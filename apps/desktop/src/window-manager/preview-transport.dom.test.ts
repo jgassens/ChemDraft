@@ -271,6 +271,20 @@ describe("window-manager palette preview transport", () => {
     unlisten();
   });
 
+  it("round-trips Main group edits from detached palettes", async () => {
+    const handler = vi.fn();
+    const unlisten = await listenForToolsetLayoutEdits(handler);
+    await sendToolsetLayoutEdit({ toolsetId: "core.main", edit: { kind: "reorderGroups", orderedGroupIds: ["style-3d", "select-text"] } });
+    await sendToolsetLayoutEdit({ toolsetId: "core.main", edit: { kind: "setGroupHidden", groupId: "orbitals", hidden: true } });
+    await sendToolsetLayoutEdit({ toolsetId: "core.main", edit: { kind: "setItemHidden", itemId: "tool.bond", hidden: false } });
+    expect(handler.mock.calls.map(([payload]) => payload.edit)).toEqual([
+      { kind: "reorderGroups", orderedGroupIds: ["style-3d", "select-text"] },
+      { kind: "setGroupHidden", groupId: "orbitals", hidden: true },
+      { kind: "setItemHidden", itemId: "tool.bond", hidden: false }
+    ]);
+    unlisten();
+  });
+
   it("uses only the Tauri channel in desktop runtime, avoiding a same-window double delivery", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     const handler = vi.fn();

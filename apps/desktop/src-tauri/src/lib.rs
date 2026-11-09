@@ -19,6 +19,11 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod palette_geometry;
+mod palette_resize;
+#[cfg(any(target_os = "macos", windows, test))]
+mod palette_resize_hit_test;
+mod palette_resize_native;
 mod panel_full_size;
 mod panel_window;
 mod panel_window_controls;
@@ -844,17 +849,7 @@ struct Engine3dSidecarSessionOutput {
     exit_code: Option<i32>,
 }
 
-#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PersistedToolsetState {
-    // Window geometry only. Palette *visibility* is owned by the TypeScript side and persisted to
-    // toolbar-layout-state.json (toolsetOverrides[].visible); Rust must not write a second, stale
-    // copy here. Old files may still carry a `visible` key — serde ignores it on read.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    x: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    y: Option<f64>,
-}
+use palette_geometry::PersistedGeometry as PersistedToolsetState;
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -959,6 +954,7 @@ pub fn run() {
         .manage(external_tools::ExternalToolsState::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
+        .manage(palette_resize::State::default())
         .manage(PluginNativeMenuItems::default())
         .manage(ToolbarsMenuModel::default())
         .manage(KeybindingSchemeState::default())
@@ -1207,6 +1203,8 @@ pub fn run() {
                 return;
             };
 
+            palette_resize::on_window_event(window, event);
+
             if utility_windows_suspended() {
                 return;
             }
@@ -1357,6 +1355,8 @@ pub fn run() {
             problem_reports::open_problem_report_email,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
+            palette_resize::report_toolset_content_size,
+            palette_resize::get_toolset_window_size,
             close_toolset_window,
             suspend_toolset_windows,
             list_toolset_window_states,
@@ -1782,6 +1782,10 @@ struct ToolsetWindowGeometry {
     title: String,
     width: f64,
     height: f64,
+    // The registry supplies orientation; absent only for older callers, which used vertical bars.
+    #[serde(default)]
+    orientation: palette_geometry::Orientation,
+    min_length: Option<f64>,
     // Default top-left for a first-ever placement (JS staggers by registry order); a persisted
     // position overrides it.
     x: f64,
@@ -2466,6 +2470,8 @@ fn close_toolset_window(
     }
     let window = app.get_webview_window(&toolset_window_label(&toolset_id));
     if let Some(window) = window.as_ref() {
+        let webview: &tauri::Webview = window.as_ref();
+        palette_resize::flush_pending(&webview.window());
         if let Some(position) = current_toolset_window_position(window) {
             // Best-effort, exactly like the `Moved` handler. Remembering where the palette was is
             // housekeeping; it must never be able to veto the close the user asked for. Once
@@ -4788,7 +4794,8 @@ async fn open_toolset_popover(
     focus_mode: Option<ToolsetPopoverFocusMode>,
 ) -> Result<(), String> {
     let label = toolset_popover_window_label(&toolset_id);
-    let focus_mode = effective_toolset_popover_focus_mode(&label, focus_mode.unwrap_or_default());
+    let focus_mode =
+        effective_toolset_popover_focus_mode(&label, Some(&kind), focus_mode.unwrap_or_default());
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return Ok(());
@@ -4836,7 +4843,7 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
         "artColor",
         true,
         (0.0, 0.0),
-        effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus),
+        effective_toolset_popover_focus_mode(&label, None, ToolsetPopoverFocusMode::Preserve),
     )
 }
 
@@ -4993,13 +5000,14 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
 
 /// Palette popovers (colour pickers and flyouts) never take key status when they open: their
 /// text fields borrow the keyboard through the guarded input lease (`install_toolset_input_focus`),
-/// like palette settings. Only the E/Z popover honours a keyboard open's request for real focus,
-/// because its choices are buttons, which never lease.
+/// like palette settings. E/Z and toolbar-items popovers honour an explicit focus request
+/// because their buttons need real keyboard entry, including when reusing a prewarmed window.
 fn effective_toolset_popover_focus_mode(
     label: &str,
+    kind: Option<&str>,
     requested: ToolsetPopoverFocusMode,
 ) -> ToolsetPopoverFocusMode {
-    if label == toolset_popover_window_label("core.bondStereo") {
+    if label == toolset_popover_window_label("core.bondStereo") || kind == Some("toolbarItems") {
         requested
     } else {
         ToolsetPopoverFocusMode::Preserve
@@ -5149,13 +5157,16 @@ fn show_toolset_popover_window(
     }
     // The page owns the live content, including a prewarmed/reused Art window switching
     // between its colour picker and command flyouts. Titles are fixed native strings.
-    if let Some(kind) = kind {
+    if let Some(kind) = kind.as_deref() {
         window
-            .set_title(toolset_popover_title(window.label(), &kind))
+            .set_title(toolset_popover_title(window.label(), kind))
             .map_err(|error| error.to_string())?;
     }
-    let focus_mode =
-        effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
+    let focus_mode = effective_toolset_popover_focus_mode(
+        window.label(),
+        kind.as_deref(),
+        focus_mode.unwrap_or_default(),
+    );
     configure_toolset_popover_window(&window, focus_mode)?;
     // Remove a tooltip already on screen before revealing this popover on either platform.
     // Subsequent tooltip-show commands are blocked by its native visibility until it hides.
@@ -7977,6 +7988,11 @@ fn ensure_toolset_window<R: Runtime>(
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
         recover_offscreen_toolset_window(app, &window);
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            palette_resize::restore(&webview.window(), None)
+        })??;
         window.show().map_err(|error| error.to_string())?;
         configure_toolset_utility_window(&window, true)?;
         return Ok(());
@@ -8011,6 +8027,16 @@ fn ensure_toolset_window<R: Runtime>(
         width,
         height,
     );
+    let content = palette_geometry::ContentSize {
+        orientation: geometry
+            .map(|geometry| geometry.orientation)
+            .unwrap_or_default(),
+        width,
+        height,
+        min_length: geometry.and_then(|geometry| geometry.min_length),
+    }
+    .validate()?;
+    palette_resize::initialize(app, &label, toolset_id, content);
 
     // Record label -> id so the Moved/Destroyed handlers and enumeration can resolve the toolset
     // without the manifest (the label itself is lossy).
@@ -8028,14 +8054,14 @@ fn ensure_toolset_window<R: Runtime>(
     )
     .title(title)
     .inner_size(width, height)
-    // The window is sized to its actual palette content by the JS side (PaletteWindow
-    // applySize). The manifest's min sizes were tuned for the old docked/web layout and are far too
-    // large for a content-fit floating window (e.g. Art's 760), which left a big blank area beside
-    // the tools — so keep only a tiny hard floor here.
-    .min_inner_size(96.0, 56.0)
+    // Remain hidden until the saved length and destination-monitor constraints are applied.
+    .visible(false)
+    .focused(false)
     .accept_first_mouse(true)
     .focusable(toolset_window_focusable())
-    .resizable(true)
+    // AppKit uses explicit native axis handles, so its unrestricted system handles stay off.
+    // Windows retains system resizing, with both parent and Tauri input-child hit tests filtered.
+    .resizable(!cfg!(target_os = "macos"))
     .decorations(false)
     // Overlapping palettes need a visible edge, matching the popover's native shadow.
     .shadow(true)
@@ -8056,8 +8082,16 @@ fn ensure_toolset_window<R: Runtime>(
     };
 
     disable_default_context_menus(&window);
-    configure_toolset_utility_window(&window, true)?;
+    configure_toolset_utility_window(&window, false)?;
     install_toolset_input_focus(&window)?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        let webview: &tauri::Webview<R> = target.as_ref();
+        palette_resize_native::install(&target, content.orientation)?;
+        palette_resize::restore(&webview.window(), Some((position.x, position.y)))
+    })??;
+    window.show().map_err(|error| error.to_string())?;
+    configure_toolset_utility_window(&window, true)?;
     Ok(())
 }
 
@@ -8113,10 +8147,13 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
         return Err("Could not access native ChemDraft toolbar window.".to_string());
     };
 
-    let style = ns_window.styleMask()
-        | NSWindowStyleMask::UtilityWindow
-        | NSWindowStyleMask::NonactivatingPanel;
-    ns_window.setStyleMask(style);
+    let current_style = ns_window.styleMask();
+    let style =
+        current_style | NSWindowStyleMask::UtilityWindow | NSWindowStyleMask::NonactivatingPanel;
+    // A no-op style setter can rebuild AppKit's frame view after the resize handles were added.
+    if style != current_style {
+        ns_window.setStyleMask(style);
+    }
     ns_window.setLevel(toolset_utility_window_level(window.label()));
     ns_window.setHidesOnDeactivate(toolset_window_hides_on_deactivate());
     ns_window.setCanHide(true);
@@ -10394,18 +10431,62 @@ mod tests {
     fn palette_popovers_open_without_focus_and_lease_their_fields() {
         let bond_stereo = toolset_popover_window_label("core.bondStereo");
         assert!(
-            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Focus)
-                == ToolsetPopoverFocusMode::Focus
+            effective_toolset_popover_focus_mode(
+                &bond_stereo,
+                None,
+                ToolsetPopoverFocusMode::Focus
+            ) == ToolsetPopoverFocusMode::Focus
         );
         assert!(
-            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Preserve)
-                == ToolsetPopoverFocusMode::Preserve
+            effective_toolset_popover_focus_mode(
+                &bond_stereo,
+                None,
+                ToolsetPopoverFocusMode::Preserve
+            ) == ToolsetPopoverFocusMode::Preserve
         );
         for toolset in ["core.art", "core.drawnStructureSettings", "core.text"] {
             let label = toolset_popover_window_label(toolset);
             assert!(
-                effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus)
-                    == ToolsetPopoverFocusMode::Preserve
+                effective_toolset_popover_focus_mode(
+                    &label,
+                    Some("flyout"),
+                    ToolsetPopoverFocusMode::Focus
+                ) == ToolsetPopoverFocusMode::Preserve
+            );
+        }
+    }
+
+    #[test]
+    fn toolbar_items_popovers_take_focus_after_prewarm() {
+        for toolset in ["core.main", "core.art", "plugin.tools"] {
+            let label = toolset_popover_window_label(toolset);
+            assert!(
+                effective_toolset_popover_focus_mode(
+                    &label,
+                    None,
+                    ToolsetPopoverFocusMode::Preserve
+                ) == ToolsetPopoverFocusMode::Preserve
+            );
+            assert!(
+                effective_toolset_popover_focus_mode(
+                    &label,
+                    Some("toolbarItems"),
+                    ToolsetPopoverFocusMode::Focus
+                ) == ToolsetPopoverFocusMode::Focus
+            );
+            assert!(
+                effective_toolset_popover_focus_mode(
+                    &label,
+                    Some("toolbarItems"),
+                    ToolsetPopoverFocusMode::Preserve
+                ) == ToolsetPopoverFocusMode::Preserve
+            );
+            assert!(
+                effective_toolset_popover_focus_mode(
+                    &label,
+                    Some("artColor"),
+                    ToolsetPopoverFocusMode::Focus
+                ) == ToolsetPopoverFocusMode::Preserve
             );
         }
     }

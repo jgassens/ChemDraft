@@ -1342,6 +1342,7 @@ describe("ToolPalette customize mode", () => {
 
     expect(container.querySelector(".tool-palette.customizing")).not.toBeNull();
     expect(container.querySelector(".palette-content-drag-grip")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
     const slots = container.querySelectorAll(".customize-slot[data-toolbar-item-id]");
     expect(slots.length).toBe(2);
     // A customize slot is not an invoking button.

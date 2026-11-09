@@ -69,7 +69,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.20`). API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
+`0.1.23`). API 0.1.23 adds toolbar group declarations. API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
@@ -95,6 +95,7 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.23 | `toolbarGroup` on toolbar buttons | No new permission |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
@@ -114,16 +115,24 @@ export const widgetManifest = parsePluginManifest({
   id: "org.yourorg.widget",
   name: "Widget",
   version: "0.1.0",
-  apiVersion: "^0.1.0",
+  apiVersion: "^0.1.23",
   entry: "src/index.ts",
-  permissions: ["selection.read", "analysis.write", "ui.menu", "ui.panel"],
+  permissions: ["selection.read", "analysis.write", "ui.menu", "ui.panel", "ui.toolbar"],
   contributes: {
     commands: [{ id: "plugin.widget.run", title: "Run Widget", requiredPermissions: ["selection.read"] }],
     menus: [{ id: "menu.widget.run", title: "Run Widget", commandId: "plugin.widget.run", location: "analyze", requiredPermissions: ["ui.menu"] }],
-    panels: [{ id: "panel.widget.result", title: "Widget Result", requiredPermissions: ["ui.panel"] }]
+    panels: [{ id: "panel.widget.result", title: "Widget Result", requiredPermissions: ["ui.panel"] }],
+    // Allowed: select-text, bonds-rings, arrows, symbols-shapes, orbitals, arrange, style-3d.
+    toolbarButtons: [{ id: "toolbar.widget.run", commandId: "plugin.widget.run", toolbarGroup: "style-3d", requiredPermissions: ["ui.toolbar"] }]
   }
 });
 ```
+
+Every toolbar button targeting API 0.1.23 or later must declare `toolbarGroup` using one of the
+seven ids above. `undeclared` is reserved for the host. Older plugins may omit the field and load
+into Undeclared. A missing group produces, for example: `Plugin "org.example.foo" targets plugin API
+0.1.23, which requires toolbarGroup on every toolbar button; button "plugin.foo.run" has none. Add one
+of: select-text, bonds-rings, arrows, symbols-shapes, orbitals, arrange, style-3d.`
 
 Command ids are `plugin.<name>.<action>`, menus `menu.<name>.<action>`, panels
 `panel.<name>.<name>`, and analyzers `analyzer.<name>.<name>`. The parser normalizes the older

@@ -21,7 +21,12 @@
       },
       "groups": [
         {
-          "id": "core.main.items",
+          "id": "select-text",
+          "title": "Select & Text",
+          "label": "Select & Text",
+          "foldIcon": "select",
+          "foldCommandId": "tool.select",
+          "foldRank": null,
           "items": [
             {
               "commandId": "tool.select",
@@ -117,18 +122,17 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            },
-            {
-              "id": "core.main.divider.1",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+            }
+          ]
+        },
+        {
+          "id": "bonds-rings",
+          "title": "Bonds & Rings",
+          "label": "Bonds & Rings",
+          "foldIcon": "bond",
+          "foldCommandId": "tool.bond",
+          "foldRank": 6,
+          "items": [
             {
               "commandId": "tool.bond",
               "title": "Single Bond",
@@ -413,24 +417,23 @@
               "tooltip": {
                 "title": "Benzene Template",
                 "shortcut": null,
-                "description": "Draw benzene. Long-press or press Arrow Down for 3–8-membered rings and chair cyclohexanes."
+                "description": "Draw benzene. Long-press or press Arrow Down for 3\u20138-membered rings and chair cyclohexanes."
               },
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            },
-            {
-              "id": "core.main.divider.2",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+            }
+          ]
+        },
+        {
+          "id": "arrows",
+          "title": "Arrows",
+          "label": "Arrows",
+          "foldIcon": "export",
+          "foldCommandId": "tool.art.reactionArrow",
+          "foldRank": 5,
+          "items": [
             {
               "commandId": "tool.art.reactionArrow",
               "title": "Reaction Arrow",
@@ -572,18 +575,17 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            },
-            {
-              "id": "core.main.divider.3",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+            }
+          ]
+        },
+        {
+          "id": "symbols-shapes",
+          "title": "Symbols & Shapes",
+          "label": "Symbols & Shapes",
+          "foldIcon": "bracket",
+          "foldCommandId": "tool.bracket",
+          "foldRank": 4,
+          "items": [
             {
               "commandId": "tool.bracket",
               "title": "Curly Bracket Tool",
@@ -802,7 +804,7 @@
               "tooltip": {
                 "title": "Symbol Tool Group",
                 "shortcut": null,
-                "description": "Stamp a ° symbol. Long-press for other symbols."
+                "description": "Stamp a \u00b0 symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -831,18 +833,17 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            },
-            {
-              "id": "core.main.divider.4",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+            }
+          ]
+        },
+        {
+          "id": "orbitals",
+          "title": "Orbitals",
+          "label": "Orbitals",
+          "foldIcon": "atom",
+          "foldCommandId": "tool.pOrbital",
+          "foldRank": 1,
+          "items": [
             {
               "commandId": "tool.lobe",
               "title": "Orbital Lobe Tool",
@@ -934,41 +935,17 @@
                 "colSpan": 1,
                 "rowSpan": 1
               }
-            },
-            {
-              "commandId": "style.formulaText",
-              "title": "Formula Text Style",
-              "icon": "style",
-              "assetName": "Custom_FormulaStyle",
-              "category": "style",
-              "id": "style.formulaText",
-              "kind": "button",
-              "label": "Formula Text Style",
-              "primary": {
-                "type": "command",
-                "commandId": "style.formulaText"
-              },
-              "submenu": null,
-              "tooltip": {
-                "title": "Formula Text Style",
-                "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "id": "core.main.divider.5",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+            }
+          ]
+        },
+        {
+          "id": "arrange",
+          "title": "Arrange",
+          "label": "Arrange",
+          "foldIcon": "align",
+          "foldCommandId": "layout.alignLeft",
+          "foldRank": 2,
+          "items": [
             {
               "commandId": "layout.arrange.circle",
               "title": "Arrange Selection",
@@ -1007,7 +984,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.left",
-                    "label": "Grid — Left",
+                    "label": "Grid \u2014 Left",
                     "icon": "arrangeGridLeft",
                     "tooltip": {
                       "title": "Arrange in a Grid (Left)",
@@ -1016,7 +993,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid",
-                    "label": "Grid — Centered",
+                    "label": "Grid \u2014 Centered",
                     "icon": "arrangeGridCenter",
                     "tooltip": {
                       "title": "Arrange in a Grid (Centered)",
@@ -1025,7 +1002,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.right",
-                    "label": "Grid — Right",
+                    "label": "Grid \u2014 Right",
                     "icon": "arrangeGridRight",
                     "tooltip": {
                       "title": "Arrange in a Grid (Right)",
@@ -1052,7 +1029,7 @@
                   },
                   {
                     "commandId": "layout.adjustArrangementSpacing",
-                    "label": "Adjust spacing…",
+                    "label": "Adjust spacing\u2026",
                     "icon": "align",
                     "tooltip": {
                       "title": "Adjust arrangement spacing",
@@ -1187,7 +1164,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.alignRight",
@@ -1212,7 +1190,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.alignTop",
@@ -1237,7 +1216,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.alignMiddle",
@@ -1262,7 +1242,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.alignBottom",
@@ -1287,7 +1268,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.distributeHorizontal",
@@ -1416,7 +1398,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.rotate90",
@@ -1538,7 +1521,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.bringToFront",
@@ -1634,7 +1618,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.sendBackward",
@@ -1658,7 +1643,8 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
+              },
+              "defaultHidden": true
             },
             {
               "commandId": "layout.sendToBack",
@@ -1682,19 +1668,19 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
-            },
-            {
-              "id": "core.main.divider.6",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
               },
-              "layout": {
-                "rowSpan": 2
-              }
-            },
+              "defaultHidden": true
+            }
+          ]
+        },
+        {
+          "id": "style-3d",
+          "title": "Style & 3D",
+          "label": "Style & 3D",
+          "foldIcon": "palette",
+          "foldCommandId": "style.color",
+          "foldRank": 3,
+          "items": [
             {
               "commandId": "style.color",
               "title": "Color Controls",
@@ -1739,6 +1725,43 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "style.formulaText",
+              "title": "Formula Text Style",
+              "icon": "style",
+              "assetName": "Custom_FormulaStyle",
+              "category": "style",
+              "id": "style.formulaText",
+              "kind": "button",
+              "label": "Formula Text Style",
+              "primary": {
+                "type": "command",
+                "commandId": "style.formulaText"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Formula Text Style",
+                "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "id": "widget.core.mainStyleControls",
+              "kind": "control",
+              "label": "Text style controls",
+              "primary": {
+                "type": "control",
+                "controlId": "widget.core.mainStyleControls"
+              },
+              "submenu": null,
+              "layout": {
+                "colSpan": 12,
+                "rowSpan": 2
               }
             },
             {
@@ -1831,31 +1854,6 @@
               "layout": {
                 "colSpan": 1,
                 "rowSpan": 1
-              }
-            },
-            {
-              "id": "widget.core.mainStyleControls",
-              "kind": "control",
-              "label": "Text style controls",
-              "primary": {
-                "type": "control",
-                "controlId": "widget.core.mainStyleControls"
-              },
-              "submenu": null,
-              "layout": {
-                "colSpan": 12,
-                "rowSpan": 2
-              }
-            },
-            {
-              "id": "core.main.divider.7",
-              "kind": "separator",
-              "label": "Divider",
-              "primary": {
-                "type": "none"
-              },
-              "layout": {
-                "rowSpan": 2
               }
             }
           ]
@@ -2255,7 +2253,7 @@
               "tooltip": {
                 "title": "Benzene Template",
                 "shortcut": null,
-                "description": "Draw benzene. Long-press or press Arrow Down for 3–8-membered rings and chair cyclohexanes."
+                "description": "Draw benzene. Long-press or press Arrow Down for 3\u20138-membered rings and chair cyclohexanes."
               },
               "layout": {
                 "colSpan": 1,
@@ -2688,7 +2686,7 @@
               "tooltip": {
                 "title": "Symbol Tool Group",
                 "shortcut": null,
-                "description": "Stamp a ° symbol. Long-press for other symbols."
+                "description": "Stamp a \u00b0 symbol. Long-press for other symbols."
               },
               "layout": {
                 "colSpan": 1,
@@ -3322,7 +3320,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.left",
-                    "label": "Grid — Left",
+                    "label": "Grid \u2014 Left",
                     "icon": "arrangeGridLeft",
                     "tooltip": {
                       "title": "Arrange in a Grid (Left)",
@@ -3331,7 +3329,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid",
-                    "label": "Grid — Centered",
+                    "label": "Grid \u2014 Centered",
                     "icon": "arrangeGridCenter",
                     "tooltip": {
                       "title": "Arrange in a Grid (Centered)",
@@ -3340,7 +3338,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.right",
-                    "label": "Grid — Right",
+                    "label": "Grid \u2014 Right",
                     "icon": "arrangeGridRight",
                     "tooltip": {
                       "title": "Arrange in a Grid (Right)",
@@ -3367,7 +3365,7 @@
                   },
                   {
                     "commandId": "layout.adjustArrangementSpacing",
-                    "label": "Adjust spacing…",
+                    "label": "Adjust spacing\u2026",
                     "icon": "align",
                     "tooltip": {
                       "title": "Adjust arrangement spacing",
@@ -4267,7 +4265,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.left",
-                    "label": "Grid — Left",
+                    "label": "Grid \u2014 Left",
                     "icon": "arrangeGridLeft",
                     "tooltip": {
                       "title": "Arrange in a Grid (Left)",
@@ -4276,7 +4274,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid",
-                    "label": "Grid — Centered",
+                    "label": "Grid \u2014 Centered",
                     "icon": "arrangeGridCenter",
                     "tooltip": {
                       "title": "Arrange in a Grid (Centered)",
@@ -4285,7 +4283,7 @@
                   },
                   {
                     "commandId": "layout.arrange.grid.right",
-                    "label": "Grid — Right",
+                    "label": "Grid \u2014 Right",
                     "icon": "arrangeGridRight",
                     "tooltip": {
                       "title": "Arrange in a Grid (Right)",
@@ -4312,7 +4310,7 @@
                   },
                   {
                     "commandId": "layout.adjustArrangementSpacing",
-                    "label": "Adjust spacing…",
+                    "label": "Adjust spacing\u2026",
                     "icon": "align",
                     "tooltip": {
                       "title": "Adjust arrangement spacing",

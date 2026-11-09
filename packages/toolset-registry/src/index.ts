@@ -19,6 +19,33 @@ export const ToolsetSourceSchema = z.enum(["core", "plugin", "user"]);
 export const ToolsetModeSchema = z.enum(["floating", "docked", "hidden"]);
 export const ToolsetOrientationSchema = z.enum(["vertical", "horizontal"]);
 
+/** Stable home groups. Rank 1 is a single folding step containing two groups. */
+export const MAIN_TOOLBAR_GROUP_IDS = [
+  "select-text", "bonds-rings", "arrows", "symbols-shapes", "orbitals", "arrange", "style-3d", "undeclared"
+] as const;
+export const ToolbarGroupIdSchema = z.enum(MAIN_TOOLBAR_GROUP_IDS);
+export type ToolbarGroupId = z.infer<typeof ToolbarGroupIdSchema>;
+export const MAIN_TOOLBAR_FOLD_ORDER = [
+  ["orbitals", "undeclared"], ["arrange"], ["style-3d"], ["symbols-shapes"], ["arrows"], ["bonds-rings"]
+] as const satisfies readonly (readonly ToolbarGroupId[])[];
+export const MAIN_TOOLBAR_GROUPS = [
+  { id: "select-text", label: "Select & Text", foldIcon: "select", foldCommandId: "tool.select", foldRank: null },
+  { id: "bonds-rings", label: "Bonds & Rings", foldIcon: "bond", foldCommandId: "tool.bond", foldRank: 6 },
+  { id: "arrows", label: "Arrows", foldIcon: "export", foldCommandId: "tool.art.reactionArrow", foldRank: 5 },
+  { id: "symbols-shapes", label: "Symbols & Shapes", foldIcon: "bracket", foldCommandId: "tool.bracket", foldRank: 4 },
+  { id: "orbitals", label: "Orbitals", foldIcon: "atom", foldCommandId: "tool.pOrbital", foldRank: 1 },
+  { id: "arrange", label: "Arrange", foldIcon: "align", foldCommandId: "layout.alignLeft", foldRank: 2 },
+  { id: "style-3d", label: "Style & 3D", foldIcon: "palette", foldCommandId: "style.color", foldRank: 3 },
+  { id: "undeclared", label: "Undeclared", foldIcon: "palette", foldRank: 1 }
+] as const;
+
+const ToolbarGroupMetadata = {
+  label: NonEmptyStringSchema.optional(),
+  foldIcon: NonEmptyStringSchema.optional(),
+  foldCommandId: CommandIdSchema.optional(),
+  foldRank: z.number().int().min(1).max(6).nullable().optional()
+};
+
 export const ToolsetGridLayoutSchema = z
   .object({
     orientation: ToolsetOrientationSchema.optional(),
@@ -108,6 +135,7 @@ export const ToolsetItemSchema = z
     shortcutDisplay: z.string().optional(),
     disabledReason: z.string().optional(),
     category: z.string().optional(),
+    defaultHidden: z.boolean().optional(),
     placement: ToolsetItemPlacementSchema.optional(),
     primary: ToolsetPrimaryActionSchema.optional(),
     submenu: ToolsetSubmenuSchema.nullish(),
@@ -139,9 +167,30 @@ export const ToolsetGroupSchema = z
   .object({
     id: NonEmptyStringSchema.optional(),
     title: NonEmptyStringSchema.optional(),
+    ...ToolbarGroupMetadata,
     items: z.array(ToolsetItemSchema).min(1)
   })
   .strict();
+
+/** Authored main groups have fixed identities and metadata; other toolsets retain the legacy schema. */
+export const MainToolbarGroupSchema = z.object({
+  id: ToolbarGroupIdSchema,
+  title: NonEmptyStringSchema.optional(),
+  label: NonEmptyStringSchema,
+  foldIcon: NonEmptyStringSchema,
+  foldCommandId: CommandIdSchema.optional(),
+  foldRank: z.number().int().min(1).max(6).nullable(),
+  items: z.array(ToolsetItemSchema)
+}).strict().superRefine((group, context) => {
+  const expected = MAIN_TOOLBAR_GROUPS.find(entry => entry.id === group.id)!;
+  if (group.foldRank !== expected.foldRank || group.label !== expected.label || group.foldIcon !== expected.foldIcon ||
+      group.foldCommandId !== ("foldCommandId" in expected ? expected.foldCommandId : undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: `Toolbar group "${group.id}" must use its fixed metadata.` });
+  }
+  if (group.items.some(item => item.kind === "spacer" || item.kind === "separator")) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Main toolbar groups cannot contain spacers or separators." });
+  }
+});
 
 export const ToolsetDefinitionSchema = z
   .object({
@@ -196,6 +245,7 @@ export const UserToolsetOverrideSchema = z
     visible: z.boolean().optional(),
     mode: ToolsetModeSchema.optional(),
     groupOrder: z.array(NonEmptyStringSchema).optional(),
+    hiddenGroupIds: z.array(ToolbarGroupIdSchema).optional(),
     itemOrder: z.record(z.array(CommandIdSchema)).optional(),
     hiddenCommandIds: z.array(CommandIdSchema).optional(),
     itemOverrides: z.array(ToolsetItemOverrideSchema).optional(),
@@ -211,6 +261,7 @@ export const UserToolsetGroupSchema = z
   .object({
     id: NonEmptyStringSchema.optional(),
     title: NonEmptyStringSchema.optional(),
+    ...ToolbarGroupMetadata,
     items: z.array(ToolsetItemSchema)
   })
   .strict();
@@ -233,6 +284,7 @@ export const RegisteredToolsetSchema = ToolsetDefinitionSchema.extend({
 export const ToolsetLayoutStateSchema = z
   .object({
     version: z.literal(1),
+    mainToolbarGroupsMigration: z.object({ version: z.literal(1), noticePending: z.boolean() }).strict().optional(),
     toolsetOrder: z.array(NonEmptyStringSchema).optional(),
     toolsetOverrides: z.array(UserToolsetOverrideSchema).default([]),
     userToolsets: z.array(UserToolsetDefinitionSchema).default([])
@@ -243,7 +295,26 @@ export const ToolsetManifestSchema = z
   .object({
     toolsets: z.array(ToolsetDefinitionSchema).min(1)
   })
-  .strict();
+  .strict().superRefine((manifest, context) => {
+    manifest.toolsets.forEach((toolset, index) => {
+      if (toolset.id !== "core.main" || !toolset.groups.some(group => group.foldRank !== undefined)) return;
+      if (toolset.groups.map(group => group.id).join(",") !== MAIN_TOOLBAR_GROUP_IDS.slice(0, 7).join(",")) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["toolsets", index, "groups"], message: "Main must declare the seven fixed toolbar groups in default order." });
+      }
+      const seen = new Set<string>();
+      toolset.groups.forEach((group, groupIndex) => {
+        const parsed = MainToolbarGroupSchema.safeParse(group);
+        if (!parsed.success) parsed.error.issues.forEach(issue => context.addIssue({ ...issue,
+          path: ["toolsets", index, "groups", groupIndex, ...issue.path] }));
+        for (const item of group.items) {
+          const id = toolsetItemCustomizationId(item);
+          if (id && seen.has(id)) context.addIssue({ code: z.ZodIssueCode.custom,
+            path: ["toolsets", index, "groups", groupIndex], message: `Main toolbar item "${id}" must have exactly one home group.` });
+          if (id) seen.add(id);
+        }
+      });
+    });
+  });
 
 export type ToolsetSource = z.infer<typeof ToolsetSourceSchema>;
 export type ToolsetMode = z.infer<typeof ToolsetModeSchema>;
@@ -347,6 +418,10 @@ export interface NormalizedToolsetItem {
 export interface NormalizedToolsetGroup {
   id?: string;
   title?: string;
+  label?: string;
+  foldIcon?: string;
+  foldCommandId?: string;
+  foldRank?: number | null;
   items: NormalizedToolsetItem[];
 }
 
@@ -515,8 +590,7 @@ export function normalizeToolsetGroup<TIcon extends string = string, TAssetName 
   context: Omit<NormalizeToolsetItemContext, "itemIndex"> = {}
 ): NormalizedToolsetGroup {
   return {
-    id: group.id,
-    title: group.title,
+    ...group,
     items: group.items.map((item, itemIndex) =>
       normalizeToolsetItem(item, { ...context, groupId: group.id ?? context.groupId, itemIndex })
     )
@@ -597,7 +671,11 @@ export function applyToolsetLayoutState<TIcon extends string = string, TAssetNam
     toolsetsById.set(override.toolsetId, applyUserToolsetOverride(toolset, safeOverride));
   }
 
-  return orderToolsets([...toolsetsById.values()], parsed.toolsetOrder);
+  // Apply defaults even when no override exists (e.g. hidden-by-default Arrange buttons).
+  return orderToolsets([...toolsetsById.values()].map(toolset =>
+    parsed.toolsetOverrides.some(override => override.toolsetId === toolset.id)
+      ? toolset : applyUserToolsetOverride(toolset, { toolsetId: toolset.id })
+  ), parsed.toolsetOrder);
 }
 
 function pruneUnknownToolsetCommands<TIcon extends string, TAssetName extends string>(
@@ -827,15 +905,30 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
 
   // Insert add-only item additions BEFORE reorder/hide runs, so itemOrder can address an added id and
   // a group that is otherwise all-hidden but holds an addition survives the empty-group filter below.
-  const groupsWithAdditions = mergeToolsetItemAdditions(
-    toolset.groups,
-    override.itemAdditions as readonly ToolsetItemAddition<TIcon, TAssetName>[] | undefined
-  );
+  const groupedMain = toolset.id === "core.main" && toolset.groups.some(group => group.foldRank !== undefined);
+  const home = new Map<string, string>();
+  toolset.groups.forEach(group => group.items.forEach(item => {
+    const id = toolsetItemCustomizationId(item);
+    if (id && group.id) home.set(id, group.id);
+  }));
+  toolset.groups.forEach(group => group.items.forEach(item => item.submenu?.items.forEach(child => {
+    if (group.id && !home.has(child.commandId)) home.set(child.commandId, group.id);
+  })));
+  const additions = override.itemAdditions as readonly ToolsetItemAddition<TIcon, TAssetName>[] | undefined;
+  const safeAdditions = groupedMain ? additions?.filter(addition =>
+    addition.item.kind !== "spacer" && addition.item.kind !== "separator"
+  ).map(addition => ({ ...addition, groupId: home.get(toolsetItemCustomizationId(addition.item) ?? "") ?? "undeclared" })) : additions;
+  const sourceGroups = [...toolset.groups];
+  if (groupedMain && safeAdditions?.some(addition => addition.groupId === "undeclared") && !sourceGroups.some(group => group.id === "undeclared")) {
+    sourceGroups.push({ ...MAIN_TOOLBAR_GROUPS[7], items: [] });
+  }
+  const groupsWithAdditions = mergeToolsetItemAdditions(sourceGroups, safeAdditions);
   const groups = reorderById(groupsWithAdditions, override.groupOrder ?? [], (group) => group.id).map((group) => {
     const orderedItems = reorderById(group.items, group.id ? (override.itemOrder?.[group.id] ?? []) : [], toolsetItemCustomizationId)
       .filter((item) => {
         const commandId = toolsetItemCustomizationId(item);
-        return commandId === undefined || !hiddenCommandIds.has(commandId);
+        return (commandId === undefined || !hiddenCommandIds.has(commandId)) &&
+          (!item.defaultHidden || (commandId !== undefined && itemOverrides.get(commandId)?.hidden === false));
       })
       .map((item) => {
         const commandId = toolsetItemCustomizationId(item);
@@ -845,13 +938,14 @@ function applyUserToolsetOverride<TIcon extends string, TAssetName extends strin
         }
         return {
           ...item,
-          placement: itemOverride.placement ?? item.placement,
+          placement: groupedMain && itemOverride.placement
+            ? { ...itemOverride.placement, groupId: group.id } : itemOverride.placement ?? item.placement,
           layout: itemOverride.layout ? { ...item.layout, ...itemOverride.layout } : item.layout
         };
       });
 
     return { ...group, items: orderedItems };
-  }).filter((group) => group.items.length > 0);
+  }).filter((group) => group.items.length > 0 && !override.hiddenGroupIds?.includes(group.id as ToolbarGroupId));
 
   return {
     ...toolset,

@@ -5,7 +5,7 @@ import type { ToolbarPaletteItemModel } from "../../toolsets";
 import type { CommandSpec } from "../../commands";
 import {
   GALLERY_TRAY_DROPPABLE_ID,
-  buildGallerySections,
+  buildMainToolbarGallerySections,
   type GalleryEntry,
   type GalleryWidgetDescriptor
 } from "./galleryModel";
@@ -37,6 +37,7 @@ function GalleryTile({ entry }: { entry: GalleryEntry }) {
       galleryKind: entry.kind,
       commandId: entry.commandId,
       widgetId: entry.widgetId,
+      groupId: entry.homeGroupId,
       iconItem,
       command: entry.command
     }
@@ -96,7 +97,7 @@ export function GalleryTray({
 }) {
   const [search, setSearch] = useState("");
   const sections = useMemo(
-    () => buildGallerySections(commands, widgets, presentItemIds, search),
+    () => buildMainToolbarGallerySections(commands, widgets, presentItemIds, search),
     [commands, widgets, presentItemIds, search]
   );
   const { setNodeRef, isOver } = useDroppable({ id: GALLERY_TRAY_DROPPABLE_ID });
@@ -132,7 +133,7 @@ export function GalleryTray({
         ))}
         {sections.length === 0 ? <p className="customize-gallery-empty">No items match.</p> : null}
       </div>
-      <p className="customize-gallery-hint">Drag items to the toolbar. Drag a tool here to remove it.</p>
+      <p className="customize-gallery-hint">Drag items into their group. Drag a tool here to hide it. Customize Toolbars shows hidden groups.</p>
     </section>
   );
 }

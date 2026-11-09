@@ -12,7 +12,7 @@ export function CustomizeBar({
 }) {
   return (
     <div className="customize-main-toolbar-bar" data-palette-control="true">
-      <span className="customize-main-toolbar-hint">Drag to reorder · drag an item out to remove it</span>
+      <span className="customize-main-toolbar-hint">Drag within a group to reorder · drag an item out to hide it</span>
       <div className="customize-main-toolbar-actions">
         <button
           type="button"

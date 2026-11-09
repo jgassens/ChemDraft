@@ -3,6 +3,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,7 +17,7 @@ import iro from "@jaames/iro";
 import { useDraggable } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
+import { MAIN_TOOLBAR_GROUPS, type ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
 import { PALETTE_INPUT_FOCUS_CANCEL_EVENT, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import {
@@ -145,6 +146,10 @@ import {
   PALETTE_GRID_METRIC_DEFAULTS,
   type ToolbarPaletteItemModel
 } from "./toolsets";
+import type { ToolbarPaletteGroupModel } from "./toolsets";
+import { foldMainToolbar, toolbarOverflowPrefix } from "./toolbars/toolbarFit";
+import { useToolbarFit } from "./toolbars/useToolbarFit";
+import { openToolsetToolbarItemsPopover, type ToolsetToolbarPopoverHandle, type ToolsetToolbarSnapshot } from "./window-manager";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
@@ -233,7 +238,12 @@ export function ToolPalette({
   onRequestFlyout,
   onInvoke,
   widgetState,
-  customize
+  customize,
+  toolsetId,
+  groupMetadata,
+  onOpeningToolbarItems,
+  toolbarPopoverRef,
+  measuring = false
 }: {
   groups?: CommandSpec[][];
   itemGroups?: ToolbarPaletteItemModel[][];
@@ -248,6 +258,12 @@ export function ToolPalette({
   /** Live state + callbacks for the widget sections (style controls, inspectors), provided via
    *  context to the widgets declared as manifest `control` items. */
   widgetState?: ToolbarWidgetState;
+  toolsetId?: string;
+  groupMetadata?: readonly ToolbarPaletteGroupModel[];
+  onOpeningToolbarItems?: () => void;
+  toolbarPopoverRef?: { current: ToolsetToolbarPopoverHandle | undefined };
+  /** Internal inert, unconstrained measurement surface; never opens a popover. */
+  measuring?: boolean;
   /** When set, render in-place customize mode: each grid item becomes a dnd-kit sortable slot (no
    *  invoke/flyout/tooltip handlers), grouped by these group ids (aligned with the item groups,
    *  BEFORE the widget filter). A DndContext must wrap this component (ToolbarCustomizeController). */
@@ -260,6 +276,86 @@ export function ToolPalette({
   } = usePaletteTooltipState();
 
   const effectiveItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
+  const rootRef = useRef<HTMLElement>(null);
+  const ownPopoverRef = useRef<ToolsetToolbarPopoverHandle | undefined>(undefined);
+  const popoverRef = toolbarPopoverRef ?? ownPopoverRef;
+  const openItemsRef = useRef<{ groupId?: string; overflow: boolean } | undefined>(undefined);
+  const focusedItemRef = useRef<string | undefined>(undefined);
+  const focusedFoldRef = useRef<string | undefined>(undefined);
+  const metadata = useMemo(() => effectiveItemGroups.map((items, index) => ({ ...groupMetadata?.[index], items })),
+    [effectiveItemGroups, groupMetadata]);
+  // Customize renders only sortable slots; an ordinary measurement copy would mount invoking
+  // buttons and a shell drag grip inside the customizing palette.
+  const needsProbe = !measuring && !customize && mode === "floating";
+  const sectionWidgets = effectiveItemGroups.flat().filter(item => isToolbarWidgetItem(item) && !isGridWidgetItem(item));
+  const inspector = sectionWidgets.some(item => item.primary.type === "control" && TOOLBAR_WIDGET_REGISTRY[item.primary.controlId]?.gridMode === "hide-grid");
+  // Legacy toolbar sections join the same ordered grid as atomic controls. Inspector panels keep
+  // their existing scrollable form layout; their hidden launcher is not a toolbar item.
+  const canFit = needsProbe && !customize && !inspector;
+  const measurement = useToolbarFit(rootRef, canFit, orientation, metadata);
+  const adaptiveSections = mode === "floating" && !customize && !inspector && sectionWidgets.length > 0 && (measuring || measurement !== undefined);
+  const folded = toolsetId === "core.main" && measurement
+    ? foldMainToolbar(measurement.groups, measurement.available, measurement.gap) : new Set<string>();
+  const fittingGroups = measurement?.groups.map(group => folded.has(group.id ?? "")
+    ? { ...group, length: group.foldedLength, prefixes: [group.foldedLength] } : group);
+  // Once Main has exhausted its fold order, any remaining shortage uses the same overflow path.
+  // The native minimum reserves one item and the overflow button, including at startup.
+  const prefix = measurement && fittingGroups
+    ? Math.max(effectiveItemGroups.some(group => group.length) ? 1 : 0,
+      toolbarOverflowPrefix(fittingGroups, measurement.available, measurement.gap, measurement.overflow)) : Infinity;
+  let remaining = prefix;
+  const displayedGroups = effectiveItemGroups.map((group, index) => {
+    if (folded.has(metadata[index]?.id ?? "")) {
+      const visible = remaining > 0 ? group : [];
+      remaining--;
+      return visible;
+    }
+    const visible = group.slice(0, Math.max(0, remaining));
+    remaining -= group.length;
+    return visible;
+  });
+  const overflowItems = effectiveItemGroups.flatMap((group, index) => group.slice(displayedGroups[index].length));
+  const snapshot = (items: ToolbarPaletteItemModel[], title?: string): ToolsetToolbarSnapshot => ({
+    title, items, activeTool, currentDistributeMode, widgetState
+  });
+  const openItems = (opener: HTMLElement, groupId?: string) => {
+    if (!toolsetId) return;
+    popoverRef.current?.dispose();
+    onOpeningToolbarItems?.();
+    openItemsRef.current = { groupId, overflow: groupId === undefined };
+    const group = metadata.find(entry => entry.id === groupId);
+    const handle = openToolsetToolbarItemsPopover({ toolsetId, opener, orientation,
+      toolbar: groupId === undefined ? snapshot(overflowItems) : snapshot(group?.items ?? [], group?.label) });
+    popoverRef.current = handle;
+    void handle.ready.catch(() => undefined);
+  };
+  useEffect(() => {
+    const opened = openItemsRef.current;
+    if (!opened || !popoverRef.current) return;
+    const group = metadata.find(entry => entry.id === opened.groupId);
+    const next = opened.overflow ? (overflowItems.length ? snapshot(overflowItems) : undefined)
+      : group && folded.has(group.id ?? "") ? snapshot(group.items, group.label) : undefined;
+    void popoverRef.current.update(next).catch(() => undefined);
+  });
+  useEffect(() => () => popoverRef.current?.dispose(), [popoverRef]);
+  useLayoutEffect(() => {
+    const id = focusedItemRef.current;
+    const foldId = focusedFoldRef.current;
+    if (foldId && !Array.from(rootRef.current?.querySelectorAll<HTMLElement>(":scope > .tool-group > [data-toolbar-fold]") ?? [])
+      .some(element => element.dataset.toolbarFold === foldId)) {
+      rootRef.current?.querySelector<HTMLButtonElement>(":scope > [data-toolbar-overflow]")?.focus({ preventScroll: true });
+      focusedFoldRef.current = undefined;
+    }
+    if (!id) return;
+    const group = metadata.find(entry => entry.items.some(item => item.id === id));
+    const hiddenByFold = group && folded.has(group.id ?? "");
+    const hiddenByOverflow = overflowItems.some(item => item.id === id);
+    if (!hiddenByFold && !hiddenByOverflow) return;
+    const button = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>(":scope > .tool-group > [data-toolbar-fold], :scope > [data-toolbar-overflow]") ?? [])
+      .find(element => hiddenByFold && !hiddenByOverflow ? element.dataset.toolbarFold === group.id : element.hasAttribute("data-toolbar-overflow"));
+    button?.focus({ preventScroll: true });
+    focusedItemRef.current = undefined;
+  });
   const renderPaletteItem = (
     item: ToolbarPaletteItemModel,
     tooltipId: string,
@@ -268,6 +364,7 @@ export function ToolPalette({
     <ToolbarPaletteItem
       key={key}
       item={item}
+      standalone={adaptiveSections && isToolbarWidgetItem(item) && !isGridWidgetItem(item)}
       activeTool={activeTool}
       tooltipId={tooltipId}
       tooltipVisible={visibleTooltipId === tooltipId}
@@ -279,18 +376,23 @@ export function ToolPalette({
     />
   );
 
-  const gridStyle = toolPaletteGridStyle(gridLayout);
+  const baseGridStyle = toolPaletteGridStyle(gridLayout, orientation);
+  const gridStyle: CSSProperties | undefined = adaptiveSections ? { ...baseGridStyle,
+    gridAutoColumns: "minmax(24px, max-content)",
+    gridTemplateRows: orientation === "horizontal" ? `repeat(${gridLayout?.rows ?? 2}, minmax(24px, max-content))` : undefined
+  } : baseGridStyle;
   // Widget items (manifest `control` items) don't render as grid slots — they drive the widget
   // sections below and can replace/hide the grid. Strip them from the grid content + sizing so a
   // widget placeholder never shows as a disabled button. Pair each group's id (from `customize`,
   // aligned to the UNFILTERED groups) BEFORE filtering so per-group reorder edits address the right
   // group even when a widget-only group drops out.
-  const gridGroups = effectiveItemGroups
+  const gridGroups = displayedGroups
     .map((group, index) => ({
-      id: customize?.groupIds[index],
+      id: customize?.groupIds[index] ?? groupMetadata?.[index]?.id,
+      metadata: groupMetadata?.[index],
       // Widgets with declared grid spans stay IN the grid (grid citizens, freely placeable); only
       // span-less widgets drop out to the appended-section path below.
-      items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item))
+      items: group.filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item) || adaptiveSections)
     }))
     .filter((group) => group.items.length > 0);
   const gridItemGroups = gridGroups.map((group) => group.items);
@@ -299,7 +401,7 @@ export function ToolPalette({
   const presentWidgets = effectiveItemGroups
     .flatMap((group, index) =>
       group
-        .filter((item) => isToolbarWidgetItem(item) && !isGridWidgetItem(item) && item.primary.type === "control")
+        .filter((item) => !adaptiveSections && isToolbarWidgetItem(item) && !isGridWidgetItem(item) && item.primary.type === "control")
         .map((item) => ({
           widgetId: item.primary.type === "control" ? item.primary.controlId : item.id,
           groupId: customize?.groupIds[index]
@@ -326,6 +428,10 @@ export function ToolPalette({
   ];
 
   const toolGroupElements = gridGroups.map((group, groupIndex) => {
+    const isFolded = folded.has(group.id ?? "");
+    const foldCommand = group.metadata?.foldCommandId ? effectiveItemGroups.flat().flatMap(item => [
+      ...(item.primary.type === "command" ? [item.primary.command] : []), ...(item.submenu?.items ?? [])
+    ]).find(command => command.id === group.metadata?.foldCommandId) : undefined;
     const content = group.items.map((tool, toolIndex) => {
       const tooltipId = `${groupIndex}-${toolIndex}-${tool.id}`;
       return customize
@@ -336,9 +442,19 @@ export function ToolPalette({
       <div
         className={["tool-group", gridStyle ? "tool-group-grid" : ""].filter(Boolean).join(" ")}
         key={group.id ?? group.items.map((tool) => tool.id).join("-")}
-        style={gridStyle}
+        data-toolbar-group-id={group.id}
+        style={isFolded ? { gridTemplateColumns: "24px", gridTemplateRows: "24px" } : gridStyle}
       >
-        {customize ? (
+        {isFolded ? <button type="button" className="icon-button toolbar-fold-button" data-palette-control="true"
+          data-toolbar-fold={group.id} aria-label={group.metadata?.label ?? group.id} aria-haspopup="menu"
+          onKeyDown={event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.click(); }
+          }}
+          onClick={event => openItems(event.currentTarget, group.id)}>
+          {foldCommand ? <ToolbarItemIcon item={{ ...group.items[0], assetName: undefined, iconDataUri: undefined,
+            primary: { type: "command", command: foldCommand } }} command={foldCommand} />
+            : <Icon name={MAIN_TOOLBAR_GROUPS.find(entry => entry.id === group.id)?.foldIcon ?? "palette"} />}
+        </button> : customize ? (
           <SortableContext items={group.items.map((tool) => tool.id)} strategy={rectSortingStrategy}>
             {content}
           </SortableContext>
@@ -380,14 +496,24 @@ export function ToolPalette({
   return (
     <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
+        ref={rootRef}
         className={[
           "tool-palette",
           mode,
           orientation,
           customize ? "customizing" : "",
+          measuring ? "toolbar-measuring" : canFit && !hidesGrid && !replacesGrid && presentWidgets.length === 0 ? "toolbar-fitted" : "",
+          adaptiveSections ? "toolbar-adaptive-sections" : "",
           ...widgetClassNames
         ].filter(Boolean).join(" ")}
         aria-label={title}
+        role="toolbar"
+        aria-orientation={orientation}
+        onFocusCapture={event => {
+          focusedItemRef.current = (event.target as HTMLElement).closest<HTMLElement>("[data-toolbar-item-id]")?.dataset.toolbarItemId;
+          focusedFoldRef.current = (event.target as HTMLElement).closest<HTMLElement>("[data-toolbar-fold]")?.dataset.toolbarFold;
+        }}
+        onBlurCapture={() => { focusedItemRef.current = undefined; focusedFoldRef.current = undefined; }}
         data-tool-palette-orientation={orientation}
         data-tooltip-delay-ms={TOOLTIP_DELAY_MS}
       >
@@ -407,6 +533,14 @@ export function ToolPalette({
             </div>
           </div>
         ) : toolGroupElements}
+        {overflowItems.length && !hidesGrid && !replacesGrid && !presentWidgets.length ? <button type="button"
+          className="icon-button toolbar-overflow-button" data-toolbar-overflow="true" data-palette-control="true"
+          aria-label="More tools" aria-haspopup="menu" onClick={event => openItems(event.currentTarget)}
+          onKeyDown={event => {
+            if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.currentTarget.click(); }
+          }}>
+          <span aria-hidden="true">⋯</span>
+        </button> : null}
         {presentWidgets.map((widget) =>
           customize ? (
             <CustomizeWidgetSlot
@@ -421,6 +555,12 @@ export function ToolPalette({
             <Fragment key={widget.widgetId}>{widget.render()}</Fragment>
           )
         )}
+        {needsProbe ? <span className="toolbar-natural-size" aria-hidden="true" inert>
+          <ToolPalette itemGroups={effectiveItemGroups} groupMetadata={groupMetadata} gridLayout={gridLayout}
+            activeTool={activeTool} mode={mode} orientation={orientation} title={title}
+            currentDistributeMode={currentDistributeMode} onInvoke={() => undefined} widgetState={widgetState} measuring />
+        </span> : null}
+        {needsProbe ? <span className="icon-button toolbar-overflow-measure" aria-hidden="true" inert>⋯</span> : null}
       </aside>
     </ToolbarWidgetStateContext.Provider>
   );
@@ -647,7 +787,7 @@ function commandGroupsToPaletteItemGroups(groups: CommandSpec[][]): ToolbarPalet
   })));
 }
 
-function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined): CSSProperties | undefined {
+function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined, orientation: ToolPaletteOrientation): CSSProperties | undefined {
   if (!gridLayout) {
     return undefined;
   }
@@ -662,7 +802,9 @@ function toolPaletteGridStyle(gridLayout: ToolsetGridLayout | undefined): CSSPro
     "--toolbar-cell-height": `${cellHeight}px`,
     "--toolbar-grid-gap": `${gap}px`,
     "--toolbar-grid-padding": `${padding}px`,
-    gridTemplateColumns: gridLayout.columns ? `repeat(${gridLayout.columns}, var(--toolbar-cell-width))` : undefined,
+    gridTemplateColumns: orientation === "horizontal" ? "none" : gridLayout.columns ? `repeat(${gridLayout.columns}, var(--toolbar-cell-width))` : undefined,
+    gridTemplateRows: orientation === "horizontal" ? `repeat(${gridLayout.rows ?? 2}, var(--toolbar-cell-height))` : undefined,
+    gridAutoColumns: "var(--toolbar-cell-width)",
     gridAutoRows: "var(--toolbar-cell-height)"
   } as CSSProperties;
 }
@@ -3772,12 +3914,16 @@ function closestParagraphSpacingCommandId(paragraphSpacingPx: number | undefined
   ), textParagraphSpacingCommands[0]).id;
 }
 
-function ToolbarPaletteItem({
+/** Shared cell renderer for palettes and native toolbar-items popovers. */
+export function ToolbarPaletteItem({
   item,
   activeTool,
   tooltipId,
   tooltipVisible,
-  distributeMode,
+  distributeMode = "centers",
+  active,
+  checked,
+  standalone = false,
   onTooltipEnter,
   onTooltipLeave,
   onRequestFlyout,
@@ -3787,7 +3933,11 @@ function ToolbarPaletteItem({
   activeTool?: string;
   tooltipId?: string;
   tooltipVisible?: boolean;
-  distributeMode: ToolPaletteDistributeMode;
+  distributeMode?: ToolPaletteDistributeMode;
+  active?: boolean;
+  checked?: boolean;
+  /** Render section controls as cells too (there is no appended widget area in a popover). */
+  standalone?: boolean;
   onTooltipEnter?: () => void;
   onTooltipLeave?: (options?: ClearTooltipOptions) => void;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
@@ -3823,10 +3973,10 @@ function ToolbarPaletteItem({
   const primaryDisabled = primaryCommand ? primaryCommand.enabled === false : true;
   const buttonDisabled = primaryDisabled && (!hasSubmenu || !hasEnabledSubmenuCommand);
   const usesNativeFlyout = hasSubmenu && Boolean(onRequestFlyout);
-  const activeState = primaryCommand?.enabled !== false && (
+  const activeState = primaryCommand?.enabled !== false && (active ?? checked ?? (
     primaryCommand?.id === activeTool
     || submenuCommands.some((command) => command.enabled !== false && command.id === activeTool)
-  );
+  ));
   const selectedDescription = primaryCommand?.description
     ?? (primaryCommand ? getDrawingToolDefinition(primaryCommand.id)?.usageHint?.action : undefined);
   const tooltipItem = followsSelectedTool && primaryCommand && primaryCommand.id !== defaultPrimaryCommand?.id
@@ -3963,7 +4113,7 @@ function ToolbarPaletteItem({
         data-toolbar-layout-row-span={item.layout.rowSpan}
       >
         <DistributeCommandIconButton
-          active={primaryCommand.enabled !== false && activeTool === primaryCommand.id}
+          active={primaryCommand.enabled !== false && (active ?? checked ?? activeTool === primaryCommand.id)}
           command={primaryCommand}
           disabled={primaryCommand.enabled === false}
           distributeMode={distributeMode}
@@ -4008,7 +4158,7 @@ function ToolbarPaletteItem({
 
   // A grid-citizen widget renders its live component inside its spanning slot (it occupies
   // colSpan×rowSpan cells like any other item, so it moves freely in customize mode).
-  if (isGridWidgetItem(item) && item.primary.type === "control") {
+  if ((isGridWidgetItem(item) || (standalone && isToolbarWidgetItem(item))) && item.primary.type === "control") {
     const gridWidget = TOOLBAR_WIDGET_REGISTRY[item.primary.controlId];
     if (gridWidget) {
       return (
@@ -4082,11 +4232,11 @@ function ToolbarPaletteItem({
         ].filter(Boolean).join(" ")}
         aria-controls={hasSubmenu && !usesNativeFlyout && menuOpen ? menuId : undefined}
         aria-describedby={tooltipVisible ? tooltipId : undefined}
-        aria-disabled={primaryDisabled && hasEnabledSubmenuCommand ? "true" : undefined}
         aria-expanded={hasSubmenu && !usesNativeFlyout ? menuOpen : undefined}
         aria-haspopup={hasSubmenu ? "menu" : undefined}
         aria-label={tooltipText}
-        aria-pressed={activeState || undefined}
+        title={standalone ? tooltipText : undefined}
+        aria-pressed={checked ?? (item.kind === "toggle" ? activeState : activeState || undefined)}
         disabled={buttonDisabled}
         data-active={activeState ? "true" : undefined}
         data-command-flyout-button={hasSubmenu ? submenu?.id : undefined}
@@ -4117,6 +4267,10 @@ function ToolbarPaletteItem({
           if (holdOpenedRef.current || menuOpen) {
             return;
           }
+          if (primaryDisabled && hasEnabledSubmenuCommand) {
+            openMenu();
+            return;
+          }
           if (!primaryDisabled) {
             pointerInvokedRef.current = true;
           }
@@ -4138,6 +4292,10 @@ function ToolbarPaletteItem({
           if (holdOpenedRef.current || menuOpen) {
             return;
           }
+          if (primaryDisabled && hasEnabledSubmenuCommand) {
+            openMenu();
+            return;
+          }
           invokePrimary();
         }}
         onKeyDown={(event) => {
@@ -4151,8 +4309,12 @@ function ToolbarPaletteItem({
             openMenu();
             return;
           }
-          if ((event.key === "Enter" || event.key === " ") && !primaryDisabled) {
+          if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
+            if (primaryDisabled) {
+              if (hasEnabledSubmenuCommand) openMenu();
+              return;
+            }
             // Claim the invoke so the synthesized click (Space activates on keyup; preventDefault on
             // keydown doesn't reliably cancel it in WKWebView) is suppressed by onClick's guard
             // instead of firing the command a second time.
@@ -4183,46 +4345,41 @@ function ToolbarPaletteItem({
           id={menuId}
           style={toolbarCommandFlyoutGridStyle(submenu?.columns)}
         >
-          {submenuCommands.map((command) => {
-            const disabled = command.enabled === false;
-            const itemShortcut = commandShortcutDisplay(command);
-            const itemText = disabled
-              ? `${command.title}: ${command.disabledReason ?? "unavailable"}`
-              : command.title;
-            return (
-              <button
-                type="button"
-                role="menuitem"
-                disabled={disabled}
-                aria-disabled={disabled ? "true" : undefined}
-                data-command-id={command.id}
-                data-disabled={disabled ? "true" : undefined}
-                data-shortcut-label={itemShortcut ?? "No shortcut"}
-                data-toolbar-asset={command.assetName}
-                data-tooltip={itemText}
-                key={command.id}
-                title={itemText}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                }}
-                onMouseDown={(event) => {
-                  event.stopPropagation();
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  chooseCommand(command);
-                }}
-              >
-                <ToolbarCommandIcon command={command} />
-                <span className="toolbar-command-label">{command.title}</span>
-              </button>
-            );
-          })}
+          {submenuCommands.map(command => <ToolbarCommandMenuItem key={command.id} command={command}
+            onInvoke={() => chooseCommand(command)} />)}
         </div>
       ) : null}
     </span>
   );
+}
+
+/** Shared list cell for an inline submenu or a submenu replacing a native popover's strip. */
+export function ToolbarCommandMenuItem({ command, active, onInvoke }: {
+  command: CommandSpec; active?: boolean; onInvoke: (commandId: string) => void;
+}) {
+  const keyboardInvoked = useRef(false);
+  const disabled = command.enabled === false;
+  const text = disabled ? `${command.title}: ${command.disabledReason ?? "unavailable"}` : command.title;
+  return <button type="button" role="menuitem" disabled={disabled}
+    aria-disabled={disabled ? "true" : undefined} aria-pressed={active || undefined}
+    className={active ? "active" : undefined} data-command-id={command.id}
+    data-disabled={disabled ? "true" : undefined} data-shortcut-label={commandShortcutDisplay(command) ?? "No shortcut"}
+    data-toolbar-asset={command.assetName} data-tooltip={text} title={text}
+    onPointerDown={event => { keyboardInvoked.current = false; event.stopPropagation(); }}
+    onMouseDown={event => event.stopPropagation()}
+    onKeyDown={event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (!disabled) { keyboardInvoked.current = true; onInvoke(command.id); }
+    }}
+    onClick={event => {
+      event.preventDefault(); event.stopPropagation();
+      if (keyboardInvoked.current) { keyboardInvoked.current = false; return; }
+      if (!disabled) onInvoke(command.id);
+    }}>
+    <ToolbarCommandIcon command={command} />
+    <span className="toolbar-command-label">{command.title}</span>
+  </button>;
 }
 
 export function toolbarCommandFlyoutGridStyle(columns: number | undefined): CSSProperties | undefined {
@@ -4563,6 +4720,7 @@ function DistributeCommandIconButton({
   useNativeFloatingTooltip(shellRef, Boolean(tooltipVisible) && !menuOpen);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdOpenedRef = useRef(false);
+  const pointerInvokedRef = useRef(false);
   const activeState = active && !disabled;
   const visibleShortcutLabel = commandShortcutDisplay(command) ?? "No shortcut";
   const modeLabel = distributeMode === "spacing" ? "equal gaps" : "centers";
@@ -4694,6 +4852,7 @@ function DistributeCommandIconButton({
             return;
           }
           holdOpenedRef.current = false;
+          pointerInvokedRef.current = false;
           event.currentTarget.setPointerCapture?.(event.pointerId);
           clearHoldTimer();
           holdTimerRef.current = setTimeout(openMenu, TOOLBAR_FLYOUT_HOLD_MS);
@@ -4705,6 +4864,7 @@ function DistributeCommandIconButton({
           if (disabled || holdOpenedRef.current || menuOpen) {
             return;
           }
+          pointerInvokedRef.current = true;
           onInvoke(command.id);
         }}
         onPointerCancel={(event) => {
@@ -4716,6 +4876,9 @@ function DistributeCommandIconButton({
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          if (pointerInvokedRef.current) { pointerInvokedRef.current = false; return; }
+          if (holdOpenedRef.current || menuOpen) return;
+          if (disabled) openMenu(); else onInvoke(command.id);
         }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -4729,8 +4892,9 @@ function DistributeCommandIconButton({
             // Match the pointer path (onPointerUp): a disabled distribute command must not invoke.
             // The menu (ArrowDown / hold) stays reachable so the mode can still be changed.
             if (!disabled) {
+              pointerInvokedRef.current = true;
               onInvoke(command.id);
-            }
+            } else openMenu();
           }
         }}
       >

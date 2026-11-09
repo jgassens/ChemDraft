@@ -792,6 +792,22 @@
     "returnType": "Result<OpsinConversion, OpsinError>"
   },
   {
+    "file": "palette_resize.rs",
+    "name": "report_toolset_content_size",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, size: ContentSize,",
+    "returnType": "Result<Status, String>"
+  },
+  {
+    "file": "palette_resize.rs",
+    "name": "get_toolset_window_size",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<Status, String>"
+  },
+  {
     "file": "panel_window_controls.rs",
     "name": "hide_plugin_panel_window",
     "async": true,

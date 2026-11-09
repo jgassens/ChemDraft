@@ -40,6 +40,7 @@ import type { RegisteredCanvasOverlay } from "./types";
 import type { CanvasOverlayContentSection, CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
 
 import type { DesktopToolsetDefinition } from "../toolsets";
+import { pluginToolbarButtonsToDefinition } from "./toolsetContributions";
 import { PluginPanelController } from "./PluginPanelController";
 import { PluginPromptTextController } from "./PluginPromptTextController";
 import { createDefaultImageSourceRegistry, type ImageSourceRegistry } from "./ImageSourceProvider";
@@ -240,6 +241,7 @@ export interface DesktopPluginRuntime {
   subscribeCanvasOverlayContent(listener: () => void): () => void;
   getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
   subscribeCanvasOverlayOpen(listener: () => void): () => void;
+  /** Includes core.main contribution fragments, merged by the toolbar catalog and palette loader. */
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
   /** Notified when plugin contributions change. Returns unsubscribe. */
@@ -584,7 +586,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const { manifest } = host.registerPlugin(validated, registerOptions);
       try {
         const contributed = manifest.contributes.toolsets;
-        if (contributed.length > 0) {
+        if (contributed.length > 0 || manifest.contributes.toolbarButtons.length > 0) {
           host.requirePermission(manifest.id, "ui.toolbar");
           for (const toolset of contributed) {
             if (pluginIdByToolsetId.has(toolset.id)) {
@@ -592,8 +594,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
             }
           }
           const mapped = contributed.map(pluginToolsetToDefinition);
+          const mainButtons = pluginToolbarButtonsToDefinition(manifest);
+          if (mainButtons) mapped.push(mainButtons);
           toolsetsByPluginId.set(manifest.id, mapped);
-          mapped.forEach((toolset) => pluginIdByToolsetId.set(toolset.id, manifest.id));
+          contributed.forEach((toolset) => pluginIdByToolsetId.set(toolset.id, manifest.id));
         }
       } catch (error) {
         // A bad toolset contribution rolls the WHOLE plugin back (commands included), so the

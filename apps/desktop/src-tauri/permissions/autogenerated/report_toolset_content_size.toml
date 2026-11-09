@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-toolset-content-size"
+description = "Enables the report_toolset_content_size command without any pre-configured scope."
+commands.allow = ["report_toolset_content_size"]
+
+[[permission]]
+identifier = "deny-report-toolset-content-size"
+description = "Denies the report_toolset_content_size command without any pre-configured scope."
+commands.deny = ["report_toolset_content_size"]

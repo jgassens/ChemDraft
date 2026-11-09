@@ -4144,7 +4144,8 @@ describe("ChemDraft desktop shell", () => {
   it("uses custom toolbar assets for the expanded palette", () => {
     const toolCommands = paletteGroups.flat();
 
-    expect(toolCommands.length).toBeGreaterThanOrEqual(49);
+    // Ten secondary Arrange buttons are hidden by default; their flyouts remain available.
+    expect(toolCommands.length).toBeGreaterThanOrEqual(40);
     expect(toolCommands.some((command) => command.assetName === "Custom_Bond_Wedge")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Arrow_Equilibrium")).toBe(true);
     expect(toolCommands.some((command) => command.assetName === "Custom_Flip_Horizontal")).toBe(true);
@@ -4240,7 +4241,8 @@ describe("ChemDraft desktop shell", () => {
     const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
     const measureCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.measure");
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(48);
+    // The grouped default hides the ten secondary Arrange entries.
+    expect(assetCommands.length).toBeGreaterThanOrEqual(38);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.some((command) => command.description?.includes("toolset action"))).toBe(false);
     expect(eyedropperCommand).toMatchObject({
@@ -4286,19 +4288,20 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("places cleanup in the main toolbar chrome cluster instead of a vague disabled options button", () => {
-    // The Main toolbar is one flattened group now; the chrome cluster is its tail segment (after the
-    // last divider), so assert its contiguous order at the end instead of indexing a per-section group.
-    const mainCommandIds = getToolsetCommandGroups("core.main")[0].map((command) => command.id);
+    const mainGroups = getToolsetCommandGroups("core.main");
+    const mainCommandIds = mainGroups.flat().map((command) => command.id);
+    const styleGroupIds = mainGroups[mainGroups.length - 1].map((command) => command.id);
     const chromeCluster = [
       "style.color",
       "tool.settings",
+      "style.formulaText",
       structureCleanupCommandId,
       structureSpin3dCommandId,
       structureInteractive3dCommandId,
       structureCleanup3dCommandId
     ];
 
-    expect(mainCommandIds.slice(-chromeCluster.length)).toEqual(chromeCluster);
+    expect(styleGroupIds).toEqual(chromeCluster);
     expect(mainCommandIds).not.toContain("tool.toolOptions");
     expect(mainCommandIds.filter((id) => id === structureCleanupCommandId)).toHaveLength(1);
     expect(mainCommandIds.filter((id) => id === structureInteractive3dCommandId)).toHaveLength(1);

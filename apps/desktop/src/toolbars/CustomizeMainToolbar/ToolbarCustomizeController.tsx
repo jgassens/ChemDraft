@@ -20,6 +20,7 @@ import { ToolbarItemIcon } from "../../ToolPalette";
 import type { ToolbarPaletteGroupModel, ToolbarPaletteItemModel } from "../../toolsets";
 import type { CommandSpec } from "../../commands";
 import { GALLERY_TRAY_DROPPABLE_ID, type GalleryEntryKind } from "./galleryModel";
+import { mainToolbarHomeGroupId } from "../mainToolbarGroups";
 
 /** dnd-kit `active.data.current` shape a customize slot or gallery tile carries. In-toolbar slots set
  *  `groupId`/`kind`; gallery tiles set `gallery` plus what the drop and the drag ghost need. */
@@ -111,7 +112,8 @@ export function customizeDragEndEdit(
   activeId: string,
   activeData: CustomizeDragData | undefined,
   overId: string | null,
-  groups: readonly ToolbarPaletteGroupModel[]
+  groups: readonly ToolbarPaletteGroupModel[],
+  groupedMain = false
 ): ToolsetLayoutEdit | undefined {
   if (activeData?.gallery) {
     if (overId === null || overId === GALLERY_TRAY_DROPPABLE_ID) {
@@ -121,6 +123,8 @@ export function customizeDragEndEdit(
     if (!target) {
       return undefined;
     }
+    if (groupedMain && (activeData.galleryKind === "spacer" || activeData.galleryKind === "separator" ||
+      mainToolbarHomeGroupId(activeData.commandId ?? activeData.widgetId ?? "") !== target.groupId)) return undefined;
     switch (activeData.galleryKind) {
       case "spacer":
         return { kind: "addSpacer", groupId: target.groupId, index: target.index };
@@ -249,6 +253,7 @@ export function galleryOverlayIconItem(
  * the groups to render (optimistic overlay ?? authoritative).
  */
 export function ToolbarCustomizeController({
+  toolsetId,
   groups,
   onEdit,
   children
@@ -322,7 +327,7 @@ export function ToolbarCustomizeController({
       overId = null;
     }
     const activeData = event.active.data.current as CustomizeDragData | undefined;
-    const edit = customizeDragEndEdit(String(event.active.id), activeData, overId, effectiveGroups);
+    const edit = customizeDragEndEdit(String(event.active.id), activeData, overId, effectiveGroups, toolsetId === "core.main");
     if (edit) {
       // Preview reorder/remove locally so the drop lands instantly; the broadcast confirms it.
       const preview = optimisticGroupsForEdit(effectiveGroups, edit);

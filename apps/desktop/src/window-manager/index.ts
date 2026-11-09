@@ -2,9 +2,11 @@ import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportP
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type { tableInspectorSnapshot } from "../tableCommands";
-import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
+import type { ToolsetDefinition, ToolbarGroupId } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
+import type { ToolbarPaletteItemModel } from "../toolsets";
+import type { ToolbarWidgetState } from "../toolbars/toolbarWidgets";
 import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
@@ -196,9 +198,37 @@ export interface ToolsetWindowGeometry {
   title: string;
   width: number;
   height: number;
+  orientation?: "horizontal" | "vertical";
+  minLength?: number;
   /** Default top-left for a first-ever placement (JS staggers by registry order). */
   x: number;
   y: number;
+}
+
+export interface ToolsetContentSize extends ToolsetWindowSize {
+  orientation: "horizontal" | "vertical";
+  minLength?: number;
+}
+export interface ToolsetWindowSizeStatus extends ToolsetContentSize {
+  toolsetId: string;
+  length: number;
+  savedLength: number | null;
+  minLength: number;
+  maxLength: number;
+}
+export async function reportToolsetContentSize(size: ToolsetContentSize): Promise<ToolsetWindowSizeStatus | undefined> {
+  if (!isDesktopRuntime()) return undefined;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowSizeStatus>("report_toolset_content_size", { size });
+}
+export async function getToolsetWindowSize(): Promise<ToolsetWindowSizeStatus | undefined> {
+  if (!isDesktopRuntime()) return undefined;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowSizeStatus>("get_toolset_window_size");
+}
+export async function listenForToolsetWindowSize(handler: (size: ToolsetWindowSizeStatus) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenCurrentWindowEvent<ToolsetWindowSizeStatus>("chemdraft://toolset-window-size", event => handler(event.payload));
 }
 
 export async function openToolsetWindow(
@@ -266,7 +296,7 @@ export async function openToolsetPopoverWindow(
     return;
   }
 
-  if (kind === "flyout") observePopoverOpeningRelease(toolsetId);
+  if (kind === "flyout" || kind === "toolbarItems") observePopoverOpeningRelease(toolsetId);
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_toolset_popover", { toolsetId, kind, x, y, focusMode });
 }
@@ -376,6 +406,26 @@ export interface ToolsetFlyoutSnapshot {
   keyboardOpen?: boolean;
 }
 
+/** Full palette cells, including embedded controls and spans. Data only: callbacks are supplied
+ * in the receiving webview and commands still travel through the shared command registry. */
+export type ToolsetToolbarItemSnapshot = ToolbarPaletteItemModel & {
+  active?: boolean;
+  checked?: boolean;
+  /** Defaults to staying open for toggles and controls, closing for ordinary commands. */
+  keepOpen?: boolean;
+};
+
+export interface ToolsetToolbarSnapshot {
+  title?: string;
+  items: ToolsetToolbarItemSnapshot[];
+  activeTool?: string;
+  currentDistributeMode?: "centers" | "spacing";
+  widgetState?: Pick<ToolbarWidgetState,
+    "colorContextKey" | "currentTextStyle" | "currentTextScript" | "currentObjectColor" |
+    "currentArtStyle" | "currentArtStyleTarget" | "currentMoleculeInspector" | "currentSelection" |
+    "currentMolecularInspector" | "molecularInspectorBusy" | "molecularInspectorStale">;
+}
+
 /**
  * What a palette popover window should show. The window is content-agnostic (one per palette),
  * so opening the colour picker vs a flyout dropdown just swaps the content in the same window —
@@ -388,6 +438,7 @@ export type ToolsetPopoverContent = {
 } & (
   | { kind: "artColor" }
   | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot }
+  | { kind: "toolbarItems"; toolbar: ToolsetToolbarSnapshot }
 );
 
 /** Where the popover's top-left belongs, in global logical coordinates. Rides the content
@@ -398,6 +449,10 @@ export type ToolsetPopoverContent = {
 export interface ToolsetPopoverAnchor {
   x: number;
   y: number;
+  /** Global logical opener bounds. Toolbar popovers place below/right, flip, then clamp after fit. */
+  opener?: MonitorLogicalBounds;
+  orientation?: "horizontal" | "vertical";
+  workArea?: MonitorLogicalBounds;
 }
 
 export type ToolsetPopoverContentPayload = { toolsetId: string; anchor?: ToolsetPopoverAnchor } & ToolsetPopoverContent;
@@ -948,6 +1003,16 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
   await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
 }
 
+/** Read the fitted native client size: the OS/native minimum may exceed the requested content size. */
+export async function currentWindowLogicalSize(): Promise<ToolsetWindowSize | undefined> {
+  if (!isDesktopRuntime()) return undefined;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const current = getCurrentWindow();
+  const [size, scale] = await Promise.all([current.innerSize(), current.scaleFactor()]);
+  if (!(size.width > 0 && size.height > 0 && scale > 0)) return undefined;
+  return { width: size.width / scale, height: size.height / scale };
+}
+
 /** Use the destination monitor's work area and scale, including taskbar/Dock exclusions.
  * Never use this webview's height: content-fit windows would shrink their own cap on every resize. */
 export async function currentWindowLogicalWorkArea(): Promise<MonitorLogicalBounds> {
@@ -981,22 +1046,6 @@ export async function listenForCurrentWindowWorkAreaChanges(handler: () => void)
       if (listener.status === "fulfilled") listener.value();
     }
   };
-}
-
-/** Preserve the top-left across macOS content resizes, then keep the whole palette on its monitor. */
-export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<void> {
-  const position = await currentWindowLogicalPosition();
-  const height = Math.min(size.height, area.bottom - area.top);
-  await setCurrentWindowLogicalSize({ width: size.width, height });
-  if (!position) return;
-  const target = {
-    x: Math.max(area.left, Math.min(position.x, area.right - size.width)),
-    y: Math.max(area.top, Math.min(position.y, area.bottom - height))
-  };
-  const resizedPosition = await currentWindowLogicalPosition();
-  if (resizedPosition?.x !== target.x || resizedPosition?.y !== target.y) {
-    await setCurrentWindowLogicalPosition(target);
-  }
 }
 
 /**
@@ -1327,6 +1376,9 @@ export async function listenForToolsetDefinitionsRequests(handler: () => void): 
 /** One in-place customize edit. Applied in MainWindow via `applyToolsetLayoutEdit`; `exitCustomize`
  *  is handled by the caller (mode state), not the layout applier. */
 export type ToolsetLayoutEdit =
+  | { kind: "reorderGroups"; orderedGroupIds: ToolbarGroupId[] }
+  | { kind: "setGroupHidden"; groupId: ToolbarGroupId; hidden: boolean }
+  | { kind: "setItemHidden"; itemId: string; hidden: boolean }
   | { kind: "reorderItems"; groupId: string; orderedItemIds: string[] }
   | { kind: "addCommand"; groupId: string; index: number; commandId: string }
   | { kind: "addSpacer"; groupId: string; index: number }
@@ -1486,7 +1538,8 @@ export interface MonitorLogicalBounds {
  *  the floating window happened to be on, which is wrong on multi-display setups. */
 export async function monitorLogicalBoundsAt(
   x: number,
-  y: number
+  y: number,
+  workArea = false
 ): Promise<MonitorLogicalBounds | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
@@ -1500,11 +1553,25 @@ export async function monitorLogicalBoundsAt(
     const right = left + monitor.size.width / scale;
     const bottom = top + monitor.size.height / scale;
     if (x >= left && x < right && y >= top && y < bottom) {
+      if (workArea) {
+        const area = monitor.workArea;
+        return { left: area.position.x / scale, top: area.position.y / scale,
+          right: (area.position.x + area.size.width) / scale,
+          bottom: (area.position.y + area.size.height) / scale };
+      }
       return { left, top, right, bottom };
     }
   }
   return undefined;
 }
+
+/** Resolve against the opener's monitor, even before the reused popover has moved there. */
+export async function monitorLogicalWorkAreaAt(x: number, y: number): Promise<MonitorLogicalBounds> {
+  return await monitorLogicalBoundsAt(x, y, true) ?? currentWindowLogicalWorkArea();
+}
+
+export { openToolsetToolbarItemsPopover, placeToolbarPopover, sendToolbarPopoverClosed,
+  type ToolsetToolbarPopoverHandle, type ToolsetToolbarPopoverOptions } from "./toolbarPopover";
 
 export async function hidePaletteFloatingTooltip(): Promise<void> {
   if (!isDesktopRuntime()) {

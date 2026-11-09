@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
+import mainManifest from "../../../apps/desktop/src/toolsets/desktop-toolsets.json";
+import originalMainCommands from "./fixtures/main-toolbar-commands.json";
 import {
   ToolsetDefinitionSchema,
+  MAIN_TOOLBAR_GROUP_IDS,
+  MAIN_TOOLBAR_FOLD_ORDER,
+  MainToolbarGroupSchema,
+  ToolbarGroupIdSchema,
+  normalizeToolsetDefinition,
   ToolsetItemAdditionSchema,
   ToolsetItemSchema,
   ToolsetLayoutStateSchema,
@@ -16,6 +23,58 @@ import {
   type ToolsetDefinition,
   parseToolsetToggleCommandId
 } from "./index";
+
+describe("main toolbar home groups", () => {
+  const main = parseToolsetManifest(mainManifest).find(toolset => toolset.id === "core.main")!;
+  it("exports fixed ids and fold steps, with Undeclared folding with Orbitals", () => {
+    expect(MAIN_TOOLBAR_GROUP_IDS).toEqual(["select-text", "bonds-rings", "arrows", "symbols-shapes", "orbitals", "arrange", "style-3d", "undeclared"]);
+    expect(MAIN_TOOLBAR_FOLD_ORDER).toEqual([["orbitals", "undeclared"], ["arrange"], ["style-3d"], ["symbols-shapes"], ["arrows"], ["bonds-rings"]]);
+    expect(ToolbarGroupIdSchema.safeParse("unknown").success).toBe(false);
+    expect(ToolbarGroupIdSchema.safeParse("undeclared").success).toBe(true);
+    expect(main.groups.map(group => group.id)).toEqual(MAIN_TOOLBAR_GROUP_IDS.slice(0, 7));
+    expect(main.groups.map(group => group.foldRank)).toEqual([null, 6, 5, 4, 1, 2, 3]);
+    for (const group of main.groups) expect(MainToolbarGroupSchema.safeParse(group).success).toBe(true);
+    expect(MainToolbarGroupSchema.safeParse({ ...main.groups[0], foldRank: 1 }).success).toBe(false);
+    expect(MainToolbarGroupSchema.safeParse({ ...main.groups[0], items: [{ id: "space", kind: "spacer" }] }).success).toBe(false);
+    expect(normalizeToolsetDefinition(main).groups[0]).toMatchObject({ label: "Select & Text", foldRank: null, foldCommandId: "tool.select" });
+  });
+  it("rejects duplicate homes and altered main metadata at the manifest boundary", () => {
+    const duplicate = { toolsets: [structuredClone(main)] };
+    duplicate.toolsets[0].groups[1].items.push(duplicate.toolsets[0].groups[0].items[0]);
+    expect(() => parseToolsetManifest(duplicate)).toThrow(/exactly one home group/);
+    const badRank = { toolsets: [structuredClone(main)] };
+    Object.assign(badRank.toolsets[0].groups[0], { foldRank: 1 });
+    expect(() => parseToolsetManifest(badRank)).toThrow(/fixed metadata/);
+  });
+  it("keeps every pre-grouping button exactly once and preserves all command ids and flyouts", () => {
+    const items = main.groups.flatMap(group => group.items);
+    expect(items.map(item => item.id).sort()).toEqual([...originalMainCommands.itemIds].sort());
+    expect(new Set(items.map(item => item.id)).size).toBe(items.length);
+    expect(items.some(item => item.kind === "spacer" || item.kind === "separator")).toBe(false);
+    expect(new ToolsetRegistry([main]).listCommandIds().sort()).toEqual(originalMainCommands.commandIds);
+    expect(main.groups.find(group => group.id === "style-3d")?.items.map(item => item.id)).toContain("style.formulaText");
+    const arrange = main.groups.find(group => group.id === "arrange")!;
+    expect(arrange.items.filter(item => !item.defaultHidden)).toHaveLength(9);
+    for (const item of arrange.items.filter(item => item.defaultHidden)) {
+      expect(arrange.items.some(parent => parent.submenu?.items.some(child => child.commandId === item.commandId))).toBe(true);
+    }
+  });
+  it("applies hidden defaults without an override and protects group homes from saved additions", () => {
+    const state = { version: 1, toolsetOverrides: [], userToolsets: [] };
+    const [defaultMain] = applyToolsetLayoutState([main], state);
+    expect(defaultMain.groups.find(group => group.id === "arrange")?.items).toHaveLength(9);
+    const [custom] = applyToolsetLayoutState([main], { ...state, toolsetOverrides: [{ toolsetId: "core.main",
+      hiddenGroupIds: ["arrows"], itemOrder: { "select-text": ["tool.bond"] },
+      itemOverrides: [{ commandId: "layout.alignRight", hidden: false }],
+      itemAdditions: [{ groupId: "arrows", item: { commandId: "plugin.test.run" } },
+        { groupId: "arrows", item: { id: "space", kind: "spacer" } }]
+    }] }, { additionalCommandIds: ["plugin.test.run"] });
+    expect(custom.groups.some(group => group.id === "arrows")).toBe(false);
+    expect(custom.groups.find(group => group.id === "undeclared")?.items.map(item => item.commandId)).toEqual(["plugin.test.run"]);
+    expect(custom.groups.find(group => group.id === "bonds-rings")?.items.some(item => item.commandId === "tool.bond")).toBe(true);
+    expect(custom.groups.find(group => group.id === "arrange")?.items.some(item => item.commandId === "layout.alignRight")).toBe(true);
+  });
+});
 
 const fixtureToolset: ToolsetDefinition = {
   id: "core.fixture",

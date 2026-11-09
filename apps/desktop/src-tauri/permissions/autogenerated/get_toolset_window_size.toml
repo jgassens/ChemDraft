@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-toolset-window-size"
+description = "Enables the get_toolset_window_size command without any pre-configured scope."
+commands.allow = ["get_toolset_window_size"]
+
+[[permission]]
+identifier = "deny-get-toolset-window-size"
+description = "Denies the get_toolset_window_size command without any pre-configured scope."
+commands.deny = ["get_toolset_window_size"]

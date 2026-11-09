@@ -4,6 +4,9 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.23 adds `toolbarGroup` to toolbar contributions. Plugins targeting 0.1.23 or later must
+declare one of `PLUGIN_TOOLBAR_GROUP_IDS` for every toolbar button; older plugins may omit it.
+
 API 0.1.19 bounds panel reports with `PluginPanelReportLimits`: finite numbers, bounded strings,
 collections and aggregate counts, and at most 128 MiB of UTF-8 JSON. Structure atoms/bonds and
 spectrum peaks are capped per figure; their combined size is bounded by the report envelope.

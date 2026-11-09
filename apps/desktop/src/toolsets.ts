@@ -3,7 +3,6 @@ import {
   applyToolsetLayoutState,
   createToolbarsMenuModel,
   createToolsetToggleCommandDefinitions,
-  mergeToolsetItemAdditions,
   normalizeToolsetDefinition,
   parseToolsetManifest,
   toolsetItemCustomizationId,
@@ -11,14 +10,13 @@ import {
   type NormalizedToolsetSubmenuItem,
   type ToolbarsMenuItem,
   type ToolsetDefinition,
-  type ToolsetGroupDefinition,
-  type ToolsetItemAddition,
   type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { isCompoundLayoutCommand, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
-import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
+import { migrateMainToolbarGroups, reconcileMainToolbarPluginHomes } from "./toolbars/toolbarLayoutState";
+import { isMainToolbarGroupId, mainToolbarGroupMetadata, setMainToolbarPluginDefinition } from "./toolbars/mainToolbarGroups";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
 import type { IconName } from "./icons";
@@ -94,15 +92,15 @@ export function createDesktopToolsetRegistry(
   // for the core-only case and every existing caller.
   pluginToolsets: readonly DesktopToolsetDefinition[] = []
 ): DesktopToolsetRegistry {
-  const base = pluginToolsets.length > 0 ? [...desktopToolsets, ...pluginToolsets] : desktopToolsets;
+  const base = composeDesktopToolsets(pluginToolsets);
   const toolsets = layoutState === undefined || layoutState === null
-    ? base
+    ? applyToolsetLayoutState(base, { version: 1, toolsetOverrides: [], userToolsets: [] })
     // Prune (not throw) so persisted customization referencing a since-removed command degrades
     // gracefully instead of discarding the whole layout; `additionalCommandIds` lets in-place-added
     // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
     : applyToolsetLayoutState<IconName, ToolbarAssetName>(
         base,
-        migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(layoutState)),
+        reconcileMainToolbarPluginHomes(migrateLegacyMainToolbarLayoutState(layoutState), base.find(toolset => toolset.id === "core.main")!),
         {
           additionalCommandIds,
           onUnknownCommand: "prune"
@@ -112,164 +110,37 @@ export function createDesktopToolsetRegistry(
   return new ToolsetRegistry<IconName, ToolbarAssetName>(toolsets);
 }
 
-/** The Main toolbar's original manifest groups, in display order — kept only so persisted state from
- *  before the flatten (commit that merged core.main into one "core.main.items" group) keeps applying. */
-const LEGACY_MAIN_GROUP_IDS = [
-  "core.main.selection",
-  "core.main.structure",
-  "core.main.arrows",
-  "core.main.annotations",
-  "core.main.orbitals-style",
-  "core.main.layout",
-  "core.main.style"
-];
-
-const MAIN_ITEMS_GROUP_ID = "core.main.items";
-
-const LEGACY_MAIN_DIVIDER_IDS = LEGACY_MAIN_GROUP_IDS.map((_, index) => `core.main.divider.${index + 1}`);
-
-/** Reconstruct the old seven manifest groups from the flattened manifest's explicit divider
- *  boundaries. This keeps the migration aligned if a base item is added inside one section later. */
-function legacyMainGroupsFromFlattenedManifest(): ToolsetGroupDefinition<IconName, ToolbarAssetName>[] {
-  const mainItems = desktopToolsets
-    .find((toolset) => toolset.id === "core.main")
-    ?.groups.find((group) => group.id === MAIN_ITEMS_GROUP_ID)
-    ?.items ?? [];
-  // Opt-in controls were never part of the historical seven-group defaults. Excluding them
-  // preserves saved section order and addition indices; unlisted new tools append normally.
-  const legacyItems = mainItems.filter(item => !isCompoundLayoutCommand(item.commandId ?? item.id ?? ""));
-  let start = 0;
-  return LEGACY_MAIN_GROUP_IDS.map((groupId, sectionIndex) => {
-    const dividerId = LEGACY_MAIN_DIVIDER_IDS[sectionIndex];
-    const dividerIndex = legacyItems.findIndex(
-      (item, itemIndex) => itemIndex >= start && toolsetItemCustomizationId(item) === dividerId
-    );
-    const end = dividerIndex >= 0 ? dividerIndex : legacyItems.length;
-    const group = { id: groupId, items: legacyItems.slice(start, end) };
-    start = dividerIndex >= 0 ? dividerIndex + 1 : end;
-    return group;
-  });
-}
-
-const LEGACY_MAIN_GROUPS = legacyMainGroupsFromFlattenedManifest();
-
-/** `reorderById` semantics over ids: listed ids lead, then every unlisted id keeps source order. */
-function reorderToolbarIds(ids: readonly string[], preferredOrder: unknown): string[] {
-  if (!Array.isArray(preferredOrder)) {
-    return [...ids];
-  }
-  const remaining = [...ids];
-  const ordered: string[] = [];
-  for (const candidate of preferredOrder) {
-    if (typeof candidate !== "string") {
-      continue;
-    }
-    const index = remaining.indexOf(candidate);
-    if (index >= 0) {
-      ordered.push(remaining.splice(index, 1)[0]);
-    }
-  }
-  return [...ordered, ...remaining];
-}
-
-function legacyMainAddition(value: unknown): value is ToolsetItemAddition<string, string> {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const addition = value as { groupId?: unknown; item?: unknown };
-  return (
-    typeof addition.groupId === "string" &&
-    LEGACY_MAIN_GROUP_IDS.includes(addition.groupId) &&
-    typeof addition.item === "object" &&
-    addition.item !== null &&
-    toolsetItemCustomizationId(addition.item as ToolsetItemDefinition<string, string>) !== undefined
-  );
-}
-
-/**
- * Remap a persisted layout state written against the old 7-group Main toolbar onto the flattened
- * single-group manifest. The old effective section order (including a saved groupOrder), each
- * section's fully padded item order, explicit divider boundaries, and accepted additions are folded
- * into one complete order. Addition indices become absolute flattened positions. Anything
- * unrecognized passes through untouched; hides are id-based and need no migration. Pure and
- * idempotent — safe to run on every load.
- */
-export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
-  if (typeof state !== "object" || state === null) {
-    return state;
-  }
-  const record = state as { toolsetOverrides?: unknown };
-  if (!Array.isArray(record.toolsetOverrides)) {
-    return state;
-  }
-  let changed = false;
-  const toolsetOverrides = record.toolsetOverrides.map((entry) => {
-    if (typeof entry !== "object" || entry === null) {
-      return entry;
-    }
-    const override = entry as Record<string, unknown>;
-    if (override.toolsetId !== "core.main") {
-      return entry;
-    }
-    const rawAdditions = Array.isArray(override.itemAdditions) ? override.itemAdditions : [];
-    const additions = rawAdditions.filter(legacyMainAddition);
-    const itemOrder =
-      typeof override.itemOrder === "object" && override.itemOrder !== null && !Array.isArray(override.itemOrder)
-        ? (override.itemOrder as Record<string, unknown>)
-        : {};
-    const hasLegacyItemOrder = LEGACY_MAIN_GROUP_IDS.some((groupId) => Array.isArray(itemOrder[groupId]));
-    const hasLegacyGroupOrder =
-      Array.isArray(override.groupOrder) &&
-      override.groupOrder.some((groupId) => typeof groupId === "string" && LEGACY_MAIN_GROUP_IDS.includes(groupId));
-    if (additions.length === 0 && !hasLegacyItemOrder && !hasLegacyGroupOrder) {
-      return entry;
-    }
-
-    changed = true;
-    const next: Record<string, unknown> = { ...override };
-    const groupsWithAdditions = mergeToolsetItemAdditions<string, string>(LEGACY_MAIN_GROUPS, additions);
-    const orderedIdsByGroup = new Map(
-      groupsWithAdditions.map((group) => [
-        group.id ?? "",
-        reorderToolbarIds(
-          group.items
-            .map((item) => toolsetItemCustomizationId(item))
-            .filter((id): id is string => id !== undefined),
-          group.id ? itemOrder[group.id] : undefined
-        )
-      ])
-    );
-    const orderedGroupIds = reorderToolbarIds(LEGACY_MAIN_GROUP_IDS, override.groupOrder);
-    let flattenedOrder = orderedGroupIds.flatMap((groupId) => [
-      ...(orderedIdsByGroup.get(groupId) ?? []),
-      LEGACY_MAIN_DIVIDER_IDS[LEGACY_MAIN_GROUP_IDS.indexOf(groupId)]
-    ]);
-    // A mixed state may already carry a flattened preference alongside legacy keys. It is a global
-    // order and therefore takes precedence after the legacy sections have been reconstructed.
-    flattenedOrder = reorderToolbarIds(flattenedOrder, itemOrder[MAIN_ITEMS_GROUP_ID]);
-
-    if (rawAdditions.length > 0) {
-      next.itemAdditions = rawAdditions.map((additionEntry) => {
-        if (!legacyMainAddition(additionEntry)) {
-          return additionEntry;
+/** Merge runtime main-button fragments before layout application; explicit plugin palettes stay intact. */
+export function composeDesktopToolsets(pluginToolsets: readonly DesktopToolsetDefinition[]): DesktopToolsetDefinition[] {
+  const main = desktopToolsets.find(toolset => toolset.id === "core.main")!;
+  const groups = main.groups.map(group => ({ ...group, items: [...group.items] }));
+  const seen = new Set(groups.flatMap(group => group.items.map(toolsetItemCustomizationId)));
+  for (const fragment of pluginToolsets.filter(toolset => toolset.id === "core.main")) {
+    for (const contribution of fragment.groups) {
+      const id = contribution.id;
+      if (!id || !isMainToolbarGroupId(id)) continue;
+      let group = groups.find(candidate => candidate.id === id);
+      for (const item of contribution.items) {
+        const itemId = toolsetItemCustomizationId(item);
+        if (!itemId || seen.has(itemId)) continue;
+        seen.add(itemId);
+        if (!group) {
+          group = { ...mainToolbarGroupMetadata(id), items: [] };
+          groups.push(group);
         }
-        const itemId = toolsetItemCustomizationId(additionEntry.item);
-        const absoluteIndex = itemId === undefined ? -1 : flattenedOrder.indexOf(itemId);
-        return {
-          ...additionEntry,
-          groupId: MAIN_ITEMS_GROUP_ID,
-          ...(absoluteIndex >= 0 ? { index: absoluteIndex } : {})
-        };
-      });
+        group.items.push(item);
+      }
     }
-    const remainingItemOrder = Object.fromEntries(
-      Object.entries(itemOrder).filter(([key]) => !LEGACY_MAIN_GROUP_IDS.includes(key) && key !== MAIN_ITEMS_GROUP_ID)
-    );
-    next.itemOrder = { ...remainingItemOrder, [MAIN_ITEMS_GROUP_ID]: flattenedOrder };
-    delete next.groupOrder;
-    return next;
-  });
-  return changed ? { ...record, toolsetOverrides } : state;
+  }
+  const combinedMain = { ...main, groups };
+  setMainToolbarPluginDefinition(combinedMain);
+  return [...desktopToolsets.map(toolset => toolset.id === "core.main" ? combinedMain : toolset),
+    ...pluginToolsets.filter(toolset => toolset.id !== "core.main")];
+}
+
+/** Compatibility entry point used by the persisted-layout loader. */
+export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
+  return migrateMainToolbarGroups(migrateRenamedCommandIdsInLayoutState(state));
 }
 
 /**
@@ -384,6 +255,10 @@ export function paletteCommandGroupsFromItemGroups(
  *  mode needs the id because item-reorder edits are per-group. */
 export interface ToolbarPaletteGroupModel {
   id?: string;
+  label?: string;
+  foldIcon?: string;
+  foldCommandId?: string;
+  foldRank?: number | null;
   items: ToolbarPaletteItemModel[];
 }
 
@@ -405,6 +280,10 @@ export function getToolsetPaletteGroups(
   );
   return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) => ({
     id: group.id,
+    label: group.label,
+    foldIcon: group.foldIcon,
+    foldCommandId: group.foldCommandId,
+    foldRank: group.foldRank,
     items: group.items.filter(item => layoutsEnabled || (item.primary.type !== "command" || !isCompoundLayoutCommand(item.primary.commandId))).map((item) => {
       const commandId = item.primary.type === "command" ? item.primary.commandId : undefined;
       const isGeneratedLauncher = commandId?.startsWith("view.toolset.toggle.") === true;
@@ -428,78 +307,13 @@ export function getToolsetItemGroups(
   return getToolsetPaletteGroups(toolsetId, registry, commandOverrides).map((group) => group.items);
 }
 
-/**
- * Default cell/gap/padding metrics for a grid toolset, shared by the CSS grid style
- * (`toolPaletteGridStyle`) and the window auto-sizer (`computePaletteGridSize`) so the two can't
- * drift apart and mis-size the window against the rendered grid.
- */
+/** Default cell/gap/padding metrics for the rendered tool palette grid. */
 export const PALETTE_GRID_METRIC_DEFAULTS = {
   cellWidth: 28,
   cellHeight: 28,
   gap: 2,
   padding: 4
 } as const;
-
-export function computePaletteGridSize(
-  gridLayout: DesktopToolsetDefinition["gridLayout"] | undefined,
-  itemGroups: readonly (readonly ToolbarPaletteItemModel[])[]
-): { width: number; height: number } | undefined {
-  if (!gridLayout) {
-    return undefined;
-  }
-
-  const cellWidth = gridLayout.cellWidth ?? PALETTE_GRID_METRIC_DEFAULTS.cellWidth;
-  const cellHeight = gridLayout.cellHeight ?? PALETTE_GRID_METRIC_DEFAULTS.cellHeight;
-  const gap = gridLayout.gap ?? PALETTE_GRID_METRIC_DEFAULTS.gap;
-  const padding = gridLayout.padding ?? PALETTE_GRID_METRIC_DEFAULTS.padding;
-  // Section-widget items (`widget.`-prefixed `control` items) render as their own sections, not grid
-  // slots, so they must not inflate the grid's column/row count (see ToolPalette's gridItemGroups
-  // filter). Inline controls (other `control` items) DO occupy a slot and are sized normally.
-  const placedItems = itemGroups
-    .flat()
-    // Span-less widgets render as appended sections (excluded from the grid math); a widget with
-    // declared grid spans is a grid citizen and its cells count like any other item's.
-    .filter((item) => !isToolbarWidgetItem(item) || isGridWidgetItem(item));
-  const placedColumnCount = Math.max(
-    0,
-    ...placedItems
-      .filter((item) => item.layout.column !== undefined)
-      .map((item) => (item.layout.column ?? 0) + item.layout.colSpan)
-  );
-  const placedRowCount = Math.max(
-    0,
-    ...placedItems
-      .filter((item) => item.layout.row !== undefined)
-      .map((item) => (item.layout.row ?? 0) + item.layout.rowSpan)
-  );
-  const autoFlowCellCount = placedItems
-    .filter((item) => item.layout.row === undefined || item.layout.column === undefined)
-    .reduce((total, item) => total + item.layout.colSpan * item.layout.rowSpan, 0);
-
-  // Columns: explicit, else derived from per-item placements, else derived from a fixed row count +
-  // the auto-flow item count. That last case is what shipped toolsets use (rows set, no columns) —
-  // without it this returned undefined and never sized anything.
-  const columns = gridLayout.columns
-    ?? (placedColumnCount > 0
-      ? placedColumnCount
-      : gridLayout.rows && autoFlowCellCount > 0
-        ? Math.ceil(autoFlowCellCount / gridLayout.rows)
-        : 0);
-  if (columns <= 0) {
-    return undefined;
-  }
-
-  const autoFlowRows = autoFlowCellCount > 0 ? Math.ceil(autoFlowCellCount / columns) : 0;
-  const rows = gridLayout.rows ?? Math.max(placedRowCount, autoFlowRows);
-  if (rows <= 0) {
-    return undefined;
-  }
-
-  return {
-    width: padding * 2 + columns * cellWidth + Math.max(0, columns - 1) * gap,
-    height: padding * 2 + rows * cellHeight + Math.max(0, rows - 1) * gap
-  };
-}
 
 export function getToolsetCommandSpecs(
   registry: DesktopToolsetRegistry = desktopToolsetRegistry
