@@ -17,3 +17,21 @@ choosing a Kekulé structure. Unsupported order values stay native `unknown`; th
 are kept per bond in `compatibility.unknown.cdxmlUnknownBondOrdersByBondId` and restored on CDXML
 export while the bond remains unknown. A native unknown bond without a preserved source value
 exports as `Order="any"`. Both cases warn; neither is exported as a single bond.
+
+CDXML `<curve>` arrows import as editable native art-arrow graphics (`graphicKind: "path"`,
+`data.artPathKind: "bezier"`, `data.pathNodes`, `markerStart` and `markerEnd`). Full, angle and
+half heads retain their endpoint; a half head remains a fishhook. Cubic chains and incoming/knot/
+outgoing spline triples retain every segment and control point; a quadratic is elevated exactly
+to cubic. Unheaded curves use the same native path without arrow markers. Source curves return as
+`<curve>`, while existing `<arrow>` objects keep their export form. Curves carry explicit line
+widths and custom colors through the visible CDXML, including when the native payload is removed.
+
+`compatibility.unknown.cdxmlCurveAttributes` retains the source attributes, including the original
+`CurvePoints` text, head sizing, `LineType` and `Z`. Unchanged geometry and head attributes export
+verbatim; edited Bezier nodes export their current controls. Native head dimensions, half-head
+handedness and hollow-head appearance can differ from the source: named import warnings describe
+these approximations, and export restores the original source attributes. Unsupported line types
+also warn and remain in the source attributes. Invalid or unsupported point layouts stay as unknown
+compatibility objects with `cdxml.curve_points_preserved` and export their source curve. Rotation,
+tilt, or edited head dimensions that standard export cannot express warn and remain in the native
+payload. This checkout rejects binary CDX input; it has no binary-to-CDXML conversion path.
