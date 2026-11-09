@@ -7533,9 +7533,8 @@ function normalizeElectronMarkSpec(spec: NativeElectronMarkSpec | NativeChargeVa
 /**
  * The charge tool places a SELECTABLE, MOVABLE charge-mark object beside the atom — the mark is
  * the user's handle on the charge. Its chemical effect (deprotonation, formula, validity) is
- * applied by `reconcileNativeChargeMarks`, which every document commit runs: while the mark sits
- * within the association radius the atom carries its charge, and dragging the mark away hands
- * the proton back.
+ * applied by `reconcileNativeChargeMarks`, which every document commit runs. A direct drop chooses
+ * its atom explicitly; other operations keep the existing distance/valence association policy.
  */
 export function applyChargeToolAtNativeAtom(
   document: ChemDraftDocument,
@@ -8414,17 +8413,15 @@ function addChargeMarkAtPoint(
 }
 
 /**
- * Applies the chemistry of the floating charge marks. A charge mark is a selectable, movable
- * object: while it sits within `nativeChargeAssociationRadiusPx` of an atom that can legally
- * carry its charge, that atom carries the charge (a minus beside a drawn OH removes the proton);
- * drag the mark away and the atom gets its proton back — no error badge, because the atom is
- * simply neutral again.
+ * Applies the chemistry of charge and radical marks. Direct drops explicitly retain a chosen
+ * atom even when the symbol is repositioned farther away. Other operations use the existing
+ * distance/valence association policy. A minus on a drawn OH removes its implicit proton.
  *
  * Runs on every document commit, so it must be a cheap, IDEMPOTENT normalization. The invariant
  * that makes it self-contained: `atom.markCharge` records exactly the portion of
  * `atom.formalCharge` the marks contributed. Each pass strips that portion back out (recovering
- * the atom's intrinsic, drawn/imported charge), re-assigns every mark to its nearest supportable
- * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
+ * the atom's intrinsic, drawn/imported charge), resolves each mark's supportable atom, and
+ * writes both fields fresh — so deleted marks, moved molecules, edited elements, and
  * copies pasted without their mark all settle correctly with no history diffing.
  */
 /**
@@ -8459,6 +8456,14 @@ export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDra
   return changed ? adoptDerivedDocument(document, { ...document, pages }) : document;
 }
 
+/** The atom fields contributed by each mark kind; display-only marks contribute nothing. */
+export function electronMarkAtomContribution(mark: ElectronMarkObject): { charge: number; radicals: number } {
+  if (mark.markKind === "charge") {
+    return { charge: nativeChargeValue(mark.charge) ?? 0, radicals: mark.radical === true ? 1 : 0 };
+  }
+  return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
+}
+
 function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
   const electronMarks = page.objects.filter((object): object is ElectronMarkObject =>
     object.type === "electron-mark" &&
@@ -8475,15 +8480,6 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
   if (electronMarks.length === 0 && !hasMarkContributions) {
     return page;
   }
-
-  // What a mark contributes to its atom. Lone pairs contribute nothing — they anchor for
-  // positioning only, since implied lone pairs are already part of the octet arithmetic.
-  const markContribution = (mark: ElectronMarkObject): { charge: number; radicals: number } => {
-    if (mark.markKind === "charge") {
-      return { charge: nativeChargeValue(mark.charge) ?? 0, radicals: mark.radical === true ? 1 : 0 };
-    }
-    return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
-  };
 
   const atomKey = (moleculeId: string, atomId: string) => `${moleculeId}\n${atomId}`;
   const moleculeById = new Map(molecules.map((molecule) => [molecule.id, molecule] as const));
@@ -8504,12 +8500,13 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
     moleculeId: string,
     atomId: string,
     center: PagePoint,
-    contribution: { charge: number; radicals: number }
+    contribution: { charge: number; radicals: number },
+    explicit = false
   ): boolean => {
     const molecule = moleculeById.get(moleculeId);
     const atom = molecule?.atoms.find((candidate) => candidate.id === atomId);
     if (!molecule || !atom ||
-      distance(center, atom) > (associationRadiusByMoleculeId.get(moleculeId) ?? nativeChargeAssociationRadiusPx)) {
+      (!explicit && distance(center, atom) > (associationRadiusByMoleculeId.get(moleculeId) ?? nativeChargeAssociationRadiusPx))) {
       return false;
     }
 
@@ -8549,9 +8546,9 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
       return;
     }
 
-    const contribution = markContribution(mark);
+    const contribution = electronMarkAtomContribution(mark);
     const center = nativeChargeMarkCenter(mark);
-    if (markCanAssociate(mark.anchor.objectId, mark.anchor.atomId, center, contribution)) {
+    if (markCanAssociate(mark.anchor.objectId, mark.anchor.atomId, center, contribution, mark.atomAssociation === "explicit")) {
       assign(mark.anchor.objectId, mark.anchor.atomId, contribution);
       anchorByMarkId.set(mark.id, { objectId: mark.anchor.objectId, atomId: mark.anchor.atomId });
     }
@@ -8563,7 +8560,7 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
       return;
     }
 
-    const contribution = markContribution(mark);
+    const contribution = electronMarkAtomContribution(mark);
     const center = nativeChargeMarkCenter(mark);
     let nearest: { objectId: string; atomId: string; distance: number } | undefined;
     molecules.forEach((molecule) => {
@@ -8627,11 +8624,13 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
     if (anchor && (currentAnchor?.objectId !== anchor.objectId || currentAnchor?.atomId !== anchor.atomId)) {
       nextObjectById.set(mark.id, {
         ...mark,
+        ...(mark.atomAssociation === "explicit" ? { atomAssociation: undefined } : {}),
         anchor: { kind: "atom", objectId: anchor.objectId, atomId: anchor.atomId }
       });
     } else if (!anchor && mark.anchor.kind === "atom") {
       nextObjectById.set(mark.id, {
         ...mark,
+        ...(mark.atomAssociation === "explicit" ? { atomAssociation: undefined } : {}),
         anchor: { kind: "point", point: nativeChargeMarkCenter(mark) }
       });
     }
@@ -8785,10 +8784,12 @@ export interface ElectronMarkMoveAssociationOptions {
 export interface ElectronMarkMoveAssociationResult {
   /** Anchor to store before normal commit reconciliation (including main's stale point anchors). */
   anchor: ElectronMarkObject["anchor"];
+  atomAssociation?: ElectronMarkObject["atomAssociation"];
 }
 
 /**
- * The sole move/transform association policy. It deliberately preserves origin/main behaviour:
+ * The general move/transform association policy. Direct drops have their own explicit policy.
+ * This deliberately preserves origin/main behaviour:
  * charges lose sticky anchors on direct moves/group transforms; radicals and lone pairs keep
  * theirs until normal distance/valence reconciliation releases them. Point anchors on the latter
  * keep their old coordinates. The editing preference never changes chemistry policy.
@@ -8802,13 +8803,18 @@ export function electronMarkMoveAssociation(
   options: ElectronMarkMoveAssociationOptions = {}
 ): ElectronMarkMoveAssociationResult {
   const operation = options.operation ?? "move";
+  // Turning/resizing a dropped mark about its own centre changes only its appearance.
+  if (mark.atomAssociation === "explicit" && operation !== "paste" && from.x === to.x && from.y === to.y) {
+    return { anchor: mark.anchor };
+  }
   const reset = operation === "paste" || (mark.markKind === "charge" &&
     operation !== "frame" && operation !== "carry" &&
     (operation === "transform" || from.x !== to.x || from.y !== to.y));
   const anchor: ElectronMarkObject["anchor"] = reset
     ? { ...mark.anchor, kind: "point", point: { x: to.x, y: to.y } }
     : mark.anchor;
-  return { anchor };
+  return { anchor, ...(mark.atomAssociation === "explicit" && operation !== "frame" && operation !== "carry"
+    ? { atomAssociation: undefined } : {}) };
 }
 
 export interface ElectronMarkChemistryChange {
@@ -8822,8 +8828,13 @@ export interface ElectronMarkChemistryChange {
   radicalDelta: number;
 }
 
+export interface ElectronMarkChemistryScope {
+  markIds: readonly string[];
+  atoms: readonly { objectId: string; atomId: string }[];
+}
+
 /**
- * Hook for the pending owner decision: call only where its result is used, scoped to affected marks.
+ * Used by direct electron-mark drops only, scoped to their affected marks and atoms.
  * Compare committed states without moving anything or running reconciliation. Each chemistry-
  * bearing mark is reported when either of its associated atoms changed formalCharge, markCharge
  * or markRadicals. Lone pairs and association changes without a chemical difference are omitted.
@@ -8832,16 +8843,19 @@ export interface ElectronMarkChemistryChange {
  * atom, so rows describe those marks, not independent quantities to add together.
  */
 export function electronMarkChemistryChanges(
-  before: ChemDraftDocument, after: ChemDraftDocument
+  before: ChemDraftDocument, after: ChemDraftDocument, scope?: ElectronMarkChemistryScope
 ): ElectronMarkChemistryChange[] {
   if (before === after) return [];
   const atomKey = (objectId: string, atomId: string) => `${objectId}\n${atomId}`;
+  const markIds = scope && new Set(scope.markIds);
+  const atomKeys = scope && new Set(scope.atoms.map(atom => atomKey(atom.objectId, atom.atomId)));
   const snapshot = (document: ChemDraftDocument) => {
     const marks = new Map<string, ElectronMarkObject>();
     const atoms = new Map<string, { formalCharge: number; markCharge: number; markRadicals: number }>();
     for (const page of document.pages) for (const object of page.objects) {
-      if (object.type === "electron-mark") marks.set(object.id, object);
+      if (object.type === "electron-mark" && (!markIds || markIds.has(object.id))) marks.set(object.id, object);
       if (object.type === "molecule") for (const atom of object.atoms) {
+        if (atomKeys && !atomKeys.has(atomKey(object.id, atom.id))) continue;
         atoms.set(atomKey(object.id, atom.id), {
           formalCharge: atom.formalCharge, markCharge: atom.markCharge ?? 0, markRadicals: atom.markRadicals ?? 0
         });
@@ -12263,8 +12277,8 @@ export function applyElectronMarkStyleToSelection(
     return [{ op: "updateObject" as const, objectId: object.id, changes: {
       x: object.x + (object.width - width) / 2, y: object.y + (object.height - height) / 2,
       width, height,
-      anchor: electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object),
-        nativeChargeMarkCenter(object), { operation: "frame" }).anchor
+      ...electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object),
+        nativeChargeMarkCenter(object), { operation: "frame" })
     } }];
   }));
   return patches.length ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
@@ -12343,9 +12357,9 @@ function moveDocumentObjectPatches(
       changes: {
         x: nextX,
         y: nextY,
-        anchor: electronMarkMoveAssociation(page, object, nativeChargeMarkCenter(object), {
+        ...electronMarkMoveAssociation(page, object, nativeChargeMarkCenter(object), {
           x: nextX + object.width / 2, y: nextY + object.height / 2
-        }).anchor
+        })
       }
     }];
   }
@@ -12879,8 +12893,8 @@ export function rotateDocumentObject(
       objectId,
       changes: {
         rotation: normalizeDegrees(object.rotation + angleDegrees),
-        ...(object.type === "electron-mark" ? { anchor: electronMarkMoveAssociation(document, object,
-          nativeChargeMarkCenter(object), nativeChargeMarkCenter(object), { operation: "frame" }).anchor } : {})
+        ...(object.type === "electron-mark" ? electronMarkMoveAssociation(document, object,
+          nativeChargeMarkCenter(object), nativeChargeMarkCenter(object), { operation: "frame" }) : {})
       }
     },
     { now: phase4Timestamp }
@@ -13939,9 +13953,9 @@ function translateDocumentObjectByPatches(
         changes: {
           x: nextX,
           y: nextY,
-          anchor: electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
+          ...electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
             x: nextX + object.width / 2, y: nextY + object.height / 2
-          }, { operation: options.preserveChargeAnchor ? "carry" : "move" }).anchor
+          }, { operation: options.preserveChargeAnchor ? "carry" : "move" })
         }
       }];
   }
@@ -14620,6 +14634,8 @@ export function duplicateSelectedDocumentObjects(
   const duplicateIdByOriginalId = new Map<string, string>();
   for (const object of selectedObjects) {
     const duplicate = structuredClone(object) as DocumentObject;
+    // Copies use the normal association policy, including a zero-offset duplicate.
+    if (duplicate.type === "electron-mark") delete duplicate.atomAssociation;
     duplicate.id = allocateId(duplicateObjectIdPrefix(object));
     duplicates.push(duplicate);
     duplicateIds.push(duplicate.id);
@@ -15004,9 +15020,9 @@ function translatedClipboardObject(
       ...object,
       x: nextX,
       y: nextY,
-      anchor: electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
+      ...electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
         x: nextX + object.width / 2, y: nextY + object.height / 2
-      }, { operation: "paste" }).anchor
+      }, { operation: "paste" })
     };
   }
 
@@ -15167,7 +15183,7 @@ function transformOtherObjectAroundPointPatches(
     rotation: normalizeDegrees(object.rotation + degrees)
   };
   if (object.type === "electron-mark") {
-    changes.anchor = electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation: "transform" }).anchor;
+    Object.assign(changes, electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation: "transform" }));
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
@@ -15404,7 +15420,7 @@ function flipOtherObjectAroundPointPatches(
   };
 
   if (object.type === "electron-mark") {
-    changes.anchor = electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation: "transform" }).anchor;
+    Object.assign(changes, electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation: "transform" }));
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
@@ -20016,7 +20032,7 @@ function documentObjectExists(document: ChemDraftDocument, objectId: string): bo
   return document.pages.some((page) => page.objects.some((object) => object.id === objectId));
 }
 
-function findDocumentObject(document: ChemDraftDocument, objectId: string): DocumentObject | undefined {
+export function findDocumentObject(document: ChemDraftDocument, objectId: string): DocumentObject | undefined {
   for (const page of document.pages) {
     const object = page.objects.find((candidate) => candidate.id === objectId);
     if (object) {
@@ -21414,7 +21430,7 @@ function nextOrdinalId(prefix: string, index: number): string {
   return `${prefix}_${String(index + 1).padStart(3, "0")}`;
 }
 
-function isEditableNativeMoleculeGraph(molecule: MoleculeObject): boolean {
+export function isEditableNativeMoleculeGraph(molecule: MoleculeObject): boolean {
   const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
   const supportedBondOrders = new Set<MoleculeBond["order"]>(["single", "double", "triple", "aromatic", "unknown"]);
 

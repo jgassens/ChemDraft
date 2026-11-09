@@ -1,4 +1,5 @@
 import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { dropElectronMark, electronMarkDropTarget } from "./electronMarkDrop";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -1097,6 +1098,7 @@ type ObjectDragState = {
   moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
   movePreviewObjectIds?: readonly string[];
   movePreviewArrowIds?: readonly string[];
+  dropStatus?: string;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1718,7 +1720,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.00.55-codex";
+const CURRENT_BUILD_STAMP = "11.09.07.50-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3424,6 +3426,7 @@ export function MainWindow({
       clearObjectTransformPreview(drag.pointerId);
       releaseGesturePointer(drag.pointerId);
       setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
       setShiftHoveredArrowId(undefined);
       shiftHoveredArrowIdRef.current = undefined;
       hoveredArrowIdRef.current = undefined;
@@ -15318,6 +15321,10 @@ export function MainWindow({
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
+      const object = findDocumentObject(drag.startDocument, drag.objectId);
+      if (object?.type === "electron-mark" && !(drag.groupObjectIds && drag.groupObjectIds.length > 1)) {
+        assignHoveredNativeDeleteTarget(electronMarkDropTarget(drag.startDocument, point));
+      }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
         : objectDragDelta(drag, point);
@@ -15365,7 +15372,7 @@ export function MainWindow({
         arrowPreviewObjects
       });
     });
-  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
+  }, [assignHoveredNativeDeleteTarget, objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -15712,8 +15719,22 @@ export function MainWindow({
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const moved = objectDragDocument(drag, point);
     clearObjectTransformPreview(drag.pointerId);
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type === "electron-mark" && !(drag.groupObjectIds && drag.groupObjectIds.length > 1)) {
+      assignHoveredNativeDeleteTarget(undefined);
+      const delta = objectDragDelta(drag, point);
+      const result = dropElectronMark(drag.startDocument, object.id,
+        { x: drag.startObjectX + delta.x, y: drag.startObjectY + delta.y }, point);
+      drag.dropStatus = result.status;
+      if (result.document === drag.startDocument) {
+        replacePresentDocument(drag.startDocument);
+        return false;
+      }
+      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel);
+      return true;
+    }
+    const moved = objectDragDocument(drag, point);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
@@ -15723,7 +15744,7 @@ export function MainWindow({
       findDocumentObject(drag.startDocument, id)?.type === "electron-mark");
     commitDocumentHistoryFrom(drag.startDocument, moved, movesMark ? "Move electron mark" : undefined);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -16335,11 +16356,12 @@ export function MainWindow({
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
       clearObjectTransformPreview(event.pointerId);
+      assignHoveredNativeDeleteTarget(undefined);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearObjectTransformPreview]);
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview]);
 
   const clearGraphicCornerRadiusDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = graphicCornerRadiusDragRef.current;
@@ -17644,7 +17666,7 @@ export function MainWindow({
       objectDragMachineRef.current = initialInteractionState();
       if (objectDrag.dragging) {
         const changed = commitObjectDrag(objectDrag, point);
-        setStatus(changed ? "Moved selected object" : "Object did not move");
+        setStatus(objectDrag.dropStatus ?? (changed ? "Moved selected object" : "Object did not move"));
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
@@ -17842,6 +17864,12 @@ export function MainWindow({
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
+    const objectDrag = objectDragRef.current;
+    if (objectDrag?.pointerId === event.pointerId) {
+      clearObjectDrag(event);
+      objectDragMachineRef.current = initialInteractionState();
+      replacePresentDocument(objectDrag.startDocument);
+    }
     const mechanismDrag = mechanismArrowDragRef.current;
     if (mechanismDrag?.pointerId === event.pointerId) {
       mechanismArrowDragRef.current = null;
@@ -17996,7 +18024,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearObjectDrag, clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -20509,7 +20537,7 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? objectDrag.latestPoint;
       if (objectDrag.dragging) {
         const changed = commitObjectDrag(objectDrag, point);
-        setStatus(changed ? "Moved selected object" : "Object did not move");
+        setStatus(objectDrag.dropStatus ?? (changed ? "Moved selected object" : "Object did not move"));
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
