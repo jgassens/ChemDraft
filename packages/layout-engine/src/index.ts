@@ -85,7 +85,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { planTableObjectSvg } from "./table";
-import { textAdvanceEm } from "./textMetrics";
+import { textAdvanceEm, measureNativeTextSpanLineWidth, nativeTextMetrics } from "./textMetrics";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -5849,6 +5849,11 @@ export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */
 export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds {
+  return objectFrameBoundsForPageFit(object);
+}
+
+/** Exact rotated frame, without a circumscribed-circle overestimate near page edges. */
+export function objectFrameBoundsForPageFit(object: DocumentObject): LayoutBounds {
   const corners = [
     { x: object.x, y: object.y },
     { x: object.x + object.width, y: object.y },
@@ -5860,6 +5865,41 @@ export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds
   return { x, y,
     width: Math.max(...corners.map(point => point.x)) - x,
     height: Math.max(...corners.map(point => point.y)) - y };
+}
+
+/** Page-fit bounds include text that SVG paints beyond a constrained stored box. SVG text uses
+ * explicit lines, anchors and the stored frame's rotation pivot; it does not clip to that frame.
+ * Keep arrangement's frame contract above unchanged. Use the same deterministic font advances
+ * and script metrics as sizing/rendering, rather than measuring host fonts or changing the text.
+ */
+export function textVisualBoundsForPageFit(object: TextObject): LayoutBounds {
+  const style = nativeTextStyleFromObjectStyle(object.style);
+  const lines = textObjectSpanLines(object);
+  const anchor = style.textAlign === "center" ? object.x + object.width / 2
+    : style.textAlign === "right" ? object.x + object.width : object.x;
+  let left = object.x, right = object.x + object.width;
+  let top = object.y, bottom = object.y + object.height;
+  const advance = style.fontSizePx * style.lineHeight + style.paragraphSpacingPx;
+  lines.forEach((line, index) => {
+    const width = measureNativeTextSpanLineWidth(line, style);
+    const x = style.textAlign === "center" ? anchor - width / 2
+      : style.textAlign === "right" ? anchor - width : anchor;
+    left = Math.min(left, x); right = Math.max(right, x + width);
+    for (const span of line) {
+      if (!span.text) continue;
+      const size = span.script === "normal"
+        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale;
+      const shift = span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
+        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0;
+      const baseline = object.y + style.fontSizePx + index * advance + shift;
+      top = Math.min(top, baseline - size);
+      bottom = Math.max(bottom, baseline + size * nativeTextMetrics.descentEm);
+    }
+  });
+  const corners = [{ x: left, y: top }, { x: right, y: top }, { x: left, y: bottom }, { x: right, y: bottom }]
+    .map(point => transformPointForObject(object, point));
+  const x = Math.min(...corners.map(point => point.x)), y = Math.min(...corners.map(point => point.y));
+  return { x, y, width: Math.max(...corners.map(point => point.x)) - x, height: Math.max(...corners.map(point => point.y)) - y };
 }
 
 /** Centre the visible ring system rather than a tall substituent or a long atom label.

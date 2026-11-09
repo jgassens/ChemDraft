@@ -11,6 +11,7 @@ import {
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
+import { planDocumentPageFit } from "../pageEnlargement";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
   type AssistantToolContext, type AssistantPageGrowth
@@ -124,6 +125,12 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
   const validated = applyPatch(document, built.patch, { now: context.now() });
+  // Replacement, movement, restyling and cleanup use the same check as insertion plans.
+  if (!built.pageGrowth) {
+    const pages = planDocumentPageFit(document, validated).growth;
+    const growth = pages[0];
+    if (growth) built = { ...built, pageGrowth: { ...growth, pages, description: "This content", itemCount: 1, items: [] } };
+  }
   for (const [id, smiles] of built.expectedSmiles ?? []) {
     const { object } = findObject(validated, id);
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);
@@ -137,11 +144,14 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     context.signal?.throwIfAborted();
     const accepted = await context.confirmPageGrowth(built.pageGrowth, context.signal);
     context.signal?.throwIfAborted();
-    if (accepted !== true) {
-      if (accepted !== false) declineReason = accepted.reason;
-      declined = built.pageGrowth.items.map(item => item.label);
+    // Keep Page Size commits the original placement. Timeout/cancellation retains the existing
+    // assistant refusal behaviour and never turns an unanswered question into an insertion.
+    if (accepted !== true && accepted !== false) {
+      declineReason = accepted.reason;
+      declined = built.pageGrowth.items.length ? built.pageGrowth.items.map(item => item.label) : ["This content"];
       const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
-      patch = { op: "batch", patches: patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) };
+      patch = { op: "batch", patches: built.pageGrowth.items.length
+        ? patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) : [] };
       summary = `Inserted ${patch.patches.length} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
     }
   }
@@ -228,14 +238,24 @@ function insertWrite(pageId: string, objects: DocumentObject[], summary: string,
 /** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
 function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
   pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
+  // Text SVG can paint beyond a constrained stored frame. Include those cells in the same
+  // decision/timeout grouping, measuring through the shared check rather than a second bounds rule.
+  const measured = planDocumentPageFit(document, applyPatch(document, write.patch)).growth.find(page => page.pageId === pageId);
+  const ids = new Set(measured?.objectIds);
+  const nonFitting = [...new Set([...plan.nonFitting, ...cells.flatMap((cell, index) => cell.some(object => ids.has(object.id)) ? [index] : [])])];
+  const page = document.pages.find(page => page.id === pageId)!;
+  const requiredSize = plan.requiredSize || measured ? {
+    width: Math.max(page.width, plan.requiredSize?.width ?? 0, measured?.width ?? 0),
+    height: Math.max(page.height, plan.requiredSize?.height ?? 0, measured?.height ?? 0)
+  } : undefined;
   return { ...write,
-    checkPreconditions: plan.requiredSize ? latest => {
+    checkPreconditions: requiredSize ? latest => {
       if (!assistantDocumentContentUnchanged(document, latest)) {
         throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
       }
     } : undefined,
-    ...(plan.requiredSize ? { pageGrowth: { pageId, ...plan.requiredSize, description, itemCount: plan.nonFitting.length,
-      items: plan.nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
+    ...(requiredSize ? { pageGrowth: { pageId, ...requiredSize, description, itemCount: nonFitting.length,
+      items: nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
 }
 
 export async function buildInsertStructures(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
@@ -369,7 +389,6 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
       old.y + old.height / 2 - object.y - object.height / 2);
   } else {
     const placed = placement(context, [object], page.id, undefined, [old.id]);
-    if (placed.plan.requiredSize) throw new Error("The replacement does not fit on this page; enlarge it with Page Setup first.");
     object = placed.objects[0] as MoleculeObject;
   }
   return { patch: { op: "batch", patches: [{ op: "removeObject", objectId: old.id }, { op: "addObject", pageId: page.id, object }] },
@@ -439,7 +458,6 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
     return { op: "updateObject", objectId: object.id, changes };
   });
-  if (placed.plan.requiredSize) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
   return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions };
 }
 

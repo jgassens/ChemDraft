@@ -10,6 +10,7 @@ import { beginAssistantTransaction, endAssistantTransaction, writeAssistantTrans
 import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
 import { DOM_COMMAND_EVENT, PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
 import { moleculeStructureBondColorCommandId } from "./commands";
+import { setNativePromptProvider } from "./nativePrompt";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -443,6 +444,27 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await pagePress(); expect(texts()[0].style.fontWeight).toBe(700);
     await undo(); expect(texts()).toEqual([]);
     await redo(); expect(texts()[0]).toMatchObject({ text: "Alpha", style: { fontWeight: 700 } });
+  });
+
+  it("keeps overflowing first typing, text edits and font changes on the original page without asking", async () => {
+    const prompt = vi.fn(async () => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = snapshot().document;
+      const id = await place("Caption line\n".repeat(120), 200);
+      const placed = snapshot().document;
+      expect(placed.pages[0].layout).toEqual(before.pages[0].layout);
+      await undo(); expect(snapshot().document).toEqual(before);
+      await redo(); expect(snapshot().document).toEqual(placed);
+      await open(id);
+      await type("Longer caption line\n".repeat(140));
+      await command("text.size.24");
+      await pagePress();
+      const edited = snapshot().document;
+      expect(edited.pages[0].layout).toEqual(before.pages[0].layout);
+      expect(edited).not.toEqual(placed);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restore(); }
   });
 
   it("finishes before the close prompt, preserves undo on Cancel and drops the snapshot on Discard", async () => {

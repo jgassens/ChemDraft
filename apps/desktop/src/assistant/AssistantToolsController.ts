@@ -1,10 +1,11 @@
-import { applyPatch, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
 import { runThumbnail } from "./runThumbnail";
 import type { AssistantToolContext, AssistantPageGrowth } from "./AssistantToolContext";
-import { nativePrompt } from "../nativePrompt";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { applyPageFitDecision, planDocumentPageFit } from "../pageEnlargement";
 import { callAssistantTool, listAssistantTools } from "./assistantTools";
 import { getAssistantTransactions, type AssistantTransactions } from "./assistantTransaction";
 import { assistantDocumentContentUnchanged, getAssistantHistoryPort } from "./historyPort";
@@ -25,6 +26,7 @@ interface Request {
   opening: number;
 }
 export interface AssistantToolsControllerOptions {
+  platform?: ShortcutPlatform;
   host(): PluginHost;
   engine: AssistantMcpEngine;
   getActiveTabId(): string | undefined;
@@ -112,8 +114,8 @@ export class AssistantToolsController implements PluginHostAssistant {
           this.running(plugin, requestId);
           abort.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (prompted || !["insert_structures", "insert_reaction", "insert_text", "insert_table"].includes(input.name)) {
-            throw new Error("Page growth is only available once per assistant insertion.");
+          if (prompted) {
+            throw new Error("Page growth is only available once per assistant tool call.");
           }
           prompted = true;
           const document = request.context.getDocument()!;
@@ -123,17 +125,12 @@ export class AssistantToolsController implements PluginHostAssistant {
           signal?.addEventListener("abort", cancelDecision, { once: true });
           const decisionDeadline = setTimeout(cancelDecision, 300_000);
           try {
-            const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
-              message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
-              // Enlarge Page is the affirmative/default action; Escape and close decline.
-              // The request's single Undo restores both the page and inserted objects.
-              choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
-            }, async () => "decline", decision.signal);
+            const accepted = await request.transactions.pageEnlargementConsent(requestId, this.options.platform).confirm(decision.signal);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
             if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
-            if (choice !== "enlarge") return false;
+            if (!accepted) return false;
             approvedGrowth = { growth, document };
             return true;
           } finally {
@@ -147,13 +144,23 @@ export class AssistantToolsController implements PluginHostAssistant {
           if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
           const plannedDocument = request.context.getDocument()!;
           const growth = approvedGrowth?.growth;
-          const patchDocument = (document: ChemDraftDocument) => {
-            const page = growth && document.pages.find(page => page.id === growth.pageId);
-            return applyPatch(document, growth && page ? { op: "batch", patches: [
-              { op: "updatePageLayout", pageId: page.id,
-                layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
-              ...writePatchOps(patch)
-            ] } : patch);
+          // Verify the plugin's scoped patch before the host-owned page translation. Consent
+          // never widens the assistant's write scope to unrelated page content.
+          const patchDocument = (document: ChemDraftDocument) => applyPatch(document, patch);
+          const fitDocument = (document: ChemDraftDocument, patched: ChemDraftDocument) => {
+            if (!growth) return patched;
+            const plan = planDocumentPageFit(document, patched);
+            for (const size of growth.pages ?? [growth]) {
+              const measured = plan.growth.find(page => page.pageId === size.pageId);
+              if (measured) {
+                measured.width = Math.max(measured.width, size.width);
+                measured.height = Math.max(measured.height, size.height);
+              } else {
+                const page = document.pages.find(page => page.id === size.pageId)!;
+                plan.growth.push({ ...size, width: Math.max(page.width, size.width), height: Math.max(page.height, size.height) });
+              }
+            }
+            return applyPageFitDecision(plan, true);
           };
           const scope = new Set([...request.selection, ...request.inserted]);
           for (const op of writePatchOps(patch)) {
@@ -191,7 +198,7 @@ export class AssistantToolsController implements PluginHostAssistant {
                   // Recompute after a gesture or concurrent tool call, including every nearby
                   // mark. No await separates this scope/chemistry recheck and the history commit.
                   const after = recheckNormalizedAssistantWrite(before, patchDocument(before), scope, verified, plannedDocument);
-                  request.transactions.writeAssistantTransaction(requestId, after, touched);
+                  request.transactions.writeAssistantTransaction(requestId, fitDocument(before, after), touched, after);
                   const existing = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
                   for (const id of touched) { request.touched.add(id); if (!existing.has(id)) request.inserted.add(id); }
                   return { applied: true as const, objectIds: touched };

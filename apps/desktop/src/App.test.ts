@@ -1900,9 +1900,9 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("also offers the page-size choice when a pasted structure overflows the current page", () => {
-    // The SMILES paste path runs the same page-fit recommendation as the CDXML import path.
-    expect(mainWindowSource).toContain("recommendImportedPageFit(nextDocument)");
-    expect(mainWindowSource).toContain('displayName: "The pasted structure"');
+    // Paste now uses the shared pre-commit check and the insert's existing undo entry.
+    expect(mainWindowSource).toContain("commitWithPageFit(before, proposed");
+    expect(mainWindowSource).not.toContain("recommendImportedPageFit(nextDocument)");
   });
 
   it("passes the pressed key to the global shortcut guard", () => {
@@ -2588,7 +2588,9 @@ describe("ChemDraft desktop shell", () => {
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
+    // Inactive-tab spacing keeps its original direct normalization; insertion tab commits
+    // share preparation, and plugin/proposal preflight also normalizes before checking fit.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(12);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(

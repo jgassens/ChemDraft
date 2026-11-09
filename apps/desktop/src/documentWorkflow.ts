@@ -14110,6 +14110,35 @@ export function translateInsertedDocumentObjects(
   return patches.length ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+/** Host-owned page enlargement: translate every frame and absolute coordinate exactly once.
+ * References still point to the same atoms/objects; no clamping, normalization or selection edit.
+ * Reuse the group translation math, including graphic paths and anchored arrow controls. */
+export function translateDocumentPage(
+  document: ChemDraftDocument, pageId: string, dx: number, dy: number
+): ChemDraftDocument {
+  const page = document.pages.find(candidate => candidate.id === pageId);
+  if (!page || (dx === 0 && dy === 0)) return document;
+  const attachmentPoints = <T extends { attachmentPoints: Anchor[] }>(value: T): T => ({ ...value,
+    attachmentPoints: value.attachmentPoints.map(anchor => offsetAnchorPoint(anchor, dx, dy)) });
+  const patches = page.objects.flatMap(object => {
+    const moves = translateDocumentObjectByPatches(document, object.id, dx, dy, {
+      translateAnchoredGeometry: true, preserveChargeAnchor: true
+    });
+    // These absolute attachment coordinates are not part of ordinary selection movement.
+    // Point-anchored electron marks also need their stored point to follow their frame.
+    if (object.type === "electron-mark") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { anchor: offsetAnchorPoint(object.anchor, dx, dy) } });
+    if (object.type === "molecule") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { superatoms: object.superatoms.map(attachmentPoints), rGroups: object.rGroups.map(attachmentPoints) } });
+    if (object.type === "superatom") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { metadata: attachmentPoints(object.metadata) } });
+    if (object.type === "r-group-label") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { display: attachmentPoints(object.display) } });
+    return moves;
+  });
+  return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
 export type DocumentAlignMode = "left" | "center" | "right" | "top" | "middle" | "bottom";
 export type DocumentDistributeAxis = "horizontal" | "vertical";
 export type DocumentDistributeMode = "centers" | "spacing";

@@ -7,7 +7,10 @@ import type {
 } from "@chemdraft/plugin-api";
 
 export interface AssistantRect { x: number; y: number; width: number; height: number }
-export interface AssistantPageGrowth { pageId: string; width: number; height: number; description: string; itemCount: number }
+export interface AssistantPageGrowth {
+  pageId: string; width: number; height: number; description: string; itemCount: number;
+  pages?: { pageId: string; width: number; height: number }[];
+}
 export type AssistantStructureInspection =
   | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
       formula: string; heavyAtoms: number; warnings: string[] }
