@@ -30,15 +30,23 @@ describe("adjustable wavy lines", () => {
       "object.wave.height:12.25", "object.wave.width:12.5", "object.wave.smoothness:0.5", "object.wave.height:012.5", "object.wave.height:12.50"])
       expect(objectWaveForCommand(id)).toBeUndefined();
   });
-  it("offers every supported wave value in the shell and Customize gallery", () => {
+  it("keeps every wave value in the shell without flooding the Customize gallery", () => {
     const commands = allShellCommands(fixture());
-    const gallery = buildGalleryModel(commands, [], new Set(), "Wave");
     expect(objectWaveCommands).toHaveLength(315);
     expect(new Set(objectWaveCommands.map(command => command.id)).size).toBe(315);
     for (const command of objectWaveCommands) {
       expect(objectWaveForCommand(command.id)).toBeDefined();
       expect(commands.find(spec => spec.id === command.id)).toMatchObject({ category: "object-style", source: "core" });
-      expect(gallery.find(entry => entry.commandId === command.id)?.title).toBe(command.title);
+    }
+    for (const search of ["", "Wave", "object.wave.height:"]) {
+      const gallery = buildGalleryModel(commands, [], new Set(), search);
+      expect(gallery.filter(entry => entry.commandId?.startsWith("object.wave."))).toHaveLength(0);
+    }
+    // Existing style families offer a small preset list, not every possible control value.
+    const gallery = buildGalleryModel(commands, [], new Set(), "");
+    for (const [prefix, count] of [["object.stroke.width.", 5], ["text.size.", 6],
+      ["text.color.", 11], ["object.color.", 11]] as const) {
+      expect(gallery.filter(entry => entry.commandId?.startsWith(prefix))).toHaveLength(count);
     }
   });
   it.each(legacyWavyPaths)("keeps main's legacy $name SVG/canvas path data without adding metadata", ({ object: raw, paths }) => {

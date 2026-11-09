@@ -126,12 +126,14 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     expect(objects()).toEqual(after);
   });
 
-  it("lists the wave commands in the mounted Customize gallery", async () => {
+  it("excludes per-value wave tiles from the mounted Customize gallery", async () => {
     await command("view.customizeMainToolbar");
     const gallery = container.querySelector('[aria-label="Toolbar item gallery"]');
     expect(gallery).not.toBeNull();
-    const labels = new Set([...gallery!.querySelectorAll("button")].map(button => button.getAttribute("aria-label")));
-    for (const { title } of objectWaveCommands) expect(labels.has(title), title).toBe(true);
+    const waveTitles = new Set(objectWaveCommands.map(command => command.title));
+    const waveTiles = [...gallery!.querySelectorAll("button")].filter(button =>
+      waveTitles.has(button.getAttribute("aria-label") ?? ""));
+    expect(waveTiles).toHaveLength(0);
   });
 
   it.each(["release", "Escape", "pointercancel", "blur"])("handles a real slider drag ending in %s", async ending => {

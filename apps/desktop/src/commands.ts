@@ -1348,7 +1348,7 @@ export function objectWaveForCommand(commandId: string): { setting: WaveSetting;
   return undefined;
 }
 
-/** Every slider step has its own registry command, also available to toolbar customization. */
+/** Every slider step has its own registry command; the gallery omits these exhaustive values. */
 export const objectWaveCommands = (Object.keys(waveSettingRanges) as WaveSetting[]).flatMap(setting => {
   const { min, max, step } = waveSettingRanges[setting];
   return Array.from({ length: (max - min) / step + 1 }, (_, index) => {
