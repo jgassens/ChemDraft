@@ -168,6 +168,62 @@ describe("interchange graphics and page extent", () => {
     expect(reopened.data.pathNodes?.[3].outControl?.y).toBeCloseTo(73.3333333, 3);
   });
 
+  it.each([
+    { style: { fillMode: "gloss" as const, fillColor: "#000000" }, code: "cdxml.graphic_gloss_payload_only" },
+    { style: { effect: "reflection" as const }, code: "cdxml.graphic_effect_payload_only" }
+  ])("warns about unsupported Bezier styling: $code", ({ style, code }) => {
+    const graphic = nativeGraphic({ artPathKind: "bezier", pathClosed: true, pathNodes: [
+      { point: { x: 40, y: 80 }, outControl: { x: 60, y: 40 } },
+      { point: { x: 140, y: 80 }, inControl: { x: 120, y: 40 } }
+    ] });
+    Object.assign(graphic.style, style);
+    const document = documentWithGraphic(graphic);
+    for (const binary of [false, true]) for (const embedNativePayload of [false, true]) {
+      const exported = binary ? exportDocumentToCdx(document, { embedNativePayload })
+        : exportDocumentToCdxml(document, { embedNativePayload });
+      const xml = "bytes" in exported ? cdxElementToCdxml(readCdx(exported.bytes)) : exported.contents;
+      expect(attributes(xml, "curve")).toHaveLength(1);
+      const limitations = exported.warnings.filter(warning => warning.code === code);
+      expect(limitations).toHaveLength(1);
+      expect(limitations[0].sourceObjectId).toBe(graphic.id);
+      if (!embedNativePayload) expect(limitations[0].message).toContain("NOT written");
+      const opened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
+      expect(opened.conflict).toBeUndefined();
+      if (embedNativePayload) expect(opened.document).toEqual(document);
+      else {
+        const visible = requireDocument(opened).pages[0].objects[0];
+        expect(visible.style.fillMode).not.toBe("gloss");
+        expect(visible.style.effect).not.toBe("reflection");
+      }
+    }
+  });
+
+  it.each([
+    { axis: "x", magnitude: 1.7e308 }, { axis: "y", magnitude: 1.7e308 },
+    // The point extent is finite here, but converting the fitted size back to native units overflows.
+    { axis: "x", magnitude: 1e308 }, { axis: "y", magnitude: 1e308 }
+  ])("retains finite coordinates when fitting $axis positions at ±$magnitude would overflow", ({ axis, magnitude }) => {
+    const document = documentWithGraphic(nativeGraphic({}, "rect"));
+    document.pages[0].objects = [-magnitude, magnitude].map((position, index) => ({
+      ...nativeGraphic({}, "rect"), id: `extreme_${index}`, x: -40, y: -40, [axis]: position
+    }));
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.page_fit_unrepresentable", sourceObjectId: document.pages[0].id
+    }));
+    expect(exported.contents).not.toMatch(/Infinity|NaN/);
+    const page = attributes(exported.contents, "page")[0];
+    expect(page.attrib4346).toBeUndefined();
+    const pageBounds = page.BoundingBox.split(" ").map(Number);
+    expect(pageBounds.every(Number.isFinite)).toBe(true);
+    expect(pageBounds[2]).toBeGreaterThanOrEqual(612);
+    expect(pageBounds[3]).toBeGreaterThanOrEqual(792);
+    const coordinateIndex = axis === "x" ? 0 : 1;
+    const bounds = attributes(exported.contents, "graphic").map(graphic => graphic.BoundingBox.split(" ").map(Number));
+    expect(bounds.map(box => box[coordinateIndex])).toEqual([-magnitude * 0.75, magnitude * 0.75]);
+    expect(bounds.map(box => box[1 - coordinateIndex])).toEqual([-30, -30]);
+  });
+
   it.each([false, true])("sizes the page around faraway content (binary=%s)", binary => {
     const document = documentWithGraphic({ ...nativeGraphic({}, "rect"), x: 5000, y: 4300 });
     const xml = binary ? cdxElementToCdxml(readCdx(exportDocumentToCdx(document).bytes))
@@ -377,6 +433,53 @@ describe("chemical and drawing round trips", () => {
 
 describe("native payload Save As and interchange Export", () => {
   const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
+
+  it("omits the v2 marker only for interchange and rejects embedded visible edits even after marker removal in CDXML and CDX", () => {
+    const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>A&amp;#10;B</s></t>')));
+    for (const binary of [false, true]) {
+      const interchange = binary ? exportDocumentToCdx(original, { embedNativePayload: false })
+        : exportDocumentToCdxml(original, { embedNativePayload: false });
+      const interchangeRoot = "bytes" in interchange ? readCdx(interchange.bytes) : tree(interchange.contents);
+      expect(interchangeRoot.attrs.attrib4345).toBeUndefined();
+      const visible = "bytes" in interchange ? importCdx(interchange.bytes) : openChemDraftPayload(interchange.contents);
+      expect(visible.document?.pages[0].objects[0]).toMatchObject({ text: "A&#10;B" });
+      expect(visible.conflict).toBeUndefined();
+
+      const saved = binary ? exportDocumentToCdx(original, { embedNativePayload: true })
+        : exportDocumentToCdxml(original, { embedNativePayload: true });
+      const root = "bytes" in saved ? readCdx(saved.bytes) : tree(saved.contents);
+      expect(root.attrs.attrib4345).toBe("|x|32");
+      const unchanged = "bytes" in saved ? importCdx(saved.bytes) : openChemDraftPayload(saved.contents);
+      expect(unchanged.document).toEqual(original);
+      expect(unchanged.conflict).toBeUndefined();
+
+      for (const removeMarker of [false, true]) for (const editText of [false, true]) {
+        if (!removeMarker && !editText) continue;
+        let opened;
+        if ("bytes" in saved) {
+          const altered = structuredClone(root);
+          if (removeMarker) delete altered.attrs.attrib4345;
+          if (editText) findText(altered)!.text = "A\nB";
+          // Recompute only binary integrity, so the independent v2 visible hash must still protect the payload.
+          const envelope = JSON.parse(Buffer.from(altered.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+          delete altered.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+          envelope.visibleBinaryHash = sha256Hex(writeCdx(altered));
+          altered.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+          opened = importCdx(writeCdx(altered));
+        } else {
+          let altered = saved.contents;
+          if (removeMarker) altered = altered.replace(' attrib4345="|x|32"', "");
+          if (editText) altered = altered.replace("A&amp;#10;B", "A&#10;B");
+          opened = openChemDraftPayload(altered);
+        }
+        expect(opened.document).toBeUndefined();
+        expect(opened.conflict?.kind).toBe("visible-layer-modified");
+        expect(opened.conflict?.embeddedDocument).toEqual(original);
+        if (editText) expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "A\nB" });
+      }
+    }
+  });
+
   const textEnvelope = (text: string, legacy = false) => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
     const object = original.pages[0].objects[0];

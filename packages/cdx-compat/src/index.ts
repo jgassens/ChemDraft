@@ -404,7 +404,7 @@ export function exportDocumentToCdxml(
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
   const fittedPages = parsedDocument.pages.map((page, pageIndex) => fitVisiblePage(page,
     buildVisiblePageChildren(page, warnings, fonts, curveColors,
-      preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex))));
+      preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)), warnings));
   const embedded = options.embedNativePayload !== false;
   const visiblePages = fittedPages.map(({ page, children, offset }) => buildPageXml(page, children, offset));
   const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors, embedded);
@@ -805,7 +805,7 @@ function serializeVisibleTree(tree: OrderedXmlTree): string {
   }).join("");
 }
 
-function fitVisiblePage(page: DocumentPage, children: string): { page: DocumentPage; children: string; offset?: Point } {
+function fitVisiblePage(page: DocumentPage, children: string, warnings: CompatibilityConversionWarning[]): { page: DocumentPage; children: string; offset?: Point } {
   const tree = parseCdxml(`<CDXML><page>${children}</page></CDXML>`);
   const content = findElements(tree, "page")[0].children;
   let left = 0, top = 0, right = 0, bottom = 0;
@@ -815,11 +815,27 @@ function fitVisiblePage(page: DocumentPage, children: string): { page: DocumentP
   });
   const margin = 18; // points; leaves room for strokes and ordinary arrowheads
   const offset = { x: left < 0 ? Math.ceil(margin - left) : 0, y: top < 0 ? Math.ceil(margin - top) : 0 };
+  const width = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + offset.x + margin)));
+  const height = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + offset.y + margin)));
+  let finite = [offset.x, offset.y, width, height].every(Number.isFinite);
+  visitVisibleCoordinates(content, (x, y) => {
+    finite = finite && Number.isFinite(x + offset.x) && Number.isFinite(y + offset.y);
+  });
+  if (!finite) {
+    warnings.push({ code: "cdxml.page_fit_unrepresentable", sourceObjectId: page.id,
+      message: `Page ${page.id} cannot be fitted within finite coordinate limits; original visible coordinates were retained and the finite page may not cover all content.` });
+    // Keep each representable unshifted extent, or the original letter-or-larger size.
+    const unshiftedWidth = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + margin)));
+    const unshiftedHeight = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + margin)));
+    return { page: { ...page,
+      width: Number.isFinite(unshiftedWidth) ? unshiftedWidth : Math.max(cdxmlToCssPx(612), page.width),
+      height: Number.isFinite(unshiftedHeight) ? unshiftedHeight : Math.max(cdxmlToCssPx(792), page.height)
+    }, children };
+  }
   const shifted = offset.x !== 0 || offset.y !== 0;
   if (shifted) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
   return {
-    page: { ...page, width: cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + offset.x + margin))),
-      height: cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + offset.y + margin))) },
+    page: { ...page, width, height },
     children: shifted ? serializeVisibleTree(content) : children,
     ...(shifted ? { offset } : {})
   };
@@ -1725,6 +1741,9 @@ function exportGraphicObject(
     return "";
   }
   const graphicId = idFor(ids, graphic.id, allocator);
+  const sourceElementName = graphic.compatibility?.unknown.cdxmlElementName;
+  const curve = sourceElementName === "curve" ? graphic : sourceElementName === "arrow" ? undefined : nativeCurveGraphic(graphic);
+  warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve));
   if (graphic.graphicKind === "unknown" && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
     const attributes = preservedCurveAttributes(graphic.compatibility.unknown.cdxmlGraphicAttributes);
     // Older imports retained only these individual compatibility keys.
@@ -1755,13 +1774,10 @@ function exportGraphicObject(
   // closed ArrowType enum — it can say which ends are full/half with a shared solid/open type —
   // so round-tripping the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
-    warnForGraphicCdxmlLimitations(graphic, warnings);
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings, curveColors);
   }
-  const curve = nativeCurveGraphic(graphic);
   if (curve) return exportGraphicAsCdxmlCurve(curve, graphicId, warnings, curveColors,
     graphic.data.artPathKind === "arc" && !graphic.data.pathControlPoint);
-  warnForGraphicCdxmlLimitations(graphic, warnings);
   if (isSemanticReactionArrowGraphic(graphic)) {
     return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings, curveColors);
   }
@@ -2011,10 +2027,12 @@ function warnForGenericGraphicMarkerLoss(
 
 function warnForGraphicCdxmlLimitations(
   graphic: GraphicObject,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  exportsCurve = false
 ): void {
   const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
-  if (typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
+  // Curves encode custom colors and path controls themselves; these warnings apply only to graphics.
+  if (!exportsCurve && typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
     warnings.push({
       code: "cdxml.graphic_color_approximation",
       message: `Native graphic color "${color}" is not in the standard ChemDraw color table and is preserved exactly only in the embedded ChemDraft payload.`,
@@ -2048,7 +2066,7 @@ function warnForGraphicCdxmlLimitations(
     });
   }
 
-  if (graphic.data.pathD && !graphic.data.artPathKind) {
+  if (!exportsCurve && graphic.data.pathD && !graphic.data.artPathKind) {
     warnings.push({
       code: "cdxml.graphic_custom_path_payload_only",
       message: "Native custom graphic paths are preserved exactly only in the embedded ChemDraft payload.",
@@ -2056,7 +2074,7 @@ function warnForGraphicCdxmlLimitations(
     });
   }
 
-  if (graphic.data.pathControlPoint) {
+  if (!exportsCurve && graphic.data.pathControlPoint) {
     warnings.push({
       code: "cdxml.graphic_path_control_payload_only",
       message: "Native path bend control points are preserved exactly only in the embedded ChemDraft payload.",

@@ -66,6 +66,9 @@ page `BoundingBox`, without conflicting fixed `Width`/`Height` or page-count att
 visible coordinates are negative, every visible coordinate on that page receives the same offset,
 including nested molecule labels, graphics, curve controls, arrow axes and bracket geometry.
 Content already inside letter stays at its original position on a letter page.
+If the fitted offset, extent, or shifted coordinates would overflow, `cdxml.page_fit_unrepresentable`
+warns and the entire page keeps its original coordinates. The page remains finite and at least letter
+size, retaining representable unshifted extents where possible; some content may lie outside it.
 
 Page attribute `attrib4346` (user-defined binary CDX property `0x4346`) records the offset as
 hex-encoded UTF-8 JSON `[dx,dy]` in CDXML points, independently of the native payload. ChemDraft
@@ -94,6 +97,8 @@ Paths without a faithful supported representation, including uncached variable-w
 outlines and unsupported SVG syntax, are omitted from the visible layer with `cdxml.graphic_not_written`,
 naming the object and explicitly saying it is **NOT written**. The embedded native payload retains
 all native geometry exactly; no native schema fields were added.
+Curves receive the same styling limitation warnings as other native graphics, including non-oval
+gloss and reflection; those effects survive exactly only in embedded saves.
 
 CDXML text and attributes decode decimal and hexadecimal numeric character references and the five
 XML entities once. Named HTML entities remain literal. Text CR and attribute CR/TAB/LF export as
