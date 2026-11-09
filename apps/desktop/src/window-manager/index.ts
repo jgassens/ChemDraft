@@ -304,9 +304,18 @@ export async function closeToolsetPopoverWindow(toolsetId: string, openedAt: num
     return;
   }
 
+  const opening = { openedAt, generation };
+  const isCurrent = () => {
+    const current = latestToolsetPopoverOpenings.get(toolsetId);
+    return openedAt !== undefined && current !== undefined && compareToolsetPopoverOpenings(current, opening) === 0;
+  };
+  if (!isCurrent()) return;
   const { invoke } = await import("@tauri-apps/api/core");
+  // Importing is asynchronous too. Validate immediately before sending the destructive IPC.
+  if (!isCurrent()) return;
   await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
   if (openedAt !== undefined) await notifyToolsetPopoverClosed(toolsetId, openedAt, generation);
+  if (isCurrent()) latestToolsetPopoverOpenings.delete(toolsetId);
 }
 
 /** OS deactivation and native hides need not pass through the renderer's close notification. */
@@ -376,6 +385,9 @@ export interface ToolsetPopoverOpening {
   generation?: number;
 }
 let popoverGeneration = 0;
+// Owner-local identities are recorded synchronously, before content delivery can yield to a close.
+// Replays of an older opening must not make its delayed close current again.
+const latestToolsetPopoverOpenings = new Map<string, ToolsetPopoverOpening>();
 /** Allocate once at the originating press; startup replays retain this sequence. */
 export function newToolsetPopoverOpening(): Required<ToolsetPopoverOpening> {
   return { openedAt: toolsetPopoverTimestamp(), generation: ++popoverGeneration };
@@ -482,6 +494,10 @@ export async function setToolsetPopoverContent(
     return;
   }
 
+  const previous = latestToolsetPopoverOpenings.get(toolsetId);
+  if (!previous || compareToolsetPopoverOpenings(content, previous) >= 0) {
+    latestToolsetPopoverOpenings.set(toolsetId, { openedAt: content.openedAt, generation: content.generation });
+  }
   const { emit } = await import("@tauri-apps/api/event");
   await emit<ToolsetPopoverContentPayload>(TOOLSET_POPOVER_CONTENT_EVENT, { toolsetId, anchor, ...content }).catch(
     () => undefined

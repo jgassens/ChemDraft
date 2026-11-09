@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { closeToolsetPopoverWindow, notifyToolsetPopoverClosed, setToolsetPopoverContent } from "./index";
+import { closeToolsetPopoverWindow, notifyToolsetPopoverClosed, setToolsetPopoverContent, toolsetPopoverTimestamp } from "./index";
 import { installPopoverEscapeRouting } from "./popoverEscape";
 
 const native = vi.hoisted(() => ({
@@ -215,18 +215,21 @@ describe.each(["macos", "windows"])("native flyout lifecycle on %s", () => {
   });
 
   it("a close resolving after a newer open closes only its original opening", async () => {
-    await open(100);
+    // Use real opening times: the manager retains the newest identity across owner lifetimes.
+    const openedAt = toolsetPopoverTimestamp();
+    const newerOpenedAt = openedAt + 1;
+    await open(openedAt);
     let finishClose!: () => void;
     native.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { finishClose = resolve; }));
-    const closing = closeToolsetPopoverWindow("core.art", 100);
+    const closing = closeToolsetPopoverWindow("core.art", openedAt);
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("close_toolset_popover", { toolsetId: "core.art" }));
-    await open(200);
+    await open(newerOpenedAt);
     finishClose(); await closing;
-    expect(native.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-closed", { toolsetId: "core.art", openedAt: 100 });
+    expect(native.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-closed", { toolsetId: "core.art", openedAt });
     await escape();
     expect(canvasEscape).not.toHaveBeenCalled();
     expect(native.emit).toHaveBeenCalledWith("chemdraft://dismiss-toolset-popovers", {
-      requestedAt: expect.any(Number), reason: "escape", openings: [{ toolsetId: "core.art", openedAt: 200, generation: undefined }]
+      requestedAt: expect.any(Number), reason: "escape", openings: [{ toolsetId: "core.art", openedAt: newerOpenedAt, generation: undefined }]
     });
     await escape();
     expect(canvasEscape).toHaveBeenCalledTimes(1);
