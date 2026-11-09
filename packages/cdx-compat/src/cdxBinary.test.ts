@@ -1,8 +1,9 @@
 // Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw), Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Modified for ChemDraft: ported codec checks to Vitest with typed-property coverage and specific hostile-input diagnostics.
 
 import { describe, expect, it } from "vitest";
-import { MAGIC, readCdx, writeCdx, type CdxElement, type CdxWarning } from "./cdxBinary";
-import { PROPS } from "./cdxTags";
+import { XMLParser } from "fast-xml-parser";
+import { CDX_POINT3D_ORDER_ATTRIBUTE, MAGIC, cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement, type CdxWarning } from "./cdxBinary";
+import { OBJECTS, PROPS } from "./cdxTags";
 import { importCdx } from "./index";
 
 const u16 = (v: number) => [v & 255, v >>> 8 & 255];
@@ -64,13 +65,13 @@ describe("binary CDX headers and reference codec cases", () => {
     expect(readCdx(bytes).kids[0].kids[0].kids[0].text).toBe("A → B");
   });
 
-  it.each(PROPS.filter((p) => p[2] === "p3"))("uses spec z/y/x bytes for %s (%s)", (tag, name) => {
-    // Independent fixed-point bytes for x=40, y=100, z=-2, in specification order.
-    const bytes = [0, 0, 254, 255, 0, 0, 100, 0, 0, 0, 40, 0];
+  it.each(PROPS.filter((p) => p[2] === "p3"))("uses x/y/z bytes for %s (%s)", (tag, name) => {
+    // Independent fixed-point bytes for x=40, y=100, z=-2; 2D's y/x order does not apply.
+    const bytes = [0, 0, 40, 0, 0, 0, 100, 0, 0, 0, 254, 255];
     expect(readCdx(file(property(tag, bytes))).attrs[name]).toBe("40 100 -2");
     expect(writeCdx(element("CDXML", { [name]: "40 100 -2" }))).toEqual(file(property(tag, bytes)));
     const big = new Uint8Array([...ascii(MAGIC), 1, 2, 3, 4, ...Array(10).fill(0), 128, 0, 0, 0, 0, 0,
-      ...u16(tag).reverse(), 0, 12, 255, 254, 0, 0, 0, 100, 0, 0, 0, 40, 0, 0, 0, 0]);
+      ...u16(tag).reverse(), 0, 12, 0, 40, 0, 0, 0, 100, 0, 0, 255, 254, 0, 0, 0, 0]);
     expect(readCdx(big).attrs[name]).toBe("40 100 -2");
   });
 
@@ -88,6 +89,70 @@ describe("binary CDX headers and reference codec cases", () => {
   });
 });
 
+describe("Point3D binary interchange and legacy provenance", () => {
+  const points: [number, string, number[]][] = [
+    [0x0207, "Head3D", [100, 200, 0]],
+    [0x0208, "Tail3D", [-50, 200, 9]],
+    [0x020d, "Center3D", [25, 175, -12]],
+    [0x020e, "MajorAxisEnd3D", [75, 175, 3]],
+    [0x020f, "MinorAxisEnd3D", [25, 225, -4]]
+  ];
+  const pointProperties = (legacy = false) => points.map(([tag, , xyz]) =>
+    property(tag, (legacy ? [...xyz].reverse() : xyz).flatMap(coord)));
+  const pointAttributes = Object.fromEntries(points.map(([, name, xyz]) => [name, xyz.join(" ")]));
+
+  it("decodes independently built arrow bytes to exact CDXML x/y/z attributes", () => {
+    const bytes = file(object(0x8001, 1, object(0x8021, 2, ...pointProperties())));
+    const arrow = readCdx(bytes).kids[0].kids[0];
+    expect(arrow.attrs).toEqual({ id: "2", ...pointAttributes });
+    expect(cdxElementToCdxml(arrow)).toBe('<arrow id="2" Head3D="100 200 0" Tail3D="-50 200 9" Center3D="25 175 -12" MajorAxisEnd3D="75 175 3" MinorAxisEnd3D="25 225 -4"></arrow>');
+  });
+
+  it("writes CDXML arrow and orbital attributes as independent x/y/z byte sequences", () => {
+    const attrs = Object.entries(pointAttributes).map(([name, value]) => `${name}="${value}"`).join(" ");
+    const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false });
+    const source = cdxElementFromOrderedTree(parser.parse(`<CDXML><page id="1"><arrow id="2" ${attrs}/><graphic id="3" GraphicType="Orbital" OrbitalType="p" ${attrs}/></page></CDXML>`));
+    const bytes = writeCdx(source);
+    expect(bytes).toEqual(file(object(0x8001, 1,
+      object(0x8021, 2, ...pointProperties()),
+      object(0x8007, 3, property(0x0a00, u16(5)), property(0x0a05, u16(3)), ...pointProperties()))));
+    expect(readCdx(bytes)).toEqual(source);
+    expect(cdxElementToCdxml(readCdx(bytes))).toBe(cdxElementToCdxml(source));
+  });
+
+  it.each([[100, 200, 0], [-40.25, 100.5, -2.75]])("uses x/y/z for all six Point3D tags on every codec object (%s, %s, %s)", (x, y, z) => {
+    const props = PROPS.filter(([, , kind]) => kind === "p3");
+    expect(props.map(([, name]) => name)).toEqual(["xyz", "Head3D", "Tail3D", "Center3D", "MajorAxisEnd3D", "MinorAxisEnd3D"]);
+    const expected = Object.fromEntries(props.map(([, name]) => [name, `${x} ${y} ${z}`]));
+    for (const [tag, name] of Object.entries(OBJECTS)) {
+      const bytes = file(object(Number(tag), 1, ...props.map(([tag]) => property(tag, [x, y, z].flatMap(coord)))));
+      expect(readCdx(bytes).kids[0], name).toMatchObject({ name, attrs: expected });
+      expect(writeCdx(element("CDXML", {}, [element(name, { id: "1", ...expected })])), name).toEqual(bytes);
+    }
+  });
+
+  it.each(["creator", "envelope"])("restores old ChemDraft Point3D from %s metadata after child objects", provenance => {
+    const metadata = provenance === "creator" ? property(0x0003, [0, 0, ...ascii("ChemDraft")])
+      : property(0x4344, ascii(JSON.stringify({ format: "org.chemdraft/cdx-envelope.v1", tags: [] })));
+    const props = PROPS.filter(([, , kind]) => kind === "p3");
+    const bytes = file(object(0x8001, 1, ...Object.entries(OBJECTS).map(([tag], index) =>
+      object(Number(tag), index + 2, ...props.map(([tag]) => property(tag, [-2, 100, 40].flatMap(coord))),
+        property(0x0200, [100, 40].flatMap(coord))))), metadata);
+    const decoded = readCdx(bytes);
+    const expected = Object.fromEntries(props.map(([, name]) => [name, "40 100 -2"]));
+    for (const child of decoded.kids[0].kids) expect(child.attrs).toMatchObject({ ...expected, p: "40 100" });
+    const rewritten = readCdx(writeCdx(decoded));
+    expect(rewritten.attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+    expect(rewritten.kids).toEqual(decoded.kids);
+    expect(decoded.attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBeUndefined(); // no input-tree mutation
+  });
+
+  it.each(["", "Independent CDX producer", "ChemDraft custom producer"])("does not infer legacy order for unrecognized provenance %j", creator => {
+    const bytes = file(property(0x0003, [0, 0, ...ascii(creator)]), object(0x8021, 2, ...pointProperties()));
+    expect(readCdx(bytes).kids[0].attrs).toEqual({ id: "2", ...pointAttributes });
+  });
+});
+
 // One independently constructed binary property for every codec kind in the source tag table.
 const samples: Record<string, { bytes: number[]; expected?: string; extra?: number[][] }> = {
   raw: { bytes: [1, 255], expected: "|x|01FF" }, str: { bytes: [0, 0, ...ascii("ChemDraft")], expected: "ChemDraft" },
@@ -97,7 +162,7 @@ const samples: Record<string, { bytes: number[]; expected?: string; extra?: numb
   fonttable: { bytes: [...u16(1), ...u16(1), ...u16(3), ...u16(10000), ...u16(5), ...ascii("Arial")] },
   colortable: { bytes: [...u16(1), ...u16(65535), ...u16(0), ...u16(0)] },
   p2: { bytes: [...coord(20), ...coord(10)], expected: "10 20" },
-  p3: { bytes: [...coord(30), ...coord(20), ...coord(10)], expected: "10 20 30" },
+  p3: { bytes: [...coord(10), ...coord(20), ...coord(30)], expected: "10 20 30" },
   rect: { bytes: [...coord(2), ...coord(1), ...coord(4), ...coord(3)], expected: "1 2 3 4" },
   alpha: { bytes: u16(65535), expected: "1" }, e16: { bytes: u16(1), expected: "Element" }, e8: { bytes: [1], expected: "Left" },
   elist: { bytes: [...u16(-2), ...u16(6), ...u16(7)], expected: "NOT 6 7" },

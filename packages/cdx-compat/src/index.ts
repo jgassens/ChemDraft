@@ -779,6 +779,8 @@ function visitVisibleCoordinates(tree: OrderedXmlTree, visit: (x: number, y: num
       if (!values.length || values.length % stride || values.some(value => !Number.isFinite(value))) continue;
       let changed = false;
       for (let index = 0; index < values.length; index += stride) {
+        // Point3D text is x/y/z: page fitting and origin restoration translate only x/y.
+        // Depth also stays untouched when this visitor moves/resizes preserved source graphics.
         const next = visit(values[index], values[index + 1]);
         if (next) { values[index] = next.x; values[index + 1] = next.y; changed = true; }
       }

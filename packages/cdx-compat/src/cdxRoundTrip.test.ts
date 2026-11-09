@@ -3,7 +3,7 @@ import { cdxmlFixtures } from "@chemdraft/fixtures";
 import { createEmptyDocument, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { XMLParser } from "fast-xml-parser";
-import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
+import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, CDX_POINT3D_ORDER_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { ChemDraftObjectTags, exportDocumentToCdxml, exportDocumentToCdx, importCdx, legacyVisibleCdxmlHash, openChemDraftPayload, visibleHashForCdxml } from "./index";
 import { sha256Hex } from "./sha256";
 
@@ -110,6 +110,41 @@ describe("interchange graphics and page extent", () => {
   const documentWithGraphic = (graphic: GraphicObject) => {
     const document = createEmptyDocument(); document.pages[0].objects = [graphic]; return document;
   };
+
+  it("reopens native arrows, arcs, orbitals and ovals with every graphic's original geometry", () => {
+    const document = requireDocument(openChemDraftPayload(wrap(`
+      <arrow id="2" BoundingBox="40 96 120 104" Head3D="120 100 7" Tail3D="40 100 -9" ArrowheadHead="Full"/>
+      <arrow id="3" BoundingBox="40 160 120 240" Head3D="80 240 5" Tail3D="120 200 -6" Center3D="80 200 11" MajorAxisEnd3D="120 200 12" MinorAxisEnd3D="80 240 13" AngularSize="90" ArrowheadHead="Full"/>
+      <graphic id="4" GraphicType="Orbital" OrbitalType="p" Center3D="240 50 17" MajorAxisEnd3D="280 50 -23" MinorAxisEnd3D="240 80 39"/>
+      <graphic id="5" GraphicType="Oval" Center3D="330 160 19" MajorAxisEnd3D="360 160 -29" MinorAxisEnd3D="330 180 43"/>
+    `)));
+    const objects = document.pages[0].objects as GraphicObject[];
+    expect(objects.map(object => object.type)).toEqual(["graphic", "graphic", "graphic", "graphic"]);
+    expect(objects[0].data).toMatchObject({ lineStart: { x: 40 * 4 / 3, y: 100 * 4 / 3 }, lineEnd: { x: 120 * 4 / 3, y: 100 * 4 / 3 } });
+    expect(objects[1].data).toMatchObject({ artPathKind: "arc", arcStartRadians: 0, arcSweepRadians: Math.PI / 2 });
+    expect(objects[2]).toMatchObject({ x: expect.closeTo(200 * 4 / 3, 8), y: expect.closeTo(20 * 4 / 3, 8),
+      width: expect.closeTo(80 * 4 / 3, 8), height: expect.closeTo(60 * 4 / 3, 8) });
+    expect(objects[3]).toMatchObject({ graphicKind: "ellipse", x: expect.closeTo(300 * 4 / 3, 8), y: expect.closeTo(140 * 4 / 3, 8),
+      width: expect.closeTo(60 * 4 / 3, 8), height: expect.closeTo(40 * 4 / 3, 8) });
+    const exported = exportDocumentToCdx(document);
+    expect(readCdx(exported.bytes).attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+    const reopened = requireDocument(importCdx(exported.bytes));
+    expect(reopened.pages[0].objects).toHaveLength(objects.length);
+    reopened.pages[0].objects.forEach((object, index) => {
+      const before = objects[index];
+      expect(object.type).toBe("graphic");
+      if (object.type !== "graphic") throw new Error("Expected graphic fixture");
+      for (const key of ["x", "y", "width", "height"] as const) expect(object[key]).toBeCloseTo(before[key], 3);
+      for (const key of ["lineStart", "lineEnd", "arcCenter"] as const) {
+        if (!before.data[key]) continue;
+        expect(object.data[key]?.x).toBeCloseTo(before.data[key].x, 3);
+        expect(object.data[key]?.y).toBeCloseTo(before.data[key].y, 3);
+      }
+      for (const key of ["arcStartRadians", "arcSweepRadians"] as const) {
+        if (before.data[key] !== undefined) expect(object.data[key]).toBeCloseTo(before.data[key], 4);
+      }
+    });
+  });
 
   it("never writes an Unknown graphic for any native graphic kind or art path kind", () => {
     const kinds = GraphicObjectSchema._def.schema.shape.graphicKind._def.innerType.options;
@@ -241,7 +276,7 @@ describe("interchange graphics and page extent", () => {
       <t id="25" p="40 -70"><s>  label  </s></t></group>
       <curve id="26" CurvePoints="10 -30 30 -80 60 -80 90 -30" ArrowheadHead="Full"/>
       <arrow id="27" Tail3D="100 -100 0" Head3D="160 -100 0" ArrowheadHead="Full"/>
-      ${sourceGraphic(28, 'OrbitalType="p" OvalType="Shaded"').replace('20 30 80 90', '180 -80 240 -20')}
+      ${sourceGraphic(28, 'OrbitalType="p" OvalType="Shaded" xyz="210 -50 41" Center3D="210 -50 17" MajorAxisEnd3D="240 -50 -23" MinorAxisEnd3D="210 -20 39"').replace('20 30 80 90', '180 -80 240 -20')}
       <graphic id="29" GraphicType="Bracket" BracketType="Square" BoundingBox="250 -120 260 0"/>`);
     const original = requireDocument(openChemDraftPayload(source));
     const xmlExport = exportDocumentToCdxml(original, { embedNativePayload: false }).contents;
@@ -253,11 +288,22 @@ describe("interchange graphics and page extent", () => {
     const atom = attributes(xml, "n")[0].p.split(" ").map(Number);
     expect(atom[0] + 40).toBeCloseTo(dx, 4); expect(atom[1] + 120).toBeCloseTo(dy, 4);
     expect(attributes(xml, "arrow")[0].Tail3D.split(" ").slice(0, 2).map(Number)).toEqual([100 + dx, -100 + dy]);
+    const orbital = attributes(xml, "graphic").find(graphic => graphic.GraphicType === "Orbital")!;
+    expect(orbital.xyz.split(" ").map(Number)).toEqual([210 + dx, -50 + dy, 41]);
+    expect(orbital.Center3D.split(" ").map(Number)).toEqual([210 + dx, -50 + dy, 17]);
+    expect(orbital.MajorAxisEnd3D.split(" ").map(Number)).toEqual([240 + dx, -50 + dy, -23]);
+    expect(orbital.MinorAxisEnd3D.split(" ").map(Number)).toEqual([210 + dx, -20 + dy, 39]);
     const reopened = requireDocument(binary ? importCdx(exportDocumentToCdx(original).bytes) : openChemDraftPayload(xml));
     expect(reopened.pages[0].objects.map(object => object.type)).toEqual(original.pages[0].objects.map(object => object.type));
     reopened.pages[0].objects.forEach((object, index) => {
       const before = original.pages[0].objects[index];
       expect(object.x).toBeCloseTo(before.x, 3); expect(object.y).toBeCloseTo(before.y, 3);
+      if (object.type === "graphic" && before.type === "graphic") {
+        expect(object.width).toBeCloseTo(before.width, 3); expect(object.height).toBeCloseTo(before.height, 3);
+        expect(object.data).toEqual(before.data);
+        if (before.graphicKind === "unknown") expect(object.compatibility?.unknown.cdxmlGraphicAttributes)
+          .toEqual(before.compatibility?.unknown.cdxmlGraphicAttributes);
+      }
       if (object.type === "molecule" && before.type === "molecule") {
         object.atoms.forEach((atom, index) => {
           expect(atom.x).toBeCloseTo(before.atoms[index].x, 3);
@@ -360,12 +406,12 @@ function compareDocuments(actual: ChemDraftDocument, expected: ChemDraftDocument
 }
 
 describe("chemical and drawing round trips", () => {
-  it("imports an independently constructed horizontal arrow with spec z/y/x coordinates", () => {
+  it("imports an independently constructed horizontal arrow with x/y/z coordinates", () => {
     const bytes = new Uint8Array(Buffer.from([
       "566A4344303130300403020100000000000000000000", // Header.
       "008000000000", "018001000000", "218003000000", // Document, page, arrow.
-      "07020C00000000000000640000007800", // Head: z=0, y=100, x=120.
-      "08020C00000000000000640000002800", // Tail: z=0, y=100, x=40.
+      "07020C00000078000000640000000000", // Head: x=120, y=100, z=0.
+      "08020C00000028000000640000000000", // Tail: x=40, y=100, z=0.
       "000000000000"
     ].join(""), "hex"));
     const document = requireDocument(importCdx(bytes));
@@ -433,6 +479,43 @@ describe("chemical and drawing round trips", () => {
 
 describe("native payload Save As and interchange Export", () => {
   const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
+
+  it.each(["ChemDraft", "Custom producer"])("opens old swapped Point3D saves from %s with both integrity checks intact", creationProgram => {
+    const source = wrap('<arrow id="2" Head3D="120 100 0" Tail3D="40 100 0"/><graphic id="3" GraphicType="Orbital" Center3D="240 50 17" MajorAxisEnd3D="280 50 -23" MinorAxisEnd3D="240 80 39"/>')
+      .replace('CreationProgram="ChemDraft"', `CreationProgram="${creationProgram}"`);
+    const original = requireDocument(openChemDraftPayload(source));
+    const current = readCdx(exportDocumentToCdx(original, { embedNativePayload: true, creationProgram }).bytes);
+    const envelope = JSON.parse(Buffer.from(current.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+    delete envelope.visibleHashVersion;
+    envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = legacyVisibleCdxmlHash(source);
+    // Build released-writer bytes independently, including z/y/x points and y/x rectangles.
+    const u16 = (n: number) => [n & 255, n >>> 8 & 255];
+    const u32 = (n: number) => [...u16(n), ...u16(n >>> 16)];
+    const property = (tag: number, data: number[]) => [...u16(tag), ...u16(data.length), ...data];
+    const object = (tag: number, id: number, ...children: number[][]) => [...u16(tag), ...u32(id), ...children.flat(), 0, 0];
+    const point = (tag: number, x: number, y: number, z: number) => property(tag, [z, y, x].flatMap(n => u32(n * 65536)));
+    const header = [...Buffer.from("VjCD0100"), 4, 3, 2, 1, ...Array(10).fill(0)];
+    const body = [property(0x0003, [0, 0, ...Buffer.from(creationProgram)]),
+      object(0x8001, 1, property(0x0204, [0, 0, 792, 612].flatMap(n => u32(n * 65536))),
+        object(0x8021, 2, point(0x0207, 120, 100, 0), point(0x0208, 40, 100, 0)),
+        object(0x8007, 3, property(0x0a00, u16(5)), point(0x020d, 240, 50, 17),
+          point(0x020e, 280, 50, -23), point(0x020f, 240, 80, 39)))];
+    envelope.visibleBinaryHash = sha256Hex(new Uint8Array([...header, ...object(0x8000, 0, ...body)]));
+    const bytes = new Uint8Array([...header, ...object(0x8000, 0, ...body,
+      property(0x4344, [...Buffer.from(JSON.stringify(envelope))]))]);
+    const opened = importCdx(bytes);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toEqual(original);
+    const visible = structuredClone(readCdx(bytes));
+    delete visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    expect(legacyVisibleCdxmlHash(cdxElementToCdxml(visible))).toBe(legacyVisibleCdxmlHash(source));
+    compareDocuments(requireDocument(openChemDraftPayload(cdxElementToCdxml(visible))), original);
+    const resaved = exportDocumentToCdx(requireDocument(opened), { embedNativePayload: true });
+    expect(readCdx(resaved.bytes).attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+    expect(importCdx(resaved.bytes).document).toEqual(original);
+  });
 
   it("omits the v2 marker only for interchange and rejects embedded visible edits even after marker removal in CDXML and CDX", () => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>A&amp;#10;B</s></t>')));

@@ -13,6 +13,10 @@ export interface CdxElement {
 export interface CdxWarning { code: string; message: string; sourceObjectId?: string }
 // Bit 14 identifies the user-defined envelope property interpreted by index.ts.
 export const CDX_NATIVE_ENVELOPE_ATTRIBUTE = "attrib4344";
+// User-defined root property 0x4347: UTF-8 "xyz" identifies the corrected Point3D writer.
+// Kept in the visible layer (and both integrity hashes), independently of the native envelope.
+export const CDX_POINT3D_ORDER_ATTRIBUTE = "attrib4347";
+const POINT3D_XYZ = "|x|78797A";
 const fmt = (n: number) => { const s = n.toFixed(2); return s === "-0.00" ? "0" : s.endsWith(".00") ? s.slice(0, -3) : s; };
 
 export const MAGIC = "VjCD0100";
@@ -274,6 +278,22 @@ function unhex(s: string): Uint8Array | undefined {
 
 export const isCdx = (b: Uint8Array) => b.length >= 8 && MAGIC.split("").every((c, i) => b[i] === c.charCodeAt(0));
 
+function isLegacyChemDraftCdx(root: CdxElement): boolean {
+  if (root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] !== undefined) return false;
+  if (root.attrs.CreationProgram === "ChemDraft") return true;
+  // Custom CreationProgram strings were allowed on embedded saves too. Recognize only our
+  // namespaced envelope, never infer coordinate order from geometry or another producer's name.
+  const encoded = root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+  if (!encoded?.startsWith("|x|")) return false;
+  const bytes = unhex(encoded.slice(3));
+  if (!bytes) return false;
+  try {
+    const envelope: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return typeof envelope === "object" && envelope !== null && "format" in envelope
+      && envelope.format === "org.chemdraft/cdx-envelope.v1";
+  } catch { return false; }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Reading.
 
@@ -378,7 +398,8 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "charge": { const v = n === 4 ? d.getInt32(0, little) / 2 ** 24 : int(d, true); if (v !== undefined) a[name] = String(n === 4 ? +v.toFixed(4) : v); return; }
       case "coord": if (n === 4) a[name] = num(coord(d, 0)); return;
       case "p2": if (n === 8) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))}`; return;
-      case "p3": if (n === 12) a[name] = `${num(coord(d, 8))} ${num(coord(d, 4))} ${num(coord(d, 0))}`; return;
+      // Point3D is x/y/z, unlike Point2D's y/x. Matches the Octet Draw codec credited above.
+      case "p3": if (n === 12) a[name] = `${num(coord(d, 0))} ${num(coord(d, 4))} ${num(coord(d, 8))}`; return;
       case "rect": if (n === 16) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))} ${num(coord(d, 12))} ${num(coord(d, 8))}`; return;
       case "angle": { const v = n === 4 ? d.getInt32(0, little) / 65536 : n === 2 ? d.getInt16(0, little) / 10 : undefined; if (v !== undefined) a[name] = exact ? String(v) : String(+v.toFixed(2)); return; }
       case "deg10": { const v = int(d, true); if (v !== undefined) a[name] = String(v / 10); return; }
@@ -505,6 +526,17 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
   if (tag !== 0x8000 && (tag || id)) fail("invalid document object tag 0x" + tag.toString(16).padStart(4, "0"));
   root = { name: "CDXML", attrs: Object.create(null), kids: [], text: "" };
   const result = object(0x8000, id, 0);
+  // Producer/envelope properties can follow child objects, so select the legacy convention
+  // only after reading the whole document. This also preserves old envelopes' visible hashes.
+  if (isLegacyChemDraftCdx(result)) {
+    const restore = (element: CdxElement) => {
+      for (const [name, value] of Object.entries(element.attrs)) {
+        if (byName.get(name)?.kind === "p3") element.attrs[name] = value.split(" ").reverse().join(" ");
+      }
+      element.kids.forEach(restore);
+    };
+    restore(result);
+  }
   if (integrity && envelopeRange) {
     // Hash all raw bytes except the root envelope, including both text copies and skipped properties.
     const [start, end] = envelopeRange, visible = new Uint8Array(bytes.length - (end - start));
@@ -551,6 +583,10 @@ const fixed = (v: number) => Math.round(v * 65536);
 export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Array {
   const emitWarning = warningSink(warnings);
   root = prepareCdxTree(root, emitWarning);
+  // A named producer or native envelope could otherwise identify this newly written file as
+  // legacy on reopen. prepareCdxTree made a copy, so adding the marker never mutates the caller.
+  if (root.attrs.CreationProgram !== undefined || root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] !== undefined
+    || root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] !== undefined) root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] = POINT3D_XYZ;
   const warn = (x: CdxElement, detail: string) => emitWarning({ code: "cdx.unencodable_data", message: "CDX export: " + detail + " in " + x.name + " object " + (x.attrs.id ?? "0") + " was omitted", sourceObjectId: x.attrs.id });
   const encodingLoss = (x: CdxElement) => (detail: string) => emitWarning({ code: "cdx.text_encoding_loss", message: `CDX export: ${detail} in ${x.name} object ${x.attrs.id ?? "0"}`, sourceObjectId: x.attrs.id });
   const fonts = new Map<number, number>();
@@ -614,7 +650,7 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
       case "charge": return r === undefined ? undefined : Number.isInteger(r) && Math.abs(r) < 128 ? le(1, r) : le(4, Math.round(r * 2 ** 24));
       case "coord": return r === undefined ? undefined : le(4, fixed(r));
       case "p2": return list.length >= 2 && list[0] !== undefined && list[1] !== undefined ? le(4, fixed(list[1]), fixed(list[0])) : undefined;
-      case "p3": return list.length >= 2 && list.slice(0, 3).every((x) => x !== undefined) ? le(4, fixed(list[2] ?? 0), fixed(list[1]!), fixed(list[0]!)) : undefined;
+      case "p3": return list.length >= 2 && list.slice(0, 3).every((x) => x !== undefined) ? le(4, fixed(list[0]!), fixed(list[1]!), fixed(list[2] ?? 0)) : undefined;
       case "rect": return list.length === 4 && list.every((x) => x !== undefined) ? le(4, fixed(list[1]!), fixed(list[0]!), fixed(list[3]!), fixed(list[2]!)) : undefined;
       case "angle": return r === undefined ? undefined : le(4, fixed(r));
       case "deg10": return r === undefined ? undefined : le(2, Math.round(r * 10));

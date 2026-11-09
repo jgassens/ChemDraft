@@ -108,7 +108,23 @@ The binary codec accepts either byte order, fixed-point coordinates and legacy/U
 Limits are 64 MB, 64 nested child-object levels, one million objects and one million properties.
 Diagnostics retain at most 1000 warnings plus one summary counting omitted warnings. A malformed typed
 property is skipped with a warning; unsupported binary properties retain their raw bytes where possible.
-Point3D bytes follow the public specification's z/y/x order. Legacy text uses the declared font charset;
+Point3D bytes are x/y/z, matching independent CDX/CDXML twins and the Octet Draw codec. This applies
+to atom `xyz` and every object's `Head3D`, `Tail3D`, `Center3D`, `MajorAxisEnd3D` and `MinorAxisEnd3D`.
+Point2D and rectangle bytes retain their separate y/x convention. Page fitting and origin restoration
+translate only the x/y components of 3D attributes, preserving z. `extent3D` and `CurvePoints3D`
+remain opaque binary properties; this codec does not decode their components.
+
+Older ChemDraft CDX wrote Point3D in z/y/x order. Files without root property `0x4347` are read with
+that legacy order only when `CreationProgram` is exactly `ChemDraft` or their native envelope has
+format `org.chemdraft/cdx-envelope.v1`. Detection happens after the entire tree is read, including
+metadata following child objects. New binary output with producer metadata or an envelope carries
+`attrib4347="|x|78797A"` (UTF-8 `xyz`); it participates in both visible integrity hashes. Resaving a
+legacy file writes corrected x/y/z bytes. Old interchange files with a custom `CreationProgram`
+and no native envelope cannot be distinguished reliably and use x/y/z; their 3D geometry may open
+with x/z swapped. Removing provenance or the order marker in an external editor can likewise lose
+this distinction. Native document data and CDXML coordinate meanings are unchanged.
+
+Legacy text uses the declared font charset;
 zero-style strings use ISO Latin-1. Unrepresentable characters produce specific encoding warnings.
 Compatibility remains fixture-driven, with the same visible-subset limits as CDXML. Doublet and
 triplet atom radicals round-trip; electron states the native model cannot express are refused with
