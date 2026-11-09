@@ -331,9 +331,9 @@ before notarization/stapling has finalized the DMG bytes.
 `macos-15-intel`, dispatched manually or for relevant PRs. It asserts x86_64,
 uses the pinned Rust toolchain and x64 Temurin 21, builds/smokes OPSIN, runs the
 three engine3d smokes only when the committed Intel sidecar is Mach-O, builds an
-app without a DMG, and runs the release gate. While the sidecar is a placeholder,
-it prints a notice and uses `--allow-sidecar-placeholder` only for that CI check.
-Never use that exception for release approval. The job is not a required check;
+app without a DMG, and runs the release gate. It fails closed unless the committed
+sidecar is a real x86_64 Mach-O binary, then always runs all three engine3d smokes.
+The job is not a required check;
 branch protection is managed separately. It has no signing/notarization secrets.
 Its runner availability and successful full build still need an actual CI run.
 

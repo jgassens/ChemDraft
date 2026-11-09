@@ -1,7 +1,6 @@
 // Parse feeds as XML, retaining raw item text so published signatures/entries never get rewritten.
 import { JSDOM } from "jsdom";
 import { targetArchitecture } from "./macos-mach-o.mjs";
-import { feedForTarget } from "./verify-macos-app.mjs";
 
 const SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle";
 export const NOTES_PREFIX = "https://raw.githubusercontent.com/jgassens/ChemDraft/main/";
@@ -11,8 +10,7 @@ export function appcastConfiguration(target) {
   return {
     architecture,
     filename: architecture === "arm64" ? "appcast.xml" : "appcast-intel.xml",
-    notesDirectory: architecture === "arm64" ? "release-notes/macos" : "release-notes/macos-intel",
-    feedURL: feedForTarget(target)
+    notesDirectory: architecture === "arm64" ? "release-notes/macos" : "release-notes/macos-intel"
   };
 }
 
