@@ -3,7 +3,7 @@ import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { moleculeSmiles, insertSmilesMolecule } from "@chemdraft/document-workflow-core";
 import { describe, expect, it } from "vitest";
-import { applyPatches, ArrowAttachmentSchema, serializeDocument, deserializeDocument, type TextObject } from "@chemdraft/chem-core";
+import { applyPatches, ArrowAttachmentSchema, serializeDocument, deserializeDocument, type TextObject, type DocumentObject } from "@chemdraft/chem-core";
 import { setReactionArrowConditions, reactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { resolveArrowAttachments, reactionConditionsFrame, arrowAttachmentPoint } from "@chemdraft/layout-engine";
 import { editGraphicPathGeometry } from "@chemdraft/art-engine";
@@ -22,6 +22,24 @@ const draft = { side: "above" as const, spans: [{ text: "H", script: "normal" as
   { text: "2", script: "subscript" as const }, { text: "O\n80 °C, 2 h", script: "normal" as const }] };
 const label = (d: ReturnType<typeof fixture>["document"]) => d.pages[0].objects.find((o): o is TextObject => o.type === "text")!;
 describe("conditions on ordinary arrows", () => {
+  it("deleting an arrow preserves molecules and refuses crafted attachments instead of deleting chemistry", () => {
+    const { document, arrow } = fixture();
+    const molecule = { id: "molecule", type: "molecule" as const, x: 40, y: 40, width: 22, height: 0, rotation: 0,
+      style: {}, structureFormat: "smiles" as const, structure: "CC", atoms: [], bonds: [], superatoms: [], rGroups: [] };
+    const valid = applyPatches(setReactionArrowConditions(document, arrow.id, draft), [
+      { op: "addObject", pageId: document.pages[0].id, object: molecule }
+    ]);
+    const removed = deleteSelectedDocumentObjects(valid, [arrow.id]);
+    expect(removed.pages[0].objects).toEqual([molecule]);
+    const craftedMolecule = { ...molecule, arrowAttachment: label(valid).arrowAttachment } as DocumentObject;
+    const crafted = { ...valid, pages: [{ ...valid.pages[0], objects: valid.pages[0].objects.map(object =>
+      object.id === molecule.id ? craftedMolecule : object) }] };
+    // The patch boundary validates the surviving invalid molecule. The old expansion deleted
+    // it first, letting the crafted document through with its chemistry silently removed.
+    expect(() => deleteSelectedDocumentObjects(crafted, [arrow.id])).toThrow();
+    expect(crafted.pages[0].objects).toContain(craftedMolecule);
+  });
+
   it("creates formatted native conditions, keeps manual offsets, and clears the label", () => {
     const { document, arrow } = fixture();
     const draft = { side: "above" as const, spans: [{ text: "K", script: "normal" as const }, { text: "2", script: "subscript" as const }, { text: "CO₃\n80 °C", script: "normal" as const }] };
@@ -97,7 +115,8 @@ describe("conditions on ordinary arrows", () => {
     expect(deleteSelectedDocumentObjects(source).pages[0].objects).toHaveLength(0);
     const detached=normalizeCommittedDocument(pasteSelectionClipboardPayload(source,
       createSelectionClipboardPayload(selectDocumentObjects(source,source.pages[0].id,[label(source).id]))!,{x:400,y:400}));
-    expect(detached.pages[0].objects.at(-1)?.arrowAttachment).toBeUndefined();
+    const pasted = detached.pages[0].objects.at(-1);
+    expect(pasted?.type === "text" ? pasted.arrowAttachment : undefined).toBeUndefined();
   });
   it("keeps orphans visible and refuses text or itself as an attachment parent", () => {
     const {document,arrow}=fixture(), next=setReactionArrowConditions(document,arrow.id,draft);
@@ -105,7 +124,7 @@ describe("conditions on ordinary arrows", () => {
     for (const parentObjectId of ["missing",object.id]) {
       const orphan=resolveArrowAttachments({...next.pages[0],objects:[{...object,arrowAttachment:{...object.arrowAttachment!,parentObjectId}}]});
       expect(orphan.objects[0]).toMatchObject({x:object.x,y:object.y});
-      expect(orphan.objects[0].arrowAttachment).toBeUndefined();
+      expect(orphan.objects[0]).not.toHaveProperty("arrowAttachment");
     }
   });
   it("uses page top for reversed straight arrows, left for vertical arrows, and curve-relative sides", () => {

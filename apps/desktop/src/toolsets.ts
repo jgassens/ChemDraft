@@ -68,8 +68,8 @@ export const desktopToolsetRegistry = createDesktopToolsetRegistry();
 export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
 
 /** Filter only the displayed catalog; saved customization keeps disabled feature entries intact. */
-export function compoundLayoutRegistry(registry: DesktopToolsetRegistry, enabled: boolean, settings: CompoundLayoutSettings = loadCompoundLayoutSettings()): DesktopToolsetRegistry {
-  const hidden = (id: string) => isCompoundLayoutCommandHidden(id, { ...settings, enabled });
+export function compoundLayoutRegistry(registry: DesktopToolsetRegistry, enabled: boolean, settings: CompoundLayoutSettings = loadCompoundLayoutSettings(), desktop = true): DesktopToolsetRegistry {
+  const hidden = (id: string) => isCompoundLayoutCommandHidden(id, { ...settings, enabled }, desktop);
   if (enabled && !registry.listToolsets().some(toolset => toolset.groups.some(group => group.items.some(item => {
     const id = item.primary?.type === "command" ? item.primary.commandId : item.commandId ?? item.id;
     return !!id && hidden(id) || item.submenu?.items.some(entry => hidden(entry.commandId));

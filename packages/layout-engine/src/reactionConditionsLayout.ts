@@ -1,7 +1,7 @@
 import type { ArrowAttachmentFrame, DocumentObject, DocumentPage, TextObject } from "@chemdraft/chem-core";
 import { artObstacleIntersectsBounds, graphicArrowInkObstacles, type NativeArtObstacle } from "@chemdraft/art-engine";
-import { moleculeOutlineForArrangement, textVisualBoundsForArrangement } from "./index";
-import { arrowAttachmentFrame, arrowAttachmentPoint, reactionConditionsFrame } from "./arrowAttachments";
+import { arrowAttachmentFrame, arrowAttachmentPoint, reactionConditionsFrame,
+  moleculeOutlineForArrangement, textVisualBoundsForArrangement } from "./arrowAttachmentFrames";
 
 /** Ink obstacles, rather than the empty bounding rectangle around a curved arrow. */
 function conditionsObstacles(page: DocumentPage, labelId: string): NativeArtObstacle[] {

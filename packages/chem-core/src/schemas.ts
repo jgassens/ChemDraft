@@ -170,8 +170,7 @@ const BaseObjectSchema = z
     height: z.number().finite().nonnegative(),
     rotation: z.number().finite().default(0),
     style: MetadataSchema.default({}),
-    compatibility: CompatibilityMetadataSchema.optional(),
-    arrowAttachment: ArrowAttachmentSchema.optional()
+    compatibility: CompatibilityMetadataSchema.optional()
   })
   .strict();
 
@@ -546,7 +545,8 @@ export const TextSpanSchema = z
 export const TextObjectSchema = BaseObjectSchema.extend({
   type: z.literal("text"),
   text: z.string(),
-  spans: z.array(TextSpanSchema).default([])
+  spans: z.array(TextSpanSchema).default([]),
+  arrowAttachment: ArrowAttachmentSchema.optional()
 }).strict();
 
 export const TABLE_LIMITS = {

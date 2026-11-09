@@ -1,6 +1,6 @@
 import { applyPatches, type ChemDraftDocument, type DocumentPatch, type TextObject } from "@chemdraft/chem-core";
 import { arrowAttachmentPoint, resolveArrowAttachments, reactionConditionsPlacement, reactionConditionsFrame, type ArrowAttachmentResolutionOptions } from "@chemdraft/layout-engine";
-import { nextObjectId, phase4Timestamp } from "./shared";
+import { phase4Timestamp } from "./shared";
 import { createNativeTextObject, nativeFormattedTextObjectSize } from "./textObjects";
 
 export interface ReactionConditionsDraft {
@@ -58,7 +58,9 @@ export function reconcileReactionArrowAttachments(document: ChemDraftDocument, o
     const resolved = resolveArrowAttachments(page, options);
     if (resolved === page) continue;
     resolved.objects.forEach((object, index) => {
-      if (object !== page.objects[index]) patches.push({ op: "updateObject", objectId: object.id,
+      const original = page.objects[index];
+      if (object.type === "text" && original.type === "text" &&
+          original.arrowAttachment?.kind === "conditions" && object !== original) patches.push({ op: "updateObject", objectId: object.id,
         changes: { ...object, arrowAttachment: object.arrowAttachment } });
     });
   }

@@ -2027,7 +2027,7 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   settings: CompoundLayoutSettings = loadCompoundLayoutSettings()): CommandSpec[] {
   const arrowPage = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
   const arrow = document.selection.objectIds.length === 1 ? arrowPage.objects.find(object => object.id === document.selection.objectIds[0]) : undefined;
-  const parent = arrow?.arrowAttachment?.kind === "conditions"
+  const parent = arrow?.type === "text" && arrow.arrowAttachment?.kind === "conditions"
     ? arrowPage.objects.find(object => object.id === arrow.arrowAttachment!.parentObjectId) : arrow;
   const hasArrow = !!parent && !!arrowAttachmentFrame(arrowPage, parent);
   const hasSelection = document.selection.objectIds.length > 0;

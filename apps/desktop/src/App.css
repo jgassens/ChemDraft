@@ -7848,8 +7848,6 @@ textarea:focus-visible,
 .reaction-conditions-preview { white-space: pre-wrap; min-height: 36px; padding: 10px; text-align: center; overflow: auto; border: 1px solid var(--cd-border); background: var(--cd-bg-control); }
 .reaction-conditions-form footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 .reaction-conditions-form footer button { padding: 6px 16px; }
-.reaction-conditions-browser-window { position: fixed; z-index: 1200; right: 24px; top: 70px; width: min(560px, calc(100vw - 48px)); height: min(620px, calc(100vh - 94px)); overflow: auto; resize: both; border: 1px solid var(--cd-border); box-shadow: 0 10px 36px #0003; }
-.reaction-conditions-browser-window .reaction-conditions-form { min-height: 100%; max-height: none; overflow: visible; }
 
 /* Frame depth stays inside the webview and follows any palette size or orientation.
    Paint above opaque children without intercepting title, tool, or resize-handle hits. */

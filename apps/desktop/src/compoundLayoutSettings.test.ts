@@ -53,6 +53,7 @@ it("keeps formatted conditions independently opt-in and filters saved custom ent
     expect(compoundLayoutCommandDisabledReason("arrow.conditions",settings)).toBeDefined();
   }
   expect(isCompoundLayoutCommandHidden("arrow.conditions",{enabled:true,formattedReactionConditions:true})).toBe(false);
+  expect(isCompoundLayoutCommandHidden("arrow.conditions",{enabled:true,formattedReactionConditions:true},false)).toBe(true);
   saveCompoundLayoutSettings({enabled:true,formattedReactionConditions:true});
   expect(loadCompoundLayoutSettings()).toEqual({enabled:true,formattedReactionConditions:true});
   const registry=createDesktopToolsetRegistry(undefined,undefined,[{id:"custom.conditions",title:"Conditions",source:"user",defaultVisible:true,defaultMode:"floating",groups:[{id:"custom.conditions.group",items:[
@@ -60,4 +61,5 @@ it("keeps formatted conditions independently opt-in and filters saved custom ent
   ]}]}]);
   expect(compoundLayoutRegistry(registry,true,{enabled:true}).require("custom.conditions").groups[0].items).toHaveLength(0);
   expect(compoundLayoutRegistry(registry,true,{enabled:true,formattedReactionConditions:true}).require("custom.conditions").groups[0].items).toHaveLength(1);
+  expect(compoundLayoutRegistry(registry,true,{enabled:true,formattedReactionConditions:true},false).require("custom.conditions").groups[0].items).toHaveLength(0);
 });

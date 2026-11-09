@@ -34,7 +34,6 @@ import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
-import { ReactionConditionsForm } from "./dialogs/ReactionConditionsForm";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   projectGraphicVisualPagePoint,
@@ -2418,8 +2417,6 @@ export function MainWindow({
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
   const openReactionConditionsRef = useRef<(arrowId: string) => void>(() => {});
   const arrowCommandTargetRef = useRef<string | undefined>(undefined);
-  const [conditionsEditor, setConditionsEditor] = useState<{ tabId: string; arrowId: string; title: string; draft: ReactionConditionsDraft }>();
-  const [conditionsError, setConditionsError] = useState<string>();
   const conditionsSourcesRef = useRef(new Map<string, { arrowId: string; source: ChemDraftDocument }>());
   const applyConditionsRef = useRef<(tabId: string, arrowId: string, draft: ReactionConditionsDraft) => void>(() => {});
   const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
@@ -2569,7 +2566,7 @@ export function MainWindow({
   const compoundLayoutSettings = useCompoundLayoutSettings();
   const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
-  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings),
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, isDesktopRuntime()),
     [unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]);
 
   // The toolbar catalog is the single data brain: it composes the core manifest with live
@@ -3209,14 +3206,16 @@ export function MainWindow({
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
   const openArrangementSpacingRef = useRef<() => void>(() => {});
   const layerActions = useMemo(() => {
-    const actions = createLayerActions(document, compoundLayoutsEnabled, compoundLayoutSettings);
+    // Conditions authoring requires the shared native dialog host (§12).
+    const actions = createLayerActions(document, compoundLayoutsEnabled, compoundLayoutSettings)
+      .filter(action => action.id !== "arrow.conditions" || isDesktopRuntime());
     const object = objectContextMenu && activePage.objects.find(object => object.id === objectContextMenu.objectId);
     return object && arrowAttachmentFrame(activePage, object) && !compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)
       ? actions.map(action => action.id === "arrow.conditions" ? { ...action, enabled: true, disabledReason: undefined } : action) : actions;
   }, [document, compoundLayoutsEnabled, compoundLayoutSettings, objectContextMenu, activePage]);
   useEffect(() => {
     if (compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)) {
-      setConditionsEditor(undefined); conditionsSourcesRef.current.clear();
+      conditionsSourcesRef.current.clear();
       void dialogCoordinatorRef.current?.closeReactionConditions();
     }
   }, [compoundLayoutSettings]);
@@ -3297,7 +3296,7 @@ export function MainWindow({
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled, compoundLayoutSettings
-      }), vibeCodeStarterCommand],
+      }), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
     [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]
@@ -7740,7 +7739,8 @@ export function MainWindow({
     // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
-    const attachment = findDocumentObject(documentRef.current, objectId)?.arrowAttachment;
+    const object = findDocumentObject(documentRef.current, objectId);
+    const attachment = object?.type === "text" ? object.arrowAttachment : undefined;
     if (attachment?.kind === "conditions") {
       arrowCommandTargetRef.current = attachment.parentObjectId;
       void invokeCommandRef.current("arrow.conditions"); return;
@@ -9759,6 +9759,7 @@ export function MainWindow({
     nonPristineTabsRef.current.add(tabId); setDocumentTabs([...documentTabsRef.current]);
   };
   openReactionConditionsRef.current = arrowId => {
+    if (!isDesktopRuntime()) return;
     const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
     if (reason) { setStatus(reason); return; }
     const tabId = activeDocumentTabIdRef.current, source = documentHistoryRef.current.present;
@@ -9767,25 +9768,11 @@ export function MainWindow({
     if (!page || !arrow || !arrowAttachmentFrame(page, arrow)) { setStatus("Select one arrow"); return; }
     const title = Array.from(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 80).join("");
     const draft = reactionConditionsDraft(source, arrowId);
-    if (isDesktopRuntime()) {
-      const coordinator = dialogCoordinatorRef.current;
-      if (!coordinator) { setStatus("Reaction conditions could not open: the dialog host is unavailable."); return; }
-      if (!coordinator.reactionConditionsArrowId(tabId)) conditionsSourcesRef.current.set(tabId, { arrowId, source });
-      void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
-    } else {
-      if (conditionsEditor) {
-        if (conditionsEditor.tabId !== tabId || conditionsEditor.arrowId !== arrowId) setStatus("Finish the open Reaction conditions editor first.");
-        return;
-      }
-      conditionsSourcesRef.current.set(tabId, { arrowId, source });
-      setConditionsError(undefined); setConditionsEditor({ tabId, arrowId, title, draft });
-    }
+    const coordinator = dialogCoordinatorRef.current;
+    if (!coordinator) { setStatus("Reaction conditions could not open: the dialog host is unavailable."); return; }
+    if (!coordinator.reactionConditionsArrowId(tabId)) conditionsSourcesRef.current.set(tabId, { arrowId, source });
+    void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
   };
-  useEffect(() => {
-    if (conditionsEditor && !documentTabs.some(tab => tab.id === conditionsEditor.tabId)) {
-      conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined);
-    }
-  }, [conditionsEditor, documentTabs]);
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
@@ -11324,7 +11311,7 @@ export function MainWindow({
           arrowCommandTargetRef.current = undefined;
           if (!arrowId) { setStatus("Select one arrow"); return; }
           const object = findDocumentObject(current, arrowId);
-          openReactionConditionsRef.current(object?.arrowAttachment?.parentObjectId ?? arrowId); return;
+          openReactionConditionsRef.current(object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? object.arrowAttachment.parentObjectId : arrowId); return;
         }
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
@@ -12440,6 +12427,7 @@ export function MainWindow({
   );
 
   const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
+    if (commandId === "arrow.conditions" && !isDesktopRuntime()) { arrowCommandTargetRef.current = undefined; return; }
     const featureDisabled = compoundLayoutCommandDisabledReason(commandId, compoundLayoutSettingsRef.current);
     if (featureDisabled) { arrowCommandTargetRef.current = undefined; setStatus(featureDisabled); return; }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
@@ -15396,7 +15384,7 @@ export function MainWindow({
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
-      if (drag.startDocument.pages.some(page => page.objects.some(object => object.arrowAttachment))) {
+      if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         clearObjectTransformPreview(drag.pointerId);
         replacePresentDocument(objectDragDocument(drag, point)); return;
       }
@@ -15713,7 +15701,7 @@ export function MainWindow({
         setObjectRotateReadout(undefined);
       }, 1200);
       if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic" &&
-          !drag.startDocument.pages.some(page => page.objects.some(object => object.arrowAttachment))) {
+          !drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         scheduleObjectTransformPreview({
           pointerId: drag.pointerId,
           objectIds: [drag.objectId],
@@ -22172,15 +22160,6 @@ export function MainWindow({
             ok = result.ok; operationStatus = result.status; return result.document; }, "Adjust arrangement spacing");
           if (ok) setSpacingSource(undefined); setStatus(operationStatus);
         }} /> : null}
-      {conditionsEditor ? <div className="reaction-conditions-browser-window"><ReactionConditionsForm title={conditionsEditor.title}
-        draft={conditionsEditor.draft} onChange={draft => setConditionsEditor({ ...conditionsEditor, draft })} error={conditionsError}
-        onCancel={() => { conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined); }}
-        onSave={() => {
-          try {
-            applyConditionsRef.current(conditionsEditor.tabId, conditionsEditor.arrowId, conditionsEditor.draft);
-            conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined);
-          } catch (error) { setConditionsError(String(error)); }
-        }} /></div> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
           tableActions={selectedTable(document) ? tableActions : []}

@@ -25,7 +25,8 @@ function fixture() {
 function assertConditions(d: ChemDraftDocument) {
   for (const object of d.pages[0].objects) {
     expect([object.x,object.y,object.width,object.height,object.rotation].every(Number.isFinite)).toBe(true);
-    const a=object.arrowAttachment;if(!a)continue;
+    if(object.type!=="text")continue;
+    const a=object.arrowAttachment;if(a?.kind!=="conditions")continue;
     expect(a.kind).toBe("conditions");
     const parent=d.pages[0].objects.find(o=>o.id===a.parentObjectId)!;
     const frame=reactionConditionsFrame(d.pages[0],parent)!;
@@ -74,7 +75,7 @@ describe('adversarial ordinary-arrow conditions', () => {
       const clones = next.pages[0].objects.filter(o => !originalIds.has(o.id));
       const ids = new Set(clones.map(o => o.id));
       expect(clones).toHaveLength(original.length);
-      expect(clones.every(o => !o.arrowAttachment || ids.has(o.arrowAttachment.parentObjectId))).toBe(true);
+      expect(clones.every(o => o.type!=="text" || !o.arrowAttachment || ids.has(o.arrowAttachment.parentObjectId))).toBe(true);
       expect(next.pages[0].objects.filter(o => originalIds.has(o.id))).toEqual(original);
       assertConditions(next);
     }

@@ -14219,7 +14219,7 @@ export function selectedArrangementObjectIds(document: ChemDraftDocument): strin
     if (object.type === "group") object.childObjectIds.forEach(includeDescendant);
   });
   const roots = selected.filter((object) => !contained.has(object.id) &&
-    object.arrowAttachment?.kind !== "conditions" &&
+    !(object.type === "text" && object.arrowAttachment?.kind === "conditions") &&
     (object.type !== "group" || resolveGroupedDocumentObjectIds(page.objects, [object.id]).length > 0));
   const moleculeIds = roots.flatMap((object) =>
     resolveGroupedDocumentObjectIds(page.objects, [object.id])
@@ -14584,7 +14584,7 @@ export function duplicateSelectedDocumentObjects(
   patches.push({ op: "setSelection", pageId: page.id, objectIds: selectionIds });
 
   for (const duplicate of duplicates) {
-    if (!duplicate.arrowAttachment) continue;
+    if (duplicate.type !== "text" || duplicate.arrowAttachment?.kind !== "conditions") continue;
     const parentObjectId = duplicateIdByOriginalId.get(duplicate.arrowAttachment.parentObjectId);
     duplicate.arrowAttachment = parentObjectId ? { ...duplicate.arrowAttachment, parentObjectId } : undefined;
   }
@@ -14809,7 +14809,7 @@ export function pasteSelectionClipboardPayload(
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
   for (const object of sourceChildren) {
     const clone = pastedById.get(idBySourceId.get(object.id)!);
-    if (!clone?.arrowAttachment) continue;
+    if (clone?.type !== "text" || clone.arrowAttachment?.kind !== "conditions") continue;
     const parentObjectId = idBySourceId.get(clone.arrowAttachment.parentObjectId);
     clone.arrowAttachment = parentObjectId ? { ...clone.arrowAttachment, parentObjectId } : undefined;
   }

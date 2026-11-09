@@ -36,6 +36,7 @@ export function compoundLayoutCommandDisabledReason(id: string, settings: Compou
   return undefined;
 }
 
-export function isCompoundLayoutCommandHidden(id: string, settings: CompoundLayoutSettings): boolean {
+export function isCompoundLayoutCommandHidden(id: string, settings: CompoundLayoutSettings, desktop = true): boolean {
+  if (id === "arrow.conditions" && !desktop) return true;
   return !!compoundLayoutCommandDisabledReason(id, settings);
 }
