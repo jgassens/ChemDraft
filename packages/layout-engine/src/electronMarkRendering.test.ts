@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { Resvg } from "@resvg/resvg-js";
 import { createEmptyDocument, type ElectronMarkObject } from "@chemdraft/chem-core";
 import { electronMarkHitCatcherAttributes, planPageSvgRender } from "./index";
 import { legacyElectronMarkHashes } from "./electronMarkLegacy.fixture";
@@ -53,8 +54,29 @@ describe("electron-mark rendering preferences", () => {
         expect(Number(b.attrs.cx) - Number(a.attrs.cx)).toBeGreaterThan(Number(a.attrs.r) + Number(b.attrs.r));
       }
       if (object.markKind === "charge" && Math.abs(object.charge!) > 1) {
-        expect(fragments.find(f => f.tag === "text")?.attrs["stroke-width"]).toBe(Math.max(0, thickness - 1.5) * 0.4);
+        const text = fragments.find(f => f.tag === "text")!;
+        expect(text.attrs["font-weight"]).toBe(thickness < 1.5 ? 400 : 700);
+        expect(text.attrs["stroke-width"]).toBe(Math.max(0, thickness - (thickness < 1.5 ? 0.5 : 1.5)) * 0.4);
       }
+    }
+  });
+
+  it.each(["circled:2", "plain:-2", "radical-ion:3"])("renders monotonically thicker multi-charge text for %s", key => {
+    for (const enabled of [false, true]) {
+      const texts = [0.5, 1, 1.5, 3].map(strokeWidth =>
+        plan({ ...markFor(key), style: { strokeWidth } }, enabled).fragments.find(f => f.tag === "text")!);
+      expect(new Set(texts.map(text => JSON.stringify(text.attrs))).size).toBe(4);
+      // Rasterize only the text, so circle widths cannot conceal an unchanged numeral/sign.
+      const ink = texts.map(text => {
+        const attrs = Object.entries(text.attrs).map(([name, value]) => `${name}="${value}"`).join(" ");
+        const pixels = new Resvg(`<svg xmlns="http://www.w3.org/2000/svg" width="280" height="280" viewBox="95 95 28 28"><text ${attrs}>${Math.abs(markFor(key).charge!)}${markFor(key).charge! > 0 ? "+" : "−"}</text></svg>`)
+          .render().pixels;
+        let coverage = 0;
+        for (let i = 3; i < pixels.length; i += 4) coverage += pixels[i];
+        return coverage;
+      });
+      expect(ink[0]).toBeGreaterThan(0);
+      for (let i = 1; i < ink.length; i++) expect(ink[i]).toBeGreaterThan(ink[i - 1]);
     }
   });
 

@@ -8780,7 +8780,7 @@ export function nativeChargeMarkCenter(mark: ElectronMarkObject): PagePoint {
 export interface ElectronMarkMoveAssociationOptions {
   /** Main resets charge anchors for translations/transforms, but not a frame-only edit. */
   operation?: "move" | "transform" | "frame" | "carry" | "paste";
-  /** A batch may move the anchored atom along with its mark. */
+  /** Simulate the anchored atom's movement too; this does not change main's anchor-reset policy. */
   atomMovesWithMark?: boolean;
   /** Molecule transforms can carry only a subset of its atoms. */
   atomTransform?: (point: PagePoint) => PagePoint;
@@ -8817,8 +8817,8 @@ export function electronMarkMoveAssociation(
   options: ElectronMarkMoveAssociationOptions = {}
 ): ElectronMarkMoveAssociationResult {
   const operation = options.operation ?? "move";
-  const reset = operation === "paste" || (mark.markKind === "charge" &&
-    operation !== "frame" && operation !== "carry" && !options.atomMovesWithMark &&
+  const reset = (operation === "paste" && !options.atomMovesWithMark) || (mark.markKind === "charge" &&
+    operation !== "frame" && operation !== "carry" && operation !== "paste" &&
     (operation === "transform" || from.x !== to.x || from.y !== to.y));
   const anchor: ElectronMarkObject["anchor"] = reset
     ? { ...mark.anchor, kind: "point", point: { x: to.x, y: to.y } }
@@ -13878,6 +13878,8 @@ function translateDocumentObjectByPatches(
     translateAnchoredGeometry?: boolean;
     /** Preserve a charge's sticky atom identity only when that atom moves by the same delta. */
     preserveChargeAnchor?: boolean;
+    /** The anchor molecule is included in this translation, even when its charge anchor resets. */
+    atomMovesWithMark?: boolean;
   } = {}
 ): DocumentPatch[] {
   const page = pageContainingObject(document, objectId);
@@ -13910,7 +13912,10 @@ function translateDocumentObjectByPatches(
           y: nextY,
           anchor: electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
             x: nextX + object.width / 2, y: nextY + object.height / 2
-          }, { atomMovesWithMark: options.preserveChargeAnchor }).anchor
+          }, {
+            operation: options.preserveChargeAnchor ? "carry" : "move",
+            atomMovesWithMark: options.atomMovesWithMark ?? options.preserveChargeAnchor
+          }).anchor
         }
       }];
   }
@@ -14184,7 +14189,9 @@ export function moveDocumentObjects(
   const patches = page.objects.flatMap((object) =>
     set.has(object.id)
       ? translateDocumentObjectByPatches(document, object.id, cdx, cdy, {
-          translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, set)
+          translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, set),
+          atomMovesWithMark: object.type === "electron-mark" && object.anchor.kind === "atom" &&
+            object.anchor.objectId !== undefined && set.has(object.anchor.objectId)
         })
       : []
   );
@@ -14279,10 +14286,12 @@ function applyLayoutItemMoves(document: ChemDraftDocument, moves: readonly Layou
     const object = objects.get(move.objectId);
     const anchorMove = object?.type === "electron-mark" && object.anchor.kind === "atom" && object.anchor.objectId
       ? combined.get(object.anchor.objectId) : undefined;
+    const atomMovesWithMark = anchorMove !== undefined &&
+      Math.abs(anchorMove.dx - move.dx) < 1e-9 && Math.abs(anchorMove.dy - move.dy) < 1e-9;
     return translateDocumentObjectByPatches(document, move.objectId, move.dx, move.dy, {
       translateAnchoredGeometry: move.translateAnchoredGeometry,
-      preserveChargeAnchor: preserveChargeAnchor && anchorMove !== undefined &&
-        Math.abs(anchorMove.dx - move.dx) < 1e-9 && Math.abs(anchorMove.dy - move.dy) < 1e-9
+      atomMovesWithMark,
+      preserveChargeAnchor: preserveChargeAnchor && atomMovesWithMark
     });
   });
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
@@ -14596,6 +14605,13 @@ export function duplicateSelectedDocumentObjects(
     patches.push({ op: "addObject", pageId: page.id, object: duplicate });
   }
 
+  // Copied marks ride with the copied atom, rather than simulating a move away from the original.
+  for (const duplicate of duplicates) {
+    if (duplicate.type !== "electron-mark" || duplicate.anchor.kind !== "atom") continue;
+    const moleculeId = duplicate.anchor.objectId && duplicateIdByOriginalId.get(duplicate.anchor.objectId);
+    if (moleculeId) duplicate.anchor = { ...duplicate.anchor, objectId: moleculeId };
+  }
+
   // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
   // before the group containing it maps its children. Only the selected groups used to be copied —
   // and their leaves resolve past any group nested inside them, so the outer copy found no copy of
@@ -14875,11 +14891,13 @@ export function pasteSelectionClipboardPayload(
   const patches: DocumentPatch[] = [];
   const idBySourceId = new Map<string, string>();
   const pastedById = new Map<string, DocumentObject>();
+  // Association is evaluated with source ids before the pasted objects receive their new ids.
+  const sourcePage = { ...page, objects: payload.objects };
 
   for (const object of sourceChildren) {
     const clone = structuredClone(object) as DocumentObject;
-    clone.id = allocateId(duplicateObjectIdPrefix(object));
-    const pasted = translatedClipboardObject(clone, dx, dy, document);
+    const pasted = translatedClipboardObject(clone, dx, dy, sourcePage, sourceChildIds);
+    pasted.id = allocateId(duplicateObjectIdPrefix(object));
     idBySourceId.set(object.id, pasted.id);
     pastedById.set(pasted.id, pasted);
     patches.push({ op: "addObject", pageId: page.id, object: pasted });
@@ -14955,7 +14973,8 @@ function translatedClipboardObject(
   object: DocumentObject,
   dx: number,
   dy: number,
-  document: ChemDraftDocument
+  document: ChemDraftDocument | DocumentPage,
+  movingObjectIds: ReadonlySet<string> = new Set()
 ): DocumentObject {
   const nextX = object.x + dx;
   const nextY = object.y + dy;
@@ -14975,7 +14994,11 @@ function translatedClipboardObject(
       y: nextY,
       anchor: electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
         x: nextX + object.width / 2, y: nextY + object.height / 2
-      }, { operation: "paste" }).anchor
+      }, {
+        operation: "paste",
+        atomMovesWithMark: object.anchor.kind === "atom" && object.anchor.objectId !== undefined &&
+          movingObjectIds.has(object.anchor.objectId)
+      }).anchor
     };
   }
 

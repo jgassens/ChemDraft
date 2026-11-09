@@ -165,8 +165,6 @@ export function createArtInspectorModel({
   selectedVisualObjects,
   requestedPaintTarget = "fill"
 }: CreateArtInspectorModelOptions): ArtInspectorModel {
-  void document;
-
   const styleObjects = selectedVisualObjects ? [...selectedVisualObjects] : [...selectedGraphicObjects];
   const graphics = styleObjects.filter((object): object is GraphicObject => object.type === "graphic");
   const moleculeObjectIds = styleObjects

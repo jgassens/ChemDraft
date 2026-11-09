@@ -3991,6 +3991,10 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scal
 
   if (magnitude > 1) {
     // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    // Below the legacy thickness use the regular face, then add a small positive outline.
+    // Numeric weights between regular/bold can resolve to the same face on non-variable fonts.
+    const thin = scaled && strokeWidth < 1.5;
+    const textStrokeWidth = thin ? Math.max(0, strokeWidth - 0.5) * 0.4 : Math.max(0, strokeWidth - 1.5) * 0.4;
     children.push(elementFragment("text", `charge-count-${object.id}`, {
       x: centerX,
       y: centerY,
@@ -3998,9 +4002,9 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scal
       "dominant-baseline": "central",
       "font-family": "Arial, Helvetica, sans-serif",
       "font-size": radius * 1.35,
-      "font-weight": 700,
+      "font-weight": thin ? 400 : 700,
       fill: "#111111",
-      ...(scaled ? { stroke: "#111111", "stroke-width": Math.max(0, strokeWidth - 1.5) * 0.4 } : {})
+      ...(scaled ? { stroke: "#111111", "stroke-width": textStrokeWidth } : {})
     }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
   } else {
     let signHalf = circled ? barHalf : radius * 0.85;

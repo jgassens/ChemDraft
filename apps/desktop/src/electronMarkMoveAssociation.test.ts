@@ -1,11 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, ElectronMarkObject, MoleculeObject } from "@chemdraft/chem-core";
 import {
-  applyChargeToolAtNativeAtom, applyElectronMarkStyleToSelection, createPhase4Document,
+  alignSelectedDocumentObjects, applyChargeToolAtNativeAtom, applyElectronMarkStyleToSelection,
+  createPhase4Document, createSelectionClipboardPayload, duplicateSelectedDocumentObjects,
   electronMarkMoveAssociation, insertNativeSingleBondMolecule, moveDocumentObject,
-  moveDocumentObjects, nativeChargeMarkCenter, normalizeCommittedDocument,
+  moveDocumentObjects, nativeChargeMarkCenter, normalizeCommittedDocument, pasteSelectionClipboardPayload,
+  flipDocumentObjectsAroundPoint, selectDocumentObjects, translateInsertedDocumentObjects,
   rotateDocumentObject, rotateDocumentObjectsAroundPoint, scaleDocumentObjectsAroundPoint,
-  type NativeElectronMarkSpec
+  type ElectronMarkMoveAssociationOptions, type NativeElectronMarkSpec
 } from "./documentWorkflow";
 import { saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
@@ -87,6 +89,82 @@ describe.each([false, true])("main's mark association policy with direct editing
     const rotated = rotateDocumentObjectsAroundPoint(document, [mark.id], pivot, 180);
     const to = nativeChargeMarkCenter(markIn(rotated));
     expect(markIn(rotated).anchor).toEqual(electronMarkMoveAssociation(document, mark, from, to, { operation: "transform" }).anchor);
+  });
+
+  it.each(specs)("reports no chemistry change when the atom travels with %j on every batch path", spec => {
+    const { document, mark, molecule } = fixture(spec);
+    const ids = [molecule.id, mark.id];
+    const selected = selectDocumentObjects(document, document.pages[0].id, ids);
+    const from = nativeChargeMarkCenter(mark);
+    const pivot = { x: from.x - 60, y: from.y - 40 };
+    const payload = createSelectionClipboardPayload(selected)!;
+    // Exercise mark-before-molecule clipboard order and paste into an unrelated document too.
+    payload.objects.reverse();
+    const cases: {
+      name: string;
+      moved: ChemDraftDocument;
+      options: ElectronMarkMoveAssociationOptions;
+      copied?: boolean;
+    }[] = [
+      { name: "group move", moved: moveDocumentObjects(selected, ids, 80, 100), options: { operation: "move" } },
+      { name: "molecule carry", moved: moveDocumentObject(selected, molecule.id,
+        { x: molecule.x + 80, y: molecule.y + 100 }), options: { operation: "carry" } },
+      { name: "insert translation", moved: translateInsertedDocumentObjects(selected, ids, 80, 100), options: { operation: "carry" } },
+      { name: "rotate", moved: rotateDocumentObjectsAroundPoint(selected, ids, pivot, 90), options: {
+        operation: "carry", atomTransform: p => ({ x: pivot.x - (p.y - pivot.y), y: pivot.y + (p.x - pivot.x) })
+      } },
+      { name: "scale", moved: scaleDocumentObjectsAroundPoint(selected, ids, pivot, 1.5, 1.5), options: {
+        operation: "carry", atomTransform: p => ({ x: pivot.x + (p.x - pivot.x) * 1.5, y: pivot.y + (p.y - pivot.y) * 1.5 })
+      } },
+      ...(["horizontal", "vertical"] as const).map(axis => ({
+        name: `flip ${axis}`, moved: flipDocumentObjectsAroundPoint(selected, ids, pivot, axis), options: {
+          operation: "carry" as const, atomTransform: (p: { x: number; y: number }) => ({
+            x: axis === "horizontal" ? 2 * pivot.x - p.x : p.x,
+            y: axis === "vertical" ? 2 * pivot.y - p.y : p.y
+          })
+        }
+      })),
+      { name: "paste", moved: pasteSelectionClipboardPayload(createPhase4Document("Paste target"), payload,
+        { x: payload.bounds.centerX + 80, y: payload.bounds.centerY + 100 }), options: { operation: "paste" }, copied: true },
+      { name: "duplicate", moved: duplicateSelectedDocumentObjects(selected, { x: 80, y: 100 }), options: { operation: "move" }, copied: true },
+      { name: "alignment", moved: alignSelectedDocumentObjects(selectDocumentObjects(document, document.pages[0].id,
+        moleculesIn(document).map(m => m.id)), "right"), options: { operation: "move" } }
+    ];
+    for (const { name, moved, options, copied } of cases) {
+      const finalDocument = normalizeCommittedDocument(moved);
+      const finalMark = finalDocument.pages[0].objects.find(o => o.type === "electron-mark" &&
+        (copied ? o.id !== mark.id : o.id === mark.id)) as ElectronMarkObject;
+      const finalMolecule = moleculesIn(finalDocument).find(m => m.id === finalMark.anchor.objectId)!;
+      expect(finalMark.anchor, name).toEqual({ ...mark.anchor, objectId: finalMolecule.id });
+      for (const field of ["formalCharge", "markCharge", "markRadicals"] as const) {
+        expect(finalMolecule.atoms[0][field], `${name}: ${field}`).toBe(molecule.atoms[0][field]);
+      }
+      const report = electronMarkMoveAssociation(document, mark, from, nativeChargeMarkCenter(finalMark), {
+        ...options, atomMovesWithMark: true
+      });
+      expect(report.chemistryChange, name).toBeUndefined();
+      if (!copied) {
+        const uncommittedMark = markIn(moved);
+        expect(uncommittedMark.anchor, name).toEqual(report.anchor);
+      }
+    }
+  });
+
+  it("keeps main's charge reset and reports a real reassociation during a crowded group move", () => {
+    const { document, mark, molecule } = fixture({ kind: "charge", charge: 1 });
+    const neighbour = molecule.atoms[1];
+    const crowdedMark = { ...mark, x: neighbour.x - 9, y: neighbour.y - 9 };
+    const crowded = normalizeCommittedDocument({ ...document, pages: [{ ...document.pages[0], objects:
+      document.pages[0].objects.map(o => o.id === mark.id ? crowdedMark : o) }] });
+    const from = nativeChargeMarkCenter(crowdedMark);
+    const report = electronMarkMoveAssociation(crowded, crowdedMark, from, { x: from.x + 80, y: from.y + 100 }, {
+      atomMovesWithMark: true
+    });
+    expect(report.anchor.kind).toBe("point");
+    expect(report.chemistryChange).toMatchObject({ atomIdBefore: molecule.atoms[0].id, atomIdAfter: neighbour.id });
+    const moved = moveDocumentObjects(crowded, [molecule.id, mark.id], 80, 100);
+    expect(markIn(moved).anchor).toEqual(report.anchor);
+    expect(markIn(normalizeCommittedDocument(moved)).anchor).toMatchObject({ kind: "atom", atomId: neighbour.id });
   });
 
   it("reports main's charge reassociation even for a centered general transform in a crowded placement", () => {
