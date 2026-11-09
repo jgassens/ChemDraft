@@ -23,6 +23,21 @@ describe("binary CDX headers and reference codec cases", () => {
     expect([...bytes]).toEqual([...header, ...u16(0x8000), ...u32(0), 0, 0]);
   });
 
+  it("writes GenericNickname as a CDXString with a zero style-run count", () => {
+    const bytes = writeCdx(element("CDXML", {}, [element("n", { id: "10", GenericNickname: "NMe" })]));
+    expect(bytes).toEqual(file(object(0x8004, 10, property(0x0433, [0, 0, 0x4e, 0x4d, 0x65]))));
+  });
+
+  it.each([
+    ["C", "6", undefined], ["Cl", "17", undefined], ["D", "1", "2"], ["T", "1", "3"], ["6", "6", undefined]
+  ])("keeps %s as an element rather than a nickname", (symbol, atomicNumber, isotope) => {
+    const node = readCdx(writeCdx(element("CDXML", {}, [element("n", { Element: symbol! })]))).kids[0];
+    expect(node.attrs.Element).toBe(atomicNumber);
+    expect(node.attrs.Isotope).toBe(isotope);
+    expect(node.attrs.GenericNickname).toBeUndefined();
+    expect(node.kids).toEqual([]);
+  });
+
   it("reads little-endian and big-endian coordinates and signed charges", () => {
     const little = file(property(0x0805, coord(14.4)), object(0x8004, 12, property(0x0200, [...coord(-10), ...coord(20)]), property(0x0421, [255])));
     const big = new Uint8Array([...ascii(MAGIC), 1, 2, 3, 4, ...Array(10).fill(0), 128, 0, 0, 0, 0, 0,

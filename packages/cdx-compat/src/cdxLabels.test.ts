@@ -19,6 +19,9 @@ const fixtures: [string, Shape][] = [
   ["Arg", "peptide"], ["D-Leu", "peptide"], ["Trp", "peptide"], ["Glu", "peptide"], ["D-Met", "peptide"],
   ["CO", "chain"], ["COO", "chain"], ["CHCO2", "chain"], ["O2", "chain"], ["O3", "chain"]
 ];
+const cdxFixtures: [string, Shape][] = [
+  ...fixtures, ["2-Me", "chain"], ["+NMe2", "chain"], [".5Linker", "chain"]
+];
 
 /** Synthetic native graphs: the text tool stores the label in element with labelLiteral=true.
  * Expansions are derived by document-workflow-core, never extra stored, unbonded atoms.
@@ -121,6 +124,10 @@ describe("synthetic multi-atom labels and attachment atoms", () => {
       expect(result.source).toBe("external-cdxml");
       await expectUnchanged(moleculeOf(result), original, label);
     });
+  }
+  for (const [label, shape] of cdxFixtures) {
+    const document = labelledDocument(label, shape);
+    const original = document.pages[0]!.objects[0] as MoleculeObject;
     it(`preserves ${label} in a ${shape} through visible CDX without native metadata`, async () => {
       const exported = exportDocumentToCdx(document, { embedNativePayload: false });
       expect(exported.warnings).toEqual(expect.arrayContaining([
@@ -150,13 +157,13 @@ describe("standard binary nickname nodes and fragment attachment points", () => 
   const property = (tag: number, data: number[]) => [...u16(tag), ...u16(data.length), ...data];
   const object = (tag: number, id: number, ...data: number[][]) => [...u16(tag), ...u32(id), ...data.flat(), 0, 0];
   // Independently encoded bytes: these cases do not use writeCdx or its NodeType table.
-  const binaryNickname = (nodeType: number, propertyOnly = false) => new Uint8Array([
+  const binaryNickname = (nodeType: number, nickname?: number[]) => new Uint8Array([
     ...new TextEncoder().encode("VjCD0100"), 4, 3, 2, 1, ...Array(10).fill(0),
     ...object(0x8000, 0, object(0x8001, 1, object(0x8003, 2,
       object(0x8004, 10),
       object(0x8004, 11, property(0x0400, u16(nodeType)),
-        ...(propertyOnly
-          ? [property(0x0433, [...new TextEncoder().encode("NMe")])]
+        ...(nickname
+          ? [property(0x0433, nickname)]
           : [object(0x8006, 12, property(0x0700, [0, 0, ...new TextEncoder().encode("NMe")]))])),
       object(0x8004, 13),
       object(0x8005, 14, property(0x0604, u32(10)), property(0x0605, u32(11))),
@@ -174,8 +181,18 @@ describe("standard binary nickname nodes and fragment attachment points", () => 
     ]);
   });
 
-  it("also reads the GenericNickname property without a text object", () => {
-    expect(moleculeOf(importCdx(binaryNickname(7, true))).atoms.map((atom) => atom.element)).toEqual(["C", "NMe", "C"]);
+  it.each([
+    ["zero style runs", [0, 0, 0x4e, 0x4d, 0x65]],
+    ["two style runs", [2, 0, ...[0, 0xffff, 1, 240, 3, 1, 0xffff, 0, 200, 3].flatMap(u16), 0x4e, 0x4d, 0x65]]
+  ] as const)("reads a spec CDXString nickname with %s without a text object", (_, data) => {
+    const bytes = binaryNickname(7, [...data]);
+    expect(readCdx(bytes).kids[0]!.kids[0]!.kids[1]!.attrs.GenericNickname).toBe("NMe");
+    const molecule = moleculeOf(importCdx(bytes));
+    expect(molecule.atoms.map((atom) => atom.element)).toEqual(["C", "NMe", "C"]);
+    expect(molecule.atoms[1]!.labelLiteral).toBe(true);
+    expect(molecule.bonds.map((bond) => [bond.fromAtomId, bond.toAtomId])).toEqual([
+      [molecule.atoms[0]!.id, molecule.atoms[1]!.id], [molecule.atoms[1]!.id, molecule.atoms[2]!.id]
+    ]);
   });
 
   it("keeps a nameless nickname unknown and warns instead of inventing carbon", () => {

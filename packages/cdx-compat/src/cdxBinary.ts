@@ -145,9 +145,9 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
     }));
     const kids = x.kids.map(copy);
     const label = x.name === "n" ? attrs.Element?.trim() : undefined;
-    // Keep invalid numeric attributes on the codec's existing warning path rather than turning
-    // an invalid atomic number into a chemically meaningful nickname.
-    if (label && !/^[+\-\d.]/.test(label)) {
+    // Numeric Element attributes already encode atomic numbers; leave validation to the codec.
+    // All other values need a symbol lookup, including labels beginning with digits or punctuation.
+    if (label && !NUMBER.test(label)) {
       const number = atomicNumberForElementSymbol(label);
       if (number !== undefined && bondedElementLabelMeaning(label) === undefined) {
         attrs.Element = String(number);

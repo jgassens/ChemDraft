@@ -76,7 +76,7 @@ export const PROPS: [number, string, string, string?][] = [
   [0x0430, "Geometry", "e8", "0=Unknown,1=1,2=Linear,3=Bent,4=TrigonalPlanar,5=TrigonalPyramidal,6=SquarePlanar,7=Tetrahedral,8=TrigonalBipyramidal,9=SquarePyramidal,10=5,11=Octahedral,12=6,13=7,14=8,15=9,16=10"],
   [0x0431, "BondOrdering", "ids"],
   [0x0432, "Attachments", "attachments"],
-  [0x0433, "GenericNickname", "plain"],
+  [0x0433, "GenericNickname", "str"],
   [0x0434, "AltGroupID", "i32"],
   [0x0435, "SubstituentsUpTo", "i8"],
   [0x0436, "SubstituentsExactly", "i8"],
