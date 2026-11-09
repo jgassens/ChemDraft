@@ -3,7 +3,7 @@ import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import * as workflow from "./documentWorkflow";
 import {
   applyElectronMarkStyleToSelection, electronMarkChemistryChanges, electronMarkMoveAssociation,
-  nativeChargeMarkCenter, normalizeCommittedDocument, normalizeDocumentEdit,
+  nativeChargeMarkCenter, normalizeCommittedDocument,
   rotateDocumentObject, scaleDocumentObjectsAroundPoint
 } from "./documentWorkflow";
 import { associationFixture, associationSpecs as specs, associationState, mainAssociationCases,
@@ -15,6 +15,11 @@ import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, resetRdkitForTesting } from "../../../packages/rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
 import { inspectStructureInWorker } from "./depiction2d/identityInspect";
+
+const normalizeDocumentEdit = (before: ChemDraftDocument, patched: ChemDraftDocument) => {
+  const document = normalizeCommittedDocument(patched);
+  return { document, chemistryChanges: electronMarkChemistryChanges(before, document) };
+};
 
 const fixture = (spec: workflow.NativeElectronMarkSpec) => associationFixture(workflow, spec);
 afterEach(() => vi.unstubAllGlobals());

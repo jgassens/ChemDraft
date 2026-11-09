@@ -470,7 +470,6 @@ import {
   createMechanismArrowBetween,
   type MechanismArrowEndpoint,
   normalizeCommittedDocument,
-  normalizeDocumentEdit,
   applyDocumentObjectProjectedPlaneTilt,
   applyNativeAtomLabelClearTarget,
   applyNativeWarningSuppressionToScope,
@@ -3473,7 +3472,7 @@ export function MainWindow({
         : nextDocumentOrUpdate;
       if (nextDocument === currentHistory.present) return currentHistory;
 
-      const { document: present } = normalizeDocumentEdit(currentHistory.present, nextDocument);
+      const present = normalizeCommittedDocument(nextDocument);
       const undoLabel = documentUndoLabelsRef.current.get(currentHistory.present);
       if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
       changed = true;
@@ -3493,8 +3492,8 @@ export function MainWindow({
     return clean;
   }, []);
   // Ordinary edits and assistant history pushes/amendments share commit preparation.
-  const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, before: ChemDraftDocument, undoLabel?: string) => {
-    const { document: present } = normalizeDocumentEdit(before, nextDocument);
+  const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, undoLabel?: string) => {
+    const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     return present;
@@ -3514,7 +3513,7 @@ export function MainWindow({
           : nextDocumentOrUpdate;
         if (nextDocument === currentHistory.present) return currentHistory;
 
-        const present = prepareDocumentCommit(nextDocument, currentHistory.present, undoLabel);
+        const present = prepareDocumentCommit(nextDocument, undoLabel);
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -3545,7 +3544,7 @@ export function MainWindow({
     try {
       installDocumentHistory((history) => {
         if (previewDocument === session.startDocument) return history;
-        const present = prepareDocumentCommit(previewDocument, session.startDocument, session.undoLabel);
+        const present = prepareDocumentCommit(previewDocument, session.undoLabel);
         return {
           past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(session.startDocument)], present),
           present,
@@ -3606,8 +3605,8 @@ export function MainWindow({
         documentTabSnapshotsRef.current.set(tabId, { ...snapshot, history, parts: [], file: { ...snapshot.file, dirty: true } });
       }
     };
-    const labelled = (document: ChemDraftDocument, before: ChemDraftDocument, label: string) => {
-      const present = prepareDocumentCommit(document, before, label);
+    const labelled = (document: ChemDraftDocument, label: string) => {
+      const present = prepareDocumentCommit(document, label);
       assistantRecordedAfterRef.current.set(present, present);
       return present;
     };
@@ -3642,7 +3641,7 @@ export function MainWindow({
       },
       push: (tabId, before, after, label) => {
         install(tabId, (history) => {
-          const present = labelled(after, history.present, label);
+          const present = labelled(after, label);
           const beforeLabel = documentUndoLabelsRef.current.get(history.present);
           if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
           const recorded = assistantRecordedAfterRef.current.get(history.present);
@@ -3651,14 +3650,14 @@ export function MainWindow({
         });
       },
       amend: (tabId, after, label) => {
-        install(tabId, history => ({ ...history, present: labelled(after, history.present, label) }));
+        install(tabId, history => ({ ...history, present: labelled(after, label) }));
       },
       select: (tabId, objectIds, label) => {
         install(tabId, (history) => {
           const present = history.present;
           const pageId = present.pages.find(page => page.objects.some(object => objectIds.includes(object.id)))?.id ?? present.selection.pageId;
           return { ...history, present: labelled(adoptDerivedDocument(present,
-            { ...present, selection: { pageId, objectIds: [...objectIds] } }), present, label) };
+            { ...present, selection: { pageId, objectIds: [...objectIds] } }), label) };
         });
       },
       onUserEdit: listener => {
@@ -3696,7 +3695,7 @@ export function MainWindow({
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
-    const { document: present } = normalizeDocumentEdit(startDocument, nextDocument);
+    const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     try {
@@ -9638,7 +9637,7 @@ export function MainWindow({
       setSelectedNativeMoleculePart(undefined);
       setStatus(result.label);
     } else if (snapshot) {
-      const present = prepareDocumentCommit(result.document, source, result.label);
+      const present = prepareDocumentCommit(result.document, result.label);
       for (const listener of assistantUserEditListenersRef.current) listener(tabId);
       documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
         history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
@@ -9699,7 +9698,7 @@ export function MainWindow({
     }
     const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
     if (result.document === source) return;
-    const { document: present } = normalizeDocumentEdit(source, result.document);
+    const present = normalizeCommittedDocument(result.document);
     documentUndoLabelsRef.current.set(present, "Adjust arrangement spacing");
     for (const listener of assistantUserEditListenersRef.current) listener(tabId);
     documentTabSnapshotsRef.current.set(tabId, { ...snapshot,

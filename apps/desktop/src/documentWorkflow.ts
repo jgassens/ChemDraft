@@ -8823,6 +8823,7 @@ export interface ElectronMarkChemistryChange {
 }
 
 /**
+ * Hook for the pending owner decision: call only where its result is used, scoped to affected marks.
  * Compare committed states without moving anything or running reconciliation. Each chemistry-
  * bearing mark is reported when either of its associated atoms changed formalCharge, markCharge
  * or markRadicals. Lone pairs and association changes without a chemical difference are omitted.
@@ -8877,14 +8878,6 @@ export function electronMarkChemistryChanges(
     });
   }
   return changes;
-}
-
-/** Shared edit/drag commit preparation; callers can expose the report without re-running an edit. */
-export function normalizeDocumentEdit(before: ChemDraftDocument, patched: ChemDraftDocument): {
-  document: ChemDraftDocument; chemistryChanges: ElectronMarkChemistryChange[];
-} {
-  const document = normalizeCommittedDocument(patched);
-  return { document, chemistryChanges: electronMarkChemistryChanges(before, document) };
 }
 
 export function findNativeMoleculeAtomHit(
