@@ -159,7 +159,9 @@ const BaseObjectSchema = z
     width: z.number().finite().nonnegative(),
     height: z.number().finite().nonnegative(),
     rotation: z.number().finite().default(0),
-    style: ObjectStyleMetadataSchema.catchall(z.unknown()).default({}),
+    // Keep the record first: an object/catchall parser moves declared keys before metadata,
+    // changing legacy serialized bytes when stylePresetId is already present in the record.
+    style: MetadataSchema.and(ObjectStyleMetadataSchema).default({}),
     compatibility: CompatibilityMetadataSchema.optional()
   })
   .strict();
