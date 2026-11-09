@@ -39,7 +39,7 @@ describe("native forward-read chemical identity (real OpenChemLib oracle)", () =
     const raw = JSON.parse(serializeDocument(document));
     raw.formatVersion = "1.3.0";
     raw.minAppVersion = "1.3.0";
-    raw.pages[0].objects[0].futureLabels = { color: "blue", layout: { placement: "beyond" } };
+    raw.pages[0].objects[0].visualDecoration = { color: "blue", layout: { placement: "beyond" } };
     // Put the visual fallback only on a bond that has no stereo marker.
     const cosmeticBond = raw.pages[0].objects[0].bonds.find((bond: { display?: unknown; order: string }) => !bond.display && bond.order === "single");
     expect(cosmeticBond).toBeDefined();

@@ -82,15 +82,21 @@ reader; hosts that need to present warnings must use the result-returning API. `
 `validateDocument`, standalone schemas and patch validation remain strict.
 
 The CDXML envelope boundary uses the same writer through
-`prepareNativeDocumentForSerialization(validatedDocument)`, which returns file data rather than an
-active typed document. It must receive an already validated document; `serializeDocument` performs
+`prepareNativeDocumentForSerializationWithWarnings(validatedDocument)`, which returns file data and
+save warnings rather than an active typed document. It must receive an already validated document; `serializeDocument` performs
 that validation for general callers. Do not stringify the active model directly for a native save.
 `openChemDraftPayload` forwards native warnings and, for explicitly versioned payloads, exposes
 `nativeDocumentVersions` so the desktop open flow can report the file's versions.
 
-Tolerance is enabled only when `formatVersion` or `minAppVersion` declares a version newer than
-the current reader. Unversioned unknown input follows the existing strict/migration path. Unknown
-fields are not a reason to repair wrong types or broken known structures.
+Unknown visual classifiers that main already degraded to `unknown` continue to open in **all**
+files, including unversioned 1.1.x files and same-version files: table alignment and preset,
+bracket/graphic kind, and reaction-arrow kind. They now also produce a named warning and preserve
+the original value for re-save. This does not require a newer version declaration.
+
+Other forward tolerance is enabled when `formatVersion` or `minAppVersion` declares a version newer
+than the current reader. Unversioned files retain existing legacy migrations and strict unknown-key
+handling. Unknown fields never justify repairing wrong types or broken known structures. Chemistry
+enums remain strict even where an older schema used a blanket `unknown` catch.
 
 ## Preservation and fallbacks
 
@@ -100,11 +106,29 @@ bookkeeping key and reconstructs the original fields in their original locations
 preserved by meaning, not by whitespace or key ordering. Clone, patch, undo and redo state retain
 the bookkeeping because it is part of the validated, JSON-cloneable document model.
 
-Paths use stable IDs for identifiable array members (pages, objects, atoms, bonds, table rows and
-columns). Moving or reordering an object therefore keeps its future data attached to it. Deleting
-an owning object does not resurrect it. Explicitly replacing a degraded value takes precedence over
-the preserved original. Arrays without unique IDs use positional paths; replacing/reordering such
-an array is an explicit edit to that visual payload.
+Paths use unique stable IDs wherever the active element has one (including pages, objects, atoms,
+bonds, table rows and columns). Moving or reordering those elements keeps future data attached to
+the same identity; deleting an owner never resurrects it. Ambiguous duplicate IDs are not used.
+Explicitly replacing a degraded value takes precedence over the preserved original.
+
+Arrays without unique IDs (cells, text spans, visual effects and reaction components) carry a read
+fingerprint: length and a content hash for every element's normalized known fields. Exact canonical
+content is checked too, so even a hash collision cannot misattach data. Fingerprints are captured
+after defaults and visual fallbacks, before installing the preservation state. They ignore JSON
+object-key order. All guards are checked against the known active model before any future fields
+are restored. An inserted, deleted, reordered or edited array loses its preserved entries rather
+than restoring by numeric position. Unchanged arrays round-trip. Old in-memory positional state
+without fingerprints is also dropped rather than guessed. Cell guards also record table column IDs
+in order, so reordering columns cannot move preserved cell data to another column even when the
+known cell contents are identical.
+
+Each affected array produces `NATIVE_EXTENSION_DATA_DROPPED`, naming its owning object/path and
+explaining that newer-version data was dropped because the array was edited. Deleted identities
+also report a drop. Save warnings are logged and returned by
+`serializeDocumentWithWarnings(document)` as `{ contents, warnings }` and by
+`prepareNativeDocumentForSerializationWithWarnings(validatedDocument)` as `{ value, warnings }`.
+The existing convenience functions retain their return types and log the same warnings. The CDXML
+envelope writer forwards them in its export result, including the desktop native-save payload.
 
 Warnings have these named codes:
 
@@ -114,13 +138,22 @@ Warnings have these named codes:
 | `NATIVE_BOND_STYLE_FALLBACK` | Unknown bond display style draws as a plain bond; preserve its original value. |
 | `NATIVE_STYLE_PRESET_FALLBACK` | Unknown molecule or document drawing preset ID uses the native default; preserve its ID and explicit numeric style settings. |
 | `NATIVE_VISUAL_ENUM_FALLBACK` | Use an explicit safe visual fallback and preserve the original value. |
+| `NATIVE_EXTENSION_DATA_DROPPED` | Save warning: omit preserved data whose array changed or whose identity was deleted; never attach it to a different element. |
 
 Visual fallbacks are allowlisted, not a blanket enum catch: bond-side placement becomes automatic,
-table alignment becomes unknown, table preset becomes three-line, reaction-arrow/bracket/graphic
+table alignment and preset become unknown, reaction-arrow/bracket/graphic
 kinds become unknown, and page preset becomes custom with its pixel dimensions intact. Unknown
 paints and arrowhead markers become none; unknown effects become invisible known effects. Cosmetic
 line settings, text script and table formatting have defined defaults. Unsupported codecs, units
 or structural revisions without a safe interpretation fail instead of guessing.
+
+Unknown fields directly on atoms and bonds fail closed regardless of their spelling; examples are
+`isotopeMassNumber`, `implicitHydrogenCount` and `cisTrans`. The same rule covers molecule-level
+fields and chemistry containers, superatoms/S-groups, R-groups and reaction components/roles.
+`visualDecoration` is the sole explicit visual extension name allowed on these objects. A new
+chemistry field cannot become acceptable just by avoiding a list of chemistry-related names.
+Unknown fields on purely visual graphics, text styling and page decoration remain preservable in
+newer files.
 
 Chemistry-bearing unknown values always fail: bond order, stereo intent, atom kind, structure
 encoding, reaction role, query semantics, electron-mark kind and label bond-side meaning are never
@@ -153,14 +186,16 @@ resolved first, so an unused newer embedded document cannot trigger a notice for
 The app has no whole-native-document clipboard reader: its private clipboard payload is a selection
 of objects with a separate contract.
 
-The notifier compares the resolved document's `minAppVersion` numerically with
-`NativeDocumentReaderVersion`. For a greater minimum it uses the existing document-owned native
+The notifier uses the reader's newer-file rule: compare the resolved document's `minAppVersion`
+numerically with `NativeDocumentReaderVersion`, **or** its `formatVersion` with
+`NativeDocumentFormatVersion`. If either is greater it uses the existing document-owned native
 message-box path (`owner: "document"`, one OK button) on both macOS and Windows:
 “This file was made with a newer ChemDraft (x.y). Some features may not show. Update to keep them.”
-The version is the file's full `minAppVersion`. Named native warnings, including paths and original
+The displayed version is the file's full `minAppVersion` when present, otherwise its `formatVersion`
+(the current format revisions use app-version numbering). Named native warnings, including paths and original
 values, go to the console log. The existing file warning report retains them too. Older and
-same-version files show no compatibility message, and a newer minimum still shows a message when
-there are no fallback warnings.
+same-version files show no compatibility message, and a newer minimum or format-only newer file
+still shows a message when there are no fallback warnings.
 
 CLI `render-document` and MCP `render_document` add `minAppVersion` and structured
 `documentWarnings` to their JSON results, including failures after a successful read. Legacy input
@@ -175,12 +210,14 @@ The frozen fixture is under `packages/chem-core/src/__fixtures__/v1.1.1/`, copie
 It is test-only and must never become a production reader.
 
 Tests prove released-schema acceptance, existing serializer hashes, migrations, preservation across
-open/save and edits, named degradation warnings, strict malformed-input rejection, and chemical
-refusals. The test-only OpenChemLib oracle in
+open/save and edits, named degradation/drop warnings, unversioned and same-version visual
+regressions, insertion/deletion/reordering of arrays, strict malformed-input rejection, and chemical
+refusals. The visual regression was also checked against the actual `schemas.ts` and
+`deserializeDocument` from main commit `78f82a1e`: the same unversioned file opens with all five
+visual classifiers degraded. The test-only OpenChemLib oracle in
 `packages/ocl-adapter/src/nativeDocumentCompatibility.test.ts` checks canonical isomeric SMILES,
 formula, charge, stereo and counts before and after opening and saving. Engine-free tests also
 check isotope/radical and coordinate preservation.
 
-The host must wire the result-returning reader into its warning/version UI. Build-stamp changes,
-desktop launches and Windows checks belong to the integration work; this package slice does not
-change native code or UI.
+Integration verification must exercise native Open/Save, session restore and compatibility notices
+on both macOS and Windows, together with the repository verification gauntlet.

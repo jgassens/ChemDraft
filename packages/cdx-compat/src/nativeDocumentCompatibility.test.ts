@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createEmptyDocument, readDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { describe, expect, it, vi } from "vitest";
+import { createEmptyDocument, readDocument, serializeDocument, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, openChemDraftPayload } from "./index";
 
 describe("native document compatibility inside a CDXML envelope", () => {
@@ -25,5 +25,23 @@ describe("native document compatibility inside a CDXML envelope", () => {
     expect(legacyJson.nativeDocumentVersions).toEqual(reopened.nativeDocumentVersions);
     expect(legacyJson.warnings).toContainEqual(expect.objectContaining({ code: "NATIVE_UNKNOWN_FIELD_PRESERVED" }));
     expect(reopened.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.native_payload_invalid" }));
+  });
+
+  it("returns and logs dropped-data warnings to envelope save callers", () => {
+    const source = { ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion: "1.3.0" };
+    const raw = JSON.parse(JSON.stringify(source));
+    raw.pages[0].objects.push({ id: "text", type: "text", x: 0, y: 0, width: 30, height: 30, rotation: 0,
+      style: {}, text: "firstsecond", spans: [{ text: "first", futureFont: "original" }, { text: "second" }] });
+    const active = readDocument(raw).document;
+    (active.pages[0]!.objects[0] as TextObject).spans.reverse();
+    const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const saved = exportDocumentToCdxml(active);
+      expect(saved.warnings).toContainEqual(expect.objectContaining({ code: "NATIVE_EXTENSION_DATA_DROPPED" }));
+      expect(log).toHaveBeenCalledWith("Native document compatibility", expect.objectContaining({ code: "NATIVE_EXTENSION_DATA_DROPPED" }));
+      const reopened = openChemDraftPayload(saved.contents).document!;
+      expect(serializeDocument(reopened)).not.toContain("futureFont");
+      expect((reopened.pages[0]!.objects[0] as TextObject).spans.map(span => span.text)).toEqual(["second", "first"]);
+    } finally { log.mockRestore(); }
   });
 });

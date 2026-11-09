@@ -22,6 +22,7 @@ import {
   nativeTextStyleFromObjectStyle,
   pageLayoutMatchesSize,
   parseDocument,
+  readSerializedDocument,
   redo,
   serializeDocument,
   stylePresetToObjectStyle,
@@ -640,9 +641,9 @@ describe("native document validation and serialization", () => {
     expect(serializeDocument(engineDocument)).toBe(JSON.stringify(parseDocument(engineDocument), null, 2));
   });
 
-  it("degrades visual classifiers only in a newer native file and preserves them for re-save", () => {
+  it("opens an unversioned document with unknown visual classifiers, warns and preserves them for re-save", () => {
     const document = createEmptyDocument({ id: "doc_future", now: timestamp });
-    const serialized = { ...JSON.parse(serializeDocument(document)), formatVersion: "1.3.0", minAppVersion: "1.3.0" } as {
+    const serialized = JSON.parse(serializeDocument(document)) as {
       pages: Array<{ objects: unknown[] }>;
     };
     serialized.pages[0].objects.push(
@@ -674,13 +675,15 @@ describe("native document validation and serialization", () => {
       }
     );
 
-    const restored = deserializeDocument(JSON.stringify(serialized));
+    const { document: restored, warnings } = readSerializedDocument(JSON.stringify(serialized));
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every((warning) => warning.code === "NATIVE_VISUAL_ENUM_FALLBACK")).toBe(true);
     const [arrow, bracket] = restored.pages[0].objects.slice(-2);
     expect(arrow).toMatchObject({ type: "reaction-arrow", arrowKind: "unknown" });
     expect(bracket).toMatchObject({ type: "bracket", bracketKind: "unknown" });
     // The rest of the object survives intact — the endpoints are what make it still drawable.
     expect(arrow).toMatchObject({ end: { kind: "point", point: { x: 110, y: 16 } } });
-    expect(JSON.parse(serializeDocument(restored))).toEqual(serialized);
+    expect(JSON.parse(serializeDocument(restored))).toMatchObject(serialized);
   });
 
   it("accepts optional molecule bond display metadata", () => {

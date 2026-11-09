@@ -7,13 +7,19 @@ This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or files
 Native files use feature-based minimum app versions. `readSerializedDocument(contents)` and
 `readDocument(candidate)` return `{ document, warnings, formatVersion, minAppVersion }`; use these
 when the host needs to present compatibility warnings. `deserializeDocument` remains the
-document-only convenience API. Newer files preserve unknown JSON fields and original values behind
-named visual fallbacks; unknown chemistry-bearing values and malformed known input fail.
+document-only convenience API. Legacy visual classifiers degrade with named warnings in every file,
+including unversioned files, and preserve their original values for re-save. Newer files also
+preserve unknown visual JSON fields; unknown chemistry fields/values and malformed known input fail.
 `serializeDocument` reconstructs preserved data and omits the new top-level version fields for
 documents using only 1.1.1 features, so the released strict reader still accepts plain files.
 `parseDocument`, validation and patches remain strict. Feature additions must update
 `NativeDocumentFeatureVersions` in `documentFeatures.ts`; the frozen-schema inventory test guards
 missing field/enum entries. See [the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
+
+Preservation follows unique IDs. Identity-free arrays restore only while their known content is
+unchanged. Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
+`serializeDocumentWithWarnings` returns `{ contents, warnings }`, and the validated container API
+`prepareNativeDocumentForSerializationWithWarnings` returns `{ value, warnings }`.
 
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload

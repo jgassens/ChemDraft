@@ -10,7 +10,7 @@ import {
 import { engineDocuments } from "./engineDocuments";
 import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
 import { minimumAppVersionForDocument, NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion } from "./documentFeatures";
-import { compareNativeVersions, restoreNativeExtensions } from "./nativeCompatibilityState";
+import { compareNativeVersions, restoreNativeExtensions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
 import { readNativeDocument, type NativeDocumentReadResult } from "./documentRead";
 
 export interface CreateEmptyDocumentOptions {
@@ -85,10 +85,16 @@ export function validateDocumentObject(candidate: unknown): DocumentObject {
 }
 
 export function serializeDocument(document: ChemDraftDocument): string {
+  return serializeDocumentWithWarnings(document).contents;
+}
+
+/** Save result for callers that present compatibility warnings in addition to the log. */
+export function serializeDocumentWithWarnings(document: ChemDraftDocument): { contents: string; warnings: NativeDocumentWriteWarning[] } {
   // An engine document is validated and normalized already; re-parsing it on every save was a full
   // schema pass over every object.
   const validated = engineDocuments.has(document) ? document : parseDocument(document);
-  return JSON.stringify(prepareNativeDocumentForSerialization(validated), null, 2);
+  const { value, warnings } = prepareNativeDocumentForSerializationWithWarnings(validated);
+  return { contents: JSON.stringify(value, null, 2), warnings };
 }
 
 /**
@@ -98,6 +104,10 @@ export function serializeDocument(document: ChemDraftDocument): string {
  * it is deliberately not typed as the active ChemDraftDocument model.
  */
 export function prepareNativeDocumentForSerialization(validated: ChemDraftDocument): unknown {
+  return prepareNativeDocumentForSerializationWithWarnings(validated).value;
+}
+
+export function prepareNativeDocumentForSerializationWithWarnings(validated: ChemDraftDocument): { value: unknown; warnings: NativeDocumentWriteWarning[] } {
   const minAppVersion = minimumAppVersionForDocument(validated);
   const extensions = validated.compatibility.nativeExtensions;
   const output = { ...validated, compatibility: { ...validated.compatibility } };
@@ -107,14 +117,15 @@ export function prepareNativeDocumentForSerialization(validated: ChemDraftDocume
   // Clone only when reconstruction will mutate nested objects. Ordinary saves keep the engine's
   // fast, already-validated path and retain the released writer's property order and defaults.
   const restored = extensions?.length ? JSON.parse(JSON.stringify(output)) as ChemDraftDocument : output;
-  const restoredCount = extensions?.length ? restoreNativeExtensions(restored, extensions) : 0;
+  const { restored: restoredCount, warnings } = extensions?.length ? restoreNativeExtensions(restored, extensions) : { restored: 0, warnings: [] };
+  for (const warning of warnings) console.warn("Native document compatibility", warning);
   if (compareNativeVersions(minAppVersion, NativeDocumentBaselineAppVersion) > 0) {
     restored.formatVersion = restoredCount && validated.formatVersion
       && compareNativeVersions(validated.formatVersion, NativeDocumentFormatVersion) > 0
       ? validated.formatVersion : NativeDocumentFormatVersion;
     restored.minAppVersion = minAppVersion;
   }
-  return restored;
+  return { value: restored, warnings };
 }
 
 export function deserializeDocument(serialized: string): ChemDraftDocument {

@@ -12,7 +12,7 @@ import {
   nativeTextStyleFromObjectStyle,
   normalizeAtomIsotope,
   parseDocument,
-  prepareNativeDocumentForSerialization,
+  prepareNativeDocumentForSerializationWithWarnings,
   type Anchor,
   type ArrowObject,
   type BondRef,
@@ -191,7 +191,9 @@ export function exportDocumentToCdxml(
   // Keep the payload compact and reuse core's version/preservation writer on the validated
   // document. Directly stringifying the active model would save degraded enum values and its
   // internal preservation sidecar, losing the original future fields on the next open.
-  const nativeJson = JSON.stringify(prepareNativeDocumentForSerialization(parsedDocument));
+  const nativeSave = prepareNativeDocumentForSerializationWithWarnings(parsedDocument);
+  warnings.push(...nativeSave.warnings);
+  const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
     .filter((object): object is TableObject => object.type === "table")

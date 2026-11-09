@@ -157,9 +157,11 @@ export {
   migrateLegacyTableObjects,
   parseDocument,
   prepareNativeDocumentForSerialization,
+  prepareNativeDocumentForSerializationWithWarnings,
   readDocument,
   readSerializedDocument,
   serializeDocument,
+  serializeDocumentWithWarnings,
   toIsoTimestamp,
   validateDocument,
   validateDocumentObject,
@@ -182,7 +184,7 @@ export {
   type NativeDocumentReadWarning,
   type NativeDocumentWarningCode
 } from "./documentRead";
-export { compareNativeVersions } from "./nativeCompatibilityState";
+export { compareNativeVersions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
 
 export {
   DocumentPatchError,

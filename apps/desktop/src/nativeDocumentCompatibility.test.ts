@@ -50,6 +50,44 @@ describe("native document compatibility notice", () => {
     } finally { restore(); }
   });
 
+  it.each(["macos", "windows"] as const)("notifies for a format-only newer file on %s", async platform => {
+    const prompt = vi.fn(async (_options: NativePromptOptions) => "ok");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const opened = openNativeDocument(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0" }));
+      expect(opened.warnings).toEqual([]);
+      await notifyNativeDocumentCompatibility(opened, opened.document!, platform);
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
+        message: "This file was made with a newer ChemDraft (1.3.0). Some features may not show. Update to keep them." });
+    } finally { restore(); }
+  });
+
+  it("uses the supplied minimum in a format-triggered notice", async () => {
+    const prompt = vi.fn(async (_options: NativePromptOptions) => "ok");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const opened = openNativeDocument(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion: "1.1.1" }));
+      await notifyNativeDocumentCompatibility(opened, opened.document!);
+      expect(prompt.mock.calls[0]![0].message).toContain("(1.1.1)");
+    } finally { restore(); }
+  });
+
+  it("logs legacy visual fallback warnings without adding a newer-file notice", async () => {
+    const prompt = vi.fn(async () => "ok");
+    const restore = setNativePromptProvider(prompt);
+    const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const raw = JSON.parse(serializeDocument(createEmptyDocument()));
+      raw.pages[0].objects.push({ id: "bracket", type: "bracket", x: 0, y: 0, width: 30, height: 30,
+        rotation: 0, style: {}, bracketKind: "future", containedObjectIds: [] });
+      const opened = openNativeDocument(JSON.stringify(raw));
+      await notifyNativeDocumentCompatibility(opened, opened.document!);
+      expect(log).toHaveBeenCalledWith("Native document compatibility", expect.objectContaining({ code: "NATIVE_VISUAL_ENUM_FALLBACK" }));
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
   it("does not notify for edited visible CDXML when its future embedded document was not chosen", async () => {
     const prompt = vi.fn(async () => "ok");
     const restore = setNativePromptProvider(prompt);

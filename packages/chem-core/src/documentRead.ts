@@ -43,7 +43,8 @@ export class NativeDocumentReadError extends Error {
 
 /**
  * Forward reader for an already-decoded native file. Strict parsing and patch validation remain
- * strict. Only files declaring a newer writer contract or minimum app receive tolerant handling.
+ * strict. Legacy visual classifiers still degrade in every file, as in the released reader.
+ * Other forward handling requires a newer writer contract or minimum app.
  * Legacy migrations are supplied by document.ts to avoid a reader/migration import cycle.
  */
 export function readNativeDocument(
@@ -61,7 +62,6 @@ export function readNativeDocument(
       throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", ["compatibility", "nativeExtensions"], undefined,
         "nativeExtensions is reserved for in-memory read state.");
     }
-    return { document: migrateLegacy(candidate), warnings: [], formatVersion, minAppVersion };
   }
 
   // JSON cloning both detaches untrusted objects and gives preservation exactly JSON semantics.
@@ -84,7 +84,8 @@ export function readNativeDocument(
     fallbackValue?: unknown,
     warning?: { path: (string | number)[]; originalValue: unknown }
   ) => {
-    extensions.push({ path: stableExtensionPath(candidate, path), kind, originalValue,
+    // Resolve identities and fingerprint arrays only after known fields/defaults are normalized.
+    extensions.push({ path, kind, originalValue,
       ...(fallbackValue !== undefined ? { fallbackValue } : {}) });
     const warningPath = warning?.path ?? path;
     const warningOriginal = warning ? warning.originalValue : originalValue;
@@ -100,15 +101,20 @@ export function readNativeDocument(
     delete compatibility.nativeExtensions;
   }
 
-  normalizeStylePresetIds(working, preserve);
+  if (newer) normalizeStylePresetIds(working, preserve);
+  const finish = (document: ChemDraftDocument): NativeDocumentReadResult => {
+    preserveOmittedJsonKeys(working, document, [], preserve);
+    if (extensions.length) document.compatibility.nativeExtensions = extensions.map((extension) => ({
+      ...extension, path: stableExtensionPath(document, extension.path as (string | number)[])
+    }));
+    return { document, warnings, formatVersion, minAppVersion };
+  };
   while (true) {
     const parsed = ChemDraftDocumentSchema.safeParse(working);
     if (parsed.success) {
       // Zod deliberately omits __proto__ record keys. Keep them as inert file data, just like
       // unknown strict-object keys, rather than installing them on the active metadata object.
-      preserveOmittedJsonKeys(working, parsed.data, [], preserve);
-      if (extensions.length) parsed.data.compatibility.nativeExtensions = extensions;
-      return { document: parsed.data, warnings, formatVersion, minAppVersion };
+      return finish(parsed.data);
     }
     let changed = false;
     for (const issue of parsed.error.issues) {
@@ -122,10 +128,11 @@ export function readNativeDocument(
             throw new NativeDocumentReadError("NATIVE_UNSUPPORTED_CHEMISTRY", path, parent[key],
               `Unsupported atom kind ${JSON.stringify(parent[key])}; chemical identity cannot be preserved.`);
           }
-          if (isUnknownChemicalField(path)) {
+          if (isUnknownChemicalField(working, path)) {
             throw new NativeDocumentReadError("NATIVE_UNSUPPORTED_CHEMISTRY", path, parent[key],
-              `Unsupported chemistry field "${key}" with value ${JSON.stringify(parent[key])}; chemical identity cannot be preserved.`);
+              `Unsupported chemistry field "${key}" with value ${JSON.stringify(parent[key])}; chemical identity cannot be preserved. The file may have been saved by a newer version of ChemDraft.`);
           }
+          if (!newer) continue; // Keep main's existing legacy migration/strict-key behavior.
           preserve(path, "field", "NATIVE_UNKNOWN_FIELD_PRESERVED", ownNativeValue(parent, key));
           delete parent[key];
           changed = true;
@@ -136,6 +143,7 @@ export function readNativeDocument(
         if (typeof originalValue !== "string") throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", issue.path, originalValue, issue.message);
         const fallback = visualFallback(working, issue.path);
         if (!fallback) throwUnsupportedValue(issue.path, originalValue);
+        if (!newer && fallback.value !== "unknown") continue;
         const replacementPath = fallback.container ? issue.path.slice(0, -1) : issue.path;
         const parent = valueAtPath(working, replacementPath.slice(0, -1));
         const key = replacementPath.at(-1)!;
@@ -153,12 +161,15 @@ export function readNativeDocument(
         else setNativeValue(parent, key, fallback.value);
         changed = true;
       } else if (issue.code === z.ZodIssueCode.invalid_literal) {
+        if (!newer) continue;
         throwUnsupportedValue(issue.path, valueAtPath(working, issue.path));
       } else {
+        if (!newer) continue;
         throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", issue.path, valueAtPath(working, issue.path), issue.message);
       }
     }
     if (!changed) {
+      if (!newer) return finish(migrateLegacy(working));
       throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", [], undefined, parsed.error.message);
     }
   }
@@ -181,11 +192,25 @@ function isUnknownAtomKind(path: (string | number)[]): boolean {
   return /^pages\.\d+\.objects\.\d+\.atoms\.\d+\.(kind|type|atomKind)$/.test(path.join("."));
 }
 
-function isUnknownChemicalField(path: (string | number)[]): boolean {
-  const location = path.join(".");
-  return /^pages\.\d+\.objects\.\d+\.atoms\.\d+\.(atomicNumber|charge|radical|radicals|radicalState|radicalCount|isotopes|hydrogens|implicitHydrogens|stereo|stereochemistry)$/.test(location)
-    || /^pages\.\d+\.objects\.\d+\.bonds\.\d+\.(bondOrder|bondType|stereoKind|stereochemistry)$/.test(location)
-    || /^pages\.\d+\.objects\.\d+\.bonds\.\d+\.display\.(stereo|stereoKind|stereochemistry)$/.test(location);
+// Explicit visual extension contract on chemistry objects. Never infer safety from an unfamiliar
+// field's spelling (e.g. isotopeMassNumber, implicitHydrogenCount or cisTrans).
+const VISUAL_CHEMISTRY_EXTENSIONS = new Set(["visualDecoration"]);
+
+function isUnknownChemicalField(root: unknown, path: (string | number)[]): boolean {
+  if (VISUAL_CHEMISTRY_EXTENSIONS.has(String(path.at(-1)))) return false;
+  if (path[0] !== "pages" || path[2] !== "objects") return false;
+  const object = valueAtPath(root, path.slice(0, 4));
+  const type = ownNativeValue(object, "type");
+  if (type === "molecule") {
+    // All unknown molecule fields and chemistry subcontainers fail closed. Only the existing
+    // rendering/placement/style and provenance containers are purely visual or descriptive.
+    if (path.length === 5) return true;
+    return !["style", "transform", "compatibility", "bounds"].includes(String(path[4]));
+  }
+  if (["reaction", "superatom", "r-group-label", "generic-atom-label", "mechanism-arrow", "electron-mark"].includes(String(type))) {
+    return path.length === 5 || !["style", "compatibility", "bounds"].includes(String(path[4]));
+  }
+  return false;
 }
 
 function throwUnsupportedValue(path: (string | number)[], originalValue: unknown): never {
@@ -210,7 +235,7 @@ function visualFallback(root: unknown, path: (string | number)[]): { value: unkn
     const layout = valueAtPath(root, path.slice(0, -1));
     value = Number(ownNativeValue(layout, "widthPx")) > Number(ownNativeValue(layout, "heightPx")) ? "landscape" : "portrait";
   } else if (/^pages\.\d+\.objects\.\d+\.columns\.\d+\.align$/.test(key)) value = "unknown";
-  else if (/^pages\.\d+\.objects\.\d+\.tableStyle\.preset$/.test(key)) value = "three-line";
+  else if (/^pages\.\d+\.objects\.\d+\.tableStyle\.preset$/.test(key)) value = "unknown";
   else if (/^pages\.\d+\.objects\.\d+\.(graphicKind|bracketKind)$/.test(key)) value = "unknown";
   else if (/^pages\.\d+\.objects\.\d+\.arrowKind$/.test(key)
     && ownNativeValue(valueAtPath(root, path.slice(0, -1)), "type") === "reaction-arrow") value = "unknown";

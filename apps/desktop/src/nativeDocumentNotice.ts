@@ -1,4 +1,4 @@
-import { compareNativeVersions, NativeDocumentReaderVersion, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { compareNativeVersions, NativeDocumentFormatVersion, NativeDocumentReaderVersion, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { ChemDraftOpenResult } from "@chemdraft/cdx-compat";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
@@ -15,10 +15,13 @@ export async function notifyNativeDocumentCompatibility(
   for (const warning of opened.warnings) {
     if (warning.code.startsWith("NATIVE_")) console.warn("Native document compatibility", warning);
   }
-  if (!minimum || compareNativeVersions(minimum, NativeDocumentReaderVersion) <= 0) return;
+  const newer = (minimum !== undefined && compareNativeVersions(minimum, NativeDocumentReaderVersion) > 0)
+    || (document.formatVersion !== undefined && compareNativeVersions(document.formatVersion, NativeDocumentFormatVersion) > 0);
+  if (!newer) return;
+  const version = minimum ?? document.formatVersion;
   await nativePrompt({
     title: "Newer ChemDraft file",
-    message: `This file was made with a newer ChemDraft (${minimum}). Some features may not show. Update to keep them.`,
+    message: `This file was made with a newer ChemDraft (${version}). Some features may not show. Update to keep them.`,
     kind: "warning",
     owner: "document",
     choices: [{ id: "ok", label: "OK", cancel: true }]

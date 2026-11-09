@@ -135,8 +135,8 @@ describe("forward-compatible native reader", () => {
     const molecule = source.pages[0]!.objects[0] as MoleculeObject;
     const raw = JSON.parse(JSON.stringify(source));
     raw.futureSettings = { nested: { enabled: true, values: [null, 3.14, "kept"] } };
-    raw.pages[0].objects[0].atoms[0].futureLabel = { position: "above", ornaments: ["a", "b"] };
-    raw.pages[0].objects[0].bonds[0].display = { bondStyle: "future-wave", futureAmplitude: 7 };
+    raw.pages[0].objects[0].atoms[0].visualDecoration = { position: "above", ornaments: ["a", "b"] };
+    raw.pages[0].objects[0].bonds[0].display = { bondStyle: "future-wave", visualDecoration: { amplitude: 7 } };
     raw.pages[0].objects[0].style.stylePresetId = "chemdraft.future";
     const pristine = JSON.stringify(raw);
     const result = readSerializedDocument(pristine);
@@ -160,6 +160,31 @@ describe("forward-compatible native reader", () => {
     expect(readDocument(plainDocument())).toMatchObject({ minAppVersion: "1.1.1", formatVersion: undefined, warnings: [] });
   });
 
+  it.each([undefined, "1.1.1", "1.2.0"])("still opens main's visual enum cases with formatVersion %s", (formatVersion) => {
+    // main 78f82a1e schemas.ts used degradingEnum(...).catch("unknown") for these classifiers,
+    // without requiring a version envelope. Keep that legacy file-reading contract.
+    const raw = JSON.parse(JSON.stringify(plainDocument()));
+    if (formatVersion) raw.formatVersion = formatVersion;
+    const base = { x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
+    raw.pages[0].objects = [
+      { ...base, id: "g", type: "graphic", graphicKind: "future-graphic", data: {} },
+      { ...base, id: "b", type: "bracket", bracketKind: "future-bracket", containedObjectIds: [] },
+      { ...base, id: "a", type: "reaction-arrow", arrowKind: "future-arrow", labels: [],
+        start: { kind: "point", point: { x: 0, y: 0 } }, end: { kind: "point", point: { x: 30, y: 0 } } },
+      { ...base, id: "t", type: "table", tableVersion: 1, headerRowCount: 0,
+        columns: [{ id: "c", align: "future-align", width: { mode: "auto" } }],
+        rows: [{ id: "r", cells: [{ text: "cell" }] }], tableStyle: { preset: "future-preset" } }
+    ];
+    const read = readDocument(raw);
+    expect(read.warnings).toHaveLength(5);
+    expect(read.warnings.every((warning) => warning.code === "NATIVE_VISUAL_ENUM_FALLBACK")).toBe(true);
+    expect(read.document.pages[0]!.objects).toMatchObject([
+      { graphicKind: "unknown" }, { bracketKind: "unknown" }, { arrowKind: "unknown" },
+      { columns: [{ align: "unknown" }], tableStyle: { preset: "unknown" } }
+    ]);
+    expect(JSON.parse(serializeDocument(read.document)).pages[0].objects).toMatchObject(raw.pages[0].objects);
+  });
+
   it("preserves known isotopes, radicals, charges, coordinates and stereo alongside future decoration", () => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
     const molecule = raw.pages[0].objects[0];
@@ -167,7 +192,7 @@ describe("forward-compatible native reader", () => {
     molecule.atoms[0].markRadicals = 1;
     molecule.atoms[1].formalCharge = -1;
     molecule.bonds[0].display = { bondStyle: "wedge" };
-    molecule.futureDecoration = { symbol: "star" };
+    molecule.visualDecoration = { symbol: "star" };
     const opened = readDocument(raw);
     expect(opened.document.pages[0]!.objects[0]).toMatchObject({ atoms: molecule.atoms, bonds: molecule.bonds });
     expect(JSON.parse(serializeDocument(opened.document))).toEqual(raw);
@@ -201,14 +226,14 @@ describe("forward-compatible native reader", () => {
 
   it("keeps preserved data with its object through cloning, patches, reordering and deletion", () => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
-    raw.pages[0].objects[0].futureValue = { kept: 42 };
-    raw.pages[0].objects.push({ ...raw.pages[0].objects[0], id: "other", futureValue: { kept: 7 } });
+    raw.pages[0].objects[0].visualDecoration = { kept: 42 };
+    raw.pages[0].objects.push({ ...raw.pages[0].objects[0], id: "other", visualDecoration: { kept: 7 } });
     const opened = readDocument(raw).document;
     const moved = applyPatch(opened, { op: "moveObject", objectId: "molecule", x: 88, y: 99 });
     const reordered = applyPatch(moved, { op: "reorderObject", objectId: "molecule", placement: "front" });
     const saved = JSON.parse(serializeDocument(reordered));
-    expect(saved.pages[0].objects.find((object: { id: string }) => object.id === "molecule")).toMatchObject({ x: 88, y: 99, futureValue: { kept: 42 } });
-    expect(saved.pages[0].objects.find((object: { id: string }) => object.id === "other")).toHaveProperty("futureValue", { kept: 7 });
+    expect(saved.pages[0].objects.find((object: { id: string }) => object.id === "molecule")).toMatchObject({ x: 88, y: 99, visualDecoration: { kept: 42 } });
+    expect(saved.pages[0].objects.find((object: { id: string }) => object.id === "other")).toHaveProperty("visualDecoration", { kept: 7 });
     const removed = applyPatch(reordered, { op: "removeObject", objectId: "molecule" });
     expect(JSON.parse(serializeDocument(removed)).pages[0].objects).toHaveLength(1);
   });
@@ -239,16 +264,76 @@ describe("forward-compatible native reader", () => {
     }
   });
 
+  it.each([undefined, "1.3.0"])("keeps chemistry-bearing unknown classifiers strict with version %s", version => {
+    const base = { x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
+    const point = { kind: "point", point: { x: 0, y: 0 } };
+    const molecule = plainDocument().pages[0]!.objects[0] as MoleculeObject;
+    const objects = [
+      { ...molecule, structureFormat: "future-encoding" },
+      { ...molecule, bonds: [{ ...molecule.bonds[0], order: "quadruple" }] },
+      { ...molecule, superatoms: [{ label: "Me", expandedStructureFormat: "future-encoding" }] },
+      { ...base, id: "r", type: "reaction", components: [], mappingState: "future-mapping" },
+      { ...base, id: "r", type: "reaction", components: [{ objectId: "m", role: "future-role" }] },
+      { ...base, id: "a", type: "mechanism-arrow", source: point, target: point, arrowKind: "future-mechanism" },
+      { ...base, id: "e", type: "electron-mark", anchor: point, markKind: "future-electrons" }
+    ];
+    for (const object of objects) {
+      const raw = JSON.parse(JSON.stringify(plainDocument()));
+      if (version) Object.assign(raw, { formatVersion: version, minAppVersion: version });
+      raw.pages[0].objects = [object];
+      expect(() => readDocument(raw)).toThrow(/chemical identity cannot be preserved/);
+    }
+  });
+
   it.each(["kind", "type", "atomKind"])("refuses an unknown atom %s", (key) => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
     raw.pages[0].objects[0].atoms[0][key] = "future-atom";
     expect(() => readDocument(raw)).toThrow(/atoms\.0\..*: Unsupported atom kind "future-atom"/);
   });
 
-  it.each(["radicalState", "atomicNumber", "stereochemistry"])("refuses unknown chemistry-bearing atom field %s", (key) => {
+  it.each(["radicalState", "atomicNumber", "stereochemistry", "isotopeMassNumber", "implicitHydrogenCount", "unfamiliarField"])("refuses unknown chemistry-bearing atom field %s", (key) => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
     raw.pages[0].objects[0].atoms[0][key] = "future-chemistry";
     expect(() => readDocument(raw)).toThrow(/Unsupported chemistry field.*chemical identity cannot be preserved/);
+  });
+
+  it.each([undefined, "1.3.0"])("fails closed for unknown chemistry fields with version %s", (version) => {
+    const cases = [
+      { path: ["atoms", 0, "isotopeMassNumber"], value: 13 },
+      { path: ["atoms", 0, "implicitHydrogenCount"], value: 2 },
+      { path: ["bonds", 0, "cisTrans"], value: "cis" },
+      { path: ["bonds", 0, "display"], value: { cisTrans: "cis" }, suffix: ["cisTrans"] },
+      { path: ["chemistry"], value: { futureStereo: { chirality: "R" } }, suffix: ["futureStereo"] },
+      { path: ["sGroups"], value: [{ polymerKind: "future" }] },
+      { path: ["rGroups"], value: [{ label: "R1", futureLogic: true }], suffix: [0, "futureLogic"] },
+      { path: ["superatoms"], value: [{ label: "Me", futureCharge: 1 }], suffix: [0, "futureCharge"] }
+    ];
+    for (const { path, value, suffix = [] } of cases) {
+      const raw = JSON.parse(JSON.stringify(plainDocument()));
+      if (version) Object.assign(raw, { formatVersion: version, minAppVersion: version });
+      const molecule = raw.pages[0].objects[0];
+      let target = molecule;
+      for (const key of path.slice(0, -1)) target = target[key];
+      target[path.at(-1)!] = value;
+      try {
+        readDocument(raw);
+        expect.fail(`Expected refusal for ${path.join(".")}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(NativeDocumentReadError);
+        expect(error).toMatchObject({ code: "NATIVE_UNSUPPORTED_CHEMISTRY", path: ["pages", 0, "objects", 0, ...path, ...suffix] });
+      }
+    }
+  });
+
+  it("refuses unknown reaction role fields while preserving explicitly visual extensions", () => {
+    const raw = JSON.parse(JSON.stringify(futureDocument()));
+    raw.pages[0].objects.push({ id: "reaction", type: "reaction", x: 0, y: 0, width: 30, height: 30, rotation: 0,
+      style: {}, components: [{ objectId: "molecule", role: "reactant", futureRole: "catalyst" }] });
+    expect(() => readDocument(raw)).toThrow(/components\.0\.futureRole: Unsupported chemistry field/);
+    delete raw.pages[0].objects[1].components[0].futureRole;
+    raw.pages[0].objects[1].components[0].visualDecoration = { color: "red" };
+    expect(JSON.parse(serializeDocument(readDocument(raw).document)).pages[0].objects[1].components[0])
+      .toMatchObject({ role: "reactant", visualDecoration: { color: "red" } });
   });
 
   it("strict schemas never silently convert a chemical bond order, even outside the file reader", () => {
@@ -291,6 +376,7 @@ describe("forward-compatible native reader", () => {
 
   it("preserves hostile-looking JSON keys as data without traversing or changing prototypes", () => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
+    raw.pages[0].objects = [{ id: "text", type: "text", x: 0, y: 0, width: 20, height: 20, rotation: 0, style: {}, text: "safe", spans: [] }];
     Object.defineProperty(raw.pages[0].objects[0], "__proto__", { value: { future: "safe" }, enumerable: true });
     Object.defineProperty(raw.styles, "__proto__", { value: { future: "also safe" }, enumerable: true });
     const result = readDocument(raw);

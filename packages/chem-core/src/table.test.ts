@@ -70,10 +70,10 @@ describe("table objects", () => {
     for (const topRulePt of [-1, 7, Infinity]) expect(TableObjectSchema.safeParse({ ...table, tableStyle: { topRulePt } }).success).toBe(false);
   });
 
-  it("fills defaults and degrades unknown alignment only through the newer-file reader with a warning", () => {
+  it("opens an unversioned table, fills defaults and degrades unknown alignment with a warning", () => {
     const raw = { ...table, columns: table.columns.map((column, i) => i ? column : { ...column, align: "future", formula: undefined }), rows: table.rows.map(row => ({ ...row, cells: row.cells.map(cell => ({ text: cell.text })) })), footnotes: undefined, tableStyle: {} };
     expect(() => TableObjectSchema.parse(raw)).toThrow();
-    const result = readDocument({ ...document, formatVersion: "1.3.0", minAppVersion: "1.3.0",
+    const result = readDocument({ ...document,
       pages: [{ ...document.pages[0], objects: [raw] }] });
     const parsed = result.document.pages[0]!.objects[0] as TableObject;
     expect(result.warnings).toContainEqual(expect.objectContaining({ code: "NATIVE_VISUAL_ENUM_FALLBACK", originalValue: "future" }));
