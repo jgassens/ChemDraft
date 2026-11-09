@@ -930,8 +930,8 @@ function exportGraphicObject(
   warnForGraphicCdxmlLimitations(graphic, warnings);
   // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a
   // native arrow. The element's ArrowheadHead/ArrowheadTail/ArrowheadType triple is RICHER than the
-  // closed ArrowType enum — it can say hollow, angled, or half-headed per end — so round-tripping
-  // the source form loses less than promoting it to a reaction arrow would.
+  // closed ArrowType enum — it can say which ends are full/half with a shared solid/open type —
+  // so round-tripping the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
   }
@@ -1207,10 +1207,16 @@ function exportGraphicAsCdxmlCurve(
       sourceObjectId: graphic.id
     });
   } else if (JSON.stringify(nodes) !== JSON.stringify(sourceNodes)) {
-    const points = [nodes[0].point];
-    for (let index = 1; index < nodes.length; index += 1) {
-      points.push(nodes[index - 1].outControl ?? nodes[index - 1].point,
-        nodes[index].inControl ?? nodes[index].point, nodes[index].point);
+    // A closed spline needs the first incoming and last outgoing handles for its final segment.
+    // Incoming/knot/outgoing triples retain them without duplicating the first native node.
+    const points = graphic.data.pathClosed
+      ? nodes.flatMap(node => [node.inControl ?? node.point, node.point, node.outControl ?? node.point])
+      : [nodes[0].point];
+    if (!graphic.data.pathClosed) {
+      for (let index = 1; index < nodes.length; index += 1) {
+        points.push(nodes[index - 1].outControl ?? nodes[index - 1].point,
+          nodes[index].inControl ?? nodes[index].point, nodes[index].point);
+      }
     }
     attributes.CurvePoints = points.map(formatPoint).join(" ");
     delete attributes.BoundingBox;
@@ -1307,13 +1313,21 @@ function cdxmlArrowheadForMarker(marker: GraphicMarker | undefined): { head: str
   }
 }
 
-/** CDXML's arrowhead enum covers full, half, and unfilled heads and nothing else, so the decorative
- *  native heads have no spelling. Drop them with a warning rather than exporting a full head that
- *  claims the user drew something they didn't. */
+/** The per-end CDXML heads describe full/half heads; Solid/Hollow/Angle is one shared type.
+ *  Decorative heads have no spelling, and mixed solid/open ends cannot share that type. */
 function warnForUnrepresentableArrowheads(
   graphic: GraphicObject,
   warnings: CompatibilityConversionWarning[]
 ): void {
+  const head = cdxmlArrowheadForMarker(graphic.data.markerEnd);
+  const tail = cdxmlArrowheadForMarker(graphic.data.markerStart);
+  if (head && tail && head.type !== tail.type) {
+    warnings.push({
+      code: "cdxml.arrow_marker_payload_only",
+      message: `Native start (tail) ${graphic.data.markerStart!.kind} style cannot be combined with the end (head) ${graphic.data.markerEnd!.kind} style in standard CDXML: ArrowheadType applies to both ends. The exported tail uses the head's ${head.type} type; its original style is preserved exactly only in the embedded ChemDraft payload.`,
+      sourceObjectId: graphic.id
+    });
+  }
   const dropped = [graphic.data.markerEnd, graphic.data.markerStart].filter(
     (marker): marker is GraphicMarker =>
       marker !== undefined && marker.kind !== "none" && cdxmlArrowheadForMarker(marker) === undefined
@@ -3087,22 +3101,25 @@ function artToolIdForImportedArrowMarkers(
  *  — which an `<arrow>` element never carries — imported every ChemDraw arrow as a bare line. */
 function cdxmlArrowMarkers(element: XmlElementView): Pick<GraphicObject["data"], "markerStart" | "markerEnd"> {
   const arrowheadType = normalizedCdxmlToken(element.attributes.ArrowheadType);
-  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType);
-  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType);
+  const isCurve = element.name === "curve";
+  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType, isCurve);
+  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType, isCurve);
   return {
     ...(markerEnd ? { markerEnd } : {}),
     ...(markerStart ? { markerStart } : {})
   };
 }
 
-function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string): GraphicMarker | undefined {
+function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string, isCurve: boolean): GraphicMarker | undefined {
   const head = normalizedCdxmlToken(arrowhead);
   // An absent attribute and "Unspecified" both mean the end is unheaded — which is why ChemDraw
   // writes a plain line arrow as `ArrowheadType="Solid"` with no `ArrowheadHead` at all.
   if (head === "" || head === "none" || head === "unspecified") {
     return undefined;
   }
-  if (head === "half" || head === "halfleft" || head === "halfright" || arrowheadType === "half") {
+  // Curve aliases stay scoped here: <arrow> keeps its historical full-head fallback for Half,
+  // ArrowheadType=Half and a per-end Angle token.
+  if (head === "halfleft" || head === "halfright" || (isCurve && (head === "half" || arrowheadType === "half"))) {
     // Native fishhook heads are one-sided but not left/right-handed, so both spellings land on the
     // same marker; a ChemDraft-authored arrow keeps its exact head in the embedded payload.
     return { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx };
@@ -3111,7 +3128,7 @@ function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string):
   // one. "Hollow" and "Angle" are both unfilled, and `open-arrow` is the nearest native head to
   // either; an unstated type means ChemDraw's default solid head.
   return {
-    kind: head === "angle" || arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
+    kind: (isCurve && head === "angle") || arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
     sizePx: defaultCdxmlArrowheadSizePx
   };
 }

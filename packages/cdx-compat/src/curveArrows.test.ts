@@ -208,6 +208,44 @@ describe("CDXML Bezier mechanism curves", () => {
     expect(exported.contents).not.toContain(`CurvePoints="${cubic}"`);
   });
 
+  it.each([
+    ["filled-arrow", "open-arrow", "Solid", "filled-arrow"],
+    ["open-arrow", "filled-arrow", "Angle", "open-arrow"]
+  ] as const)("warns when an edited %s head cannot share its type with an %s tail", (head, tail, type, visibleTail) => {
+    const { curve, document } = importedCurve(fixture('ArrowheadHead="Full"'));
+    curve.data.markerEnd = { kind: head, sizePx: 16 };
+    curve.data.markerStart = { kind: tail, sizePx: 16 };
+    const exported = exportDocumentToCdxml(document);
+    expect(exported.contents).toContain('ArrowheadHead="Full"');
+    expect(exported.contents).toContain('ArrowheadTail="Full"');
+    expect(exported.contents).toContain(`ArrowheadType="${type}"`);
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.arrow_marker_payload_only", sourceObjectId: curve.id,
+      message: expect.stringContaining(`start (tail) ${tail}`)
+    }));
+    const after = importedCurve(canonicalVisibleCdxml(exported.contents));
+    expect(after.curve.data.markerEnd?.kind).toBe(head);
+    expect(after.curve.data.markerStart?.kind).toBe(visibleTail);
+    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+  });
+
+  it("round-trips an edited closed three-node Bezier including both closing controls", () => {
+    const points = "12 60 24 48 36 12 60 12 84 48 96 72 84 96 48 108 12 84";
+    const { curve, document } = importedCurve(fixture('Closed="yes"', points));
+    expect(curve.data.pathNodes).toHaveLength(3);
+    curve.data.pathNodes![0].inControl = { x: 8, y: 88 };
+    curve.data.pathNodes![2].outControl = { x: 8, y: 120 };
+    const exported = exportDocumentToCdxml(document);
+    expect(exported.warnings).toEqual([]);
+    expect(exported.contents).toContain('Closed="yes"');
+    expect(exported.contents).toContain('CurvePoints="6 66 24 48 36 12 60 12 84 48 96 72 84 96 48 108 6 90"');
+    const after = importedCurve(canonicalVisibleCdxml(exported.contents));
+    expect(after.curve.data.pathClosed).toBe(true);
+    expect(after.curve.data.pathNodes).toEqual(curve.data.pathNodes);
+    expect(planNativeArtVisual(after.curve, { coordinateSpace: "page" }).pathD)
+      .toEqual(planNativeArtVisual(curve, { coordinateSpace: "page" }).pathD);
+  });
+
   it("preserves an unsupported point layout with a named warning and writes the original back", () => {
     const points = "0 0 10 10 20 0 30 10 40 0";
     const opened = openChemDraftPayload(`<CDXML><page><curve id="odd" CurvePoints="${points}" ArrowheadHead="Half"/></page></CDXML>`);

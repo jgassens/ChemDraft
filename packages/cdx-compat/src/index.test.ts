@@ -2075,6 +2075,27 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(reopenedHeads).toEqual(["filled-arrow", "open-arrow", "half-arrow", "filled-arrow", undefined]);
   });
 
+  it.each([
+    'ArrowheadHead="Half" ArrowheadType="Solid"',
+    'ArrowheadHead="Full" ArrowheadType="Half"',
+    'ArrowheadHead="Angle" ArrowheadType="Solid"'
+  ])("keeps the legacy standalone <arrow> mapping for %s", attributes => {
+    // These tokens historically used the full-head fallback on <arrow>. Curve-specific aliases
+    // must not change either that import or the resulting standard CDXML export.
+    const opened = openChemDraftPayload(`<CDXML><page><arrow id="a1"
+      Head3D="120 30 0" Tail3D="30 30 0" ${attributes}/></page></CDXML>`);
+    const arrow = opened.document!.pages[0].objects[0] as GraphicObject;
+    expect(arrow.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(arrow.data.markerStart).toBeUndefined();
+    expect(arrow.data.artToolId).toBe("reactionArrow");
+    const exported = exportDocumentToCdxml(opened.document!);
+    expect(exported.warnings).toEqual([]);
+    expect(exported.contents).toContain("<arrow ");
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Solid"');
+    const after = openChemDraftPayload(canonicalVisibleCdxml(exported.contents));
+    expect((after.document!.pages[0].objects[0] as GraphicObject).data.markerEnd).toEqual(arrow.data.markerEnd);
+  });
+
   it("warns instead of inventing a CDXML spelling for decorative arrowheads", () => {
     // CDXML's arrowhead enum is full/half/unfilled and nothing else, so a dot or diamond head has no
     // spelling. Exporting it as a full head would claim the user drew something they didn't.

@@ -35,3 +35,13 @@ also warn and remain in the source attributes. Invalid or unsupported point layo
 compatibility objects with `cdxml.curve_points_preserved` and export their source curve. Rotation,
 tilt, or edited head dimensions that standard export cannot express warn and remain in the native
 payload. This checkout rejects binary CDX input; it has no binary-to-CDXML conversion path.
+
+Edited closed Beziers export incoming/knot/outgoing triples, including the first incoming and last
+outgoing controls that define the closing segment. CDXML's per-end heads specify `Full`, `HalfLeft`
+or `HalfRight`; `Solid`, `Hollow` and `Angle` belong to the shared `ArrowheadType` (see the
+[CDXML enum mappings](https://github.com/epam/Indigo/blob/master/core/indigo-core/molecule/CDXCommons.h#L109-L114)).
+An edited curve with mixed filled/open ends therefore exports using the end head's type and emits
+`cdxml.arrow_marker_payload_only`, naming the start (tail) style that is approximated. The native
+payload retains both original marker styles. Curve-specific `Half`/`Angle` aliases do not affect
+standalone `<arrow>` import: its legacy full-head fallback and resulting `Full`/`Solid` export for
+`ArrowheadHead="Half"`, `ArrowheadType="Half"` or `ArrowheadHead="Angle"` remain unchanged.
