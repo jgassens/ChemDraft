@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
-import { createEmptyDocument, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, CDX_POINT3D_ORDER_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
@@ -332,11 +332,239 @@ describe("interchange graphics and page extent", () => {
       const root = tree(xml), page = elements(root, "page")[0];
       expect(page.attrs.BoundingBox).toBe("0 0 612 792");
       expect(page.attrs.attrib4346).toBeUndefined();
+      expect(page.attrs.WidthPages).toBeUndefined();
+      expect(page.attrs.HeightPages).toBeUndefined();
+      expect(root.attrs.PrintMargins).toBeUndefined();
       expect(attributes(xml, "graphic")[0].BoundingBox).toBe("30 30 120 90");
       expect(root.attrs.attrib4345).toBe(embedded ? "|x|32" : undefined);
       const binaryRoot = readCdx(exportDocumentToCdx(document, { embedNativePayload: embedded }).bytes);
       expect(binaryRoot.attrs.attrib4345).toBe(embedded ? "|x|32" : undefined);
+      expect(binaryRoot.attrs.PrintMargins).toBeUndefined();
+      expect(elements(binaryRoot, "page")[0].attrs).toMatchObject({ BoundingBox: "0 0 612 792" });
+      expect(elements(binaryRoot, "page")[0].attrs.WidthPages).toBeUndefined();
     }
+  });
+
+  const halfInchMargins = { top: 48, left: 48, bottom: 48, right: 48 };
+  const setLayout = (document: ChemDraftDocument, layout: PageLayout) => {
+    Object.assign(document.pages[0], { layout, width: layout.widthPx, height: layout.heightPx, margin: pageMarginFromLayout(layout) });
+  };
+  const interchange = (document: ChemDraftDocument, binary: boolean) => binary
+    ? readCdx(exportDocumentToCdx(document).bytes)
+    : tree(exportDocumentToCdxml(document, { embedNativePayload: false }).contents);
+
+  it.each([false, true])("fits wholly negative content using its shifted extents (binary=%s)", binary => {
+    const document = documentWithGraphic({ ...nativeGraphic({}, "rect"),
+      x: -600 / 0.75, y: -600 / 0.75, width: 100 / 0.75, height: 100 / 0.75 });
+    const root = interchange(document, binary), page = elements(root, "page")[0];
+    expect(page.attrs.BoundingBox).toBe("0 0 612 792");
+    expect(page.attrs.WidthPages).toBeUndefined();
+    expect(page.attrs.HeightPages).toBeUndefined();
+    expect(root.attrs.PrintMargins).toBeUndefined();
+    expect(JSON.parse(Buffer.from(page.attrs.attrib4346.slice(3), "hex").toString("utf8"))).toEqual([618, 618]);
+    expect(elements(page, "graphic")[0].attrs.BoundingBox).toBe("18 18 118 118");
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[0].objects[0].x).toBeCloseTo(-600 / 0.75, 3);
+    expect(reopened.pages[0].objects[0].y).toBeCloseTo(-600 / 0.75, 3);
+  });
+
+  it.each([false, true])("writes shared margins when only a later plain source page grows (binary=%s)", binary => {
+    const source = `<CDXML><page id="1" BoundingBox="0 0 612 792"/>
+      <page id="2" BoundingBox="0 0 612 792"><graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    document.pages[1].objects[0].width = 900 / 0.75;
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings.filter(warning => warning.code === "cdxml.page_margins_conflict")).toEqual([]);
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1008 684", WidthPages: "2", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages.map(page => [page.width, page.height, page.margin])).toEqual(
+      document.pages.map(page => [page.width, page.height, page.margin]));
+  });
+
+  it.each([false, true].flatMap(binary => ["36.0 36.0 36.0 36.0", "36.00001 36.00001 36.00001 36.00001"]
+    .map(margins => ({ binary, margins }))))("compares preserved and regenerated margins numerically (binary=$binary, margins=$margins)", ({ binary, margins }) => {
+    const source = `<CDXML PrintMargins="${margins}">
+      <page id="1" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1"/>
+      <page id="2" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1">
+        <graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    document.pages[1].objects[0].width = 900 / 0.75;
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings.filter(warning => warning.code === "cdxml.page_margins_conflict")).toEqual([]);
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe(binary ? readCdx(bytesFromCdxml(source)).attrs.PrintMargins : margins);
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1080 720", WidthPages: "2", HeightPages: "1" });
+  });
+
+  it.each([false, true])("does not add a page when content ends exactly at a printable boundary (binary=%s)", binary => {
+    for (const preset of ["letter", "a4"] as const) {
+      const layout = createPageLayout(preset, "portrait", halfInchMargins);
+      const document = documentWithGraphic({ ...nativeGraphic({}, "rect"), x: 0, y: 0,
+        width: layout.widthPx - 96, height: layout.heightPx - 96 });
+      setLayout(document, layout);
+      const root = interchange(document, binary);
+      expect(root.attrs.PrintMargins).toBe("36 36 36 36");
+      expect(elements(root, "page")[0].attrs).toMatchObject({ WidthPages: "1", HeightPages: "1" });
+      const box = elements(root, "page")[0].attrs.BoundingBox.split(" ").map(Number);
+      expect(box[2]).toBeCloseTo((layout.widthPx - 96) * 0.75, 3);
+      expect(box[3]).toBeCloseTo((layout.heightPx - 96) * 0.75, 3);
+      document.pages[0].objects[0].width += 0.01 / 0.75;
+      expect(elements(interchange(document, binary), "page")[0].attrs.WidthPages).toBe("2");
+    }
+  });
+
+  it.each([false, true])("fits different native-page margins to the shared root print setup and warns (binary=%s)", binary => {
+    const document = documentWithGraphic(nativeGraphic({}, "rect"));
+    document.pages.push({ ...structuredClone(document.pages[0]), id: "page_002", objects: [
+      { ...nativeGraphic({}, "rect"), id: "graphic_002", x: 0, y: 0, width: 520 / 0.75 }
+    ] });
+    document.pages[1].margin = halfInchMargins;
+    document.pages[1].layout = createPageLayout("letter", "portrait", halfInchMargins);
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.page_margins_conflict", sourceObjectId: "page_002" }));
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1008 684", WidthPages: "2", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[1]).toMatchObject({ width: 816, height: 1056, margin: document.pages[0].margin });
+  });
+
+  it.each([false, true])("regenerates a preserved grid whose page margins differ from the shared root (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36 36 36 36">
+      <page id="1" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1"/>
+      <page id="2" PrintMargins="54 54 54 54" BoundingBox="0 0 504 684" WidthPages="1" HeightPages="1">
+        <graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.page_margins_conflict", sourceObjectId: document.pages[1].id }));
+    const root = interchange(document, binary), page = elements(root, "page")[1];
+    expect(root.attrs.PrintMargins).toBe("36 36 36 36");
+    expect(page.attrs.PrintMargins).toBeUndefined();
+    expect(page.attrs).toMatchObject({ BoundingBox: "0 0 540 720", WidthPages: "1", HeightPages: "1" });
+  });
+
+  it.each([false, true])("replaces a source root margin value that differs from the first page's effective margins (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36 36 36 36"><page id="1" PrintMargins="54 54 54 54"
+      BoundingBox="0 0 504 684" WidthPages="1" HeightPages="1">
+      <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[0].attrs.PrintMargins).toBeUndefined();
+    expect(elements(root, "page")[0].attrs).toMatchObject({ BoundingBox: "0 0 504 684", WidthPages: "1", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[0]).toMatchObject({ width: 816, height: 1056, margin: document.pages[0].margin });
+  });
+
+  it.each([false, true])("exports each native page with explicit grid counts in a multi-page document (binary=%s)", binary => {
+    const document = documentWithGraphic(nativeGraphic({}, "rect"));
+    document.pages.push({ ...structuredClone(document.pages[0]), id: "page_002", objects: [] });
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")).toHaveLength(2);
+    for (const page of elements(root, "page")) {
+      expect(page.attrs).toMatchObject({ BoundingBox: "0 0 504 684", WidthPages: "1", HeightPages: "1" });
+    }
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages).toHaveLength(2);
+    expect(reopened.pages.map(page => [page.width, page.height])).toEqual([[816, 1056], [816, 1056]]);
+  });
+
+  it.each([false, true])("imports unambiguous uncounted paper and printable sizes with margins (binary=%s)", binary => {
+    for (const box of ["0 0 595.28 841.89", "0 0 523.28 769.89", "0 0 841.89 595.28", "0 0 769.89 523.28"]) {
+      const source = `<CDXML PrintMargins="36 36 36 36"><page id="1" BoundingBox="${box}">
+        <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+      const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+      expect(document.pages[0].layout.presetId).toBe("a4");
+      expect(document.pages[0].layout.sourceUnit).toBe("mm");
+      expect(Math.min(document.pages[0].width, document.pages[0].height) * 0.75).toBeCloseTo(595.28, 3);
+      expect(Math.max(document.pages[0].width, document.pages[0].height) * 0.75).toBeCloseTo(841.89, 3);
+      expect(document.pages[0].margin).toEqual(halfInchMargins);
+      const original = binary ? readCdx(bytesFromCdxml(source)) : tree(source);
+      expect(elements(interchange(document, binary), "page")[0].attrs.BoundingBox).toBe(elements(original, "page")[0].attrs.BoundingBox);
+    }
+  });
+
+  it.each([false, true])("derives portrait, landscape and A4 grids from the actual paper and asymmetric margins (binary=%s)", binary => {
+    const cases = [
+      { layout: createPageLayout("letter", "portrait", halfInchMargins), printable: [540, 720], extent: [900, 1200], counts: [2, 2] },
+      { layout: createPageLayout("letter", "landscape", halfInchMargins), printable: [720, 540], extent: [1300, 900], counts: [2, 2] },
+      { layout: createCustomPageLayout(595.28 / 0.75, 841.89 / 0.75, "css-px", halfInchMargins), printable: [523.28, 769.89], extent: [900, 1200], counts: [2, 2] },
+      { layout: createPageLayout("a4", "portrait", { top: 24, left: 32, bottom: 40, right: 48 }),
+        printable: [210 / 25.4 * 72 - 60, 297 / 25.4 * 72 - 48], extent: [900, 400], counts: [2, 1] }
+    ];
+    for (const { layout, printable, extent, counts } of cases) {
+      const document = documentWithGraphic({ ...nativeGraphic({}, "rect"),
+        x: -40, y: -80, width: extent[0] / 0.75, height: extent[1] / 0.75 });
+      setLayout(document, layout);
+      const root = interchange(document, binary), page = elements(root, "page")[0];
+      expect(root.attrs.PrintMargins).toBe([layout.marginTopPx, layout.marginLeftPx, layout.marginBottomPx, layout.marginRightPx].map(value => value * 0.75).join(" "));
+      expect(page.attrs).toMatchObject({ WidthPages: String(counts[0]), HeightPages: String(counts[1]) });
+      const [left, top, width, height] = page.attrs.BoundingBox.split(/\s+/).map(Number);
+      expect([left, top]).toEqual([0, 0]);
+      expect(width).toBeCloseTo(printable[0] * counts[0], 3);
+      expect(height).toBeCloseTo(printable[1] * counts[1], 3);
+      expect(page.attrs.attrib4346).toMatch(/^\|x\|/);
+      const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+      expect(reopened.pages[0].width).toBeCloseTo(layout.widthPx, 3);
+      expect(reopened.pages[0].height).toBeCloseTo(layout.heightPx, 3);
+      expect(reopened.pages[0].margin).toEqual(document.pages[0].margin);
+      expect(reopened.pages[0].layout.orientation).toBe(layout.orientation);
+      expect(reopened.pages[0].objects[0].x).toBeCloseTo(-40, 3);
+      expect(reopened.pages[0].objects[0].y).toBeCloseTo(-80, 3);
+      const repeated = interchange(reopened, binary);
+      expect(repeated.attrs.PrintMargins).toBe(root.attrs.PrintMargins);
+      expect(elements(repeated, "page")[0].attrs).toEqual(page.attrs);
+    }
+  });
+
+  it.each([false, true])("preserves all source page attributes and root margins verbatim while a 2 by 2 drawing fits (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36.000 36.00 36.0 36">
+      <page id="1" BoundingBox="0.000 0.00 1080.0000 1440.00" WidthPages="2" HeightPages="2"
+        HeaderPosition="24.000" FooterPosition="28.00" Header="source header" Footer="source footer"
+        PrintTrimMarks="yes" PageOverlap="0" DrawingSpace="poster" attrib4a12="|x|010203"
+        ${binary ? "" : 'Orientation="portrait" ExtraPageSetting="opaque &amp; exact"'}>
+        <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 1000 1300"/>
+      </page></CDXML>`;
+    const original = binary ? readCdx(bytesFromCdxml(source)) : tree(source);
+    const pageAttributes = elements(original, "page")[0].attrs;
+    const document = requireDocument(binary ? importCdx(writeCdx(original)) : openChemDraftPayload(source));
+    const page = document.pages[0];
+    expect(page.width).toBe(816); expect(page.height).toBe(1056);
+    expect(page.margin).toEqual(halfInchMargins);
+    expect(page.layout).toMatchObject({ presetId: "letter", orientation: "portrait", sourceUnit: "inch" });
+    expect(page.compatibility?.unknown.cdxmlPageAttributes).toEqual(pageAttributes);
+    expect(page.compatibility?.unknown.cdxmlRootPageAttributes).toEqual({ PrintMargins: original.attrs.PrintMargins });
+    const exported = interchange(document, binary);
+    expect(exported.attrs.PrintMargins).toBe(original.attrs.PrintMargins);
+    expect(elements(exported, "page")[0].attrs).toEqual({ ...pageAttributes, id: elements(exported, "page")[0].attrs.id });
+    const reimported = requireDocument(binary ? importCdx(writeCdx(exported)) : openChemDraftPayload(cdxElementToCdxml(exported)));
+    expect(reimported.pages[0].objects[0].x).toBeCloseTo(page.objects[0].x, 4);
+    expect(reimported.pages[0].objects[0].y).toBeCloseTo(page.objects[0].y, 4);
+    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(document);
+    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(document);
+
+    page.objects[0].width = 1500 / 0.75;
+    page.objects[0].height = 1900 / 0.75;
+    const grown = interchange(document, binary), grownPage = elements(grown, "page")[0].attrs;
+    expect(grown.attrs.PrintMargins).toBe("36 36 36 36");
+    expect(grownPage).toMatchObject({ BoundingBox: "0 0 1620 2160", WidthPages: "3", HeightPages: "3", HeaderPosition: pageAttributes.HeaderPosition,
+      FooterPosition: pageAttributes.FooterPosition, PrintTrimMarks: "yes", attrib4a12: "|x|010203" });
+  });
+
+  it.each([false, true])("uses a changed native paper setup instead of stale source counts and margins (binary=%s)", binary => {
+    const document = requireDocument(openChemDraftPayload(`<CDXML PrintMargins="36 36 36 36"><page id="1"
+      BoundingBox="0 0 1080 1440" WidthPages="2" HeightPages="2" Width="612" Height="792" Orientation="portrait">
+      <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`));
+    setLayout(document, createPageLayout("letter", "landscape", halfInchMargins));
+    const exported = interchange(document, binary), page = elements(exported, "page")[0].attrs;
+    expect(page).toMatchObject({ BoundingBox: "0 0 720 540", WidthPages: "1", HeightPages: "1" });
+    expect(page.Width).toBeUndefined(); expect(page.Height).toBeUndefined(); expect(page.Orientation).toBeUndefined();
+    const reopened = requireDocument(binary ? importCdx(writeCdx(exported)) : openChemDraftPayload(cdxElementToCdxml(exported)));
+    expect(reopened.pages[0].layout).toMatchObject({ presetId: "letter", orientation: "landscape" });
+    expect(reopened.pages[0].width).toBe(1056); expect(reopened.pages[0].height).toBe(816);
   });
 });
 type Node = [number, number, number, string?];

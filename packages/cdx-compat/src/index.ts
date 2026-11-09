@@ -40,6 +40,7 @@ import { bondedElementLabelMeaning, isGenericAtomLabel } from "@chemdraft/templa
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 import { PROPS } from "./cdxTags";
+import { equalPrintMargins, fitPageSetup, importPageSetup, pagePrintMargins, type VisiblePageSetup } from "./pageSetup";
 import {
   CDX_NATIVE_ENVELOPE_ATTRIBUTE,
   cdxElementFromOrderedTree,
@@ -403,12 +404,35 @@ export function exportDocumentToCdxml(
   }
   const reactionAllocator = createIdAllocator(0, reactionIds);
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
-  const fittedPages = parsedDocument.pages.map((page, pageIndex) => fitVisiblePage(page,
-    buildVisiblePageChildren(page, warnings, fonts, curveColors,
-      preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)), warnings));
+  let sharedPrintMargins = pagePrintMargins(parsedDocument.pages[0]);
+  const fittedPages = parsedDocument.pages.map((page, pageIndex) => {
+    const fitted = fitVisiblePage(page,
+      buildVisiblePageChildren(page, warnings, fonts, curveColors,
+        preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)), warnings,
+      parsedDocument.pages.length === 1, sharedPrintMargins);
+    // Retain an equivalent source root spelling, and use its exact numbers for later grids.
+    if (pageIndex === 0 && equalPrintMargins(fitted.setup.rootAttributes.PrintMargins, sharedPrintMargins)) {
+      sharedPrintMargins = fitted.setup.rootAttributes.PrintMargins;
+    }
+    return fitted;
+  });
   const embedded = options.embedNativePayload !== false;
-  const visiblePages = fittedPages.map(({ page, children, offset }) => buildPageXml(page, children, offset));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors, embedded);
+  const rootPageSetup = { ...fittedPages[0]?.setup.rootAttributes };
+  if (fittedPages.some(({ setup }) => setup.attributes.WidthPages !== undefined || setup.attributes.HeightPages !== undefined
+      || setup.attributes.PrintMargins !== undefined
+      || setup.rootAttributes.WidthPages !== undefined || setup.rootAttributes.HeightPages !== undefined)
+      || rootPageSetup.PrintMargins !== undefined) {
+    rootPageSetup.PrintMargins = sharedPrintMargins;
+    for (const fitted of fittedPages) delete fitted.setup.attributes.PrintMargins;
+  }
+  for (const fitted of fittedPages.slice(1)) {
+    if (!equalPrintMargins(pagePrintMargins(fitted.page), sharedPrintMargins)) warnings.push({
+      code: "cdxml.page_margins_conflict", sourceObjectId: fitted.page.id,
+      message: `Page ${fitted.page.id} has different print margins from page ${parsedDocument.pages[0].id}; CDXML's shared root PrintMargins and every page grid use page ${parsedDocument.pages[0].id}'s margins.`
+    });
+  }
+  const visiblePages = fittedPages.map(({ page, children, setup }) => buildPageXml(page, children, setup));
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors, embedded, rootPageSetup);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -417,10 +441,10 @@ export function exportDocumentToCdxml(
     visibleCdxmlHash,
     nativeDocument: encodeBase64UrlUtf8(nativeJson)
   });
-  const envelopePages = fittedPages.map(({ page, children, offset }, pageIndex) =>
-    buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, offset)
+  const envelopePages = fittedPages.map(({ page, children, setup }, pageIndex) =>
+    buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, setup)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, curveColors, embedded);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, curveColors, embedded, rootPageSetup);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -731,11 +755,11 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[], embedded = true): string {
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[], embedded = true, pageSetup: Record<string, string> = {}): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}>`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(pageSetup).length ? ` ${xmlAttributes(pageSetup)}` : ""}>`,
     buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
       `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
@@ -756,15 +780,14 @@ function buildStandardColorTableXml(colors: readonly string[]): string {
   ].join("\n");
 }
 
-function buildPageXml(page: DocumentPage, children: string, offset?: Point): string {
-  const attributes = [
-    `id="${escapeXmlAttribute(page.id)}"`,
-    // "left top right bottom": a portrait page must export as width-then-height, or every
-    // spec-conforming reader sees it as landscape.
-    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
-  ];
-  if (offset) attributes.push(`${PageOffsetAttribute}="|x|${hex(utf8Bytes(JSON.stringify([offset.x, offset.y])))}"`);
-  return `  <page ${attributes.join(" ")}>${children}</page>`;
+function buildPageXml(page: DocumentPage, children: string, setup: VisiblePageSetup): string {
+  const attributes: Record<string, string> = { id: page.id, ...setup.attributes };
+  // Object ids remain native; the rest of an unchanged source page setup retains its spelling.
+  attributes.id = page.id;
+  if (setup.offset && !attributes[PageOffsetAttribute]) {
+    attributes[PageOffsetAttribute] = `|x|${hex(utf8Bytes(JSON.stringify([setup.offset.x, setup.offset.y])))}`;
+  }
+  return `  <page ${xmlAttributes(attributes)}>${children}</page>`;
 }
 
 /** Coordinate attributes, rather than native object kinds, are translated so nested labels,
@@ -808,39 +831,25 @@ function serializeVisibleTree(tree: OrderedXmlTree): string {
   }).join("");
 }
 
-function fitVisiblePage(page: DocumentPage, children: string, warnings: CompatibilityConversionWarning[]): { page: DocumentPage; children: string; offset?: Point } {
+function fitVisiblePage(page: DocumentPage, children: string, warnings: CompatibilityConversionWarning[], allowPlain: boolean, printMargins: string): { page: DocumentPage; children: string; setup: VisiblePageSetup } {
   const tree = parseCdxml(`<CDXML><page>${children}</page></CDXML>`);
   const content = findElements(tree, "page")[0].children;
-  let left = 0, top = 0, right = 0, bottom = 0;
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
   visitVisibleCoordinates(content, (x, y) => {
     left = Math.min(left, x); top = Math.min(top, y);
     right = Math.max(right, x); bottom = Math.max(bottom, y);
   });
-  const margin = 18; // points; leaves room for strokes and ordinary arrowheads
-  const offset = { x: left < 0 ? Math.ceil(margin - left) : 0, y: top < 0 ? Math.ceil(margin - top) : 0 };
-  const width = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + offset.x + margin)));
-  const height = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + offset.y + margin)));
-  let finite = [offset.x, offset.y, width, height].every(Number.isFinite);
-  visitVisibleCoordinates(content, (x, y) => {
-    finite = finite && Number.isFinite(x + offset.x) && Number.isFinite(y + offset.y);
-  });
-  if (!finite) {
+  if (left === Infinity) left = top = right = bottom = 0;
+  const setup = fitPageSetup(page, { left, top, right, bottom }, allowPlain, printMargins);
+  if (setup.unrepresentable) {
     warnings.push({ code: "cdxml.page_fit_unrepresentable", sourceObjectId: page.id,
       message: `Page ${page.id} cannot be fitted within finite coordinate limits; original visible coordinates were retained and the finite page may not cover all content.` });
-    // Keep each representable unshifted extent, or the original letter-or-larger size.
-    const unshiftedWidth = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + margin)));
-    const unshiftedHeight = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + margin)));
-    return { page: { ...page,
-      width: Number.isFinite(unshiftedWidth) ? unshiftedWidth : Math.max(cdxmlToCssPx(612), page.width),
-      height: Number.isFinite(unshiftedHeight) ? unshiftedHeight : Math.max(cdxmlToCssPx(792), page.height)
-    }, children };
+    return { page, children, setup };
   }
-  const shifted = offset.x !== 0 || offset.y !== 0;
-  if (shifted) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
+  const offset = setup.offset;
+  if (offset) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
   return {
-    page: { ...page, width, height },
-    children: shifted ? serializeVisibleTree(content) : children,
-    ...(shifted ? { offset } : {})
+    page, children: offset ? serializeVisibleTree(content) : children, setup
   };
 }
 
@@ -2689,7 +2698,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   let importedPages: DocumentPage[];
   try {
     importedPages = pageElements.map((pageElement, pageIndex) => {
-      const pageTemplate = base.pages[0];
+      const pageTemplate = importPageSetup(base.pages[0], pageElement.attributes, root?.attributes ?? {});
       restorePageOffset(pageElement, warnings);
       const importedPage = applyImportTransformToPageObjects(
         importPageObjects(pageElement, pageIndex, warnings, colorTable, curveLineDefaults),

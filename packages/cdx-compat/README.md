@@ -64,15 +64,57 @@ Native-payload, schema and codec checks still apply. Older envelopes
 without the binary hash also require conflict review. This property is ChemDraft-specific; other readers
 can consume the standard visible objects without interpreting it.
 
-Visible pages grow to cover their exported content plus an 18-point margin, with letter
-(`612 × 792` points) as the minimum; larger native page sizes are retained. This exporter writes
-page `BoundingBox`, without conflicting fixed `Width`/`Height` or page-count attributes. If any
-visible coordinates are negative, every visible coordinate on that page receives the same offset,
-including nested molecule labels, graphics, curve controls, arrow axes and bracket geometry.
-Content already inside letter stays at its original position on a letter page.
+Page fitting retains the source root `PrintMargins` and all source page attributes, including the
+original `BoundingBox` text, `WidthPages`, `HeightPages`, headers, footers, trim marks, orientation
+and opaque attributes. When native paper settings are unchanged and the visible content still fits,
+export writes that setup back verbatim (object ids may be reassigned). Binary CDX retains the same
+settings within its ordinary numeric precision and supported attribute set. `PrintMargins` is
+top/left/bottom/right in both CDXML text and binary CDX, including asymmetric margins.
+
+On import, a counted page box plus margins determines the physical paper size: divide the box by
+the page counts and add the margins. Recognised paper sizes map to native presets and orientation;
+other unambiguous sizes map to custom paper. Uncounted boxes without margins describe paper.
+With margins but no counts, native size is inferred only when a recognised paper size distinguishes
+the paper-box and printable-box conventions. Ambiguous settings remain in compatibility data.
+Page counts stay in compatibility data; native `pages` are separate logical pages.
+
+For new drawings, changed paper settings, or content that outgrows a source setup, export derives
+the printable width and height from the actual native paper dimensions minus its margins. Each
+page writes `WidthPages = ceil(contentRight / printableWidth)` and
+`HeightPages = ceil(contentBottom / printableHeight)`, with a minimum of one, after origin fitting.
+Its `BoundingBox` is `0 0 WidthPages*printableWidth HeightPages*printableHeight`; root `PrintMargins`
+comes from the native margins. No conflicting fixed `Width`/`Height` attributes are generated.
+This applies to landscape, A4, custom paper and documents with multiple native pages. Different
+margins across native pages produce `cdxml.page_margins_conflict`, naming the affected pages: the
+shared root and every printable-area grid use the first page's margins. Margins are compared
+numerically within 0.00005 points, so equivalent source spellings do not warn. If any page uses a
+printable-area grid, its margins are written at the root even when the first page retains an
+uncounted source box. Source root margins are retained only when numerically equal to the effective
+margins. The plain `<page BoundingBox="0 0 612 792">` form, without page counts or print
+margins, is retained for a new single-page Letter portrait drawing with default native margins
+whose content fits that paper.
+
+If visible coordinates are negative, every visible coordinate on that page receives the same
+offset, placing its minimum 18 points inside the fitted area, including nested molecule labels,
+graphics, curve controls, arrow axes and bracket geometry. Positive coordinates stay stationary.
 If the fitted offset, extent, or shifted coordinates would overflow, `cdxml.page_fit_unrepresentable`
 warns and the entire page keeps its original coordinates. The page remains finite and at least letter
 size, retaining representable unshifted extents where possible; some content may lie outside it.
+
+Page compatibility feature table (under `DocumentPage.compatibility.unknown`):
+
+| Key | Preserved data / purpose |
+| --- | --- |
+| `cdxmlPageAttributes` | All source page attributes and their original text, including page counts and the existing `attrib4346` origin offset. |
+| `cdxmlRootPageAttributes` | Root print setup: `PrintMargins`, `MacPrintInfo`, `WinPrintInfo`, `Orientation`, `PageOrientation`, `Width`, `Height`, `WidthPages`, `HeightPages`, `DrawingSpace`, `PageOverlap`, `Header`, `HeaderPosition`, `Footer`, `FooterPosition`, `PrintTrimMarks`. |
+| `cdxmlPageNativeSetup` | Stable field-value snapshot of imported native size, margins and layout, used to detect subsequent paper-setting edits. |
+
+The only native schema addition is optional `DocumentPage.compatibility`, using the existing
+compatibility metadata schema. Existing documents need no migration or backfill; native dimensions,
+margins and layout fields keep their existing meanings. Synthetic coverage exercises source setup
+preservation and growth, Letter portrait/landscape, A4, asymmetric margins, native multi-page
+documents, exact printable boundaries, finite overflow fallback and origin restoration in both
+CDXML and CDX. No independent-reader or interactive platform verification is claimed here.
 
 Page attribute `attrib4346` (user-defined binary CDX property `0x4346`) records the offset as
 hex-encoded UTF-8 JSON `[dx,dy]` in CDXML points, independently of the native payload. ChemDraft

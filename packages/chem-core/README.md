@@ -4,6 +4,12 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+`DocumentPage` optionally carries `compatibility` using the same metadata schema as document objects.
+CDXML/CDX import uses it to retain source page and print settings, including page counts that have
+no native layout field. Native `width`/`height`, `margin`, and `layout` continue to describe one
+physical paper size in CSS pixels; separate entries in `pages` are separate logical pages. The
+optional metadata is additive to v1 and needs no migration or backfill.
+
 Bond displays are `bold`, `wedge`, `hashed`, `dashed`, and `wavy`. Optional
 `MoleculeBond.display.bondStyle: "wavy"` is valid only with `order: "single"` (schema rejection
 otherwise) and means explicitly unknown stereo at `fromAtomId`. It follows additive v1 conventions:

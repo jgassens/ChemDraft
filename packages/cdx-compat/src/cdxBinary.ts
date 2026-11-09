@@ -405,7 +405,11 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "p2": if (n === 8) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))}`; return;
       // Point3D is x/y/z, unlike Point2D's y/x. Matches the Octet Draw codec credited above.
       case "p3": if (n === 12) a[name] = `${num(coord(d, 0))} ${num(coord(d, 4))} ${num(coord(d, 8))}`; return;
-      case "rect": if (n === 16) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))} ${num(coord(d, 12))} ${num(coord(d, 8))}`; return;
+      case "rect": if (n === 16) {
+        // PrintMargins spells top/left/bottom/right in XML as well as binary.
+        const order = name === "PrintMargins" ? [0, 4, 8, 12] : [4, 0, 12, 8];
+        a[name] = order.map(offset => num(coord(d, offset))).join(" ");
+      } return;
       case "angle": { const v = n === 4 ? d.getInt32(0, little) / 65536 : n === 2 ? d.getInt16(0, little) / 10 : undefined; if (v !== undefined) a[name] = exact ? String(v) : String(+v.toFixed(2)); return; }
       case "deg10": { const v = int(d, true); if (v !== undefined) a[name] = String(v / 10); return; }
       case "spacing": { const v = int(d, false); if (v !== undefined) a[name] = String(v / 10); return; }
@@ -656,7 +660,8 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
       case "coord": return r === undefined ? undefined : le(4, fixed(r));
       case "p2": return list.length >= 2 && list[0] !== undefined && list[1] !== undefined ? le(4, fixed(list[1]), fixed(list[0])) : undefined;
       case "p3": return list.length >= 2 && list.slice(0, 3).every((x) => x !== undefined) ? le(4, fixed(list[0]!), fixed(list[1]!), fixed(list[2] ?? 0)) : undefined;
-      case "rect": return list.length === 4 && list.every((x) => x !== undefined) ? le(4, fixed(list[1]!), fixed(list[0]!), fixed(list[3]!), fixed(list[2]!)) : undefined;
+      case "rect": return list.length === 4 && list.every((x) => x !== undefined)
+        ? le(4, ...(p.name === "PrintMargins" ? list : [list[1], list[0], list[3], list[2]]).map(x => fixed(x!))) : undefined;
       case "angle": return r === undefined ? undefined : le(4, fixed(r));
       case "deg10": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "spacing": return r === undefined ? undefined : le(2, Math.round(r * 10));

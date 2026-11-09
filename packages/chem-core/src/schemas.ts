@@ -768,6 +768,7 @@ export const DocumentPageSchema = z
       .strict()
       .default({ top: 72, right: 72, bottom: 72, left: 72 }),
     layout: PageLayoutSchema,
+    compatibility: CompatibilityMetadataSchema.optional(),
     objects: z.array(DocumentObjectSchema),
     crossings: z.array(CrossingOverrideSchema).default([])
   })

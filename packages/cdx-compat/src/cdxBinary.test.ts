@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { XMLParser } from "fast-xml-parser";
 import { CDX_POINT3D_ORDER_ATTRIBUTE, MAGIC, cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement, type CdxWarning } from "./cdxBinary";
 import { OBJECTS, PROPS } from "./cdxTags";
-import { importCdx } from "./index";
+import { exportDocumentToCdx, importCdx } from "./index";
 
 const u16 = (v: number) => [v & 255, v >>> 8 & 255];
 const u32 = (v: number) => [...u16(v), ...u16(v >>> 16)];
@@ -22,6 +22,35 @@ describe("binary CDX headers and reference codec cases", () => {
   it("writes the magic, little-endian marker, ten reserved bytes and document tag/id", () => {
     const bytes = writeCdx(element("CDXML"));
     expect([...bytes]).toEqual([...header, ...u16(0x8000), ...u32(0), 0, 0]);
+  });
+
+  it("preserves independently built page setup bytes, including top/left/bottom/right print margins", () => {
+    const marginProperty = property(0x0802, [24, 30, 48, 42].flatMap(coord));
+    // Binary rectangles are top/left/bottom/right; visible BoundingBox text is left/top/right/bottom.
+    const bytes = file(marginProperty, object(0x8001, 1,
+      property(0x0204, [0, 0, 1440, 1080].flatMap(coord)),
+      property(0x080f, u16(2)), property(0x0810, u16(2)),
+      property(0x0816, coord(12)), property(0x0818, coord(18)), property(0x0819, []),
+      object(0x8006, 2, property(0x0200, [60, 40].flatMap(coord)), property(0x0700, styled("page setup")))));
+    const decoded = readCdx(bytes);
+    expect(decoded.attrs.PrintMargins).toBe("24 30 48 42");
+    expect(decoded.kids[0].attrs).toMatchObject({ BoundingBox: "0 0 1080 1440", WidthPages: "2", HeightPages: "2",
+      HeaderPosition: "12", FooterPosition: "18", PrintTrimMarks: "yes" });
+    const imported = importCdx(bytes);
+    expect(imported.document).toBeDefined();
+    const page = imported.document!.pages[0];
+    expect(page).toMatchObject({ width: 816, height: 1056, margin: { top: 32, left: 40, bottom: 64, right: 56 } });
+    const exported = exportDocumentToCdx(imported.document!);
+    expect(exported.warnings.filter(warning => warning.code === "cdx.unencodable_data")).toEqual([]);
+    const visible = readCdx(exported.bytes);
+    expect(visible.attrs.PrintMargins).toBe(decoded.attrs.PrintMargins);
+    const visiblePage = visible.kids.find(child => child.name === "page")!;
+    expect(visiblePage.attrs).toEqual({ ...decoded.kids[0].attrs, id: visiblePage.attrs.id });
+    const reencoded = writeCdx(element("CDXML", { PrintMargins: "24 30 48 42" }));
+    expect(reencoded).toEqual(file(marginProperty));
+    const reopened = importCdx(exported.bytes).document?.pages[0].objects[0];
+    expect(reopened?.x).toBeCloseTo(page.objects[0].x, 4);
+    expect(reopened?.y).toBeCloseTo(page.objects[0].y, 4);
   });
 
   it("writes GenericNickname as a CDXString with a zero style-run count", () => {
