@@ -141,8 +141,8 @@ export const DocumentStylePreset = {
 } as const satisfies ChemDraftStylePreset;
 
 /**
- * ACS author guidelines: https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat
- * ACS journals' published structure-drawing settings, widely reproduced as the "1996" values:
+ * ACS Chemical Reviews author guidelines: https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay
+ * ACS journals' published structure-drawing settings:
  * bond length 14.4 pt (0.2 in), line width 0.6 pt, bold width 2.0 pt,
  * double-bond spacing 18% of bond length, hash spacing 2.5 pt, label margin 1.6 pt,
  * Arial/Helvetica (sans-serif fallback) labels 10 pt, regular weight 400.

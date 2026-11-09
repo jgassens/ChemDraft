@@ -1,7 +1,6 @@
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
-import { nativeStylePresetMenuItems } from "./appMenu";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -822,7 +821,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -844,7 +843,7 @@ import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
-import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
+import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
@@ -11886,11 +11885,9 @@ export function MainWindow({
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
-  const nativePluginMenuItems = useMemo(() => [
-    ...nativeStylePresetMenuItems(),
-    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
-    ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems(
+    pluginRuntime.pluginMenuItems, availablePluginUpdateCount
+  ), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);

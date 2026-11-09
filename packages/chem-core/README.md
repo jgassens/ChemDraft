@@ -13,7 +13,7 @@ values use **22 native units per 14.4 pt**, independently of image pixel density
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | ChemDraft Synthetic | `chemdraft.synthetic` | 22 units | 2 / 4.8 units | 4.8 units (absolute) | 9 units | 6 units | 15 units | Original native hand-drawing defaults in `src/styles.ts` |
 | Document style | `chemdraft.document` | 14.4 pt (22 units) | 1.134 / 2.268 pt | 18% of bond length | 2.5 pt | 1.6 pt | 10 pt | Native fixed physical-document contract in `src/styles.ts` and layout-engine's `documentStyle.ts` |
-| ACS 1996-style | `chemdraft.acs1996` | 14.4 pt (0.2 in; 22 units) | 0.6 / 2.0 pt | 18% of bond length | 2.5 pt | 1.6 pt | 10 pt | [ACS author guidelines](https://researcher-resources.acs.org/publish/author_guidelines?coden=jacsat), published structure-drawing settings widely reproduced as the 1996 values |
+| ACS 1996-style | `chemdraft.acs1996` | 14.4 pt (0.2 in; 22 units) | 0.6 / 2.0 pt | 18% of bond length | 2.5 pt | 1.6 pt | 10 pt | [ACS Chemical Reviews author guidelines](https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay), ACS journals' published structure-drawing settings |
 | RSC journal-style | `chemdraft.rscjournal` | 12.2 pt | 0.5 / 1.6 pt | 20% of bond length | 1.8 pt | 1.6 pt (Document style fallback) | 7 pt | [RSC Advances author guidelines](https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances), Chemical structures; values also published for Analytical Methods |
 
 For the two publisher-based presets, values transcribed from the publisher's public author
