@@ -59,6 +59,21 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
+    const context = { ...EMPTY_CONTEXT, platform };
+    const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
+    const aliases: AppMenuCommand[] = ["first", "second"].map(name => ({
+      kind: "command", id: `menu.test.${name}`, commandId: `plugin.test.${name}`,
+      label: name, enabled: true, pluginContributed: true
+    }));
+    const model = buildAppMenuModel({ ...context, pluginMenuItems: aliases.map(command => ({ location: "structure", command })) });
+    const structure = model.find(section => section.id === "structure")!;
+    expect(base.items.at(-1)).toMatchObject({ commandId: "style.preset.apply.chemdraft.rscjournal" });
+    expect(structure.items.slice(0, base.items.length)).toEqual(base.items);
+    expect(structure.items.slice(base.items.length)).toEqual([expect.objectContaining({ kind: "separator" }), ...aliases]);
+    expect(nativeRoutedCommandIds(model)).toEqual(nativeRoutedCommandIds(buildAppMenuModel(context)));
+  });
+
   it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {

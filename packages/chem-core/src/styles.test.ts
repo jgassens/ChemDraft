@@ -1,9 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { Acs1996StylePreset, RscJournalStylePreset, NativeStylePresets, DOCUMENT_STYLE_UNITS_PER_PT,
   DocumentStylePreset, nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle, stylePresetToObjectStyle,
-  createEmptyDocument, ChemDraftDocumentSchema, applyPatch } from "./index";
+  createEmptyDocument, ChemDraftDocumentSchema, DocumentObjectSchema, DocumentSchemaVersion,
+  deserializeDocument, serializeDocument, applyPatch } from "./index";
 
 describe("native style presets", () => {
+  it.each([
+    { type: "molecule", structureFormat: "smiles", structure: "CO" },
+    { type: "text", text: "Caption" },
+    { type: "graphic", graphicKind: "rect" }
+  ])("validates and round-trips optional preset metadata on $type objects without migrating old documents", fields => {
+    const base = { ...fields, id: "object_001", x: 0, y: 0, width: 40, height: 20 };
+    for (const style of [{}, { stylePresetId: Acs1996StylePreset.id }]) {
+      const object = DocumentObjectSchema.parse({ ...base, style });
+      expect(object.style.stylePresetId).toBe(style.stylePresetId);
+      const document = createEmptyDocument();
+      document.pages[0]!.objects.push(object);
+      const restored = deserializeDocument(serializeDocument(document));
+      expect(restored).toEqual(document);
+      expect(restored.schema).toBe(DocumentSchemaVersion);
+      expect(restored.pages[0]!.objects[0]!.style).toEqual(style);
+    }
+    expect(DocumentObjectSchema.safeParse({ ...base, style: { stylePresetId: 42 } }).success).toBe(false);
+  });
+
   it.each(NativeStylePresets)("validates and resolves $id without losing fields", preset => {
     const drawing = stylePresetToObjectStyle(preset);
     const document = createEmptyDocument();
