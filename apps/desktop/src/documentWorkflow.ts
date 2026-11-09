@@ -7566,16 +7566,14 @@ export function applyChargeToolAtNativeAtom(
       // A radical ion stacked back to neutral is a radical, not nothing: the charge is what the
       // press removed, and the unpaired electron it did not touch stays as a bare radical dot on
       // the same atom, where the mark was.
-      const anchorAtom = plan.existing.anchor.kind === "atom" && plan.existing.anchor.objectId && plan.existing.anchor.atomId
-        ? { objectId: plan.existing.anchor.objectId, atomId: plan.existing.anchor.atomId }
-        : { objectId: molecule.id, atomId: target.atomId };
-      return addChargeMarkAtPoint(
-        applyPatches(document, [{ op: "removeObject", objectId: plan.existing.id }], { now: phase4Timestamp }),
-        page.id,
-        { kind: "radical-dot" },
-        nativeChargeMarkCenter(plan.existing),
-        anchorAtom
-      );
+      // Convert in place so the anchor and explicit drop association (as well as the mark's
+      // identity and appearance) survive even when the symbol is far from its atom.
+      return applyPatches(document, [
+        { op: "updateObject", objectId: plan.existing.id, changes: {
+          markKind: "radical-dot", charge: undefined, radical: undefined, chargeStyle: undefined
+        } },
+        { op: "setSelection", pageId: page.id, objectIds: [plan.existing.id] }
+      ], { now: phase4Timestamp });
     }
     return applyPatches(
       document,
@@ -8424,6 +8422,11 @@ function addChargeMarkAtPoint(
  * writes both fields fresh — so deleted marks, moved molecules, edited elements, and
  * copies pasted without their mark all settle correctly with no history diffing.
  */
+export interface CommittedDocumentNormalizationOptions {
+  /** A direct drop found no atom in its capture radius. Suppress legacy capture for this commit only. */
+  floatingElectronMarkIds?: ReadonlySet<string>;
+}
+
 /**
  * What every committed document passes through: MainWindow's five commit paths (the initial
  * document, opening a file, each label-editor keystroke, an edit, a history commit) call this and
@@ -8434,17 +8437,21 @@ function addChargeMarkAtPoint(
  * marks are reconciled first. Both passes are idempotent and keep what is already right, so a layout
  * commit changes nothing.
  */
-export function normalizeCommittedDocument(document: ChemDraftDocument): ChemDraftDocument {
-  const reconciled = reconcileNativeChargeMarks(document);
+export function normalizeCommittedDocument(
+  document: ChemDraftDocument, options: CommittedDocumentNormalizationOptions = {}
+): ChemDraftDocument {
+  const reconciled = reconcileNativeChargeMarks(document, options);
   const recorded = withNativeDocumentLabelBondSides(reconciled);
   // Re-admitted to the patch engine's sharing, as `reconcileNativeChargeMarks` does.
   return recorded === reconciled ? reconciled : adoptDerivedDocument(reconciled, recorded);
 }
 
-export function reconcileNativeChargeMarks(document: ChemDraftDocument): ChemDraftDocument {
+export function reconcileNativeChargeMarks(
+  document: ChemDraftDocument, options: CommittedDocumentNormalizationOptions = {}
+): ChemDraftDocument {
   let changed = false;
   const pages = document.pages.map((page) => {
-    const nextPage = reconcileNativeChargeMarksOnPage(page);
+    const nextPage = reconcileNativeChargeMarksOnPage(page, options);
     if (nextPage !== page) {
       changed = true;
     }
@@ -8464,7 +8471,7 @@ export function electronMarkAtomContribution(mark: ElectronMarkObject): { charge
   return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
 }
 
-function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
+function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: CommittedDocumentNormalizationOptions): DocumentPage {
   const electronMarks = page.objects.filter((object): object is ElectronMarkObject =>
     object.type === "electron-mark" &&
     (object.markKind === "lone-pair" ||
@@ -8495,6 +8502,8 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
   const assignedChargeByAtomKey = new Map<string, number>();
   const assignedRadicalsByAtomKey = new Map<string, number>();
   const anchorByMarkId = new Map<string, { objectId: string; atomId: string } | undefined>();
+  // Recording an unassigned result also blocks pass 2 from applying the wider legacy radius.
+  for (const id of options.floatingElectronMarkIds ?? []) anchorByMarkId.set(id, undefined);
 
   const markCanAssociate = (
     moleculeId: string,
@@ -8542,7 +8551,7 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage): DocumentPage {
   // dragging a mark between two nearby atoms doesn't flicker and a crowded placement can't be
   // stolen by whichever neighbor happens to sit marginally closer.
   electronMarks.forEach((mark) => {
-    if (mark.anchor.kind !== "atom" || !mark.anchor.objectId || !mark.anchor.atomId) {
+    if (anchorByMarkId.has(mark.id) || mark.anchor.kind !== "atom" || !mark.anchor.objectId || !mark.anchor.atomId) {
       return;
     }
 

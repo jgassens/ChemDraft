@@ -1720,7 +1720,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.07.50-codex";
+const CURRENT_BUILD_STAMP = "11.09.08.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3489,7 +3489,9 @@ export function MainWindow({
     const stripped = edit && edit.documentIdentity === documentIdentityRef.current &&
       edit.historyNavigation === historyNavigationCountRef.current && documentHasAtomLabelDraft(current, edit)
       ? restoreAtomLabelDraft(current, edit) : current;
-    const clean = normalizeCommittedDocument(stripped);
+    // An unchanged snapshot already passed commit normalization. Record it exactly, including
+    // a floating electron mark deliberately left outside a direct drop's capture radius.
+    const clean = stripped === current ? current : normalizeCommittedDocument(stripped);
     const label = documentUndoLabelsRef.current.get(current);
     if (label) documentUndoLabelsRef.current.set(clean, label);
     return clean;
@@ -3693,12 +3695,14 @@ export function MainWindow({
   const commitDocumentHistoryFrom = useCallback((
     startDocument: ChemDraftDocument,
     nextDocument: ChemDraftDocument,
-    undoLabel?: string
+    undoLabel?: string,
+    options: { normalized?: boolean } = {}
   ) => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
-    const present = normalizeCommittedDocument(nextDocument);
+    // Direct electron-mark drops already normalized with their narrower capture policy.
+    const present = options.normalized ? nextDocument : normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     try {
@@ -4771,11 +4775,14 @@ export function MainWindow({
     rederiveNativeCanvasHoverRef.current(nextDocument);
     // Both placement paths select the mark they placed/bumped, so the committed document names
     // the stacked magnitude ("Placed positive charge 2+ on hovered atom").
-    const placedMarkId = nextDocument.selection.objectIds[0];
-    const placedMark = placedMarkId ? findDocumentObject(nextDocument, placedMarkId) : undefined;
-    const placedNoun = placedMark?.type === "electron-mark" && placedMark.markKind === "charge" &&
-        typeof placedMark.charge === "number"
-      ? electronMarkSpecStatusNoun(markSpec, placedMark.charge)
+    const committedDocument = documentRef.current;
+    const placedMarkId = committedDocument.selection.objectIds[0];
+    const placedMark = placedMarkId ? findDocumentObject(committedDocument, placedMarkId) : undefined;
+    const placedNoun = placedMark?.type === "electron-mark" && placedMark.markKind === "radical-dot"
+      ? electronMarkSpecStatusNoun({ kind: "radical-dot" })
+      : placedMark?.type === "electron-mark" && placedMark.markKind === "charge" && typeof placedMark.charge === "number"
+      ? electronMarkSpecStatusNoun({ kind: "charge", charge: placedMark.charge > 0 ? 1 : -1,
+          radical: placedMark.radical, chargeStyle: placedMark.chargeStyle }, placedMark.charge)
       : noun;
     setStatus(`Placed ${placedNoun} on hovered atom`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
@@ -15731,7 +15738,7 @@ export function MainWindow({
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel);
+      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel, { normalized: true });
       return true;
     }
     const moved = objectDragDocument(drag, point);

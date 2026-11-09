@@ -49,7 +49,10 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     };
     const expectedCanonical = (smiles: string) => {
       const mol = module.get_mol(smiles);
-      if (!mol) throw new Error(`Invalid expected SMILES: ${smiles}`);
+      if (!mol?.get_smiles) {
+        mol?.delete();
+        throw new Error(`Cannot canonicalize expected SMILES: ${smiles}`);
+      }
       try { return mol.get_smiles(); } finally { mol.delete(); }
     };
     const startCanonical = canonical(document);
@@ -93,6 +96,80 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(result.status).toContain("no atom within capture radius");
     const reopened = workflow.normalizeCommittedDocument(deserializeDocument(serializeDocument(result.document)));
     expect(reopened.pages).toEqual(result.document.pages);
+  });
+
+  it.each(["point", "stale"])("keeps a %s-anchored floating charge outside capture radius, without changing legacy normalization", anchorKind => {
+    const fixture = electronMarkDropFixture();
+    let document = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
+      dropMark(fixture.document).id, { x: 591, y: 491 }));
+    if (anchorKind === "stale") document = applyPatch(document, { op: "updateObject", objectId: dropMark(document).id,
+      changes: { anchor: { kind: "atom", objectId: "missing", atomId: "missing" }, atomAssociation: "explicit" }
+    }, { now: phase4Timestamp });
+    const point = { x: fixture.carbonylOxygen.x, y: fixture.carbonylOxygen.y - 20 };
+    expect(electronMarkDropTarget(document, point)).toBeUndefined();
+    const before = atomDropState(document, fixture.carbonylOxygen.id);
+    const result = drop(document, point);
+    expect(result.refused).toBeUndefined();
+    expect(dropMark(result.document).anchor.kind).toBe("point");
+    expect(dropMark(result.document).atomAssociation).toBeUndefined();
+    expect(dropMolecule(result.document)).toEqual(dropMolecule(document));
+    expect(atomDropState(result.document, fixture.carbonylOxygen.id)).toEqual(before);
+    expect(workflow.electronMarkChemistryChanges(document, result.document)).toEqual([]);
+    expect(result.status).toBe("Moved electron mark");
+    // Only the drop opts out: load and ordinary-edit normalization still use the legacy radius.
+    const legacy = workflow.normalizeCommittedDocument(result.document);
+    expect(dropMark(legacy).anchor.atomId).toBe(fixture.carbonylOxygen.id);
+    expect(atomDropState(legacy, fixture.carbonylOxygen.id)).toMatchObject({ charge: 1, hydrogens: 1 });
+    const reopened = workflow.normalizeCommittedDocument(deserializeDocument(serializeDocument(result.document)));
+    expect(dropMark(reopened).anchor.atomId).toBe(fixture.carbonylOxygen.id);
+  });
+
+  it("attaches a floating charge inside capture radius and names the committed chemistry", () => {
+    const fixture = electronMarkDropFixture();
+    const document = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
+      dropMark(fixture.document).id, { x: 591, y: 491 }));
+    const result = drop(document, { x: fixture.carbonylOxygen.x, y: fixture.carbonylOxygen.y - 8 });
+    expect(result.refused).toBeUndefined();
+    expect(dropMark(result.document)).toMatchObject({ atomAssociation: "explicit",
+      anchor: { kind: "atom", objectId: dropMolecule(document).id, atomId: fixture.carbonylOxygen.id } });
+    expect(atomDropState(result.document, fixture.carbonylOxygen.id)).toMatchObject({ charge: 1, hydrogens: 1 });
+    expect(result.status).toBe("Charge attached to O (O now OH)");
+  });
+
+  it("reports chemistry introduced by normalization even without an intended transfer", () => {
+    const fixture = electronMarkDropFixture();
+    const document = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
+      dropMark(fixture.document).id, { x: 591, y: 491 }));
+    const normalize = workflow.normalizeCommittedDocument;
+    // Belt and braces: simulate a future normalization pass unexpectedly capturing the mark.
+    vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(next => normalize(next));
+    const result = drop(document, { x: fixture.carbonylOxygen.x, y: fixture.carbonylOxygen.y - 20 });
+    expect(atomDropState(result.document, fixture.carbonylOxygen.id)).toMatchObject({ charge: 1, hydrogens: 1 });
+    expect(result.status).toBe("Charge attached to O (O now OH)");
+  });
+
+  it.each([1, -1] as const)("retains a distant radical ion's association when neutralising charge %s", async charge => {
+    const fixture = electronMarkDropFixture({ kind: "charge", charge, radical: true });
+    const distant = drop(fixture.document, { x: 600, y: 500 }).document;
+    const original = dropMark(distant), molecule = dropMolecule(distant);
+    const neutral = workflow.normalizeCommittedDocument(workflow.applyChargeToolAtNativeAtom(distant, -charge as 1 | -1,
+      { kind: "atom", objectId: molecule.id, atomId: fixture.sourceAtom.id, distanceToPointer: 0 }));
+    expect(dropMark(neutral)).toMatchObject({ id: original.id, markKind: "radical-dot", x: original.x, y: original.y,
+      anchor: original.anchor, atomAssociation: "explicit" });
+    expect(dropMark(neutral).charge).toBeUndefined();
+    expect(dropMark(neutral).radical).toBeUndefined();
+    expect(atomDropState(neutral, fixture.sourceAtom.id)).toMatchObject({ charge: 0, radicals: 1, hydrogens: charge > 0 ? 0 : 2 });
+    const module = await ensureRdkit();
+    const result = inspectStructureInWorker(module, stereoPerceptionMolfile(dropMolecule(neutral)));
+    expect(result.valid).toBe(true);
+    if (!result.valid) throw new Error(result.reason);
+    const expected = module.get_mol(charge > 0 ? "CC(C)(C)OC(=O)[N]CC(=O)O" : "[CH2]C(C)(C)OC(=O)NCC(=O)O");
+    if (!expected?.get_smiles) {
+      expected?.delete();
+      throw new Error("Cannot canonicalize expected neutral radical");
+    }
+    try { expect(result.canonicalSmiles).toBe(expected.get_smiles()); } finally { expected.delete(); }
+    expect(workflow.normalizeCommittedDocument(neutral)).toBe(neutral);
   });
 
   it.each(associationSpecs)("re-associates and transfers exactly the contribution of %j", spec => {

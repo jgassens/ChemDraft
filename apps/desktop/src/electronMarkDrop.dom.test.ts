@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { atomDisplayLabel } from "@chemdraft/layout-engine";
-import { phase4Timestamp } from "@chemdraft/document-workflow-core";
+import { nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import * as workflow from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -134,6 +134,54 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     expect(dropMolecule(snapshot())).toEqual(dropMolecule(before));
     expect(status()).toBe("Charge repositioned on N; no atom within capture radius");
     await command("edit.undo"); expect(snapshot()).toEqual(before);
+  });
+
+  it.each([20, 8])("commits a floating charge released %s px from O with accurate status", async separation => {
+    const fixture = electronMarkDropFixture();
+    const document = workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
+      dropMark(fixture.document).id, { x: 591, y: 491 }));
+    await mount(document);
+    const before = snapshot(), drag = await start();
+    const point = { x: fixture.carbonylOxygen.x, y: fixture.carbonylOxygen.y - separation };
+    await move(drag.target, point);
+    expect(highlighted()).toBe(separation === 8 ? fixture.carbonylOxygen.id : undefined);
+    await act(async () => pointer(drag.target, "pointerup", point));
+    if (separation === 20) {
+      expect(dropMark(snapshot()).anchor.kind).toBe("point");
+      expect(dropMolecule(snapshot())).toEqual(dropMolecule(before));
+      expect(status()).toBe("Moved electron mark");
+    } else {
+      expect(dropMark(snapshot()).anchor.atomId).toBe(fixture.carbonylOxygen.id);
+      expect(dropMolecule(snapshot()).atoms[10]).toMatchObject({ formalCharge: 1, markCharge: 1 });
+      expect(labels()[10]).toBe("OH");
+      expect(status()).toBe("Charge attached to O (O now OH)");
+    }
+    const after = snapshot();
+    await command("edit.undo"); expect(snapshot()).toEqual(before);
+    await command("edit.redo"); expect(snapshot()).toEqual(after);
+  });
+
+  it.each([1, -1] as const)("keeps the radical on its atom after dropping and neutralising a radical ion with charge %s", async charge => {
+    const fixture = electronMarkDropFixture({ kind: "charge", charge, radical: true });
+    await mount(fixture.document);
+    const drag = await start(), end = { x: 600, y: 500 };
+    await move(drag.target, end);
+    await act(async () => pointer(drag.target, "pointerup", end));
+    expect(status()).toContain("no atom within capture radius");
+    const distant = snapshot(), original = dropMark(distant);
+    await act(async () => pointer(page(), "pointermove", fixture.sourceAtom));
+    await command(charge > 0 ? "tool.minus" : "tool.plus");
+    await act(async () => pointer(page(), "pointerdown", fixture.sourceAtom));
+    const neutral = snapshot(), molecule = dropMolecule(neutral);
+    const atom = molecule.atoms.find(atom => atom.id === fixture.sourceAtom.id)!;
+    expect(dropMark(neutral)).toMatchObject({ id: original.id, markKind: "radical-dot",
+      anchor: original.anchor, atomAssociation: "explicit", x: original.x, y: original.y });
+    expect(atom).toMatchObject({ formalCharge: 0, markRadicals: 1 });
+    expect(nativeImplicitHydrogenCount(workflow.nativeElementFromAtomLabel(atom.element)!,
+      nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms), atom.formalCharge, atom.markRadicals)).toBe(charge > 0 ? 0 : 2);
+    expect(status()).toBe("Placed radical electron on hovered atom");
+    await command("edit.undo"); expect(snapshot()).toEqual(distant);
+    await command("edit.redo"); expect(snapshot()).toEqual(neutral);
   });
 
   it("highlights a refused target, reports why, and leaves no undo entry", async () => {

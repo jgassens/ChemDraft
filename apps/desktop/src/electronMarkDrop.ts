@@ -51,7 +51,7 @@ export interface ElectronMarkDropResult {
   refused?: boolean;
 }
 
-/** A single direct drop. Callers commit the returned snapshot once; previews never call this. */
+/** A single direct drop. Callers install the already-normalized snapshot once; previews never call this. */
 export function dropElectronMark(
   document: ChemDraftDocument, markId: string, position: PagePoint, dropPoint: PagePoint
 ): ElectronMarkDropResult {
@@ -90,7 +90,9 @@ export function dropElectronMark(
     moved = applyPatch(moved, { op: "updateObject", objectId: markId,
       changes: { anchor, atomAssociation: "explicit" } }, { now: phase4Timestamp });
   }
-  const after = normalizeCommittedDocument(moved);
+  const after = normalizeCommittedDocument(moved, {
+    floatingElectronMarkIds: !target && !source ? new Set([markId]) : undefined
+  });
   const finalMark = findDocumentObject(after, markId) as ElectronMarkObject;
   const finalDestination = associatedAtom(after, finalMark.anchor);
   if (destination && (!finalDestination || finalDestination.molecule.id !== destination.molecule.id ||
@@ -113,15 +115,23 @@ export function dropElectronMark(
   const anchors = [mark.anchor, finalMark.anchor];
   const chemistryChanges = electronMarkChemistryChanges(document, after, { markIds: [markId], atoms: anchors.flatMap(anchor =>
     anchor.kind === "atom" && anchor.objectId && anchor.atomId ? [{ objectId: anchor.objectId, atomId: anchor.atomId }] : []) });
-  if (transferring && finalDestination) {
-    const finalSource = source && associatedAtom(after, mark.anchor);
-    const chemistry = chemistryChanges.length
-      ? ` (${finalDestination.atom.element} now ${label(finalDestination)}${finalSource ? `, ${finalSource.atom.element} now ${label(finalSource)}` : ""})` : "";
+  const finalSource = source && associatedAtom(after, mark.anchor);
+  const endpoints = [finalDestination, finalSource].flatMap(endpoint => endpoint ? [endpoint] : []);
+  const changedAtoms = endpoints.filter((endpoint, index, endpoints) =>
+    endpoints.findIndex(other => other?.molecule.id === endpoint.molecule.id && other?.atom.id === endpoint.atom.id) === index);
+  const chemistry = chemistryChanges.length
+    ? ` (${changedAtoms.map(endpoint => `${endpoint.atom.element} now ${label(endpoint)}`).join(", ")})` : "";
+  // Status describes the committed associations and chemistry, including any change made by
+  // normalization, rather than relying on the intended geometric transfer alone.
+  if (finalDestination && (!source || source.molecule.id !== finalDestination.molecule.id || source.atom.id !== finalDestination.atom.id)) {
     return { document: after, undoLabel, status: source
       ? `${name} moved from ${source.atom.element} to ${finalDestination.atom.element}${chemistry}`
       : `${name} attached to ${finalDestination.atom.element}${chemistry}` };
   }
+  if (source && !finalDestination && chemistryChanges.length) {
+    return { document: after, undoLabel, status: `${name} detached from ${source.atom.element}${chemistry}` };
+  }
   return { document: after, undoLabel, status: source
-    ? `${name} repositioned on ${source.atom.element}${target ? "" : "; no atom within capture radius"}`
-    : "Moved electron mark" };
+    ? `${name} repositioned on ${source.atom.element}${chemistry}${target ? "" : "; no atom within capture radius"}`
+    : `Moved electron mark${chemistry}` };
 }
