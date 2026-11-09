@@ -45,6 +45,10 @@ Synthetic-fixture-covered `<scheme>/<step>` import uses native `reaction` object
 source order. `components` holds reactant/product/agent roles; `conditionsTextObjectIds` links text
 above or below the arrow; optional `arrowObjectIds` and `plusObjectIds` link shared drawables.
 Groups resolve to their members, and an intermediate used by two steps remains one molecule.
+Explicit reactant/product text labels remain participants; decorative group members do not acquire
+chemical roles and produce a named warning while retaining their source references. Multiline
+conditions retain their exact text through visible CDXML and CDX export; XML indentation is added
+only before serialized objects, never inside their text.
 Unresolved participant ids produce `cdxml.reaction_reference_unresolved` and are ignored.
 
 Visible export writes schemes for native reaction objects. Compatibility metadata retains source

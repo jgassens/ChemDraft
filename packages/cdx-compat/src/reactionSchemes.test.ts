@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDocument, parseDocument, type ChemDraftDocument, type ReactionObject } from "@chemdraft/chem-core";
 import { documentInventory, documentReactionSummary } from "@chemdraft/document-workflow-core";
-import { exportDocumentToCdxml, openChemDraftPayload } from "./index";
+import { exportDocumentToCdx, exportDocumentToCdxml, importCdx, openChemDraftPayload } from "./index";
 // Test-only integration: exercise the actual desktop copy operations before visible export.
 import {
   createSelectionClipboardPayload, duplicateSelectedDocumentObjects, pasteSelectionClipboardPayload
@@ -46,6 +46,56 @@ function importFixture(contents: string) {
 }
 
 describe("synthetic CDXML reaction schemes", () => {
+  it("preserves the visible characters of multi-run conditions through CDXML, CDX and chained exports", () => {
+    const source = oneStep().replace('<s>25 °C, 2 h</s>',
+      '<s font="3">Na</s><s face="32">2</s><s>CO</s><s face="32">3</s><s font="4">\nTHF,  25 °C\n</s><s font="3">2 h</s>');
+    const expected = "Na2CO3\nTHF,  25 °C\n2 h";
+    const { document } = importFixture(source);
+    expect(summary(document)[0].conditions[0].text).toBe(expected);
+    const xml = exportDocumentToCdxml(document).contents;
+    // Inspect standard visible content, independently of embedded native restoration.
+    expect(xml).toContain(`>${expected}</t>`);
+    const xmlDocument = importFixture(visibleOnly(xml)).document;
+    const binaryDocument = importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes).document!;
+    const chained = importCdx(exportDocumentToCdx(xmlDocument, { embedNativePayload: false }).bytes).document!;
+    for (const reopened of [xmlDocument, binaryDocument, chained]) {
+      expect(summary(reopened)[0].conditions[0].text).toBe(expected);
+      expect(objects(reopened).find(object => object.type === "text" && object.text === expected)).toBeDefined();
+    }
+  });
+
+  it.each([
+    ['<s font="3">H</s><s face="32">2</s><s font="4">O,  2 h</s>', "H2O,  2 h"],
+    ['<s>H</s><s face="32">2</s><s>O&#10;2 h &amp; literal &amp;#10;</s>', "H2O\n2 h & literal &#10;"]
+  ])("concatenates adjacent runs and decodes XML line breaks exactly once: %s", (runs, expected) => {
+    let { document } = importFixture(oneStep().replace('<s>25 °C, 2 h</s>', runs));
+    for (let iteration = 0; iteration < 3; iteration++) {
+      expect(summary(document)[0].conditions[0].text).toBe(expected);
+      document = importFixture(visibleOnly(exportDocumentToCdxml(document).contents)).document;
+      document = importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes).document!;
+      expect(summary(document)[0].conditions[0].text).toBe(expected);
+    }
+  });
+
+  it("keeps explicit text and nickname participants, expands groups, and warns about decorative members", () => {
+    const source = `<CDXML><page id="1"><scheme id="900"><step id="901"
+      ReactionStepReactants="80" ReactionStepProducts="30"/></scheme>
+      <group id="80">${fragment("10", 0)}<t id="60" p="0 20"><s>reagent A</s></t>
+      <graphic id="70" GraphicType="Rectangle" BoundingBox="0 0 10 10"/></group>
+      <fragment id="30"><n id="301" p="100 0" NodeType="GenericNickname"><t><s>Resin</s></t></n></fragment>
+      </page></CDXML>`;
+    const { document, warnings } = importFixture(source);
+    expect(summary(document)[0].components).toEqual([
+      { role: "reactant", id: "10" }, { role: "reactant", id: "60" }, { role: "product", id: "30" }
+    ]);
+    expect(warnings).toContainEqual(expect.objectContaining({ code: "cdxml.reaction_object_role_unsupported",
+      message: expect.stringContaining('ReactionStepReactants object "70" is graphic') }));
+    const exported = exportDocumentToCdxml(document);
+    // Retain the source group and decorative member without calling it a participant.
+    expect(stepAttributes(exported.contents)[0].ReactionStepReactants).toBe("80");
+    expect(summary(importFixture(visibleOnly(exported.contents)).document)).toEqual(summary(document));
+  });
+
   it("imports participants, an agent, conditions, arrows and pluses into the native reaction", () => {
     const { document } = importFixture(oneStep());
     expect(summary(document)).toEqual([{

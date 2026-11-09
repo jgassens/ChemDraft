@@ -191,6 +191,9 @@ const xmlParser = new XMLParser({
   attributeNamePrefix: "",
   parseAttributeValue: false,
   trimValues: false,
+  // The binary codec emits XML character references for text line breaks and tabs.
+  // fast-xml-parser enables numeric reference decoding through this option.
+  htmlEntities: true,
   commentPropName: "#comment",
   cdataPropName: "#cdata"
 });
@@ -681,6 +684,12 @@ function reactionReferenceLeaves(rootIds: readonly string[], objects: ReadonlyMa
   return leaves;
 }
 
+function isReactionParticipant(object: DocumentObject): boolean {
+  // Explicit role lists may name a reagent by text instead of a molecular graph.
+  // Containers resolve above; decorative members of those containers are not participants.
+  return ["molecule", "text", "superatom", "r-group-label"].includes(object.type);
+}
+
 function importReactionStep(
   scheme: XmlElementView, step: XmlElementView, pageIndex: number, schemeIndex: number, stepIndex: number,
   rootsBySourceId: ReadonlyMap<string, string[]>, objects: ReadonlyMap<string, DocumentObject>,
@@ -716,7 +725,9 @@ function importReactionStep(
       linkedObjects.set(object.id, object);
       if (attribute === "ReactionStepReactants" || attribute === "ReactionStepProducts") {
         const role = attribute === "ReactionStepReactants" ? "reactant" : "product";
-        addComponent(role, object.id);
+        if (isReactionParticipant(object)) addComponent(role, object.id);
+        else warnings.push({ code: "cdxml.reaction_object_role_unsupported", sourceObjectId: id,
+          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its source reference is preserved in compatibility metadata without assigning a participant role.` });
       } else if (attribute === "ReactionStepArrows") {
         arrowObjectIds.push(object.id);
       } else if (attribute === "ReactionStepPlusses") {
@@ -836,6 +847,12 @@ function exportReactionSchemes(
         ReactionStepArrows: arrows, ReactionStepObjectsAboveArrow: above, ReactionStepObjectsBelowArrow: below,
         ReactionStepPlusses: reaction.plusObjectIds ?? []
       };
+      // Preserve explicitly linked decorative source objects without assigning them chemistry.
+      // This also lets an unchanged mixed group keep its source container id on export.
+      for (const attribute of ["ReactionStepReactants", "ReactionStepProducts"] as const) {
+        desired[attribute].push(...reactionReferenceLeaves(sourceRoots(attribute), objects)
+          .filter(object => !isReactionParticipant(object)).map(object => object.id));
+      }
       attributes.id = idFor(ids, reaction.id, allocator);
       for (const attribute of reactionListAttributes) {
         const remaining = new Set(desired[attribute]);
@@ -4676,8 +4693,9 @@ function escapeXmlAttribute(value: string): string {
 }
 
 function indent(value: string, spaces: number): string {
-  const prefix = " ".repeat(spaces);
-  return value.split("\n").map((line) => `${prefix}${line}`).join("\n");
+  // Only indent the structural boundary before this serialized object. Its internal
+  // newlines may be visible text, including styled conditions and atom labels.
+  return `${" ".repeat(spaces)}${value}`;
 }
 
 function warning(code: string, message: string): CompatibilityConversionWarning {
