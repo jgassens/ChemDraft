@@ -38,7 +38,7 @@ const sizeCases = [
     bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAlgAAAEsCAYAAAAfPc2WAAAC0ElEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwbP5CAAExinjxAAAAAElFTkSuQmCC" }
 ];
 
-describe("picture paste and canvas", () => {
+describe("picture paste and canvas", { timeout: 30_000 }, () => {
   let container: HTMLDivElement;
   let root: Root;
   const captureMethods = {
@@ -85,6 +85,9 @@ describe("picture paste and canvas", () => {
   const snapshot = () => bridge().snapshot().document;
   const canUndo = () => container.querySelector('[data-can-undo="true"]') !== null;
   async function command(id: string) { await act(async () => { await bridge().command(id); }); }
+  async function waitForPaste(completed: () => void) {
+    await vi.waitFor(async () => { await act(async () => {}); completed(); }, { timeout: 15_000 });
+  }
 
   function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -103,14 +106,18 @@ describe("picture paste and canvas", () => {
     target.dispatchEvent(event);
   }
 
-  async function pasteFiles(files: File[], completed: () => void) {
+  async function dispatchFiles(files: File[]) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", { value: { types: ["Files"], files, getData: () => "" } });
     await act(async () => {
       window.dispatchEvent(event);
     });
     expect(event.defaultPrevented).toBe(true);
-    await vi.waitFor(async () => { await act(async () => {}); completed(); });
+  }
+
+  async function pasteFiles(files: File[], completed: () => void) {
+    await dispatchFiles(files);
+    await waitForPaste(completed);
   }
 
   it.each(["menu", "event", "native-fallback"])("pastes a Word table before its picture through %s, including after chemistry declines", async route => {
@@ -141,7 +148,7 @@ describe("picture paste and canvas", () => {
           window.dispatchEvent(event);
           expect(event.defaultPrevented).toBe(true);
         });
-        await vi.waitFor(async () => { await act(async () => {}); expect(snapshot().pages[0]!.objects).toHaveLength(1); });
+        await waitForPaste(() => expect(snapshot().pages[0]!.objects).toHaveLength(1));
       }
       const objects = snapshot().pages[0]!.objects;
       expect(objects).toHaveLength(1);
@@ -184,7 +191,7 @@ describe("picture paste and canvas", () => {
         await act(async () => {
           window.dispatchEvent(event);
         });
-        await vi.waitFor(async () => { await act(async () => {}); expect(snapshot().pages[0]!.objects).toHaveLength(1); });
+        await waitForPaste(() => expect(snapshot().pages[0]!.objects).toHaveLength(1));
         expect(event.defaultPrevented).toBe(true);
       }
       const objects = snapshot().pages[0]!.objects;
@@ -292,7 +299,7 @@ describe("picture paste and canvas", () => {
       view: { viewport: createViewportState({ scale: 0.25, minZoom: 0.25 }), scrollLeft: 0, scrollTop: 0 }
     });
     await render();
-    await vi.waitFor(() => expect((bridge().snapshot().viewport as { scale: number }).scale).toBe(0.25));
+    await waitForPaste(() => expect((bridge().snapshot().viewport as { scale: number }).scale).toBe(0.25));
     const { scale } = bridge().snapshot().viewport as { scale: number };
     page().getBoundingClientRect = () => ({ ...pageRect, left: 0, top: -50,
       width: 816 * scale, height: 1056 * scale, right: 816 * scale, bottom: -50 + 1056 * scale });
@@ -331,7 +338,24 @@ describe("picture paste and canvas", () => {
   it.each(["image/png", "image/svg+xml"])("reads %s files in the DOM fallback as base64 and pastes them", async type => {
     await render();
     const bytes = type === "image/png" ? Uint8Array.from(atob(picturePngBase64), char => char.charCodeAt(0)) : pictureSvg;
-    await pasteFiles([new File([bytes], "picture", { type })], () => expect(snapshot().pages[0]!.objects.some(object => object.type === "graphic")).toBe(true));
+    // Hold the actual browser read until explicitly released. The paste must wait for
+    // its load event, however long the host takes to schedule it.
+    const readAsDataURL = FileReader.prototype.readAsDataURL;
+    let pendingRead: { reader: FileReader; file: Blob } | undefined;
+    vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader, file) {
+      pendingRead = { reader: this, file };
+    });
+    await dispatchFiles([new File([bytes], "picture", { type })]);
+    expect(pendingRead).toBeDefined();
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+    const { reader, file } = pendingRead!;
+    await act(async () => {
+      const loaded = new Promise<void>(resolve => reader.addEventListener("loadend", () => resolve(), { once: true }));
+      readAsDataURL.call(reader, file);
+      await loaded;
+    });
+    await waitForPaste(() => expect(snapshot().pages[0]!.objects.some(object => object.type === "graphic")).toBe(true));
     const image = snapshot().pages[0]!.objects.find(object => object.type === "graphic")!;
     expect(image).toMatchObject({ graphicKind: "image", data: { image: { mimeType: type,
       dataBase64: type === "image/png" ? picturePngBase64 : btoa(pictureSvg) } } });
@@ -485,8 +509,7 @@ describe("picture paste and canvas", () => {
       verification.resolve();
       await verification.promise;
     });
-    await vi.waitFor(async () => {
-      await act(async () => { await Promise.resolve(); });
+    await waitForPaste(() => {
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     });
 
@@ -638,8 +661,7 @@ describe("picture paste and canvas", () => {
       depiction.resolve(parsed);
       await depiction.promise;
     });
-    await vi.waitFor(async () => {
-      await act(async () => { await Promise.resolve(); });
+    await waitForPaste(() => {
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     });
     const pasted = snapshot();

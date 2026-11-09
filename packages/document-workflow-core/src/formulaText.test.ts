@@ -1,6 +1,71 @@
 import { describe, it, expect } from "vitest";
+import { spawn } from "node:child_process";
 import type { TextSpan } from "@chemdraft/chem-core";
 import { formulaSpansForMixedText, formulaSpansFromText } from "./formulaText";
+
+// Charge stripping once used an unanchored regex whose backtracking happens inside V8,
+// beyond a JS operation counter. Run the real module in a killable process, and start
+// its generous budget only after imports finish. This also bounds a regressed sync hang.
+async function expectClassificationToFinish(expression: string) {
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { formulaSpansForMixedText, formulaSpansFromText } from ${JSON.stringify(new URL("./formulaText.ts", import.meta.url).href)};
+    process.send("ready");
+    process.once("message", () => {
+      process.send({ correct: ${expression} });
+    });
+  `], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let stderr = "";
+  child.stderr!.on("data", data => { stderr += data; });
+  const exited = new Promise<void>(resolve => child.once("close", () => resolve()));
+  const message = () => new Promise<unknown>((resolve, reject) => {
+    const received = (value: unknown) => { cleanup(); resolve(value); };
+    const failed = (error: Error) => { cleanup(); reject(error); };
+    const closed = () => failed(new Error(`Formula worker exited before replying: ${stderr}`));
+    const cleanup = () => {
+      child.off("message", received); child.off("error", failed); child.off("close", closed);
+    };
+    child.once("message", received); child.once("error", failed); child.once("close", closed);
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const startup = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Formula worker did not become ready: ${stderr}`)), 20_000);
+    });
+    expect(await Promise.race([message(), startup])).toBe("ready");
+    clearTimeout(timer);
+    const result = message();
+    const budget = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Formula classification exceeded its 10 s work budget")), 10_000);
+    });
+    child.send("classify");
+    expect(await Promise.race([result, budget])).toEqual({ correct: true });
+  } finally {
+    clearTimeout(timer);
+    child.kill();
+    await exited;
+  }
+}
+
+// Count characters offered to string/regex operations, including suffix slices. A
+// suffix-wide scan at every token position consumes quadratic work even if the engine
+// happens to make slices cheap. Restore the builtins before running any assertions.
+function classificationWork(text: string) {
+  const slice = String.prototype.slice, startsWith = String.prototype.startsWith, exec = RegExp.prototype.exec;
+  let work = 0;
+  String.prototype.slice = function (start, end) {
+    const result = slice.call(this, start, end); work += result.length; return result;
+  };
+  String.prototype.startsWith = function (search, position) {
+    work += search.length; return startsWith.call(this, search, position);
+  };
+  RegExp.prototype.exec = function (input) {
+    work += input.length; return exec.call(this, input);
+  };
+  try { return { result: formulaSpansForMixedText(text), work }; }
+  finally {
+    String.prototype.slice = slice; String.prototype.startsWith = startsWith; RegExp.prototype.exec = exec;
+  }
+}
 
 describe("formula text", () => {
   it.each(["SN1", "SN2", "SNi", "SNAr", "SN1'", "SN2'", "E1", "E2", "E1cB", "E1cb"])(
@@ -28,22 +93,9 @@ describe("formula text", () => {
     expect(formulaSpansForMixedText(text)).toBeUndefined();
   });
 
-  it("classifies a long superscript digit run without a sign in linear time", () => {
-    const short = "²".repeat(25_000), long = "²".repeat(400_000);
-    const elapsed = (text: string) => {
-      const started = performance.now();
-      for (let index = 0; index < 20; index += 1) expect(formulaSpansForMixedText(text)).toBeUndefined();
-      return performance.now() - started;
-    };
-    elapsed(short); elapsed(long); // Warm both lengths before comparing scaling.
-    const shortTimes: number[] = [], longTimes: number[] = [];
-    for (let index = 0; index < 5; index += 1) {
-      shortTimes.push(elapsed(short)); longTimes.push(elapsed(long));
-    }
-    const median = (times: number[]) => times.sort((a, b) => a - b)[2];
-    // Linear growth is about 16x; quadratic growth is about 256x.
-    expect(median(longTimes) / median(shortTimes)).toBeLessThan(64);
-  }, 30_000); // Allow repeated long scans to finish on a loaded runner.
+  it("classifies a long superscript digit run with no sign without pathological backtracking", async () => {
+    await expectClassificationToFinish('formulaSpansForMixedText("²".repeat(2_000_000)) === undefined');
+  }, 45_000);
 
   it("leaves trailing punctuation plain after formulas", () => {
     for (const punctuation of [",", ";", ":", ".", "!", "?", "*", "†", "‡"]) {
@@ -71,19 +123,14 @@ describe("formula text", () => {
   });
 
   it("classifies a long formula token in linear time", () => {
-    const tokens = [25_000, 400_000].map(n => `${"H".repeat(n - 2)}2x`);
-    for (const token of tokens) formulaSpansForMixedText(token);
-    const times = tokens.map(token => Math.min(...Array.from({ length: 3 }, () => {
-      const started = performance.now();
-      const result = formulaSpansForMixedText(token);
-      const elapsed = performance.now() - started;
+    for (const length of [2_000, 8_000, 32_000]) {
+      const token = `${"H".repeat(length - 2)}2x`;
+      const { result, work } = classificationWork(token);
       expect(result).toBeUndefined();
-      return elapsed;
-    })));
-    // A 16x input separates linear (~16x) from quadratic (~256x) growth, with room for load noise.
-    expect(times[1] / Math.max(times[0], 0.5)).toBeLessThan(64);
-  // Eight scans of up to 400,000 characters can exceed the 5 s default on a heavily loaded machine; the assertion is the ratio, not the time.
-  }, 30_000);
+      expect(work).toBeGreaterThan(length); // The counter must observe the actual classification.
+      expect(work).toBeLessThan(1024 * length);
+    }
+  });
 
   it("formats formula-like tokens in mixed text", () => {
     for (const text of ["CH2Cl2", "Ti(OiPr)4", "Pd(PPh3)4", "Et3N", "Pd2(dba)3", "CuSO4·5H2O", "SO42-"]) {
@@ -107,14 +154,14 @@ describe("formula text", () => {
       expect(formulaSpansForMixedText(text), text).toBeUndefined();
     }
   });
-  it("classifies a long digit run in linear time", () => {
+  it("classifies a long digit run without pathological backtracking", async () => {
     // The body pattern used to offer two ways to match a digit — `[A-Z][a-z]?\d*` and a standalone
     // `\d+` — so an n-digit run had 2^(n-1) parses. A trailing character that fails the match sent
     // the engine through all of them: pasting a 40-digit label froze the app outright.
-    const pathological = `C${"1".repeat(40)}!-`;
-    const started = performance.now();
-    expect(formulaSpansFromText(pathological).map((span) => span.text).join("")).toBe(pathological);
-    expect(performance.now() - started).toBeLessThan(100);
+    await expectClassificationToFinish(`
+      formulaSpansFromText("C" + "1".repeat(512) + "!-").map(span => span.text).join("")
+        === "C" + "1".repeat(512) + "!-"
+    `);
 
     // Same language as before: the shapes that were formulas still are.
     // A leading coefficient stays normal text; only a digit run *after* an element or a closing
@@ -128,7 +175,7 @@ describe("formula text", () => {
     expect(formulaSpansFromText("Fe(CN)63-").at(-1)).toMatchObject({ text: "3-", script: "superscript" });
     // And a bare sign is still not a charge.
     expect(formulaSpansFromText("-")).toEqual([{ text: "-", script: "normal", style: {} }]);
-  });
+  }, 45_000);
 
   it("formats formula text spans with subscripts and a superscript charge", () => {
     expect(formulaSpansFromText("H2O")).toEqual([
