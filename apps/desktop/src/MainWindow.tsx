@@ -7,6 +7,9 @@ import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
+import { clearCustomSwatchSlot, customSwatchCommandId, loadCustomSwatches, parseCustomSwatchCommandId, setCustomSwatchSlot, type CustomSwatchNumber, type CustomSwatchSlot } from "./customColorSwatches";
+import { persistCustomSwatches, useCustomSwatches } from "./toolbars/customSwatchSettings";
+import { createCustomSwatchActions, textCustomColorCommandId } from "./commands";
 import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
@@ -3267,17 +3270,24 @@ export function MainWindow({
     ),
     [keybindingScheme, toolsetRegistry]
   );
+  const customSwatches = useCustomSwatches();
+  const customSwatchActions = useMemo(() => createCustomSwatchActions(customSwatches,
+    document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0 || activeTextEditObjectId !== undefined),
+    [customSwatches, document.selection.objectIds, selectedNativeMoleculeParts, activeTextEditObjectId]);
+  const customColorSaveRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot, hex: string) => void>(() => {});
+  const customColorClearRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot) => Promise<void>>(async () => {});
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       [...allShellCommands(document, selectedMolecule, {
+        customSwatches,
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
-      }), vibeCodeStarterCommand],
+      }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command), vibeCodeStarterCommand],
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -9708,6 +9718,8 @@ export function MainWindow({
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
+      saveCustomColor: (snapshot, hex) => customColorSaveRef.current(snapshot.swatch, snapshot.slot, hex),
+      clearCustomColor: snapshot => customColorClearRef.current(snapshot.swatch, snapshot.slot),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
@@ -11476,6 +11488,23 @@ export function MainWindow({
       });
     });
 
+    customSwatchActions.forEach(action => register(action, async () => {
+      const parsed = parseCustomSwatchCommandId(action.id)!;
+      const state = loadCustomSwatches();
+      const color = state[parsed.swatch][`slot${parsed.slot}`];
+      if (parsed.action === "clear") {
+        if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+      } else if (parsed.action === "apply") {
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color));
+      } else {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }
+        await coordinator.openCustomColor(activeDocumentTabIdRef.current, {
+          title: `Custom Color ${parsed.swatch}, Slot ${parsed.slot}`, swatch: parsed.swatch, slot: parsed.slot, color: color ?? null
+        });
+      }
+    }));
+
     textToolbarActions.forEach((action) => {
       register(action, () => {
         if (!applyTextStyleCommand(action.id)) {
@@ -11612,7 +11641,7 @@ export function MainWindow({
 
     return bindings;
   }, [
-    tableActions, activeTableCell,
+    customSwatchActions, tableActions, activeTableCell,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -11680,6 +11709,8 @@ export function MainWindow({
 
   coreCommandBindingsRef.current = coreCommandBindings;
 
+  customColorSaveRef.current = (swatch, slot, hex) => persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+
   // The registry and its core-command registrar are created exactly once. Handlers delegate
   // to the live bindings ref, so plugin commands registered into the same stable instance in
   // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
@@ -11692,6 +11723,7 @@ export function MainWindow({
   }, []);
 
   vibeGuideActionRef.current = async action => { await registry.invoke(action === "saveStarter" ? VIBE_CODE_SAVE_COMMAND_ID : PLUGIN_MANAGER_COMMAND_ID); };
+  customColorClearRef.current = async (swatch, slot) => { await registry.invoke(customSwatchCommandId(swatch, slot, "clear")); };
 
   insertTableFromDialogRef.current = async (tabId, options) => {
     const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
@@ -12710,6 +12742,7 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
+      if (parseCustomSwatchCommandId(command.id)) continue;
       if (!compoundLayoutsEnabled && isCompoundLayoutCommand(command.id)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
@@ -21232,6 +21265,7 @@ export function MainWindow({
                 onInvoke={invoke}
                 customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
+                  commandSpecs: shellCommandSpecs,
                   colorContextKey,
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,

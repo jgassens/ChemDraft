@@ -6,6 +6,7 @@ import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstal
 import { perfHook, perfProbe, sendPerfCompletion } from "../perf/runtime";
 import type { InsertTableOptions } from "./dialogProtocol";
 import type { StructureTemplatesSnapshot } from "./dialogProtocol";
+import type { CustomColorSnapshot } from "./dialogProtocol";
 
 export interface EngineInstallPresenter {
   action(action: EngineInstallAction): void | Promise<void>;
@@ -43,6 +44,8 @@ export class DialogCoordinator {
   constructor(private transport: DialogTransport, private owner: {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
     insertTable?(tabId: string, options: InsertTableOptions): void | Promise<void>;
+    saveCustomColor?(snapshot: CustomColorSnapshot, hex: string): void | Promise<void>;
+    clearCustomColor?(snapshot: CustomColorSnapshot): void | Promise<void>;
     insertTemplate?(tabId: string, templateId: string): void | Promise<void>;
     applyArrangementSpacing?(tabId: string, percent: number): void | Promise<void>;
     previewArrangementSpacing?(tabId: string, percent: number): string | Promise<string>;
@@ -99,6 +102,12 @@ export class DialogCoordinator {
   }
   async openInsertTable(tabId: string, data: InsertTableOptions & { title: string }): Promise<void> {
     return this.open(tabId, "insertTable", data);
+  }
+  async openCustomColor(tabId: string, data: CustomColorSnapshot): Promise<void> {
+    const existing = this.sessions.get(`${tabId}:customColor`);
+    if (existing?.snapshot.dialogKind === "customColor" &&
+        (existing.snapshot.data.swatch !== data.swatch || existing.snapshot.data.slot !== data.slot)) await this.settle(existing, "cancel");
+    return this.open(tabId, "customColor", data);
   }
   async openStructureTemplates(tabId: string, data: StructureTemplatesSnapshot): Promise<void> {
     return this.open(tabId, "structureTemplates", data);
@@ -157,7 +166,7 @@ export class DialogCoordinator {
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -190,7 +199,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "customColor" ? "Custom Color" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -287,7 +296,8 @@ export class DialogCoordinator {
     if (session.terminalRequestId) return;
     // Reserve the entire session before invoking the owner or awaiting the receipt.
     session.terminalRequestId = message.requestId;
-    const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: message.data.action === "apply" ? "applied" : "cancelled" } };
+    const changesSettingsOrDocument = message.data.action === "apply" || message.data.action === "clear";
+    const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: changesSettingsOrDocument ? "applied" : "cancelled" } };
     session.receipts.set(message.requestId, receipt);
     let finished!: () => void;
     session.inFlight.set(message.requestId, new Promise<void>(resolve => { finished = resolve; }));
@@ -297,14 +307,22 @@ export class DialogCoordinator {
         ...dialogEnvelope(message), type: "result", data: { status: "accepted" }
       });
       if (session.settled) return;
-      if (message.data.action === "apply") {
+      if (session.snapshot.dialogKind === "customColor") {
+        if (message.data.action === "apply" && "hex" in message.data) {
+          if (!this.owner.saveCustomColor) throw new Error("Custom color settings are unavailable");
+          await this.owner.saveCustomColor(session.snapshot.data, message.data.hex);
+        } else if (message.data.action === "clear") {
+          if (!this.owner.clearCustomColor) throw new Error("Custom color settings are unavailable");
+          await this.owner.clearCustomColor(session.snapshot.data);
+        }
+      } else if (message.data.action === "apply") {
         if ("percent" in message.data) {
           if (!this.owner.applyArrangementSpacing) throw new Error("Spacing is unavailable");
           await this.owner.applyArrangementSpacing(message.documentTabId, message.data.percent);
         } else if ("rows" in message.data) {
           if (!this.owner.insertTable) throw new Error("Table insertion is unavailable");
           await this.owner.insertTable(message.documentTabId, message.data);
-        } else await this.owner.applyPageSize(message.documentTabId, message.data);
+        } else if ("width" in message.data) await this.owner.applyPageSize(message.documentTabId, message.data);
         if (perfProbe) perfHook(() => sendPerfCompletion(delivery.windowLabel, message.requestId, "document-commit"));
       } else if (message.data.action === "export" || message.data.action === "chooseDestination") {
         const callback = message.data.action === "export" ? this.owner.export : this.owner.chooseExportDestination;
@@ -337,7 +355,7 @@ export class DialogCoordinator {
       return;
     }
     try { await this.transport.publish(session.registration.hostId, receipt); }
-    finally { await this.settle(session, message.data.action === "apply" ? "apply" : "cancel"); }
+    finally { await this.settle(session, changesSettingsOrDocument ? "apply" : "cancel"); }
   }
   private async preview(session: Session, requestId: string, percent: number): Promise<void> {
     if (session.terminalRequestId || session.snapshot.dialogKind !== "arrangementSpacing") return;

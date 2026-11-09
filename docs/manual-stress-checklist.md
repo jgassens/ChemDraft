@@ -1121,3 +1121,21 @@ one step and preserve selection. Highlight characters inside one box and confirm
 formatted.
 
 - **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.
+
+## Custom Color Swatches (macOS and Windows)
+
+- In Customize Main Toolbar, place two different Custom Color Swatch items from Object Style.
+  Each has two independent `?` slots; none are on the factory toolbar. Reorder them and restart:
+  placement and colours must survive.
+- Click empty slots and set colours using Hex, RGB and CMYK. Check prefilled conversions, live
+  preview, inline invalid-input messages, disabled OK for invalid input, and the CMYK approximation
+  note. OK stores the colour without changing the drawing. Other open palette windows update.
+- Apply each colour to a selected bond, atom, whole molecule, text object, selected text run,
+  reaction arrow, and shape. Compare with a preset; only the intended targets change, chemistry
+  stays unchanged, and Undo/Redo restores the colour in one operation (or within the text edit).
+- Right-click both empty and set slots to edit. Tab to a slot and use Shift+F10/the context-menu
+  key, including a set slot with no selection. Change a colour, Cancel a draft, and Clear a set
+  slot; only Clear removes its stored colour. Restart again to check persistence.
+- Move the modeless dialog outside the document window and to a monitor with different scaling.
+  Toolbars remain usable; reopening remembers its position. On Windows it has no taskbar entry
+  and stays owned by the document window. Check Escape, Cmd/Ctrl+W and title-bar close.

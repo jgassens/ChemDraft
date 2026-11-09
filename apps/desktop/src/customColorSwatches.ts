@@ -1,7 +1,8 @@
 /** Pure model for four two-slot custom color swatches. */
 export const CUSTOM_SWATCH_COUNT = 4;
 export const CMYK_APPROXIMATION_NOTE = "Approximate: CMYK is converted to screen RGB without a color profile.";
-const STORAGE_KEY = "chemdraft.customColorSwatches.v1";
+export const CUSTOM_SWATCH_STORAGE_KEY = "chemdraft.customColorSwatches.v1";
+const STORAGE_KEY = CUSTOM_SWATCH_STORAGE_KEY;
 
 export type CustomSwatchNumber = 1 | 2 | 3 | 4;
 export type CustomSwatchSlot = 1 | 2;
