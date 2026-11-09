@@ -353,7 +353,15 @@ export const coreDrawingToolDefinitions = [
     kind: "bracket",
     category: "annotation",
     icon: "bracket",
-    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+    usageHint: usageHint("drag around a repeat unit", "click to place a default pair", "Esc exits")
+  },
+  {
+    commandId: "tool.roundBracket",
+    title: "Round Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "roundBracket",
+    usageHint: usageHint("drag around a repeat unit", "click to place a default pair", "Esc exits")
   },
   {
     commandId: "tool.dagger",

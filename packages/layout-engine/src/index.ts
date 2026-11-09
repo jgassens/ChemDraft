@@ -85,7 +85,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { planTableObjectSvg } from "./table";
-import { textAdvanceEm } from "./textMetrics";
+import { textAdvanceEm, measureTextRun, nativeTextMetrics } from "./textMetrics";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -5110,11 +5110,13 @@ export function bracketGlyphPathD(
   kind: BracketObject["bracketKind"],
   width: number,
   height: number,
-  project?: (point: LayoutPoint) => LayoutPoint
+  project?: (point: LayoutPoint) => LayoutPoint,
+  side: BracketObject["side"] = "open"
 ): string {
   // Project endpoints and Bezier controls, preserving a constant stroke in SVG/PDF.
   // Keep raw number serialization for the original, untilted glyph.
   const point = (x: number, y: number) => {
+    if (side === "close") x = Math.max(width - 1, 0) - x;
     if (!project) return `${x} ${y}`;
     const projected = project({ x, y });
     return `${formatNumber(projected.x)} ${formatNumber(projected.y)}`;
@@ -5134,12 +5136,36 @@ export function bracketGlyphPathD(
   return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
+/** Object-local label metrics, shared with the inline editor, canvas and vector exports. */
+export function bracketLabelPlan(object: BracketObject) {
+  if (!object.repeatUnit || object.side !== "close") return undefined;
+  const style = nativeTextStyleFromObjectStyle(object.style);
+  const fontSize = style.fontSizePx * nativeTextScriptFontScale;
+  const text = object.label ?? "n";
+  const x = Math.max(object.width, 1) + 2;
+  const y = Math.max(object.height - 1, 0) + style.fontSizePx * nativeTextSubscriptOffsetEm;
+  return { text, x, y, fontSize, fontFamily: style.fontFamily,
+    bounds: { x, y: y - fontSize, width: measureTextRun(text, { ...style, fontSizePx: fontSize }),
+      height: fontSize * (1 + nativeTextMetrics.descentEm) } };
+}
+
+export function bracketVisualBounds(object: BracketObject): LayoutBounds {
+  const label = bracketLabelPlan(object);
+  const right = label ? Math.max(object.width, label.bounds.x + label.bounds.width) : object.width;
+  const bottom = label ? Math.max(object.height, label.bounds.y + label.bounds.height) : object.height;
+  const points = [{ x: 0, y: 0 }, { x: right, y: 0 }, { x: right, y: bottom }, { x: 0, y: bottom }]
+    .map(point => transformPointForObject(object, { x: object.x + point.x, y: object.y + point.y }));
+  const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
+  return { x, y, width: Math.max(...points.map(point => point.x)) - x, height: Math.max(...points.map(point => point.y)) - y };
+}
+
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   const projection = projectedPlaneMatrixForObject(object);
   const project = projection ? (point: LayoutPoint) => projectPointInObjectPlane(object,
     { x: object.x + point.x, y: object.y + point.y }, projection) : undefined;
+  const label = bracketLabelPlan(object);
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     transform: projection ? undefined : rotationTransform(object)
   }), [
@@ -5147,13 +5173,19 @@ function bracketObjectFragment(object: BracketObject, layerIndex: number): PageS
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
       transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height, project),
+      d: bracketGlyphPathD(object.bracketKind, width, height, project, object.side),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,
       "stroke-linecap": "round",
       "stroke-linejoin": "round"
-    })
+    }),
+    ...(label ? [elementFragment("text", `bracket-label-${object.id}`, {
+      class: "bracket-repeat-label", x: label.x, y: label.y,
+      transform: projection ? `${projectedPlaneSvgTransformForObject(object)} translate(${formatNumber(object.x)} ${formatNumber(object.y)})`
+        : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      "font-size": label.fontSize, "font-family": label.fontFamily, fill: "#172026", stroke: "none"
+    }, [textFragment(`bracket-label-text-${object.id}`, label.text)])] : [])
   ]);
 }
 

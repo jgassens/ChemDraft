@@ -1,3 +1,6 @@
+import { BracketLabelEditor } from "./BracketLabelEditor";
+import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel } from "./bracketCommands";
+import { bracketLabelPlan } from "@chemdraft/layout-engine";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
@@ -1034,7 +1037,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital" | "bracket";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -1044,6 +1047,7 @@ type NativePlacementDragState = {
   bondOrder?: NativeBondOrderValue;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
+  bracketKind?: BracketObject["bracketKind"];
   chainAnchor?: NativeChainAnchor;
   /** Flexible chain variant: the zig-zag follows the accumulated pointer path. */
   chainFlexible?: boolean;
@@ -1715,7 +1719,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.06.55-codex";
+const CURRENT_BUILD_STAMP = "11.09.07.40-opus";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2553,6 +2557,9 @@ export function MainWindow({
   useEffect(() => { setTableCellEdit(undefined); }, [activeDocumentTabId]);
   const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const [bracketLabelEdit, setBracketLabelEdit] = useState<{ objectId: string; tabId: string }>();
+  useEffect(() => { setBracketLabelEdit(undefined); }, [activeDocumentTabId]);
+  const bracketActions = useMemo(() => createBracketCommands(document), [document]);
   const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   const insertTableFromDialogRef = useRef<(tabId: string, options: InsertTableOptions) => Promise<void>>(async () => {});
@@ -6899,7 +6906,7 @@ export function MainWindow({
 
   const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
     const currentDocument = documentRef.current;
-    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind));
+    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind), `Draw ${bracketKind} bracket pair`);
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Inserted ${bracketKind} bracket`);
@@ -10907,6 +10914,21 @@ export function MainWindow({
       }
     }));
 
+    bracketActions.forEach(action => register(action, () => {
+      if (action.id === "bracket.repeatUnit.toggle") {
+        commitDocumentChange(toggleBracketRepeatUnit(documentRef.current), action.title);
+        setStatus(action.title);
+      } else {
+        const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
+        if (closing) {
+          clearScheduledTextEditorFocus();
+          setActiveTextEditObjectId(undefined);
+          setActiveAtomLabelEdit(undefined);
+          setBracketLabelEdit({ objectId: closing.id, tabId: activeDocumentTabIdRef.current });
+        }
+      }
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
@@ -11619,7 +11641,7 @@ export function MainWindow({
 
     return bindings;
   }, [
-    tableActions, activeTableCell,
+    tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -11866,12 +11888,17 @@ export function MainWindow({
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
+  const bracketMenuItems = useMemo(() => bracketActions.filter(action => action.id === "bracket.repeatUnit.toggle").map(action => ({
+    location: "structure", command: { kind: "command" as const, id: action.id, commandId: action.id,
+      label: action.title, enabled: action.enabled !== false, coreRouted: true }
+  })), [bracketActions]);
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
   const nativePluginMenuItems = useMemo(() => [
     ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
+    ...bracketMenuItems,
     ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  ], [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -14665,12 +14692,15 @@ export function MainWindow({
       | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle; bondOrder?: NativeBondOrderValue }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
+      | { kind: "bracket"; bracketKind: BracketObject["bracketKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
       | { kind: "orbital"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
-    const placementDocument = placement.kind === "template"
+    const placementDocument = placement.kind === "bracket"
+      ? insertNativeBracket(startDocument, point, placement.bracketKind)
+      : placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
       : placement.kind === "arrow"
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
@@ -14700,6 +14730,7 @@ export function MainWindow({
       bondOrder: placement.kind === "single-bond" ? placement.bondOrder : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      bracketKind: placement.kind === "bracket" ? placement.bracketKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
@@ -15095,6 +15126,9 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "bracket" && drag.bracketKind) {
+      return insertNativeBracket(drag.startDocument, drag.startPoint, drag.bracketKind, point);
+    }
     if (drag.kind === "orbital") {
       return aimNativeOrbitalPlacement(drag.placementDocument, drag.objectId, point, drag.shiftKey);
     }
@@ -15151,7 +15185,7 @@ export function MainWindow({
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
-    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
+    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -15160,7 +15194,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, placed);
+    commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
     return true;
   }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
@@ -15206,7 +15240,7 @@ export function MainWindow({
     const label = nativePlacementStatusLabel(drag);
     const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
       ? "Inserted angled"
-      : drag.kind === "chain"
+      : drag.kind === "chain" || drag.kind === "bracket"
         ? "Inserted"
         : "Inserted rotated";
     // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
@@ -16911,7 +16945,9 @@ export function MainWindow({
       if (bracketKind) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -18292,7 +18328,9 @@ export function MainWindow({
       if (bracketKind && point) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -20891,7 +20929,7 @@ export function MainWindow({
         hasSelectedMolecule: selectedMolecule !== undefined,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
-        pluginMenuItems: pluginRuntime.pluginMenuItems,
+        pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
         keybindingScheme
       }),
@@ -20907,6 +20945,7 @@ export function MainWindow({
       visibleToolsetIds,
       toolsetRegistry,
       pluginRuntime.pluginMenuItems,
+      bracketMenuItems,
       availablePluginUpdateCount
     ]
   );
@@ -21586,6 +21625,16 @@ export function MainWindow({
                       onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
                   </>;
                 })()}
+                {bracketLabelEdit?.tabId === activeDocumentTabId ? (() => {
+                  const object = findDocumentObject(document, bracketLabelEdit.objectId);
+                  return object?.type === "bracket" && bracketLabelPlan(object) ? <BracketLabelEditor
+                    key={`${activeDocumentTabId}:${object.id}`} object={object}
+                    onFinish={value => {
+                      if (value !== undefined) commitDocumentChange(current => setBracketRepeatLabel(current, object.id, value), "Edit repeat-unit label");
+                      setBracketLabelEdit(undefined);
+                      canvasRegionRef.current?.focus({ preventScroll: true });
+                    }} /> : null;
+                })() : null}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -22083,6 +22132,7 @@ export function MainWindow({
         }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          bracketActions={findDocumentObject(document, objectContextMenu.objectId)?.type === "bracket" ? bracketActions : []}
           tableActions={selectedTable(document) ? tableActions : []}
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           bondStereoActions={(() => {
@@ -23630,6 +23680,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "bracket") return `${drag.bracketKind} bracket pair`;
   if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
@@ -25264,6 +25315,7 @@ function ArtStyleQaLayer({
 }
 
 export function ObjectLayerContextMenu({
+  bracketActions = [],
   layoutActions = [],
   tableActions = [],
   bondStereoActions = [],
@@ -25281,6 +25333,7 @@ export function ObjectLayerContextMenu({
 }: {
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
+  bracketActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
@@ -25383,6 +25436,9 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {bracketActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+        data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
+        onClick={() => onInvoke(action.id)}>{action.title}</button>)}
       {tableRowColumnActions.map(action => (
         <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
           data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
@@ -29506,10 +29562,12 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
-  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
+  const pathD = bracketGlyphPathD(object.bracketKind, width, height, undefined, object.side);
+  const label = bracketLabelPlan(object);
   return (
     <svg
       className="bracket-glyph"
+      style={{ overflow: "visible" }}
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
@@ -29519,6 +29577,9 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
         d={pathD}
         transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}
       />
+      {label ? <text className="bracket-repeat-label" x={label.x} y={label.y} fontSize={label.fontSize}
+        fontFamily={label.fontFamily} fill="#172026" stroke="none"
+        transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}>{label.text}</text> : null}
     </svg>
   );
 }
