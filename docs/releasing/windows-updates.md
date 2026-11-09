@@ -132,7 +132,11 @@ An end-to-end test needs two signed stable builds with increasing versions and a
    - accepting it downloads, saves the session, shows the passive installer, and reopens ChemDraft
      on the newer version;
    - a drawing made before the update is still there after the relaunch.
-5. Uninstall the test build.
+5. Uninstall the test build. The NSIS installer remembers the folder it last installed to, so a
+   silent install (`/S`) without `/D=<folder>` reuses that remembered folder instead of the default
+   per-user location. After installing a test build into a separate folder with `/D=...`, pass
+   `/D=%LOCALAPPDATA%\ChemDraft` explicitly when reinstalling the stable release (or it lands in the
+   test folder); `/D` must be the last argument and must not be quoted.
 
 To drive the prompt from a script: it is a Windows task dialog, and on Windows 11 its buttons are
 exposed to UI Automation as bare panes with no Invoke pattern. Find the window instead
