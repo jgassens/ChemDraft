@@ -211,7 +211,7 @@ export const SketchStylePreset = {
   drawing: {
     ...ChemDraftSyntheticStylePreset.drawing,
     stylePresetId: "chemdraft.sketch",
-    atomLabelFontFamily: "'Patrick Hand', cursive",
+    atomLabelFontFamily: "'Patrick Hand', Arial, Helvetica, sans-serif",
     visualEffects: [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7 }]
   }
 } as const satisfies ChemDraftStylePreset;

@@ -7,7 +7,7 @@ This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or files
 ## Native drawing presets
 
 The four presets other than Sketch use Arial, Helvetica, sans-serif labels at regular weight 400.
-Sketch uses `'Patrick Hand', cursive` labels and the sketch effect at roughness 1.25. Physical point
+Sketch uses `'Patrick Hand', Arial, Helvetica, sans-serif` labels and the sketch effect at roughness 1.25. Physical point
 values use **22 native units per 14.4 pt**, independently of image pixel density.
 
 | Name | ID | Bond length | Line / bold width | Double-bond gap | Hash spacing | Label margin | Label size | Source |

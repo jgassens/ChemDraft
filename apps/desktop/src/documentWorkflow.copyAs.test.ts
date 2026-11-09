@@ -7,7 +7,17 @@ import {
 } from "./documentWorkflow";
 
 describe("Copy As grouped artwork", () => {
-  it("copies a user-made group recursively, in paint order, without unrelated artwork", () => {
+  it("prepares bundled handwriting before the desktop SVG export wrapper writes Sketch text", async () => {
+    const document = createPhase4Document("Sketch clipboard");
+    document.pages[0]!.objects = [{ id: "sketch-text", type: "text", x: 100, y: 100,
+      width: 100, height: 30, rotation: 0, text: "OH ⇌", spans: [],
+      style: { fontFamily: "'Patrick Hand', Arial, Helvetica, sans-serif" } }];
+    const result = await exportPhase4Svg(copyAsScopedDocument(document));
+    expect(result.contents).toContain("@font-face");
+    expect(result.contents).toContain("OH ⇌");
+  });
+
+  it("copies a user-made group recursively, in paint order, without unrelated artwork", async () => {
     const document = insertNativeSingleBondMolecule(
       insertNativeSingleBondMolecule(createPhase4Document("Grouped Copy As"), { x: 300, y: 300 }),
       { x: 700, y: 500 }
@@ -39,7 +49,7 @@ describe("Copy As grouped artwork", () => {
     const direct = { ...document, pages: [{ ...page, objects: [molecule, caption] }],
       selection: { ...document.selection, objectIds: [molecule.id, caption.id] } };
     expect(scoped.pages).toEqual(copyAsScopedDocument(direct).pages);
-    const svg = exportPhase4Svg(scoped, { includeWarnings: false }).contents;
+    const svg = (await exportPhase4Svg(scoped, { includeWarnings: false })).contents;
     expect(svg).toContain("Grouped artwork");
     expect(svg).toContain('data-object-id="' + molecule.id + '"');
     expect(svg).not.toContain("Outside");
@@ -72,7 +82,7 @@ describe("Copy As grouped artwork", () => {
       expect(copied.pages).toEqual(copyAsScopedDocument(directlySelected).pages);
       expect(copied.pages[0]!.width).toBeGreaterThan(32);
       expect(copied.pages[0]!.height).toBeGreaterThan(32);
-      const svg = exportPhase4Svg(copied, { includeWarnings: false }).contents;
+      const svg = (await exportPhase4Svg(copied, { includeWarnings: false })).contents;
       for (const object of artwork) expect(svg).toContain('data-object-id="' + object.id + '"');
       expect(svg).toContain("<path");
       expect(svg).toContain("<text");
@@ -127,7 +137,7 @@ function expectPaddedFrames(document: ChemDraftDocument) {
 }
 
 describe("Copy As rotated content crop", () => {
-  it.each([90, 30])("contains a 2:1 picture rotated %s degrees beside a ring with 16-unit padding", rotation => {
+  it.each([90, 30])("contains a 2:1 picture rotated %s degrees beside a ring with 16-unit padding", async rotation => {
     const document = insertNativeTemplateMolecule(createPhase4Document(), { x: 110, y: 350 }, "cyclohexane");
     const image = picture(rotation);
     expect(image.width).toBe(400);
@@ -140,7 +150,7 @@ describe("Copy As rotated content crop", () => {
     const before = structuredClone(withImage);
     const copied = expectPaddedFrames(withImage);
     expect(withImage).toEqual(before);
-    const svg = exportPhase4Svg(copied, { includeWarnings: false }).contents;
+    const svg = (await exportPhase4Svg(copied, { includeWarnings: false })).contents;
     expect(svg).toContain("<image");
     expect(svg).toContain(`rotate(${rotation} `);
     expect(svg).toContain('data-object-id="' + page.objects[0]!.id + '"');

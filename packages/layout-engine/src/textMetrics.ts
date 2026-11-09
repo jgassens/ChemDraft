@@ -15,7 +15,7 @@ export function isPatrickHandFont(fontFamily: string): boolean {
 
 /** Exact advances from the bundled 1.003 face; independent of installed system fonts. */
 export function patrickHandTextAdvanceEm(text: string): number {
-  return [...text].reduce((sum, character) => sum + (patrickHandAdvances[character.codePointAt(0)!] ?? 1), 0);
+  return [...text].reduce((sum, character) => sum + (patrickHandAdvances[character.codePointAt(0)!] ?? textAdvanceEm(character)), 0);
 }
 
 /** Explicit SVG script metrics. Offsets are in PARENT em, independent of script size.
@@ -53,7 +53,10 @@ function nativeTextAdvances(fontFamily: string, bold: boolean, italic: boolean):
 } | undefined {
   // Do not skip an unknown first family: it may be installed and wider than its fallback.
   const family = fontFamily.split(",")[0]!.trim().toLowerCase().replace(/["']/g, "");
-  if (isPatrickHandFont(fontFamily)) return { advances: patrickHandAdvances, ceilings: patrickHandAdvances };
+  if (isPatrickHandFont(fontFamily)) return {
+    advances: { ...helveticaAdvances, ...patrickHandAdvances },
+    ceilings: { ...arialAdvanceCeilings[(bold ? 1 : 0) + (italic ? 2 : 0)]!, ...patrickHandAdvances }
+  };
   const face = (bold ? 1 : 0) + (italic ? 2 : 0);
   if (["courier", "courier new"].includes(family)) {
     return { advances: courierAdvances, ceilings: courierAdvanceCeilings[face]! };

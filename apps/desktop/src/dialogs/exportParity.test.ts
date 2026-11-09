@@ -21,7 +21,7 @@ describe("Export form preserves the existing export pipeline", () => {
     const svg = { includeWarnings: !guides, includePageGuides: guides };
     const state = { ...exportFixture(), format: "svg" as const, busy: false, svg };
     const result = await createDialogExportResult(document, state);
-    expect(result.kind === "text" && result.contents).toBe(exportPhase4Svg(document, svg).contents);
+    expect(result.kind === "text" && result.contents).toBe((await exportPhase4Svg(document, svg)).contents);
     const cdxml = { creationProgram: "  ChemDraft parity  " };
     const xml = await createDialogExportResult(document, { ...state, format: "cdxml", cdxml });
     expect(xml).toEqual(exportPhase4Cdxml(document, { creationProgram: "ChemDraft parity" }));
@@ -46,7 +46,7 @@ describe("Export form preserves the existing export pipeline", () => {
     const raster = { scale: 3, background: "transparent" as const, jpegQuality: 83, maxDimensionPx: 4096 };
     const result = await createDialogExportResult(document, { ...exportFixture(), format, busy: false, raster });
     const transparent = format === "png";
-    const svg = exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" });
+    const svg = (await exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" }));
     expect(rasterizeSvgNative).toHaveBeenLastCalledWith(svg.contents, format, { scale: 3, cssPxPerInch: 96, background: transparent ? "transparent" : "#ffffff", jpegQuality: 83, maxDimensionPx: 4096 });
     expect(result.kind === "binary" && result.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.warnings).toEqual([...svg.warnings, { message: "Raster warning" }]);

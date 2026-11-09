@@ -12,7 +12,7 @@ import {
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
-import { patrickHandFontFaceCss } from "./handwritingFont";
+import { ensureHandwritingFontLoaded, requireHandwritingFontFaceCss } from "./handwritingFont";
 
 export interface SvgExportOptions {
   pageIndex?: number;
@@ -115,11 +115,8 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     }, children: [] }] }, 2);
   }).join("\n");
   // Only rendered text on this page needs a font. Preserve all other SVG bytes.
-  const needsHandwriting = (fragments: readonly PageSvgFragment[]): boolean => fragments.some(fragment =>
-    fragment.kind === "element" && (isPatrickHandFont(String(fragment.attrs["font-family"] ?? ""))
-      || needsHandwriting(fragment.children)));
   const fontMarkup = needsHandwriting(plan.fragments)
-    ? `  <defs><style>${patrickHandFontFaceCss}</style></defs>`
+    ? `  <defs><style>${requireHandwritingFontFaceCss()}</style></defs>`
     : "";
   const warnings = plan.warnings.filter((warning) => !(warning.code === "export.svg.graphic_fallback" && warning.objectId && images.has(warning.objectId))).map<ExportWarning>((warning) => ({
     code: warning.code,
@@ -252,4 +249,15 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function needsHandwriting(fragments: readonly PageSvgFragment[]): boolean {
+  return fragments.some(fragment => fragment.kind === "element" &&
+    (isPatrickHandFont(String(fragment.attrs["font-family"] ?? "")) || needsHandwriting(fragment.children)));
+}
+
+/** Prepare only the exported page's rendered fonts before calling the synchronous writer. */
+export async function ensureSvgFontsLoaded(document: ChemDraftDocument, options: SvgExportOptions = {}): Promise<void> {
+  const page = document.pages[options.pageIndex ?? 0];
+  if (page && needsHandwriting(planPageSvgRender(page).fragments)) await ensureHandwritingFontLoaded();
 }

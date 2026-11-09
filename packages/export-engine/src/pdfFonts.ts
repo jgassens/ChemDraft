@@ -2,6 +2,8 @@ import type { jsPDF } from "jspdf";
 import { fontCoverage } from "./fonts/coverage";
 import { isPatrickHandFont } from "@chemdraft/layout-engine";
 
+import { loadHandwritingFont } from "./handwritingFont";
+
 type Face = "normal" | "bold" | "italic" | "bolditalic";
 type Family = "ChemDraftNotoSans" | "ChemDraftDejaVuSans" | "ChemDraftPatrickHand";
 
@@ -20,10 +22,10 @@ const needsEmbeddedFont = /[^\u0000-\u00ffŒœŠšŸŽžƒˆ˜–—‘’‚“
 // to the synchronous SVG writer; PDF registers it only for handwriting runs.
 const loadFace = {
   ChemDraftPatrickHand: {
-    normal: () => import("./fonts/PatrickHand-Regular"),
-    bold: () => import("./fonts/PatrickHand-Regular"),
-    italic: () => import("./fonts/PatrickHand-Regular"),
-    bolditalic: () => import("./fonts/PatrickHand-Regular")
+    normal: loadHandwritingFont,
+    bold: loadHandwritingFont,
+    italic: loadHandwritingFont,
+    bolditalic: loadHandwritingFont
   },
   ChemDraftNotoSans: {
     normal: () => import("./fonts/NotoSans-Regular"),

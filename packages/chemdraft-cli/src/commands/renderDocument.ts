@@ -3,7 +3,7 @@ import { basename, dirname, extname } from "node:path";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-core";
-import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
@@ -122,6 +122,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
         warnings.push(...pdf.warnings);
         await save(extension === format ? out : `${out}.${format}`, pdf.bytes);
       } else {
+        await ensureSvgFontsLoaded(document);
         const exported = exportDocumentToSvg(document, { background: background === "white" ? "#ffffff" : "transparent" });
         warnings.push(...exported.warnings);
         const cropped = document.pages[0]!.objects.length === 0 && figure.style !== "document" ? undefined

@@ -1,5 +1,5 @@
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import {
   moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, planNativeArtVisual,
   type LayoutBounds
@@ -10,7 +10,8 @@ import { rotatedGraphicLocalBounds } from "../graphicHandleGeometry";
 export const ASSISTANT_PREVIEW_MAX_LENGTH = 256 * 1024;
 
 /** Transcript preview only: never changes coordinates or chemistry in the source document. */
-export function runThumbnail(document: ChemDraftDocument, touchedIds: readonly string[]): string | undefined {
+export async function runThumbnail(document: ChemDraftDocument, touchedIds: readonly string[]): Promise<string | undefined> {
+  await Promise.all(document.pages.map((_, pageIndex) => ensureSvgFontsLoaded(document, { pageIndex })));
   const touched = new Set(touchedIds);
   const regions = document.pages.flatMap((page, pageIndex) => {
     const bounds = page.objects.filter(object => touched.has(object.id)).map(objectBounds);

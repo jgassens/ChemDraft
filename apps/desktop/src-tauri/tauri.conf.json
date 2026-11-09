@@ -45,7 +45,8 @@
       "resources/opsin/jre",
       "resources/ocsr/*.py",
       "resources/ocsr/*.txt",
-      "resources/naming/**/*"
+      "resources/naming/**/*",
+      "resources/fonts/PatrickHand-OFL.txt"
     ],
     "fileAssociations": [
       {

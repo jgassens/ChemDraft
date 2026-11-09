@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { jsPDF } from "jspdf";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { SketchStylePreset, createEmptyDocument, stylePresetToObjectStyle, type TextObject } from "@chemdraft/chem-core";
-import { atomLabelRunAdvance, planPageSvgRender } from "@chemdraft/layout-engine";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { DefaultNativeTextStyle, SketchStylePreset, createEmptyDocument, stylePresetToObjectStyle, type TextObject } from "@chemdraft/chem-core";
+import { atomLabelRunAdvance, measureNativeTextSpanLineWidth, planPageSvgRender } from "@chemdraft/layout-engine";
 import { elementFragments } from "@chemdraft/layout-engine/testing";
 import { patrickHandAdvances } from "../../layout-engine/src/patrickHandMetrics.generated";
-import { exportDocumentToSvg } from "./svg";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "./svg";
 import { exportDocumentToPdf, exportSvgToPdf } from "./pdf";
 import { preparePdfFonts } from "./pdfFonts";
 import { fontCoverage } from "./fonts/coverage";
@@ -19,7 +19,7 @@ const appFont = new URL("../../../apps/desktop/src/assets/fonts/PatrickHand-Regu
 function fixture(handwriting = true) {
   const document = createEmptyDocument({ now: "2026-01-01T00:00:00.000Z" });
   const text: TextObject = { id: "caption", type: "text", x: 100, y: 120, width: 160, height: 40,
-    rotation: 0, text: "Sketch H2O", spans: [], style: handwriting ? { fontFamily: "'Patrick Hand', cursive", fontSizePx: 15 } : {} };
+    rotation: 0, text: "Sketch H2O", spans: [], style: handwriting ? { fontFamily: "'Patrick Hand', Arial, Helvetica, sans-serif", fontSizePx: 15 } : {} };
   document.pages[0]!.objects = [text, {
     id: "molecule", type: "molecule", x: 100, y: 60, width: 40, height: 20, rotation: 0,
     structureFormat: "smiles", structure: "CO", superatoms: [], rGroups: [],
@@ -32,6 +32,7 @@ function fixture(handwriting = true) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("locally bundled Sketch handwriting", () => {
+  beforeAll(async () => { await ensureSvgFontsLoaded(fixture()); });
   it("preserves pre-Sketch SVG bytes for a document without handwriting", () => {
     const document = fixture(false);
     // Captured from the writer at 068b692b; also compared byte-for-byte during this change.
@@ -45,6 +46,10 @@ describe("locally bundled Sketch handwriting", () => {
     expect(sfntName(font, 5)).toContain("1.003");
     const ofl = readFileSync(new URL("./fonts/LICENSE_PATRICK_HAND.txt", import.meta.url), "utf8");
     expect(ofl).toBe(readFileSync(new URL("../../../apps/desktop/src/assets/fonts/OFL.txt", import.meta.url), "utf8"));
+    const packaged = new URL("../../../apps/desktop/src-tauri/resources/fonts/PatrickHand-OFL.txt", import.meta.url);
+    expect(readFileSync(packaged, "utf8")).toBe(ofl);
+    const config = JSON.parse(readFileSync(new URL("../../../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+    expect(config.bundle.resources).toContain("resources/fonts/PatrickHand-OFL.txt");
     expect(ofl).toContain("Copyright (c) 2010-2012 Patrick Wagesreiter");
     const css = readFileSync(new URL("../../../apps/desktop/src/App.css", import.meta.url), "utf8");
     expect(css).toContain("url('./assets/fonts/PatrickHand-Regular.ttf')");
@@ -78,7 +83,7 @@ describe("locally bundled Sketch handwriting", () => {
       if (fragment.attrs.class === "native-molecule-sketch") expect(svg).toContain(`d="${fragment.attrs.d}"`);
     }
     const dom = new JSDOM(svg, { contentType: "image/svg+xml" });
-    expect([...dom.window.document.querySelectorAll("text")].every(text => text.closest("[font-family]")?.getAttribute("font-family") === "'Patrick Hand', cursive")).toBe(true);
+    expect([...dom.window.document.querySelectorAll("text")].every(text => text.closest("[font-family]")?.getAttribute("font-family") === "'Patrick Hand', Arial, Helvetica, sans-serif")).toBe(true);
     dom.window.close();
   });
 
@@ -93,7 +98,7 @@ describe("locally bundled Sketch handwriting", () => {
   });
 
   it("embeds Patrick Hand for ASCII and falls back by cmap for missing Unicode", async () => {
-    const dom = new JSDOM('<svg><text font-family="\'Patrick Hand\', cursive">Sketch H2O ⇌ μ</text></svg>');
+    const dom = new JSDOM('<svg><text font-family="\'Patrick Hand\', Arial, Helvetica, sans-serif">Sketch H2O ⇌ μ</text></svg>');
     const pdf = new jsPDF();
     const addFont = vi.spyOn(pdf, "addFont");
     const release = await preparePdfFonts(dom.window.document.documentElement, pdf);
@@ -102,8 +107,27 @@ describe("locally bundled Sketch handwriting", () => {
     for (const span of dom.window.document.querySelectorAll("text tspan")) {
       const family = span.getAttribute("font-family")!;
       if ([...span.textContent!].every(character => cmapCovers(character))) expect(family).toBe("ChemDraftPatrickHand");
+      if (span.textContent!.includes("⇌")) expect(family).toBe("ChemDraftDejaVuSans");
     }
     release(); dom.window.close();
+  });
+
+  it("uses the usual sans fallback geometry for a glyph outside Patrick Hand's cmap", () => {
+    expect(cmapCovers("⇌")).toBe(false);
+    const drawing = SketchStylePreset.drawing;
+    const sansDrawing = { ...drawing, atomLabelFontFamily: "Arial, Helvetica, sans-serif" };
+    expect(atomLabelRunAdvance({ text: "⇌", script: "normal" }, drawing))
+      .toBe(atomLabelRunAdvance({ text: "⇌", script: "normal" }, sansDrawing));
+    const style = { ...DefaultNativeTextStyle, fontFamily: drawing.atomLabelFontFamily };
+    const spans = [{ text: "⇌", script: "normal" as const, style: {} }];
+    expect(measureNativeTextSpanLineWidth(spans, style))
+      .toBe(measureNativeTextSpanLineWidth(spans, { ...style, fontFamily: "Arial, Helvetica, sans-serif" }));
+    const document = fixture();
+    const text = document.pages[0]!.objects[0]! as TextObject;
+    text.text = "⇌";
+    const svg = exportDocumentToSvg(document).contents;
+    expect(svg).toContain("&apos;Patrick Hand&apos;, Arial, Helvetica, sans-serif");
+    expect(svg).toContain("⇌");
   });
 
   it("still refuses external styles and unreviewed embedded font bytes", async () => {

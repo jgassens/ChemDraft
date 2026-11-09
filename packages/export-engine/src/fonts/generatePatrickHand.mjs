@@ -9,6 +9,10 @@ const hash = createHash("sha256").update(font).digest("hex");
 if (hash !== "0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc") {
   throw new Error("Patrick Hand font checksum differs from the reviewed 1.003 asset.");
 }
+// OFL source of truth; keep export-source and installed notices byte-identical.
+const ofl = readFileSync(new URL("apps/desktop/src/assets/fonts/OFL.txt", root));
+writeFileSync(new URL("packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt", root), ofl);
+writeFileSync(new URL("apps/desktop/src-tauri/resources/fonts/PatrickHand-OFL.txt", root), ofl);
 function table(name) {
   for (let i = 0; i < font.readUInt16BE(4); i++) {
     const record = 12 + i * 16;
