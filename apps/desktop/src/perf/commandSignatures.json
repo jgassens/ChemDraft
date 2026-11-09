@@ -72,6 +72,14 @@
     "returnType": "Result<(), String>"
   },
   {
+    "file": "dialog_windows.rs",
+    "name": "preferences_ready",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, data: Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "download_diagnosis.rs",
     "name": "diagnose_download_host",
     "async": true,

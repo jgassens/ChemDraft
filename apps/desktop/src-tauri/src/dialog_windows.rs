@@ -1020,6 +1020,7 @@ struct Session {
     receipts: HashMap<String, Message>,
     transient_until: Instant,
     programmatic_client: Option<(u32, u32)>,
+    programmatic_position: Option<(i32, i32)>,
     pending_move: Option<(Instant, SavedPosition)>,
     content_fit: Option<MeasuredContent>,
 }
@@ -1033,6 +1034,7 @@ struct PreferencesLayout {
     ready: bool,
     transient_until: Instant,
     programmatic_client: Option<(u32, u32)>,
+    programmatic_position: Option<(i32, i32)>,
     pending_move: Option<(Instant, SavedPosition)>,
 }
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
@@ -1271,6 +1273,7 @@ fn register(
             receipts: HashMap::new(),
             transient_until: Instant::now() + Duration::from_millis(500),
             programmatic_client: None,
+            programmatic_position: None,
             pending_move: None,
             content_fit: None,
         },
@@ -1592,7 +1595,6 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
 }
 pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
     if let Some(window) = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL) {
-        persist_move(&window, false);
         flush_preferences(app);
         let _ = window.destroy();
     }
@@ -1607,15 +1609,22 @@ pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str)
 }
 
 pub(crate) fn prepare_preferences() {
-    REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).preferences = Some(PreferencesLayout {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .preferences = Some(PreferencesLayout {
         ready: false,
         transient_until: Instant::now() + Duration::from_millis(500),
         programmatic_client: None,
+        programmatic_position: None,
         pending_move: None,
     });
 }
 #[tauri::command]
-pub(crate) async fn preferences_ready(window: tauri::WebviewWindow, data: Value) -> Result<(), String> {
+pub(crate) async fn preferences_ready(
+    window: tauri::WebviewWindow,
+    data: Value,
+) -> Result<(), String> {
     if window.label() != super::PREFERENCES_WINDOW_LABEL {
         return Err("Only Preferences can report its content size".into());
     }
@@ -2093,6 +2102,8 @@ fn place_content_window<R: Runtime>(
     }
     .apply(
         |x, y| {
+            // Tag the requested physical origin before the native call can emit Moved.
+            remember_programmatic_position(window.label(), (x as i32, y as i32));
             move_dialog(
                 cfg!(target_os = "macos"),
                 (x, y, destination_scale),
@@ -2164,6 +2175,8 @@ fn place_content_window<R: Runtime>(
     mark_transient(window.label());
     let client = window.inner_size().map_err(|e| e.to_string())?;
     remember_programmatic_client(window.label(), (client.width, client.height));
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    remember_programmatic_position(window.label(), (position.x, position.y));
     Ok(())
 }
 struct TemplatePlacement<'a> {
@@ -2329,9 +2342,15 @@ fn finish_placement(
 }
 pub(crate) fn mark_transient(label: &str) {
     if label == super::PREFERENCES_WINDOW_LABEL {
-        if let Some(state) = REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).preferences.as_mut() {
+        if let Some(state) = REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preferences
+            .as_mut()
+        {
             state.transient_until = Instant::now() + Duration::from_millis(500);
             state.programmatic_client = None;
+            state.programmatic_position = None;
         }
         return;
     }
@@ -2345,6 +2364,7 @@ pub(crate) fn mark_transient(label: &str) {
     {
         session.transient_until = Instant::now() + Duration::from_millis(500);
         session.programmatic_client = None;
+        session.programmatic_position = None;
     }
 }
 fn remember_programmatic_client(label: &str, size: (u32, u32)) {
@@ -2353,9 +2373,30 @@ fn remember_programmatic_client(label: &str, size: (u32, u32)) {
         if let Some(state) = registry.preferences.as_mut() {
             state.programmatic_client = Some(size);
         }
-    } else if let Some(session) = registry.sessions.values_mut()
-        .find(|s| s.registration.window_label == label) {
+    } else if let Some(session) = registry
+        .sessions
+        .values_mut()
+        .find(|s| s.registration.window_label == label)
+    {
         session.programmatic_client = Some(size);
+    }
+}
+fn remember_programmatic_position(label: &str, position: (i32, i32)) {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let programmed = if label == super::PREFERENCES_WINDOW_LABEL {
+        registry
+            .preferences
+            .as_mut()
+            .map(|state| &mut state.programmatic_position)
+    } else {
+        registry
+            .sessions
+            .values_mut()
+            .find(|session| session.registration.window_label == label)
+            .map(|session| &mut session.programmatic_position)
+    };
+    if let Some(programmed) = programmed {
+        *programmed = Some(position);
     }
 }
 fn transient_frame_event(
@@ -2363,9 +2404,16 @@ fn transient_frame_event(
     resized: bool,
     programmed: Option<(u32, u32)>,
     actual: (u32, u32),
+    programmed_position: Option<(i32, i32)>,
+    position: (i32, i32),
 ) -> bool {
-    // A real user resize immediately after reveal must not be swallowed by the 500ms guard.
-    transient && (!resized || programmed.is_none_or(|size| size == actual))
+    // The time window alone cannot distinguish a queued app move from an immediate user drag.
+    transient
+        && if resized {
+            programmed.is_none_or(|size| size == actual)
+        } else {
+            programmed_position == Some(position)
+        }
 }
 fn should_persist(
     visible: bool,
@@ -2388,14 +2436,34 @@ fn should_persist(
 fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
     let app = window.app_handle();
     let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
-    let (ready, transient_until, programmatic_client, pending_move) = if window.label() == super::PREFERENCES_WINDOW_LABEL {
-        let Some(state) = registry.preferences.as_mut() else { return; };
-        (state.ready, &mut state.transient_until, &mut state.programmatic_client, &mut state.pending_move)
-    } else {
-        let Some(session) = registry.sessions.values_mut()
-            .find(|s| s.registration.window_label == window.label()) else { return; };
-        (session.ready, &mut session.transient_until, &mut session.programmatic_client, &mut session.pending_move)
-    };
+    let (ready, transient_until, programmatic_client, programmatic_position, pending_move) =
+        if window.label() == super::PREFERENCES_WINDOW_LABEL {
+            let Some(state) = registry.preferences.as_mut() else {
+                return;
+            };
+            (
+                state.ready,
+                &mut state.transient_until,
+                &mut state.programmatic_client,
+                &mut state.programmatic_position,
+                &mut state.pending_move,
+            )
+        } else {
+            let Some(session) = registry
+                .sessions
+                .values_mut()
+                .find(|s| s.registration.window_label == window.label())
+            else {
+                return;
+            };
+            (
+                session.ready,
+                &mut session.transient_until,
+                &mut session.programmatic_client,
+                &mut session.programmatic_position,
+                &mut session.pending_move,
+            )
+        };
     if !should_persist(
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
@@ -2415,20 +2483,30 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
     ) {
         return;
     }
-    let Ok(client) = window.inner_size() else { return; };
-    if transient_frame_event(Instant::now() < *transient_until, resized,
-        *programmatic_client, (client.width, client.height)) {
+    let Ok(client) = window.inner_size() else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    if transient_frame_event(
+        Instant::now() < *transient_until,
+        resized,
+        *programmatic_client,
+        (client.width, client.height),
+        *programmatic_position,
+        (position.x, position.y),
+    ) {
         return;
     }
     *transient_until = Instant::now();
     *programmatic_client = None;
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
-    if !resized && !super::UTILITY_SUSPENSION
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .persist_move(window.label(), (position.x, position.y))
+    *programmatic_position = None;
+    if !resized
+        && !super::UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .persist_move(window.label(), (position.x, position.y))
     {
         return;
     }
@@ -2436,13 +2514,23 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
         return;
     };
     let m = WorkArea::from_monitor(&monitor).inset(12.0);
-    let Ok(outer) = window.outer_size() else { return; };
+    let Ok(outer) = window.outer_size() else {
+        return;
+    };
     let size = if resized {
-        Some((f64::from(client.width) / m.scale, f64::from(client.height) / m.scale))
+        Some((
+            f64::from(client.width) / m.scale,
+            f64::from(client.height) / m.scale,
+        ))
     } else {
         pending_move.as_ref().and_then(|(_, saved)| saved.size)
     };
-    let saved = saved_frame(&m, (position.x, position.y), (outer.width, outer.height), size);
+    let saved = saved_frame(
+        &m,
+        (position.x, position.y),
+        (outer.width, outer.height),
+        size,
+    );
     *pending_move = Some((Instant::now(), saved));
     drop(registry);
     let path = match saved_path(app) {
@@ -2464,7 +2552,11 @@ fn take_pending_positions(registry: &mut Registry) -> PositionWrites {
                 .map(|(at, saved)| (at, s.snapshot.dialog_kind.clone(), saved))
         })
         .collect();
-    if let Some((at, saved)) = registry.preferences.as_mut().and_then(|p| p.pending_move.take()) {
+    if let Some((at, saved)) = registry
+        .preferences
+        .as_mut()
+        .and_then(|p| p.pending_move.take())
+    {
         moves.push((at, "preferences".into(), saved));
     }
     // Several tabs can have the same kind open. Persist the most recent genuine move for that
@@ -2541,7 +2633,11 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
     }
 }
 fn flush_preferences<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let state = REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).preferences.take();
+    let state = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .preferences
+        .take();
     if let Some((_, saved)) = state.and_then(|s| s.pending_move) {
         let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
         if let Ok(path) = saved_path(app) {
@@ -2578,10 +2674,6 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
         }
         WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
             if window.label() == super::PREFERENCES_WINDOW_LABEL {
-                // Capture an immediate close after a resize before tearing down its host state.
-                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
-                    persist_move(&webview, false);
-                }
                 flush_preferences(window.app_handle());
                 return;
             }
@@ -3635,8 +3727,19 @@ mod tests {
                 (1.5, 1.5),
                 (2.0, 2.0),
             ] {
-                for (remembered, small) in [(false, false), (false, true), (true, false), (true, true)] {
-                    for kind in ["preferences", "vibeCodeGuide", "insertTable", "export", "pageSize", "arrangementSpacing", "engineInstall", "toolInstall"] {
+                for (remembered, small) in
+                    [(false, false), (false, true), (true, false), (true, true)]
+                {
+                    for kind in [
+                        "preferences",
+                        "vibeCodeGuide",
+                        "insertTable",
+                        "export",
+                        "pageSize",
+                        "arrangementSpacing",
+                        "engineInstall",
+                        "toolInstall",
+                    ] {
                         let spec = kind_spec(kind).unwrap();
                         let work = WorkArea {
                             id: "destination".into(),
@@ -3673,7 +3776,8 @@ mod tests {
                                 Some(origin_scale),
                             )
                             .unwrap();
-                            let (client_width, client_height) = dialog_client_size(&spec, Some(measured), saved.as_ref(), false);
+                            let (client_width, client_height) =
+                                dialog_client_size(&spec, Some(measured), saved.as_ref(), false);
                             let position = position_for(
                                 saved.as_ref(),
                                 std::slice::from_ref(&work),
@@ -3836,14 +3940,31 @@ mod tests {
     fn saved_frames_use_logical_client_sizes_and_destination_dpi() {
         for scale in [1.0, 1.5, 2.0] {
             let work = WorkArea {
-                id: "secondary".into(), x: -2000.0, y: -300.0,
-                width: 1200.0, height: 800.0, scale,
-            }.inset(12.0);
-            let saved = saved_frame(&work, ((-1900.0 * scale) as i32, (-200.0 * scale) as i32),
-                ((600.0 * scale) as u32, (400.0 * scale) as u32), Some((584.0, 360.0)));
-            assert_eq!(remembered_client_size(Some(&saved), true), Some((584.0, 360.0)));
-            let position = position_for(Some(&saved), std::slice::from_ref(&work), &work,
-                (0.0, 0.0, 1000.0, 700.0), (600.0, 400.0));
+                id: "secondary".into(),
+                x: -2000.0,
+                y: -300.0,
+                width: 1200.0,
+                height: 800.0,
+                scale,
+            }
+            .inset(12.0);
+            let saved = saved_frame(
+                &work,
+                ((-1900.0 * scale) as i32, (-200.0 * scale) as i32),
+                ((600.0 * scale) as u32, (400.0 * scale) as u32),
+                Some((584.0, 360.0)),
+            );
+            assert_eq!(
+                remembered_client_size(Some(&saved), true),
+                Some((584.0, 360.0))
+            );
+            let position = position_for(
+                Some(&saved),
+                std::slice::from_ref(&work),
+                &work,
+                (0.0, 0.0, 1000.0, 700.0),
+                (600.0, 400.0),
+            );
             assert!((position.0 + 1900.0 * scale).abs() < 0.001);
             assert!((position.1 + 200.0 * scale).abs() < 0.001);
             assert_eq!(position.2, scale);
@@ -3854,56 +3975,230 @@ mod tests {
     fn legacy_frames_and_invalid_sizes_fall_back_to_content_without_a_height_floor() {
         let legacy: SavedPosition = serde_json::from_value(json!({
             "monitor":"one", "x":0, "y":0, "offsetX":0.5, "offsetY":0.5
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(legacy.size, None);
-        let measured = MeasuredContent::new(ContentFit::from_ready(
-            &json!({"contentHeight":180,"pixelRatio":1})), Some(1.0));
+        let measured = MeasuredContent::new(
+            ContentFit::from_ready(&json!({"contentHeight":180,"pixelRatio":1})),
+            Some(1.0),
+        );
         let spec = kind_spec("insertTable").unwrap();
-        assert_eq!(dialog_client_size(&spec, measured, Some(&legacy), false), (480.0, 180.0));
-        for size in [(0.0, 300.0), (500.0, f64::NAN), (f64::INFINITY, 300.0), (500.0, -1.0)] {
-            let saved = SavedPosition { size: Some(size), ..legacy.clone() };
-            assert_eq!(dialog_client_size(&spec, measured, Some(&saved), false), (480.0, 180.0));
+        assert_eq!(
+            dialog_client_size(&spec, measured, Some(&legacy), false),
+            (480.0, 180.0)
+        );
+        for size in [
+            (0.0, 300.0),
+            (500.0, f64::NAN),
+            (f64::INFINITY, 300.0),
+            (500.0, -1.0),
+        ] {
+            let saved = SavedPosition {
+                size: Some(size),
+                ..legacy.clone()
+            };
+            assert_eq!(
+                dialog_client_size(&spec, measured, Some(&saved), false),
+                (480.0, 180.0)
+            );
         }
-        let saved = SavedPosition { size: Some((600.0, 200.0)), ..legacy };
-        assert_eq!(dialog_client_size(&spec, measured, Some(&saved), false), (600.0, 200.0));
+        let saved = SavedPosition {
+            size: Some((600.0, 200.0)),
+            ..legacy
+        };
+        assert_eq!(
+            dialog_client_size(&spec, measured, Some(&saved), false),
+            (600.0, 200.0)
+        );
         let page = kind_spec("pageSize").unwrap();
-        assert_eq!(dialog_client_size(&page, measured, Some(&saved), false), (420.0, 180.0));
+        assert_eq!(
+            dialog_client_size(&page, measured, Some(&saved), false),
+            (420.0, 180.0)
+        );
         // Retained, nonresizable dialogs still keep their already fitted live client.
-        assert_eq!(dialog_client_size(&page, None, Some(&saved), true), (600.0, 200.0));
+        assert_eq!(
+            dialog_client_size(&page, None, Some(&saved), true),
+            (600.0, 200.0)
+        );
     }
     #[test]
     fn immediate_user_resizes_are_saved_but_programmatic_frames_are_not() {
-        assert!(transient_frame_event(true, true, None, (600, 400)));
-        assert!(transient_frame_event(true, true, Some((600, 400)), (600, 400)));
-        assert!(transient_frame_event(true, false, Some((600, 400)), (620, 420)));
-        assert!(!transient_frame_event(true, true, Some((600, 400)), (620, 420)));
-        assert!(!transient_frame_event(false, true, Some((600, 400)), (600, 400)));
+        let event = |transient, resized, programmed, actual| {
+            transient_frame_event(
+                transient,
+                resized,
+                programmed,
+                actual,
+                Some((100, 200)),
+                (100, 200),
+            )
+        };
+        assert!(event(true, true, None, (600, 400)));
+        assert!(event(true, true, Some((600, 400)), (600, 400)));
+        assert!(event(true, false, Some((600, 400)), (620, 420)));
+        assert!(!event(true, true, Some((600, 400)), (620, 420)));
+        assert!(!event(false, true, Some((600, 400)), (600, 400)));
+    }
+    #[test]
+    fn immediate_user_move_then_close_keeps_the_new_position() {
+        let now = Instant::now();
+        let work = WorkArea {
+            id: "display".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1600.0,
+            height: 1000.0,
+            scale: 1.0,
+        };
+        let original = saved_frame(&work, (100, 200), (616, 440), Some((600.0, 400.0)));
+        for preferences in [false, true] {
+            let mut registry = Registry::default();
+            let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+            registry.preferences = Some(PreferencesLayout {
+                ready: true,
+                transient_until: now + Duration::from_millis(500),
+                programmatic_client: Some((600, 400)),
+                programmatic_position: Some((100, 200)),
+                pending_move: None,
+            });
+            let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+            session.transient_until = now + Duration::from_millis(500);
+            session.programmatic_client = Some((600, 400));
+            session.programmatic_position = Some((100, 200));
+            let (until, client, position, pending) = if preferences {
+                let state = registry.preferences.as_mut().unwrap();
+                (
+                    state.transient_until,
+                    state.programmatic_client,
+                    state.programmatic_position,
+                    &mut state.pending_move,
+                )
+            } else {
+                (
+                    session.transient_until,
+                    session.programmatic_client,
+                    session.programmatic_position,
+                    &mut session.pending_move,
+                )
+            };
+            // A Moved event arrives one millisecond after reveal, with the same client size.
+            if !transient_frame_event(
+                now + Duration::from_millis(1) < until,
+                false,
+                client,
+                (600, 400),
+                position,
+                (300, 350),
+            ) {
+                *pending = Some((now, saved_frame(&work, (300, 350), (616, 440), None)));
+            }
+            // Close drains the pending event before the debounced worker can run, without
+            // recapturing a non-resize event that could overwrite a remembered user size.
+            let (kind, pending) = if preferences {
+                (
+                    "preferences".to_string(),
+                    registry.preferences.take().unwrap().pending_move,
+                )
+            } else {
+                let session = registry.sessions.remove(&registration.host_id).unwrap();
+                (session.snapshot.dialog_kind, session.pending_move)
+            };
+            let mut positions = HashMap::from([(kind.clone(), original.clone())]);
+            let writes = pending
+                .map(|(_, saved)| (kind.clone(), saved))
+                .into_iter()
+                .collect();
+            merge_positions(&mut positions, writes);
+            let saved = &positions[&kind];
+            assert_eq!((saved.x, saved.y), (300.0, 350.0));
+            assert_eq!(saved.size, original.size);
+            let reopened = position_for(
+                Some(saved),
+                std::slice::from_ref(&work),
+                &work,
+                (0.0, 0.0, 1000.0, 700.0),
+                (616.0, 440.0),
+            );
+            assert!((reopened.0 - 300.0).abs() < 0.001);
+            assert!((reopened.1 - 350.0).abs() < 0.001);
+            assert_eq!(reopened.2, 1.0);
+        }
+    }
+    #[test]
+    fn app_initiated_transient_move_is_ignored() {
+        assert!(transient_frame_event(
+            true,
+            false,
+            Some((600, 400)),
+            (600, 400),
+            Some((100, 200)),
+            (100, 200),
+        ));
+        // An untagged move is never ignored just because it occurred during the time window.
+        assert!(!transient_frame_event(
+            true,
+            false,
+            None,
+            (600, 400),
+            None,
+            (300, 350),
+        ));
+        assert!(!transient_frame_event(
+            false,
+            false,
+            Some((600, 400)),
+            (600, 400),
+            Some((100, 200)),
+            (100, 200),
+        ));
     }
     #[test]
     fn moves_preserve_the_last_user_size_across_coalesced_and_separate_writes() {
         let original = SavedPosition {
-            size: None, monitor: "one".into(), x: 10.0, y: 20.0,
-            offset_x: 0.0, offset_y: 0.0,
+            size: None,
+            monitor: "one".into(),
+            x: 10.0,
+            y: 20.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
         };
         let mut positions = HashMap::new();
         merge_positions(&mut positions, vec![("export".into(), original.clone())]);
         assert_eq!(positions["export"].size, None);
-        let resized = SavedPosition { size: Some((600.0, 800.0)), ..original.clone() };
-        let moved = SavedPosition { x: 100.0, ..original.clone() };
-        merge_positions(&mut positions, vec![
-            ("export".into(), resized), ("export".into(), moved.clone()),
-        ]);
+        let resized = SavedPosition {
+            size: Some((600.0, 800.0)),
+            ..original.clone()
+        };
+        let moved = SavedPosition {
+            x: 100.0,
+            ..original.clone()
+        };
+        merge_positions(
+            &mut positions,
+            vec![("export".into(), resized), ("export".into(), moved.clone())],
+        );
         assert_eq!(positions["export"].size, Some((600.0, 800.0)));
         assert_eq!(positions["export"].x, 100.0);
         merge_positions(&mut positions, vec![("export".into(), moved)]);
         assert_eq!(positions["export"].size, Some((600.0, 800.0)));
-        let resized = SavedPosition { size: Some((500.0, 300.0)), ..original };
+        let resized = SavedPosition {
+            size: Some((500.0, 300.0)),
+            ..original
+        };
         merge_positions(&mut positions, vec![("export".into(), resized)]);
         assert_eq!(positions["export"].size, Some((500.0, 300.0)));
     }
     #[test]
     fn work_area_margin_handles_even_tiny_screens() {
-        let work = WorkArea { id: "tiny".into(), x: 0.0, y: 20.0, width: 10.0, height: 6.0, scale: 2.0 }.inset(12.0);
+        let work = WorkArea {
+            id: "tiny".into(),
+            x: 0.0,
+            y: 20.0,
+            width: 10.0,
+            height: 6.0,
+            scale: 2.0,
+        }
+        .inset(12.0);
         assert!(work.width >= 1.0 && work.height >= 1.0);
         assert_eq!(work.clamp(-50.0, -50.0, 600.0, 800.0), (work.x, work.y));
     }
