@@ -4629,7 +4629,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage)");
+    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage, { directElectronMarkEditing })");
     expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");

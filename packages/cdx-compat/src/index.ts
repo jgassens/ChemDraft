@@ -550,7 +550,15 @@ function exportVisibleObject(
     });
     return "";
   }
-  if (object.type === "mechanism-arrow" || object.type === "electron-mark") {
+  if (object.type === "electron-mark") {
+    warnings.push({
+      code: "cdxml.electron_mark_appearance_payload_only",
+      message: `CDXML export: electron mark ${object.id}, including its position, size (${object.width} × ${object.height}), thickness (${object.style.strokeWidth ?? 1.5}) and rotation (${object.rotation}°), is preserved only in the embedded ChemDraft payload; no visible CDXML symbol is written.`,
+      sourceObjectId: object.id
+    });
+    return "";
+  }
+  if (object.type === "mechanism-arrow") {
     warnings.push({
       code: "cdxml.mechanism_payload_only",
       message: "Editable mechanism annotations remain in the ChemDraft payload until CDXML mapping is implemented.",

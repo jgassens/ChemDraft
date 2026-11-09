@@ -2,6 +2,7 @@ import {
   applyPatch,
   createEmptyDocument,
   type GraphicObject,
+  type ElectronMarkObject,
   type MoleculeObject,
   type TextObject,
   type UnknownCompatibilityObject
@@ -11,6 +12,26 @@ import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
+
+it("matches electron-mark rendering options and keeps authored styling across opt-out", () => {
+  const document = createEmptyDocument({ title: "Electron mark SVG", now: timestamp });
+  const mark: ElectronMarkObject = { id: "mark", type: "electron-mark", x: 100, y: 100,
+    width: 18, height: 18, rotation: 0, style: {}, markKind: "charge", charge: 1, radical: true,
+    anchor: { kind: "point", point: { x: 109, y: 109 } } };
+  document.pages[0].objects.push(mark);
+  const legacy = exportDocumentToSvg(document).contents;
+  expect(exportDocumentToSvg(document, { directElectronMarkEditing: false }).contents).toBe(legacy);
+  expect(legacy).toContain(`cx="${109 - 18 * 0.32 * 0.75}"`);
+  expect(exportDocumentToSvg(document, { directElectronMarkEditing: true }).contents).not.toBe(legacy);
+  for (const charge of [-9, -2, -1, 1, 2, 9]) {
+    Object.assign(mark, { charge, width: 72, height: 72, rotation: 37, style: { strokeWidth: 4.5 } });
+    const authored = exportDocumentToSvg(document).contents;
+    expect(exportDocumentToSvg(document, { directElectronMarkEditing: true }).contents).toBe(authored);
+    expect(authored).toContain("rotate(37 136 136)");
+    if (Math.abs(charge) === 1) expect(authored).toContain('stroke-width="4.5"');
+    else expect(authored).toContain('stroke-width="1.2"');
+  }
+});
 
 it("writes explicitly requested physical units without changing viewBox geometry", () => {
   const document = createEmptyDocument({ title: "Physical SVG", now: timestamp });

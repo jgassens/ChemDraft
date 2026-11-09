@@ -2142,7 +2142,9 @@ describe("layout-engine page SVG planner", () => {
   });
 
   it("keeps a ±1 radical dot separate from its sign and inside the symbol frame", () => {
-    const fragments = plannedChargeMark("charge_radical_single", 1, { radical: true });
+    const fragments = planPageSvgRender(pageWithObjects([
+      chargeMarkObject("charge_radical_single", 1, { radical: true })
+    ]), { directElectronMarkEditing: true }).fragments;
 
     expect(fragments[0]?.attrs["data-charge-style"]).toBe("plain");
     expect(fragments[0]?.attrs["data-charge-radical"]).toBe("true");

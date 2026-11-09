@@ -252,6 +252,7 @@ import {
   planMoleculeAtomLabels,
   recordedLabelBondSide,
   planPageSvgRender,
+  electronMarkHitCatcherAttributes,
   planTableLayout,
   planNativeArtVisual,
   placementAimDegrees,
@@ -888,6 +889,7 @@ import {
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useDirectElectronMarkEditing } from "./useDirectElectronMarkEditing";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
@@ -1716,7 +1718,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.00.55-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2560,6 +2562,7 @@ export function MainWindow({
 
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const directElectronMarkEditing = useDirectElectronMarkEditing();
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
   const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
     [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
@@ -3165,7 +3168,7 @@ export function MainWindow({
   // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
   // their start geometry until the real document is rendered once on release.
   const pageSvgRenderPlan = useMemo(() =>
-    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage)), [plannedDisplayPage]);
+    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage, { directElectronMarkEditing })), [plannedDisplayPage, directElectronMarkEditing]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
   const baseObjectOverlayFragments = useMemo(() => {
     const next = reuseUnchangedFragments(
@@ -3768,8 +3771,9 @@ export function MainWindow({
     fileStateRef.current = file;
     setFileState(file);
   }, []);
-  const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
+  const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument, undoLabel?: string): boolean => {
     const previewDocument = documentRef.current;
+    if (undoLabel) documentUndoLabelsRef.current.set(previewDocument, undoLabel);
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     let changed = false;
     try {
@@ -8207,7 +8211,7 @@ export function MainWindow({
         handled: true,
         targeted: currentDocument.pages.some(page => page.objects.some(object =>
           object.type === "electron-mark" && currentDocument.selection.objectIds.includes(object.id))),
-        message: `Updated electron mark ${electronStyle.property}`
+        message: `Change electron mark ${electronStyle.property}`
       };
     }
 
@@ -8361,7 +8365,8 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document,
+      electronMarkStyleCommands.some(command => command.id === commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
@@ -15714,7 +15719,9 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, moved);
+    const movesMark = (drag.groupObjectIds ?? [drag.objectId]).some(id =>
+      findDocumentObject(drag.startDocument, id)?.type === "electron-mark");
+    commitDocumentHistoryFrom(drag.startDocument, moved, movesMark ? "Move electron mark" : undefined);
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
 
@@ -15773,7 +15780,7 @@ export function MainWindow({
       });
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, committed);
+    commitDocumentHistoryFrom(drag.startDocument, committed, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined);
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument]);
 
@@ -16056,9 +16063,9 @@ export function MainWindow({
       return false;
     }
 
-    const changed = commitLiveInputPreview(session.startDocument);
+    const changed = commitLiveInputPreview(session.startDocument, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined);
     if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
-      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Rotate electron mark" : "Rotate art object");
     }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
@@ -16175,7 +16182,7 @@ export function MainWindow({
       return false;
     }
 
-    const changed = commitLiveInputPreview(session.startDocument);
+    const changed = commitLiveInputPreview(session.startDocument, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined);
     updateObjectResizeInput(undefined);
     setObjectResizeReadout(undefined);
     setStatus(changed ? "Stretch applied" : "Stretch unchanged");
@@ -16249,7 +16256,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, resized);
+    commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined);
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
@@ -17543,7 +17550,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = objectRotateDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
+        const label = objectRotateDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -17563,7 +17570,7 @@ export function MainWindow({
         );
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
-        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
+        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${targetLabel}` : `Resized ${targetLabel}`
           : `${capitalizeLabel(targetLabel)} size unchanged`);
@@ -17793,6 +17800,7 @@ export function MainWindow({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }, [
+    directElectronMarkEditing,
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     clearNativePartDrag,
@@ -18057,7 +18065,7 @@ export function MainWindow({
     const groupedPointerObjectIds = activeToolState.activeKind === "selection"
       ? groupedDragObjectIdsForPointer(currentDocument, objectId)
       : undefined;
-    const electronMarkActive = object?.type === "electron-mark";
+    const electronMarkActive = object?.type === "electron-mark" && (directElectronMarkEditing || object.markKind === "charge");
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(
           object,
@@ -18756,7 +18764,7 @@ export function MainWindow({
       }
     }
 
-    if (shouldDragDocumentObject(object, activeToolState.activeKind)) {
+    if (shouldDragDocumentObject(object, activeToolState.activeKind, directElectronMarkEditing)) {
       event.preventDefault();
       event.stopPropagation();
       if (!shouldActivateDocumentObject(object, "selection")) {
@@ -18928,6 +18936,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
   }, [
+    directElectronMarkEditing,
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     activeChargeToolValue,
@@ -19004,7 +19013,7 @@ export function MainWindow({
       : undefined;
     const canOpenRotationEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19039,7 +19048,7 @@ export function MainWindow({
     });
     setStatus("Z rotation entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19066,7 +19075,7 @@ export function MainWindow({
       : undefined;
     const canRotateObject =
       object?.type === "text" ||
-      (object !== undefined && documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)) ||
+      (object !== undefined && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)) ||
       (object?.type === "molecule" && (
         isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
         selectedFragmentBounds !== undefined
@@ -19127,6 +19136,7 @@ export function MainWindow({
           : "Rotate selected art object"
     );
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -19159,7 +19169,7 @@ export function MainWindow({
       : undefined;
     const canOpenTiltEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19207,7 +19217,7 @@ export function MainWindow({
     });
     setStatus("3D rotation entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19238,7 +19248,7 @@ export function MainWindow({
       : undefined;
     const canTiltObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) &&
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) &&
           (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : isNativeMoleculeGraph(object) &&
           object.atoms.length > 0 &&
@@ -19324,6 +19334,7 @@ export function MainWindow({
       ? "3D rotate: drag to tilt/twist selected fragment"
       : object.type === "molecule" ? "3D rotate: drag to tilt/twist" : "X/Y rotate selected art object");
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -19356,7 +19367,7 @@ export function MainWindow({
       : undefined;
     const canOpenResizeEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19392,7 +19403,7 @@ export function MainWindow({
     });
     setStatus("Stretch entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
   const handleGraphicCornerRadiusPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19738,7 +19749,7 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
-    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
+    if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
       openObjectResizeInput(objectId, corner);
       return;
     }
@@ -19751,7 +19762,7 @@ export function MainWindow({
       : undefined;
     const canResizeObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : object.atoms.length > 0 &&
           (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
@@ -19805,6 +19816,7 @@ export function MainWindow({
       ? "Resize selected molecule fragment"
       : object.type === "molecule" ? "Resize selected molecule" : "Resize selected art object");
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -20405,7 +20417,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = documentObjectTransformLabel(object);
+        const label = documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -20425,7 +20437,7 @@ export function MainWindow({
         );
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
-        const label = documentObjectTransformLabel(object);
+        const label = documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${label}` : `Resized ${label}`
           : `${capitalizeLabel(label)} size unchanged`);
@@ -20525,6 +20537,7 @@ export function MainWindow({
     }
     clearNativeBondDrag(event);
   }, [
+    directElectronMarkEditing,
     finishNativePlacementDrag,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
@@ -21030,7 +21043,7 @@ export function MainWindow({
         if (!selectedIdSet.has(object.id)) return false;
         if (object.type === "text") return true;
         if (object.type === "molecule") return isNativeMoleculeGraph(object);
-        if (!documentObjectSupportsArtTransform(object)) return false;
+        if (!documentObjectSupportsArtTransform(object, directElectronMarkEditing)) return false;
         if (object.type === "graphic" && (activeToolState.activeCommandId === "tool.art.directEdit" || activeGraphicTransformObjectId !== object.id)) {
           // Direct path/gradient controls occupy the frame until the object enters transform mode.
           return !nativeGraphicPathEditPoints(object) && !nativeGraphicPathNodeEditPoints(object) &&
@@ -21559,6 +21572,7 @@ export function MainWindow({
                 ) : null}
                 <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  directElectronMarkEditing={directElectronMarkEditing}
                   {...objectViewHandlers}
                   ariaLabel={document.title}
                   pageHeight={activePage.height}
@@ -21763,6 +21777,7 @@ export function MainWindow({
 
                   return (
                     <DocumentObjectView
+                      directElectronMarkEditing={directElectronMarkEditing}
                       key={objectRenderKey}
                       {...objectViewHandlers}
                       object={moveArrowPreviewObjects?.get(object.id)?.object ?? object}
@@ -23841,12 +23856,13 @@ export function shouldActivateDocumentObject(object: DocumentObject | undefined,
   return object !== undefined && activeToolKind === "selection";
 }
 
-export function shouldDragDocumentObject(object: DocumentObject | undefined, activeToolKind: string): boolean {
+export function shouldDragDocumentObject(object: DocumentObject | undefined, activeToolKind: string, directElectronMarkEditing = false): boolean {
   if (activeToolKind === "selection") {
     return true;
   }
 
-  return activeToolKind === "charge" && object?.type === "electron-mark";
+  return activeToolKind === "charge" && object?.type === "electron-mark" &&
+    (directElectronMarkEditing || object.markKind === "charge");
 }
 
 export function shouldOpenMoleculeEditorFromObjectClick(
@@ -27538,6 +27554,7 @@ function PageInteractionPortal({ target, children }: { target: HTMLDivElement | 
 const PageSvgSurface = memo(PageSvgSurfaceContent);
 
 function PageSvgSurfaceContent({
+  directElectronMarkEditing = false,
   ariaLabel,
   pageHeight,
   pageWidth,
@@ -27550,6 +27567,7 @@ function PageSvgSurfaceContent({
   editingTableCell,
   ...handlers
 }: {
+  directElectronMarkEditing?: boolean;
   ariaLabel: string;
   pageHeight: number;
   pageWidth: number;
@@ -27646,15 +27664,16 @@ function PageSvgSurfaceContent({
                   </svg>
                 ) : (
                   <>
-                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" || object.type === "electron-mark" ? (
-                      <rect x={object.x} y={object.y}
-                        width={tableLayout?.width ?? object.width}
-                        height={tableLayout?.height ?? object.height}
+                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" || (directElectronMarkEditing && object.type === "electron-mark") ? (
+                      <rect {...(object.type === "electron-mark" ? electronMarkHitCatcherAttributes(object) : {
+                        x: object.x, y: object.y,
+                        width: tableLayout?.width ?? object.width,
+                        height: tableLayout?.height ?? object.height,
+                        transform: object.type === "table" ? String(fragments[0].attrs.transform ?? "")
+                          : projectedPlaneSvgTransformForObject(object)
+                      })}
                         data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
-                          : object.type === "electron-mark"
-                            ? `rotate(${object.rotation} ${object.x + object.width / 2} ${object.y + object.height / 2})`
-                            : projectedPlaneSvgTransformForObject(object)}
+                        data-electron-mark-hit-target={object.type === "electron-mark" ? object.id : undefined}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
                     {fragments.map(fragment => {
@@ -27901,6 +27920,7 @@ function useStableCallbacks<T extends Record<string, (...args: never[]) => unkno
 const DocumentObjectView = memo(DocumentObjectViewContent);
 
 function DocumentObjectViewContent({
+  directElectronMarkEditing = false,
   object,
   layerIndex,
   interactionLayer,
@@ -27979,6 +27999,7 @@ function DocumentObjectViewContent({
   onAtomLabelFinish,
   onBondStereoBadgeOpen
 }: {
+  directElectronMarkEditing?: boolean;
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
   object: DocumentObject;
   layerIndex: number;
@@ -28223,7 +28244,7 @@ function DocumentObjectViewContent({
       onAtomLabelCancel(state);
     }
   };
-  const artObjectProjection = documentObjectSupportsArtTransform(object)
+  const artObjectProjection = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
   const frameBounds = interactionBounds ?? object;
@@ -28266,7 +28287,7 @@ function DocumentObjectViewContent({
       {children}
     </div>, interactionLayer
   ) : <>{children}</>;
-  const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
+  const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
@@ -28324,7 +28345,7 @@ function DocumentObjectViewContent({
     showGraphicGradientHandles;
   const showArtObjectTransformFrame = (selected || graphicShiftTransformActive) &&
     !inGroupSelection &&
-    documentObjectSupportsArtTransform(object) &&
+    documentObjectSupportsArtTransform(object, directElectronMarkEditing) &&
     !graphicDirectEditChromeActive;
   const zRotationHandleVisible = rotationHandlesVisible || rotateReadout !== undefined;
   const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
@@ -30940,8 +30961,8 @@ interface DocumentObjectProjection {
   matrix?: DocumentObjectProjectionMatrix;
 }
 
-function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
-  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow" || object.type === "electron-mark";
+function documentObjectSupportsArtTransform(object: DocumentObject, directElectronMarkEditing = false): boolean {
+  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow" || (directElectronMarkEditing && object.type === "electron-mark");
 }
 
 function documentObjectOuterCssTransform(
@@ -31654,14 +31675,14 @@ function documentObjectToolbarColor(object: DocumentObject): string {
   return metadataColor(object.style.color, object.style.strokeColor, object.style.fillColor, "#111111");
 }
 
-function documentObjectTransformLabel(object: DocumentObject | undefined): string {
+function documentObjectTransformLabel(object: DocumentObject | undefined, directElectronMarkEditing = false): string {
   if (object?.type === "text") {
     return "text box";
   }
   if (object?.type === "molecule") {
     return "selected molecule";
   }
-  if (object && documentObjectSupportsArtTransform(object)) {
+  if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing)) {
     return "selected art object";
   }
   return "selected object";

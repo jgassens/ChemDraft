@@ -2,14 +2,18 @@
 
 ## Electron-mark repositioning (2026-10-25)
 
-Circled/plain charges, radical ions, radical dots and lone pairs have a transparent grab
-area across their frame. Existing marks drag with Select or an electron-mark tool active,
-without placing duplicates. Independent moves update point anchors for every mark kind.
-Corner handles resize the marks; Art toolbar Size and Thickness sliders preview and commit
-appearance changes through registered commands. Dot size follows the frame; thickness is shared
-by canvas and export. Focused DOM regressions cover dragging, resizing, sliders and Undo/Redo.
-The automated stress results and remaining native checks are recorded in
-[the verification report](../electron-mark-verification.md).
+Direct electron-mark editing is an opt-in drawing preference, off by default. When enabled,
+circled/plain charges, radical ions, radical dots and lone pairs gain frame-wide picking,
+electron-tool dragging and resize/rotation handles. The default retains painted-ink picking,
+repeated radical/lone-pair placement and the previous default glyph geometry.
+Art toolbar Size and Thickness commands remain available in either mode; custom appearance
+survives save/reopen and opt-out and uses the same geometry in canvas and SVG/PDF export.
+Moves and transforms retain the previous chemistry association rules in one exported pure policy,
+which reports reassociation for a future owner decision. Charges may change chemical association;
+radicals/lone pairs retain sticky atom anchors while supportable and in range.
+Edits have labelled Undo entries. CDXML warns by mark ID that its visible annotation, including
+position, size, thickness and rotation, survives only in the embedded native payload.
+Native interaction checks remain in the shared [manual checklist](../manual-stress-checklist.md).
 
 ## Agent skill: one document style for structures, and structure naming (2026-10-22)
 
