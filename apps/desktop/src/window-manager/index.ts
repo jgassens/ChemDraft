@@ -350,6 +350,14 @@ export async function listenForToolsetPopoverClosed(handler: (payload: ToolsetPo
   return listenTauriEvent<ToolsetPopoverClosedPayload>(TOOLSET_POPOVER_CLOSED_EVENT, event => handler(event.payload));
 }
 
+/** Query the OS: click-away and app deactivation can hide a picker outside its owner's state. */
+export async function isToolsetPopoverWindowVisible(toolsetId: string): Promise<boolean> {
+  if (!isDesktopRuntime()) return false;
+  const { Window } = await import("@tauri-apps/api/window");
+  const popover = await Window.getByLabel(`toolset-popover-${toolsetId.replaceAll(".", "-")}`);
+  return popover ? popover.isVisible() : false;
+}
+
 /** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
 export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
 

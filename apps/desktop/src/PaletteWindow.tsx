@@ -45,6 +45,7 @@ import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
   closeToolsetPopoverWindow,
+  isToolsetPopoverWindowVisible,
   newToolsetPopoverOpening,
   currentWindowLogicalPosition,
   currentWindowLogicalWorkArea,
@@ -674,6 +675,7 @@ export function PaletteWindow({
     // A's slower resolve could win). Every show candidate, hide, and teardown invalidates the
     // previous request; the token is re-checked after the await, immediately before emitting.
     let tooltipRequest = 0;
+    let tooltipOwner: string | undefined;
     const handleTooltip = (event: Event) => {
       if (customizeThisPaletteRef.current) {
         tooltipRequest += 1;
@@ -685,11 +687,15 @@ export function PaletteWindow({
         return;
       }
       if (!detail.visible || !detail.anchor || !(detail.title || detail.description)) {
+        // React can clean up A after B has announced its tooltip. Only the current owner hides it.
+        if (detail.ownerId && detail.ownerId !== tooltipOwner) return;
+        tooltipOwner = undefined;
         tooltipRequest += 1;
         void hidePaletteFloatingTooltip().catch(() => undefined);
         return;
       }
       const { title, description, shortcut, anchor } = detail;
+      tooltipOwner = detail.ownerId;
       tooltipRequest += 1;
       const request = tooltipRequest;
       void (async () => {
@@ -821,7 +827,7 @@ export function PaletteWindow({
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
     content = { ...content, ...newToolsetPopoverOpening() };
-    void (async () => {
+    return (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
       // open to the anchor offset from (0,0) — inches from its button — while every
       // later open worked. Retry once, then abort; a popout that doesn't appear (and
@@ -846,13 +852,22 @@ export function PaletteWindow({
     })().catch(() => undefined);
   };
 
-  // Clicking the swatch always (re)opens + repositions — deliberately NOT a toggle: the panel hides
-  // itself on app-deactivate (hidesOnDeactivate), which a local "is it open?" flag can't observe, so
-  // a toggle would go stale and eat the next click. Dismissal is Escape / click-away / app-deactivate.
+  const colorToggleRef = useRef(Promise.resolve());
+  // Serialize swatch presses and consult native visibility so external dismissal never consumes
+  // the next click. A flyout sharing this palette's window must switch to colour rather than close.
   const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
-    openPopover(anchor, "artColor", { kind: "artColor" });
-    // Make sure the freshly shown picker reflects the current object's colour.
-    void requestToolsetTextStyle().catch(() => undefined);
+    colorToggleRef.current = colorToggleRef.current.then(async () => {
+      if (lastPopoverPayloadRef.current?.content.kind === "artColor"
+          && await isToolsetPopoverWindowVisible(toolset.id)) {
+        const opening = lastPopoverPayloadRef.current.content;
+        lastPopoverPayloadRef.current = undefined;
+        await dismissToolsetPopovers(toolsetPopoverTimestamp());
+        await closeToolsetPopoverWindow(toolset.id, opening.openedAt, opening.generation);
+        return;
+      }
+      await openPopover(anchor, "artColor", { kind: "artColor" });
+      await requestToolsetTextStyle();
+    }).catch(() => undefined);
   };
 
   const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
@@ -911,7 +926,7 @@ export function PaletteWindow({
 
   // A pointer-down anywhere in this palette that isn't a popover trigger dismisses any open popover
   // ("click elsewhere closes it"). The colour swatch and flyout buttons are excluded so re-clicking
-  // one repositions/swaps its popover rather than close-then-reopen. The popover lives in its own
+  // one toggles/swaps its popover rather than close-then-reopen. The popover lives in its own
   // window, so its own clicks never reach this listener.
   useEffect(() => {
     const handlePointerDown = (event: globalThis.PointerEvent) => {

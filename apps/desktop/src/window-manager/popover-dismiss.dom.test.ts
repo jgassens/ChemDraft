@@ -2,10 +2,13 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, listenForToolsetPopoverContent, setToolsetPopoverContent,
   TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease,
-  notifyToolsetPopoverClosed, listenForToolsetPopoverClosed, newToolsetPopoverOpening, compareToolsetPopoverOpenings } from "./index";
+  isToolsetPopoverWindowVisible, notifyToolsetPopoverClosed, listenForToolsetPopoverClosed,
+  newToolsetPopoverOpening, compareToolsetPopoverOpenings } from "./index";
 
 const transport = vi.hoisted(() => ({
   emit: vi.fn(async (_event: string, _payload?: unknown) => {}),
+  isVisible: vi.fn(async () => false),
+  getByLabel: vi.fn(),
   receive: undefined as undefined | ((event: { event: string; id: number; payload: unknown }) => void)
 }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -16,6 +19,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   })
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
+vi.mock("@tauri-apps/api/window", () => ({ Window: { getByLabel: transport.getByLabel } }));
 
 const host = window as typeof window & { __TAURI__?: unknown };
 beforeEach(() => { host.__TAURI__ = {}; vi.clearAllMocks(); });
@@ -37,6 +41,24 @@ it("assigns distinct sequences at identical timestamps and retains them through 
   const openings = [{ toolsetId: "core.art", ...second }];
   await dismissToolsetPopovers(200, "escape", openings);
   expect(transport.emit).toHaveBeenLastCalledWith(TOOLSET_POPOVER_DISMISS_EVENT, { requestedAt: 200, reason: "escape", openings });
+});
+
+it.each([false, true])("reads native popover visibility (%s) with the same label as Rust", async visible => {
+  transport.isVisible.mockResolvedValue(visible);
+  transport.getByLabel.mockResolvedValue({ isVisible: transport.isVisible });
+  expect(await isToolsetPopoverWindowVisible("core.art")).toBe(visible);
+  expect(transport.getByLabel).toHaveBeenCalledExactlyOnceWith("toolset-popover-core-art");
+  expect(transport.isVisible).toHaveBeenCalledTimes(1);
+});
+
+it("treats an uncreated popover and a browser preview as hidden", async () => {
+  transport.getByLabel.mockResolvedValue(null);
+  expect(await isToolsetPopoverWindowVisible("core.art")).toBe(false);
+  expect(transport.isVisible).not.toHaveBeenCalled();
+  transport.getByLabel.mockClear();
+  delete host.__TAURI__;
+  expect(await isToolsetPopoverWindowVisible("core.art")).toBe(false);
+  expect(transport.getByLabel).not.toHaveBeenCalled();
 });
 
 it("forwards the captured opening release once even if the button stops propagation", async () => {

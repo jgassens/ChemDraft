@@ -1102,6 +1102,16 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
 
 ## Toolbar popovers and dropdowns (macOS and Windows)
 
+- Hover Main/Art toolbar button A until its tooltip appears, then slide across B, C and D without
+  pausing. Each neighbour's tooltip must replace the previous one promptly; none may be skipped.
+  Leaving for empty space must hide it, and returning after a pause must use the normal hover delay.
+  Include the Art style row (paint target/type, colour swatch, stroke width, dash and effects) and
+  opacity/gradient controls: all must use the same app tooltip appearance and existing text, with
+  no delayed browser tooltip underneath or behind another window.
+- Select a graphic and click the Art Stroke colour swatch: the picker opens; clicking the same
+  swatch again closes it. Repeat with Fill, then dismiss by click-away, Escape and app deactivation;
+  the next swatch click must reopen it. A swatch click with a tool flyout open must switch to colour.
+  Verify document focus, no taskbar entries, and placement on monitors with different scaling.
 - Hover a palette button until its tooltip appears, then mouse-open a toolbar flyout, the Art
   colour picker, or the E/Z popover. The tooltip must disappear as the popover appears; hovering
   buttons on this or another palette must show no tooltip while any popover is visible. Include a
@@ -1117,6 +1127,11 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
   Atom label font family/face, background mode, alignment, and placement. Every option
   must have readable dark text on an opaque light background with the OS in both light and dark
   appearance. Confirm the existing macOS light appearance is unchanged.
+  Also check the Export, Page Size, and Insert Table dialog lists and the Molecular Inspector,
+  plugin report/composer, linked figure controls (nucleus and axis units), NMR panel controls, and
+  plugin settings lists on both platforms. On Windows use WebView2 with both light and dark OS
+  appearance: open lists must have dark text on an opaque light background; closed styling stays
+  consistent with the surrounding panel. Include an installed plugin rather than only a fixture.
 - With a drawing tool active and objects selected, mouse-open a toolbar flyout, Art colour picker,
   or E/Z popover while focus stays in the document. Escape must dismiss it without changing the
   tool, selection or drawing; a second Escape performs the existing canvas action. Repeat from a
