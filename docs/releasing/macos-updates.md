@@ -78,29 +78,25 @@ Sparkle compares the packaged app's `CFBundleVersion`. Tauri derives the macOS v
 Do not reuse a published version.
 
 1. Increase `version` in `apps/desktop/src-tauri/tauri.conf.json` and run the normal tests/build.
-2. Produce a Developer ID signed release app/DMG, notarize it, staple it, and pass the validation
-   steps in `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`.
-3. Put the final DMG and an optional same-basename `.md` release-notes file into a clean staging
-   directory. Keep the release-notes file at `release-notes/macos/ChemDraft_X.Y.Z_aarch64.md`
-   in the repository as well. Copy the current root `appcast.xml` into that directory so prior releases
-   remain in the feed.
-4. Generate signed feed entries with the Keychain-held Sparkle key. For version `X.Y.Z`:
+2. Build, sign, notarize, staple and verify both Mac artifacts using the steps below and
+   `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`.
+3. Generate and verify both feeds as described below. Create GitHub release `vX.Y.Z` with both
+   final DMGs and the Windows installer from the same commit and version.
+4. After the release assets are reachable, land both feeds and their notes on `main` through the
+   normal PR flow. Do not change the generated signature, length, or DMG URL.
 
-```bash
-apps/desktop/src-tauri/sparkle-bin/generate_appcast \
-  --download-url-prefix "https://github.com/jgassens/ChemDraft/releases/download/vX.Y.Z/" \
-  --link "https://github.com/jgassens/ChemDraft" \
-  --maximum-deltas 0 \
-  --maximum-versions 3 \
-  -o appcast.xml \
-  /absolute/path/to/staging-directory
+From release 1.2, the three builds have the same features unless a gap is genuinely impossible.
+Name each gap and its reason in the release notes. Use this release body template:
+
+```markdown
+## macOS (Apple silicon)
+
+## macOS (Intel)
+
+## Windows
+
+Platform differences: None. (Otherwise list each feature gap and its reason.)
 ```
-
-5. Create GitHub release `vX.Y.Z` and upload the exact notarized DMG named in the generated appcast.
-6. Copy the generated appcast back to the repository root. Set the new entry’s release-notes link to
-   `https://raw.githubusercontent.com/jgassens/ChemDraft/main/release-notes/macos/ChemDraft_X.Y.Z_aarch64.md`.
-   Commit and push the appcast and notes to `main` only after the release asset is reachable. Do not
-   change the generated signature, length, or DMG URL.
 
 Back up the Sparkle private key before the first public release. Use
 `apps/desktop/src-tauri/sparkle-bin/generate_keys -x <private-key-file>`, store that file in an
@@ -180,7 +176,7 @@ keep their existing native JDK discovery; they do not use this download.
 
 On Apple silicon, the builder first probes Rosetta 2 and runs both jlink and the
 generated Java launcher via `/usr/bin/arch -x86_64`. If Rosetta is missing, it stops
-before downloading and names the installation command:
+before downloading. The owner must install Rosetta; an agent must never run this command:
 
 ```bash
 /usr/sbin/softwareupdate --install-rosetta --agree-to-license
@@ -216,7 +212,7 @@ provides an advisory smoke check, using its explicitly supplied x64 JDK.
 
 Start at the repository root, on the exact commit being released, with the
 normal release prerequisites installed and the local signing/notarization
-instructions open. Install Rosetta on Apple silicon and an arm64 JDK (JDK 21+,
+instructions open. The owner installs Rosetta on Apple silicon. Install an arm64 JDK (JDK 21+,
 with deployment compatibility for the declared minimum macOS 11.0). Intel builds
 obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
 
@@ -262,8 +258,9 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ChemDraft.app --target aarch64-apple-darwin
    ```
 
-   Complete signing, notarization, stapling and validation using the existing
-   local flow above. Save the final arm64 DMG in its own clean staging folder,
+   Sign with Developer ID, submit for notarization, staple and validate the app and DMG
+   using `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app
+   verification command above again on the final app. Save the final arm64 DMG in its own clean staging folder,
    e.g. `/absolute/path/release-arm64`, retaining its architecture-specific name.
 
 4. Only after packaging arm64, replace the shared staging runtime with Intel:
@@ -278,7 +275,9 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    `run-app` creates and verifies the staged Intel JRE before building its worktree
    app. The subsequent production package build above signs that staged JRE through
    `scripts/sign-opsin-runtime.sh` before sealing the app. Finish the same local
-   signing/notarization/stapling validation independently for Intel. Save its final
+   Developer ID signing, notarization, stapling and validation independently for Intel using
+   `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app verification
+   command above again on the final app. Save its final
    DMG in `/absolute/path/release-intel` with a distinct
    architecture-specific name. Neither architecture may overwrite the other's
    artifact. The JRE output `resources/opsin/jre` is shared: never build these in
@@ -306,30 +305,22 @@ Run this gate on the final signed app too; it performs no signing or mutation.
 
 ### Publish two appcasts
 
-Run `generate_appcast` **separately**, against separate staging directories.
-Never put both same-version DMGs in one generator input folder. Copy the
-previous `appcast.xml` into the arm64 folder and the previous
-`appcast-intel.xml` into the Intel folder. For the first Intel publication there
-is no previous Intel feed: generate it from the final Intel artifact.
+Put exactly one final DMG in each clean staging directory. Keep same-basename notes in
+`release-notes/macos/` for arm64 and `release-notes/macos-intel/` for Intel. Generate
+the feeds separately after signing, notarization and stapling. The wrapper verifies each
+DMG, uses the matching notes, and merges the existing root feed.
 
 ```bash
-apps/desktop/src-tauri/sparkle-bin/generate_appcast \
-  --download-url-prefix "https://github.com/jgassens/ChemDraft/releases/download/vX.Y.Z/" \
-  --link "https://github.com/jgassens/ChemDraft" \
-  --maximum-deltas 0 --maximum-versions 3 \
-  -o /absolute/path/release-arm64/appcast.xml /absolute/path/release-arm64
-
-apps/desktop/src-tauri/sparkle-bin/generate_appcast \
-  --download-url-prefix "https://github.com/jgassens/ChemDraft/releases/download/vX.Y.Z/" \
-  --link "https://github.com/jgassens/ChemDraft" \
-  --maximum-deltas 0 --maximum-versions 3 \
-  -o /absolute/path/release-intel/appcast-intel.xml /absolute/path/release-intel
+node tools/release/generate-macos-appcast.mjs --target aarch64-apple-darwin --version X.Y.Z --staging /absolute/path/release-arm64
+node tools/release/generate-macos-appcast.mjs --target x86_64-apple-darwin --version X.Y.Z --staging /absolute/path/release-intel
+node tools/release/verify-macos-feed.mjs /absolute/path/release-arm64/appcast.xml --dmg /absolute/path/release-arm64/ChemDraft_X.Y.Z_aarch64.dmg
+node tools/release/verify-macos-feed.mjs /absolute/path/release-intel/appcast-intel.xml --dmg /absolute/path/release-intel/ChemDraft_X.Y.Z_x64.dmg
 ```
 
+The feed verifier mounts each DMG read-only and runs the same app gate on every app inside.
 Inspect each generated feed's enclosure, version, minimum OS and hardware
 requirements. Both feeds must name their own exact final DMG. Publish both DMGs
-in the same GitHub release and version as Windows (release body has `## macOS`
-and `## Windows`). Only once both assets are reachable, copy the generated feeds
+in the same GitHub release and version as Windows. Only once both assets are reachable, copy the generated feeds
 to repository-root `appcast.xml` and `appcast-intel.xml` and land them through
 the normal PR flow. Do not hand-edit signed entries or generate signatures
 before notarization/stapling has finalized the DMG bytes.
@@ -349,6 +340,10 @@ Its runner availability and successful full build still need an actual CI run.
 Acceptance on a **real Intel Mac**, including the declared minimum OS, remains
 mandatory; Rosetta and unsigned hosted CI do not establish it:
 
+- [ ] Confirm the Apple-silicon DMG, Intel DMG and Windows x64 installer use the same commit and version.
+- [ ] On a real Intel Mac, launch, draw, save and reopen, export, run Name to Structure via OPSIN,
+      use Spin 3D, install a plugin and check for updates. Complete the existing Apple-silicon and
+      Windows hands-on checks as well.
 - [ ] Quarantined downloaded DMG passes Gatekeeper; notarization and staples
       validate, install, native launch, quit and reopen work.
 - [ ] Main app, sidecar, Sparkle helpers and signed JVM run without architecture

@@ -80,8 +80,10 @@ Review action updates and trust policy changes as release infrastructure changes
 ## Run a release
 
 Use a reviewed commit that has landed on the public repository's `main` branch, with the workflow
-and signing tools present. Both platform artifacts must use the same commit and version. The release
-body must include `## macOS` and `## Windows`; this workflow supplies the Windows artifacts only.
+and signing tools present. The Apple-silicon DMG, Intel DMG and Windows installer must use the same
+commit and version. The release body must include `## macOS (Apple silicon)`, `## macOS (Intel)` and
+`## Windows`, plus a Platform differences note naming each feature gap and its reason, or saying there
+are none. This workflow supplies the Windows artifacts only.
 
 1. Set the app version before tagging, and prepare tracked Windows release notes if needed. Create
    the release tag and an **existing draft** GitHub release, for example `vX.Y.Z`.
@@ -123,7 +125,7 @@ body must include `## macOS` and `## Windows`; this workflow supplies the Window
    use it only for draft dry runs. Only this job has
    `contents: write`; the build/signing job has read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
-7. After both platform artifacts pass review, publish the joint release. Only **after** the installer
+7. After all three artifacts pass review, publish the joint release. Only **after** the installer
    URL is publicly downloadable, commit the generated `latest.json` to `main` through the normal PR
    path. This workflow neither publishes the release nor updates the feed on `main`.
 

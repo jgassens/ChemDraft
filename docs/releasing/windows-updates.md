@@ -40,7 +40,7 @@ The NSIS installer hook quotes both the executable path and `.chemdraft` documen
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
 - **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to
-  the macOS `appcast.xml`; joint releases use the same commit and version for both platforms.
+  the macOS `appcast.xml` and `appcast-intel.xml`; joint releases use the same commit and version for all three builds.
 - **Public key:** `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.windows.conf.json`.
 - **Private key:** `%USERPROFILE%\.tauri\chemdraft-updater.key`.
   - It is outside the repository. Never commit it, and never print it.
@@ -77,7 +77,7 @@ Dispatch on the release tag with the same tag in `ref`; optionally provide a tra
 file and an existing draft release tag in `upload_to_release`. The final `windows-release` artifact
 contains the installer, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
-publishes a release or commits the feed. Review both platform artifacts from the same commit/version,
+publishes a release or commits the feed. Review all three artifacts from the same commit/version,
 publish the joint release, then commit the generated feed to `main` only after its installer URL works.
 
 ### Windows VM path (retired)
