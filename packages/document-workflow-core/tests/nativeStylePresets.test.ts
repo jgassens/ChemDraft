@@ -157,6 +157,26 @@ describe("applyNativeStylePreset", () => {
     }
   });
 
+  it.each([
+    { effects: null, expected: null },
+    { effects: "sketch", expected: "sketch" },
+    { effects: { kind: "sketch" }, expected: { kind: "sketch" } },
+    { effects: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }, { kind: "sketch" }],
+      expected: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }] },
+    { effects: [{ kind: "sketch" }], expected: undefined }
+  ])("removes only sketch entries from legacy effect arrays: $effects", ({ effects, expected }) => {
+    const document = createEmptyDocument();
+    const molecule = createSmilesMolecule(document, { x: 100, y: 100 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    molecule.style.effects = effects;
+    document.pages[0]!.objects.push(molecule);
+    const result = apply(document, ChemDraftSyntheticStylePreset.id, "document");
+    expect(result.pages[0]!.objects[0]!.style.effects).toEqual(expected);
+    expect(molecule.style.effects).toEqual(effects);
+  });
+
   it("styles only selected molecules/text and keeps all other objects and defaults untouched", async () => {
     const document = await fixture();
     document.selection = { pageId: document.pages[0]!.id, objectIds: ["m0", "caption", "mechanism"] };

@@ -51,8 +51,10 @@ export function applyNativeStylePreset(
         if (visualEffects.length) style.visualEffects = visualEffects;
         else delete style.visualEffects;
         if (Array.isArray(style.effects)) {
-          style.effects = style.effects.filter(effect => effect?.kind !== "sketch");
-          if (!style.effects.length) delete style.effects;
+          const remainingEffects = style.effects.filter(effect =>
+            typeof effect !== "object" || effect === null || !("kind" in effect) || effect.kind !== "sketch");
+          if (remainingEffects.length) style.effects = remainingEffects;
+          else delete style.effects;
         }
         changes = {
           ...moleculeTargetBondLengthChanges(object, preset.drawing.bondLengthPx),
