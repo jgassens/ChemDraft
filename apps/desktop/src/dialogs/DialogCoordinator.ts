@@ -1,4 +1,6 @@
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
+import type { ConditionsSnapshot } from "./dialogProtocol";
+import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
@@ -44,6 +46,8 @@ export class DialogCoordinator {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
     insertTable?(tabId: string, options: InsertTableOptions): void | Promise<void>;
     insertTemplate?(tabId: string, templateId: string): void | Promise<void>;
+    applyReactionConditions?(tabId: string, arrowId: string, draft: ReactionConditionsDraft): void | Promise<void>;
+    onConditionsSettled?(tabId: string): void;
     applyArrangementSpacing?(tabId: string, percent: number): void | Promise<void>;
     previewArrangementSpacing?(tabId: string, percent: number): string | Promise<string>;
     onSpacingSettled?(tabId: string): void;
@@ -140,6 +144,12 @@ export class DialogCoordinator {
     const session = this.sessions.get(`${tabId}:toolInstall`);
     if (session) await this.settle(session, "close");
   }
+  async openReactionConditions(tabId: string, data: ConditionsSnapshot): Promise<void> {
+    const existing = this.sessions.get(`${tabId}:reactionConditions`);
+    if (existing?.snapshot.dialogKind === "reactionConditions" && existing.snapshot.data.arrowId !== data.arrowId)
+      throw new Error("Finish the open Reaction conditions editor before editing another arrow in this drawing.");
+    return this.open(tabId, "reactionConditions", data);
+  }
   private async open(tabId: string, kind: DialogKind, data: Extract<DialogMessage, { type: "snapshot" }>["data"], engineInstall?: EngineInstallPresenter, toolInstall?: ToolInstallPresenter, afterClose?: Promise<void>): Promise<void> {
     if (this.stopped) throw new Error("The document window is closing");
     const key = `${tabId}:${kind}`;
@@ -157,7 +167,7 @@ export class DialogCoordinator {
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -190,7 +200,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "reactionConditions" ? "Reaction conditions" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -298,7 +308,10 @@ export class DialogCoordinator {
       });
       if (session.settled) return;
       if (message.data.action === "apply") {
-        if ("percent" in message.data) {
+        if ("draft" in message.data) {
+          if (!this.owner.applyReactionConditions || session.snapshot.dialogKind !== "reactionConditions") throw new Error("Reaction conditions are unavailable");
+          await this.owner.applyReactionConditions(message.documentTabId, session.snapshot.data.arrowId, message.data.draft);
+        } else if ("percent" in message.data) {
           if (!this.owner.applyArrangementSpacing) throw new Error("Spacing is unavailable");
           await this.owner.applyArrangementSpacing(message.documentTabId, message.data.percent);
         } else if ("rows" in message.data) {
@@ -377,6 +390,7 @@ export class DialogCoordinator {
     const key = `${session.snapshot.documentTabId}:${session.snapshot.dialogKind}`;
     if (this.sessions.get(key) === session) this.sessions.delete(key);
     if (session.snapshot.dialogKind === "arrangementSpacing") this.owner.onSpacingSettled?.(session.snapshot.documentTabId);
+    if (session.snapshot.dialogKind === "reactionConditions") this.owner.onConditionsSettled?.(session.snapshot.documentTabId);
     // Preserve the existing Page Size callback contract.
     let finishToolClose: (() => void) | undefined;
     const toolClosed = session.toolInstall ? new Promise<void>(resolve => { finishToolClose = resolve; }) : undefined;
@@ -394,8 +408,15 @@ export class DialogCoordinator {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.documentTabId === tabId).map(s => this.settle(s, "ownerTabClose")));
   }
   hasArrangementSpacing(tabId: string): boolean { return this.sessions.has(`${tabId}:arrangementSpacing`); }
+  reactionConditionsArrowId(tabId: string): string | undefined {
+    const snapshot = this.sessions.get(`${tabId}:reactionConditions`)?.snapshot;
+    return snapshot?.dialogKind === "reactionConditions" ? snapshot.data.arrowId : undefined;
+  }
   async closeArrangementSpacing(): Promise<void> {
     await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "arrangementSpacing").map(s => this.settle(s, "cancel")));
+  }
+  async closeReactionConditions(): Promise<void> {
+    await Promise.all([...this.sessions.values()].filter(s => s.snapshot.dialogKind === "reactionConditions").map(s => this.settle(s, "cancel")));
   }
   async dispose(reason: "quit" | "ownerClose" = "ownerClose"): Promise<void> {
     this.stopped = true;

@@ -69,6 +69,14 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             min_size: (480.0, 240.0),
             fit_content: true,
         }),
+        "reactionConditions" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Reaction conditions",
+            size: (560.0, 620.0),
+            min_size: (380.0, 420.0),
+            fit_content: false,
+        }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -225,6 +233,48 @@ fn valid_table_options(rows: u32, columns: u32, header_rows: u32, preset: &str) 
         && (1..=64).contains(&columns)
         && header_rows <= rows
         && matches!(preset, "three-line" | "grid")
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConditionsSpan {
+    text: String,
+    script: String,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConditionsDraft {
+    side: String,
+    spans: Vec<ConditionsSpan>,
+}
+impl ConditionsDraft {
+    fn valid(&self) -> bool {
+        matches!(self.side.as_str(), "above" | "below")
+            && self.spans.len() <= 128
+            && self
+                .spans
+                .iter()
+                .map(|span| span.text.encode_utf16().count())
+                .sum::<usize>()
+                <= 2000
+            && self
+                .spans
+                .iter()
+                .all(|span| matches!(span.script.as_str(), "normal" | "subscript" | "superscript"))
+            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= 2500)
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConditionsSnapshot {
+    title: String,
+    arrow_id: String,
+    draft: ConditionsDraft,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum ConditionsAction {
+    Apply { draft: ConditionsDraft },
+    Cancel {},
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -858,6 +908,21 @@ impl Message {
                         && r.error.is_none_or(|s| s.encode_utf16().count() <= 1024)
                 })
             }
+            "snapshot" if self.dialog_kind == "reactionConditions" => {
+                serde_json::from_value::<ConditionsSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    valid_title(&s.title)
+                        && !s.arrow_id.is_empty()
+                        && s.arrow_id.encode_utf16().count() <= 128
+                        && s.draft.valid()
+                })
+            }
+            "action" if self.dialog_kind == "reactionConditions" => serde_json::from_value::<
+                ConditionsAction,
+            >(self.data.clone())
+            .is_ok_and(|action| match action {
+                ConditionsAction::Apply { draft } => draft.valid(),
+                ConditionsAction::Cancel {} => true,
+            }),
             "snapshot" if self.dialog_kind == "export" => {
                 serde_json::from_value::<ExportSnapshot>(self.data.clone()).is_ok_and(|s| {
                     !s.title.is_empty()
@@ -2271,6 +2336,40 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
+        let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});
+        assert!(
+            serde_json::from_value::<super::ConditionsDraft>(draft.clone())
+                .unwrap()
+                .valid()
+        );
+        for invalid in [
+            json!({"side":"left","spans":[]}),
+            json!({"side":"above","spans":[{"text":"x","script":"html"}]}),
+            json!({"side":"above","spans":[{"text":"Δ".repeat(1400),"script":"normal"}]}),
+        ] {
+            assert!(!serde_json::from_value::<super::ConditionsDraft>(invalid)
+                .unwrap()
+                .valid());
+        }
+        let spec = super::kind_spec("reactionConditions").unwrap();
+        assert_eq!(spec.title, "Reaction conditions");
+        assert!(spec.resizable);
+        assert!(!spec.fit_content);
+        assert!(super::is_dialog_label("dialog-main-reactionConditions-1"));
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-reactionConditions-*"));
+        let mut message = snapshot();
+        message.dialog_kind = "reactionConditions".into();
+        message.data = json!({"title":"Drawing","arrowId":"arrow-1","draft":draft});
+        assert!(message.validate().is_ok());
+        message.message_type = "action".into();
+        message.data = json!({"action":"apply","draft":draft});
+        assert!(message.validate().is_ok());
+        message.data = json!({"action":"cancel","draft":draft});
+        assert!(message.validate().is_err());
+    }
     use super::*;
     #[test]
     fn vibe_code_guide_kind_and_messages_are_bounded() {

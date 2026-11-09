@@ -1,3 +1,4 @@
+import { attachedConditionsDocument } from "./attachedConditions.fixture";
 import {
   applyPatch,
   createEmptyDocument,
@@ -422,6 +423,13 @@ describe("exportDocumentToPdf", () => {
     expect(sampled).toBeGreaterThan(100);
     expect(brightening).toBeLessThanOrEqual(2);
     dom.window.close();
+  });
+  it('preserves multiline formatted conditions with explicit independent script baselines',async()=>{
+    const document=attachedConditionsDocument();
+    const svg=exportDocumentToSvg(document).contents;
+    expect(svg).not.toContain('baseline-shift=');
+    const result=await withPdfDom(domParser=>exportDocumentToPdf(document,{domParser,compress:false}));
+    expect(extractPdfTextRuns(result.bytes).join('')).toBe('H2OZn2+');
   });
   it("does not count the white page background as drawing geometry", async () => {
     const document = createEmptyDocument({ now: timestamp });

@@ -2588,7 +2588,8 @@ describe("ChemDraft desktop shell", () => {
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
+    // The conditions editor also commits to its original tab while it is inactive.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(12);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(
@@ -7030,4 +7031,11 @@ describe("ChemDraft desktop shell", () => {
     expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
     expect(resized.selection).toEqual(document.selection);
   });
+});
+
+it("registers a customizable ordinary-arrow conditions command behind the opt-in gate",()=>{
+  const doc=createPhase4Document();
+  const command=allShellCommands(doc).find(command=>command.id==="arrow.conditions");
+  expect(command).toMatchObject({title:"Reaction conditions…",enabled:false,disabledReason:"Enable Compound layout tools in Settings"});
+  expect(isValidToolsetCommandId("arrow.conditions")).toBe(true);
 });

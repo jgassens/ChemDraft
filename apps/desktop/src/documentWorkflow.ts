@@ -1,6 +1,8 @@
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
+import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
+import { withArrowAttachmentIds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./ringTemplates";
@@ -5663,7 +5665,7 @@ export function applyObjectColorToDocumentObjects(
   // Expand groups to their renderable children: a GroupObject is skipped by render/export, so
   // writing color to the group wrapper changes nothing visible while reporting success.
   const allObjects = document.pages.flatMap((page) => page.objects);
-  const selectedIds = new Set(resolveGroupedDocumentObjectIds(allObjects, objectIds));
+  const selectedIds = new Set(withArrowAttachmentIds(allObjects, resolveGroupedDocumentObjectIds(allObjects, objectIds)));
   if (selectedIds.size === 0) {
     return document;
   }
@@ -7245,7 +7247,7 @@ export function deleteSelectedDocumentObjects(
 ): ChemDraftDocument {
   const page = selectionPage(document);
   const selectedIds = new Set(selectedObjectIds);
-  const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, selectedObjectIds));
+  const selectedChildIds = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, selectedObjectIds)));
   const affectedGroupIds = page.objects
     .filter((object): object is GroupObject =>
       object.type === "group" &&
@@ -8436,6 +8438,7 @@ function addChargeMarkAtPoint(
  * commit changes nothing.
  */
 export function normalizeCommittedDocument(document: ChemDraftDocument): ChemDraftDocument {
+  document = reconcileReactionArrowAttachments(document);
   const reconciled = reconcileNativeChargeMarks(document);
   const recorded = withNativeDocumentLabelBondSides(reconciled);
   // Re-admitted to the patch engine's sharing, as `reconcileNativeChargeMarks` does.
@@ -13920,7 +13923,7 @@ function expandWithAnchoredMarkIds(
       expanded.add(markId);
     }
   }
-  return expanded;
+  return new Set(withArrowAttachmentIds(pageObjects, [...expanded]));
 }
 
 /**
@@ -14027,6 +14030,14 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
 }
 
 function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
+  const attachedIds = withArrowAttachmentIds(page.objects, [object.id]);
+  if (attachedIds.length > 1) {
+    const bounds = selectionBounds(page.objects, attachedIds);
+    if (bounds) {
+      const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
+      return { x: object.x + delta.x, y: object.y + delta.y };
+    }
+  }
   return {
     x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
     y: clamp(position.y, 0, Math.max(0, page.height - object.height))
@@ -14208,6 +14219,7 @@ export function selectedArrangementObjectIds(document: ChemDraftDocument): strin
     if (object.type === "group") object.childObjectIds.forEach(includeDescendant);
   });
   const roots = selected.filter((object) => !contained.has(object.id) &&
+    object.arrowAttachment?.kind !== "conditions" &&
     (object.type !== "group" || resolveGroupedDocumentObjectIds(page.objects, [object.id]).length > 0));
   const moleculeIds = roots.flatMap((object) =>
     resolveGroupedDocumentObjectIds(page.objects, [object.id])
@@ -14477,7 +14489,7 @@ export function duplicateSelectedDocumentObjects(
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
     object.type === "group" && directlySelected.has(object.id)
   );
-  const selectedIds = new Set(selectedTransformObjectIds(document));
+  const selectedIds = new Set(withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document)));
   const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
   if (selectedObjects.length === 0) {
     return document;
@@ -14571,8 +14583,13 @@ export function duplicateSelectedDocumentObjects(
   ];
   patches.push({ op: "setSelection", pageId: page.id, objectIds: selectionIds });
 
+  for (const duplicate of duplicates) {
+    if (!duplicate.arrowAttachment) continue;
+    const parentObjectId = duplicateIdByOriginalId.get(duplicate.arrowAttachment.parentObjectId);
+    duplicate.arrowAttachment = parentObjectId ? { ...duplicate.arrowAttachment, parentObjectId } : undefined;
+  }
   const next = applyPatches(document, patches, { now: phase4Timestamp });
-  return moveDocumentObjects(next, selectionIds, offset.x, offset.y);
+  return reconcileReactionArrowAttachments(moveDocumentObjects(next, selectionIds, offset.x, offset.y));
 }
 
 /**
@@ -14591,7 +14608,7 @@ export function createSelectionClipboardPayload(
   moleculeFragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftSelectionClipboardPayload | undefined {
   const page = firstPage(document);
-  const selectedObjectIds = selectedTransformObjectIds(document);
+  const selectedObjectIds = withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document));
   const selectedIdSet = new Set(selectedObjectIds);
   const objects = page.objects.filter((object) => selectedIdSet.has(object.id));
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
@@ -14790,6 +14807,12 @@ export function pasteSelectionClipboardPayload(
   }
 
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
+  for (const object of sourceChildren) {
+    const clone = pastedById.get(idBySourceId.get(object.id)!);
+    if (!clone?.arrowAttachment) continue;
+    const parentObjectId = idBySourceId.get(clone.arrowAttachment.parentObjectId);
+    clone.arrowAttachment = parentObjectId ? { ...clone.arrowAttachment, parentObjectId } : undefined;
+  }
   // Restore anchors only after every child is present, even if the mark preceded its molecule.
   for (const object of sourceChildren) {
     if (object.type !== "electron-mark" || object.anchor.kind !== "atom") {
@@ -15059,6 +15082,13 @@ function transformOtherObjectAroundPointPatches(
       }
     }
   }
+  if(object.type==='text' && object.arrowAttachment?.kind==='conditions') {
+    const factor=proportionalGraphicScale(scaleX,scaleY),style=nativeTextStyleFromObjectStyle(object.style);
+    const nextStyle={...object.style,fontSizePx:style.fontSizePx*factor,letterSpacingPx:style.letterSpacingPx*factor,paragraphSpacingPx:style.paragraphSpacingPx*factor};
+    const spans=object.spans.map(span=>({...span,style:{...span.style,...(typeof span.style.fontSizePx==='number'?{fontSizePx:span.style.fontSizePx*factor}:{})}}));
+    const size=nativeFormattedTextObjectSize({...object,style:nextStyle,spans});
+    Object.assign(changes,size,{x:newCenter.x-size.width/2,y:newCenter.y-size.height/2,style:nextStyle,spans});
+  }
   // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
   // at its original size inside a resized box.
   //
@@ -15098,7 +15128,7 @@ export function rotateDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -15118,7 +15148,7 @@ export function rotateDocumentObjectsAroundPoint(
       ? rotateNativeMoleculeGeometryAroundPointPatches(document, object.id, center, degrees)
       : transformOtherObjectAroundPointPatches(document, object.id, center, { degrees })));
   }
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+  return patches.length > 0 ? reconcileReactionArrowAttachments(applyPatches(document, patches, { now: phase4Timestamp })) : document;
 }
 
 /** Scale every object in `ids` about the shared `center` by `scaleX`/`scaleY`. */
@@ -15135,7 +15165,7 @@ export function scaleDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -15155,7 +15185,8 @@ export function scaleDocumentObjectsAroundPoint(
       ? scaleNativeMoleculeObjectAroundPointPatches(document, object.id, center, sx, sy)
       : transformOtherObjectAroundPointPatches(document, object.id, center, { scaleX: sx, scaleY: sy })));
   }
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+  return patches.length > 0 ? reconcileReactionArrowAttachments(applyPatches(document, patches, { now: phase4Timestamp }),
+    { scale: { objectIds: set, scaleX: sx, scaleY: sy } }) : document;
 }
 
 export type DocumentFlipAxis = "horizontal" | "vertical";
@@ -15190,7 +15221,7 @@ export function flipDocumentObjectsAroundPoint(
   }
 
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -15210,7 +15241,7 @@ export function flipDocumentObjectsAroundPoint(
       ? flipNativeMoleculeObjectAroundPointPatches(document, object.id, center, axis)
       : flipOtherObjectAroundPointPatches(document, object.id, center, axis)));
   }
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+  return patches.length > 0 ? reconcileReactionArrowAttachments(applyPatches(document, patches, { now: phase4Timestamp })) : document;
 }
 
 function flipNativeMoleculeObjectAroundPointPatches(
@@ -19580,7 +19611,8 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
     }
   });
 
-  return page.objects.filter((object) => scopeIds.has(object.id));
+  const attachedScopeIds = new Set(withArrowAttachmentIds(page.objects, [...scopeIds]));
+  return page.objects.filter((object) => attachedScopeIds.has(object.id));
 }
 
 export function copyAsScopeMolecules(document: ChemDraftDocument): readonly MoleculeObject[] {

@@ -1,4 +1,5 @@
 import type {
+  ArrowAttachmentFrame,
   GraphicEffect,
   GraphicFreehandOptions,
   GraphicFreehandPoint,
@@ -22,6 +23,97 @@ import {
   isValidPath
 } from "svg-path-commander/util";
 
+export const arrowAttachmentPoint = (frame: ArrowAttachmentFrame, point: NativeArtPoint): NativeArtPoint => ({
+  x: frame.origin.x + frame.tangent.x * point.x + frame.normal.x * point.y,
+  y: frame.origin.y + frame.tangent.y * point.x + frame.normal.y * point.y
+});
+
+/** A shaft's halfway point and forward tangent, in page space. The normal points outside a
+ * curved shaft; a straight left-to-right shaft uses the upper side. Shared by attachments. */
+export function arrowFrameFromPoints(points: readonly NativeArtPoint[], fraction=.5): ArrowAttachmentFrame | undefined {
+  if (points.length < 2) return undefined;
+  const length = nativeArtPolylineLength(points);
+  if (length < 1e-6) return undefined;
+  const position=length*Math.max(0,Math.min(1,fraction));
+  const origin = nativeArtPolylinePointAtLength(points, position);
+  const before = nativeArtPolylinePointAtLength(points, Math.max(0, position - Math.min(1, length / 4)));
+  const after = nativeArtPolylinePointAtLength(points, Math.min(length, position + Math.min(1, length / 4)));
+  if (!origin || !before || !after) return undefined;
+  const tangent = normalizedVector({ x: after.x - before.x, y: after.y - before.y });
+  if (!tangent) return undefined;
+  let normal = { x: tangent.y, y: -tangent.x };
+  const chordMiddle = midpoint(points[0], points[points.length - 1]);
+  const bow=nativeArtPolylinePointAtLength(points,length/2)!;
+  const bend=(bow.x-chordMiddle.x)*normal.x+(bow.y-chordMiddle.y)*normal.y;
+  if (bend < -0.01)
+    normal = { x: -normal.x, y: -normal.y };
+  return { origin, tangent, normal, length };
+}
+
+export function graphicArrowAttachmentFrame(object: GraphicObject, fraction=.5): ArrowAttachmentFrame | undefined {
+  if (!object.data.dualShaftParallel && !object.data.dualShaft &&
+      ![object.data.markerStart, object.data.markerEnd].some(marker => marker && marker.kind !== "none")) return undefined;
+  return arrowFrameFromPoints(graphicOpenStrokePageSamplePoints(object),fraction);
+}
+
+export const arrowPathSamplePoints=(pathD:string):NativeArtPoint[]=>svgPathSamplePoints(pathD);
+
+export type NativeArtObstacle = NativeArtBounds | { outline: readonly NativeArtPoint[]; padding?: number };
+/** Actual rotated shafts and head clearance, shared by automatic condition-label placement. */
+export function graphicArrowInkObstacles(object: GraphicObject): NativeArtObstacle[] {
+  const points=graphicOpenStrokePageSamplePoints(object),plan=planNativeArtVisual(object);
+  const shapes:NativeArtObstacle[]=points.slice(1).map((p,i)=>({outline:[points[i],p],padding:plan.stroke.width/2}));
+  for(const [marker,point] of [[plan.markerStart,points[0]],[plan.markerEnd,points[points.length-1]]] as const) {
+    if(marker && point) shapes.push({x:point.x-marker.sizePx,y:point.y-marker.sizePx,width:marker.sizePx*2,height:marker.sizePx*2});
+  }
+  return shapes;
+}
+const obstacleOutline = (shape: NativeArtObstacle): readonly NativeArtPoint[] => "outline" in shape ? shape.outline : [
+  { x: shape.x, y: shape.y }, { x: shape.x+shape.width, y: shape.y },
+  { x: shape.x+shape.width, y: shape.y+shape.height }, { x: shape.x, y: shape.y+shape.height }
+];
+const squaredPointSegmentDistance = (p: NativeArtPoint, a: NativeArtPoint, b: NativeArtPoint) => {
+  const dx=b.x-a.x, dy=b.y-a.y, length=dx*dx+dy*dy;
+  const t=length ? Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/length)) : 0;
+  return (p.x-a.x-t*dx)**2+(p.y-a.y-t*dy)**2;
+};
+function segmentsIntersect(a: NativeArtPoint,b: NativeArtPoint,c: NativeArtPoint,d: NativeArtPoint): boolean {
+  const cross=(p:NativeArtPoint,q:NativeArtPoint,r:NativeArtPoint)=>(q.x-p.x)*(r.y-p.y)-(q.y-p.y)*(r.x-p.x);
+  return cross(a,b,c)*cross(a,b,d)<=0 && cross(c,d,a)*cross(c,d,b)<=0 &&
+    Math.max(Math.min(a.x,b.x),Math.min(c.x,d.x))<=Math.min(Math.max(a.x,b.x),Math.max(c.x,d.x)) &&
+    Math.max(Math.min(a.y,b.y),Math.min(c.y,d.y))<=Math.min(Math.max(a.y,b.y),Math.max(c.y,d.y));
+}
+function insideOutline(p: NativeArtPoint, points: readonly NativeArtPoint[]): boolean {
+  let inside=false;
+  for(let i=0,j=points.length-1;i<points.length;j=i++) {
+    const a=points[i],b=points[j];
+    if((a.y>p.y)!==(b.y>p.y) && p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x) inside=!inside;
+  }
+  return inside;
+}
+function prepareObstacle(shape: NativeArtObstacle, clearance: number) {
+  clearance += "outline" in shape ? shape.padding ?? 0 : 0;
+  const points=obstacleOutline(shape);
+  const minX=Math.min(...points.map(p=>p.x))-clearance, maxX=Math.max(...points.map(p=>p.x))+clearance;
+  const minY=Math.min(...points.map(p=>p.y))-clearance, maxY=Math.max(...points.map(p=>p.y))+clearance;
+  return { points, minX,maxX,minY,maxY,clearance };
+}
+function routeSegmentHitsObstacle(a: NativeArtPoint,b: NativeArtPoint, shape: ReturnType<typeof prepareObstacle>): boolean {
+  const {points,clearance}=shape;
+  if(Math.max(a.x,b.x)<shape.minX || Math.min(a.x,b.x)>shape.maxX || Math.max(a.y,b.y)<shape.minY || Math.min(a.y,b.y)>shape.maxY) return false;
+  if(insideOutline(a,points) || insideOutline(b,points)) return true;
+  return points.some((c,i)=>{
+    const d=points[(i+1)%points.length];
+    return segmentsIntersect(a,b,c,d) || Math.min(squaredPointSegmentDistance(a,c,d),squaredPointSegmentDistance(b,c,d),
+      squaredPointSegmentDistance(c,a,b),squaredPointSegmentDistance(d,a,b))<=clearance*clearance;
+  });
+}
+/** Collision against real outlines (also supports two-point stroked segments). */
+export function artObstacleIntersectsBounds(shape: NativeArtObstacle, bounds: NativeArtBounds, clearance=0): boolean {
+  const a=prepareObstacle(shape,clearance), box=obstacleOutline(bounds);
+  return box.some((p,i)=>routeSegmentHitsObstacle(p,box[(i+1)%box.length],a)) ||
+    a.points.some(p=>p.x>=bounds.x && p.x<=bounds.x+bounds.width && p.y>=bounds.y && p.y<=bounds.y+bounds.height);
+}
 const minimumArcSweepRadians = Math.PI / 180;
 const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 const transientFreehandPathCache = new WeakMap<GraphicObject, { revision: string; pathD?: string }>();
@@ -3277,7 +3369,7 @@ function graphicPathLocalBoundsPoints(object: GraphicObject): NativeArtPoint[] {
   ];
 }
 
-function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
+export function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
   const localPoints = object.graphicKind === "line"
     ? graphicLineLocalPoints(object)
     : object.graphicKind === "path" ? graphicPathLocalSamplePoints(object) : [];
@@ -3413,7 +3505,7 @@ function svgPathBounds(pathD: string): NativeArtBounds | undefined {
  * whichever corner came last, putting the arrowhead on the wrong end pointing the wrong way. No
  * caller ever wanted them; the two that asked for bounds asked `getPathBBox` directly.
  */
-function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
+export function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
   try {
     if (!isValidPath(pathD)) {
       return [];
