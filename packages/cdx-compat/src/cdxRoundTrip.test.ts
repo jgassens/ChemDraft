@@ -19,6 +19,125 @@ describe("interchange graphics and page extent", () => {
   const sourceGraphic = (id: number, subtype: string) => `<graphic id="${id}" GraphicType="Orbital" ${subtype}
     BoundingBox="20 30 80 90" color="4" Z="7" LineWidth="0.75" IgnoreWarnings="yes" attrib4a10="|x|010203"/>`;
 
+  it.each([false, true])("imports a fragment's aromatic ring circle and retains its source attributes (binary=%s)", binary => {
+    const circle = '<graphic id="30" GraphicType="Oval" OvalType="Circle" BoundingBox="35 35 65 65" color="4" LineWidth="1.5" Z="7" attrib4a10="|x|010203"/>';
+    const atoms = [[50,20],[76,35],[76,65],[50,80],[24,65],[24,35]]
+      .map(([x,y], i) => `<n id="${i + 10}" p="${x} ${y}"/>`).join("");
+    const bonds = Array.from({ length: 6 }, (_, i) => `<b id="${i + 20}" B="${i + 10}" E="${(i + 1) % 6 + 10}" Order="1.5"/>`).join("");
+    const source = wrap(`<fragment id="2">${atoms}${bonds}${circle}</fragment>`).replace('<page ',
+      '<colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="0.2" g="0.4" b="0.6"/></colortable><page ');
+    const input = binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source);
+    const document = requireDocument(input);
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule") as MoleculeObject;
+    const graphic = document.pages[0].objects.find(object => object.type === "graphic") as GraphicObject;
+    expect(molecule.bonds.map(bond => bond.order)).toEqual(Array(6).fill("aromatic"));
+    expect(graphic.graphicKind).toBe("ellipse");
+    expect(graphic.style.strokeColor).toBe("#336699");
+    expect(graphic.style.strokeWidth).toBeCloseTo(2);
+    expect(graphic.compatibility?.unknown.cdxmlGraphicAttributes).toMatchObject({ GraphicType: "Oval", OvalType: "Circle", color: "4", LineWidth: "1.5" });
+    expect(graphic.compatibility?.unknown.cdxmlGraphicAttributes).toEqual(attributes(source, "graphic")[0]);
+    const output = binary ? importCdx(exportDocumentToCdx(document).bytes) : openChemDraftPayload(exportDocumentToCdxml(document, { embedNativePayload: false }).contents);
+    const reopened = requireDocument(output).pages[0].objects.find(object => object.type === "graphic") as GraphicObject;
+    expect(reopened.graphicKind).toBe("ellipse");
+    expect(reopened.style.strokeColor).toBe("#336699");
+    expect(reopened.style.strokeWidth).toBeCloseTo(2);
+    expect(reopened.compatibility?.unknown.cdxmlGraphicAttributes).toMatchObject({ GraphicType: "Oval", OvalType: "Circle", color: "4", LineWidth: "1.5" });
+    expect(reopened.compatibility?.unknown.cdxmlGraphicAttributes).toEqual(attributes(source, "graphic")[0]);
+  });
+
+  it("names superseded display graphics when skipping them", () => {
+    const input = openChemDraftPayload(wrap('<graphic id="8" GraphicType="Oval" OvalType="Circle" SupersededBy="9"/><graphic id="9" GraphicType="Oval" BoundingBox="20 20 40 40"/>'));
+    expect(input.warnings.some(warning => warning.code === "cdxml.graphic_superseded" && warning.message.includes("8") && warning.message.includes("Oval"))).toBe(true);
+  });
+
+  describe.each([false, true])("imported ellipse style edits (binary=%s)", binary => {
+    const source = (subtype: string) => wrap(`<graphic id="30" GraphicType="Oval" OvalType="${subtype}"
+      BoundingBox="35 35 65 65" color="4" LineWidth="1.5000" Z="7" IgnoreWarnings="yes" attrib4a10="|x|010203"
+      ${subtype === "Shadowed" ? 'ShadowSize="600"' : ""}/>`);
+    const open = (xml: string) => requireDocument(binary ? importCdx(bytesFromCdxml(xml)) : openChemDraftPayload(xml));
+    const write = (document: ChemDraftDocument) => {
+      const result = binary ? exportDocumentToCdx(document, { embedNativePayload: false })
+        : exportDocumentToCdxml(document, { embedNativePayload: false });
+      const xml = "bytes" in result ? cdxElementToCdxml(readCdx(result.bytes)) : result.contents;
+      return { ...result, xml, attrs: attributes(xml, "graphic")[0], reopened: openChemDraftPayload(xml) };
+    };
+
+    it.each(["Circle", "Filled", "Circle Shaded", "Shadowed"])("keeps unedited %s attributes verbatim", subtype => {
+      const document = open(source(subtype));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      expect(write(document).attrs).toEqual(graphic.compatibility?.unknown.cdxmlGraphicAttributes);
+    });
+
+    it.each([false, true])("writes a circle's edited fill and names its distinct stroke loss (legacy=%s)", legacy => {
+      const document = open(source("Circle"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      if (legacy) delete graphic.compatibility!.unknown.cdxmlGraphicStyle;
+      expect(write(document).attrs).toEqual(graphic.compatibility?.unknown.cdxmlGraphicAttributes);
+      graphic.style.fillMode = "solid";
+      graphic.style.fillColor = "#336699";
+      const result = write(document);
+      expect(result.attrs.OvalType).toBe("Filled");
+      expect(result.attrs).toMatchObject({ Z: "7", IgnoreWarnings: "yes", attrib4a10: "|x|010203" });
+      const reopened = requireDocument(result.reopened).pages[0].objects[0] as GraphicObject;
+      expect(reopened.style).toMatchObject({ fillMode: "solid", fillColor: "#336699", strokeColor: "#336699" });
+      expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.graphic_single_color", sourceObjectId: graphic.id }));
+    });
+
+    it.each(["Filled", "Circle Shaded", "Shadowed"])("removes the source %s fill or effect", subtype => {
+      const document = open(source(subtype));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillColor = "none";
+      delete graphic.style.fillMode;
+      delete graphic.style.effect;
+      const result = write(document);
+      expect(result.attrs.OvalType).toBeUndefined();
+      expect(result.attrs.ShadowSize).toBeUndefined();
+      expect(result.attrs).toMatchObject({ Z: "7", IgnoreWarnings: "yes", attrib4a10: "|x|010203" });
+      const reopened = requireDocument(result.reopened).pages[0].objects[0] as GraphicObject;
+      expect(reopened.style.fillColor).toBe("none");
+      expect(reopened.style.fillMode).toBeUndefined();
+      expect(reopened.style.effect).toBeUndefined();
+    });
+
+    it("replaces shading with a solid fill when only fillMode changes", () => {
+      const document = open(source("Circle Shaded"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillMode = "solid";
+      const result = write(document);
+      expect(result.attrs.OvalType).toBe("Filled");
+      expect((requireDocument(result.reopened).pages[0].objects[0] as GraphicObject).style)
+        .toMatchObject({ fillMode: "solid", fillColor: graphic.style.fillColor });
+    });
+
+    it("updates and removes imported dash and bold width attributes", () => {
+      const document = open(source("Circle").replace('LineWidth="1.5000"', 'LineType="Bold" BoldWidth="4" LineWidth="1.5000"'));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.strokeDasharray = "3 4";
+      graphic.style.strokeWidth = 2;
+      const result = write(document);
+      expect(result.attrs.LineType).toBe("Dashed");
+      expect(result.attrs.BoldWidth).toBeUndefined();
+      expect((requireDocument(result.reopened).pages[0].objects[0] as GraphicObject).style)
+        .toMatchObject({ strokeDasharray: "3 4", strokeWidth: 2 });
+      delete graphic.style.strokeDasharray;
+      expect(write(document).attrs.LineType).toBeUndefined();
+    });
+
+    it("names edited styles that visible ellipse attributes cannot express", () => {
+      const document = open(source("Circle"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillColor = "#ff0000";
+      graphic.style.fillMode = "solid";
+      graphic.style.effect = "shadow";
+      graphic.style.fillOpacity = 0.5;
+      const result = write(document);
+      expect(result.warnings).toContainEqual(expect.objectContaining({ sourceObjectId: graphic.id,
+        message: expect.stringContaining("fillColor") }));
+      expect(result.warnings).toContainEqual(expect.objectContaining({ sourceObjectId: graphic.id,
+        message: expect.stringContaining("fillOpacity") }));
+    });
+  });
+
   it.each([
     'OvalType="Filled" OrbitalType="s"',
     'OvalType="Shaded" OrbitalType="p"',

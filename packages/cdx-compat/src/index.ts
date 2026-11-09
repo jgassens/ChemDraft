@@ -368,11 +368,11 @@ export function exportDocumentToCdxml(
       const unknown = object.compatibility?.unknown;
       const curveColor = object.type === "graphic" && unknown?.cdxmlElementName === "curve"
         ? object.style.strokeColor ?? defaultCdxmlStrokeColor
-        : object.type === "graphic" && object.graphicKind === "path"
+        : object.type === "graphic" && (object.graphicKind === "path" || object.graphicKind === "ellipse")
           ? object.style.strokeColor ?? defaultCdxmlStrokeColor : unknown?.cdxmlCurveColor;
       const color = typeof curveColor === "string" ? normalizeHexColor(curveColor) : undefined;
       if (color && !curveColors.includes(color)) curveColors.push(color);
-      if (object.type === "graphic" && object.graphicKind === "path" && object.data.pathClosed) {
+      if (object.type === "graphic" && (object.graphicKind === "ellipse" || object.graphicKind === "path" && object.data.pathClosed)) {
         const fill = object.style.fillColor ? normalizeHexColor(object.style.fillColor) : undefined;
         if (fill && !curveColors.includes(fill)) curveColors.push(fill);
       }
@@ -1795,7 +1795,7 @@ function exportGraphicObject(
   const sourceElementName = graphic.compatibility?.unknown.cdxmlElementName;
   const curve = sourceElementName === "curve" ? graphic : sourceElementName === "arrow" ? undefined : nativeCurveGraphic(graphic);
   warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve));
-  if (graphic.graphicKind === "unknown" && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
+  if ((graphic.graphicKind === "unknown" || graphic.graphicKind === "ellipse") && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
     const attributes = preservedCurveAttributes(graphic.compatibility.unknown.cdxmlGraphicAttributes);
     // Older imports retained only these individual compatibility keys.
     attributes.GraphicType ??= String(graphic.compatibility.unknown.cdxmlGraphicType ?? "Unknown");
@@ -1806,6 +1806,7 @@ function exportGraphicObject(
       if (typeof value === "string") attributes[attribute] ??= value;
     }
     if (attributes.GraphicType !== "Unknown") {
+      if (graphic.graphicKind === "ellipse") updatePreservedEllipseStyle(graphic, attributes, warnings, curveColors);
       const sourceElement = { name: "graphic", attributes, children: [] };
       // Use the importer's frame rule: axes may define a different frame than BoundingBox.
       const sourceBox = graphicBoundsForCdxmlShape(sourceElement, attributes.GraphicType, cdxmlLinePointsForShape(sourceElement));
@@ -1838,7 +1839,53 @@ function exportGraphicObject(
 
 function needsSourceGraphicIds(object: DocumentObject): boolean {
   return object.type === "reaction" || object.type === "bracket" ||
-    object.type === "graphic" && object.graphicKind === "unknown" && object.compatibility?.unknown.cdxmlElementName === "graphic";
+    object.type === "graphic" && (object.graphicKind === "unknown" || object.graphicKind === "ellipse") && object.compatibility?.unknown.cdxmlElementName === "graphic";
+}
+
+/** Leave untouched source spelling alone; an edited ellipse must use its current native style. */
+function updatePreservedEllipseStyle(
+  graphic: GraphicObject,
+  attributes: Record<string, string>,
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[]
+): void {
+  const unknown = graphic.compatibility?.unknown;
+  const sourceColors = isRecord(unknown?.cdxmlGraphicColorTable) ? unknown.cdxmlGraphicColorTable : {};
+  const sourceStyle: Record<string, unknown> = isRecord(unknown?.cdxmlGraphicStyle) ? unknown.cdxmlGraphicStyle
+    : graphicStyleFromCdxmlCurve({ name: "graphic", attributes, children: [] }, {
+      colorByIndex: new Map<number, string>([[0, "#000000"], [1, "#ffffff"],
+        ...colors.map((color, index) => [index + 2, color] as [number, string]),
+        ...Object.entries(sourceColors).flatMap(([index, color]) =>
+          typeof color === "string" ? [[Number(index), color] as [number, string]] : [])])
+    });
+  const currentStyle: Record<string, unknown> = graphic.style;
+  const changed = [...new Set([...Object.keys(sourceStyle), ...Object.keys(currentStyle)])]
+    .filter(key => JSON.stringify(currentStyle[key]) !== JSON.stringify(sourceStyle[key]));
+  if (changed.length === 0) return;
+
+  // These describe the native style, unlike opaque attributes, Z, and the source geometry.
+  for (const name of ["OvalType", "ShadowSize", "FillType", "color", "LineType", "LineWidth", "BoldWidth"]) delete attributes[name];
+  const ovalType = cdxmlOvalTypeForGraphic(graphic);
+  if (ovalType) attributes.OvalType = ovalType;
+  if (graphic.style.effect === "shadow") attributes.ShadowSize = "400";
+  const color = cdxmlGraphicColorIndex(graphic, warnings, colors);
+  if (color !== undefined) attributes.color = String(color);
+  const lineType = cdxmlLineTypeForGraphic(graphic);
+  if (lineType) attributes.LineType = lineType;
+  attributes.LineWidth = formatNumber(cssPxToCdxml(graphic.style.strokeWidth ?? defaultCdxmlLineWidthPx));
+  if (lineType === "Bold") attributes.BoldWidth = attributes.LineWidth;
+
+  const unsupported = changed.filter(key => ["strokePaint", "fillPaint", "opacity", "strokeOpacity", "fillOpacity",
+    "strokeLineCap", "strokeLineJoin", "strokeMiterLimit", "visualEffects", "inactiveVisualEffects", "effects", "inactiveEffects"].includes(key));
+  if (graphic.style.strokeDasharray && graphic.style.strokeDasharray !== "3 4") unsupported.push("strokeDasharray");
+  if (graphic.style.effect === "shadow" && graphic.style.fillMode === "gloss") unsupported.push("effect (shadow with gloss)");
+  if (ovalType === "Shadowed" && graphicHasVisibleFill(graphic)) unsupported.push("fillColor (fill with shadow)");
+  const usesFillColor = ovalType?.includes("Filled") || ovalType?.includes("Shaded");
+  const colorValue = usesFillColor ? graphic.style.fillColor ?? graphic.style.color ?? graphic.style.strokeColor
+    : graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
+  if (color === undefined && colorValue) unsupported.push(usesFillColor ? "fillColor" : "strokeColor");
+  if (unsupported.length) warnings.push({ code: "cdxml.graphic_style_approximation", sourceObjectId: graphic.id,
+    message: `Ellipse style ${unsupported.join(", ")} cannot be expressed exactly in standard CDXML; these edits are preserved exactly only in the embedded ChemDraft payload.` });
 }
 
 function transformPreservedGraphicGeometry(attributes: Record<string, string>, source: { x: number; y: number; width: number; height: number }, target: GraphicObject): void {
@@ -2455,6 +2502,15 @@ function cdxmlGraphicColorAttribute(
   warnings: CompatibilityConversionWarning[],
   colors: readonly string[] = standardCdxmlColorTable
 ): string[] {
+  const index = cdxmlGraphicColorIndex(graphic, warnings, colors);
+  return index === undefined ? [] : [`color="${index}"`];
+}
+
+function cdxmlGraphicColorIndex(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[]
+): number | undefined {
   // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
   // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
   // fill color (not stroke) to round-trip the visible fill; every other subtype keeps the stroke.
@@ -2478,14 +2534,14 @@ function cdxmlGraphicColorAttribute(
     });
   }
   if (!color || color.toLowerCase() === "none") {
-    return [];
+    return undefined;
   }
   const normalized = normalizeHexColor(color);
   const index = normalized === "#000000" ? 0 : normalized === "#ffffff" ? 1 : normalized ? colors.indexOf(normalized) + 2 : undefined;
   if (index === undefined || index < 2 && normalized !== "#000000" && normalized !== "#ffffff") {
-    return [];
+    return undefined;
   }
-  return [`color="${index}"`];
+  return index;
 }
 
 function cdxmlShapeSubtypeForColor(graphic: GraphicObject): string {
@@ -2810,7 +2866,16 @@ function importPageObjects(
       return { objects: [object], rootIds: [object.id] };
     };
     if (element.name === "fragment") {
-      return single(importFragment(element, pageIndex, objectIndex, warnings, context));
+      const molecule = single(importFragment(element, pageIndex, objectIndex, warnings, context));
+      // Display objects can be children of a fragment (or its nodes), independently of its bonds.
+      for (const name of ["graphic", "arrow", "curve"]) {
+        for (const child of findElements(element.children, name)) {
+          const imported = importElement(child);
+          molecule.objects.push(...imported.objects);
+          molecule.rootIds.push(...imported.rootIds);
+        }
+      }
+      return molecule;
     }
     if (element.name === "t") {
       return single(importText(element, pageIndex, objectIndex));
@@ -4034,6 +4099,7 @@ function importGraphic(
   context: ImportPageContext
 ): GraphicObject | ArrowObject | BracketObject | UnknownCompatibilityObject | undefined {
   if (element.attributes.SupersededBy) {
+    context.warnings.push({ code: "cdxml.graphic_superseded", message: `CDXML graphic ${element.attributes.id ?? "<unnamed>"} (${element.attributes.GraphicType ?? "unspecified"}) was skipped because it is superseded by ${element.attributes.SupersededBy}.` });
     return undefined;
   }
 
@@ -4405,7 +4471,7 @@ function importShapeGraphic(
     : element.attributes.GraphicType;
   const linePoints = cdxmlLinePointsForShape(element);
   const box = graphicBoundsForCdxmlShape(element, type, linePoints);
-  const style = graphicStyleFromCdxmlShape(element, context.colorTable);
+  const style = graphicStyleFromCdxmlCurve(element, context.colorTable);
   const data = graphicDataFromCdxmlShape(element, type, linePoints, box);
   const graphicKind = graphicKindFromCdxmlShape(type, data);
 
@@ -4427,8 +4493,9 @@ function importShapeGraphic(
       unknown: {
         cdxmlElementName: elementName,
         cdxmlGraphicType: type,
-        ...(graphicKind === "unknown" ? { cdxmlGraphicAttributes: { ...element.attributes },
-          cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex) } : {}),
+        ...((graphicKind === "unknown" || graphicKind === "ellipse") && elementName === "graphic" ? { cdxmlGraphicAttributes: { ...element.attributes },
+          cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex),
+          ...(graphicKind === "ellipse" ? { cdxmlGraphicStyle: { ...style } } : {}) } : {}),
         ...(element.attributes.OvalType ? { cdxmlOvalType: element.attributes.OvalType } : {}),
         ...(element.attributes.RectangleType ? { cdxmlRectangleType: element.attributes.RectangleType } : {}),
         ...(element.attributes.LineType ? { cdxmlLineType: element.attributes.LineType } : {}),
