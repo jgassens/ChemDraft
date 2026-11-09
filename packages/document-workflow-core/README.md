@@ -18,6 +18,7 @@ desktop importers did not change.
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
+| `nativeDocument.ts` | Shared app/agent native opening with an injected JSON/envelope decoder; preserves its warnings, version envelope and unknown-content bookkeeping while recording label bond sides |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
 | `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and label blocks |

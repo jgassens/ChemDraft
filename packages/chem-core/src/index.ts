@@ -182,6 +182,7 @@ export {
   type NativeDocumentReadWarning,
   type NativeDocumentWarningCode
 } from "./documentRead";
+export { compareNativeVersions } from "./nativeCompatibilityState";
 
 export {
   DocumentPatchError,

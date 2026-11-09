@@ -138,6 +138,38 @@ determines the minimum again.
 
 ## Verification and integration
 
+The desktop and CLI call `readNativeDocumentContents` in `document-workflow-core`, injecting
+`openChemDraftPayload` as the native JSON/CDXML-envelope decoder. That decoder calls the tolerant
+chem-core reader. The shared workflow records missing label bond sides while retaining the entire
+read result, including preservation state, named warnings and version information. No second
+headless parser or desktop import is involved; MCP calls the CLI module in-process.
+
+Desktop File Open, recent/OS opens, native and browser drops, and browser file uploads converge on
+`openDocumentContentsNow`. Once the resolved document is installed, it calls
+`notifyNativeDocumentCompatibility` exactly once. Session restore calls the same notifier once per
+installed tab, after installing the restored histories; a skipped fresh-start session shows no
+notice. Activating an already-open tab shows no new notice. A visible-CDXML conflict choice is
+resolved first, so an unused newer embedded document cannot trigger a notice for the visible subset.
+The app has no whole-native-document clipboard reader: its private clipboard payload is a selection
+of objects with a separate contract.
+
+The notifier compares the resolved document's `minAppVersion` numerically with
+`NativeDocumentReaderVersion`. For a greater minimum it uses the existing document-owned native
+message-box path (`owner: "document"`, one OK button) on both macOS and Windows:
+“This file was made with a newer ChemDraft (x.y). Some features may not show. Update to keep them.”
+The version is the file's full `minAppVersion`. Named native warnings, including paths and original
+values, go to the console log. The existing file warning report retains them too. Older and
+same-version files show no compatibility message, and a newer minimum still shows a message when
+there are no fallback warnings.
+
+CLI `render-document` and MCP `render_document` add `minAppVersion` and structured
+`documentWarnings` to their JSON results, including failures after a successful read. Legacy input
+reports the effective `1.1.1` baseline and an empty warning list. Existing `warnings` strings and
+`exportWarnings` continue to include read warnings. There is no interactive headless prompt or
+extra stdout output. App Save, Save As, session autosave and CLI/MCP ChemDraft exports use the
+preserving serializer/envelope writer, so normalization and unrelated edits retain future content
+and its source minimum.
+
 The frozen fixture is under `packages/chem-core/src/__fixtures__/v1.1.1/`, copied from commit
 `6be9bb8eb040d99dd5e5be0d4fff06382ec0a7d2` (tag `v1.1.1`), including its schema dependencies.
 It is test-only and must never become a production reader.

@@ -1121,3 +1121,20 @@ one step and preserve selection. Highlight characters inside one box and confirm
 formatted.
 
 - **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.
+
+## Newer native documents (macOS and Windows)
+
+Open a versioned future native JSON file and a `.chemdraft` envelope with a greater `minAppVersion`,
+an unknown visual field, a future bond style and a future drawing preset ID. Repeat through File
+Open, recent files, OS Open With and file drop. Each newly opened document must show exactly one
+native OK message with that file's full minimum version, owned by the document window. Verify that
+floating utilities hide and restore around the box, focus returns correctly, and Windows gains no
+taskbar entry. Activating an already-open file must not repeat the box. Legacy and same-version
+files remain quiet. Detailed named warnings must reach the log.
+
+Edit unrelated content, Save and Save As, then reopen and inspect the embedded native JSON: unknown
+values and at least the source minimum must survive. Quit and restore several future tabs: each
+restored file gets one message and retains its data. With fresh startup enabled, skipped session
+tabs show no message. For a modified visible CDXML layer, choose the visible subset and confirm
+that unused future embedded content produces no update message. In browser preview repeat file
+upload and drop, acknowledging the shared prompt fallback.
