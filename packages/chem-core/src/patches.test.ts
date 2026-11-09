@@ -42,7 +42,16 @@ describe("patch engine structural sharing", () => {
       id, type: "reaction", x: 0, y: 0, width: 50, height: 10, rotation: 0, style: {}, mappingState: "absent",
       components: [{ objectId: "shared", role: sharedRole }, { objectId: "other", role: "agent" }],
       conditionsTextObjectIds: ["conditions", "keep-text"], arrowObjectIds: ["arrow", "keep-arrow"],
-      plusObjectIds: ["plus", "keep-plus"]
+      plusObjectIds: ["plus", "keep-plus"],
+      compatibility: { warnings: [], unknown: {
+        cdxmlStepReferences: {
+          ReactionStepReactants: ["shared", "other"],
+          ReactionStepObjectsAboveArrow: ["conditions", "keep-text"],
+          ReactionStepArrows: ["arrow", "keep-arrow"], ReactionStepPlusses: ["plus", "keep-plus"],
+          opaque: "preserved"
+        },
+        unrelated: { retained: true }
+      } }
     });
     const arrow = (id: string): DocumentObject => ({
       id, type: "reaction-arrow", x: 0, y: 0, width: 20, height: 1, rotation: 0, style: {},
@@ -53,7 +62,9 @@ describe("patch engine structural sharing", () => {
       ...[molecule("shared"), molecule("other"), textObject("conditions", 0), textObject("keep-text", 0),
         arrow("arrow"), arrow("keep-arrow"), textObject("plus", 0), textObject("keep-plus", 0),
         reaction("r1", "product"), reaction("r2", "reactant"),
-        { ...reaction("unrelated", "reactant"), components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [] }
+        { ...reaction("unrelated", "reactant"), components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [],
+          compatibility: { warnings: [], unknown: { cdxmlStepReferences: { ReactionStepReactants: ["other"] } } } },
+        { ...reaction("metadata-only", "reactant"), components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [] }
       ].map(object => ({ op: "addObject" as const, pageId, object })),
       { op: "setSelection", pageId, objectIds: ["shared", "conditions", "arrow", "plus"] }
     ], { now });
@@ -64,14 +75,26 @@ describe("patch engine structural sharing", () => {
       : { op: "batch", patches: removals }, { now });
     const after = history.present;
     const steps = after.pages[0].objects.filter((object): object is ReactionObject => object.type === "reaction");
-    expect(steps).toHaveLength(3);
+    expect(steps).toHaveLength(4);
     for (const step of steps.slice(0, 2)) {
       expect(step.components).toEqual([{ objectId: "other", role: "agent" }]);
       expect(step.conditionsTextObjectIds).toEqual(mode === "single" ? ["conditions", "keep-text"] : ["keep-text"]);
       expect(step.arrowObjectIds).toEqual(mode === "single" ? ["arrow", "keep-arrow"] : ["keep-arrow"]);
       expect(step.plusObjectIds).toEqual(mode === "single" ? ["plus", "keep-plus"] : ["keep-plus"]);
     }
-    expect(steps[2]).toBe(before.pages[0].objects.at(-1));
+    for (const step of [steps[0]!, steps[1]!, steps[3]!]) {
+      expect(step.compatibility!.unknown).toEqual({
+        cdxmlStepReferences: {
+          ReactionStepReactants: ["other"],
+          ReactionStepObjectsAboveArrow: mode === "single" ? ["conditions", "keep-text"] : ["keep-text"],
+          ReactionStepArrows: mode === "single" ? ["arrow", "keep-arrow"] : ["keep-arrow"],
+          ReactionStepPlusses: mode === "single" ? ["plus", "keep-plus"] : ["keep-plus"],
+          opaque: "preserved"
+        },
+        unrelated: { retained: true }
+      });
+    }
+    expect(steps[2]).toBe(before.pages[0].objects.at(-2));
     expect(before).toEqual(snapshot);
     expect(undo(history).present).toEqual(snapshot);
     expect(redo(undo(history)).present).toEqual(after);

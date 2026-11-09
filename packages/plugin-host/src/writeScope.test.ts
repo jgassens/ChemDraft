@@ -1,4 +1,4 @@
-import { applyPatch, createEmptyDocument, type DocumentPatch, type DocumentObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, type DocumentPatch, type DocumentObject, type ReactionObject } from "@chemdraft/chem-core";
 import type { PluginCommandContext, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import { PluginHost, writePatchOps, type PluginPatchApplicationRequest } from "./index";
@@ -8,16 +8,27 @@ const text = (id: string): DocumentObject => ({
   id, type: "text", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {}, text: id, spans: []
 });
 const snapshot = (objectIds: string[]): PluginSelectionSnapshot => ({ objectIds, molecules: [] });
+const reaction = (reference: "components" | "conditions" | "arrows" | "plusses" | "metadata"): ReactionObject => ({
+  id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {}, mappingState: "absent",
+  components: reference === "components" ? [{ role: "agent", objectId: "mol_1" }] : [],
+  conditionsTextObjectIds: reference === "conditions" ? ["mol_1"] : [],
+  arrowObjectIds: reference === "arrows" ? ["mol_1"] : [],
+  plusObjectIds: reference === "plusses" ? ["mol_1"] : [],
+  ...(reference === "metadata" ? { compatibility: { warnings: [], unknown: {
+    cdxmlStepReferences: { ReactionStepObjectsAboveArrow: ["mol_1"] }
+  } } } : {})
+});
 
 function fixture(
   selectedIds: string[],
   run: (context: PluginCommandContext) => unknown | Promise<unknown>,
-  getSelection?: () => PluginSelectionSnapshot | Promise<PluginSelectionSnapshot>
+  getSelection?: () => PluginSelectionSnapshot | Promise<PluginSelectionSnapshot>,
+  objects: DocumentObject[] = []
 ) {
   let document = createEmptyDocument({ now });
   const pageId = document.pages[0]!.id;
-  document = applyPatch(document, { op: "batch", patches: ["mol_1", "mol_7"].map((id) => ({
-    op: "addObject", pageId, object: text(id)
+  document = applyPatch(document, { op: "batch", patches: [text("mol_1"), text("mol_7"), ...objects].map((object) => ({
+    op: "addObject", pageId, object
   })) }, { now });
   document = { ...document, selection: { pageId, objectIds: selectedIds } };
   const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
@@ -42,6 +53,65 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  describe.each(["components", "conditions", "arrows", "plusses", "metadata"] as const)("reaction %s references", reference => {
+    it.each([false, true])("refuses an out-of-scope cascade atomically (batch = %s)", async batch => {
+      const f = fixture(["mol_1", "mol_7"], async ctx => {
+        const removal: DocumentPatch = { op: "removeObject", objectId: "mol_1" };
+        await expect(ctx.documents.applyPatch!({ reason: "remove drawable", patch: batch ? {
+          op: "batch", patches: [
+            { op: "updateObject", objectId: "mol_7", changes: { text: "must not change" } },
+            { op: "addObject", pageId: f.pageId, object: text("unaccepted") }, removal
+          ]
+        } : removal })).rejects.toThrow(
+          "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+        );
+        await expect(ctx.documents.applyPatch!({ reason: "rejected insertion", patch: {
+          op: "removeObject", objectId: "unaccepted"
+        } })).rejects.toThrow("unaccepted was not selected");
+      }, undefined, [reaction(reference)]);
+      const before = f.document();
+      await f.host.invokeCommand("plugin.scope.run");
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
+    });
+
+    it.each(["selected", "inserted", "batch insertion"])("allows a cascade when the reaction is %s", async mode => {
+      const step = reaction(reference);
+      const f = fixture(mode === "selected" ? ["mol_1", "step"] : ["mol_1"], async ctx => {
+        const insertion: DocumentPatch = { op: "addObject", pageId: f.pageId, object: step };
+        if (mode === "inserted") await ctx.documents.applyPatch!({ reason: "insert reaction", patch: insertion });
+        return ctx.documents.applyPatch!({ reason: "remove drawable", patch: {
+          op: "batch", patches: [
+            ...(mode === "batch insertion" ? [insertion] : []),
+            { op: "removeObject", objectId: "mol_1" }
+          ]
+        } });
+      }, undefined, mode === "selected" ? [step] : []);
+      await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+      const objects = f.document().pages[0]!.objects;
+      expect(objects.some(object => object.id === "mol_1")).toBe(false);
+      expect(objects.find(object => object.id === "step")).toMatchObject({
+        components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [],
+        ...(reference === "metadata" ? { compatibility: { unknown: {
+          cdxmlStepReferences: { ReactionStepObjectsAboveArrow: [] }
+        } } } : {})
+      });
+    });
+  });
+
+  it("does not authorize a cascade using a later insertion with the reaction's id", async () => {
+    const f = fixture(["mol_1"], ctx => ctx.documents.applyPatch!({ reason: "later insertion", patch: {
+      op: "batch", patches: [
+        { op: "removeObject", objectId: "mol_1" },
+        { op: "addObject", pageId: f.pageId, object: reaction("components") }
+      ]
+    } }), undefined, [reaction("components")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(
+      "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+    );
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
   it("accepts a native reaction referencing page drawables, including later batch insertions", async () => {
     const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "Insert synthetic reaction", patch: {
       op: "batch", patches: [

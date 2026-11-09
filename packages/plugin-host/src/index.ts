@@ -3,7 +3,7 @@
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
-import { applyPatch } from "@chemdraft/chem-core";
+import { applyPatch, pruneReactionObjectReferences } from "@chemdraft/chem-core";
 import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
@@ -1081,7 +1081,8 @@ export class PluginHost {
     }
     const parsedPatch = ProposedDocumentPatchSchema.parse(patch);
     const scope = new Set(requestScope?.objectIds ?? invocation.writeScope);
-    for (const op of writePatchOps(parsedPatch.patch)) {
+    const ops = writePatchOps(parsedPatch.patch);
+    for (const op of ops) {
       if (!(DirectWritePatchOps as readonly string[]).includes(op.op)) {
         throw new PluginHostError(`Plugin "${pluginId}" passed an unsupported "${op.op}" patch to documents.applyPatch.`);
       }
@@ -1118,6 +1119,35 @@ export class PluginHost {
     const apply = requestScope?.apply ?? this.applyDocumentPatch;
     if (!apply) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
+    }
+    const lastRemoval = ops.map(op => op.op).lastIndexOf("removeObject");
+    if (lastRemoval !== -1) {
+      let document = await this.getActiveDocument?.();
+      if (!document) {
+        throw new PluginHostError("Plugin patch refused: no active document is available to check reaction removal scope.");
+      }
+      // Preview in order so insertions and edits earlier in a batch use the same removal rule as
+      // the patch engine. Nothing reaches the embedding host until the entire patch is authorized.
+      const removalScope = new Set(requestScope?.objectIds ?? invocation.writeScope);
+      for (let index = 0; index <= lastRemoval; index++) {
+        const op = ops[index]!;
+        if (op.op === "addObject") removalScope.add(op.object.id);
+        if (op.op === "addAnnotation") removalScope.add(op.annotation.id);
+        if (op.op === "removeObject") {
+          const page = document.pages.find(page => page.objects.some(object => object.id === op.objectId));
+          const target = page?.objects.find(object => object.id === op.objectId);
+          const removed = new Set([op.objectId]);
+          for (const object of page?.objects ?? []) {
+            if (object !== target && object.type === "reaction" && !removalScope.has(object.id)
+              && pruneReactionObjectReferences(object, removed) !== object) {
+              throw new PluginHostError(
+                `Plugin patch refused: removing ${op.objectId} would change reaction ${object.id}, which this command may not modify.`
+              );
+            }
+          }
+        }
+        if (index < lastRemoval) document = applyPatch(document, op);
+      }
     }
     if (!requestScope && this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
       throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
