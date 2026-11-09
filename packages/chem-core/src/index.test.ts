@@ -640,13 +640,9 @@ describe("native document validation and serialization", () => {
     expect(serializeDocument(engineDocument)).toBe(JSON.stringify(parseDocument(engineDocument), null, 2));
   });
 
-  it("degrades an unrecognized classifier to 'unknown' instead of failing the whole document", () => {
-    // A document written by a newer build, or imported from a format with a richer vocabulary. Every
-    // one of these enums spells "unknown" as a member precisely so this case has an answer; without
-    // the degrade, one such value fails its object, its page, and the entire file — the user sees an
-    // unopenable document rather than one arrow drawn plainly.
+  it("degrades visual classifiers only in a newer native file and preserves them for re-save", () => {
     const document = createEmptyDocument({ id: "doc_future", now: timestamp });
-    const serialized = JSON.parse(serializeDocument(document)) as {
+    const serialized = { ...JSON.parse(serializeDocument(document)), formatVersion: "1.3.0", minAppVersion: "1.3.0" } as {
       pages: Array<{ objects: unknown[] }>;
     };
     serialized.pages[0].objects.push(
@@ -684,6 +680,7 @@ describe("native document validation and serialization", () => {
     expect(bracket).toMatchObject({ type: "bracket", bracketKind: "unknown" });
     // The rest of the object survives intact — the endpoints are what make it still drawable.
     expect(arrow).toMatchObject({ end: { kind: "point", point: { x: 110, y: 16 } } });
+    expect(JSON.parse(serializeDocument(restored))).toEqual(serialized);
   });
 
   it("accepts optional molecule bond display metadata", () => {

@@ -4,6 +4,17 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Native files use feature-based minimum app versions. `readSerializedDocument(contents)` and
+`readDocument(candidate)` return `{ document, warnings, formatVersion, minAppVersion }`; use these
+when the host needs to present compatibility warnings. `deserializeDocument` remains the
+document-only convenience API. Newer files preserve unknown JSON fields and original values behind
+named visual fallbacks; unknown chemistry-bearing values and malformed known input fail.
+`serializeDocument` reconstructs preserved data and omits the new top-level version fields for
+documents using only 1.1.1 features, so the released strict reader still accepts plain files.
+`parseDocument`, validation and patches remain strict. Feature additions must update
+`NativeDocumentFeatureVersions` in `documentFeatures.ts`; the frozen-schema inventory test guards
+missing field/enum entries. See [the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

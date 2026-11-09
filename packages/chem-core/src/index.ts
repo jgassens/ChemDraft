@@ -156,6 +156,9 @@ export {
   migrateDocument,
   migrateLegacyTableObjects,
   parseDocument,
+  prepareNativeDocumentForSerialization,
+  readDocument,
+  readSerializedDocument,
   serializeDocument,
   toIsoTimestamp,
   validateDocument,
@@ -164,6 +167,21 @@ export {
   type DocumentValidationIssue,
   type DocumentValidationResult
 } from "./document";
+
+export {
+  minimumAppVersionForDocument,
+  NativeDocumentBaselineAppVersion,
+  NativeDocumentFeatureVersions,
+  NativeDocumentFormatVersion,
+  NativeDocumentReaderVersion,
+  type NativeDocumentFeatureVersion
+} from "./documentFeatures";
+export {
+  NativeDocumentReadError,
+  type NativeDocumentReadResult,
+  type NativeDocumentReadWarning,
+  type NativeDocumentWarningCode
+} from "./documentRead";
 
 export {
   DocumentPatchError,
