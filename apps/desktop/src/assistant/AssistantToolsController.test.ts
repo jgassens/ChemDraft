@@ -45,7 +45,9 @@ function setup() {
   const controller = new AssistantToolsController({ host: (): PluginHost => host, engine,
     getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
     readDocument: port.read, transactions: () => transactions, createContext: () => context });
-  const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }) });
+  const host = new PluginHost({ assistant: controller,
+    getActiveDocument: () => port.read(activeTabId),
+    getSelection: () => ({ objectIds: [], molecules: [] }) });
   const plugin = { id: context.plugin.id, name: context.plugin.name };
   let commandContext!: PluginCommandContext;
   let release!: () => void;

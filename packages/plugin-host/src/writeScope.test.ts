@@ -53,6 +53,63 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  describe.each(["missing", "unavailable"] as const)("document provider %s", provider => {
+    it.each([false, true])("applies patches without removals without reading the document (batch = %s)", async batch => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(() => undefined);
+      const host = new PluginHost({
+        ...(provider === "unavailable" ? { getActiveDocument } : {}),
+        applyDocumentPatch: f.applyDocumentPatch
+      });
+      const patches: DocumentPatch[] = [
+        { op: "addObject", pageId: f.pageId, object: text("new") },
+        { op: "addAnnotation", pageId: f.pageId, annotation: {
+          id: "note", type: "annotation", x: 0, y: 0, width: 10, height: 10,
+          rotation: 0, style: {}, targetObjectIds: [], message: "note"
+        } },
+        { op: "updateObject", objectId: "mol_1", changes: { text: "edited" } },
+        { op: "moveObject", objectId: "mol_1", x: 10, y: 20 },
+        { op: "setObjectOrder", pageId: f.pageId, objectIds: ["mol_7", "mol_1", "new", "note"] }
+      ];
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": async ctx => {
+          for (const patch of batch ? [{ op: "batch" as const, patches }] : patches) {
+            await ctx.documents.applyPatch!({ reason: "no removals", patch });
+          }
+        } }
+      });
+      // Explicit Send scope avoids the separate invocation-start selection read.
+      await host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1", "mol_7"]) });
+      expect(getActiveDocument).not.toHaveBeenCalled();
+      expect(f.applyDocumentPatch).toHaveBeenCalledTimes(batch ? 1 : patches.length);
+      expect(f.document().pages[0]!.objects.find(object => object.id === "mol_1"))
+        .toMatchObject({ text: "edited", x: 10, y: 20 });
+    });
+
+    it.each([false, true])("refuses removals when their reaction scope cannot be checked (request scope = %s)", async requestScope => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(() => undefined);
+      const host = new PluginHost({
+        ...(provider === "unavailable" ? { getActiveDocument } : {}),
+        applyDocumentPatch: f.applyDocumentPatch
+      });
+      const patch = { reason: "remove selected", patch: { op: "removeObject" as const, objectId: "mol_1" } };
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": ctx => requestScope
+          ? host.applyPatchForPlugin("org.test.scope", undefined, patch, {
+            objectIds: ["mol_1"], apply: f.applyDocumentPatch
+          })
+          : ctx.documents.applyPatch!(patch) }
+      });
+      const before = f.document();
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1"]) }))
+        .rejects.toThrow("Plugin patch refused: no active document is available to check reaction removal scope.");
+      expect(getActiveDocument).toHaveBeenCalledTimes(provider === "unavailable" ? 1 : 0);
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
+    });
+  });
+
   describe.each(["components", "conditions", "arrows", "plusses", "metadata"] as const)("reaction %s references", reference => {
     it.each([false, true])("refuses an out-of-scope cascade atomically (batch = %s)", async batch => {
       const f = fixture(["mol_1", "mol_7"], async ctx => {
