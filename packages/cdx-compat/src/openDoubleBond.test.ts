@@ -10,6 +10,24 @@ const openDocument = () => deserializeDocument(readFileSync(new URL(
 ), "utf8"));
 
 describe("CDXML E/Z-unspecified double bonds", () => {
+  it("writes wavy single bonds without Display and warns for each bond", () => {
+    const document = openDocument();
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const bonds = molecule.bonds.filter(bond => bond.order === "single");
+    expect(bonds.length).toBeGreaterThanOrEqual(2);
+    for (const bond of bonds) bond.display = { bondStyle: "wavy" };
+    const exported = exportDocumentToCdxml(document);
+    const elements = canonicalVisibleCdxml(exported.contents).match(/<b\b[^>]*Order="1"[^>]*\/>/g)!;
+    expect(elements).toHaveLength(bonds.length);
+    for (const element of elements) expect(element).not.toContain("Display=");
+    expect(exported.warnings.filter(entry => entry.code === "cdxml.wavy_bond_not_written"))
+      .toEqual(bonds.map(bond => ({
+        code: "cdxml.wavy_bond_not_written",
+        message: `CDXML export: wavy bond ${bond.id} written as a plain single bond (wavy display not yet supported)`
+      })));
+    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+  });
+
   it.each([undefined, "bold"] as const)("writes the usual display (%s) and warns once per open bond", bondStyle => {
     const document = openDocument();
     const molecule = document.pages[0].objects[0] as MoleculeObject;
