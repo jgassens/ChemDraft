@@ -118,14 +118,19 @@ Point2D and rectangle bytes retain their separate y/x convention. Page fitting a
 translate only the x/y components of 3D attributes, preserving z. `extent3D` and `CurvePoints3D`
 remain opaque binary properties; this codec does not decode their components.
 
-Older ChemDraft CDX wrote Point3D in z/y/x order. Files without root property `0x4347` are read with
-that legacy order only when `CreationProgram` is exactly `ChemDraft` or their native envelope has
+Older ChemDraft development builds wrote Point3D in z/y/x order. Only root property `0x4347` with
+the exact UTF-8 value `xyz` (`attrib4347="|x|78797A"`) selects corrected x/y/z order by marker.
+An unexpected value produces `cdx.point3d_order_marker_unrecognized`, naming the value, and is
+ignored for order selection. Files with an absent or unrecognized marker are read with
+legacy order only when `CreationProgram` is exactly `ChemDraft` or their native envelope has
 format `org.chemdraft/cdx-envelope.v1`. Detection happens after the entire tree is read, including
 metadata following child objects. New binary output with producer metadata or an envelope carries
 `attrib4347="|x|78797A"` (UTF-8 `xyz`); it participates in both visible integrity hashes. Resaving a
 legacy file writes corrected x/y/z bytes. Old interchange files with a custom `CreationProgram`
 and no native envelope cannot be distinguished reliably and use x/y/z; their 3D geometry may open
-with x/z swapped. Removing provenance or the order marker in an external editor can likewise lose
+with x/z swapped. No released ChemDraft build ever wrote binary CDX; the writer was first added for
+1.2, so this custom-`CreationProgram` ambiguity affects only development builds.
+Removing provenance or the order marker in an external editor can likewise lose
 this distinction. Native document data and CDXML coordinate meanings are unchanged.
 
 Legacy text uses the declared font charset;
@@ -148,6 +153,8 @@ missing targets produce `cdxml.reaction_reference_unresolved`; the original list
 `compatibility.unknown.cdxmlStepAttributes`. Newly imported native reactions now populate
 `arrowObjectIds` for these references, where older imports left the list empty; no schema change or
 migration of previously saved native documents is performed.
+Legacy `<graphic>` arrow twins carrying `SupersededBy` are intentionally not imported or written
+back. The modern `<arrow>` they point to is kept, and reaction steps reference that arrow.
 
 Visible export writes schemes for native reaction objects. Compatibility metadata retains source
 scheme membership, step order, above/below placement and source attributes; unchanged valid source

@@ -151,6 +151,34 @@ describe("Point3D binary interchange and legacy provenance", () => {
     const bytes = file(property(0x0003, [0, 0, ...ascii(creator)]), object(0x8021, 2, ...pointProperties()));
     expect(readCdx(bytes).kids[0].attrs).toEqual({ id: "2", ...pointAttributes });
   });
+
+  describe.each(["creator", "envelope", "other producer"])("Point3D order marker with %s provenance", provenance => {
+    const metadata = provenance === "envelope"
+      ? property(0x4344, ascii(JSON.stringify({ format: "org.chemdraft/cdx-envelope.v1", tags: [] })))
+      : property(0x0003, [0, 0, ...ascii(provenance === "creator" ? "ChemDraft" : "Independent CDX producer")]);
+
+    it("uses x/y/z only for the exact UTF-8 xyz marker", () => {
+      const warnings: CdxWarning[] = [];
+      const decoded = readCdx(file(object(0x8021, 2, ...pointProperties()), metadata,
+        property(0x4347, ascii("xyz"))), true, warnings);
+      expect(decoded.kids[0].attrs).toEqual({ id: "2", ...pointAttributes });
+      expect(decoded.attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+      expect(warnings).toEqual([]);
+    });
+
+    it.each(["zyx", "XYZ", "xyz\0", ""])("warns and falls back to provenance for unexpected marker %j", marker => {
+      const warnings: CdxWarning[] = [];
+      const decoded = readCdx(file(object(0x8021, 2, ...pointProperties(provenance !== "other producer")),
+        metadata, property(0x4347, ascii(marker))), true, warnings);
+      const encoded = `|x|${Buffer.from(marker).toString("hex").toUpperCase()}`;
+      expect(decoded.kids[0].attrs).toEqual({ id: "2", ...pointAttributes });
+      expect(decoded.attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe(encoded);
+      expect(warnings).toEqual([{
+        code: "cdx.point3d_order_marker_unrecognized",
+        message: expect.stringContaining(JSON.stringify(encoded))
+      }]);
+    });
+  });
 });
 
 // One independently constructed binary property for every codec kind in the source tag table.

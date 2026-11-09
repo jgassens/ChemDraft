@@ -278,8 +278,13 @@ function unhex(s: string): Uint8Array | undefined {
 
 export const isCdx = (b: Uint8Array) => b.length >= 8 && MAGIC.split("").every((c, i) => b[i] === c.charCodeAt(0));
 
-function isLegacyChemDraftCdx(root: CdxElement): boolean {
-  if (root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] !== undefined) return false;
+function isLegacyChemDraftCdx(root: CdxElement, warn: (warning: CdxWarning) => void): boolean {
+  const marker = root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE];
+  if (marker === POINT3D_XYZ) return false;
+  if (marker !== undefined) warn({
+    code: "cdx.point3d_order_marker_unrecognized",
+    message: `CDX import: unrecognized Point3D order marker 0x4347 value ${JSON.stringify(marker)}; using producer provenance to select coordinate order.`
+  });
   if (root.attrs.CreationProgram === "ChemDraft") return true;
   // Custom CreationProgram strings were allowed on embedded saves too. Recognize only our
   // namespaced envelope, never infer coordinate order from geometry or another producer's name.
@@ -528,7 +533,7 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
   const result = object(0x8000, id, 0);
   // Producer/envelope properties can follow child objects, so select the legacy convention
   // only after reading the whole document. This also preserves old envelopes' visible hashes.
-  if (isLegacyChemDraftCdx(result)) {
+  if (isLegacyChemDraftCdx(result, warn)) {
     const restore = (element: CdxElement) => {
       for (const [name, value] of Object.entries(element.attrs)) {
         if (byName.get(name)?.kind === "p3") element.attrs[name] = value.split(" ").reverse().join(" ");
