@@ -305,17 +305,19 @@ export async function closeToolsetPopoverWindow(toolsetId: string, openedAt: num
   }
 
   const opening = { openedAt, generation };
-  const isCurrent = () => {
+  const hasNewerOpening = () => {
     const current = latestToolsetPopoverOpenings.get(toolsetId);
-    return openedAt !== undefined && current !== undefined && compareToolsetPopoverOpenings(current, opening) === 0;
+    return current !== undefined && compareToolsetPopoverOpenings(current, opening) > 0;
   };
-  if (!isCurrent()) return;
+  // Content registers only after native open completes. Cleanup may close its pending replacement
+  // while the previous opening is still registered, so only a strictly newer opening blocks it.
+  if (hasNewerOpening()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   // Importing is asynchronous too. Validate immediately before sending the destructive IPC.
-  if (!isCurrent()) return;
+  if (hasNewerOpening()) return;
   await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
   if (openedAt !== undefined) await notifyToolsetPopoverClosed(toolsetId, openedAt, generation);
-  if (isCurrent()) latestToolsetPopoverOpenings.delete(toolsetId);
+  if (!hasNewerOpening()) latestToolsetPopoverOpenings.delete(toolsetId);
 }
 
 /** OS deactivation and native hides need not pass through the renderer's close notification. */
