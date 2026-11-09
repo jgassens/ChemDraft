@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { Molecule } from "openchemlib";
 import { applyPatches, moleculeToMolfileV2000, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { CommandRegistry } from "@chemdraft/plugin-host";
@@ -26,14 +26,14 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
   let root: Root;
   let container: HTMLDivElement;
   let registry: CommandRegistry;
-  let invokeSpy: ReturnType<typeof vi.spyOn<CommandRegistry, "invoke">>;
+  let invokeSpy: MockInstance<CommandRegistry["invoke"]>;
   let waveIds: string[];
   let moleculeId: string;
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
   const objects = () => snapshot().pages[0].objects;
   const waves = () => objects().filter((object): object is GraphicObject => waveIds.includes(object.id) && object.type === "graphic");
   const molecule = () => objects().find(object => object.id === moleculeId) as MoleculeObject;
-  const canonical = (object: MoleculeObject) => Molecule.fromMolfile(moleculeToMolfileV2000(object, { kekuleBondOrders: {} }).contents).toSmiles();
+  const canonical = (object: MoleculeObject) => Molecule.fromMolfile(moleculeToMolfileV2000(object, { kekuleBondOrders: new Map() }).contents).toSmiles();
   const moleculeSvg = () => container.querySelector(`[data-object-id="${moleculeId}"].native-molecule-object`)?.innerHTML;
   async function palette(event: string, commandId = objectWaveCommandId("height", 18)) {
     await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { commandId } })); });
@@ -64,7 +64,7 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     moleculeId = mol.id;
     // V2000 stereo=4 is a source wavy/either single bond. Main has no native wavy
     // single-bond display enum: preserve its source and existing native display exactly.
-    const lines = moleculeToMolfileV2000(mol, { kekuleBondOrders: {} }).contents.split("\n");
+    const lines = moleculeToMolfileV2000(mol, { kekuleBondOrders: new Map() }).contents.split("\n");
     const bondLine = lines.findIndex(line => line.includes("V2000")) + 1 + mol.atoms.length;
     lines[bondLine] = `${lines[bondLine].slice(0, 9)}  4${lines[bondLine].slice(12)}`;
     mol.structure = lines.join("\n"); mol.structureFormat = "molfile-v2000";
