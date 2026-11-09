@@ -10,6 +10,7 @@ import { verifyDmg, verifyFeedArtifacts } from "./verify-macos-feed.mjs";
 import { feedForTarget, verifyApp } from "./verify-macos-app.mjs";
 import { machOSlices } from "./macos-mach-o.mjs";
 import { thinMachO } from "./macos-test-fixtures.mjs";
+import { requiredLicenseFiles } from "./required-license-files.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const names = { arm64: "ChemDraft_1.1.1_aarch64.dmg", x86_64: "ChemDraft_1.1.1_x86_64.dmg" };
@@ -114,7 +115,10 @@ function appChecker(architecture, feedTarget = architecture) {
   const paths = ["Contents/MacOS/chemdraft", "Contents/MacOS/avogadro3d-sidecar", "Contents/Resources/resources/opsin/jre/bin/java", "Contents/Resources/resources/opsin/jre/lib/server/libjvm.dylib"];
   return (app, target) => verifyApp(app, target, {
     run: () => ({ status: 0, stdout: JSON.stringify(plist) }),
-    inventory: () => paths.map((path) => ({ path, slices: machOSlices(thinMachO(architecture)) }))
+    inventory: () => [
+      ...paths.map((path) => ({ path, slices: machOSlices(thinMachO(architecture)) })),
+      ...requiredLicenseFiles.map(({ target }) => ({ path: `Contents/Resources/${target}` }))
+    ]
   });
 }
 

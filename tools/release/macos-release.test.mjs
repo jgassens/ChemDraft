@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isMachO, machOSlices, packedVersion, versionString } from "./macos-mach-o.mjs";
 import { fatMachO, thinMachO } from "./macos-test-fixtures.mjs";
-import { feedForTarget, inventoryApp, verifyInventory } from "./verify-macos-app.mjs";
+import { feedForTarget, inventoryApp, verifyApp, verifyInventory } from "./verify-macos-app.mjs";
+import { requiredLicenseFiles } from "./required-license-files.mjs";
 
 test("parses modern and legacy minimum commands and all fat table formats", () => {
   for (const command of [0x32, 0x24]) {
@@ -38,7 +39,10 @@ function validBundle(architecture = "x86_64") {
   return {
     target,
     plist: { LSMinimumSystemVersion: "11.0", SUFeedURL: feedForTarget(target), CFBundleExecutable: "chemdraft" },
-    records: ["Contents/MacOS/chemdraft", "Contents/MacOS/avogadro3d-sidecar", "Contents/Resources/resources/opsin/jre/bin/java", "Contents/Resources/resources/opsin/jre/lib/server/libjvm.dylib"].map((path) => ({ path, slices: machOSlices(thinMachO(architecture)) }))
+    records: [
+      ...["Contents/MacOS/chemdraft", "Contents/MacOS/avogadro3d-sidecar", "Contents/Resources/resources/opsin/jre/bin/java", "Contents/Resources/resources/opsin/jre/lib/server/libjvm.dylib"].map((path) => ({ path, slices: machOSlices(thinMachO(architecture)) })),
+      ...requiredLicenseFiles.map(({ target }) => ({ path: `Contents/Resources/${target}` }))
+    ]
   };
 }
 
@@ -53,7 +57,7 @@ test("both thin app targets pass with their own feed and compatible universal Sp
 test("wrong feed, missing runtime, wrong JVM, wrong helpers and high minos fail closed", () => {
   const feed = validBundle(); feed.plist.SUFeedURL = feedForTarget("arm64");
   assert.throws(() => verifyInventory(feed), /SUFeedURL/);
-  const missing = validBundle(); missing.records.pop();
+  const missing = validBundle(); missing.records.splice(3, 1);
   assert.throws(() => verifyInventory(missing), /libjvm.*missing/);
   const wrongJvm = validBundle(); wrongJvm.records[3].slices = machOSlices(thinMachO("arm64"));
   assert.throws(() => verifyInventory(wrongJvm), /libjvm.*missing x86_64/);
@@ -69,7 +73,7 @@ test("sidecar placeholder exemption is explicit and cannot exempt missing Java",
   const bundle = validBundle(); bundle.records[1] = { path: bundle.records[1].path, placeholder: true };
   assert.throws(() => verifyInventory(bundle), /sidecar.*placeholder/);
   assert.equal(verifyInventory({ ...bundle, allowSidecarPlaceholder: true }), 3);
-  bundle.records.pop();
+  bundle.records.splice(3, 1);
   assert.throws(() => verifyInventory({ ...bundle, allowSidecarPlaceholder: true }), /libjvm/);
 });
 
@@ -98,7 +102,7 @@ test("bundle traversal finds extensionless helpers and handles framework aliases
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, buffer);
     };
-    for (const record of bundle.records) write(record.path, thinMachO());
+    for (const record of bundle.records) write(record.path, record.slices ? thinMachO() : "fixture licence");
     write("Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate", fatMachO([thinMachO(), thinMachO("arm64")]));
     const framework = join(app, "Contents/Frameworks/Sparkle.framework");
     symlinkSync("B", join(framework, "Versions/Current"));
@@ -109,5 +113,38 @@ test("bundle traversal finds extensionless helpers and handles framework aliases
     assert.throws(() => verifyInventory({ ...bundle, records: inventoryApp(app) }), /hidden-helper.*missing x86_64/);
     symlinkSync(temp, join(app, "Contents/outside"));
     assert.throws(() => inventoryApp(app), /symlink escapes/);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("both macOS final app gates require every licence in Contents/Resources/licenses", () => {
+  const temp = mkdtempSync(join(tmpdir(), "chemdraft-macos-licenses-"));
+  try {
+    for (const architecture of ["x86_64", "arm64"]) {
+      const app = join(temp, architecture, "ChemDraft.app");
+      const bundle = validBundle(architecture);
+      for (const record of bundle.records) {
+        const file = join(app, record.path);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, record.slices ? thinMachO(architecture) : "fixture licence");
+      }
+      const check = () => verifyApp(app, bundle.target, {
+        run: () => ({ status: 0, stdout: JSON.stringify(bundle.plist) })
+      });
+      assert.equal(check(), 4);
+      for (const { target } of requiredLicenseFiles) {
+        const file = join(app, "Contents", "Resources", target);
+        rmSync(file);
+        // A licence elsewhere in the app does not satisfy the stable path contract.
+        const misplaced = join(app, "Contents", "Resources", "resources", target);
+        mkdirSync(dirname(misplaced), { recursive: true });
+        writeFileSync(misplaced, "misplaced fixture licence");
+        assert.throws(check, (error) => error.message.includes(`Contents/Resources/${target}: required bundled licence file is missing`));
+        mkdirSync(file);
+        assert.throws(check, /required bundled licence file is missing/);
+        rmSync(file, { recursive: true });
+        writeFileSync(file, "fixture licence");
+      }
+      assert.equal(check(), 4);
+    }
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });

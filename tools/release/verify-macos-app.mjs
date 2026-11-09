@@ -6,6 +6,9 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { isMachO, machOSlices, packedVersion, targetArchitecture, versionString } from "./macos-mach-o.mjs";
+import { requiredLicenseFiles } from "./required-license-files.mjs";
+
+const requiredLicensePaths = new Set(requiredLicenseFiles.map(({ target }) => `Contents/Resources/${target}`));
 
 export function feedForTarget(target) {
   return `https://raw.githubusercontent.com/jgassens/ChemDraft/main/appcast${targetArchitecture(target) === "x86_64" ? "-intel" : ""}.xml`;
@@ -27,6 +30,9 @@ export function verifyInventory({ target, plist, records, allowSidecarPlaceholde
     const record = records.find((item) => item.path === path);
     if (allowSidecarPlaceholder && path === required[1] && record?.placeholder) continue;
     if (!record?.slices?.length) throw new Error(`${path}: required Mach-O is missing or is a placeholder`);
+  }
+  for (const path of requiredLicensePaths) {
+    if (!records.some((item) => item.path === path)) throw new Error(`${path}: required bundled licence file is missing`);
   }
   let count = 0;
   for (const { path, slices } of records) {
@@ -62,6 +68,7 @@ export function inventoryApp(app) {
       try {
         if (isMachO(buffer)) records.push({ path: bundlePath, slices: machOSlices(buffer) });
         else if (bundlePath === "Contents/MacOS/avogadro3d-sidecar") records.push({ path: bundlePath, placeholder: buffer.includes(Buffer.from("avogadro3d-sidecar placeholder")) });
+        else if (requiredLicensePaths.has(bundlePath)) records.push({ path: bundlePath });
       } catch (error) {
         throw new Error(`${bundlePath}: ${error.message}`);
       }
@@ -84,7 +91,7 @@ function main() {
   const app = resolve(positionals[0]);
   const count = verifyApp(app, values.target, { allowSidecarPlaceholder: values["allow-sidecar-placeholder"] });
   if (values["allow-sidecar-placeholder"]) console.warn("Smoke CI only: sidecar placeholder permitted; this is not release acceptance.");
-  console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS and Sparkle feed (${app})`);
+  console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS, Sparkle feed and bundled licences (${app})`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
