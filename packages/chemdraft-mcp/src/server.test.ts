@@ -736,6 +736,24 @@ describe("ChemDraft MCP server", () => {
     });
   }, 120_000);
 
+  it("declines unknown-order chemistry in MCP analysis with no fallback numbers", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "analyze_structure", arguments: {
+      smiles: "C~C", methods: ["rdkit.composition", "rdkit.average-mass", "rdkit.monoisotopic-mass", "rdkit.canonical-smiles"]
+    } });
+    expect(result.isError).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({
+      summary: {
+        formula: { value: null, status: "unsupported" },
+        averageMass: { value: null, status: "unsupported" },
+        monoisotopicMass: { value: null, status: "unsupported" },
+        canonicalSmiles: { value: null, status: "unsupported" },
+        logP: { value: null, status: "not-requested" }
+      },
+      run: { status: "unsupported", warnings: [expect.objectContaining({ code: "structure.unknown_bond_order" })] }
+    });
+  });
+
   it("surfaces bad-SMILES CLI errors as MCP errors", async () => {
     const client = await connect();
     const result = await client.callTool({

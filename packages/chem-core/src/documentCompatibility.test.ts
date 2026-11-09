@@ -257,7 +257,7 @@ describe("forward-compatible native reader", () => {
     expect(saved).not.toHaveProperty("minAppVersion");
   });
 
-  it.each(["order", "stereo"])("refuses an unknown chemical bond %s with a specific path and value", (key) => {
+  it.each(["stereo"])("refuses an unknown chemical bond %s with a specific path and value", (key) => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
     raw.pages[0].objects[0].bonds[0][key] = "future-chemistry";
     try {
@@ -271,7 +271,7 @@ describe("forward-compatible native reader", () => {
     }
   });
 
-  it.each([undefined, "1.3.0"])("keeps chemistry-bearing unknown classifiers strict with version %s", version => {
+  it.each([undefined, "1.2.0", "1.3.0"])("opens main's chemistry enum cases with warnings and preserves originals with version %s", version => {
     const base = { x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
     const point = { kind: "point", point: { x: 0, y: 0 } };
     const molecule = plainDocument().pages[0]!.objects[0] as MoleculeObject;
@@ -280,15 +280,47 @@ describe("forward-compatible native reader", () => {
       { ...molecule, bonds: [{ ...molecule.bonds[0], order: "quadruple" }] },
       { ...molecule, superatoms: [{ label: "Me", expandedStructureFormat: "future-encoding" }] },
       { ...base, id: "r", type: "reaction", components: [], mappingState: "future-mapping" },
-      { ...base, id: "r", type: "reaction", components: [{ objectId: "m", role: "future-role" }] },
       { ...base, id: "a", type: "mechanism-arrow", source: point, target: point, arrowKind: "future-mechanism" },
-      { ...base, id: "e", type: "electron-mark", anchor: point, markKind: "future-electrons" }
+      { ...base, id: "e", type: "electron-mark", anchor: point, markKind: "future-electrons" },
+      { ...base, id: "s", type: "superatom", label: "Me", metadata: { label: "Me", expandedStructureFormat: "future-encoding" } }
+    ];
+    const suffixes = [["structureFormat"], ["bonds", 0, "order"], ["superatoms", 0, "expandedStructureFormat"],
+      ["mappingState"], ["arrowKind"], ["markKind"], ["metadata", "expandedStructureFormat"]];
+    for (const [index, object] of objects.entries()) {
+      const raw = JSON.parse(JSON.stringify(plainDocument()));
+      if (version) Object.assign(raw, { formatVersion: version, minAppVersion: version });
+      raw.pages[0].objects = [object];
+      const opened = readDocument(raw);
+      const suffix = suffixes[index]!;
+      const at = (value: unknown) => suffix.reduce<unknown>((current, key) => (current as Record<string | number, unknown>)[key], value);
+      expect(opened.warnings).toEqual([expect.objectContaining({ code: "NATIVE_CHEMISTRY_ENUM_FALLBACK",
+        path: ["pages", 0, "objects", 0, ...suffix], originalValue: at(object) })]);
+      expect(at(opened.document.pages[0]!.objects[0])).toBe("unknown");
+      const saved = JSON.parse(serializeDocument(opened.document));
+      expect(saved.pages[0].objects[0]).toMatchObject(object);
+      expect(at(readDocument(saved).document.pages[0]!.objects[0])).toBe("unknown");
+    }
+  });
+
+  it.each([undefined, "1.3.0"])("still refuses unknown reaction roles and malformed enum types with version %s", version => {
+    const base = { x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
+    const point = { kind: "point", point: { x: 0, y: 0 } };
+    const molecule = plainDocument().pages[0]!.objects[0] as MoleculeObject;
+    const objects = [
+      { ...molecule, structureFormat: 17 },
+      { ...molecule, bonds: [{ ...molecule.bonds[0], order: null }] },
+      { ...molecule, superatoms: [{ label: "Me", expandedStructureFormat: [] }] },
+      { ...base, id: "r", type: "reaction", components: [], mappingState: false },
+      { ...base, id: "r", type: "reaction", components: [{ objectId: "m", role: "future-role" }] },
+      { ...base, id: "a", type: "mechanism-arrow", source: point, target: point, arrowKind: {} },
+      { ...base, id: "e", type: "electron-mark", anchor: point, markKind: 3 },
+      { ...base, id: "s", type: "superatom", label: "Me", metadata: { label: "Me", expandedStructureFormat: false } }
     ];
     for (const object of objects) {
       const raw = JSON.parse(JSON.stringify(plainDocument()));
       if (version) Object.assign(raw, { formatVersion: version, minAppVersion: version });
       raw.pages[0].objects = [object];
-      expect(() => readDocument(raw)).toThrow(/chemical identity cannot be preserved/);
+      expect(() => readDocument(raw)).toThrow();
     }
   });
 

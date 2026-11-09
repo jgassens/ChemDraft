@@ -11,3 +11,8 @@ forwards named native warnings (including `path` and `originalValue`) and expose
 restoring future fields and avoiding a second schema pass. Export warnings include
 `NATIVE_EXTENSION_DATA_DROPPED` when edits invalidate preservation of identity-free arrays. See
 [the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
+
+Legacy unknown chemistry enum strings survive exactly in the embedded native payload; the visible
+CDXML layer reports `cdxml.native_enum_payload_only` when it cannot represent them. Unknown-order
+bonds write `Order="any"` with `cdxml.unknown_bond_order`, never a single-bond guess. Binary CDX
+export remains unavailable.

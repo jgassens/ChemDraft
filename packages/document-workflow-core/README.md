@@ -6,6 +6,10 @@ or molfile into a native molecule object, scaling a molecule to a target bond le
 inserting text objects and reaction arrows, atom validation and valence rules, and the native SMILES
 writer.
 
+`nativeSingleBondGraphMetadata` declines formula and average/exact mass on unknown-order bonds,
+returning `native.unknown_bond_order` with the bond IDs. SMILES export refuses these bonds even when
+a stored SMILES string is present; MOL export can retain query type 8 with warnings.
+
 It exists because the CLI used to import `apps/desktop/src/documentWorkflow.ts` by relative path.
 That file is ~20,000 lines and also carries desktop-only code, so any desktop-only import added to it
 broke every headless command. The code here was **moved** out of `documentWorkflow.ts` and

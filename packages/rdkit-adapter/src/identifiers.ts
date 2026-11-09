@@ -5,7 +5,7 @@
  * one-interpretation-engine rule in AGENTS.md §8 Analysis and prediction claims.
  */
 import { ensureRdkit, type RdkitMinimalModule } from "./conformer";
-import { elementSymbol, type RdkitJson } from "./composition";
+import { elementSymbol, rdkitHasIndeterminateBonds, type RdkitJson } from "./composition";
 
 export interface StructureIdentifiers {
   smiles?: string;
@@ -47,6 +47,9 @@ export async function computeStructureIdentifiers(
   }
 
   try {
+    if (typeof molecule.get_json === "function" && rdkitHasIndeterminateBonds(JSON.parse(molecule.get_json()) as RdkitJson)) {
+      return undefined;
+    }
     const identifiers: StructureIdentifiers = {};
     if (typeof molecule.get_smiles === "function") {
       const smiles = molecule.get_smiles();

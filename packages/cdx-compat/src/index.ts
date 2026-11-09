@@ -193,6 +193,27 @@ export function exportDocumentToCdxml(
   // internal preservation sidecar, losing the original future fields on the next open.
   const nativeSave = prepareNativeDocumentForSerializationWithWarnings(parsedDocument);
   warnings.push(...nativeSave.warnings);
+  // CDXML has no vocabulary for future native enum values. The payload retains them exactly;
+  // explicitly report that limitation instead of claiming the visible approximation is chemistry.
+  for (const extension of parsedDocument.compatibility.nativeExtensions ?? []) {
+    if (extension.kind !== "enum" || extension.fallbackValue !== "unknown") continue;
+    const key = extension.path.at(-1);
+    if (!["order", "structureFormat", "expandedStructureFormat", "mappingState", "arrowKind", "markKind"].includes(String(key))) continue;
+    // The preserving writer has already checked all identity/array guards. Warn only if the
+    // original actually survived; an explicit edit must not produce an obsolete export warning.
+    const restoredValue = extension.path.reduce<unknown>((value, segment) => {
+      if (typeof segment === "object") {
+        if (!Array.isArray(value)) return undefined;
+        return "id" in segment ? value.find(item => item?.id === segment.id) : value[segment.index];
+      }
+      return typeof value === "object" && value !== null && Object.hasOwn(value, segment)
+        ? (value as Record<string | number, unknown>)[segment] : undefined;
+    }, nativeSave.value);
+    if (restoredValue !== extension.originalValue) continue;
+    const path = extension.path.map(segment => typeof segment !== "object" ? segment : "id" in segment ? segment.id : segment.index);
+    warnings.push({ code: "cdxml.native_enum_payload_only", path, originalValue: extension.originalValue,
+      message: `Native value ${JSON.stringify(extension.originalValue)} at ${path.join(".")} has no known CDXML equivalent; its original value is preserved only in the embedded ChemDraft payload.` });
+  }
   const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
@@ -3531,10 +3552,10 @@ function cdxmlBondOrder(
   }
   warnings.push({
     code: "cdxml.unknown_bond_order",
-    message: "Unknown bond order was exported as CDXML Order=\"1\" with a compatibility warning.",
+    message: "Unknown bond order was exported as CDXML Order=\"any\" (a query bond); the original native value is preserved in the embedded ChemDraft payload.",
     sourceObjectId
   });
-  return "1";
+  return "any";
 }
 
 function isCdxmlDativeOrder(order: string | undefined): boolean {

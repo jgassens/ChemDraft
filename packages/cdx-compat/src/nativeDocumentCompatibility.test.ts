@@ -1,8 +1,53 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEmptyDocument, readDocument, serializeDocument, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
-import { exportDocumentToCdxml, openChemDraftPayload } from "./index";
+import { applyPatch, createEmptyDocument, readDocument, serializeDocument, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
+import { canonicalVisibleCdxml, exportDocumentToCdxml, openChemDraftPayload } from "./index";
 
 describe("native document compatibility inside a CDXML envelope", () => {
+  it.each([undefined, "1.3.0"])("preserves main's degraded chemistry enums, without a single-bond guess, with version %s", version => {
+    const raw = JSON.parse(serializeDocument(createEmptyDocument()));
+    if (version) Object.assign(raw, { formatVersion: version, minAppVersion: version });
+    const base = { x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
+    const point = { kind: "point", point: { x: 0, y: 0 } };
+    raw.pages[0].objects = [
+      { ...base, id: "m", type: "molecule", structureFormat: "future-encoding", structure: "CC",
+        atoms: [{ id: "a", element: "C", x: 0, y: 0 }, { id: "b", element: "C", x: 22, y: 0 }],
+        bonds: [{ id: "bond", fromAtomId: "a", toAtomId: "b", order: "quadruple" }],
+        superatoms: [{ label: "Me", expandedStructureFormat: "future-expansion" }] },
+      { ...base, id: "r", type: "reaction", components: [], mappingState: "future-mapping" },
+      { ...base, id: "a", type: "mechanism-arrow", arrowKind: "future-mechanism", source: point, target: point },
+      { ...base, id: "e", type: "electron-mark", markKind: "future-electrons", anchor: point },
+      { ...base, id: "s", type: "superatom", label: "Et", metadata: { label: "Et", expandedStructureFormat: "future-standalone-expansion" } }
+    ];
+    const active = readDocument(raw);
+    expect(active.warnings).toHaveLength(7);
+    expect(active.document.pages[0]!.objects).toMatchObject([
+      { structureFormat: "unknown", bonds: [{ order: "unknown" }], superatoms: [{ expandedStructureFormat: "unknown" }] },
+      { mappingState: "unknown" }, { arrowKind: "unknown" }, { markKind: "unknown" },
+      { metadata: { expandedStructureFormat: "unknown" } }
+    ]);
+    const exported = exportDocumentToCdxml(active.document);
+    const visible = canonicalVisibleCdxml(exported.contents);
+    expect(visible).toContain('Order="any"');
+    expect(visible).not.toContain('Order="1"');
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.unknown_bond_order" }));
+    expect(exported.warnings.filter(w => w.code === "cdxml.native_enum_payload_only").map(w => w.originalValue).sort())
+      .toEqual(["quadruple", "future-encoding", "future-expansion", "future-mapping", "future-mechanism", "future-electrons", "future-standalone-expansion"].sort());
+    const reopened = openChemDraftPayload(exported.contents);
+    expect(reopened.source).toBe("native-payload");
+    expect(reopened.warnings.filter(w => w.code === "NATIVE_CHEMISTRY_ENUM_FALLBACK")).toHaveLength(7);
+    expect(JSON.parse(serializeDocument(reopened.document!)).pages[0].objects).toMatchObject(raw.pages[0].objects);
+    const external = openChemDraftPayload(visible).document!;
+    expect((external.pages[0]!.objects.find(o => o.type === "molecule") as MoleculeObject).bonds[0]!.order).toBe("unknown");
+
+    // Resolving the order is an explicit edit: neither save route revives the old value or warning.
+    const molecule = active.document.pages[0]!.objects[0] as MoleculeObject;
+    const resolved = applyPatch(active.document, { op: "updateObject", objectId: molecule.id,
+      changes: { bonds: molecule.bonds.map(bond => ({ ...bond, order: "double" })) } });
+    const corrected = exportDocumentToCdxml(resolved);
+    expect(corrected.warnings).not.toContainEqual(expect.objectContaining({ originalValue: "quadruple" }));
+    expect(JSON.parse(serializeDocument(openChemDraftPayload(corrected.contents).document!)).pages[0].objects[0].bonds[0].order).toBe("double");
+  });
+
   it("restores future native data before encoding, rather than persisting an internal sidecar", () => {
     const source = createEmptyDocument({ now: "2026-11-09T00:00:00.000Z" });
     const raw = JSON.parse(serializeDocument(source));

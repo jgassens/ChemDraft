@@ -12,6 +12,7 @@ export type NativeDocumentWarningCode =
   | "NATIVE_UNKNOWN_FIELD_PRESERVED"
   | "NATIVE_BOND_STYLE_FALLBACK"
   | "NATIVE_STYLE_PRESET_FALLBACK"
+  | "NATIVE_CHEMISTRY_ENUM_FALLBACK"
   | "NATIVE_VISUAL_ENUM_FALLBACK";
 
 export interface NativeDocumentReadWarning {
@@ -44,7 +45,7 @@ export class NativeDocumentReadError extends Error {
 
 /**
  * Forward reader for an already-decoded native file. Strict parsing and patch validation remain
- * strict. Legacy visual classifiers still degrade in every file, as in the released reader.
+ * strict. Legacy classifiers still degrade in every file, as in the released reader.
  * Other forward handling requires a newer writer contract or minimum app.
  * Legacy migrations are supplied by document.ts to avoid a reader/migration import cycle.
  */
@@ -144,7 +145,7 @@ export function readNativeDocument(
         const originalValue = valueAtPath(working, issue.path);
         // Missing discriminators and wrong types are malformed structure, never future enum values.
         if (typeof originalValue !== "string") throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", issue.path, originalValue, issue.message);
-        const fallback = visualFallback(working, issue.path);
+        const fallback = chemistryFallback(working, issue.path) ?? visualFallback(working, issue.path);
         if (!fallback) throwUnsupportedValue(issue.path, originalValue);
         if (!newer && fallback.value !== "unknown") continue;
         const replacementPath = fallback.container ? issue.path.slice(0, -1) : issue.path;
@@ -245,6 +246,22 @@ function throwUnsupportedValue(path: (string | number)[], originalValue: unknown
     || path.at(-1) === "kind";
   throw new NativeDocumentReadError(chemistry ? "NATIVE_UNSUPPORTED_CHEMISTRY" : "NATIVE_UNSUPPORTED_VALUE", path, originalValue,
     `Unsupported value ${JSON.stringify(originalValue)}; ${chemistry ? "chemical identity cannot be preserved" : "no safe fallback is defined"}.`);
+}
+
+/** Only the chemistry enums main already degraded. Unknown fields and malformed types stay strict. */
+function chemistryFallback(root: unknown, path: (string | number)[]): { value: "unknown"; code: NativeDocumentWarningCode; container?: boolean } | undefined {
+  const key = path.join(".");
+  const type = ownNativeValue(valueAtPath(root, path.slice(0, 4)), "type");
+  const molecule = type === "molecule" && (
+    /^pages\.\d+\.objects\.\d+\.bonds\.\d+\.order$/.test(key)
+    || /^pages\.\d+\.objects\.\d+\.structureFormat$/.test(key)
+    || /^pages\.\d+\.objects\.\d+\.superatoms\.\d+\.expandedStructureFormat$/.test(key));
+  const expansion = type === "superatom" && /^pages\.\d+\.objects\.\d+\.metadata\.expandedStructureFormat$/.test(key);
+  const classifier = /^pages\.\d+\.objects\.\d+\.(mappingState|arrowKind|markKind)$/.test(key)
+    && ((type === "reaction" && path.at(-1) === "mappingState")
+      || (type === "mechanism-arrow" && path.at(-1) === "arrowKind")
+      || (type === "electron-mark" && path.at(-1) === "markKind"));
+  return molecule || expansion || classifier ? { value: "unknown", code: "NATIVE_CHEMISTRY_ENUM_FALLBACK" } : undefined;
 }
 
 function visualFallback(root: unknown, path: (string | number)[]): { value: unknown; code: NativeDocumentWarningCode; container?: boolean } | undefined {

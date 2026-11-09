@@ -8,9 +8,12 @@ Native files use feature-based minimum app versions. `readSerializedDocument(con
 `readDocument(candidate)` return `{ document, warnings, formatVersion, minAppVersion }`; use these
 when the host needs to present compatibility warnings. `deserializeDocument` remains the
 document-only convenience API. Legacy visual classifiers degrade with named warnings in every file,
-including unversioned files, and preserve their original values for re-save. Newer files also
+including unversioned files, and preserve their original values for re-save. Main's legacy chemistry
+classifiers (bond order, structure/expansion encoding, reaction mapping, mechanism-arrow kind and
+electron-mark kind) likewise open as `unknown`, with `NATIVE_CHEMISTRY_ENUM_FALLBACK` naming the
+original value/path; saves restore the original string. Newer files also
 preserve unknown visual JSON fields. Unknown fields on chemistry objects require an explicit matching
-`ignorableFields` header pattern; unlisted chemistry fields, unknown chemistry values and malformed
+`ignorableFields` header pattern; unlisted chemistry fields, other unknown chemistry values and malformed
 known input fail. Known chemistry fields cannot be declared ignorable.
 `serializeDocument` reconstructs preserved data and omits the new top-level version fields for
 documents using only 1.1.1 features, so the released strict reader still accepts plain files.

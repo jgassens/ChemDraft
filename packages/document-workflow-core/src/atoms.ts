@@ -6,6 +6,7 @@
 import {
   drawnLabelBondSide,
   normalizeAtomIsotope,
+  UnknownBondOrderError,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -956,6 +957,21 @@ export function nativeSingleBondGraphMetadata(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): ChemicalMetadata {
+  const unknownIds = bonds.filter(bond => bond.order === "unknown").map(bond => bond.id);
+  if (unknownIds.length) {
+    // An unknown bond has no valence contribution from which to infer H, formula or mass.
+    // Decline before the label/valence walk instead of publishing a guessed single-bond number.
+    return {
+      atomCount: atoms.length, bondCount: bonds.length,
+      totalCharge: atoms.reduce((sum, atom) => sum + atom.formalCharge, 0),
+      radicalCount: atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0),
+      isotopeLabels: [...new Set(atoms.flatMap(atom => atom.element === "D" ? ["2H"] :
+        atom.element === "T" ? ["3H"] : atom.isotope === undefined ? [] : [`${atom.isotope}${atom.element}`]))].sort(),
+      stereochemistry: [],
+      warnings: [{ code: "native.unknown_bond_order",
+        message: `${new UnknownBondOrderError(unknownIds).message} Formula, average mass and exact mass were not calculated.` }]
+    };
+  }
   const elementCounts = new Map<string, number>();
   // Aromatic bonds count at their Kekulé orders — the same bonds `atomDisplayLabel` counts, so the
   // formula's hydrogens are the ones the drawing shows.

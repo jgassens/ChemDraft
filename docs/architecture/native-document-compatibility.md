@@ -137,10 +137,17 @@ files, including unversioned 1.1.x files and same-version files: table alignment
 bracket/graphic kind, and reaction-arrow kind. They now also produce a named warning and preserve
 the original value for re-save. This does not require a newer version declaration.
 
+The same backwards-acceptance rule applies to main's chemistry classifiers: bond order, molecule
+`structureFormat`, superatom `expandedStructureFormat` (both molecule metadata and standalone
+superatoms), reaction `mappingState`, mechanism `arrowKind`, and electron `markKind`. Unrecognized
+**strings** become the existing visible `unknown` state, with `NATIVE_CHEMISTRY_ENUM_FALLBACK`
+carrying the path and original value. This is not permission to infer chemistry from the fallback.
+Malformed enum types still fail. Strict schemas and patch validation do not perform degradation.
+
 Other forward tolerance is enabled when `formatVersion` or `minAppVersion` declares a version newer
 than the current reader. Unversioned files retain existing legacy migrations and strict unknown-key
 handling. Unknown fields never justify repairing wrong types or broken known structures. Chemistry
-enums remain strict even where an older schema used a blanket `unknown` catch.
+enums outside the explicit legacy allowlist remain strict.
 
 ## Preservation and fallbacks
 
@@ -182,6 +189,7 @@ Warnings have these named codes:
 | `NATIVE_BOND_STYLE_FALLBACK` | Unknown bond display style draws as a plain bond; preserve its original value. |
 | `NATIVE_STYLE_PRESET_FALLBACK` | Unknown molecule or document drawing preset ID uses the native default; preserve its ID and explicit numeric style settings. |
 | `NATIVE_VISUAL_ENUM_FALLBACK` | Use an explicit safe visual fallback and preserve the original value. |
+| `NATIVE_CHEMISTRY_ENUM_FALLBACK` | Retain main's legacy `unknown` chemistry state, warn with the original value/path, and preserve that value for save. |
 | `NATIVE_EXTENSION_DATA_DROPPED` | Save warning: omit preserved data whose array changed or whose identity was deleted; never attach it to a different element. |
 
 Visual fallbacks are allowlisted, not a blanket enum catch: bond-side placement becomes automatic,
@@ -203,13 +211,30 @@ mark chemistry-bearing additions ignorable.
 Unknown fields on purely visual graphics, text styling and page decoration remain preservable in
 newer files.
 
-Chemistry-bearing unknown values always fail: bond order, stereo intent, atom kind, structure
-encoding, reaction role, query semantics, electron-mark kind and label bond-side meaning are never
-substituted. Existing elements, atom identity, orders, charges, isotope/radical state, stereo,
+Chemistry-bearing unknown values outside the legacy enum allowlist fail: stereo intent, atom kind,
+reaction role, query semantics and label bond-side meaning are never substituted. Existing elements,
+atom identity, known orders, charges, isotope/radical state, stereo,
 coordinates and reaction components are unchanged by visual degradation. A future document object
 type is refused because an older reader cannot establish whether it carries chemistry. Errors use
 `NativeDocumentReadError`, naming the `code`, `path` and `originalValue`; chemical refusals use
 `NATIVE_UNSUPPORTED_CHEMISTRY`.
+
+The preserving native writer restores original enum strings exactly. CDXML embeds that same native
+data and warns with `cdxml.native_enum_payload_only` for preserved enum values its visible vocabulary
+cannot express. Unknown-order bonds use `Order="any"` in visible CDXML, with
+`cdxml.unknown_bond_order`, never a single-bond guess. Removing the native payload therefore still
+leaves an unknown query bond. Binary CDX export remains unimplemented and unavailable.
+
+Calculations never interpret an unknown bond as single. Native graph metadata omits formula and
+average/exact mass with `native.unknown_bond_order`; native SMILES export refuses. MOL export keeps
+type 8 (any) with a warning, and engine-facing MOL writers refuse. Desktop analysis already
+declines before creating a worker. Direct RDKit analysis also reads the engine's query/unspecified
+bond evidence before deriving composition or descriptors and returns `unsupported` for every
+requested method, with no numeric/identifier payload. This covers the legacy formula/mass adapter
+and CLI/MCP analyze, including `C~C`; unrequested methods remain `not-requested`. Unknown structure
+encodings are never parsed as another format; when a molecule has an explicit native graph, that
+graph remains the source of calculations. Reaction mapping and mechanism annotations do not supply
+molecular bond orders to the calculation engines.
 
 While any preserved data remains active, saving conservatively retains the source minimum and any
 newer format contract. The reader cannot infer the introduction version of a feature it does not
