@@ -213,6 +213,9 @@ export const ChemDraftObjectTags = {
 const VisibleHashVersionAttribute = "attrib4345";
 const VisibleHashVersion = "2";
 const EncodedVisibleHashVersion = "|x|32";
+// Page-local UTF-8 JSON [dx, dy], in CDXML points. Raw-property notation survives binary CDX
+// without a native envelope; other readers can ignore it and use the fitted visible page.
+const PageOffsetAttribute = "attrib4346";
 
 const xmlParser = new XMLParser({
   preserveOrder: true,
@@ -339,21 +342,41 @@ export function exportDocumentToCdxml(
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
     .filter((object): object is TableObject => object.type === "table")
     .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
-  // Keep the existing palette indices stable; curves can carry arbitrary source colors.
+  // Source compatibility graphics retain their color indices as well as their other attributes.
   const curveColors: string[] = [...standardCdxmlColorTable];
+  const sourceColors = new Map<number, string>();
+  for (const page of parsedDocument.pages) for (const object of page.objects) {
+    const table = object.compatibility?.unknown.cdxmlGraphicColorTable;
+    if (isRecord(table)) for (const [index, color] of Object.entries(table)) {
+      if (/^\d+$/.test(index) && Number(index) >= 2 && Number(index) < 65536 && typeof color === "string" && normalizeHexColor(color)) {
+        const previous = sourceColors.get(Number(index));
+        if (previous && previous !== color) warnings.push({ code: "cdxml.graphic_color_table_conflict", sourceObjectId: object.id,
+          message: `Source graphic color index ${index} refers to different colors in this document; its attribute is retained, but the shared CDXML color table uses ${color}.` });
+        sourceColors.set(Number(index), color);
+        while (curveColors.length <= Number(index) - 2) curveColors.push("#000000");
+        curveColors[Number(index) - 2] = color;
+      }
+    }
+  }
+  for (const color of standardCdxmlColorTable) if (!curveColors.includes(color)) curveColors.push(color);
   for (const page of parsedDocument.pages) {
     for (const object of page.objects) {
       const unknown = object.compatibility?.unknown;
       const curveColor = object.type === "graphic" && unknown?.cdxmlElementName === "curve"
         ? object.style.strokeColor ?? defaultCdxmlStrokeColor
-        : unknown?.cdxmlCurveColor;
+        : object.type === "graphic" && object.graphicKind === "path"
+          ? object.style.strokeColor ?? defaultCdxmlStrokeColor : unknown?.cdxmlCurveColor;
       const color = typeof curveColor === "string" ? normalizeHexColor(curveColor) : undefined;
       if (color && !curveColors.includes(color)) curveColors.push(color);
+      if (object.type === "graphic" && object.graphicKind === "path" && object.data.pathClosed) {
+        const fill = object.style.fillColor ? normalizeHexColor(object.style.fillColor) : undefined;
+        if (fill && !curveColors.includes(fill)) curveColors.push(fill);
+      }
     }
   }
   // Source reaction lists use document-wide ids. Reserve them before allocating any new ids,
   // including atom/bond ids carried by opaque atom-mapping attributes.
-  const preserveReferenceIds = parsedDocument.pages.some(page => page.objects.some(object => object.type === "reaction" || object.type === "bracket"));
+  const preserveReferenceIds = parsedDocument.pages.some(page => page.objects.some(needsSourceGraphicIds));
   const reactionIds = new Set<string>(parsedDocument.pages.map(page => page.id));
   for (const page of parsedDocument.pages) {
     for (const object of page.objects) {
@@ -379,10 +402,12 @@ export function exportDocumentToCdxml(
   }
   const reactionAllocator = createIdAllocator(0, reactionIds);
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, fonts, curveColors,
-    preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)));
-  const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors);
+  const fittedPages = parsedDocument.pages.map((page, pageIndex) => fitVisiblePage(page,
+    buildVisiblePageChildren(page, warnings, fonts, curveColors,
+      preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex))));
+  const embedded = options.embedNativePayload !== false;
+  const visiblePages = fittedPages.map(({ page, children, offset }) => buildPageXml(page, children, offset));
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors, embedded);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -391,10 +416,10 @@ export function exportDocumentToCdxml(
     visibleCdxmlHash,
     nativeDocument: encodeBase64UrlUtf8(nativeJson)
   });
-  const envelopePages = parsedDocument.pages.map((page, pageIndex) =>
-    buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
+  const envelopePages = fittedPages.map(({ page, children, offset }, pageIndex) =>
+    buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, offset)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, curveColors);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, curveColors, embedded);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -705,11 +730,11 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[]): string {
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[], embedded = true): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}" ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}">`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}>`,
     buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
       `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
@@ -730,20 +755,94 @@ function buildStandardColorTableXml(colors: readonly string[]): string {
   ].join("\n");
 }
 
-function buildPageXml(page: DocumentPage, children: string): string {
+function buildPageXml(page: DocumentPage, children: string, offset?: Point): string {
   const attributes = [
     `id="${escapeXmlAttribute(page.id)}"`,
     // "left top right bottom": a portrait page must export as width-then-height, or every
     // spec-conforming reader sees it as landscape.
     `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
   ];
+  if (offset) attributes.push(`${PageOffsetAttribute}="|x|${hex(utf8Bytes(JSON.stringify([offset.x, offset.y])))}"`);
   return `  <page ${attributes.join(" ")}>${children}</page>`;
+}
+
+/** Coordinate attributes, rather than native object kinds, are translated so nested labels,
+ * bracket attachments, source graphics and curves all receive exactly the same page offset. */
+function visitVisibleCoordinates(tree: OrderedXmlTree, visit: (x: number, y: number) => Point | void): void {
+  for (const node of tree) {
+    const element = elementView(node);
+    if (!element) continue;
+    for (const [name, text] of Object.entries(element.attributes)) {
+      const stride = visibleCoordinatePairs.has(name) ? 2 : visibleCoordinateTriples.has(name) ? 3 : 0;
+      if (!stride) continue;
+      const values = text.trim().split(/\s+/).map(Number);
+      if (!values.length || values.length % stride || values.some(value => !Number.isFinite(value))) continue;
+      let changed = false;
+      for (let index = 0; index < values.length; index += stride) {
+        const next = visit(values[index], values[index + 1]);
+        if (next) { values[index] = next.x; values[index + 1] = next.y; changed = true; }
+      }
+      if (changed) (node[":@"] as Record<string, string>)[name] = values.map(value => String(value)).join(" ");
+    }
+    visitVisibleCoordinates(element.children, visit);
+  }
+}
+
+const visibleCoordinatePairs = new Set(["p", "BoundingBox", "Start", "End", "CurvePoints", "TextFrame", "GroupFrame"]);
+const visibleCoordinateTriples = new Set(["xyz", "Head3D", "Tail3D", "Center3D", "MajorAxisEnd3D", "MinorAxisEnd3D", "CurvePoints3D"]);
+
+// Preserve text-only whitespace and mixed-content ordering when translating a visible page.
+function serializeVisibleTree(tree: OrderedXmlTree): string {
+  return tree.map(node => {
+    if (node["#text"] !== undefined) return escapeXmlText(String(node["#text"]));
+    const cdata = cdataContent(node["#cdata"]);
+    if (cdata !== undefined) return escapeXmlText(cdata);
+    const element = elementView(node);
+    if (!element) return "";
+    const children = serializeVisibleTree(element.children);
+    const attributes = xmlAttributes(element.attributes);
+    return `<${element.name}${attributes ? ` ${attributes}` : ""}${children ? `>${children}</${element.name}>` : "/>"}`;
+  }).join("");
+}
+
+function fitVisiblePage(page: DocumentPage, children: string): { page: DocumentPage; children: string; offset?: Point } {
+  const tree = parseCdxml(`<CDXML><page>${children}</page></CDXML>`);
+  const content = findElements(tree, "page")[0].children;
+  let left = 0, top = 0, right = 0, bottom = 0;
+  visitVisibleCoordinates(content, (x, y) => {
+    left = Math.min(left, x); top = Math.min(top, y);
+    right = Math.max(right, x); bottom = Math.max(bottom, y);
+  });
+  const margin = 18; // points; leaves room for strokes and ordinary arrowheads
+  const offset = { x: left < 0 ? Math.ceil(margin - left) : 0, y: top < 0 ? Math.ceil(margin - top) : 0 };
+  const shifted = offset.x !== 0 || offset.y !== 0;
+  if (shifted) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
+  return {
+    page: { ...page, width: cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + offset.x + margin))),
+      height: cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + offset.y + margin))) },
+    children: shifted ? serializeVisibleTree(content) : children,
+    ...(shifted ? { offset } : {})
+  };
+}
+
+function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversionWarning[]): void {
+  const encoded = page.attributes[PageOffsetAttribute];
+  if (encoded === undefined) return;
+  try {
+    if (!/^\|x\|(?:[0-9a-f]{2})+$/i.test(encoded)) throw new Error("invalid offset bytes");
+    const bytes = new Uint8Array(encoded.slice(3).match(/../g)!.map(value => parseInt(value, 16)));
+    const offset: unknown = JSON.parse(utf8String(bytes));
+    if (!Array.isArray(offset) || offset.length !== 2 || !offset.every(value => typeof value === "number" && Number.isFinite(value))) throw new Error("invalid offset pair");
+    visitVisibleCoordinates(page.children, (x, y) => ({ x: x - offset[0], y: y - offset[1] }));
+  } catch {
+    warnings.push(warning("cdxml.page_offset_invalid", "CDXML page origin metadata is invalid; visible positions were retained without restoring the original origin."));
+  }
 }
 
 function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
   const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
-  const preserveSourceIds = page.objects.some(object => object.type === "reaction" || object.type === "bracket");
+  const preserveSourceIds = page.objects.some(needsSourceGraphicIds);
   for (const object of page.objects) {
     const sourceId = object.compatibility?.originalId;
     if (preserveSourceIds && sourceId) {
@@ -1040,7 +1139,7 @@ function exportVisibleObject(
     }
   }
   if (object.type === "table") {
-    return exportTableObject(object, context.ids, allocator, warnings, fonts);
+    return exportTableObject(object, context.ids, allocator, warnings, fonts, context.curveColors);
   }
   if (object.type === "molecule") {
     return exportMoleculeObject(object, context, allocator, warnings);
@@ -1527,7 +1626,8 @@ function exportTableObject(
   ids: Map<string, string>,
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
-  fonts: readonly string[]
+  fonts: readonly string[],
+  colors: readonly string[]
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
@@ -1563,7 +1663,7 @@ function exportTableObject(
     id: table.id, type: "graphic", graphicKind: "line", x: rule.x1, y: rule.y1,
     width: rule.x2 - rule.x1, height: rule.y2 - rule.y1, rotation: 0,
     style: { strokeWidth: rule.widthPx, strokeColor: style.color }, data: {}
-  }, allocator.next(), warnings));
+  }, allocator.next(), warnings, colors));
   const caption = [...(table.caption?.text ?? "").replace(/\s+/gu, " ").trim()];
   const tableName = caption.length > 0
     ? `Table "${caption.length > 40 ? `${caption.slice(0, 39).join("")}…` : caption.join("")}"`
@@ -1625,22 +1725,157 @@ function exportGraphicObject(
     return "";
   }
   const graphicId = idFor(ids, graphic.id, allocator);
+  if (graphic.graphicKind === "unknown" && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
+    const attributes = preservedCurveAttributes(graphic.compatibility.unknown.cdxmlGraphicAttributes);
+    // Older imports retained only these individual compatibility keys.
+    attributes.GraphicType ??= String(graphic.compatibility.unknown.cdxmlGraphicType ?? "Unknown");
+    for (const [attribute, key] of [["BoundingBox", "cdxmlBoundingBox"], ["color", "cdxmlColor"], ["OvalType", "cdxmlOvalType"],
+      ["RectangleType", "cdxmlRectangleType"], ["LineType", "cdxmlLineType"], ["AngularSize", "cdxmlAngularSize"],
+      ["CornerRadius", "cdxmlCornerRadius"], ["ShadowSize", "cdxmlShadowSize"]]) {
+      const value = graphic.compatibility.unknown[key];
+      if (typeof value === "string") attributes[attribute] ??= value;
+    }
+    if (attributes.GraphicType !== "Unknown") {
+      const sourceElement = { name: "graphic", attributes, children: [] };
+      // Use the importer's frame rule: axes may define a different frame than BoundingBox.
+      const sourceBox = graphicBoundsForCdxmlShape(sourceElement, attributes.GraphicType, cdxmlLinePointsForShape(sourceElement));
+      if (!boxesApproximatelyEqual(sourceBox, graphic, 1e-9)) {
+        transformPreservedGraphicGeometry(attributes, sourceBox, graphic);
+        if (!attributes.BoundingBox && !graphicAxisBounds(sourceElement)) attributes.BoundingBox = formatBoundingBox(graphic);
+      }
+      attributes.id = graphicId;
+      return `<graphic ${xmlAttributes(attributes)}/>`;
+    }
+  }
   if (graphic.compatibility?.unknown.cdxmlElementName === "curve") {
     return exportGraphicAsCdxmlCurve(graphic, graphicId, warnings, curveColors);
   }
-  warnForGraphicCdxmlLimitations(graphic, warnings);
   // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a
   // native arrow. The element's ArrowheadHead/ArrowheadTail/ArrowheadType triple is RICHER than the
   // closed ArrowType enum — it can say which ends are full/half with a shared solid/open type —
   // so round-tripping the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
-    return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
+    warnForGraphicCdxmlLimitations(graphic, warnings);
+    return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings, curveColors);
   }
+  const curve = nativeCurveGraphic(graphic);
+  if (curve) return exportGraphicAsCdxmlCurve(curve, graphicId, warnings, curveColors,
+    graphic.data.artPathKind === "arc" && !graphic.data.pathControlPoint);
+  warnForGraphicCdxmlLimitations(graphic, warnings);
   if (isSemanticReactionArrowGraphic(graphic)) {
-    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
+    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings, curveColors);
   }
   warnForGenericGraphicMarkerLoss(graphic, warnings);
-  return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
+  return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings, curveColors);
+}
+
+function needsSourceGraphicIds(object: DocumentObject): boolean {
+  return object.type === "reaction" || object.type === "bracket" ||
+    object.type === "graphic" && object.graphicKind === "unknown" && object.compatibility?.unknown.cdxmlElementName === "graphic";
+}
+
+function transformPreservedGraphicGeometry(attributes: Record<string, string>, source: { x: number; y: number; width: number; height: number }, target: GraphicObject): void {
+  const node: OrderedXmlNode = { graphic: [], ":@": attributes };
+  visitVisibleCoordinates([node], (x, y) => ({
+    x: Number(formatNumber(cssPxToCdxml(target.x + (cdxmlToCssPx(x) - source.x) * (source.width ? target.width / source.width : 1)))),
+    y: Number(formatNumber(cssPxToCdxml(target.y + (cdxmlToCssPx(y) - source.y) * (source.height ? target.height / source.height : 1))))
+  }));
+}
+
+/** Native knot/control data maps directly to CDXML splines, including closed polygons. */
+function nativeCurveGraphic(graphic: GraphicObject): GraphicObject | undefined {
+  if (graphic.graphicKind !== "path") return undefined;
+  const kind = graphic.data.artPathKind;
+  let nodes = graphic.data.pathNodes;
+  let closed = graphic.data.pathClosed;
+  if (!kind && graphic.data.pathD) {
+    const path = nativeSvgPathNodes(graphic.data.pathD, graphic);
+    if (!path) return undefined;
+    nodes = path.nodes;
+    closed = path.closed;
+  }
+  if (kind === "freehand") return undefined; // variable-width outlines need their own conversion
+  if (kind === "arc" && !graphic.data.pathControlPoint &&
+      [graphic.data.markerStart, graphic.data.markerEnd].some(marker => marker && marker.kind !== "none")) {
+    const { startRadians, sweepRadians } = nativeGraphicArcAngles(graphic);
+    const center = graphic.data.arcCenter ?? objectCenter(graphic);
+    const rx = graphic.data.arcRadiusX ?? Math.max(graphic.width / 2 - 4, 1);
+    const ry = graphic.data.arcRadiusY ?? Math.max(graphic.height / 2 - 4, 1);
+    const count = Math.ceil(Math.abs(sweepRadians) / (Math.PI / 2));
+    const step = sweepRadians / count;
+    const handle = 4 / 3 * Math.tan(step / 4);
+    nodes = Array.from({ length: count + 1 }, (_, index) => {
+      const angle = startRadians + step * index;
+      const point = ellipsePointAtRadians(center, rx, ry, angle);
+      const tangent = { x: -rx * Math.sin(angle) * handle, y: ry * Math.cos(angle) * handle };
+      return { point, ...(index > 0 ? { inControl: { x: point.x - tangent.x, y: point.y - tangent.y } } : {}),
+        ...(index < count ? { outControl: { x: point.x + tangent.x, y: point.y + tangent.y } } : {}) };
+    });
+  }
+  if (kind === "quadratic" || kind === "arc" && graphic.data.pathControlPoint) {
+    const { start, end } = graphicLineEndpointsForCdxml(graphic);
+    const middle = graphic.data.pathControlPoint;
+    if (!middle) return undefined;
+    const control = { x: 2 * middle.x - (start.x + end.x) / 2, y: 2 * middle.y - (start.y + end.y) / 2 };
+    nodes = [{ point: start, outControl: { x: start.x + (control.x - start.x) * 2 / 3, y: start.y + (control.y - start.y) * 2 / 3 } },
+      { point: end, inControl: { x: end.x + (control.x - end.x) * 2 / 3, y: end.y + (control.y - end.y) * 2 / 3 } }];
+  }
+  if (!nodes?.length || !["bezier", "polyline", "quadratic", "arc", undefined].includes(kind)) return undefined;
+  if (kind === "polyline") nodes = nodes.map(node => ({ point: node.point }));
+  return { ...graphic, data: { ...graphic.data, artPathKind: "bezier", pathNodes: nodes, pathClosed: closed } };
+}
+
+/** Convert one SVG subpath to knots, refusing unsupported syntax instead of changing its shape.
+ * Stored SVG paths use object-local coordinates; native pathNodes use page coordinates. */
+function nativeSvgPathNodes(path: string, origin: Point): { nodes: GraphicPathNode[]; closed: boolean } | undefined {
+  const tokens = path.match(/[a-z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/ig) ?? [];
+  if (path.replace(/[a-z]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?|[\s,]/ig, "")) return undefined;
+  const nodes: GraphicPathNode[] = [];
+  let cursor: Point = { x: 0, y: 0 }, command = "", index = 0, closed = false;
+  let cubicControl: Point | undefined, quadraticControl: Point | undefined;
+  const pagePoint = (point: Point): Point => ({ x: point.x + origin.x, y: point.y + origin.y });
+  while (index < tokens.length) {
+    if (/^[a-z]$/i.test(tokens[index])) command = tokens[index++];
+    const op = command.toUpperCase(), relative = command !== op;
+    if (op === "Z") {
+      if (!nodes.length || index !== tokens.length) return undefined;
+      closed = true;
+      break;
+    }
+    const count = ({ M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2 } as Record<string, number>)[op];
+    if (!count || index + count > tokens.length || tokens.slice(index, index + count).some(token => /^[a-z]$/i.test(token))) return undefined;
+    const values = tokens.slice(index, index + count).map(Number);
+    index += count;
+    if (values.some(value => !Number.isFinite(value))) return undefined;
+    const point = (at: number): Point => ({ x: values[at] + (relative ? cursor.x : 0), y: values[at + 1] + (relative ? cursor.y : 0) });
+    if (op === "M") {
+      if (nodes.length) return undefined;
+      cursor = point(0); nodes.push({ point: pagePoint(cursor) });
+      command = relative ? "l" : "L";
+      continue;
+    }
+    if (!nodes.length) return undefined;
+    const end = op === "H" ? { x: values[0] + (relative ? cursor.x : 0), y: cursor.y }
+      : op === "V" ? { x: cursor.x, y: values[0] + (relative ? cursor.y : 0) }
+      : point(count - 2);
+    const next: GraphicPathNode = { point: pagePoint(end) };
+    const reflect = (control: Point | undefined): Point => control
+      ? { x: 2 * cursor.x - control.x, y: 2 * cursor.y - control.y } : cursor;
+    if (op === "C" || op === "S") {
+      nodes[nodes.length - 1].outControl = pagePoint(op === "C" ? point(0) : reflect(cubicControl));
+      cubicControl = point(op === "C" ? 2 : 0);
+      next.inControl = pagePoint(cubicControl);
+    } else if (op === "Q" || op === "T") {
+      const control = op === "Q" ? point(0) : reflect(quadraticControl);
+      nodes[nodes.length - 1].outControl = pagePoint({ x: cursor.x + (control.x - cursor.x) * 2 / 3, y: cursor.y + (control.y - cursor.y) * 2 / 3 });
+      next.inControl = pagePoint({ x: end.x + (control.x - end.x) * 2 / 3, y: end.y + (control.y - end.y) * 2 / 3 });
+      quadraticControl = control;
+    }
+    if (op !== "C" && op !== "S") cubicControl = undefined;
+    if (op !== "Q" && op !== "T") quadraticControl = undefined;
+    nodes.push(next); cursor = end;
+  }
+  return nodes.length >= 2 ? { nodes, closed } : undefined;
 }
 
 /**
@@ -1694,7 +1929,8 @@ function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
 function exportSemanticReactionArrowGraphic(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[]
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
   const arrowKind = semanticArrowExportKind(graphic) ?? "forward";
@@ -1707,7 +1943,7 @@ function exportSemanticReactionArrowGraphic(
     `id="${graphicId}"`,
     `GraphicType="Line"`,
     `ArrowType="${escapeXmlAttribute(arrowType)}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
     `Start="${formatPoint(line.start)}"`,
@@ -1820,22 +2056,6 @@ function warnForGraphicCdxmlLimitations(
     });
   }
 
-  // Bezier, polyline, and freehand geometry has no CDXML graphic type, so it exports as
-  // GraphicType="Unknown" with only a bounding box. The earlier pathD check misses these because
-  // they carry an artPathKind — which is how the orbital tools' curves left silently.
-  const hasPathGeometry = Boolean(
-    (graphic.data.pathNodes && graphic.data.pathNodes.length > 0) ||
-      graphic.data.pathD ||
-      graphic.data.freehandOptions
-  );
-  if (hasPathGeometry && cdxmlGraphicTypeForNativeGraphic(graphic) === "Unknown") {
-    warnings.push({
-      code: "cdxml.graphic_shape_payload_only",
-      message: `Native ${graphic.data.artPathKind ?? graphic.graphicKind} geometry has no CDXML graphic type; the exported file keeps only its bounding box, and the shape is preserved exactly only in the embedded ChemDraft payload.`,
-      sourceObjectId: graphic.id
-    });
-  }
-
   if (graphic.data.pathControlPoint) {
     warnings.push({
       code: "cdxml.graphic_path_control_payload_only",
@@ -1848,12 +2068,18 @@ function warnForGraphicCdxmlLimitations(
 function exportGraphicAsCdxmlGraphic(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[] = standardCdxmlColorTable
 ): string {
   const type = cdxmlGraphicTypeForNativeGraphic(graphic);
+  if (!type) {
+    warnings.push({ code: "cdxml.graphic_not_written", sourceObjectId: graphic.id,
+      message: `Native ${graphic.data.artPathKind ?? graphic.graphicKind} graphic ${graphic.id} has no faithful CDXML representation and is NOT written in the visible layer.` });
+    return "";
+  }
   const attrs = [
     `id="${graphicId}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     `GraphicType="${type}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, objectCornerPoints(graphic)))}"`,
     ...(type === "Line" || type === "Arc" ? cdxmlLineTypeAttributes(graphic) : []),
@@ -1871,14 +2097,15 @@ function exportGraphicAsCdxmlGraphic(
 function exportGraphicAsCdxmlArrow(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[]
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
   const isArc = graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint);
   const attrs = [
     `id="${graphicId}"`,
-    `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, [line.start, line.end]))}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, objectCornerPoints(graphic)))}"`,
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     'FillType="None"',
     ...cdxmlArrowheadAttributes(graphic, warnings),
@@ -1896,9 +2123,19 @@ function exportGraphicAsCdxmlCurve(
   graphic: GraphicObject,
   graphicId: string,
   warnings: CompatibilityConversionWarning[],
-  colors: readonly string[]
+  colors: readonly string[],
+  approximateArc = false
 ): string {
   const attributes = preservedCurveAttributes(graphic.compatibility?.unknown.cdxmlCurveAttributes);
+  const nativeCurve = graphic.compatibility?.unknown.cdxmlElementName !== "curve";
+  if (nativeCurve) {
+    attributes.FillType = graphicHasVisibleFill(graphic) ? "Solid" : "None";
+    if (approximateArc) {
+      warnings.push({ code: "cdxml.arc_curve_approximation", sourceObjectId: graphic.id,
+        message: "Circular arrow exported as cubic CDXML curve segments; the arc has a small geometric approximation." });
+    }
+    warnForGenericGraphicMarkerLoss({ ...graphic, data: { ...graphic.data, markerStart: undefined, markerEnd: undefined } }, warnings);
+  }
   const sourceNodes = curveNodesFromCdxml(attributes.CurvePoints);
   const nodes = graphic.data.pathNodes;
   if (!nodes?.length || graphic.data.artPathKind !== "bezier") {
@@ -1940,7 +2177,12 @@ function exportGraphicAsCdxmlCurve(
     warnings.push({ code: "cdxml.curve_head_size_payload_only",
       message: "Edited native curve head dimensions remain only in the native payload; standard CDXML retains the source head sizing attributes.", sourceObjectId: graphic.id });
   }
-  const color = normalizeHexColor(graphic.style.strokeColor ?? defaultCdxmlStrokeColor);
+  const useFill = nativeCurve && graphic.data.pathClosed && graphicHasVisibleFill(graphic);
+  const color = normalizeHexColor((useFill ? graphic.style.fillColor : graphic.style.strokeColor) ?? defaultCdxmlStrokeColor);
+  if (useFill && graphic.style.strokeColor && normalizeHexColor(graphic.style.strokeColor) !== color) {
+    warnings.push({ code: "cdxml.graphic_single_color", sourceObjectId: graphic.id,
+      message: "CDXML curves store a single color; the visible fill was preserved and the distinct stroke color was dropped." });
+  }
   const colorIndex = color ? colors.indexOf(color) : -1;
   if (colorIndex >= 0) attributes.color = String(colorIndex + 2);
   else {
@@ -2043,7 +2285,7 @@ function warnForUnrepresentableArrowheads(
   });
 }
 
-function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line" | "Oval" | "Rectangle" | "Unknown" {
+function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line" | "Oval" | "Rectangle" | undefined {
   if (graphic.graphicKind === "ellipse") {
     return "Oval";
   }
@@ -2056,12 +2298,11 @@ function cdxmlGraphicTypeForNativeGraphic(graphic: GraphicObject): "Arc" | "Line
   if (
     graphic.graphicKind === "line" ||
     graphic.data.artPathKind === "line" ||
-    graphic.data.artPathKind === "wavy" ||
-    graphic.data.artPathKind === "quadratic"
+    graphic.data.artPathKind === "wavy"
   ) {
     return "Line";
   }
-  return "Unknown";
+  return undefined;
 }
 
 function cdxmlShapeSubtypeAttributes(graphic: GraphicObject): string[] {
@@ -2142,7 +2383,8 @@ function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
 
 function cdxmlGraphicColorAttribute(
   graphic: GraphicObject,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[] = standardCdxmlColorTable
 ): string[] {
   // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
   // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
@@ -2169,8 +2411,9 @@ function cdxmlGraphicColorAttribute(
   if (!color || color.toLowerCase() === "none") {
     return [];
   }
-  const index = cdxmlColorIndexForHex(color);
-  if (index === undefined) {
+  const normalized = normalizeHexColor(color);
+  const index = normalized === "#000000" ? 0 : normalized === "#ffffff" ? 1 : normalized ? colors.indexOf(normalized) + 2 : undefined;
+  if (index === undefined || index < 2 && normalized !== "#000000" && normalized !== "#ffffff") {
     return [];
   }
   return [`color="${index}"`];
@@ -2198,12 +2441,13 @@ function cdxmlBoundingBoxForGraphic(graphic: GraphicObject, fallbackPoints: read
 
 function boxesApproximatelyEqual(
   left: { x: number; y: number; width: number; height: number },
-  right: { x: number; y: number; width: number; height: number }
+  right: { x: number; y: number; width: number; height: number },
+  tolerance = 0.01
 ): boolean {
-  return nearlyEqual(left.x, right.x) &&
-    nearlyEqual(left.y, right.y) &&
-    nearlyEqual(left.width, right.width) &&
-    nearlyEqual(left.height, right.height);
+  return Math.abs(left.x - right.x) <= tolerance &&
+    Math.abs(left.y - right.y) <= tolerance &&
+    Math.abs(left.width - right.width) <= tolerance &&
+    Math.abs(left.height - right.height) <= tolerance;
 }
 
 function nearlyEqual(left: number, right: number): boolean {
@@ -2399,6 +2643,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   try {
     importedPages = pageElements.map((pageElement, pageIndex) => {
       const pageTemplate = base.pages[0];
+      restorePageOffset(pageElement, warnings);
       const importedPage = applyImportTransformToPageObjects(
         importPageObjects(pageElement, pageIndex, warnings, colorTable, curveLineDefaults),
         importTransform
@@ -4041,6 +4286,8 @@ function importShapeGraphic(
       unknown: {
         cdxmlElementName: elementName,
         cdxmlGraphicType: type,
+        ...(graphicKind === "unknown" ? { cdxmlGraphicAttributes: { ...element.attributes },
+          cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex) } : {}),
         ...(element.attributes.OvalType ? { cdxmlOvalType: element.attributes.OvalType } : {}),
         ...(element.attributes.RectangleType ? { cdxmlRectangleType: element.attributes.RectangleType } : {}),
         ...(element.attributes.LineType ? { cdxmlLineType: element.attributes.LineType } : {}),

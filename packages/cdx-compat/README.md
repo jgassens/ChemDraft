@@ -12,7 +12,8 @@ clipboard data; decoding binary CDX as text first corrupts it. Malformed files r
 `exportDocumentToCdx(document, { embedNativePayload: false })` returns `{ bytes, warnings }`, using
 `exportDocumentToCdxml` for the visible document. Unsupported CDXML attributes, elements or values
 produce compatibility warnings. Export defaults to omitting native metadata.
-CDXML embeds native metadata by default; `{ embedNativePayload: false }` omits it. Warnings about
+CDXML embeds native metadata by default; `{ embedNativePayload: false }` omits it, including the
+root hash-version attribute `attrib4345`. Warnings about
 unsupported data say explicitly when that data is not written because no payload is embedded.
 
 Native multi-atom labels are encoded as standard `GenericNickname` nodes with label text on the
@@ -30,7 +31,7 @@ Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` cont
 the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope
 property itself, including both legacy and UTF-8 text copies. Unchanged files restore the exact native
 document; external edits to either copy use the existing conflict path. Both the binary hash and the
-stored visible XML hash must match. Every new CDXML envelope has root attribute
+stored visible XML hash must match. Every new payload-embedded CDXML envelope has root attribute
 `attrib4345="|x|32"`: the opaque binary-property notation for user-defined CDX property `0x4345`,
 whose UTF-8 value is the hash-semantics version `"2"`. Save As CDX preserves that property beside
 `0x4344` and also records `visibleHashVersion: "2"` in the envelope JSON; both copies must agree.
@@ -58,6 +59,41 @@ existing numeric-reference limitations); no new native tag trips their CDX tag w
 Native-payload, schema and codec checks still apply. Older envelopes
 without the binary hash also require conflict review. This property is ChemDraft-specific; other readers
 can consume the standard visible objects without interpreting it.
+
+Visible pages grow to cover their exported content plus an 18-point margin, with letter
+(`612 × 792` points) as the minimum; larger native page sizes are retained. This exporter writes
+page `BoundingBox`, without conflicting fixed `Width`/`Height` or page-count attributes. If any
+visible coordinates are negative, every visible coordinate on that page receives the same offset,
+including nested molecule labels, graphics, curve controls, arrow axes and bracket geometry.
+Content already inside letter stays at its original position on a letter page.
+
+Page attribute `attrib4346` (user-defined binary CDX property `0x4346`) records the offset as
+hex-encoded UTF-8 JSON `[dx,dy]` in CDXML points, independently of the native payload. ChemDraft
+subtracts it before importing visible objects and their source compatibility attributes, so repeated
+CDXML/CDX interchange cycles restore the original origin and relative layout within the formats'
+ordinary coordinate precision. Embedded saves still restore the exact native document. Other readers
+can ignore the attribute and display the shifted drawing on its fitted page. If another reader
+removes that property, the original absolute origin cannot be recovered; relative layout remains
+intact. Invalid origin metadata warns and leaves visible positions unchanged.
+
+Unsupported source `<graphic>` types, including Orbital and Symbol, retain **every** source attribute
+in `compatibility.unknown.cdxmlGraphicAttributes`, alongside the existing compatibility keys. Unedited
+graphics export with the same element, type and attributes, including opaque attributes and raw CDX
+properties. Moves and resizes update only the coordinate attributes; subtype, color, Z, line width
+and other source data stay intact. Source color-table indices are preserved; combining incompatible
+source palettes produces a named warning. Binary attributes retain CDX's normal enum spelling and
+fixed-point precision (for example, the binary orbital enum names `dz2Plus`/`dz2Minus`). Arbitrary
+CDXML-only attributes that CDX cannot encode still produce the codec's named omission warnings.
+
+Export never invents `GraphicType="Unknown"`. Native Bezier chains, open/closed polylines, polygons
+and quadratic bends write real `<curve>` elements, with full/open/half arrowheads at their respective
+ends. Supported object-local SVG path commands are `M`, `L`, `H`, `V`, `C`, `S`, `Q`, `T`, `Z` and their relative
+forms for one subpath. Quadratics elevate exactly to cubics. Native circular arrows use cubic curve
+segments with a named approximation warning; imported standalone `<arrow>` objects retain that form.
+Paths without a faithful supported representation, including uncached variable-width freehand
+outlines and unsupported SVG syntax, are omitted from the visible layer with `cdxml.graphic_not_written`,
+naming the object and explicitly saying it is **NOT written**. The embedded native payload retains
+all native geometry exactly; no native schema fields were added.
 
 CDXML text and attributes decode decimal and hexadecimal numeric character references and the five
 XML entities once. Named HTML entities remain literal. Text CR and attribute CR/TAB/LF export as

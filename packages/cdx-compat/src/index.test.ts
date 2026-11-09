@@ -1008,7 +1008,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     });
   });
 
-  it("warns when a native graphic path bend cannot be represented exactly in visible CDXML", () => {
+  it("exports a native graphic path bend as a real CDXML curve", () => {
     const graphic = {
       id: "art_cdxml_bent_line",
       type: "graphic",
@@ -1033,14 +1033,15 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       creationProgram: "Graphic Bend Warning Test"
     });
 
-    expect(result.contents).toContain('GraphicType="Line"');
+    expect(result.contents).toContain('<curve ');
+    expect(result.contents).toContain('CurvePoints="75 127.5 105 47.5 135 47.5 165 127.5"');
     expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
       type: "graphic",
       data: {
         pathControlPoint: { x: 160, y: 90 }
       }
     });
-    expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_path_control_payload_only");
+    expect(result.warnings.map((item) => item.code)).not.toContain("cdxml.graphic_path_control_payload_only");
   });
 
   it("exports circular graphic arcs from native radian sweep metadata", () => {
@@ -1985,7 +1986,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
   });
 
-  it("warns when brackets and curved art degrade on the way to CDXML", () => {
+  it("warns for approximated brackets and exports curved art as a real curve", () => {
     const bracket = exportDocumentToCdxml(documentWithObjects([
       {
         id: "bracket_001",
@@ -2027,9 +2028,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       }
     ]), { creationProgram: "T" });
 
-    // Bezier curves carry an artPathKind, so the older pathD-only check never fired for them.
-    expect(orbital.contents).toContain('GraphicType="Unknown"');
-    expect(orbital.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_shape_payload_only");
+    expect(orbital.contents).toContain('<curve ');
+    expect(orbital.contents).toContain('Closed="yes"');
+    expect(orbital.contents).not.toContain('GraphicType="Unknown"');
+    expect(orbital.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
 
     // A shape CDXML can represent stays quiet.
     const oval = exportDocumentToCdxml(documentWithObjects([
