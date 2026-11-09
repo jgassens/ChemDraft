@@ -69,7 +69,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.24`). API 0.1.24 adds optional reaction `arrowObjectIds`/`plusObjectIds`; shared scheme arrows and plus signs are referenced by id, never copied. API 0.1.23 adds bondStyle 'wavy' (single-bond either stereo).
+`0.1.25`). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds to native brackets. API 0.1.24 adds optional reaction `arrowObjectIds`/`plusObjectIds`; shared scheme arrows and plus signs are referenced by id, never copied. API 0.1.23 adds bondStyle 'wavy' (single-bond either stereo).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
 `fromAtomId` is the explicitly unknown stereocentre. Preserve both endpoints when copying; never
 assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plugins using wavy bonds
@@ -94,11 +94,12 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.24` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.25` packages remain compatible, each on a host at or above the version
 it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.24 | Optional reaction `arrowObjectIds`/`plusObjectIds`; shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
 | 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |

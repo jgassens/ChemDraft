@@ -21,6 +21,21 @@ migration: an absent side keeps the original opening glyph, and no repeat label 
 Pairs share an opaque `pairId`; the closing member's existing `label` field carries the repeat
 subscript. Drawing and label placement belong to layout-engine.
 
+Optional `bracketUsage` is `sru`, `multiple`, `generic`, or `unknown`; unrecognised stored strings
+load as `unknown`. Legacy `repeatUnit: true` without a usage still means an SRU. `repeatCount` is an
+optional positive integer (meaningful for a multiple group); `label` remains free text, including
+`n` or `x-y`. `crossingBondIds` optionally lists molecule-scoped `BondRef` values
+(`{ objectId, bondId }`), since bond ids are local to each molecule. No migration or backfill is
+needed. Pair cleanup removes all multiplier and crossing metadata from an orphan, and patches
+prune references to deleted bonds or molecules. Copies carry references only to copied objects.
+
+`bracketChemistryWarnings` reads live document membership, preserved atom membership, crossing
+references, and geometric enclosure. Cached formula and mass metadata carry
+`chemistry.bracket_multiplier` warnings after loading or patching; values describe one drawn copy,
+never an expanded polymer or multiplier. `moleculeBracketWarningMessages` lets graph consumers keep
+that context when only a molecule is available. The MOL writers return those warnings too; callers
+can pass `document` for live context. Plain generic pairs stay quiet.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

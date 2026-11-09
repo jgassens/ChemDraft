@@ -58,6 +58,7 @@ import {
   adoptDerivedDocument,
   bracketPairs,
   withoutBracketPairMetadata,
+  moleculeBracketWarningMessages,
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -7290,6 +7291,7 @@ export function deleteSelectedDocumentObjects(
         if (object.type !== "bracket" || !object.pairId || removedIds.has(object.id) || !removedPairIds.has(object.pairId)) return [];
         return [{ op: "updateObject", objectId: object.id, changes: {
           pairId: undefined, repeatUnit: undefined, label: undefined, containedObjectIds: [],
+          bracketUsage: undefined, repeatCount: undefined, crossingBondIds: undefined,
           bracketKind: object.bracketKind === "polymer" ? "square" : object.bracketKind
         } }];
       })
@@ -14814,12 +14816,31 @@ function remapCopiedBracketPairs(objects: DocumentObject[], idMap: ReadonlyMap<s
       delete object.pairId;
       delete object.repeatUnit;
       delete object.label;
+      delete object.bracketUsage;
+      delete object.repeatCount;
+      delete object.crossingBondIds;
       Object.assign(object, plain);
     }
     object.containedObjectIds = object.containedObjectIds.flatMap(id => {
       const mapped = idMap.get(id);
       return mapped === undefined ? [] : [mapped];
     });
+    object.crossingBondIds = object.crossingBondIds?.flatMap(ref => {
+      const mapped = idMap.get(ref.objectId);
+      const molecule = objects.find(object => object.id === mapped);
+      return mapped && molecule?.type === "molecule" && molecule.bonds.some(bond => bond.id === ref.bondId)
+        ? [{ objectId: mapped, bondId: ref.bondId }] : [];
+    });
+    // Source membership and opaque atom ids belong to the original document, not the copy.
+    if (object.compatibility) {
+      const unknown = object.compatibility.unknown;
+      delete unknown.bracketedGroup;
+      delete unknown.cdxmlBracketAttachment;
+      delete unknown.cdxmlBracketCrossings;
+      delete unknown.cdxmlBracketMembership;
+      delete unknown.cdxmlBracketMemberObjectIds;
+      delete unknown.cdxmlBracketMembers;
+    }
   }
 }
 
@@ -19785,7 +19806,10 @@ export function copyAsMergedMolecule(
  * is room: it has no 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure`
  * string, silently.
  */
-export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
+export function analysisFacingStructure(molecule: MoleculeObject, document?: ChemDraftDocument): { structureFormat: string; structure: string; refusalReason?: string } {
+  const bracketWarnings = moleculeBracketWarningMessages(molecule, document);
+  if (bracketWarnings.length) return { structureFormat: "molfile-v3000", structure: "",
+    refusalReason: bracketWarnings.join(" ") };
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
   if (unknownIds.length > 0) {
     // No query molfile reaches a descriptor engine. The client maps this to an unsupported run,
@@ -19845,11 +19869,12 @@ export function validationFacingStructure(
  * positions left out, so moving or rotating the molecule never reads as a stale report, while any
  * change to its chemistry (an element, a charge, a bond order, a label) does.
  */
-export function analysisSubjectKey(molecule: MoleculeObject): string {
+export function analysisSubjectKey(molecule: MoleculeObject, document?: ChemDraftDocument): string {
   return JSON.stringify([
     molecule.id,
     molecule.atoms.map(({ x: _x, y: _y, z: _z, ...atom }) => atom),
-    molecule.bonds
+    molecule.bonds,
+    moleculeBracketWarningMessages(molecule, document)
   ]);
 }
 
@@ -19873,7 +19898,7 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
       if (smiles.length > 0) parts.push(smiles);
     }
   } finally {
-    warningsOut?.push(...warnings.map((warning) => warning.message));
+    warningsOut?.push(...warnings.map((warning) => warning.message).filter(message => !warningsOut.some(previous => previous.includes(message))));
   }
   return parts.length > 0 ? parts.join(".") : undefined;
 }
@@ -20636,9 +20661,11 @@ function remapAnchorsAfterMoleculeMerge(
       const childObjectIds = [...new Set(object.childObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
       return [{ op: "updateObject", objectId: object.id, changes: { childObjectIds } }];
     }
-    if (object.type === "bracket" && object.containedObjectIds.includes(absorbedObjectId)) {
+    if (object.type === "bracket" && (object.containedObjectIds.includes(absorbedObjectId) || object.crossingBondIds?.some(ref => ref.objectId === absorbedObjectId))) {
       const containedObjectIds = [...new Set(object.containedObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
-      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds } }];
+      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds,
+        crossingBondIds: object.crossingBondIds?.flatMap(ref => ref.objectId !== absorbedObjectId ? [ref] :
+          bondIdMap.has(ref.bondId) ? [{ objectId: hostObjectId, bondId: bondIdMap.get(ref.bondId)! }] : []) } }];
     }
     return [];
   });

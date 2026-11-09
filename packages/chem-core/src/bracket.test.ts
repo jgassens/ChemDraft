@@ -1,10 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { BracketObjectSchema, createEmptyDocument, deserializeDocument, serializeDocument, type BracketObject } from "./index";
+import { applyPatch, BracketObjectSchema, createEmptyDocument, deserializeDocument, serializeDocument, withoutBracketPairMetadata, type BracketObject, type MoleculeObject } from "./index";
 
 const legacy: BracketObject = { id: "b1", type: "bracket", bracketKind: "square", x: 10, y: 20,
   width: 16, height: 64, rotation: 0, style: {}, containedObjectIds: [] };
 
 describe("additive v1 bracket fields", () => {
+  it("accepts optional usage, positive integer counts and molecule-scoped bond references tolerantly", () => {
+    const bracket = { ...legacy, bracketUsage: "multiple", repeatCount: 3, crossingBondIds: [{ objectId: "m", bondId: "b" }] };
+    expect(BracketObjectSchema.parse(bracket)).toEqual(bracket);
+    expect(BracketObjectSchema.parse({ ...legacy, bracketUsage: "future" }).bracketUsage).toBe("unknown");
+    for (const repeatCount of [0, -1, 1.5]) expect(BracketObjectSchema.safeParse({ ...bracket, repeatCount }).success).toBe(false);
+    expect(withoutBracketPairMetadata({ ...legacy, pairId: "p", repeatUnit: true, bracketUsage: "multiple", repeatCount: 3,
+      crossingBondIds: bracket.crossingBondIds, label: "x" })).toEqual(legacy);
+  });
+  it("strips multipliers on orphan load, prunes deleted bond references, and keeps undo inputs unchanged", () => {
+    const document = createEmptyDocument();
+    const molecule: MoleculeObject = { id: "m", type: "molecule", x: 20, y: 30, width: 20, height: 20, rotation: 0, style: {},
+      structure: "", structureFormat: "unknown", atoms: [], bonds: [{ id: "bond", fromAtomId: "a", toAtomId: "b", order: "single" }], superatoms: [], rGroups: [] };
+    const open: BracketObject = { ...legacy, pairId: "p", side: "open", bracketUsage: "multiple", repeatCount: 3, containedObjectIds: [molecule.id],
+      crossingBondIds: [{ objectId: molecule.id, bondId: "bond" }] };
+    document.pages[0].objects = [molecule, open, { ...open, id: "close", side: "close" }];
+    const edited = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: { bonds: [] } });
+    expect(edited.pages[0].objects.filter(object => object.type === "bracket").map(object => object.crossingBondIds)).toEqual([[], []]);
+    expect(open.crossingBondIds).toHaveLength(1);
+    const deleted = applyPatch(document, { op: "removeObject", objectId: "close" });
+    expect(deleted.pages[0].objects.find(object => object.id === open.id)).toEqual({ ...legacy, side: "open" });
+    const loaded = deserializeDocument(JSON.stringify({ ...document, pages: [{ ...document.pages[0], objects: [open] }] }));
+    expect(loaded.pages[0].objects[0]).toEqual({ ...legacy, side: "open" });
+  });
   it("loads old single glyphs without changing their fields", () => {
     const document = createEmptyDocument(); document.pages[0].objects.push(legacy);
     expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toEqual(legacy);

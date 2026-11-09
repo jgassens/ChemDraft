@@ -121,7 +121,7 @@ these approximations, and export restores the original source attributes. Unsupp
 also warn and remain in the source attributes. Invalid or unsupported point layouts stay as unknown
 compatibility objects with `cdxml.curve_points_preserved` and export their source curve. Rotation,
 tilt, or edited head dimensions that standard export cannot express warn and remain in the native
-payload. This checkout rejects binary CDX input; it has no binary-to-CDXML conversion path.
+payload. Binary CDX uses the shared CDXML mapping.
 
 Edited closed Beziers export incoming/knot/outgoing triples, including the first incoming and last
 outgoing controls that define the closing segment. CDXML's per-end heads specify `Full`, `HalfLeft`
@@ -133,18 +133,21 @@ payload retains both original marker styles. Curve-specific `Half`/`Angle` alias
 standalone `<arrow>` import: its legacy full-head fallback and resulting `Full`/`Solid` export for
 `ArrowheadHead="Half"`, `ArrowheadType="Half"` or `ArrowheadHead="Angle"` remain unchanged.
 
-Untilted, unrotated square and round brackets write real `graphic` bracket elements and
-`bracketedgroup`/`bracketattachment` pair membership. Synthetic fixtures cover those paths.
-Repeat pairs write `BracketUsage="SRU"` and visible label text. Repeat-label association and polymer
-crossing-bond connectivity remain preserve-and-warn cases; exact native labels survive the document
-envelope. External SRU text stays independent, without inventing a label association. Unknown
-bracket usage, atom membership and crossing attachments retain their original compatibility data.
-Foreign groups with unsupported usage, membership, crossing attachments or extra group data remain
-unknown compatibility objects, with specific warnings; they never create native pairs. Re-export
-retains the original group in the embedded payload, without emitting a simplified visible group.
+Untilted, unrotated square and round brackets write real `graphic` elements and native editable
+pairs. `bracketedgroup` maps `SRU` to `bracketUsage: "sru"` plus `repeatUnit`, `MultipleGroup` to
+`"multiple"`, absent usage to `"generic"`, and other usages to `"unknown"` with a named warning.
+Graphic-level usage fills in an absent group usage. `SRULabel`, positive integer `RepeatCount`,
+whole-fragment membership, and molecule-scoped crossing bonds round-trip through CDXML and CDX.
+Atom-level or unresolved membership and unresolved crossing references remain compatibility data
+with warnings; they do not prevent native pair import. No multiplier expands the molecular graph.
 
-Bracket orientation is **UNVERIFIED against an independent reader**. Closing glyphs currently use
-reversed `BoundingBox` x coordinates. No repo schema or specification was found documenting that
-rule or an alternative orientation attribute. The fixtures are synthetic and confirm internal
-consistency only.
-See [the bracket handoff](../../docs/architecture/brackets-repeat-units.md) for the remaining work.
+Graphic attributes including `LipSize`, `Z`, `IgnoreWarnings`, `Warning`, line width and colour stay
+in compatibility data and are written back. Native appearance may approximate unmapped styling,
+which warns on import. The glyph left of its partner opens the pair regardless of source endpoint
+order. Unedited `BoundingBox` text is written verbatim; edited geometry is regenerated.
+`InnerAtomID` survives unchanged crossing bonds; retopologised bonds drop that opaque association.
+Independent text beside a group without `SRULabel` remains independent and still warns.
+
+These are synthetic-fixture-covered paths, not a general Tier B polymer claim. Groups with missing
+or non-pair attachments still use unknown-object preservation. No independent-reader or interactive
+platform verification is claimed. See [the bracket handoff](../../docs/architecture/brackets-repeat-units.md).

@@ -13,22 +13,24 @@ export function selectedBracketPair(document: ChemDraftDocument): BracketObject[
 
 export function createBracketCommands(document: ChemDraftDocument): CommandSpec[] {
   const pair = selectedBracketPair(document);
-  const repeat = pair.some(object => object.repeatUnit || object.bracketKind === "polymer");
+  const repeat = pair.some(object => object.repeatUnit || object.bracketKind === "polymer" || object.bracketUsage === "sru" || object.bracketUsage === "multiple" || object.bracketUsage === "unknown");
+  const labelEditable = pair.some(object => object.repeatUnit || object.bracketKind === "polymer" || object.bracketUsage === "sru");
   return [
     { id: "bracket.repeatUnit.toggle", title: repeat ? "Remove Repeat Unit" : "Mark as Repeat Unit", category: "annotation",
       icon: "bracket", enabled: pair.length === 2, disabledReason: pair.length ? undefined : "Select a bracket pair first" },
-    { id: "bracket.label.edit", title: "Edit Repeat Label", category: "annotation", icon: "text", enabled: repeat,
-      disabledReason: repeat ? undefined : "Mark a bracket pair as a repeat unit first" }
+    { id: "bracket.label.edit", title: "Edit Repeat Label", category: "annotation", icon: "text", enabled: labelEditable,
+      disabledReason: labelEditable ? undefined : "Mark a bracket pair as a repeat unit first" }
   ];
 }
 
 export function toggleBracketRepeatUnit(document: ChemDraftDocument): ChemDraftDocument {
   const pair = selectedBracketPair(document);
   if (!pair.length) return document;
-  const repeatUnit = !pair.some(object => object.repeatUnit || object.bracketKind === "polymer");
+  const repeatUnit = !pair.some(object => object.repeatUnit || object.bracketKind === "polymer" || object.bracketUsage === "sru" || object.bracketUsage === "multiple" || object.bracketUsage === "unknown");
   return applyPatches(document, [
     ...pair.map(object => ({ op: "updateObject" as const, objectId: object.id, changes: {
       repeatUnit, bracketKind: object.bracketKind === "polymer" ? "square" as const : object.bracketKind,
+      ...(repeatUnit ? { bracketUsage: "sru" as const } : { bracketUsage: undefined, repeatCount: undefined, crossingBondIds: undefined }),
       ...(repeatUnit && object.side === "close" ? { label: object.label || "n" } : {})
     } })),
     { op: "setSelection", pageId: document.selection.pageId, objectIds: pair.map(object => object.id) }
@@ -39,7 +41,7 @@ export function setBracketRepeatLabel(document: ChemDraftDocument, objectId: str
   const object = document.pages.flatMap(page => page.objects).find(object => object.id === objectId);
   const page = document.pages.find(page => page.objects.some(item => item.id === objectId));
   const pair = object?.type === "bracket" && object.pairId && page ? bracketPairs(page.objects).get(object.pairId) : undefined;
-  if (object?.type !== "bracket" || !pair || object.side !== "close" || !(object.repeatUnit || object.bracketKind === "polymer")) return document;
+  if (object?.type !== "bracket" || !pair || object.side !== "close" || !(object.repeatUnit || object.bracketKind === "polymer" || object.bracketUsage === "sru")) return document;
   const value = label.trim() || "n";
   if (value === (object.label ?? "n")) return document;
   return applyPatches(document, [

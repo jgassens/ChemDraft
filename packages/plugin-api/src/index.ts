@@ -35,6 +35,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.19 exports the parameterised detached snapshotPanelReport walk for host overlay validation.
  * 0.1.20 adds the optional table style field autoColumnMinEm (minimum auto column width in em).
  * 0.1.23 adds bondStyle 'wavy' (single-bond either stereo).
+ * 0.1.25 adds optional native bracketUsage, repeatCount and scoped crossingBondIds.
  * 0.1.24 adds optional reaction arrowObjectIds/plusObjectIds; shared scheme arrows and plus signs are referenced by id, never copied.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
@@ -45,7 +46,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.24" as const;
+export const PluginApiVersion = "0.1.25" as const;
 
 export const pluginPermissions = [
   "document.read",

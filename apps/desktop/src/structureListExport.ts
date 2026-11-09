@@ -96,7 +96,7 @@ export async function exportStructureListSdf(
       spellLabel: nativeSingleHeavyElementLabelValence,
       placeholderAtoms: radicalPlaceholders
     }).contents;
-    warnings.push(...writerWarnings.map((message): ExportWarning => ({
+    warnings.push(...writerWarnings.filter(message => !warnings.some(warning => warning.message.includes(message))).map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",
       message,
       severity: "warning",

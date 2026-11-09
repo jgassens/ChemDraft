@@ -1719,7 +1719,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.07.40-opus";
+const CURRENT_BUILD_STAMP = "11.09.08.46-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2324,8 +2324,8 @@ export function MainWindow({
       // The live atom/bond graph, not the object's `structure` string: that string is empty for an
       // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
       // system, which analysed a different molecule than the one on the page.
-      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule);
-      const subjectKey = analysisSubjectKey(molecule);
+      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule, documentRef.current);
+      const subjectKey = analysisSubjectKey(molecule, documentRef.current);
       const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
       if (!client) {
@@ -2915,7 +2915,7 @@ export function MainWindow({
   const analysisReportIsStale =
     analysisReport !== undefined &&
     analysisSubject !== undefined &&
-    (selectedMolecule ? analysisSubjectKey(selectedMolecule) : undefined) !== analysisSubject;
+    (selectedMolecule ? analysisSubjectKey(selectedMolecule, document) : undefined) !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -11131,6 +11131,8 @@ export function MainWindow({
           // The live graph, expanded the way the Molecular Inspector reads it — never the stored
           // structure, which after a 3D flatten spells every label as a dummy "*" and would put the
           // placeholder graph's formula over the drawing's (validationFacingStructure).
+          const bracketRefusal = analysisFacingStructure(molecule, document).refusalReason;
+          if (bracketRefusal) { setStatus(bracketRefusal); return; }
           const analysis = await chemistryAdapter.analyzeStructure(validationFacingStructure(molecule));
           setLastAnalysis(analysis);
           publishAnalysisWindow(
