@@ -724,12 +724,12 @@ function exportBond(
   const bondId = cdxmlBondIdForRef(nativeRef, context, allocator);
   // A native dative bond (single + dashed) keeps its meaning in CDXML, which has an order for it;
   // written as Order="1" it read back — in ChemDraw or RDKit — as an ordinary covalent single bond.
-  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond.order, molecule.id, warnings);
+  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond, molecule, warnings);
   const attributes = [
     `id="${bondId}"`,
     `B="${atomIds.get(bond.fromAtomId) ?? escapeXmlAttribute(bond.fromAtomId)}"`,
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
-    `Order="${order}"`
+    `Order="${escapeXmlAttribute(order)}"`
   ];
   if (bond.order === "double" && bond.stereo === "either") {
     // Wavy on a double bond means crossed/E/Z-unspecified, regardless of its coordinates.
@@ -2046,10 +2046,14 @@ function importFragment(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
   const cdxmlIdByBondId = new Map<string, string>();
+  const cdxmlUnknownBondOrdersByBondId: Record<string, string> = {};
   const dashedSingleBondIds: string[] = [];
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
     const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId);
+    if (order === "unknown" && bondElement.attributes.Order !== undefined) {
+      cdxmlUnknownBondOrdersByBondId[bondId] = bondElement.attributes.Order;
+    }
     const bond: MoleculeBond = {
       id: bondId,
       fromAtomId: atomIdByCdxmlId.get(bondElement.attributes.B ?? "") ?? bondElement.attributes.B ?? "",
@@ -2237,9 +2241,10 @@ function importFragment(
       sourceFormat: "cdxml",
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
-      unknown: Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0
-        ? { cdxmlAtomStereochemistryByAtomId }
-        : {}
+      unknown: {
+        ...(Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0 ? { cdxmlAtomStereochemistryByAtomId } : {}),
+        ...(Object.keys(cdxmlUnknownBondOrdersByBondId).length > 0 ? { cdxmlUnknownBondOrdersByBondId } : {})
+      }
     }
   };
 }
@@ -3517,10 +3522,12 @@ function splitCdxmlIdList(value: string | undefined): string[] {
 }
 
 function cdxmlBondOrder(
-  order: MoleculeBond["order"],
-  sourceObjectId: string,
+  bond: MoleculeBond,
+  molecule: MoleculeObject,
   warnings: CompatibilityConversionWarning[]
 ): string {
+  const { order } = bond;
+  const sourceObjectId = molecule.id;
   if (order === "single") {
     return "1";
   }
@@ -3533,17 +3540,27 @@ function cdxmlBondOrder(
   if (order === "aromatic") {
     warnings.push({
       code: "cdxml.aromatic_bond_approximation",
-      message: "Aromatic bond display was exported as CDXML Order=\"1.5\"; ChemDraft did not rewrite the native chemical graph.",
-      sourceObjectId
+      message: "Native aromatic/delocalised bond order was preserved as CDXML Order=\"1.5\". This does not establish ring aromaticity or choose a Kekule structure.",
+      sourceObjectId,
+      bondIds: [bond.id]
     });
     return "1.5";
   }
+  // Keep unsupported source values through the visible layer too. The native enum deliberately
+  // says only `unknown`; it cannot encode a partial, query or future CDXML order's exact spelling.
+  // Only consult this payload while the bond is still unknown, and never restore a known order
+  // from malformed/stale metadata. Explicit chemical edits always take precedence.
+  const preservedOrders = molecule.compatibility?.unknown.cdxmlUnknownBondOrdersByBondId;
+  const preserved = isRecord(preservedOrders) ? preservedOrders[bond.id] : undefined;
+  const value = typeof preserved === "string" && nativeBondOrderFromCdxml(preserved) === "unknown"
+    ? preserved : "any";
   warnings.push({
     code: "cdxml.unknown_bond_order",
-    message: "Unknown bond order was exported as CDXML Order=\"1\" with a compatibility warning.",
-    sourceObjectId
+    message: `Native unknown bond order was exported as CDXML Order="${value}"; its chemical order remains unknown.`,
+    sourceObjectId,
+    bondIds: [bond.id]
   });
-  return "1";
+  return value;
 }
 
 function isCdxmlDativeOrder(order: string | undefined): boolean {
@@ -3556,6 +3573,26 @@ function moleculeBondOrderFromCdxml(
   sourceObjectId: string,
   bondId: string
 ): MoleculeBond["order"] {
+  const nativeOrder = nativeBondOrderFromCdxml(order);
+  if (nativeOrder === "aromatic") {
+    warnings.push({
+      code: "cdxml.aromatic_bond_import_approximation",
+      message: "CDXML aromatic/delocalised order was preserved as native aromatic, including outside rings; no ring aromaticity or Kekule structure was inferred.",
+      sourceObjectId,
+      bondIds: [bondId]
+    });
+  } else if (nativeOrder === "unknown") {
+    warnings.push({
+      code: "cdxml.bond_order_import_unsupported",
+      message: `Unsupported CDXML bond order "${order}" was imported as unknown; the original order value is preserved for CDXML export.`,
+      sourceObjectId,
+      bondIds: [bondId]
+    });
+  }
+  return nativeOrder;
+}
+
+function nativeBondOrderFromCdxml(order: string | undefined): MoleculeBond["order"] {
   if (order === "1" || order === undefined) {
     return "single";
   }
@@ -3571,20 +3608,8 @@ function moleculeBondOrderFromCdxml(
     return "single";
   }
   if (order === "1.5" || order?.toLowerCase() === "aromatic") {
-    warnings.push({
-      code: "cdxml.aromatic_bond_import_approximation",
-      message: "Imported aromatic CDXML bond as native aromatic bond; no Kekule conversion was performed.",
-      sourceObjectId,
-      bondIds: [bondId]
-    });
     return "aromatic";
   }
-  warnings.push({
-    code: "cdxml.bond_order_import_unsupported",
-    message: `Unsupported CDXML bond order "${order}" was imported as unknown.`,
-    sourceObjectId,
-    bondIds: [bondId]
-  });
   return "unknown";
 }
 
