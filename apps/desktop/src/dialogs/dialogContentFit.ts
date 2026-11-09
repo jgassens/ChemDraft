@@ -1,8 +1,10 @@
+import { useEffect, useRef } from "react";
+
 /**
  * Content-fit sizing for native dialogs whose host spec opts in (`fit_content` in dialog_windows.rs).
  * The form measures its rendered height once fonts are ready and sends it with `ready`; the host
  * sets the window's inner height to it at reveal, clamped to the work area. The form itself is a
- * `.cd-dialog-fit` column (App.css) whose `.cd-dialog-fit-body` scrolls above a pinned footer, so
+ * `.cd-dialog-fit` column (or Export's grid) whose `.cd-dialog-fit-body` scrolls above a pinned footer, so
  * content that grows after the measurement, or a window clamped shorter, never hides the buttons.
  */
 export interface DialogContentFit {
@@ -47,7 +49,7 @@ function overrideStyles(element: HTMLElement, overrides: Record<string, string>)
 export function measureDialogContent(element: HTMLElement): DialogContentFit | undefined {
   const view = element.ownerDocument.defaultView;
   const restores = [
-    overrideStyles(element, { height: "auto", "min-height": "0px" }),
+    overrideStyles(element, { height: "auto", "min-height": "0px", "max-height": "none" }),
     ...Array.from(element.querySelectorAll<HTMLElement>(".cd-dialog-fit-body"),
       body => overrideStyles(body, { "flex-grow": "0", "flex-shrink": "0", "flex-basis": "auto", "min-height": "0px", overflow: "visible" }))
   ];
@@ -79,4 +81,17 @@ export async function measureDialogContentWhenFontsReady(
     clearTimeout(timer);
   }
   return element.isConnected ? measureDialogContent(element) : undefined;
+}
+
+/** One committed root per form; hidden webviews must not wait for animation frames. */
+export function useDialogContentReady<T extends HTMLElement>(onReady?: (element: T) => void) {
+  const root = useRef<T>(null);
+  const reported = useRef(false);
+  useEffect(() => {
+    if (!reported.current && root.current && onReady) {
+      reported.current = true;
+      onReady(root.current);
+    }
+  }, [onReady]);
+  return root;
 }

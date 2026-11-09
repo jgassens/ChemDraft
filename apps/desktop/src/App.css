@@ -7874,6 +7874,7 @@ textarea:focus-visible,
 .cd-dialog-fit { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
 .cd-dialog-fit-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: auto; margin: -4px; padding: 4px; }
 .cd-dialog-fit-footer { flex: none; }
+.cd-dialog-fit-body > * { flex-shrink: 0; }
 /* Fixed row metrics on both WebKit and WebView2. An empty status paragraph must
    reserve the same two lines as a validation message. */
 .cd-insert-table-form h2 { line-height: 19px; margin: 0 0 13px; }
@@ -7916,3 +7917,13 @@ textarea:focus-visible,
 .bond-stereo-popover { width: 290px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .bond-stereo-popover p { margin: 0; line-height: 1.4; white-space: normal; }
 .bond-stereo-popover button { min-height: 28px; text-align: left; }
+
+/* Shared native content-fit forms: reserve actions while only the body scrolls. */
+.preferences-shell > .cd-dialog-fit-body { margin: 0; padding: 0; }
+.cd-install-form .cd-dialog-fit-body { overflow-wrap: anywhere; }
+.cd-install-form .cd-dialog-fit-footer { padding-top: 12px; }
+.arrangement-spacing-dialog.cd-dialog-fit { min-height: 0; overflow: hidden; }
+.cd-export-fit > .cd-dialog-fit-body { margin: 0; padding: 0; display: grid; }
+
+.cd-page-size-web-fallback .cd-dialog-fit { height: auto; max-height: calc(100dvh - 32px); min-height: 0; }
+.plugin-prompt-backdrop > .arrangement-spacing-dialog.cd-dialog-fit { height: auto; }

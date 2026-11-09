@@ -166,7 +166,6 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     }, percent === 100 ? 0 : 120);
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
   }, [hostId, snapshot, percent]);
-  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -203,7 +202,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}
       onInsert={templateId => sendAction({ action: "insert", templateId })} onClose={() => sendAction({ action: "cancel" })} />
   </Suspense>;
-  if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm {...snapshot.data} percent={percent}
+  if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm onReady={reportReady} {...snapshot.data} percent={percent}
     preview={preview} busy={busy} error={error} onChange={value => {
       previewRequestId.current = undefined; previewParts.current = undefined;
       setPreview(undefined); setError(undefined); setPercent(value);
@@ -231,9 +230,9 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   if (snapshot?.dialogKind === "insertTable") return <InsertTableForm key={snapshot.sessionId} title={snapshot.data.title} initial={snapshot.data}
     busy={busy} error={error} onReady={reportReady} onCancel={() => sendAction({ action: "cancel" })}
     onSubmit={options => sendAction({ action: "apply", ...options })} />;
-  if (snapshot?.dialogKind === "engineInstall") return <EngineInstallForm snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
-  if (snapshot?.dialogKind === "toolInstall") return <ToolInstallForm snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
+  if (snapshot?.dialogKind === "engineInstall") return <EngineInstallForm onReady={reportReady} snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
+  if (snapshot?.dialogKind === "toolInstall") return <ToolInstallForm onReady={reportReady} snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
   if (!snapshot || snapshot.dialogKind !== "pageSize" || !draft) return <p role="status">{error ?? "Opening dialog…"}</p>;
-  return <PageSizeForm title={snapshot.data.title} state={draft} onChange={setDraft} busy={busy} error={error}
+  return <PageSizeForm onReady={reportReady} title={snapshot.data.title} state={draft} onChange={setDraft} busy={busy} error={error}
     onCancel={() => sendAction({ action: "cancel" })} onApply={size => sendAction({ action: "apply", ...size })} />;
 }

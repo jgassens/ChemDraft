@@ -20,6 +20,14 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
+  it("grants content-size reporting only to the actual Preferences window", () => {
+    const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability)
+      .includes("allow-preferences-ready"));
+    expect(granted.map(({ name }) => name)).toEqual(["preferences-layout.json"]);
+    expect(granted[0]!.capability.windows).toEqual(["preferences"]);
+    expect(granted[0]!.capability.webviews).toBeUndefined();
+    expect(granted[0]!.capability.permissions).toEqual(["allow-preferences-ready"]);
+  });
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
     // The final pattern belongs to the structure-template picker.
