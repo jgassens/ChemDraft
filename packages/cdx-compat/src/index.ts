@@ -731,14 +731,21 @@ function exportBond(
     `Order="${order}"`
   ];
   if (bond.order === "double" && bond.stereo === "either") {
-    warnings.push(warning(
-      "cdxml.open_double_bond_native_only",
-      `E/Z-unspecified double bond ${bond.id} is kept for ChemDraft only; other apps will see a plain double bond.`
-    ));
-  }
-  const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
-  if (bondStyle) {
-    attributes.push(`Display="${bondStyle}"`);
+    // Wavy on a double bond means crossed/E/Z-unspecified, regardless of its coordinates.
+    attributes.push('Display="Wavy"');
+    if (bond.display?.bondStyle) {
+      warnings.push({
+        code: "cdxml.open_double_bond_style_native_only",
+        message: `E/Z-unspecified double bond ${bond.id} is written with Display="Wavy"; its ${bond.display.bondStyle} style is kept only in the native payload.`,
+        sourceObjectId: molecule.id,
+        bondIds: [bond.id]
+      });
+    }
+  } else {
+    const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
+    if (bondStyle) {
+      attributes.push(`Display="${bondStyle}"`);
+    }
   }
   if (bond.display?.doubleBondSide && bond.display.doubleBondSide !== "automatic") {
     attributes.push(`DoublePosition="${cdxmlDoublePositionName(bond.display.doubleBondSide)}"`);
@@ -2084,6 +2091,10 @@ function importFragment(
         });
       }
       bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
+    } else if (order === "double" && bondElement.attributes.Display === "Wavy") {
+      // Explicit unknown E/Z must take precedence over stereo inferred from the 2D geometry.
+      // DoublePosition controls line placement, not this stereochemical intent.
+      bond.stereo = "either";
     } else if (bondDisplay) {
       if (bondDisplay.bondStyle === "dashed" && order === "single") {
         dashedSingleBondIds.push(bondId);
@@ -2103,6 +2114,21 @@ function importFragment(
         sourceObjectId: objectId,
         bondIds: [bondId]
       });
+    }
+    if (order === "double") {
+      // Do not guess that a secondary display or a CIP annotation means the crossed convention.
+      // These attributes are not mapped; name them rather than silently discarding the hint.
+      for (const attribute of ["Display2", "BS"] as const) {
+        const value = bondElement.attributes[attribute];
+        if (value) {
+          warnings.push({
+            code: "cdxml.bond_stereo_attribute_unsupported",
+            message: `CDXML double bond ${cdxmlBondId} attribute ${attribute}="${value}" is not mapped to native stereo. Display="Wavy" marks E/Z-unspecified bonds; otherwise E/Z may be derived from coordinates.`,
+            sourceObjectId: objectId,
+            bondIds: [bondId]
+          });
+        }
+      }
     }
     return bond;
   });
