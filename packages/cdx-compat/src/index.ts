@@ -39,6 +39,7 @@ import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning, isGenericAtomLabel } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
+import { PROPS } from "./cdxTags";
 import {
   CDX_NATIVE_ENVELOPE_ATTRIBUTE,
   cdxElementFromOrderedTree,
@@ -910,9 +911,12 @@ const reactionListAttributes = [
   "ReactionStepObjectsAboveArrow", "ReactionStepObjectsBelowArrow", "ReactionStepPlusses"
 ] as const;
 type ReactionListAttribute = typeof reactionListAttributes[number];
+const idListAttributes = new Set(PROPS.filter(([, , kind]) => kind === "ids" || kind === "attachments")
+  .map(([, name]) => name));
 
 function xmlAttributes(attributes: Record<string, string>): string {
-  return Object.entries(attributes).filter(([name]) => /^[A-Za-z_][\w.:-]*$/.test(name))
+  return Object.entries(attributes).filter(([name, value]) => /^[A-Za-z_][\w.:-]*$/.test(name)
+    && (!idListAttributes.has(name) || value.trim().length > 0))
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ");
 }
 
@@ -945,6 +949,7 @@ function isReactionParticipant(object: DocumentObject): boolean {
 function importReactionStep(
   scheme: XmlElementView, step: XmlElementView, pageIndex: number, schemeIndex: number, stepIndex: number,
   rootsBySourceId: ReadonlyMap<string, string[]>, objects: ReadonlyMap<string, DocumentObject>,
+  supersededBySourceId: ReadonlyMap<string, string>,
   warnings: CompatibilityConversionWarning[]
 ): ReactionObject {
   const id = `cdxml_reaction_${pageIndex + 1}_${schemeIndex + 1}_${stepIndex + 1}`;
@@ -964,10 +969,21 @@ function importReactionStep(
   for (const attribute of reactionListAttributes) {
     const roots: string[] = [];
     for (const sourceId of splitCdxmlIdList(step.attributes[attribute])) {
-      const resolved = rootsBySourceId.get(sourceId);
+      let targetId = sourceId;
+      const visited = new Set<string>();
+      // Legacy arrow graphics may be omitted in favour of a modern <arrow>. Resolve their
+      // replacement chain to an imported object, retaining the original list in step metadata.
+      while (attribute === "ReactionStepArrows" && !rootsBySourceId.get(targetId)?.length
+        && supersededBySourceId.has(targetId) && !visited.has(targetId)) {
+        visited.add(targetId);
+        targetId = supersededBySourceId.get(targetId)!;
+      }
+      const resolved = rootsBySourceId.get(targetId);
       if (!resolved?.length) {
+        const reason = visited.has(targetId) ? ` (SupersededBy cycle at "${targetId}")`
+          : visited.size ? ` (SupersededBy missing target or unimported object "${targetId}")` : "";
         warnings.push({ code: "cdxml.reaction_reference_unresolved", sourceObjectId: id,
-          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object; ignored.` });
+          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object${reason}; source text is preserved in compatibility metadata.` });
         continue;
       }
       roots.push(...resolved);
@@ -1061,6 +1077,11 @@ function exportReactionSchemes(
       }
       if (reaction.mappingState === "absent") delete attributes.ReactionStepAtomMap;
       for (const attribute of Object.keys(attributes)) {
+        // Opaque atom-map lists follow the same nonempty-list rule as interpreted step lists.
+        if (attribute.startsWith("ReactionStep") && !attributes[attribute].trim()) {
+          delete attributes[attribute];
+          continue;
+        }
         if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
           warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: reaction.id,
             message: `Reaction ${reaction.id}: ${attribute} is exported opaquely from source metadata; it has not been interpreted or updated for native edits.` });
@@ -1121,11 +1142,11 @@ function exportReactionSchemes(
             message: `Native reaction ${reaction.id}: ${attribute} object "${id}" is missing; ignored on export.` });
         }
         const value = exported.join(" ");
-        if (value || attributes[attribute] !== undefined) {
+        if (value) {
           // Keep original list whitespace too when no semantic or id edit requires rewriting it.
           if (splitCdxmlIdList(attributes[attribute]).join(" ") !== value) attributes[attribute] = value;
           else attributes[attribute] ??= value;
-        }
+        } else delete attributes[attribute];
       }
       if (reaction.mappingState !== "absent" && !attributes.ReactionStepAtomMap) {
         warnings.push({ code: "cdxml.reaction_mapping_payload_only", sourceObjectId: reaction.id,
@@ -2244,7 +2265,7 @@ function preservedCurveAttributes(value: unknown): Record<string, string> {
 }
 
 function curveXml(attributes: Record<string, string>): string {
-  return `<curve ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ")}/>`;
+  return `<curve ${xmlAttributes(attributes)}/>`;
 }
 
 /** The write side of {@link cdxmlArrowMarkers}: name which ends are headed and how, so an arrow
@@ -2744,6 +2765,7 @@ function importPageObjects(
   };
   const schemes: XmlElementView[] = [];
   const rootsBySourceId = new Map<string, string[]>();
+  const supersededBySourceId = new Map<string, string>();
   context.preserveReactionIds ||= findElements(pageElement.children, "bracketedgroup").length > 0;
   const stepReferencedIds = new Set(findElements(pageElement.children, "step").flatMap(step =>
     reactionListAttributes.flatMap(attribute => splitCdxmlIdList(step.attributes[attribute]))));
@@ -2754,6 +2776,9 @@ function importPageObjects(
   // page children and tied together by a native group. Importing the whole group as one opaque
   // unknown object dropped every molecule inside it — real ChemDraw files group routinely.
   const importElement = (element: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    if (element.attributes.id && element.attributes.SupersededBy) {
+      supersededBySourceId.set(element.attributes.id, element.attributes.SupersededBy.trim());
+    }
     const single = (object: DocumentObject | undefined) => {
       if (!object) {
         return { objects: [], rootIds: [] };
@@ -2863,7 +2888,8 @@ function importPageObjects(
   const objectsById = new Map(objects.map(object => [object.id, object]));
   schemes.forEach((scheme, schemeIndex) => {
     childElements(scheme, "step").forEach((step, stepIndex) => {
-      const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex, rootsBySourceId, objectsById, warnings);
+      const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
+        rootsBySourceId, objectsById, supersededBySourceId, warnings);
       objects.push(reaction);
     });
   });

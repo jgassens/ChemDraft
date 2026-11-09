@@ -34,6 +34,21 @@ import {
 } from "./index";
 import { sha256Hex, utf8Bytes } from "./sha256";
 
+it("omits empty preserved id lists without changing nonempty source lists", () => {
+  const opened = openChemDraftPayload(`<CDXML><page id="1">
+    <group id="80" BasisObjects="" BondOrdering=" " ConnectionOrder=" 20  30 ">
+      <t id="20" p="0 0"><s>first</s></t><t id="30" p="30 0"><s>second</s></t>
+    </group>
+    <curve id="40" CurvePoints="0 10 10 10 20 10 30 10" BasisObjects=""/>
+  </page></CDXML>`);
+  expect(opened.document).toBeDefined();
+  const exported = exportDocumentToCdxml(opened.document!);
+  expect(exported.contents).not.toMatch(/\b(?:BasisObjects|BondOrdering)="\s*"/);
+  expect(exported.contents).toContain('ConnectionOrder=" 20  30 "');
+  // Visible-list cleanup must not change compatibility data in the embedded native document.
+  expect(openChemDraftPayload(exported.contents).document).toEqual(opened.document);
+});
+
 it("warns when a picture is omitted from visible CDXML and retains the native payload", () => {
   const picture = createImageGraphicObject({ id: "g12", mimeType: "image/svg+xml", center: { x: 30, y: 40 },
     dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"/>') });

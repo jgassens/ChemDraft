@@ -143,6 +143,11 @@ chemical roles and produce a named warning while retaining their source referenc
 conditions retain their exact text through visible CDXML and CDX export; XML indentation is added
 only before serialized objects, never inside their text.
 Unresolved participant ids produce `cdxml.reaction_reference_unresolved` and are ignored.
+Step arrow references follow legacy graphics' `SupersededBy` chains to imported arrows. Cycles and
+missing targets produce `cdxml.reaction_reference_unresolved`; the original list text remains in
+`compatibility.unknown.cdxmlStepAttributes`. Newly imported native reactions now populate
+`arrowObjectIds` for these references, where older imports left the list empty; no schema change or
+migration of previously saved native documents is performed.
 
 Visible export writes schemes for native reaction objects. Compatibility metadata retains source
 scheme membership, step order, above/below placement and source attributes; unchanged valid source
@@ -150,6 +155,8 @@ object ids and step lists round-trip, including group references. Edited native 
 the affected lists. New reactions use their native links and place agents/conditions above or below
 according to their positions relative to the arrow. This does not infer a reaction from loose
 drawings: the CLI's current visual layout builder still produces loose drawing objects.
+Superseded arrow references export the imported arrow's id. Empty reaction-step id lists, including
+arrow, above/below, participant, plus and opaque atom-map lists, are omitted instead of written empty.
 Atom maps and other unmapped `ReactionStep*` attributes are retained opaquely with a named warning;
 they do not become native atom mapping. The embedded native payload round-trips the full document.
 This fixture coverage does not claim general CDXML reaction compatibility or exact arrowhead sizing.

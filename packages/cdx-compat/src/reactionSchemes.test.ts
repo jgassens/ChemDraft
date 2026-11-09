@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { XMLParser } from "fast-xml-parser";
 import { createEmptyDocument, parseDocument, type ChemDraftDocument, type ReactionObject } from "@chemdraft/chem-core";
 import { documentInventory, documentReactionSummary } from "@chemdraft/document-workflow-core";
 import { exportDocumentToCdx, exportDocumentToCdxml, importCdx, openChemDraftPayload } from "./index";
+import { cdxElementFromOrderedTree, readCdx, writeCdx } from "./cdxBinary";
 // Test-only integration: exercise the actual desktop copy operations before visible export.
 import {
   createSelectionClipboardPayload, duplicateSelectedDocumentObjects, pasteSelectionClipboardPayload
@@ -15,6 +17,9 @@ const fragment = (id: string, x: number, y = 60) => `<fragment id="${id}">
 </fragment>`;
 const arrow = (id: string, x: number, kind = "FullHead") =>
   `<graphic id="${id}" GraphicType="Line" ArrowType="${kind}" BoundingBox="${x + 60} 60 ${x} 60"/>`;
+const modernArrow = '<arrow id="52" Tail3D="100 60 0" Head3D="160 60 0" ArrowheadHead="Full" ArrowheadType="Solid"/>';
+const supersededArrow = (id: string, target: string, type = "Line") =>
+  `<graphic id="${id}" GraphicType="${type}" ArrowType="FullHead" SupersededBy="${target}" BoundingBox="160 60 100 60"/>`;
 const oneStep = (extraReactant = "", arrowKind = "FullHead") => `<CDXML><page id="1">
   <scheme id="900" Z="9"><step id="901" ReactionStepReactants="10 20${extraReactant}"
     ReactionStepProducts="30" ReactionStepArrows="50" ReactionStepObjectsAboveArrow="40"
@@ -45,7 +50,95 @@ function importFixture(contents: string) {
   return { document: opened.document!, warnings: opened.warnings };
 }
 
+describe.each(["CDXML", "CDX"])("synthetic %s superseded reaction arrows", format => {
+  const open = (source: string) => {
+    if (format === "CDXML") return importFixture(source);
+    const tree = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", trimValues: false }).parse(source);
+    const bytes = writeCdx(cdxElementFromOrderedTree(tree));
+    // Exercise the actual legacy SupersededBy property through the binary codec.
+    expect(readCdx(bytes).kids[0].kids.some(child => child.attrs.SupersededBy)).toBe(true);
+    const opened = importCdx(bytes);
+    expect(opened.document, JSON.stringify(opened.warnings)).toBeDefined();
+    return { document: opened.document!, warnings: opened.warnings };
+  };
+  const exportVisible = (document: ChemDraftDocument) => {
+    const xml = exportDocumentToCdxml(document).contents;
+    expect(xml).not.toMatch(/\bReactionStep\w+="\s*"/);
+    if (format === "CDX") {
+      const decoded = readCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes);
+      const step = decoded.kids.find(child => child.name === "page")!.kids
+        .find(child => child.name === "scheme")!.kids.find(child => child.name === "step")!;
+      for (const [name, value] of Object.entries(step.attrs)) {
+        if (name.startsWith("ReactionStep")) expect(value.trim(), name).not.toBe("");
+      }
+      return step.attrs;
+    }
+    return stepAttributes(xml)[0];
+  };
+
+  it.each(["Line", "Arc"])("resolves a superseded %s to its imported modern arrow", type => {
+    const source = oneStep().replace(arrow("50", 100), supersededArrow("50", "52", type) + modernArrow);
+    const { document, warnings } = open(source);
+    const reaction = reactions(document)[0];
+    const importedArrow = objects(document).find(object => object.compatibility?.originalId === "52")!;
+    expect(importedArrow).toBeDefined();
+    expect(reaction.arrowObjectIds).toEqual([importedArrow.id]);
+    expect(reaction.compatibility?.unknown.cdxmlStepAttributes).toMatchObject({ ReactionStepArrows: "50" });
+    expect(warnings.filter(warning => warning.code === "cdxml.reaction_reference_unresolved")).toEqual([]);
+    expect(exportVisible(document).ReactionStepArrows).toBe("52");
+    const reopened = format === "CDX"
+      ? importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes).document!
+      : importFixture(visibleOnly(exportDocumentToCdxml(document).contents)).document;
+    expect(summary(reopened)[0].arrows).toEqual(["52"]);
+  });
+
+  it("follows two SupersededBy hops", () => {
+    const source = oneStep().replace(arrow("50", 100),
+      supersededArrow("50", "51") + supersededArrow("51", "52") + modernArrow);
+    const { document, warnings } = open(source);
+    expect(summary(document)[0].arrows).toEqual(["52"]);
+    expect(warnings.filter(warning => warning.code === "cdxml.reaction_reference_unresolved")).toEqual([]);
+    expect(exportVisible(document).ReactionStepArrows).toBe("52");
+  });
+
+  it.each([
+    ["cycle", supersededArrow("50", "51") + supersededArrow("51", "50")],
+    ["missing target", supersededArrow("50", "999999")]
+  ])("warns and retains source references for a %s", (reason, graphics) => {
+    const { document, warnings } = open(oneStep().replace(arrow("50", 100), graphics));
+    expect(reactions(document)[0].arrowObjectIds).toEqual([]);
+    expect(reactions(document)[0].compatibility?.unknown.cdxmlStepAttributes).toMatchObject({ ReactionStepArrows: "50" });
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.reaction_reference_unresolved", sourceObjectId: reactions(document)[0].id,
+      message: expect.stringContaining('ReactionStepArrows id "50"')
+    }));
+    expect(warnings.find(warning => warning.code === "cdxml.reaction_reference_unresolved")?.message).toContain(reason);
+    expect(exportVisible(document)).not.toHaveProperty("ReactionStepArrows");
+  });
+});
+
 describe("synthetic CDXML reaction schemes", () => {
+  it.each([false, true])("omits every empty ReactionStep id list (preserved source: %s)", preserveSource => {
+    const { document } = importFixture(oneStep());
+    const reaction = reactions(document)[0];
+    reaction.components = [];
+    reaction.conditionsTextObjectIds = [];
+    reaction.arrowObjectIds = [];
+    reaction.plusObjectIds = [];
+    if (preserveSource) {
+      Object.assign(reaction.compatibility!.unknown.cdxmlStepAttributes as Record<string, string>, {
+        ReactionStepAtomMap: "", ReactionStepAtomMapManual: " ", ReactionStepAtomMapAuto: ""
+      });
+    } else delete reaction.compatibility;
+    const xml = exportDocumentToCdxml(document).contents;
+    expect(xml).not.toMatch(/\bReactionStep\w+="\s*"/);
+    expect(Object.keys(stepAttributes(xml)[0]).filter(name => name.startsWith("ReactionStep"))).toEqual([]);
+    const decoded = readCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes);
+    const step = decoded.kids.find(child => child.name === "page")!.kids
+      .find(child => child.name === "scheme")!.kids.find(child => child.name === "step")!;
+    expect(Object.keys(step.attrs).filter(name => name.startsWith("ReactionStep"))).toEqual([]);
+  });
+
   it("preserves the visible characters of multi-run conditions through CDXML, CDX and chained exports", () => {
     const source = oneStep().replace('<s>25 °C, 2 h</s>',
       '<s font="3">Na</s><s face="32">2</s><s>CO</s><s face="32">3</s><s font="4">\nTHF,  25 °C\n</s><s font="3">2 h</s>');
@@ -304,7 +397,7 @@ describe("synthetic CDXML reaction schemes", () => {
     const attrs = stepAttributes(exportDocumentToCdxml(document).contents)[0];
     expect(attrs.ReactionStepReactants).toBe("20");
     expect(attrs.ReactionStepProducts).toBe("30 10");
-    expect(attrs.ReactionStepObjectsBelowArrow).toBe("");
+    expect(attrs).not.toHaveProperty("ReactionStepObjectsBelowArrow");
   });
 
   it("preserves opaque atom maps explicitly and retains their original atom ids", () => {
