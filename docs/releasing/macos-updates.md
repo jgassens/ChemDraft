@@ -194,7 +194,7 @@ uses that JRE to smoke-test OPSIN's benzene conversion. This checks the actual
 native binaries rather than relying on the JDK version or runner architecture.
 
 `tauri.conf.json` includes `resources/opsin/jre` in bundle resources. After
-production packaging, run the existing release gate against the built app:
+production packaging, the final signed app MUST pass `tools/release/verify-macos-app.mjs` before publication:
 
 ```bash
 node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
@@ -241,8 +241,8 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
 
    Commit the real sidecar and update its placeholder assertion in
    `apps/desktop/src-tauri/src/lib.rs` and binaries README before selecting the
-   final release commit. The tooling change deliberately leaves the placeholder
-   in place. Native Intel execution acceptance remains required after Rosetta
+   final release commit. The real Intel sidecar is committed and required by the
+   strict smoke and release checks. Native Intel execution acceptance remains required after Rosetta
    smokes pass. Verify both sidecars' minimum OS, not just the new one.
 
 2. Install the Rust targets for the toolchain pinned in `rust-toolchain.toml`:

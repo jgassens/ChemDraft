@@ -30,6 +30,7 @@ if [ "$RUN_MODE" = "--dev" ] && [ -n "$MACOS_TARGET" ]; then
   echo "--target is supported for packaged launches only; --dev keeps its host-native workflow."
   exit 2
 fi
+MACOS_BUILD_TARGET="$(node "$ROOT_DIR/scripts/macos-build-target.mjs" "$MACOS_TARGET")"
 RELEASE_TARGET_DIR="$APP_DIR/src-tauri/target${MACOS_TARGET:+/$MACOS_TARGET}/release"
 # Which worktree/branch this launch is from. With several ChemDraft worktrees checked out (all
 # building an app literally named "ChemDraft"), this is exported so the build bakes it into the
@@ -43,7 +44,7 @@ export CHEMDRAFT_WORKTREE_LABEL
 RUN_APP_SIGN_IDENTITY=""
 RUN_APP_SIGN_IDENTITY_DESC=""
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
-if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
+if [ "$MACOS_BUILD_TARGET" = "x86_64-apple-darwin" ]; then
   LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout-x86_64/avogadro3d-sidecar"
 fi
 TAURI_OUTPUT_BUNDLE="$RELEASE_TARGET_DIR/bundle/macos/ChemDraft.app"
@@ -860,24 +861,22 @@ force_tauri_context_rebuild
 
 # The Intel package must never inherit the shared arm64 OPSIN image. This obtains a checksum-pinned
 # JDK outside the checkout when JAVA_HOME is unset, links the JRE, and checks its native architecture.
-if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
-  node "$ROOT_DIR/scripts/build-opsin-runtime.mjs" --target "$MACOS_TARGET"
+if [ "$MACOS_BUILD_TARGET" = "x86_64-apple-darwin" ]; then
+  node "$ROOT_DIR/scripts/build-opsin-runtime.mjs" --target "$MACOS_BUILD_TARGET"
 fi
+node "$ROOT_DIR/scripts/check-release-opsin-runtime.mjs" --target "$MACOS_BUILD_TARGET"
 
 # The identifier must be overridden at BUILD time, not patched into Info.plist afterwards:
 # `generate_context!()` bakes it in at compile time and Tauri derives app_data_dir() from it. Patching
 # only the plist would give the bundle a separate LaunchServices identity while it kept reading and
 # writing ~/Library/Application Support/org.chemdraft.desktop — still fighting the stable app over
 # toolbar-state.json, which is the whole thing this split exists to stop.
-if [ -n "$MACOS_TARGET" ]; then
-  tauri_target_args=(--target "$MACOS_TARGET")
-  if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
-    tauri_target_args+=(--config "$APP_DIR/src-tauri/tauri.intel.conf.json")
-  fi
-  node_modules/.bin/tauri build "${tauri_target_args[@]}" --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
-else
-  node_modules/.bin/tauri build --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
+tauri_build_args=(build)
+if [ -n "$MACOS_TARGET" ]; then tauri_build_args+=(--target "$MACOS_TARGET"); fi
+if [ "$MACOS_BUILD_TARGET" = "x86_64-apple-darwin" ]; then
+  tauri_build_args+=(--config "$APP_DIR/src-tauri/tauri.intel.conf.json")
 fi
+node_modules/.bin/tauri "${tauri_build_args[@]}" --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
 set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"
 stage_run_app_bundle
 resign_local_bundle "$RUN_APP_BUNDLE"

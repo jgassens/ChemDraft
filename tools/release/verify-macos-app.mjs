@@ -71,14 +71,18 @@ export function inventoryApp(app) {
   return records;
 }
 
+export function verifyApp(app, target, { run = spawnSync, inventory = inventoryApp, allowSidecarPlaceholder = false } = {}) {
+  const plistResult = run("/usr/bin/plutil", ["-convert", "json", "-o", "-", join(app, "Contents", "Info.plist")], { encoding: "utf8" });
+  if (plistResult.status !== 0) throw new Error(`Cannot read bundle Info.plist: ${plistResult.stderr || plistResult.error?.message}`);
+  return verifyInventory({ target, plist: JSON.parse(plistResult.stdout), records: inventory(app), allowSidecarPlaceholder });
+}
+
 function main() {
   const { values, positionals } = parseArgs({ options: { target: { type: "string" }, "allow-sidecar-placeholder": { type: "boolean", default: false } }, allowPositionals: true });
   if (positionals.length !== 1 || !values.target || !positionals[0].endsWith(".app")) throw new Error("Usage: node tools/release/verify-macos-app.mjs <built.app> --target <triple> [--allow-sidecar-placeholder (smoke CI only)]");
   targetArchitecture(values.target);
   const app = resolve(positionals[0]);
-  const plistResult = spawnSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", join(app, "Contents", "Info.plist")], { encoding: "utf8" });
-  if (plistResult.status !== 0) throw new Error(`Cannot read bundle Info.plist: ${plistResult.stderr || plistResult.error?.message}`);
-  const count = verifyInventory({ target: values.target, plist: JSON.parse(plistResult.stdout), records: inventoryApp(app), allowSidecarPlaceholder: values["allow-sidecar-placeholder"] });
+  const count = verifyApp(app, values.target, { allowSidecarPlaceholder: values["allow-sidecar-placeholder"] });
   if (values["allow-sidecar-placeholder"]) console.warn("Smoke CI only: sidecar placeholder permitted; this is not release acceptance.");
   console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS and Sparkle feed (${app})`);
 }

@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - native/avogadro3d-sidecar/**
-      - apps/desktop/src-tauri/binaries/**
-      - apps/desktop/src-tauri/tauri.intel.conf.json
-      - apps/desktop/src-tauri/Info.intel.plist
-      - apps/desktop/src-tauri/Info.plist
-      - apps/desktop/src-tauri/tauri.conf.json
+      - native/**
+      - apps/desktop/**
+      - packages/**
       - scripts/**
       - tools/release/**
       - run-app
@@ -56,24 +53,21 @@ jobs:
           architecture: x64
       - run: pnpm install --frozen-lockfile
       - name: Tooling unit tests (no native compilation)
-        run: node --test scripts/opsin-runtime-architecture.test.mjs scripts/macos-build-target.test.mjs tools/release/macos-release.test.mjs
+        env:
+          # The .test.ts suites use Vitest; this command runs the Node .test.mjs suites.
+          NODE_OPTIONS: --no-experimental-strip-types
+        run: node --test scripts/ tools/release/
       - name: Build Intel OPSIN runtime and smoke test benzene
         run: node scripts/build-opsin-runtime.mjs --arch x86_64
       - name: Inspect committed Intel sidecar
-        id: sidecar
         shell: bash
         run: |
-          if file -b "$CHEMDRAFT_ENGINE3D_SIDECAR" | grep -q 'Mach-O'; then
-            echo 'real=true' >> "$GITHUB_OUTPUT"
-          elif grep -q 'avogadro3d-sidecar placeholder' "$CHEMDRAFT_ENGINE3D_SIDECAR"; then
-            echo 'real=false' >> "$GITHUB_OUTPUT"
-            echo '::notice::Intel sidecar is still a placeholder; skipping engine3d smokes. This run cannot establish release acceptance.'
-          else
-            echo '::error::Intel sidecar is neither Mach-O nor the known placeholder'
-            exit 1
-          fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { assertMachOArchitecture } from "./tools/release/macos-mach-o.mjs";
+            assertMachOArchitecture(readFileSync(process.env.CHEMDRAFT_ENGINE3D_SIDECAR), "x86_64");
+          '
       - name: Smoke committed Intel sidecar (never rebuild it here)
-        if: steps.sidecar.outputs.real == 'true'
         run: |
           pnpm smoke:engine3d-real-structure
           pnpm smoke:engine3d-hold-steady
@@ -85,12 +79,8 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=3072
         run: pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app --ci
       - name: Inspect Intel app architecture, minimum OS, runtime and feed
-        env:
-          REAL_SIDECAR: ${{ steps.sidecar.outputs.real }}
         shell: bash
         run: |
-          check_args=()
-          if [ "$REAL_SIDECAR" = false ]; then check_args+=(--allow-sidecar-placeholder); fi
           node tools/release/verify-macos-app.mjs \
             apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app \
-            --target x86_64-apple-darwin "${check_args[@]}"
+            --target x86_64-apple-darwin

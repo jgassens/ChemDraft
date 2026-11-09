@@ -3,11 +3,19 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { macosBuildArgs } from "./macos-build-target.mjs";
+import { macosBuildArgs, macosBuildTarget } from "./macos-build-target.mjs";
 
 test("macOS build preserves native defaults and routes explicit targets correctly", () => {
   const defaultArgs = ["build", "--bundles", "app"];
-  assert.deepEqual(macosBuildArgs(defaultArgs, "intel.json"), defaultArgs);
+  assert.deepEqual(macosBuildArgs(defaultArgs, "intel.json", "arm64"), defaultArgs);
+  assert.deepEqual(macosBuildArgs(defaultArgs, "intel.json", "x64"), ["build", "--config", "intel.json", "--bundles", "app"]);
+  assert.deepEqual(defaultArgs, ["build", "--bundles", "app"]);
+  for (const host of ["arm64", "x64"]) {
+    assert.equal(macosBuildTarget(defaultArgs, host), host === "x64" ? "x86_64-apple-darwin" : "aarch64-apple-darwin");
+    assert.deepEqual(macosBuildArgs(["dev"], "intel.json", host), ["dev"]);
+    assert.deepEqual(macosBuildArgs(["build", "--", "--target=bad"], "intel.json", host), host === "x64"
+      ? ["build", "--config", "intel.json", "--", "--target=bad"] : ["build", "--", "--target=bad"]);
+  }
   const arm64Args = ["build", "--target", "aarch64-apple-darwin", "--bundles", "app"];
   assert.deepEqual(macosBuildArgs(arm64Args, "intel.json"), arm64Args);
   for (const flag of [["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"], ["-t", "x86_64-apple-darwin"]]) {
@@ -41,17 +49,34 @@ test("run-app rejects invalid targets and cross-target dev before any build or i
   }
 });
 
-test("run-app target aliases stage Intel OPSIN before packaging, with no native-default changes", { skip: process.platform === "win32" }, () => {
+test("run-app native and explicit targets preserve output paths, stage Intel OPSIN, preflight, then package with the correct plist", { skip: process.platform === "win32" }, () => {
   const source = readFileSync(new URL("../run-app", import.meta.url), "utf8");
   // Execute the real argument parser and runtime preparation block with a mocked Node process.
   // Skip launcher locks, installs, cargo, signing, builds and every other filesystem operation.
-  const parser = source.slice(source.indexOf("RUN_MODE="), source.indexOf("\nRELEASE_TARGET_DIR="));
-  const preparation = source.slice(source.indexOf('if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then\n  node'), source.indexOf("\n# The identifier must be overridden"));
+  const parser = source.slice(source.indexOf("RUN_MODE="), source.indexOf("\n# Which worktree/branch"));
+  const preparation = source.slice(source.indexOf('if [ "$MACOS_BUILD_TARGET" = "x86_64-apple-darwin" ]; then\n  node'), source.indexOf("\n# The identifier must be overridden"));
   assert.ok(preparation.includes("build-opsin-runtime.mjs"));
-  const script = `${parser}\nROOT_DIR=/fixture\nnode() { printf '%s\\n' "$@"; }\n${preparation}`;
-  for (const args of [["-t", "x86_64-apple-darwin"], ["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"], ["--target", "aarch64-apple-darwin"], []]) {
+  const packaging = source.slice(source.indexOf("tauri_build_args=(build)"), source.indexOf('\nset_bundle_display_name "$TAURI_OUTPUT_BUNDLE"')).replace("node_modules/.bin/tauri", "tauri");
+  for (const native of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) for (const args of [["-t", "x86_64-apple-darwin"], ["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"], ["--target", "aarch64-apple-darwin"], []]) {
+    const script = `set -eu\nROOT_DIR=/fixture\nAPP_DIR=/fixture/apps/desktop\nRUN_APP_BUNDLE_ID=org.chemdraft.desktop.dev
+node() { if [[ "$1" = */macos-build-target.mjs ]]; then printf '%s\\n' "\${2:-${native}}"; else printf '%s\\n' "$@"; fi; }
+tauri() { printf '%s\\n' "$@"; }
+${parser}
+printf '%s\\n' "$RELEASE_TARGET_DIR"
+${preparation}
+${packaging}`;
     const result = spawnSync("bash", ["-c", script, "run-app", ...args], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, args.some((arg) => arg.includes("x86_64")) ? "/fixture/scripts/build-opsin-runtime.mjs\n--target\nx86_64-apple-darwin\n" : "");
+    const target = args.length ? args.at(-1).replace("--target=", "") : native;
+    const lines = result.stdout.trim().split("\n");
+    assert.equal(lines[0], `/fixture/apps/desktop/src-tauri/target${args.length ? `/${target}` : ""}/release`);
+    const expected = [];
+    if (target === "x86_64-apple-darwin") expected.push("/fixture/scripts/build-opsin-runtime.mjs", "--target", target);
+    expected.push("/fixture/scripts/check-release-opsin-runtime.mjs", "--target", target, "build");
+    if (args.length) expected.push("--target", target);
+    if (target === "x86_64-apple-darwin") expected.push("--config", "/fixture/apps/desktop/src-tauri/tauri.intel.conf.json");
+    expected.push("--bundles", "app", "--config", '{"identifier":"org.chemdraft.desktop.dev"}');
+    assert.deepEqual(lines.slice(1), expected);
   }
+  assert.ok(source.indexOf('if [ "$RUN_MODE" = "--dev" ]; then\n  select_dev_port') < source.indexOf('node "$ROOT_DIR/scripts/check-release-opsin-runtime.mjs"'));
 });

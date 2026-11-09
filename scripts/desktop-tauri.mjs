@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEV_PRODUCT_NAME, isStableBuild, prependToPath, worktreeIdentity, worktreeLabelFor } from "./worktree-identity.mjs";
 import { macosBuildArgs } from "./macos-build-target.mjs";
+import { preflightReleaseOpsinRuntime } from "./check-release-opsin-runtime.mjs";
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
@@ -29,7 +30,7 @@ const PACKAGE_BUILD_FLAG = "--package-build";
 const isPackageBuild = process.argv[2] === PACKAGE_BUILD_FLAG;
 const inputArgs = isPackageBuild ? ["build", ...process.argv.slice(3)] : process.argv.slice(2);
 const args = process.platform === "darwin"
-  ? macosBuildArgs(inputArgs, join(APP_DIR, "src-tauri", "tauri.intel.conf.json"))
+  ? macosBuildArgs(inputArgs, join(APP_DIR, "src-tauri", "tauri.intel.conf.json"), process.arch)
   : inputArgs;
 
 const env = { ...process.env };
@@ -37,6 +38,8 @@ const identity = worktreeIdentity(ROOT_DIR);
 env.CHEMDRAFT_WORKTREE_LABEL = worktreeLabelFor({ command: args[0], identity, env });
 
 if (process.platform === "darwin") {
+  // Fail before signing or Tauri packaging; dev/debug/non-bundle builds keep OPSIN optional.
+  preflightReleaseOpsinRuntime(args);
   const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
   const result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...args], {
     cwd: APP_DIR,
