@@ -390,7 +390,8 @@ export const MoleculeAtomSchema = z
 export const MoleculeBondDisplaySchema = z
   .object({
     doubleBondSide: z.enum(["left", "right", "center", "automatic"]).optional(),
-    bondStyle: z.enum(["bold", "wedge", "hashed", "dashed"]).optional(),
+    /** Wavy explicitly leaves the stereocentre at fromAtomId unknown; single bonds only. */
+    bondStyle: z.enum(["bold", "wedge", "hashed", "dashed", "wavy"]).optional(),
     /** Perspective depth cue baked by the 3D flatten: 0 = farthest bond, 1 = nearest.
      *  Display-only (stroke weight) — never part of chemical identity. */
     depthWeight: z.number().min(0).max(1).optional()
@@ -411,6 +412,10 @@ export const MoleculeBondSchema = z
   .refine((bond) => bond.stereo === undefined || bond.order === "double", {
     path: ["stereo"],
     message: 'Bond stereo "either" is valid only for a double bond.'
+  })
+  .refine((bond) => bond.display?.bondStyle !== "wavy" || bond.order === "single", {
+    path: ["display", "bondStyle"],
+    message: 'Bond style "wavy" is valid only for a single bond.'
   })
   .transform((bond) => {
     if (bond.stereo === undefined) delete bond.stereo;

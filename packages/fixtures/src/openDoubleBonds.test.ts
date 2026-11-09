@@ -188,7 +188,9 @@ it("CDXML Wavy is order-sensitive and does not turn a single bond into an open d
   const result = openChemDraftPayload(source);
   const mol = result.document!.pages[0]!.objects[0] as MoleculeObject;
   expect(eitherIndices(mol.bonds)).toEqual([]);
-  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(true);
+  expect(mol.bonds).toHaveLength(3);
+  expect(mol.bonds[1]).toMatchObject({ order: "single", display: { bondStyle: "wavy" } });
+  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(false);
 });
 
 it("SMILES-to-native is geometry-defined by default and explicitly opts into perceived open bonds", async () => {

@@ -1434,6 +1434,8 @@ export function nativeBondStyleForToolCommand(commandId: string): NativeBondTool
       return "wedge";
     case "tool.hashedBond":
       return "hashed";
+    case "tool.wavyBond":
+      return "wavy";
     case "tool.dashedBond":
       return "dashed";
     case "tool.boldBond":
@@ -7445,6 +7447,7 @@ export function applyNativeBondDisplayStyleTarget(
   if (!bond) {
     return document;
   }
+  if (bondStyle === "wavy" && bond.order !== "single") return document;
   if (bond.display?.bondStyle === bondStyle) {
     return nativeBondDisplayStyleReverses(bond, bondStyle)
       ? applyPatch(
@@ -7482,12 +7485,12 @@ export function applyNativeBondDisplayStyleTarget(
 
 /**
  * Whether applying `bondStyle` to a bond already drawn that way reverses it rather than doing
- * nothing: a wedge or hashed wedge clicked again with its own tool swaps its narrow end to the
+ * nothing: a wedge, hashed wedge or wavy bond clicked again with its own tool swaps its stereo end to the
  * other atom. The narrow end marks the stereocentre, so this is a stereo edit the user asked for
  * by clicking, and its undo restores the bond exactly. Every other style is direction-free.
  */
 export function nativeBondDisplayStyleReverses(bond: MoleculeBond, bondStyle: NativeBondDisplayStyle): boolean {
-  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed");
+  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed" || bondStyle === "wavy");
 }
 
 /** The same bond drawn from its other end; a left/right double-bond side is mirrored to stay put. */
@@ -16066,6 +16069,7 @@ function buildNativeMoleculeEngineRelayout(
   const engineBondByPair = new Map(
     engineBonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
+  const unknownStereoAtomIds = new Set(molecule.bonds.filter(bond => bond.display?.bondStyle === "wavy").map(bond => bond.fromAtomId));
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
     const toIndex = atomIndexById.get(bond.toAtomId);
@@ -16074,7 +16078,11 @@ function buildNativeMoleculeEngineRelayout(
         ? atomPairKey(`${Math.min(fromIndex, toIndex)}`, `${Math.max(fromIndex, toIndex)}`)
         : undefined;
     const engineBond = pairKey !== undefined ? engineBondByPair.get(pairKey) : undefined;
-    const wedge = engineBond?.wedge ?? null;
+    const proposedStereoAtomId = engineBond && molecule.atoms[engineBond.from]?.id;
+    // An explicit unknown centre and its directed marker survive every depictor, even one
+    // that proposes a new wedge from the same centre on the new coordinates.
+    const wedge = bond.display?.bondStyle === "wavy" ? "wavy"
+      : proposedStereoAtomId && unknownStereoAtomIds.has(proposedStereoAtomId) ? null : engineBond?.wedge ?? null;
     const {
       bondStyle: previousStyle,
       depthWeight: _depthWeight,
@@ -16089,8 +16097,8 @@ function buildNativeMoleculeEngineRelayout(
     // A wedge/hash is narrow at `from`. OCL may move the stereo marker to a different adjacent bond
     // and may orient that bond opposite to ChemDraft's pre-existing endpoint order. Preserve the
     // engine's directed narrow end; an unordered-pair-only transfer can turn R/S into unspecified.
-    const engineFromAtomId = wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
-    const engineToAtomId = wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
+    const engineFromAtomId = previousStyle === "wavy" ? bond.fromAtomId : wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
+    const engineToAtomId = previousStyle === "wavy" ? bond.toAtomId : wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
     const directedBond = engineFromAtomId && engineToAtomId
       ? { ...bond, fromAtomId: engineFromAtomId, toAtomId: engineToAtomId }
       : bond;
@@ -18073,6 +18081,7 @@ function relocateRepeatedStereoMarkers(
 
       for (const candidate of source) {
         if (candidate.order !== "single") continue;
+        if (candidate.display?.bondStyle === "wavy") continue;
         const neighborId = candidate.fromAtomId === centerId
           ? candidate.toAtomId
           : candidate.toAtomId === centerId
@@ -18230,6 +18239,7 @@ function relocateRepeatedStereoMarkers(
 
     for (const candidate of depthAligned) {
       if (candidate.order !== "single") continue;
+      if (candidate.display?.bondStyle === "wavy") continue;
       const neighborId = candidate.fromAtomId === centerId
         ? candidate.toAtomId
         : candidate.toAtomId === centerId
@@ -18572,6 +18582,20 @@ export function flattenNativeMolecule3d(
     };
   }
   mark("flatten.reconcile-stereo");
+
+  // Explicit unknown intent belongs to the wave's original directed bond, even when
+  // the reader cannot perceive that atom as stereogenic. Never lose or redirect it.
+  const committedBondById = new Map(committedBonds.map(bond => [bond.id, bond]));
+  const lostWaves = molecule.bonds.filter(bond => {
+    if (bond.display?.bondStyle !== "wavy") return false;
+    const actual = committedBondById.get(bond.id);
+    return actual?.display?.bondStyle !== "wavy" || actual.order !== "single" ||
+      actual.fromAtomId !== bond.fromAtomId || actual.toAtomId !== bond.toAtomId;
+  });
+  if (lostWaves.length) return {
+    status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+    refusalReasons: [`flatten would lose or redirect explicit unknown stereo at ${lostWaves.length} bond(s); re-orient and try again`]
+  };
 
   const stagedMolecule: MoleculeObject = {
     ...molecule,
@@ -20587,10 +20611,11 @@ function nativeBondWithOrderAndDisplay(
   bond: MoleculeBond,
   order: MoleculeBond["order"]
 ): MoleculeBond {
-  const bondStyle = bond.display?.bondStyle;
+  const bondStyle = bond.display?.bondStyle === "wavy" && order !== "single" ? undefined : bond.display?.bondStyle;
   if (order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
     const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    if (restDisplay.bondStyle === "wavy") delete restDisplay.bondStyle;
     const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,

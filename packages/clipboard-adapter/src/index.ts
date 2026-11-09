@@ -152,10 +152,10 @@ export interface ParsedClipboardBond {
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
   stereo?: "either";
-  /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
-   *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
+  /** Single-bond stereo from the source molfile (V2000 1→wedge, 6→hashed, 4→wavy;
+   *  V3000 CFG=1→wedge, CFG=3→hashed, CFG=2→wavy). The stereo end is `fromAtomId`.
    *  "dashed" is not stereo: it marks a coordination (dative) bond, type 9. */
-  bondStyle?: "wedge" | "hashed" | "dashed";
+  bondStyle?: "wedge" | "hashed" | "dashed" | "wavy";
 }
 
 export interface ParsedMolfileGraph {
@@ -1109,7 +1109,8 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
     // Some writers use the V3000 coordination type in V2000 bond blocks. Preserve its dative
     // meaning exactly as the V3000 reader does, because treating it as an ordinary single bond
     // would silently change the interaction into a covalent bond.
-    const bondStyle = orderCode === 9 ? "dashed" : bondStyleFromV2000Stereo(stereoCode);
+    const bondStyle = orderCode === 9 ? "dashed" : stereoCode === 4
+      ? (orderCode === 1 ? "wavy" : undefined) : bondStyleFromV2000Stereo(stereoCode);
     if (orderCode === 9) {
       warnings.push({
         code: "clipboard.v2000_coordination_bond",
@@ -1312,7 +1313,8 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
       const cfg = cfgMatch ? Number(cfgMatch[1]) : 0;
       // Type 9 is a coordination (dative) bond: it reads back as a single bond with the dashed
       // display style, and a dative bond carries no wedge/hash stereo (CFG stays with real types).
-      const bondStyle = orderCode === 9 ? "dashed" : cfg === 1 ? "wedge" : cfg === 3 ? "hashed" : undefined; // CFG 2 = either
+      const bondStyle = orderCode === 9 ? "dashed" : cfg === 1 ? "wedge" : cfg === 3 ? "hashed"
+        : cfg === 2 && orderCode === 1 ? "wavy" : undefined;
       bonds.push({
         id: bondId(index),
         fromAtomId: atomId(fromIndex),
@@ -1573,7 +1575,7 @@ function bondStyleFromV2000Stereo(code: number): ParsedClipboardBond["bondStyle"
   if (code === 6) {
     return "hashed"; // down
   }
-  return undefined; // 0 none, 4 either, 3 cis/trans — no native single-bond wedge style
+  return undefined; // either is handled with its bond order at the call site
 }
 
 function bondOrderFromMolfile(code: number): ParsedClipboardBond["order"] {

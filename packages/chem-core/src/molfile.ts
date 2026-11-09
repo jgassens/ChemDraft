@@ -486,9 +486,11 @@ function i4(value: number): string {
 
 function bondStereoFlag(bond: MoleculeBond): number {
   if (bond.order === "double" && bond.stereo === "either") return 3;
+  if (bond.order !== "single") return 0;
   const style = bond.display?.bondStyle;
   if (style === "wedge") return 1; // up (narrow end at fromAtomId)
   if (style === "hashed") return 6; // down
+  if (style === "wavy") return 4; // unknown at fromAtomId
   return 0;
 }
 
@@ -691,7 +693,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   writableBonds.forEach((bond, index) => {
     const [from, to] = v3000BondAtomIds(bond, atomById);
     const stereo = bondStereoFlag(bond);
-    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : stereo === 3 ? " CFG=2" : "";
+    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : (stereo === 3 || stereo === 4) ? " CFG=2" : "";
     lines.push(
       `M  V30 ${index + 1} ${isDativeBond(bond) ? 9 : resolvedMolfileBondCode(bond, options)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );

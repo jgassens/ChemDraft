@@ -119,7 +119,7 @@ export async function moleculeSmiles(
         }
       }
       const identifiers = await computeStructureIdentifiers(
-        molfile ?? moleculeToMolfileV2000(expanded.molecule, {
+        (molecule.bonds.some((bond) => bond.display?.bondStyle === "wavy") ? undefined : molfile) ?? moleculeToMolfileV2000(expanded.molecule, {
           unknownBondOrders: "refuse",
           fromDocFrame: true,
           warnings: writerWarnings,
@@ -174,7 +174,7 @@ export async function moleculeSmiles(
     nativeMoleculeUnspellableLabels(molecule).length === 0 &&
     !molecule.atoms.some((atom) => (atom.markRadicals ?? 0) > 0 ||
       atom.isotope !== undefined || atom.element === "D" || atom.element === "T") &&
-    !molecule.bonds.some((bond) => bond.stereo === "either") &&
+    !molecule.bonds.some((bond) => bond.stereo === "either" || bond.display?.bondStyle === "wavy") &&
     molecule.structureFormat === "smiles" &&
     molecule.structure
   ) {

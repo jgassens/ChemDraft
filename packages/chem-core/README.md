@@ -4,6 +4,11 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Bond displays are `bold`, `wedge`, `hashed`, `dashed`, and `wavy`. Optional
+`MoleculeBond.display.bondStyle: "wavy"` is valid only with `order: "single"` (schema rejection
+otherwise) and means explicitly unknown stereo at `fromAtomId`. It follows additive v1 conventions:
+no migration or backfill. MOL V2000 writes single-bond stereo 4; V3000 writes CFG=2.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

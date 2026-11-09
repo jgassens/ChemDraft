@@ -90,6 +90,10 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavelength tied to the
+stroke width and bond length. The shared SVG plan owns label trimming and crossing gaps, including
+effect/sketch paths; canvas, SVG, PDF and resvg PNG all consume that geometry.
+
 `DocumentStylePreset` and `DocumentTextStyle` are native style data in `@chemdraft/chem-core`.
 `DocumentStyleScale` and point conversion stay here in `src/documentStyle.ts`. Native coordinates
 use 22 units per bond; the physical scale is 14.4/22 pt per unit. Canvas plans and exporters use those same dimensions,
