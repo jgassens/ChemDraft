@@ -30,7 +30,7 @@ import {
   type TextObject,
   type TableObject
 } from "@chemdraft/chem-core";
-import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
+import { measureTextRun, planTableLayout, textObjectSpansForRendering } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
@@ -142,7 +142,10 @@ interface IdAllocator {
   next(): string;
 }
 
+type ExportColorTable = Map<string, number>;
+
 interface VisibleExportContext {
+  colors: ExportColorTable;
   ids: Map<string, string>;
   bondIdsByRefKey: Map<string, string>;
   crossingPartnerKeysByRefKey: Map<string, Set<string>>;
@@ -150,6 +153,7 @@ interface VisibleExportContext {
 }
 
 interface CdxmlColorTable {
+  warnings: CompatibilityConversionWarning[];
   colorByIndex: Map<number, string>;
 }
 
@@ -191,9 +195,10 @@ export function exportDocumentToCdxml(
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
     .filter((object): object is TableObject => object.type === "table")
     .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts));
+  const colors: ExportColorTable = new Map(standardCdxmlColorTable.map((color, index) => [color, index + 2]));
+  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts, colors));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, colors);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -205,7 +210,7 @@ export function exportDocumentToCdxml(
   const envelopePages = parsedDocument.pages.map((page, pageIndex) =>
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, colors);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -451,12 +456,12 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[]): string {
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: ExportColorTable): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
     `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
-    buildStandardColorTableXml(),
+    buildColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
       `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
     ...pages,
@@ -465,10 +470,10 @@ function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], f
   ].join("\n");
 }
 
-function buildStandardColorTableXml(): string {
+function buildColorTableXml(colors: ExportColorTable): string {
   return [
     "  <colortable>",
-    ...standardCdxmlColorTable.map((color) => {
+    ...[...colors.keys()].map((color) => {
       const rgb = hexToRgb(color) ?? { r: 0, g: 0, b: 0 };
       return `    <color r="${formatColorComponent(rgb.r)}" g="${formatColorComponent(rgb.g)}" b="${formatColorComponent(rgb.b)}"/>`;
     }),
@@ -486,9 +491,9 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[]): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[], colors: ExportColorTable): string {
   const allocator = createIdAllocator(pageIndex);
-  const context = createVisibleExportContext(page);
+  const context = createVisibleExportContext(page, colors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const visibleChildren = page.objects
     .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById, fonts))
@@ -505,22 +510,22 @@ function exportVisibleObject(
   fonts: readonly string[]
 ): string {
   if (object.type === "table") {
-    return exportTableObject(object, context.ids, allocator, warnings, fonts);
+    return exportTableObject(object, context.ids, allocator, warnings, fonts, context.colors);
   }
   if (object.type === "molecule") {
     return exportMoleculeObject(object, context, allocator, warnings);
   }
   if (object.type === "text") {
-    return exportTextObject(object, context.ids, allocator);
+    return exportTextObject(object, context.ids, allocator, context.colors);
   }
   if (object.type === "plus") {
-    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator);
+    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator, context.colors);
   }
   if (object.type === "reaction-arrow") {
-    return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings);
+    return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings, context.colors);
   }
   if (object.type === "graphic") {
-    return exportGraphicObject(object, context.ids, allocator, warnings);
+    return exportGraphicObject(object, context.ids, allocator, warnings, context.colors);
   }
   if (object.type === "bracket") {
     warnings.push({
@@ -540,7 +545,7 @@ function exportVisibleObject(
       compatibility: object.compatibility,
       graphicKind: "path",
       data: {}
-    }, context.ids, allocator, warnings);
+    }, context.ids, allocator, warnings, context.colors);
   }
   if (object.type === "reaction") {
     warnings.push({
@@ -566,7 +571,7 @@ function exportVisibleObject(
   return "";
 }
 
-function createVisibleExportContext(page: DocumentPage): VisibleExportContext {
+function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable): VisibleExportContext {
   const crossingPartnerKeysByRefKey = new Map<string, Set<string>>();
   const crossingFrontKeysByRefKey = new Map<string, { front: number; back: number }>();
 
@@ -581,6 +586,7 @@ function createVisibleExportContext(page: DocumentPage): VisibleExportContext {
   });
 
   return {
+    colors,
     ids: new Map(),
     bondIdsByRefKey: new Map(),
     crossingPartnerKeysByRefKey,
@@ -634,7 +640,8 @@ function exportMoleculeObject(
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
     const attributes = [
       `id="${nodeId}"`,
-      `p="${formatPoint(atom)}"`
+      `p="${formatPoint(atom)}"`,
+      ...cdxmlColorAttribute(moleculePartColor(molecule.style.atomLabelColors, atom.id) ?? molecule.style.atomLabelColor, context.colors)
     ];
     if (elementNumber !== undefined && atom.element !== "C") {
       attributes.push(`Element="${elementNumber}"`);
@@ -728,7 +735,8 @@ function exportBond(
     `id="${bondId}"`,
     `B="${atomIds.get(bond.fromAtomId) ?? escapeXmlAttribute(bond.fromAtomId)}"`,
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
-    `Order="${order}"`
+    `Order="${order}"`,
+    ...cdxmlColorAttribute(moleculePartColor(molecule.style.bondColors, bond.id) ?? molecule.style.bondColor, context.colors)
   ];
   if (bond.order === "double" && bond.stereo === "either") {
     warnings.push(warning(
@@ -791,7 +799,8 @@ function exportTableObject(
   ids: Map<string, string>,
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
-  fonts: readonly string[]
+  fonts: readonly string[],
+  colors: ExportColorTable
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
@@ -815,7 +824,7 @@ function exportTableObject(
         const face = (weight >= 600 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
           (run.script === "subscript" ? 32 : run.script === "superscript" ? 64 : 0);
         const size = run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx;
-        return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}">${escapeXmlText(run.text)}</s>`;
+        return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}"${cdxmlColorAttribute(run.style.color ?? style.color, colors).map(attribute => ` ${attribute}`).join("")}>${escapeXmlText(run.text)}</s>`;
       }).join("");
       texts.push(`<t id="${allocator.next()}" p="${formatPoint({ x: first.x + afterWidth, y: line.baselineY })}" Justification="${justification}">${runXml}</t>`);
     }
@@ -827,7 +836,7 @@ function exportTableObject(
     id: table.id, type: "graphic", graphicKind: "line", x: rule.x1, y: rule.y1,
     width: rule.x2 - rule.x1, height: rule.y2 - rule.y1, rotation: 0,
     style: { strokeWidth: rule.widthPx, strokeColor: style.color }, data: {}
-  }, allocator.next(), warnings));
+  }, allocator.next(), warnings, colors));
   const caption = [...(table.caption?.text ?? "").replace(/\s+/gu, " ").trim()];
   const tableName = caption.length > 0
     ? `Table "${caption.length > 40 ? `${caption.slice(0, 39).join("")}…` : caption.join("")}"`
@@ -845,9 +854,17 @@ function exportTableObject(
   return `<group id="${idFor(ids, table.id, allocator)}">${texts.join("")}${lines.join("")}</group>`;
 }
 
-function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator): string {
+function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator, colors: ExportColorTable): string {
   const textId = idFor(ids, text.id, allocator);
-  return `<t id="${textId}" p="${formatPoint({ x: text.x, y: text.y })}">${escapeXmlText(text.text)}</t>`;
+  const color = cdxmlColorAttribute(text.style.color, colors);
+  const content = text.spans.length === 0 ? escapeXmlText(text.text)
+    : textObjectSpansForRendering(text).map((span) => {
+        const face = span.script === "subscript" ? ' face="32"' : span.script === "superscript" ? ' face="64"' : "";
+        // Explicit black must override a coloured parent, even though it is otherwise implicit.
+        const runColor = cdxmlColorAttribute(span.style.color, colors, normalizeHexColorValue(text.style.color));
+        return `<s${face}${runColor.length ? ` ${runColor.join(" ")}` : ""}>${escapeXmlText(span.text)}</s>`;
+      }).join("");
+  return `<t id="${textId}" p="${formatPoint({ x: text.x, y: text.y })}"${color.length ? ` ${color.join(" ")}` : ""}>${content}</t>`;
 }
 
 function exportReactionArrowObject(
@@ -855,7 +872,8 @@ function exportReactionArrowObject(
   ids: Map<string, string>,
   allocator: IdAllocator,
   objectsById: ReadonlyMap<string, DocumentObject>,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string {
   const graphicId = idFor(ids, arrow.id, allocator);
   const start = resolveAnchorPoint(arrow.start, objectsById) ?? { x: arrow.x, y: arrow.y + arrow.height / 2 };
@@ -874,14 +892,15 @@ function exportReactionArrowObject(
     });
   }
   const arrowTypeAttribute = arrowType === undefined ? "" : ` ArrowType="${escapeXmlAttribute(arrowType)}"`;
-  return `<graphic id="${graphicId}" GraphicType="Line"${arrowTypeAttribute} BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
+  return `<graphic id="${graphicId}" GraphicType="Line"${arrowTypeAttribute}${cdxmlColorAttribute(arrow.style.strokeColor ?? arrow.style.color, colors).map(attribute => ` ${attribute}`).join("")} BoundingBox="${formatLineBoundingBox(start, end)}" Start="${formatPoint(start)}" End="${formatPoint(end)}"/>`;
 }
 
 function exportGraphicObject(
   graphic: GraphicObject,
   ids: Map<string, string>,
   allocator: IdAllocator,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string {
   if (graphic.graphicKind === "image") {
     warnings.push({ code: "cdxml.picture_not_saved", message: `CDXML export: picture ${graphic.id} is not saved in CDXML`, sourceObjectId: graphic.id });
@@ -894,13 +913,13 @@ function exportGraphicObject(
   // closed ArrowType enum — it can say hollow, angled, or half-headed per end — so round-tripping
   // the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
-    return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
+    return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings, colors);
   }
   if (isSemanticReactionArrowGraphic(graphic)) {
-    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings);
+    return exportSemanticReactionArrowGraphic(graphic, graphicId, warnings, colors);
   }
   warnForGenericGraphicMarkerLoss(graphic, warnings);
-  return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings);
+  return exportGraphicAsCdxmlGraphic(graphic, graphicId, warnings, colors);
 }
 
 /**
@@ -954,20 +973,20 @@ function isSemanticReactionArrowGraphic(graphic: GraphicObject): boolean {
 function exportSemanticReactionArrowGraphic(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
   const arrowKind = semanticArrowExportKind(graphic) ?? "forward";
   const arrowType = cdxmlArrowTypeByExportKind[arrowKind];
   // Appearance rides the same helpers every other graphic export uses; without them a dashed or
   // coloured reaction arrow reopened elsewhere as a default solid black one, silently and with no
-  // warning. The colour helper also raises the out-of-table warning, so this path stops reporting
-  // clean on a lossy export.
+  // warning. Colours share the same document-wide table as all other written objects.
   const attributes = [
     `id="${graphicId}"`,
     `GraphicType="Line"`,
     `ArrowType="${escapeXmlAttribute(arrowType)}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
     `Start="${formatPoint(line.start)}"`,
@@ -1038,10 +1057,10 @@ function warnForGraphicCdxmlLimitations(
   warnings: CompatibilityConversionWarning[]
 ): void {
   const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
-  if (typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
+  if (typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && normalizeHexColor(color) === undefined) {
     warnings.push({
       code: "cdxml.graphic_color_approximation",
-      message: `Native graphic color "${color}" is not in the standard ChemDraw color table and is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `Native graphic color "${color}" cannot be represented as an RGB colour and is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }
@@ -1108,12 +1127,13 @@ function warnForGraphicCdxmlLimitations(
 function exportGraphicAsCdxmlGraphic(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string {
   const type = cdxmlGraphicTypeForNativeGraphic(graphic);
   const attrs = [
     `id="${graphicId}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     `GraphicType="${type}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, objectCornerPoints(graphic)))}"`,
     ...(type === "Line" || type === "Arc" ? cdxmlLineTypeAttributes(graphic) : []),
@@ -1131,14 +1151,15 @@ function exportGraphicAsCdxmlGraphic(
 function exportGraphicAsCdxmlArrow(
   graphic: GraphicObject,
   graphicId: string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string {
   const line = graphicLineEndpointsForCdxml(graphic);
   const isArc = graphic.data.artPathKind === "arc" && !pointMetadata(graphic.data.pathControlPoint);
   const attrs = [
     `id="${graphicId}"`,
     `BoundingBox="${escapeXmlAttribute(cdxmlBoundingBoxForGraphic(graphic, [line.start, line.end]))}"`,
-    ...cdxmlGraphicColorAttribute(graphic, warnings),
+    ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     'FillType="None"',
     ...cdxmlArrowheadAttributes(graphic, warnings),
@@ -1305,7 +1326,8 @@ function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
 
 function cdxmlGraphicColorAttribute(
   graphic: GraphicObject,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
 ): string[] {
   // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
   // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
@@ -1329,14 +1351,7 @@ function cdxmlGraphicColorAttribute(
       sourceObjectId: graphic.id
     });
   }
-  if (!color || color.toLowerCase() === "none") {
-    return [];
-  }
-  const index = cdxmlColorIndexForHex(color);
-  if (index === undefined) {
-    return [];
-  }
-  return [`color="${index}"`];
+  return cdxmlColorAttribute(color, colors);
 }
 
 function cdxmlShapeSubtypeForColor(graphic: GraphicObject): string {
@@ -1373,19 +1388,25 @@ function nearlyEqual(left: number, right: number): boolean {
   return Math.abs(left - right) <= 0.01;
 }
 
-function cdxmlColorIndexForHex(color: string): number | undefined {
-  const normalized = normalizeHexColor(color);
-  if (!normalized) {
-    return undefined;
+function normalizeHexColorValue(color: unknown): string | undefined {
+  return typeof color === "string" ? normalizeHexColor(color) : undefined;
+}
+
+function moleculePartColor(colors: unknown, id: string): unknown {
+  return isRecord(colors) ? colors[id] : undefined;
+}
+
+/** Register at emission time: pages, objects and runs share stable first-use order. CDXML reserves
+ * indices 0/1 for black/white; explicit table entries start at 2, just as on import. */
+function cdxmlColorAttribute(color: unknown, colors: ExportColorTable, inherited = defaultCdxmlStrokeColor): string[] {
+  const normalized = normalizeHexColorValue(color);
+  if (!normalized || normalized === inherited) return [];
+  let index = colors.get(normalized);
+  if (index === undefined) {
+    index = colors.size + 2;
+    colors.set(normalized, index);
   }
-  if (normalized === "#000000") {
-    return 0;
-  }
-  if (normalized === "#ffffff") {
-    return 1;
-  }
-  const index = standardCdxmlColorTable.findIndex((candidate) => candidate === normalized);
-  return index >= 0 ? index + 2 : undefined;
+  return [`color="${index}"`];
 }
 
 function normalizeHexColor(color: string): string | undefined {
@@ -1554,7 +1575,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   }
 
   const importTransform = importTransformForTree(tree);
-  const colorTable = importCdxmlColorTable(tree);
+  const colorTable = importCdxmlColorTable(tree, warnings);
   const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
   let importedPages: DocumentPage[];
   try {
@@ -1646,7 +1667,7 @@ function importPageObjects(
       return single(importFragment(element, pageIndex, objectIndex, warnings, context));
     }
     if (element.name === "t") {
-      return single(importText(element, pageIndex, objectIndex));
+      return single(importText(element, pageIndex, objectIndex, context));
     }
     if (element.name === "graphic") {
       return single(importGraphic(element, pageIndex, objectIndex, context));
@@ -1971,9 +1992,15 @@ function importFragment(
   const atomIdByCdxmlId = new Map<string, string>();
   const cdxmlAtomStereochemistryByAtomId: Record<string, { assignment: "R" | "S"; cdxmlAtomId: string; geometry?: string }> = {};
   const statedHydrogensByAtomId = new Map<string, number>();
+  const atomLabelColors: Record<string, string> = {};
+  const bondColors: Record<string, string> = {};
   const atoms: MoleculeAtom[] = atomElements.map((atomElement, atomIndex) => {
     const atomId = `atom_${String(atomIndex + 1).padStart(3, "0")}`;
     const cdxmlId = atomElement.attributes.id ?? atomId;
+    const label = childElements(atomElement, "t")[0];
+    const labelRun = label ? childElements(label, "s")[0] : undefined;
+    const color = colorForCdxmlIndex(labelRun?.attributes.color ?? label?.attributes.color ?? atomElement.attributes.color ?? fragment.attributes.color, context.colorTable);
+    if (color) atomLabelColors[atomId] = color;
     atomIdByCdxmlId.set(cdxmlId, atomId);
     const statedHydrogens = parseInteger(atomElement.attributes.NumHydrogens);
     if (statedHydrogens !== undefined && statedHydrogens >= 0) {
@@ -2041,6 +2068,8 @@ function importFragment(
   const dashedSingleBondIds: string[] = [];
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
+    const color = colorForCdxmlIndex(bondElement.attributes.color ?? fragment.attributes.color, context.colorTable);
+    if (color) bondColors[bondId] = color;
     const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId);
     const bond: MoleculeBond = {
       id: bondId,
@@ -2198,7 +2227,10 @@ function importFragment(
     width: bounds.width,
     height: bounds.height,
     rotation: 0,
-    style: {},
+    style: {
+      ...(Object.keys(atomLabelColors).length ? { atomLabelColors } : {}),
+      ...(Object.keys(bondColors).length ? { bondColors } : {})
+    },
     structureFormat: "unknown",
     structure: "",
     ...(chemistry ? { chemistry } : {}),
@@ -2595,9 +2627,26 @@ function frontBondRefFromCdxmlDepth(left: BondRef, right: BondRef, context: Impo
   return bondRefKey(left).localeCompare(bondRefKey(right)) >= 0 ? left : right;
 }
 
-function importText(textElement: XmlElementView, pageIndex: number, objectIndex: number): TextObject {
+function importText(textElement: XmlElementView, pageIndex: number, objectIndex: number, context: ImportPageContext): TextObject {
   const point = parseCdxmlPoint(textElement.attributes.p);
   const text = textContent(textElement.children);
+  const color = colorForCdxmlIndex(textElement.attributes.color, context.colorTable);
+  const spans: TextObject["spans"] = [];
+  for (const node of textElement.children) {
+    const run = childElements({ ...textElement, children: [node] }, "s")[0];
+    if (run) {
+      const runColor = colorForCdxmlIndex(run.attributes.color, context.colorTable);
+      const face = parseInteger(run.attributes.face) ?? 0;
+      spans.push({
+        text: textContent(run.children),
+        script: face & 32 ? "subscript" : face & 64 ? "superscript" : "normal",
+        style: runColor ? { color: runColor } : {}
+      });
+    } else {
+      const plain = textContent([node]);
+      if (plain) spans.push({ text: plain, script: "normal", style: {} });
+    }
+  }
   return {
     id: `cdxml_text_${pageIndex + 1}_${objectIndex}`,
     type: "text",
@@ -2606,9 +2655,9 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
     width: Math.max(36, text.length * 8),
     height: 24,
     rotation: 0,
-    style: {},
+    style: color ? { color } : {},
     text,
-    spans: [],
+    spans: childElements(textElement, "s").length ? spans : [],
     compatibility: {
       sourceFormat: "cdxml",
       originalId: textElement.attributes.id,
@@ -2646,6 +2695,7 @@ function importGraphic(
     }
     const start = parseCdxmlPoint(element.attributes.Start) ?? { x: box.x, y: box.y };
     const end = parseCdxmlPoint(element.attributes.End) ?? { x: box.x + box.width, y: box.y + box.height };
+    const color = colorForCdxmlIndex(element.attributes.color, context.colorTable);
     return {
       id: `cdxml_arrow_${pageIndex + 1}_${objectIndex}`,
       type: "reaction-arrow",
@@ -2654,7 +2704,7 @@ function importGraphic(
       width: box.width,
       height: box.height,
       rotation: 0,
-      style: {},
+      style: color ? { strokeColor: color } : {},
       arrowKind,
       start: { kind: "point", point: start },
       end: { kind: "point", point: end },
@@ -3640,7 +3690,7 @@ function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
     : "none";
 }
 
-function importCdxmlColorTable(tree: OrderedXmlTree): CdxmlColorTable {
+function importCdxmlColorTable(tree: OrderedXmlTree, warnings: CompatibilityConversionWarning[]): CdxmlColorTable {
   const colorByIndex = new Map<number, string>([
     [0, "#000000"],
     [1, "#ffffff"]
@@ -3656,12 +3706,17 @@ function importCdxmlColorTable(tree: OrderedXmlTree): CdxmlColorTable {
   colors.forEach((color, index) => {
     colorByIndex.set(index + 2, color);
   });
-  return { colorByIndex };
+  return { colorByIndex, warnings };
 }
 
 function colorForCdxmlIndex(value: string | undefined, colorTable: CdxmlColorTable): string | undefined {
-  const index = parseInteger(value);
-  return index === undefined ? undefined : colorTable.colorByIndex.get(index);
+  if (value === undefined) return undefined;
+  const index = /^\d+$/.test(value.trim()) ? Number(value) : NaN;
+  const color = colorTable.colorByIndex.get(index);
+  if (color === undefined) {
+    colorTable.warnings.push(warning("cdxml.color_index_invalid", `CDXML colour index "${value}" is invalid or outside the colour table; the default or inherited colour was used.`));
+  }
+  return color;
 }
 
 function colorComponentFromCdxml(value: string | undefined): number {
