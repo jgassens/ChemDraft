@@ -38,6 +38,8 @@ describe("native feature version registry", () => {
     expect(additions).toEqual(Object.entries(NativeDocumentFeatureVersions)
       .filter(([, feature]) => feature.schemaTracked !== false).map(([token]) => token).sort());
     for (const entry of Object.values(NativeDocumentFeatureVersions)) {
+      expect(typeof entry.ignorable).toBe("boolean");
+      if (entry.kind !== "feature") expect(entry.ignorable).toBe(false);
       expect(entry.introducedIn).toMatch(/^\d+\.\d+\.\d+$/);
       expect(compareNativeVersions(entry.introducedIn, "1.1.1")).toBeGreaterThan(0);
     }
@@ -67,10 +69,10 @@ describe("native feature version registry", () => {
         bondStyle: z.enum(["plain", "wavy", "new-wave"]), preset: z.enum(["default", "new-preset"]) })]))
     });
     const registry: Record<string, NativeDocumentFeatureVersion> = {
-      "field:conditionsLabel": { introducedIn: "1.2.0", kind: "feature" },
-      "value:objects.*[type=molecule].bondStyle=\"wavy\"": { introducedIn: "1.2.0", kind: "feature" },
-      "value:objects.*[type=molecule].bondStyle=\"new-wave\"": { introducedIn: "1.10.0", kind: "feature" },
-      "value:objects.*[type=molecule].preset=\"new-preset\"": { introducedIn: "1.3.0", kind: "feature" }
+      "field:conditionsLabel": { introducedIn: "1.2.0", kind: "feature", ignorable: true },
+      "value:objects.*[type=molecule].bondStyle=\"wavy\"": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+      "value:objects.*[type=molecule].bondStyle=\"new-wave\"": { introducedIn: "1.10.0", kind: "feature", ignorable: false },
+      "value:objects.*[type=molecule].preset=\"new-preset\"": { introducedIn: "1.3.0", kind: "feature", ignorable: false }
     };
     const base = { objects: [{ type: "molecule", bondStyle: "plain", preset: "default" }] };
     const minimum = (value: unknown) => minimumVersionForNativeFeatures(schema, value, registry);
@@ -88,6 +90,7 @@ describe("native feature version registry", () => {
     const serialized = JSON.parse(serializeDocument(document));
     expect(serialized).not.toHaveProperty("formatVersion");
     expect(serialized).not.toHaveProperty("minAppVersion");
+    expect(serialized).not.toHaveProperty("ignorableFields");
     expect(Released111DocumentSchema.parse(serialized)).toEqual(document);
     // Stronger than a blank-page proof: exercise every existing graph/stereo corpus entry too.
     for (const entry of CORPUS) {
@@ -100,7 +103,7 @@ describe("native feature version registry", () => {
   it("can version a new preset id inside open style metadata without treating all metadata as new", () => {
     const schema = z.object({ style: z.record(z.unknown()) });
     const registry: Record<string, NativeDocumentFeatureVersion> = {
-      "value:style.stylePresetId=\"chemdraft.future\"": { introducedIn: "1.2.0", kind: "feature", schemaTracked: false }
+      "value:style.stylePresetId=\"chemdraft.future\"": { introducedIn: "1.2.0", kind: "feature", ignorable: false, schemaTracked: false }
     };
     expect(minimumVersionForNativeFeatures(schema, { style: { stylePresetId: "chemdraft.synthetic" } }, registry)).toBe("1.1.1");
     expect(minimumVersionForNativeFeatures(schema, { style: { stylePresetId: "chemdraft.future" } }, registry)).toBe("1.2.0");
@@ -113,8 +116,8 @@ describe("native feature version registry", () => {
     const oldTokens = nativeSchemaInventory(old);
     expect([...nativeSchemaInventory(next)].filter((token) => !oldTokens.has(token))).toContain('value:version="1"');
     const registry: Record<string, NativeDocumentFeatureVersion> = {
-      'value:version="1"': { introducedIn: "1.2.0", kind: "feature" },
-      'value:style="wave=new.style"': { introducedIn: "1.3.0", kind: "feature" }
+      'value:version="1"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+      'value:style="wave=new.style"': { introducedIn: "1.3.0", kind: "feature", ignorable: false }
     };
     expect(minimumVersionForNativeFeatures(next, { version: 1 }, registry)).toBe("1.1.1");
     expect(minimumVersionForNativeFeatures(next, { version: "1" }, registry)).toBe("1.2.0");
@@ -134,6 +137,8 @@ describe("forward-compatible native reader", () => {
     const source = futureDocument();
     const molecule = source.pages[0]!.objects[0] as MoleculeObject;
     const raw = JSON.parse(JSON.stringify(source));
+    raw.ignorableFields = ["pages.*.objects.*[type=molecule].atoms.*.visualDecoration",
+      "pages.*.objects.*[type=molecule].bonds.*.display.visualDecoration"];
     raw.futureSettings = { nested: { enabled: true, values: [null, 3.14, "kept"] } };
     raw.pages[0].objects[0].atoms[0].visualDecoration = { position: "above", ornaments: ["a", "b"] };
     raw.pages[0].objects[0].bonds[0].display = { bondStyle: "future-wave", visualDecoration: { amplitude: 7 } };
@@ -192,6 +197,7 @@ describe("forward-compatible native reader", () => {
     molecule.atoms[0].markRadicals = 1;
     molecule.atoms[1].formalCharge = -1;
     molecule.bonds[0].display = { bondStyle: "wedge" };
+    raw.ignorableFields = ["pages.*.objects.*[type=molecule].visualDecoration"];
     molecule.visualDecoration = { symbol: "star" };
     const opened = readDocument(raw);
     expect(opened.document.pages[0]!.objects[0]).toMatchObject({ atoms: molecule.atoms, bonds: molecule.bonds });
@@ -226,6 +232,7 @@ describe("forward-compatible native reader", () => {
 
   it("keeps preserved data with its object through cloning, patches, reordering and deletion", () => {
     const raw = JSON.parse(JSON.stringify(futureDocument()));
+    raw.ignorableFields = ["pages.*.objects.*[type=molecule].visualDecoration"];
     raw.pages[0].objects[0].visualDecoration = { kept: 42 };
     raw.pages[0].objects.push({ ...raw.pages[0].objects[0], id: "other", visualDecoration: { kept: 7 } });
     const opened = readDocument(raw).document;
@@ -331,6 +338,7 @@ describe("forward-compatible native reader", () => {
       style: {}, components: [{ objectId: "molecule", role: "reactant", futureRole: "catalyst" }] });
     expect(() => readDocument(raw)).toThrow(/components\.0\.futureRole: Unsupported chemistry field/);
     delete raw.pages[0].objects[1].components[0].futureRole;
+    raw.ignorableFields = ["pages.*.objects.*[type=reaction].components.*.visualDecoration"];
     raw.pages[0].objects[1].components[0].visualDecoration = { color: "red" };
     expect(JSON.parse(serializeDocument(readDocument(raw).document)).pages[0].objects[1].components[0])
       .toMatchObject({ role: "reactant", visualDecoration: { color: "red" } });

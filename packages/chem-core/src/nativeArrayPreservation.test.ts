@@ -5,7 +5,8 @@ import type { GraphicObject, ReactionObject, TableObject, TextObject } from "./s
 const base = { x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {} };
 
 function sourceDocument() {
-  return JSON.parse(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion: "1.3.0" }));
+  return JSON.parse(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion: "1.3.0",
+    ignorableFields: ["pages.*.objects.*[type=reaction].components.*.visualDecoration"] }));
 }
 
 function tableSource() {

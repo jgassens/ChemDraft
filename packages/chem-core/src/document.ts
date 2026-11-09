@@ -9,7 +9,7 @@ import {
 } from "./schemas";
 import { engineDocuments } from "./engineDocuments";
 import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
-import { minimumAppVersionForDocument, NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion } from "./documentFeatures";
+import { ignorableFieldsForNativeFeatures, minimumAppVersionForDocument, NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion } from "./documentFeatures";
 import { compareNativeVersions, restoreNativeExtensions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
 import { readNativeDocument, type NativeDocumentReadResult } from "./documentRead";
 
@@ -114,6 +114,7 @@ export function prepareNativeDocumentForSerializationWithWarnings(validated: Che
   delete output.compatibility.nativeExtensions;
   delete output.formatVersion;
   delete output.minAppVersion;
+  delete output.ignorableFields;
   // Clone only when reconstruction will mutate nested objects. Ordinary saves keep the engine's
   // fast, already-validated path and retain the released writer's property order and defaults.
   const restored = extensions?.length ? JSON.parse(JSON.stringify(output)) as ChemDraftDocument : output;
@@ -124,6 +125,8 @@ export function prepareNativeDocumentForSerializationWithWarnings(validated: Che
       && compareNativeVersions(validated.formatVersion, NativeDocumentFormatVersion) > 0
       ? validated.formatVersion : NativeDocumentFormatVersion;
     restored.minAppVersion = minAppVersion;
+    const ignorableFields = ignorableFieldsForNativeFeatures(restored, undefined, validated.ignorableFields);
+    if (ignorableFields.length) restored.ignorableFields = ignorableFields;
   }
   return { value: restored, warnings };
 }

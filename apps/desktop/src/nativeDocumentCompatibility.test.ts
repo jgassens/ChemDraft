@@ -63,6 +63,31 @@ describe("native document compatibility notice", () => {
     } finally { restore(); }
   });
 
+  it.each(["macos", "windows"] as const)("opens a self-described 1.3 atom display field, notifies and saves it on %s", async platform => {
+    const prompt = vi.fn(async (_options: NativePromptOptions) => "ok");
+    const restore = setNativePromptProvider(prompt);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const raw = JSON.parse(serializeDocument(createEmptyDocument()));
+      Object.assign(raw, { formatVersion: "1.3.0", minAppVersion: "1.3.0",
+        ignorableFields: ["pages.*.objects.*[type=molecule].atoms.*.labelHalo"] });
+      raw.pages[0].objects.push({ id: "m", type: "molecule", x: 0, y: 0, width: 30, height: 30,
+        rotation: 0, style: {}, structureFormat: "smiles", structure: "C", superatoms: [], rGroups: [], bonds: [],
+        atoms: [{ id: "c", element: "C", x: 0, y: 0, formalCharge: 0, labelHalo: { color: "blue" } }] });
+      const opened = openNativeDocument(JSON.stringify(raw));
+      expect(opened.document).toBeDefined();
+      expect(opened.warnings).toEqual([expect.objectContaining({ code: "NATIVE_UNKNOWN_FIELD_PRESERVED" })]);
+      await notifyNativeDocumentCompatibility(opened, opened.document!, platform);
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
+        message: "This file was made with a newer ChemDraft (1.3.0). Some features may not show. Update to keep them." });
+      const reopened = openNativeDocument(createNativeSavePayload(opened.document!).contents);
+      const saved = JSON.parse(serializeDocument(reopened.document!));
+      expect(saved.ignorableFields).toEqual(raw.ignorableFields);
+      expect(saved.pages[0].objects[0].atoms[0].labelHalo).toEqual({ color: "blue" });
+    } finally { restore(); }
+  });
+
   it("uses the supplied minimum in a format-triggered notice", async () => {
     const prompt = vi.fn(async (_options: NativePromptOptions) => "ok");
     const restore = setNativePromptProvider(prompt);

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ChemDraftDocument } from "./schemas";
+import { nativeFieldPatternValues } from "./nativeFieldPatterns";
 import { compareNativeVersions, isNativeRecord, nativeExtensionTarget, ownNativeValue } from "./nativeCompatibilityState";
 
 export const NativeDocumentBaselineAppVersion = "1.1.1";
@@ -9,6 +10,8 @@ export const NativeDocumentReaderVersion = "1.2.0";
 export interface NativeDocumentFeatureVersion {
   introducedIn: string;
   kind: "feature" | "envelope" | "internal";
+  /** True only for display-only additions; false for chemistry, envelope and internal state. */
+  ignorable: boolean;
   /** Open metadata keys/values have no Zod field/enum to inventory; they still need version rules. */
   schemaTracked?: false;
 }
@@ -20,22 +23,23 @@ export interface NativeDocumentFeatureVersion {
  * There are currently no drawing-schema differences from the released v1.1.1 baseline.
  */
 export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocumentFeatureVersion>> = {
-  "field:formatVersion": { introducedIn: "1.2.0", kind: "envelope" },
-  "field:minAppVersion": { introducedIn: "1.2.0", kind: "envelope" },
-  "field:compatibility.nativeExtensions": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.id": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.index": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.tableColumnIds": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.length": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.hashes": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.contents": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.kind": { introducedIn: "1.2.0", kind: "internal" },
-  'value:compatibility.nativeExtensions.*.kind="field"': { introducedIn: "1.2.0", kind: "internal" },
-  'value:compatibility.nativeExtensions.*.kind="enum"': { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.originalValue": { introducedIn: "1.2.0", kind: "internal" },
-  "field:compatibility.nativeExtensions.*.fallbackValue": { introducedIn: "1.2.0", kind: "internal" }
+  "field:formatVersion": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },
+  "field:minAppVersion": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },
+  "field:ignorableFields": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },
+  "field:compatibility.nativeExtensions": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.id": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.index": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.tableColumnIds": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.length": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.hashes": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.path.*.arrayFingerprint.contents": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.kind": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  'value:compatibility.nativeExtensions.*.kind="field"': { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  'value:compatibility.nativeExtensions.*.kind="enum"': { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.originalValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.fallbackValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false }
 };
 
 /** Schema inspection shared by the registry guard and usage detection; no validation is weakened. */
@@ -104,11 +108,26 @@ export function minimumVersionForNativeFeatures(
 ): string {
   const inventory = nativeSchemaInventory(schema);
   for (const token of Object.keys(registry)) {
+    if (typeof registry[token]!.ignorable !== "boolean") {
+      throw new Error(`Native feature registry entry must declare ignorable: ${token}`);
+    }
     if (registry[token]!.schemaTracked !== false && !inventory.has(token)) {
       throw new Error(`Native feature registry entry is absent from the schema: ${token}`);
     }
   }
   return minimumVersionForRegisteredFeatures(value, registry);
+}
+
+/** Derive the display-only header from used fields, including restored future file data. */
+export function ignorableFieldsForNativeFeatures(
+  value: unknown,
+  registry: Readonly<Record<string, NativeDocumentFeatureVersion>> = NativeDocumentFeatureVersions,
+  sourcePatterns: readonly string[] = []
+): string[] {
+  const registered = Object.entries(registry).flatMap(([token, feature]) =>
+    token.startsWith("field:") && feature.kind === "feature" && feature.ignorable ? [token.slice(6)] : []);
+  return [...new Set([...registered, ...sourcePatterns])]
+    .filter((pattern) => nativeFieldPatternValues(value, pattern).length > 0).sort();
 }
 
 function visitNativeSchema(

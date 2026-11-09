@@ -6,21 +6,23 @@ dependency. CDXML/CDX compatibility is a separate boundary.
 ## Version envelope and the released reader
 
 The native object-model discriminator remains `schema: "chemdraft.document.v1"`. Newer writers can
-also emit two **top-level** stable `major.minor.patch` strings:
+also emit these **top-level** header fields (versions are stable `major.minor.patch` strings):
 
 | Field | Meaning |
 | --- | --- |
 | `formatVersion` | The writer's native-file contract revision; currently `1.2.0`. |
 | `minAppVersion` | The oldest app that understands the features actually present in the file. |
+| `ignorableFields` | Field path patterns for newer, display-only fields actually present; an older reader may omit these from display while preserving them for re-save. Omitted when the list is empty. |
 
 The schema at tag `v1.1.1` is strict at the root and in nested objects. Consequently the 1.2 writer
-omits **both** fields whenever the document needs only 1.1.1 features. It does not add a default
+omits **all three** fields whenever the document needs only 1.1.1 features. It does not add a default
 version field to every file. Plain files keep the released serializer's property order and defaults,
 and the frozen, test-only 1.1.1 schema parses them. The reader reports an absent `formatVersion` and
 an effective `minAppVersion` of `1.1.1` for these legacy files. Existing page-layout and graphic-arc
 migrations still apply to legacy files.
 
-When newer features are present, the writer adds `formatVersion` and the computed `minAppVersion`.
+When newer features are present, the writer adds `formatVersion`, the computed `minAppVersion`, and
+the nonempty `ignorableFields` list derived from the feature table and the fields actually present.
 An unmodified 1.1.1 app will reject those files; 1.2 cannot retroactively change that released app.
 A newer version envelope alone is not a used feature: saving an otherwise plain document removes it.
 
@@ -30,12 +32,19 @@ A newer version envelope alone is not a used feature: saving an otherwise plain 
 ## One feature introduction registry
 
 `NativeDocumentFeatureVersions` in `packages/chem-core/src/documentFeatures.ts` is the single table
-of additions since 1.1.1. Each entry records `introducedIn` and its kind:
+of additions since 1.1.1. Each entry records `introducedIn`, a required boolean `ignorable`, and its kind:
 
 - `feature`: a field or enum/literal value that raises the minimum when actually present;
 - `envelope`: version information, which does not itself raise the minimum;
 - `internal`: preservation bookkeeping, which is reconstructed into file data rather than saved as
   a second copy of that data.
+
+`ignorable: true` promises that omitting the addition cannot change chemical meaning: it is purely
+display-only. Chemistry-bearing additions must declare `ignorable: false`; envelope and internal
+entries also declare false. Every new field, including children of a new field or object type,
+needs this explicit decision. Enum/literal entries declare safety too, but only **field** entries
+produce `ignorableFields` patterns: unknown values of known fields still use the reader's explicit
+fallback policy, never a header-directed substitution.
 
 Schema inventory tokens identify fields (`field:path`) and enum/literal members (`value:path=<JSON value>`).
 An array element uses `*`; a discriminated branch uses `[type=molecule]`, for example
@@ -52,7 +61,8 @@ version calculation. They require usage tests because arbitrary metadata has no 
 
 `documentCompatibility.test.ts` compares the complete current schema inventory with the frozen
 released schema. A new schema field, object discriminator or enum/literal member without a table
-entry fails the test. Schema-tracked stale entries also fail. Every introduction must follow 1.1.1.
+entry or without an explicit `ignorable` declaration fails the test. Schema-tracked stale entries
+also fail. Every introduction must follow 1.1.1.
 
 **At this branch's starting point the drawing schemas were identical to tag `v1.1.1`.** The initial
 table therefore contains only the version envelope and internal preservation state, not invented
@@ -63,6 +73,40 @@ preset IDs, object branches, multiple simultaneous features and numeric version 
 
 Ordinary saves inspect the registered feature paths rather than re-validating every atom just to
 compute the minimum. Already validated patch-engine documents retain their fast save path.
+
+## Ignorable field pattern syntax
+
+Header patterns use the schema inventory's field paths without the `field:` prefix. For example:
+
+```json
+{
+  "formatVersion": "1.3.0",
+  "minAppVersion": "1.3.0",
+  "ignorableFields": ["pages.*.objects.*[type=molecule].atoms.*.labelHalo"]
+}
+```
+
+Dots separate exact field names. `*` consumes exactly one **array element**, never an arbitrary
+object key or a subtree. An optional `[key=value]` qualifier filters the selected value by an exact
+discriminator string; `[type=molecule]` restricts the object branch. Omitting a qualifier covers all
+branches at that position. Field/discriminator names use letters, digits, `_`, `$` and `-`, starting
+with a letter, `_` or `$`; discriminator values use the same characters without the first-character
+restriction. Numeric array indexes, `**`, empty segments, `[]`, and a leading or final `*` are not
+allowed. Patterns match an entire field path, with no implicit descendants: the example permits
+the unknown `labelHalo` field and its opaque JSON value, not an unknown parent field or sibling.
+
+A malformed list or pattern fails with `NATIVE_INVALID_DOCUMENT` at `ignorableFields`. A declaration
+that could match a known field is also malformed unless that field is registered as a newer,
+display-only feature. Baseline fields do not belong in this header. Thus a file cannot declare
+`pages.*.objects.*[type=molecule].atoms.*.formalCharge` ignorable, even if no atom or charge field
+occurs in the payload; omitting the object discriminator does not evade this check. The header
+never relaxes known-field types, chemistry enums or structural validation.
+
+Future writers must derive the list from **used** `kind: "feature"` field entries with
+`ignorable: true`, rather than hand-maintaining a second list. On re-save, older readers also retain
+source patterns for preserved future fields that actually survive reconstruction. Patterns whose
+fields were removed or whose array guards failed are omitted. The resulting list is deduplicated
+and sorted, and is emitted only for a document that uses post-1.1.1 features.
 
 ## Reader API
 
@@ -147,11 +191,15 @@ paints and arrowhead markers become none; unknown effects become invisible known
 line settings, text script and table formatting have defined defaults. Unsupported codecs, units
 or structural revisions without a safe interpretation fail instead of guessing.
 
-Unknown fields directly on atoms and bonds fail closed regardless of their spelling; examples are
-`isotopeMassNumber`, `implicitHydrogenCount` and `cisTrans`. The same rule covers molecule-level
-fields and chemistry containers, superatoms/S-groups, R-groups and reaction components/roles.
-`visualDecoration` is the sole explicit visual extension name allowed on these objects. A new
-chemistry field cannot become acceptable just by avoiding a list of chemistry-related names.
+Unknown fields directly on atoms and bonds fail closed unless the newer file's own
+`ignorableFields` contains a matching pattern. The same rule covers molecule-level fields and
+chemistry containers, superatoms/S-groups, R-groups and reaction components/roles. Unlisted fields
+produce `NATIVE_UNSUPPORTED_CHEMISTRY`, naming the field/path and explaining that it was not declared
+ignorable. A listed unknown display field is removed from the active model and preserved with the
+same stable-identity and array-fingerprint rules described above. There are no magic safe names:
+even `visualDecoration` requires a declaration on a chemistry object. A new chemistry field cannot
+become acceptable just by avoiding a list of chemistry-related names; future writers must never
+mark chemistry-bearing additions ignorable.
 Unknown fields on purely visual graphics, text styling and page decoration remain preservable in
 newer files.
 

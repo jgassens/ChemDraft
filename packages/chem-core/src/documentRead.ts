@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ChemDraftDocumentSchema, type ChemDraftDocument } from "./schemas";
-import { NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion, NativeDocumentReaderVersion } from "./documentFeatures";
+import { nativeSchemaInventory, NativeDocumentBaselineAppVersion, NativeDocumentFeatureVersions, NativeDocumentFormatVersion, NativeDocumentReaderVersion } from "./documentFeatures";
+import { NativeFieldPatternSchema, nativeFieldPatternMatches, nativeFieldPatternsOverlap } from "./nativeFieldPatterns";
 import { DefaultNativeDrawingStyle, DocumentStylePreset } from "./styles";
 import {
   compareNativeVersions, isNativeRecord, NativeVersionSchema, ownNativeValue,
@@ -53,6 +54,7 @@ export function readNativeDocument(
 ): NativeDocumentReadResult {
   const formatVersion = fileVersion(candidate, "formatVersion");
   const minAppVersion = fileVersion(candidate, "minAppVersion") ?? NativeDocumentBaselineAppVersion;
+  const ignorableFields = fileIgnorableFields(candidate);
   const newer = (formatVersion !== undefined && compareNativeVersions(formatVersion, NativeDocumentFormatVersion) > 0)
     || compareNativeVersions(minAppVersion, NativeDocumentReaderVersion) > 0;
 
@@ -124,13 +126,14 @@ export function readNativeDocument(
         for (const key of issue.keys) {
           if (!Object.hasOwn(parent, key)) continue;
           const path = [...issue.path, key];
-          if (isUnknownAtomKind(path)) {
+          const ignorable = newer && ignorableFields.some((pattern) => nativeFieldPatternMatches(working, path, pattern));
+          if (!ignorable && isUnknownAtomKind(path)) {
             throw new NativeDocumentReadError("NATIVE_UNSUPPORTED_CHEMISTRY", path, parent[key],
               `Unsupported atom kind ${JSON.stringify(parent[key])}; chemical identity cannot be preserved.`);
           }
-          if (isUnknownChemicalField(working, path)) {
+          if (!ignorable && isUnknownChemicalField(working, path)) {
             throw new NativeDocumentReadError("NATIVE_UNSUPPORTED_CHEMISTRY", path, parent[key],
-              `Unsupported chemistry field "${key}" with value ${JSON.stringify(parent[key])}; chemical identity cannot be preserved. The file may have been saved by a newer version of ChemDraft.`);
+              `Unsupported chemistry field "${key}" with value ${JSON.stringify(parent[key])}; it is not declared in ignorableFields, so chemical identity cannot be preserved. The file may have been saved by a newer version of ChemDraft.`);
           }
           if (!newer) continue; // Keep main's existing legacy migration/strict-key behavior.
           preserve(path, "field", "NATIVE_UNKNOWN_FIELD_PRESERVED", ownNativeValue(parent, key));
@@ -184,6 +187,32 @@ function fileVersion(candidate: unknown, key: string): string | undefined {
   return parsed.data;
 }
 
+let knownFields: string[] | undefined;
+
+function fileIgnorableFields(candidate: unknown): string[] {
+  const value = ownNativeValue(candidate, "ignorableFields");
+  if (value === undefined) return [];
+  const parsed = z.array(NativeFieldPatternSchema).safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", ["ignorableFields", ...issue.path], value,
+      `Malformed ignorableFields header: ${issue.message}`);
+  }
+  knownFields ??= [...nativeSchemaInventory(ChemDraftDocumentSchema)].filter((token) => token.startsWith("field:"));
+  parsed.data.forEach((pattern, index) => {
+    for (const token of knownFields!) {
+      if (!nativeFieldPatternsOverlap(pattern, token.slice(6))) continue;
+      const feature = NativeDocumentFeatureVersions[token];
+      // Baseline fields never belong in this header. In particular a file cannot override
+      // known chemistry semantics, even when that field is absent from the actual payload.
+      if (feature?.kind === "feature" && feature.ignorable) continue;
+      throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", ["ignorableFields", index], pattern,
+        `Malformed ignorableFields header: known field ${token.slice(6)} is not registered as a newer display-only field and cannot be declared ignorable.`);
+    }
+  });
+  return parsed.data;
+}
+
 function valueAtPath(root: unknown, path: (string | number)[]): unknown {
   return path.reduce<unknown>((value, key) => ownNativeValue(value, key), root);
 }
@@ -192,12 +221,7 @@ function isUnknownAtomKind(path: (string | number)[]): boolean {
   return /^pages\.\d+\.objects\.\d+\.atoms\.\d+\.(kind|type|atomKind)$/.test(path.join("."));
 }
 
-// Explicit visual extension contract on chemistry objects. Never infer safety from an unfamiliar
-// field's spelling (e.g. isotopeMassNumber, implicitHydrogenCount or cisTrans).
-const VISUAL_CHEMISTRY_EXTENSIONS = new Set(["visualDecoration"]);
-
 function isUnknownChemicalField(root: unknown, path: (string | number)[]): boolean {
-  if (VISUAL_CHEMISTRY_EXTENSIONS.has(String(path.at(-1)))) return false;
   if (path[0] !== "pages" || path[2] !== "objects") return false;
   const object = valueAtPath(root, path.slice(0, 4));
   const type = ownNativeValue(object, "type");

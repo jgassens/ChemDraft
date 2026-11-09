@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NativeFieldPatternSchema } from "./nativeFieldPatterns";
 import { NativeExtensionsSchema, NativeVersionSchema } from "./nativeCompatibilityState";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
@@ -762,6 +763,7 @@ export const ChemDraftDocumentSchema = z
     schema: z.literal(DocumentSchemaVersion),
     formatVersion: NativeVersionSchema.optional(),
     minAppVersion: NativeVersionSchema.optional(),
+    ignorableFields: z.array(NativeFieldPatternSchema).optional(),
     id: IdSchema,
     title: z.string(),
     createdAt: IsoDateSchema,
