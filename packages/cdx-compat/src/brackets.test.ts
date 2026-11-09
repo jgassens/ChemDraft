@@ -103,18 +103,37 @@ describe("native bracket group interchange", () => {
     }
   });
 
-  it.each(["9007199254740993", "9007199254740992", "0", "-1", "1.5", "1.00000000000000001", "NaN"])("preserves invalid RepeatCount %s verbatim without interpreting it", text => {
+  it.each(["", "9007199254740993", "9007199254740992", "0", "-1", "1.5", "1.00000000000000001", "NaN"])("preserves invalid RepeatCount %s verbatim without interpreting it", text => {
     const imported = openChemDraftPayload(fixture("brackets-native-sru").replace('RepeatCount="7"', `RepeatCount="${text}"`));
     const document = imported.document!;
     const brackets = document.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
     expect(brackets.every(object => object.bracketUsage === "unknown" && object.repeatCount === undefined && !object.repeatUnit)).toBe(true);
     expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_repeat_count_preserved", message: expect.stringContaining(`"${text}"`) }));
+    for (const embedNativePayload of [false, true]) {
+      const unedited = exportDocumentToCdxml(document, { embedNativePayload }).contents;
+      expect(unedited).toContain(`RepeatCount="${text}"`);
+      expect(unedited).toContain('SRULabel="x-y"');
+      expect(() => exportDocumentToCdx(document, { embedNativePayload })).toThrow(`RepeatCount "${text}"`);
+    }
     brackets[1].label = "unrelated-edit";
     const xml = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
     expect(xml).toContain(`RepeatCount="${text}"`);
     expect(xml).toContain('SRULabel="x-y"');
     expect(JSON.stringify(brackets[0].compatibility!.unknown.bracketedGroup)).toContain(text);
     for (const embedNativePayload of [false, true]) expect(() => exportDocumentToCdx(document, { embedNativePayload })).toThrow(`RepeatCount "${text}"`);
+  });
+
+  it.each(["", "NaN"])("warns when a semantic edit replaces invalid RepeatCount %s", text => {
+    const document = openChemDraftPayload(fixture("brackets-native-sru").replace('RepeatCount="7"', `RepeatCount="${text}"`)).document!;
+    const closing = document.pages[0].objects.find((object): object is BracketObject => object.type === "bracket" && object.side === "close")!;
+    const edited = applyPatch(document, { op: "updateObject", objectId: closing.id, changes: { repeatCount: 4 } });
+    for (const embedNativePayload of [false, true]) {
+      const exported = exportDocumentToCdxml(edited, { embedNativePayload });
+      expect(exported.contents).toContain('RepeatCount="4"');
+      expect(exported.contents).not.toContain(`RepeatCount="${text}"`);
+      expect(exported.warnings).toContainEqual({ code: "cdxml.bracket_repeat_count_dropped", sourceObjectId: closing.id,
+        message: `Bracket RepeatCount "${text}" is NOT written because a native repeat count of 4 replaces it.` });
+    }
   });
 
   it("uses recorded native members and inner atoms when fragments share source ids", () => {

@@ -1211,13 +1211,18 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
     attrs.id = attrs.id ? allocator.sourceId(attrs.id) : allocator.next();
     const usage = bracketUsageAttribute(pair);
     if (usage) attrs.BracketUsage = usage; else delete attrs.BracketUsage;
-    if (!closing.compatibility?.unknown.cdxmlBracketInvalidRepeatCount) {
+    const invalidRepeatCount = closing.compatibility?.unknown.cdxmlBracketInvalidRepeatCount;
+    const hasInvalidRepeatCount = invalidRepeatCount !== undefined;
+    if (!hasInvalidRepeatCount) {
       if (usage === "SRU" && (closing.label !== "" || attrs.SRULabel !== undefined || !unchanged)) attrs.SRULabel = closing.label ?? "n";
       else if (!unchanged) delete attrs.SRULabel;
     }
     const count = pair.find(object => object.repeatCount !== undefined)?.repeatCount;
-    if (count !== undefined) attrs.RepeatCount = String(count);
-    else if (!unchanged && !closing.compatibility?.unknown.cdxmlBracketInvalidRepeatCount) delete attrs.RepeatCount;
+    if (count !== undefined) {
+      if (hasInvalidRepeatCount) warnings.push({ code: "cdxml.bracket_repeat_count_dropped", sourceObjectId: closing.id,
+        message: `Bracket RepeatCount "${invalidRepeatCount}" is NOT written because a native repeat count of ${count} replaces it.` });
+      attrs.RepeatCount = String(count);
+    } else if (!unchanged && !hasInvalidRepeatCount) delete attrs.RepeatCount;
     const attachments = pair.map(object => {
       const source = object.compatibility?.unknown.cdxmlBracketAttachment;
       const attachmentAttrs = isRecord(source) ? preservedCurveAttributes(source.attributes) : {};

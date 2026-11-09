@@ -1990,15 +1990,23 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       {
         id: "bracket_001",
         type: "bracket",
-        x: 144, y: 126, width: 16, height: 64, rotation: 0, style: {},
-        bracketKind: "curly",
+        x: 144, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "open", pairId: "bracket_pair",
+        containedObjectIds: []
+      },
+      {
+        id: "bracket_002",
+        type: "bracket",
+        x: 244, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "close", pairId: "bracket_pair",
         containedObjectIds: []
       }
     ]), { creationProgram: "T" });
 
-    // The bracket still exports as a placeholder, but no longer silently.
-    expect(bracket.contents).toContain('GraphicType="Unknown"');
-    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_payload_only");
+    // Rotated pairs retain their group with an axis-aligned glyph approximation.
+    expect(bracket.contents).toContain("<bracketedgroup");
+    expect(bracket.contents).toContain('GraphicType="Bracket"');
+    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_geometry_approximated");
 
     const orbital = exportDocumentToCdxml(documentWithObjects([
       {
