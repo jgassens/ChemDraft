@@ -9,7 +9,8 @@ describe("additive v1 bracket fields", () => {
     const bracket = { ...legacy, bracketUsage: "multiple", repeatCount: 3, crossingBondIds: [{ objectId: "m", bondId: "b" }] };
     expect(BracketObjectSchema.parse(bracket)).toEqual(bracket);
     expect(BracketObjectSchema.parse({ ...legacy, bracketUsage: "future" }).bracketUsage).toBe("unknown");
-    for (const repeatCount of [0, -1, 1.5]) expect(BracketObjectSchema.safeParse({ ...bracket, repeatCount }).success).toBe(false);
+    for (const repeatCount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity]) expect(BracketObjectSchema.safeParse({ ...bracket, repeatCount }).success).toBe(false);
+    expect(BracketObjectSchema.parse({ ...bracket, repeatCount: Number.MAX_SAFE_INTEGER }).repeatCount).toBe(Number.MAX_SAFE_INTEGER);
     expect(withoutBracketPairMetadata({ ...legacy, pairId: "p", repeatUnit: true, bracketUsage: "multiple", repeatCount: 3,
       crossingBondIds: bracket.crossingBondIds, label: "x" })).toEqual(legacy);
   });

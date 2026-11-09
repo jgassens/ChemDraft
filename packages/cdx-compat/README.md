@@ -12,6 +12,8 @@ clipboard data; decoding binary CDX as text first corrupts it. Malformed files r
 `exportDocumentToCdx(document, { embedNativePayload: false })` returns `{ bytes, warnings }`, using
 `exportDocumentToCdxml` for the visible document. Unsupported CDXML attributes, elements or values
 produce compatibility warnings. Export defaults to omitting native metadata.
+CDXML embeds native metadata by default; `{ embedNativePayload: false }` omits it. Warnings about
+unsupported data say explicitly when that data is not written because no payload is embedded.
 
 Native multi-atom labels are encoded as standard `GenericNickname` nodes with label text on the
 existing atom; its bond endpoints stay unchanged. Import also accepts unexpanded nickname, formula,
@@ -136,17 +138,28 @@ standalone `<arrow>` import: its legacy full-head fallback and resulting `Full`/
 Untilted, unrotated square and round brackets write real `graphic` elements and native editable
 pairs. `bracketedgroup` maps `SRU` to `bracketUsage: "sru"` plus `repeatUnit`, `MultipleGroup` to
 `"multiple"`, absent usage to `"generic"`, and other usages to `"unknown"` with a named warning.
-Graphic-level usage fills in an absent group usage. `SRULabel`, positive integer `RepeatCount`,
+Graphic-level usage fills in an absent group usage. `SRULabel`, safe positive integer `RepeatCount`,
 whole-fragment membership, and molecule-scoped crossing bonds round-trip through CDXML and CDX.
 Atom-level or unresolved membership and unresolved crossing references remain compatibility data
 with warnings; they do not prevent native pair import. No multiplier expands the molecular graph.
+Invalid counts retain their original text and source group as compatibility data, with native usage
+`unknown` and a warning. CDXML writes that text verbatim; CDX export refuses an invalid count rather
+than writing a rounded binary value. Unsupported glyph transforms or shapes use an axis-aligned
+bracket approximation with a geometry warning; valid pairs still write their group semantics.
 
 Graphic attributes including `LipSize`, `Z`, `IgnoreWarnings`, `Warning`, line width and colour stay
 in compatibility data and are written back. Native appearance may approximate unmapped styling,
-which warns on import. The glyph left of its partner opens the pair regardless of source endpoint
-order. Unedited `BoundingBox` text is written verbatim; edited geometry is regenerated.
+which warns on import. Side assignment compares centre X, centre Y (top opens), then bounding box,
+independently of attachment order. Indistinguishable glyphs retain their imported sides and the
+group remains compatibility data with a warning. Unedited `BoundingBox` text is written verbatim;
+edited geometry is regenerated.
 `InnerAtomID` survives unchanged crossing bonds; retopologised bonds drop that opaque association.
 Independent text beside a group without `SRULabel` remains independent and still warns.
+Membership edits retain surviving source object and atom references; dropped references are named
+in warnings. Unresolved crossings survive unrelated label or membership edits. Source references
+resolve through the recorded native object and atom, so duplicate source ids cannot retarget them.
+Copying a complete pair and every referenced object carries and remaps its compatibility records;
+incomplete copies drop those records with user-visible warnings.
 
 These are synthetic-fixture-covered paths, not a general Tier B polymer claim. Groups with missing
 or non-pair attachments still use unknown-object preservation. No independent-reader or interactive

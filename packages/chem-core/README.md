@@ -23,7 +23,7 @@ subscript. Drawing and label placement belong to layout-engine.
 
 Optional `bracketUsage` is `sru`, `multiple`, `generic`, or `unknown`; unrecognised stored strings
 load as `unknown`. Legacy `repeatUnit: true` without a usage still means an SRU. `repeatCount` is an
-optional positive integer (meaningful for a multiple group); `label` remains free text, including
+optional safe positive integer (meaningful for a multiple group); `label` remains free text, including
 `n` or `x-y`. `crossingBondIds` optionally lists molecule-scoped `BondRef` values
 (`{ objectId, bondId }`), since bond ids are local to each molecule. No migration or backfill is
 needed. Pair cleanup removes all multiplier and crossing metadata from an orphan, and patches

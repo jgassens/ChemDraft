@@ -1719,7 +1719,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.08.46-codex";
+const CURRENT_BUILD_STAMP = "11.09.09.58-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7280,10 +7280,12 @@ export function MainWindow({
       activePage,
       pastePointerPagePoint()
     );
+    const warnings: string[] = [];
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      placement.point
+      placement.point,
+      warnings
     );
     if (nextDocument === documentRef.current) {
       setStatus("Clipboard selection unchanged");
@@ -7299,7 +7301,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Pasted ChemDraft selection");
+    setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
   }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointerPagePoint]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
@@ -7356,7 +7358,7 @@ export function MainWindow({
 
     selectionClipboardPayloadRef.current = payload;
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
-    const notices = [...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
+    const notices = [...(payload.warnings ?? []), ...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
@@ -11323,8 +11325,9 @@ export function MainWindow({
         }
 
         if (action.id === "layout.duplicate") {
-          const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current));
-          setStatus(changed ? action.title : "No selected object");
+          const warnings: string[] = [];
+          const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current, undefined, warnings));
+          setStatus([changed ? action.title : "No selected object", ...warnings].join("; "));
           return;
         }
 

@@ -26,6 +26,75 @@ function expectPlainBracket(object: BracketObject) {
 }
 
 describe("bracket pair annotations", () => {
+  it.each([false, true])("preserves imported pair compatibility only with all referenced objects copied (%s)", includeMolecule => {
+    const source = openChemDraftPayload(`<CDXML><page id="1">
+      <fragment id="10"><n id="11" Element="6" p="100 100"/><n id="12" Element="8" p="130 100"/><b id="13" B="11" E="12" Order="1"/></fragment>
+      <graphic id="20" GraphicType="Bracket" BracketType="Round" BoundingBox="70 80 80 130"/>
+      <graphic id="21" GraphicType="Bracket" BracketType="Round" BoundingBox="150 80 160 130"/>
+      <bracketedgroup id="30" BracketedObjectIDs="10 11" BracketUsage="SRU" RepeatCount="7" SRULabel="x-y" PolymerRepeatPattern="HeadToTail">
+        <bracketattachment id="31" GraphicID="20"><crossingbond id="32" BondID="13" InnerAtomID="11"/></bracketattachment>
+        <bracketattachment id="33" GraphicID="21"/>
+      </bracketedgroup></page></CDXML>`).document!;
+    const molecule = source.pages[0].objects.find(object => object.type === "molecule")!;
+    const selected = applyPatch(source, { op: "setSelection", objectIds: source.pages[0].objects.filter(object => includeMolecule || object.type === "bracket").map(object => object.id) });
+    const originalCompatibility = structuredClone(bracketObjects(source).map(object => object.compatibility));
+    const payload = createSelectionClipboardPayload(selected)!;
+    const duplicateWarnings: string[] = [];
+    const pasteWarnings: string[] = [];
+    const results = [duplicateSelectedDocumentObjects(selected, undefined, duplicateWarnings),
+      pasteSelectionClipboardPayload(source, payload, { x: 400, y: 400 }, pasteWarnings)];
+    for (const result of results) {
+      const copies = result.pages[0].objects.filter(object => result.selection.objectIds.includes(object.id));
+      const copiedMolecule = copies.find(object => object.type === "molecule");
+      const copiedBrackets = copies.filter((object): object is BracketObject => object.type === "bracket");
+      for (const bracket of copiedBrackets) {
+        const unknown = bracket.compatibility!.unknown;
+        if (includeMolecule) {
+          expect(unknown.bracketedGroup).toBeDefined();
+          expect(unknown.cdxmlBracketMembers).toEqual([
+            { sourceId: "10", objectId: copiedMolecule!.id },
+            { sourceId: "11", objectId: copiedMolecule!.id, atomId: molecule.atoms[0].id }
+          ]);
+          expect(unknown.cdxmlBracketMembership).toBe(JSON.stringify([copiedMolecule!.id]));
+          expect(unknown.cdxmlBracketMemberObjectIds).toEqual([copiedMolecule!.id]);
+          expect(bracket.containedObjectIds).toEqual([copiedMolecule!.id]);
+          if (bracket.side === "open") expect(unknown.cdxmlBracketCrossings).toEqual([expect.objectContaining({
+            ref: { objectId: copiedMolecule!.id, bondId: molecule.bonds[0].id }, innerAtomId: molecule.atoms[0].id
+          })]);
+        } else {
+          for (const key of ["bracketedGroup", "cdxmlBracketCrossings", "cdxmlBracketMembers", "cdxmlBracketState", "cdxmlBracketMembership"]) expect(unknown[key]).toBeUndefined();
+        }
+      }
+      if (includeMolecule) {
+        const scoped = { ...result, pages: [{ ...result.pages[0], objects: copies }] };
+        const exported = exportDocumentToCdxml(scoped, { embedNativePayload: false });
+        expect(exported.contents).toContain('PolymerRepeatPattern="HeadToTail"');
+        expect(exported.contents).toContain('RepeatCount="7"');
+        const reopened = openChemDraftPayload(exported.contents).document!;
+        const reopenedMolecule = reopened.pages[0].objects.find(object => object.type === "molecule")!;
+        const reopenedOpen = bracketObjects(reopened).find(object => object.side === "open")!;
+        expect(reopenedOpen.crossingBondIds).toEqual([{ objectId: reopenedMolecule.id, bondId: reopenedMolecule.bonds[0].id }]);
+        expect(reopenedOpen.compatibility!.unknown.cdxmlBracketMembers).toEqual(expect.arrayContaining([expect.objectContaining({
+          objectId: reopenedMolecule.id, atomId: reopenedMolecule.atoms[0].id
+        })]));
+      }
+    }
+    if (includeMolecule) {
+      expect(payload.warnings ?? []).toEqual([]);
+      expect(duplicateWarnings).toEqual([]);
+      expect(pasteWarnings).toEqual([]);
+    } else {
+      for (const warnings of [payload.warnings!, duplicateWarnings, pasteWarnings]) {
+        expect(warnings.some(message => message.includes("bracketedGroup") && message.includes(molecule.id))).toBe(true);
+      }
+    }
+    const half = applyPatch(source, { op: "setSelection", objectIds: [bracketObjects(source)[0].id] });
+    const halfPayload = createSelectionClipboardPayload(half)!;
+    expectPlainBracket(halfPayload.objects[0] as BracketObject);
+    expect(halfPayload.warnings).toEqual([expect.stringContaining("complete pair was not copied")]);
+    expect(bracketObjects(source).map(object => object.compatibility)).toEqual(originalCompatibility);
+  });
+
   it.each([false, true])("remaps copied crossing bonds and drops uncopied ones (copy molecule: %s)", includeMolecule => {
     const original = repeatAroundMolecule();
     const molecule = original.pages[0].objects.find(object => object.type === "molecule")!;

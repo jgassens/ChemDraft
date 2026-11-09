@@ -635,7 +635,7 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
   pairId: IdSchema.optional(),
   repeatUnit: z.boolean().optional(),
   bracketUsage: degradingEnum(["sru", "multiple", "generic", "unknown"]).optional(),
-  repeatCount: z.number().int().positive().optional(),
+  repeatCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   crossingBondIds: z.array(BondRefSchema).optional(),
   label: z.string().optional(),
   containedObjectIds: z.array(IdSchema).default([])

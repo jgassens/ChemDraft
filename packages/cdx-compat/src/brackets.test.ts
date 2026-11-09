@@ -22,6 +22,135 @@ const binary = (source: string) => writeCdx(cdxElementFromOrderedTree(new XMLPar
   ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(source)));
 
 describe("native bracket group interchange", () => {
+  it("keeps surviving atom members after membership edits and names each dropped source id", () => {
+    const document = openChemDraftPayload(fixture("brackets-native-sru")
+      .replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="11 12 missing"')).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    for (const object of document.pages[0].objects) if (object.type === "bracket") object.containedObjectIds = [molecule.id];
+    // Imported native atom ids are local; remove the atom recorded for source id 12.
+    const atomIds = molecule.compatibility!.unknown.cdxmlAtomIdsByAtomId as Record<string, string>;
+    molecule.atoms = molecule.atoms.filter(atom => atomIds[atom.id] !== "12");
+    molecule.bonds = [];
+    const exported = exportDocumentToCdxml(document);
+    expect(exported.contents).toContain('BracketedObjectIDs="11 10"');
+    expect(exported.warnings.filter(warning => warning.code === "cdxml.bracket_member_dropped").map(warning => warning.message))
+      .toEqual([expect.stringContaining('"12"'), expect.stringContaining('"missing"')]);
+  });
+
+  it("retains source object members that still export after native molecule membership changes", () => {
+    const source = fixture("brackets-native-sru").replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="10 50"')
+      .replace("</page>", '<graphic id="50" GraphicType="Rectangle" BoundingBox="0 0 10 10"/></page>');
+    const document = openChemDraftPayload(source).document!;
+    for (const object of document.pages[0].objects) if (object.type === "bracket") object.containedObjectIds = [];
+    const result = exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(result.contents).toContain('BracketedObjectIDs="50"');
+    expect(result.warnings.filter(warning => warning.code === "cdxml.bracket_member_dropped")).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('"10"') })
+    ]);
+  });
+
+  it("keeps unresolved crossings across label and membership edits and warns on deleted resolved crossings", () => {
+    const document = openChemDraftPayload(fixture("brackets-native-sru").replace('BondID="13"', 'BondID="999"')).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    for (const object of document.pages[0].objects) if (object.type === "bracket") {
+      object.containedObjectIds = [];
+      if (object.side === "close") object.label = "new-label";
+    }
+    const exported = exportDocumentToCdxml(document);
+    expect(exported.contents).toContain('SRULabel="new-label"');
+    expect(exported.contents).toContain('BondID="999"');
+    expect(exported.contents).toContain('InnerAtomID="11"');
+    expect(exported.warnings.some(warning => warning.code === "cdxml.bracket_crossing_dropped")).toBe(false);
+    const close = document.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")!;
+    const orphan = exportDocumentToCdxml(applyPatch(document, { op: "removeObject", objectId: close.id }), { embedNativePayload: false });
+    expect(orphan.contents).not.toContain("<crossingbond");
+    expect(orphan.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_crossing_dropped", message: expect.stringContaining('"999"') }));
+    const resolved = openChemDraftPayload(fixture("brackets-native-sru")).document!;
+    const resolvedMolecule = resolved.pages[0].objects.find(object => object.type === "molecule")!;
+    const deleted = applyPatch(resolved, { op: "updateObject", objectId: resolvedMolecule.id, changes: { bonds: [] } });
+    const deletion = exportDocumentToCdxml(deleted);
+    expect(deletion.contents).not.toContain("<crossingbond");
+    expect(deletion.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_crossing_dropped", message: expect.stringContaining('"13"') }));
+    expect(molecule.bonds).toHaveLength(1);
+  });
+
+  it.each(["sru", "multiple"] as const)("writes %s semantics and crossings when one half needs geometry approximation", usage => {
+    const document = openChemDraftPayload(fixture(`brackets-native-${usage}`)).document!;
+    document.pages[0].objects.find(object => object.type === "bracket")!.rotation = 30;
+    for (const result of [exportDocumentToCdxml(document, { embedNativePayload: false }), exportDocumentToCdx(document)]) {
+      const xml = "contents" in result ? result.contents : cdxElementToCdxml(readCdx(result.bytes));
+      expect(xml).toContain("<bracketedgroup");
+      expect(xml).toContain(`BracketUsage="${usage === "sru" ? "SRU" : "MultipleGroup"}"`);
+      expect(xml).toContain(`RepeatCount="${usage === "sru" ? "7" : "3"}"`);
+      expect(xml).toContain('BracketedObjectIDs="10"');
+      expect(xml).toContain('BondID="13"');
+      if (usage === "sru") expect(xml).toContain('SRULabel="x-y"');
+      expect(result.warnings.map(warning => warning.code)).toContain("cdxml.bracket_geometry_approximated");
+      expect(result.warnings.map(warning => warning.code)).not.toContain("cdxml.bracket_payload_only");
+      const reopened = openChemDraftPayload(xml).document!;
+      expect(reopened.pages[0].objects.filter(object => object.type === "bracket").every(object => object.bracketUsage === usage)).toBe(true);
+    }
+  });
+
+  it.each([false, true])("makes payload-only membership warnings truthful (embed: %s)", embedNativePayload => {
+    const document = pair("round", "n");
+    for (const object of document.pages[0].objects) if (object.type === "bracket") object.containedObjectIds = ["missing"];
+    for (const exported of [exportDocumentToCdxml(document, { embedNativePayload }), exportDocumentToCdx(document, { embedNativePayload })]) {
+      const warning = exported.warnings.find(warning => warning.code === "cdxml.bracket_membership_payload_only")!;
+      expect(warning).toBeDefined();
+      expect(warning.message).toContain(embedNativePayload ? "preserved only in the ChemDraft payload" : "NOT written");
+      if (!embedNativePayload) expect(warning.message).not.toMatch(/preserved|reopens it exactly/);
+    }
+  });
+
+  it.each(["9007199254740993", "9007199254740992", "0", "-1", "1.5", "1.00000000000000001", "NaN"])("preserves invalid RepeatCount %s verbatim without interpreting it", text => {
+    const imported = openChemDraftPayload(fixture("brackets-native-sru").replace('RepeatCount="7"', `RepeatCount="${text}"`));
+    const document = imported.document!;
+    const brackets = document.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
+    expect(brackets.every(object => object.bracketUsage === "unknown" && object.repeatCount === undefined && !object.repeatUnit)).toBe(true);
+    expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_repeat_count_preserved", message: expect.stringContaining(`"${text}"`) }));
+    brackets[1].label = "unrelated-edit";
+    const xml = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    expect(xml).toContain(`RepeatCount="${text}"`);
+    expect(xml).toContain('SRULabel="x-y"');
+    expect(JSON.stringify(brackets[0].compatibility!.unknown.bracketedGroup)).toContain(text);
+    for (const embedNativePayload of [false, true]) expect(() => exportDocumentToCdx(document, { embedNativePayload })).toThrow(`RepeatCount "${text}"`);
+  });
+
+  it("uses recorded native members and inner atoms when fragments share source ids", () => {
+    const source = fixture("brackets-native-sru").replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="10 11"')
+      .replace("</page>", '<fragment id="10"><n id="11" Element="7" p="250 110"/><n id="22" Element="6" p="280 110"/><b id="23" B="11" E="22" Order="1"/></fragment></page>');
+    const document = openChemDraftPayload(source).document!;
+    const first = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    const xml = exported.contents;
+    const [firstFragment, secondFragment] = [...xml.matchAll(/<fragment id="([^"]+)"[^>]*>([\s\S]*?)<\/fragment>/g)];
+    const firstAtom = /<n id="([^"]+)"/.exec(firstFragment[2])![1];
+    const secondAtom = /<n id="([^"]+)"/.exec(secondFragment[2])![1];
+    expect(firstAtom).not.toBe(secondAtom);
+    expect(xml).toContain(`BracketedObjectIDs="${firstFragment[1]} ${firstAtom}"`);
+    expect(xml).toContain(`InnerAtomID="${firstAtom}"`);
+    const reopened = openChemDraftPayload(xml).document!;
+    const member = reopened.pages[0].objects.find(object => object.type === "bracket") as BracketObject;
+    const molecule = reopened.pages[0].objects.find(object => object.id === member.containedObjectIds[0])!;
+    expect(molecule.type === "molecule" && molecule.atoms.map(atom => atom.element)).toEqual(first.atoms.map(atom => atom.element));
+  });
+
+  it.each(["vertical", "bounding-box", "identical"])("decides %s sides independently of attachment order", mode => {
+    const source = fixture("brackets-native-sru")
+      .replace('BoundingBox="87 138 75 90"', 'BoundingBox="75 90 87 138"')
+      .replace('BoundingBox="183 90 195 138"', mode === "vertical" ? 'BoundingBox="75 150 87 198"' : mode === "bounding-box" ? 'BoundingBox="76 90 86 138"' : 'BoundingBox="75 90 87 138"');
+    const reversed = source.replace(/(<bracketattachment id="31"[\s\S]*?<\/bracketattachment>)\s*(<bracketattachment id="33"[^>]*\/>)/, "$2$1");
+    const results = [source, reversed].map(xml => openChemDraftPayload(xml));
+    const sides = results.map(result => result.document!.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket")
+      .map(object => [object.compatibility!.originalId, object.side, object.label]));
+    expect(sides[0]).toEqual(sides[1]);
+    if (mode === "identical") {
+      expect(sides[0]).toEqual([["20", "open", undefined], ["21", "open", undefined]]);
+      for (const result of results) expect(result.warnings.map(warning => warning.code)).toContain("cdxml.bracket_sides_ambiguous");
+    } else expect(sides[0]).toEqual([["20", "open", undefined], ["21", "close", "x-y"]]);
+  });
+
   it.each(["sru", "multiple"] as const)("round-trips %s fields, graphics and crossing bonds through visible CDXML and CDX", usage => {
     const source = fixture(`brackets-native-${usage}`);
     for (const imported of [openChemDraftPayload(source), importCdx(binary(source))]) {
@@ -285,6 +414,6 @@ describe("CDXML bracket graphics", () => {
     expect(native.document!.pages[0].objects.find(object => object.type === "bracket" && object.crossingBondIds?.length)).toBeDefined();
     const unsupported = pair("round");
     unsupported.pages[0].objects[0].rotation = 30;
-    expect(exportDocumentToCdxml(unsupported).warnings.map(warning => warning.code)).toContain("cdxml.bracket_payload_only");
+    expect(exportDocumentToCdxml(unsupported).warnings.map(warning => warning.code)).toContain("cdxml.bracket_geometry_approximated");
   });
 });
