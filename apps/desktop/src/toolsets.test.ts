@@ -85,11 +85,23 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
-  it("keeps Double Bond and Triple Bond off the default Main toolbar", () => {
-    const ids = getToolsetItemGroups("core.main").flat().map(item => item.id);
-    expect(ids).toContain("tool.bond");
-    expect(ids).not.toContain("tool.doubleBond");
-    expect(ids).not.toContain("tool.tripleBond");
+  it("puts Single, Double and Triple Bond together on default Main and leaves Chain in the gallery", () => {
+    const items = getToolsetItemGroups("core.main").flat();
+    const ids = items.map(item => item.id);
+    expect(ids.slice(ids.indexOf("tool.bond"), ids.indexOf("tool.bond") + 3)).toEqual([
+      "tool.bond", "tool.doubleBond", "tool.tripleBond"
+    ]);
+    expect(ids).not.toContain("tool.chain");
+    for (const [id, label, assetName] of [
+      ["tool.doubleBond", "Double Bond", "Custom_Bond_Double"],
+      ["tool.tripleBond", "Triple Bond", "Custom_Bond_Triple"]
+    ]) {
+      expect(items.find(item => item.id === id)).toMatchObject({
+        kind: "button", label, assetName, category: "structure",
+        primary: { type: "command", command: { id } }, submenu: null,
+        tooltip: { title: label }, layout: { colSpan: 1, rowSpan: 1 }
+      });
+    }
   });
   it("maps legacy command items to schema-backed palette items", () => {
     const item = getToolsetItemGroups("core.legacy", registry([legacyToolset]))[0][0];

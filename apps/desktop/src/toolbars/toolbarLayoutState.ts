@@ -1,5 +1,12 @@
 import type { ToolsetLayoutState } from "@chemdraft/toolset-registry";
 
+export const MAIN_TOOLBAR_DEFAULTS_REVISION = 1;
+
+/** Stamp new customization before it is rendered, broadcast or saved as a historical layout. */
+export function withCurrentMainToolbarDefaults<T extends ToolsetLayoutState>(state: T): T {
+  return { ...state, mainToolbarDefaultsRevision: Math.max(state.mainToolbarDefaultsRevision ?? 0, MAIN_TOOLBAR_DEFAULTS_REVISION) };
+}
+
 const EMPTY_LAYOUT_STATE: ToolsetLayoutState = { version: 1, toolsetOverrides: [], userToolsets: [] };
 
 /**
@@ -30,6 +37,7 @@ export function mergeVisibilityIntoLayoutState(
   return {
     ...base,
     version: 1,
+    mainToolbarDefaultsRevision: base.mainToolbarDefaultsRevision ?? MAIN_TOOLBAR_DEFAULTS_REVISION,
     toolsetOverrides: [...preserved, ...updated],
     userToolsets: [...base.userToolsets],
     ...(base.toolsetOrder ? { toolsetOrder: [...base.toolsetOrder] } : {})

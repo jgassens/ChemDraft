@@ -233,6 +233,8 @@ export const RegisteredToolsetSchema = ToolsetDefinitionSchema.extend({
 export const ToolsetLayoutStateSchema = z
   .object({
     version: z.literal(1),
+    // Desktop default changes are migrated once, independently of per-toolset customization.
+    mainToolbarDefaultsRevision: z.number().int().positive().optional(),
     toolsetOrder: z.array(NonEmptyStringSchema).optional(),
     toolsetOverrides: z.array(UserToolsetOverrideSchema).default([]),
     userToolsets: z.array(UserToolsetDefinitionSchema).default([])

@@ -166,7 +166,7 @@ import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/Tool
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
-import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
+import { mergeVisibilityIntoLayoutState, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
@@ -811,7 +811,7 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
-  migrateLegacyMainToolbarLayoutState,
+  migrateMainToolbarDefaultsLayoutState,
   type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.12.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3805,9 +3805,9 @@ export function MainWindow({
         }
 
         if (layoutState !== undefined) {
-          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
-          // consumes it; the next save persists the migrated shape.
-          const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
+          // Preserve historical Main defaults and fold pre-flatten layouts before anything consumes
+          // them; the visibility save below persists the migrated state and its defaults revision.
+          const migrated = migrateMainToolbarDefaultsLayoutState(layoutState);
           toolbarCatalog.setLayoutState(migrated);
           const nextRegistry = toolbarCatalog.registry();
           setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
@@ -12655,6 +12655,7 @@ export function MainWindow({
   // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
   // applies immediately — no draft that can drift out of sync) from a final close.
   const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
+    next = withCurrentMainToolbarDefaults(next);
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
     const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);

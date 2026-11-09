@@ -173,7 +173,7 @@ const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }>
   { pattern: /^view\.toolset\.toggle\./, section: "toolbars" },
   { pattern: /^view\.toggle(MoleculeInspector|RingInspector|ToolPalette)$/, section: "toolbars" },
   { pattern: /^tool\.(select|lasso|eraser)$/, section: "selection" },
-  { pattern: /^tool\.(bond|wedgeBond|hashedBond|dashedBond|boldBond|chain)$/, section: "bonds" },
+  { pattern: /^tool\.(bond|doubleBond|tripleBond|wedgeBond|hashedBond|dashedBond|boldBond|chain|chainFlexible)$/, section: "bonds" },
   { pattern: /^bond\./, section: "bonds" },
   { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane)/, section: "rings" },
   { pattern: /^atom\./, section: "atoms" },
