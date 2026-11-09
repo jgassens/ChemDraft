@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { createEmptyDocument, parseDocument, type ChemDraftDocument, type ReactionObject } from "@chemdraft/chem-core";
 import { documentInventory, documentReactionSummary } from "@chemdraft/document-workflow-core";
 import { exportDocumentToCdxml, openChemDraftPayload } from "./index";
+// Test-only integration: exercise the actual desktop copy operations before visible export.
+import {
+  createSelectionClipboardPayload, duplicateSelectedDocumentObjects, pasteSelectionClipboardPayload
+} from "../../../apps/desktop/src/documentWorkflow";
 
 // Entirely authored synthetic fixtures; no source documents or corpus excerpts.
 const fragment = (id: string, x: number, y = 60) => `<fragment id="${id}">
@@ -89,6 +93,105 @@ describe("synthetic CDXML reaction schemes", () => {
       document = importFixture(visibleOnly(exported.contents)).document;
     }
   });
+
+  it.each(["duplicate", "paste"])("exports an independent ordered scheme after %s, with no source references", operation => {
+    const source = `<CDXML><page id="1"><scheme id="900">
+      <step id="902" ReactionStepReactants="10" ReactionStepProducts="20" ReactionStepArrows="50"
+        ReactionStepObjectsAboveArrow="80" ReactionStepObjectsBelowArrow="70" ReactionStepPlusses="90"/>
+      <step id="901" ReactionStepReactants="20" ReactionStepProducts="30" ReactionStepArrows="60"/>
+    </scheme>${fragment("10", 0)}${arrow("50", 30)}${fragment("20", 110)}${arrow("60", 145)}${fragment("30", 220)}
+    <graphic id="80" GraphicType="Rectangle" BoundingBox="30 10 40 20"/>
+    <t id="70" p="30 100"><s>heat</s></t><t id="90" p="20 60"><s>+</s></t></page></CDXML>`;
+    const { document } = importFixture(source);
+    // Deliberately reverse native step storage: source order must come from cdxmlStepIndex.
+    const page = document.pages[0];
+    page.objects = [...page.objects.filter(object => object.type !== "reaction"), ...reactions(document).reverse()];
+    document.selection = { pageId: page.id, objectIds: page.objects.map(object => object.id) };
+    const originalIds = new Set(page.objects.map(object => object.id));
+    const payload = createSelectionClipboardPayload(document)!;
+    const copied = operation === "duplicate" ? duplicateSelectedDocumentObjects(document, { x: 0, y: 200 })
+      : pasteSelectionClipboardPayload(document, payload, { x: 500, y: 400 });
+    const copyIds = new Set(objects(copied).filter(object => !originalIds.has(object.id)).map(object => object.id));
+    const copiedSteps = reactions(copied).filter(step => copyIds.has(step.id));
+    expect(new Set(copiedSteps.map(step => step.compatibility?.unknown.cdxmlSchemeKey)).size).toBe(1);
+    expect(copiedSteps[0].compatibility?.unknown.cdxmlSchemeKey).not.toBe(reactions(document)[0].compatibility?.unknown.cdxmlSchemeKey);
+    expect(copiedSteps.map(step => step.compatibility?.unknown.cdxmlStepIndex)).toEqual([1, 0]);
+    for (const step of copiedSteps) {
+      const references = step.compatibility!.unknown.cdxmlStepReferences as Record<string, string[]>;
+      for (const id of Object.values(references).flat()) expect(copyIds.has(id), id).toBe(true);
+    }
+    const exported = exportDocumentToCdxml(copied);
+    const schemes = [...exported.contents.matchAll(/<scheme\s[^>]*>([\s\S]*?)<\/scheme>/g)].map(match => stepAttributes(match[1]));
+    expect(schemes.map(steps => steps.length)).toEqual([2, 2]);
+    expect(schemes[0]).toEqual(stepAttributes(source));
+    const stepRefs = (steps: Record<string, string>[]) => steps.flatMap(step => Object.entries(step)
+      .filter(([key]) => key.startsWith("ReactionStep")).flatMap(([, value]) => value.split(/\s+/).filter(Boolean)));
+    const originalExportIds = new Set(stepRefs(schemes[0]));
+    for (const id of stepRefs(schemes[1])) expect(originalExportIds.has(id), id).toBe(false);
+    for (const steps of schemes) {
+      expect(steps[0].ReactionStepProducts).toBe(steps[1].ReactionStepReactants);
+      expect(steps[0].ReactionStepObjectsAboveArrow.split(" ")).toHaveLength(1);
+      expect(steps[0].ReactionStepObjectsBelowArrow.split(" ")).toHaveLength(1);
+      expect(steps[1].ReactionStepObjectsAboveArrow).toBeUndefined();
+    }
+    const reopened = importFixture(visibleOnly(exported.contents)).document;
+    expect(reactions(reopened).map(step => step.compatibility?.unknown.cdxmlStepIndex)).toEqual([0, 1, 0, 1]);
+    expect(summary(reopened).map(step => step.components.map(component => component.role)))
+      .toEqual([["reactant", "product"], ["reactant", "product"], ["reactant", "product"], ["reactant", "product"]]);
+    expect(objects(reopened).filter(object => object.type === "molecule")).toHaveLength(6);
+  });
+
+  it.each(["duplicate", "paste"])("drops uncopied native and compatibility references on partial %s", operation => {
+    const source = oneStep().replace('ReactionStepArrows="50"', 'ReactionStepArrows="50 51"')
+      .replace('ReactionStepObjectsBelowArrow="60"', 'ReactionStepObjectsBelowArrow="60 61"')
+      .replace('ReactionStepPlusses="70"', 'ReactionStepPlusses="70 71"')
+      .replace('</page>', `${arrow("51", 300)}<t id="61" p="300 100"><s>dry</s></t><t id="71" p="300 60"><s>+</s></t></page>`);
+    const { document } = importFixture(source);
+    const retained = objects(document).filter(object => object.type === "reaction" || ["10", "50", "60", "70"].includes(object.compatibility?.originalId ?? ""));
+    document.selection = { pageId: document.pages[0].id, objectIds: retained.map(object => object.id) };
+    const payload = createSelectionClipboardPayload(document)!;
+    expect(payload.objects).toHaveLength(5);
+    const copied = operation === "duplicate" ? duplicateSelectedDocumentObjects(document)
+      : pasteSelectionClipboardPayload(createEmptyDocument(), payload, { x: 100, y: 100 });
+    const copyIds = new Set(copied.selection.objectIds);
+    const step = reactions(copied).find(object => copyIds.has(object.id))!;
+    expect(step.components).toHaveLength(1);
+    expect(step.components[0].role).toBe("reactant");
+    expect(step.conditionsTextObjectIds).toHaveLength(1);
+    expect(step.arrowObjectIds).toHaveLength(1);
+    expect(step.plusObjectIds).toHaveLength(1);
+    const references = step.compatibility!.unknown.cdxmlStepReferences as Record<string, string[]>;
+    const ids = [...step.components.map(component => component.objectId), ...step.conditionsTextObjectIds,
+      ...step.arrowObjectIds!, ...step.plusObjectIds!, ...Object.values(references).flat()];
+    for (const id of ids) expect(copyIds.has(id), id).toBe(true);
+    expect(summary(importFixture(visibleOnly(exportDocumentToCdxml(copied).contents)).document).at(-1)?.components)
+      .toEqual([{ role: "reactant", id: expect.any(String) }]);
+  });
+
+  it("allocates a fresh scheme key even when an older copy already owns the candidate key", () => {
+    const { document } = importFixture(oneStep());
+    document.selection = { pageId: document.pages[0].id, objectIds: objects(document).map(object => object.id) };
+    const candidate = reactions(duplicateSelectedDocumentObjects(document)).at(-1)!.compatibility!.unknown.cdxmlSchemeKey;
+    reactions(document)[0].compatibility!.unknown.cdxmlSchemeKey = candidate;
+    const copied = duplicateSelectedDocumentObjects(document);
+    expect(reactions(copied).at(-1)!.compatibility!.unknown.cdxmlSchemeKey).not.toBe(candidate);
+    expect(exportDocumentToCdxml(copied).contents.match(/<scheme /g)).toHaveLength(2);
+  });
+
+  it.each(['<scheme id="900"/>', '<scheme id="900"><objecttag Name="source" Value="keep"/></scheme>'])(
+    "preserves a scheme with no steps and warns: %s", scheme => {
+      const opened = openChemDraftPayload(`<CDXML><page id="1">${scheme}</page></CDXML>`);
+      expect(opened.document).toBeDefined();
+      expect(opened.warnings).toContainEqual(expect.objectContaining({
+        code: "cdxml.reaction_scheme_without_steps_preserved", message: expect.stringContaining("scheme 900")
+      }));
+      expect(objects(opened.document!)).toEqual([expect.objectContaining({
+        type: "unknown-compatibility-object", sourceObjectType: "scheme",
+        raw: expect.objectContaining({ name: "scheme", attributes: { id: "900" } })
+      })]);
+      expect(openChemDraftPayload(exportDocumentToCdxml(opened.document!).contents).document).toEqual(opened.document);
+    }
+  );
 
   it("preserves an equilibrium arrow and its step reference without changing reaction roles", () => {
     const { document } = importFixture(oneStep("", "Equilibrium"));

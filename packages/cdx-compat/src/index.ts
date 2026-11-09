@@ -225,7 +225,7 @@ export function exportDocumentToCdxml(
   }
   const reactionAllocator = createIdAllocator(0, reactionIds);
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts, curveColors,
+  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, fonts, curveColors,
     hasReactions ? reactionAllocator : createIdAllocator(pageIndex)));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
   const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors);
@@ -521,7 +521,7 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
   const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(object => object.type === "reaction");
@@ -557,7 +557,7 @@ function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityCon
   const visibleChildren = page.objects.filter(object => !groupedIds.has(object.id)).map(emit).filter(Boolean);
   // Cyclic or multiply-owned native groups still export each drawable at most once.
   for (const object of page.objects) if (!emitted.has(object.id)) visibleChildren.push(emit(object));
-  visibleChildren.push(...exportReactionSchemes(page, context.ids, allocator, warnings, objectsById, pageIndex));
+  visibleChildren.push(...exportReactionSchemes(page, context.ids, allocator, warnings, objectsById));
   return visibleChildren.length > 0 ? `\n${visibleChildren.map((child) => indent(child, 4)).join("\n")}\n  ` : "";
 }
 
@@ -677,13 +677,13 @@ function importReactionStep(
 
 function exportReactionSchemes(
   page: DocumentPage, ids: Map<string, string>, allocator: IdAllocator,
-  warnings: CompatibilityConversionWarning[], objects: ReadonlyMap<string, DocumentObject>, pageIndex: number
+  warnings: CompatibilityConversionWarning[], objects: ReadonlyMap<string, DocumentObject>
 ): string[] {
   const schemes = new Map<string, { id: string; attributes: Record<string, string>; reactions: ReactionObject[] }>();
   for (const reaction of page.objects) {
     if (reaction.type !== "reaction") continue;
     const source = reaction.compatibility?.unknown;
-    const key = typeof source?.cdxmlSchemeKey === "string" ? source.cdxmlSchemeKey : `native_scheme_${pageIndex}_${reaction.id}`;
+    const key = typeof source?.cdxmlSchemeKey === "string" ? source.cdxmlSchemeKey : `native_scheme_${page.id}_${reaction.id}`;
     let scheme = schemes.get(key);
     if (!scheme) {
       scheme = {
@@ -2073,6 +2073,11 @@ function importPageObjects(
       return imported;
     }
     if (element.name === "scheme") {
+      if (childElements(element, "step").length === 0) {
+        warnings.push({ code: "cdxml.reaction_scheme_without_steps_preserved",
+          message: `CDXML scheme${element.attributes.id ? ` ${element.attributes.id}` : ""} has no steps; preserved as an unknown compatibility object.` });
+        return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+      }
       schemes.push(element);
       return { objects: [], rootIds: [] };
     }

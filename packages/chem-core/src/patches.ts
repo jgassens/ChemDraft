@@ -358,6 +358,25 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
   forgetShiftedDuplicateLocations(document);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
   pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
+  pruneReactionReferences(location.page, new Set([objectId]));
+}
+
+/** Replace changed reactions rather than mutating objects shared with undo snapshots. */
+function pruneReactionReferences(page: DocumentPage, removed: ReadonlySet<string>): void {
+  page.objects = page.objects.map(object => {
+    if (object.type !== "reaction") return object;
+    const components = object.components.filter(component => !removed.has(component.objectId));
+    const conditionsTextObjectIds = object.conditionsTextObjectIds.filter(id => !removed.has(id));
+    const arrowObjectIds = object.arrowObjectIds?.filter(id => !removed.has(id));
+    const plusObjectIds = object.plusObjectIds?.filter(id => !removed.has(id));
+    if (components.length === object.components.length && conditionsTextObjectIds.length === object.conditionsTextObjectIds.length
+      && arrowObjectIds?.length === object.arrowObjectIds?.length && plusObjectIds?.length === object.plusObjectIds?.length) return object;
+    return {
+      ...object, components, conditionsTextObjectIds,
+      ...(arrowObjectIds === undefined ? {} : { arrowObjectIds }),
+      ...(plusObjectIds === undefined ? {} : { plusObjectIds })
+    };
+  });
 }
 
 /**
@@ -413,6 +432,7 @@ function removeObjects(document: ChemDraftDocument, objectIds: readonly string[]
     // into splice would overflow the argument stack on a page of 100,000 objects.
     page.objects = kept;
     pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => removedHere.has(ref.objectId)));
+    pruneReactionReferences(page, removedHere);
     removedHere.forEach((id) => removed.add(id));
   }
   forgetShiftedDuplicateLocations(document);

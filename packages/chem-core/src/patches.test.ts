@@ -10,7 +10,8 @@ import {
   toEngineDocument
 } from "./patches";
 import { createEmptyDocument, deserializeDocument } from "./document";
-import type { ChemDraftDocument, DocumentObject } from "./schemas";
+import { applyPatchWithHistory, createDocumentHistory, redo, undo } from "./history";
+import type { ChemDraftDocument, DocumentObject, ReactionObject } from "./schemas";
 
 const now = "2026-09-26T00:00:00.000Z";
 
@@ -29,6 +30,55 @@ function documentWith(count: number): ChemDraftDocument {
 }
 
 describe("patch engine structural sharing", () => {
+  it.each(["single", "batch"])("prunes shared reaction references on %s removal and restores exact snapshots on undo", mode => {
+    const empty = createEmptyDocument({ now });
+    const pageId = empty.pages[0].id;
+    const molecule = (id: string): DocumentObject => ({
+      id, type: "molecule", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {},
+      structureFormat: "smiles", structure: "C", atoms: [{ id: "a", element: "C", x: 0, y: 0, formalCharge: 0 }],
+      bonds: [], superatoms: [], rGroups: []
+    });
+    const reaction = (id: string, sharedRole: "reactant" | "product"): ReactionObject => ({
+      id, type: "reaction", x: 0, y: 0, width: 50, height: 10, rotation: 0, style: {}, mappingState: "absent",
+      components: [{ objectId: "shared", role: sharedRole }, { objectId: "other", role: "agent" }],
+      conditionsTextObjectIds: ["conditions", "keep-text"], arrowObjectIds: ["arrow", "keep-arrow"],
+      plusObjectIds: ["plus", "keep-plus"]
+    });
+    const arrow = (id: string): DocumentObject => ({
+      id, type: "reaction-arrow", x: 0, y: 0, width: 20, height: 1, rotation: 0, style: {},
+      arrowKind: "forward", start: { kind: "point", point: { x: 0, y: 0 } },
+      end: { kind: "point", point: { x: 20, y: 0 } }, labels: []
+    });
+    const before = applyPatches(empty, [
+      ...[molecule("shared"), molecule("other"), textObject("conditions", 0), textObject("keep-text", 0),
+        arrow("arrow"), arrow("keep-arrow"), textObject("plus", 0), textObject("keep-plus", 0),
+        reaction("r1", "product"), reaction("r2", "reactant"),
+        { ...reaction("unrelated", "reactant"), components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [] }
+      ].map(object => ({ op: "addObject" as const, pageId, object })),
+      { op: "setSelection", pageId, objectIds: ["shared", "conditions", "arrow", "plus"] }
+    ], { now });
+    const snapshot = JSON.parse(JSON.stringify(before)) as ChemDraftDocument;
+    const removals = (mode === "single" ? ["shared"] : ["shared", "conditions", "arrow", "plus"])
+      .map(objectId => ({ op: "removeObject" as const, objectId }));
+    const history = applyPatchWithHistory(createDocumentHistory(before), mode === "single" ? removals[0]!
+      : { op: "batch", patches: removals }, { now });
+    const after = history.present;
+    const steps = after.pages[0].objects.filter((object): object is ReactionObject => object.type === "reaction");
+    expect(steps).toHaveLength(3);
+    for (const step of steps.slice(0, 2)) {
+      expect(step.components).toEqual([{ objectId: "other", role: "agent" }]);
+      expect(step.conditionsTextObjectIds).toEqual(mode === "single" ? ["conditions", "keep-text"] : ["keep-text"]);
+      expect(step.arrowObjectIds).toEqual(mode === "single" ? ["arrow", "keep-arrow"] : ["keep-arrow"]);
+      expect(step.plusObjectIds).toEqual(mode === "single" ? ["plus", "keep-plus"] : ["keep-plus"]);
+    }
+    expect(steps[2]).toBe(before.pages[0].objects.at(-1));
+    expect(before).toEqual(snapshot);
+    expect(undo(history).present).toEqual(snapshot);
+    expect(redo(undo(history)).present).toEqual(after);
+    const sequential = removals.reduce((document, patch) => applyPatch(document, patch, { now }), before);
+    expect(after).toEqual(sequential);
+  });
+
   it("applies a batch sequentially and atomically, including on an engine document", () => {
     const before = documentWith(2);
     const after = applyPatch(before, { op: "batch", patches: [
