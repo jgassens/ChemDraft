@@ -544,6 +544,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     // Retain a real native envelope, but serialize its visible text/attribute as a released
     // writer did, including per-line indentation inside text and literal attribute controls.
     const saved = exportDocumentToCdxml(document).contents
+      .replace(' attrib4345="|x|32"', "")
       .replace(/(<t\b[^>]*>)[\s\S]*?(<\/t>)/, `$1${visibleText}$2`)
       .replace('CreationProgram="ChemDraft"', `CreationProgram="${visibleAttribute}"`);
     const legacyHash = legacyVisibleCdxmlHash(saved);
@@ -565,6 +566,81 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       expect(conflicted.conflict?.embeddedDocument).toEqual(document);
       expect(conflicted.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
     }
+  });
+
+  it.each([
+    ["known, accepted limitation: a legacy CDXML numeric-reference substitution opens without conflict", "legacy"],
+    ["conflicts on a cross-semantics text substitution in a v2 CDXML envelope", "current"]
+  ] as const)("%s", (_name, version) => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: version === "legacy" ? "A\nB" : "A&#10;B", spans: []
+    }]);
+    let saved = exportDocumentToCdxml(document).contents;
+    if (version === "legacy") {
+      saved = saved.replace(' attrib4345="|x|32"', "").replace("A\nB", "A&#10;B");
+      saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyVisibleCdxmlHash(saved));
+    }
+    const unchanged = openChemDraftPayload(saved);
+    expect(unchanged.document).toEqual(document);
+    expect(unchanged.conflict).toBeUndefined();
+    const edited = version === "legacy"
+      ? saved.replace("A&#10;B", "A&amp;#10;B")
+      : saved.replace("A&amp;#10;B", "A&#10;B");
+    expect(edited).not.toBe(saved);
+    // The legacy canonicalizer aliases the numeric reference and its escaped literal.
+    const alternateHash = version === "legacy" ? visibleHashForCdxml : legacyVisibleCdxmlHash;
+    expect(alternateHash(edited)).toBe(extractObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash));
+    const opened = openChemDraftPayload(edited);
+    if (version === "legacy") {
+      expect(legacyVisibleCdxmlHash(edited)).toBe(legacyVisibleCdxmlHash(saved));
+      expect(opened.source).toBe("native-payload");
+      expect(opened.document).toEqual(document);
+      expect(opened.conflict).toBeUndefined();
+      expect(opened.warnings).toEqual([]);
+      return;
+    }
+    expect(opened.document).toBeUndefined();
+    expect(opened.conflict?.embeddedDocument).toEqual(document);
+    expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({
+      text: "A\nB"
+    });
+    expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+  });
+
+  it.each([undefined, "|x|31", "|x|33", "", "2"])("rejects a stripped or altered hash version %j even with a cross-semantics edit", (version) => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "A&#10;B", spans: []
+    }]);
+    const saved = exportDocumentToCdxml(document).contents;
+    expect(saved).toContain(' attrib4345="|x|32"');
+    const altered = saved.replace(' attrib4345="|x|32"', version === undefined ? "" : ` attrib4345="${version}"`);
+    for (const candidate of [altered, altered.replace("A&amp;#10;B", "A&#10;B")]) {
+      const opened = openChemDraftPayload(candidate);
+      expect(opened.document).toBeUndefined();
+      expect(opened.conflict?.embeddedDocument).toEqual(document);
+      expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+    }
+  });
+
+  it("never accepts an unknown hash version even when the current visible hash agrees", () => {
+    let saved = exportDocumentToCdxml(documentWithObjects([singleBondMolecule()])).contents
+      .replace(' attrib4345="|x|32"', ' attrib4345="|x|33"');
+    saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, visibleHashForCdxml(saved));
+    expect(openChemDraftPayload(saved).conflict?.kind).toBe("visible-layer-modified");
+  });
+
+  it("rejects upgrading a legacy selector to authorize a cross-semantics edit", () => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "A\nB", spans: []
+    }]);
+    let saved = exportDocumentToCdxml(document).contents
+      .replace(' attrib4345="|x|32"', "").replace("A\nB", "A&#10;B");
+    saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyVisibleCdxmlHash(saved));
+    const edited = saved.replace("A&#10;B", "A&amp;#10;B").replace("<CDXML ", '<CDXML attrib4345="|x|32" ');
+    expect(openChemDraftPayload(edited).conflict?.embeddedDocument).toEqual(document);
   });
 
   it("hashes UTF-8 bytes with the bundled SHA-256 helper", () => {

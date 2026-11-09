@@ -103,14 +103,18 @@ export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
           }
           return { name: "objecttag", attrs: { Name: entry[0], Value: entry[1], TagType: "String", Persistent: "yes" }, kids: [], text: "" };
         });
-        if (!("visibleBinaryHash" in envelope) || envelope.visibleBinaryHash !== integrity.visibleBinaryHash) {
+        const envelopeHashVersion = "visibleHashVersion" in envelope ? envelope.visibleHashVersion : undefined;
+        const visibleHashVersion = root.attrs[VisibleHashVersionAttribute];
+        const versionMatches = envelopeHashVersion === undefined && visibleHashVersion === undefined
+          || envelopeHashVersion === VisibleHashVersion && visibleHashVersion === EncodedVisibleHashVersion;
+        if (!("visibleBinaryHash" in envelope) || envelope.visibleBinaryHash !== integrity.visibleBinaryHash || !versionMatches) {
           // Even a change to the legacy text hidden by its UTF-8 copy must defeat native restoration.
           for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = "";
-          warnings.push(warning("cdx.native_payload_modified", "CDX import: binary content changed or its integrity hash is missing; the embedded native document requires conflict review."));
+          warnings.push(warning("cdx.native_payload_modified", "CDX import: binary content changed, its integrity hash is missing, or its hash version disagrees with the visible layer; the embedded native document requires conflict review."));
         }
         // Keep the stored XML hash intact: a matching binary hash must also agree with the
-        // visible layer recorded beside the native payload. The shared opener accepts either
-        // released or current XML canonicalization without rebasing away a real discrepancy.
+        // visible layer recorded beside the native payload. The hashed root version selects
+        // exactly one XML canonicalization without rebasing away a real discrepancy.
         page.kids.push(...tags);
       } catch (error) {
         warnings.push(warning("cdx.native_payload_invalid", `CDX import: native envelope could not be decoded: ${errorMessage(error)}`));
@@ -140,6 +144,7 @@ export function exportDocumentToCdx(document: ChemDraftDocument, options: CdxExp
     });
   };
   strip(root);
+  if (!options.embedNativePayload) delete root.attrs[VisibleHashVersionAttribute];
   const visibleBytes = writeCdx(root, warnings);
   if (!options.embedNativePayload) return { bytes: visibleBytes, warnings };
   // Binary encoding normalizes IDs, fixed-point coordinates, styles and table precision. Hash that
@@ -147,7 +152,7 @@ export function exportDocumentToCdx(document: ChemDraftDocument, options: CdxExp
   const normalized = readCdx(visibleBytes);
   const visibleHash = visibleHashForCdxml(cdxElementToCdxml(normalized));
   const visibleBinaryHash = sha256Hex(writeCdx(normalized));
-  const envelope = { format: "org.chemdraft/cdx-envelope.v1", visibleBinaryHash, tags: tags.map(([name, value]) => [name, name === ChemDraftObjectTags.visibleCdxmlHash ? visibleHash : value]) };
+  const envelope = { format: "org.chemdraft/cdx-envelope.v1", visibleHashVersion: VisibleHashVersion, visibleBinaryHash, tags: tags.map(([name, value]) => [name, name === ChemDraftObjectTags.visibleCdxmlHash ? visibleHash : value]) };
   normalized.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${hex(utf8Bytes(JSON.stringify(envelope)))}`;
   return { bytes: writeCdx(normalized, warnings), warnings };
 }
@@ -187,6 +192,14 @@ export const ChemDraftObjectTags = {
   visibleCdxmlHash: "org.chemdraft/visible-cdxml-hash",
   nativeDocument: "org.chemdraft/native-document"
 } as const;
+
+// User-defined CDX property 0x4345 stores UTF-8 "2", represented by the same opaque CDXML
+// root attribute. Unlike payload objecttags / property 0x4344, it stays in BOTH visible hashes.
+// Removing/changing the selector therefore cannot switch semantics while keeping a stored hash.
+// Older readers preserve unknown root attributes/properties and ignore extra envelope fields.
+const VisibleHashVersionAttribute = "attrib4345";
+const VisibleHashVersion = "2";
+const EncodedVisibleHashVersion = "|x|32";
 
 const xmlParser = new XMLParser({
   preserveOrder: true,
@@ -515,11 +528,20 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   }
 
   const expectedVisibleHash = tags[ChemDraftObjectTags.visibleCdxmlHash];
-  const actualVisibleHash = visibleHashForParsedTree(tree);
-  let visibleHashMatches = !!expectedVisibleHash && expectedVisibleHash === actualVisibleHash;
-  if (expectedVisibleHash && !visibleHashMatches) {
+  const visibleHashVersion = tree.map(elementView).find(element => element?.name.toLowerCase() === "cdxml")?.attributes[VisibleHashVersionAttribute];
+  let visibleHashMatches = false;
+  if (expectedVisibleHash) {
     try {
-      visibleHashMatches = expectedVisibleHash === legacyVisibleCdxmlHash(contents);
+      if (visibleHashVersion === undefined) {
+        // Known, accepted legacy limitation: only a line break can be swapped for literal text
+        // '&#10;' (or similar numeric references) without changing this hash. This is cosmetic,
+        // never changes chemistry, and must not prompt on unchanged legacy files. Re-saving
+        // upgrades the file to v2, whose current canonicalization distinguishes these forms.
+        visibleHashMatches = expectedVisibleHash === legacyVisibleCdxmlHash(contents);
+      } else if (visibleHashVersion === EncodedVisibleHashVersion) {
+        visibleHashMatches = expectedVisibleHash === visibleHashForParsedTree(tree);
+      }
+      // An unknown version always requires conflict review, even if a hash would match.
     } catch {
       // A legacy parser refusal cannot authorize native restoration; use conflict review below.
     }
@@ -649,7 +671,7 @@ function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], f
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}" ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}">`,
     buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
       `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),

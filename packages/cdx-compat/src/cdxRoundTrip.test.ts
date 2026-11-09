@@ -150,6 +150,125 @@ describe("chemical and drawing round trips", () => {
 });
 
 describe("native payload Save As and interchange Export", () => {
+  const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
+  const textEnvelope = (text: string, legacy = false) => {
+    const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
+    const object = original.pages[0].objects[0];
+    if (object.type !== "text") throw new Error("Expected text fixture");
+    object.text = text;
+    const visible = readCdx(exportDocumentToCdx(original, { embedNativePayload: true }).bytes);
+    const envelope = JSON.parse(Buffer.from(visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+    delete visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    if (legacy) {
+      delete visible.attrs.attrib4345;
+      delete envelope.visibleHashVersion;
+      envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = legacyVisibleCdxmlHash(cdxElementToCdxml(visible));
+      envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
+    }
+    return { original, visible, envelope };
+  };
+
+  it.each([
+    ["known, accepted limitation: a legacy CDX numeric-reference substitution opens without conflict after recomputing the binary hash", "legacy"],
+    ["conflicts on a cross-semantics text substitution in a v2 CDX even with a recomputed binary hash", "current"]
+  ] as const)("%s", (_name, version) => {
+    const { original, visible, envelope } = textEnvelope(version === "legacy" ? "A\nB" : "A&#10;B", version === "legacy");
+    const unchanged = structuredClone(visible);
+    unchanged.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    expect(importCdx(writeCdx(unchanged)).document).toEqual(original);
+    expect(importCdx(writeCdx(unchanged)).conflict).toBeUndefined();
+    findText(visible)!.text = version === "legacy" ? "A&#10;B" : "A\nB";
+    const alternateHash = version === "legacy" ? visibleHashForCdxml : legacyVisibleCdxmlHash;
+    expect(alternateHash(cdxElementToCdxml(visible))).toBe(envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1]);
+    if (version === "legacy") {
+      expect(legacyVisibleCdxmlHash(cdxElementToCdxml(visible))).toBe(envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1]);
+    }
+    envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
+    visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    const opened = importCdx(writeCdx(visible));
+    if (version === "legacy") {
+      expect(opened.source).toBe("native-payload");
+      expect(opened.document).toEqual(original);
+      expect(opened.conflict).toBeUndefined();
+      expect(opened.warnings).toEqual([]);
+      return;
+    }
+    expect(opened.document).toBeUndefined();
+    expect(opened.conflict?.embeddedDocument).toEqual(original);
+    expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "A\nB" });
+    expect(opened.warnings.some(({ code }) => code === "cdx.native_payload_modified")).toBe(false);
+    expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+  });
+
+  it("silently restores unchanged legacy CDX with a line break and upgrades to v2 on save", () => {
+    const { original, visible, envelope } = textEnvelope("A\nB", true);
+    expect(visible.attrs.attrib4345).toBeUndefined();
+    expect(envelope.visibleHashVersion).toBeUndefined();
+    visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    const opened = importCdx(writeCdx(visible));
+    expect(opened.source).toBe("native-payload");
+    expect(opened.document).toEqual(original);
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+
+    const resaved = exportDocumentToCdx(requireDocument(opened), { embedNativePayload: true });
+    const upgraded = readCdx(resaved.bytes);
+    expect(upgraded.attrs.attrib4345).toBe("|x|32");
+    const upgradedEnvelope = JSON.parse(Buffer.from(upgraded.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+    expect(upgradedEnvelope.visibleHashVersion).toBe("2");
+    delete upgraded.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    expect(upgradedEnvelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1]).toBe(visibleHashForCdxml(cdxElementToCdxml(upgraded)));
+    const reopened = importCdx(resaved.bytes);
+    expect(reopened.document).toEqual(original);
+    expect(reopened.conflict).toBeUndefined();
+    expect(reopened.warnings).toEqual([]);
+  });
+
+  it.each(["envelope", "property", "both"])("rejects stripping or altering the %s version even after recomputing the binary hash", (target) => {
+    for (const version of [undefined, "1", "3", ""]) {
+      for (const editText of [false, true]) {
+        const { original, visible, envelope } = textEnvelope("A&#10;B");
+        expect(envelope.visibleHashVersion).toBe("2");
+        expect(visible.attrs.attrib4345).toBe("|x|32");
+        if (target !== "property") {
+          if (version === undefined) delete envelope.visibleHashVersion;
+          else envelope.visibleHashVersion = version;
+        }
+        if (target !== "envelope") {
+          if (version === undefined) delete visible.attrs.attrib4345;
+          else visible.attrs.attrib4345 = `|x|${Buffer.from(version).toString("hex")}`;
+        }
+        if (editText) findText(visible)!.text = "A\nB";
+        envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
+        visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+        const opened = importCdx(writeCdx(visible));
+        expect(opened.document).toBeUndefined();
+        expect(opened.conflict?.embeddedDocument).toEqual(original);
+        expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+      }
+    }
+  });
+
+  it("rejects upgrading a legacy CDX selector to authorize a cross-semantics edit", () => {
+    const { original, visible, envelope } = textEnvelope("A\nB", true);
+    findText(visible)!.text = "A&#10;B";
+    visible.attrs.attrib4345 = "|x|32";
+    envelope.visibleHashVersion = "2";
+    envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
+    visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(original);
+  });
+
+  it("never accepts an unknown CDX version even if both visible hashes are recomputed", () => {
+    const { original, visible, envelope } = textEnvelope("A&#10;B");
+    visible.attrs.attrib4345 = "|x|33";
+    envelope.visibleHashVersion = "3";
+    envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
+    envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = visibleHashForCdxml(cdxElementToCdxml(visible));
+    visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(original);
+  });
+
   it.each(["\n", "\r", "\t", "\n\r\t"])("restores unchanged legacy CDX with %j in text and attributes and still detects visible edits", (character) => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
     const text = original.pages[0].objects[0];
@@ -162,6 +281,9 @@ describe("native payload Save As and interchange Export", () => {
     expect(saved.attrs.CreationProgram).toBe(`before${decodedCharacter}after`);
     const envelope = JSON.parse(Buffer.from(saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
     delete saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    delete saved.attrs.attrib4345;
+    delete envelope.visibleHashVersion;
+    envelope.visibleBinaryHash = sha256Hex(writeCdx(saved));
     const xml = cdxElementToCdxml(saved);
     const legacyHash = legacyVisibleCdxmlHash(xml);
     expect(legacyHash).not.toBe(visibleHashForCdxml(xml));
@@ -188,7 +310,7 @@ describe("native payload Save As and interchange Export", () => {
   it.each([
     ["current", visibleHashForCdxml],
     ["legacy", legacyVisibleCdxmlHash]
-  ] as const)("requires the stored %s XML hash even when an edited CDX has a recomputed binary hash", (_name, hash) => {
+  ] as const)("requires the stored %s XML hash even when an edited CDX has a recomputed binary hash", (name, hash) => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
     const text = original.pages[0].objects[0];
     if (text.type !== "text") throw new Error("Expected text fixture");
@@ -196,6 +318,10 @@ describe("native payload Save As and interchange Export", () => {
     const saved = readCdx(exportDocumentToCdx(original, { embedNativePayload: true, creationProgram: "before\n\r\tafter" }).bytes);
     const envelope = JSON.parse(Buffer.from(saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
     delete saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    if (name === "legacy") {
+      delete saved.attrs.attrib4345;
+      delete envelope.visibleHashVersion;
+    }
     const storedHash = hash(cdxElementToCdxml(saved));
     envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = storedHash;
 
@@ -277,6 +403,7 @@ describe("native payload Save As and interchange Export", () => {
     const original = requireDocument(openChemDraftPayload(examples[0][1]));
     const exported = exportDocumentToCdx(original, { embedNativePayload: false });
     expect(cdxElementToCdxml(readCdx(exported.bytes))).not.toContain("org.chemdraft/");
+    expect(readCdx(exported.bytes).attrs.attrib4345).toBeUndefined();
     expect(importCdx(exported.bytes).source).toBe("external-cdxml");
   });
 

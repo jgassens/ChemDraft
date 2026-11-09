@@ -48,6 +48,26 @@ hash canonical UTF-8 bytes
 
 `fast-xml-parser` is configured in ordered mode with attribute and text coercion disabled. CDXML is validated before parsing so malformed XML returns a warning result instead of a raw exception or a partially trusted parse.
 
+New envelopes use visible hash-semantics version `"2"`, stored as root attribute
+`attrib4345="|x|32"` (the opaque encoding of binary property `0x4345`). That selector is included
+in the visible XML hash. CDX Save As also stores `visibleHashVersion: "2"` in its native envelope
+JSON; the two version copies must agree. The raw binary hash covers property `0x4345` and every
+other byte except the native envelope property itself. Both the stored XML hash and the binary
+hash must match, even if an external editor recomputes the binary hash.
+
+Version `"2"` uses only current canonicalization, which decodes numeric character references once
+and preserves text and attribute control characters with appropriate escaping. An absent version
+uses only the frozen released canonicalization, which leaves numeric references literal and uses
+the released whitespace escaping. Unknown versions require the existing conflict review; readers
+never try both semantics. Removing or changing the hashed selector cannot authorize an edit.
+
+Known, accepted legacy limitation: a line break encoded as `&#10;` and the literal text `&#10;`
+encoded as `&amp;#10;` have the same legacy hash (similarly for other numeric references). This is
+a cosmetic substitution that never changes chemistry. Unversioned files open silently whenever
+the legacy checks match, including unchanged files with line breaks, without any new prompt or
+conflict. CDX still requires its binary hash to match. Saving a legacy document again upgrades it
+to version `"2"`; cross-semantics substitutions in v2 files require the existing conflict review.
+
 ## 3. Open Behavior
 
 `openChemDraftPayload` first strips a leading byte-order mark and leading whitespace, then sniffs:
