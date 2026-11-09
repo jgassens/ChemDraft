@@ -11,7 +11,7 @@ import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
-import { listenCurrentWindowEvent, listenTauriEvent, safeTauriListen } from "./tauriEvents";
+import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -336,7 +336,7 @@ export async function listenForToolsetPopoverNativeClose(toolsetId: string, clos
   const popover = await Window.getByLabel(`toolset-popover-${toolsetId.replaceAll(".", "-")}`);
   if (!popover) { closed(); return () => undefined; }
   const listeners = ["tauri://close-requested", "tauri://destroyed"].map(name =>
-    safeTauriListen(name, handler => popover.listen(name, handler), closed));
+    safeTauriWindowListen(popover, name, closed));
   const stop = () => listeners.forEach(listener => listener.stop());
   try {
     await Promise.all(listeners.map(listener => listener.attached));

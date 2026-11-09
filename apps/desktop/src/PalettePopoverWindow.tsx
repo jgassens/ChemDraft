@@ -9,6 +9,7 @@ import {
   listenForToolsetPopoverContent,
   notifyToolsetPopoverClosed,
   compareToolsetPopoverOpenings,
+  newToolsetPopoverOpening,
   listenForToolsetPopoverDismiss,
   listenForToolsetPopoverRelease,
   listenForBondStereoPopoverActions,
@@ -176,9 +177,14 @@ export function PalettePopoverWindow({
       if (payload.toolsetId !== toolsetId) {
         return;
       }
-      const openedAt = payload.openedAt ?? toolsetPopoverTimestamp();
-      if (closedOpening.current && compareToolsetPopoverOpenings({ ...payload, openedAt }, closedOpening.current) <= 0) return;
-      if (contentPushedRef.current && compareToolsetPopoverOpenings({ ...payload, openedAt }, contentRef.current) <= 0) return;
+      // Unstamped pushes have no replay identity: each is a fresh opening, even when the
+      // clock has not advanced. Stamped owner replays retain their original identity.
+      const opening = payload.openedAt === undefined && payload.generation === undefined
+        ? newToolsetPopoverOpening()
+        : { openedAt: payload.openedAt ?? toolsetPopoverTimestamp(), generation: payload.generation };
+      const { openedAt } = opening;
+      if (closedOpening.current && compareToolsetPopoverOpenings(opening, closedOpening.current) <= 0) return;
+      if (contentPushedRef.current && compareToolsetPopoverOpenings(opening, contentRef.current) <= 0) return;
       // Dismiss IPC and content IPC can arrive in either order. A genuine press
       // after this open began wins even if the window had no content at the time.
       if (latestDismissAt.current >= openedAt) {
@@ -201,7 +207,7 @@ export function PalettePopoverWindow({
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
       }
-      const next: ToolsetPopoverContent = { ...payload, openedAt };
+      const next: ToolsetPopoverContent = { ...payload, ...opening };
       contentRef.current = next;
       setContent(next);
     })
