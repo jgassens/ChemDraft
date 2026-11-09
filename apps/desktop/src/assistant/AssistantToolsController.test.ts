@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, createEmptyDocument, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo, type ReactionObject } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
@@ -660,6 +660,56 @@ describe("assistant requests and MCP bridge", () => {
         reason: "outside assistant request", requiresUserApproval: true })).rejects.toThrow("not selected");
     } finally { await s.finish(); }
   });
+  it.each([false, true])("checks removal cascades in the request tab after switching tabs (reaction in scope = %s)", async inScope => {
+    const s = setup();
+    try {
+      const step: ReactionObject = {
+        id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {},
+        mappingState: "absent", components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: []
+      };
+      s.replace(applyPatch(s.context.getDocument()!, {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: step
+      }));
+      s.select(inScope ? [s.text.id, step.id] : [s.text.id]);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "delete selected text" });
+      const foreground = createEmptyDocument();
+      const read = s.port.read;
+      vi.spyOn(s.port, "read").mockImplementation(tab => tab === "another-tab" ? foreground : read(tab));
+      s.activate("another-tab");
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "delete_objects", input: { objectIds: [s.text.id] } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      // A reaction now references the text while the write waits for the drawing gesture.
+      // This reaches the host's removal check after preparation's normalization check.
+      s.replace(applyPatch(s.context.getDocument()!, {
+        op: "updateObject", objectId: step.id, changes: { conditionsTextObjectIds: [s.text.id] }
+      }));
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      const before = s.context.getDocument()!;
+      const scopedWrite = vi.spyOn(s.host, "applyPatchForPlugin");
+      s.gesture.active = false;
+      s.gate.flush();
+      const result = await pending;
+      expect(scopedWrite).toHaveBeenCalledOnce();
+      if (inScope) {
+        expect(result).toMatchObject({ structuredContent: { objectIds: [s.text.id] } });
+        expect(s.history).toHaveLength(1);
+        expect(s.history[0]!.before).toBe(before);
+        const objects = s.context.getDocument()!.pages[0]!.objects;
+        expect(objects.some(object => object.id === s.text.id)).toBe(false);
+        expect(objects.find(object => object.id === step.id)).toMatchObject({ conditionsTextObjectIds: [] });
+      } else {
+        expect(result).toMatchObject({ isError: true, content: [{ text:
+          `Plugin patch refused: removing ${s.text.id} would change reaction step, which this command may not modify.`
+        }] });
+        expect(s.history).toHaveLength(0);
+        expect(s.context.getDocument()).toBe(before);
+      }
+      expect(s.port.read("another-tab")).toBe(foreground);
+      expect(foreground.pages[0]!.objects).toEqual([]);
+      await s.controller.endRequest(s.plugin, { requestId });
+    } finally { await s.finish(); }
+  });
   it("refuses out-of-scope edits, empty-selection edits, writes without an own command, and calls on a closed tab", async () => {
     const s = setup();
     try {
@@ -667,7 +717,7 @@ describe("assistant requests and MCP bridge", () => {
       const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "add" });
       expect(await s.controller.callTool(s.plugin, { name: "delete_objects", input: { objectIds: [s.text.id] } })).toMatchObject({ structuredContent: { refused: true } });
       // Check the host gate independently of the tool's own scope check.
-      await expect(s.host.applyPatchForPlugin(s.plugin.id, undefined, { patch: { op: "removeObject", pageId: s.context.getDocument()!.pages[0]!.id, objectId: s.text.id }, reason: "test", requiresUserApproval: true }, { objectIds: [], apply: () => ({ applied: true, objectIds: [] }) })).rejects.toThrow("not selected");
+      await expect(s.host.applyPatchForPlugin(s.plugin.id, undefined, { patch: { op: "removeObject", pageId: s.context.getDocument()!.pages[0]!.id, objectId: s.text.id }, reason: "test", requiresUserApproval: true }, { objectIds: [], getDocument: s.context.getDocument, apply: () => ({ applied: true, objectIds: [] }) })).rejects.toThrow("not selected");
       await s.controller.endRequest(s.plugin, { requestId });
       s.close();
       await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("No assistant request");

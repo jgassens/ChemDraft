@@ -1067,7 +1067,12 @@ export class PluginHost {
     invocationToken: symbol | undefined,
     patch: ProposedDocumentPatch,
     /** Trusted embedding-host override, never exposed on the plugin context. */
-    requestScope?: { objectIds: readonly string[]; apply: NonNullable<PluginHostOptions["applyDocumentPatch"]> },
+    requestScope?: {
+      objectIds: readonly string[];
+      /** Read the same fixed document that `apply` writes, even after a tab switch. */
+      getDocument: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
+      apply: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
+    },
     /** Trusted host label, never taken from plugin input. */
     undoLabel?: string
   ): Promise<AppliedPatchReceipt> {
@@ -1122,9 +1127,9 @@ export class PluginHost {
     }
     const lastRemoval = ops.map(op => op.op).lastIndexOf("removeObject");
     if (lastRemoval !== -1) {
-      let document = await this.getActiveDocument?.();
+      let document = await (requestScope ? requestScope.getDocument() : this.getActiveDocument?.());
       if (!document) {
-        throw new PluginHostError("Plugin patch refused: no active document is available to check reaction removal scope.");
+        throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check reaction removal scope.`);
       }
       // Preview in order so insertions and edits earlier in a batch use the same removal rule as
       // the patch engine. Nothing reaches the embedding host until the entire patch is authorized.

@@ -97,16 +97,66 @@ describe("direct-write invocation scope", () => {
       host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
         commandHandlers: { "plugin.scope.run": ctx => requestScope
           ? host.applyPatchForPlugin("org.test.scope", undefined, patch, {
-            objectIds: ["mol_1"], apply: f.applyDocumentPatch
+            objectIds: ["mol_1"], getDocument: () => undefined, apply: f.applyDocumentPatch
           })
           : ctx.documents.applyPatch!(patch) }
       });
       const before = f.document();
       await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1"]) }))
-        .rejects.toThrow("Plugin patch refused: no active document is available to check reaction removal scope.");
-      expect(getActiveDocument).toHaveBeenCalledTimes(provider === "unavailable" ? 1 : 0);
+        .rejects.toThrow(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check reaction removal scope.`);
+      expect(getActiveDocument).toHaveBeenCalledTimes(!requestScope && provider === "unavailable" ? 1 : 0);
       expect(f.applyDocumentPatch).not.toHaveBeenCalled();
       expect(f.document()).toBe(before);
+    });
+  });
+
+  describe("fixed request document", () => {
+    it.each([false, true])("checks the request's reaction cascade (reaction in scope = %s)", async inScope => {
+      const f = fixture([], () => {}, undefined, [reaction("components")]);
+      // The foreground tab has no removed object, so previewing it would miss the cascade.
+      const foreground = createEmptyDocument({ now });
+      const getActiveDocument = vi.fn(() => foreground);
+      const getDocument = vi.fn(async () => f.document());
+      const host = new PluginHost({ getActiveDocument });
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": () => host.applyPatchForPlugin("org.test.scope", undefined,
+          { reason: "remove from request tab", patch: { op: "removeObject", objectId: "mol_1" } }, {
+            objectIds: inScope ? ["mol_1", "step"] : ["mol_1"], getDocument, apply: f.applyDocumentPatch
+          }) }
+      });
+      const before = f.document();
+      const pending = host.invokeCommand("plugin.scope.run", { writeSelection: snapshot([]) });
+      if (inScope) {
+        await expect(pending).resolves.toMatchObject({ applied: true });
+        expect(f.applyDocumentPatch).toHaveBeenCalledOnce();
+        expect(f.document().pages[0]!.objects.find(object => object.id === "step")).toMatchObject({ components: [] });
+        expect(f.document().pages[0]!.objects.some(object => object.id === "mol_1")).toBe(false);
+      } else {
+        await expect(pending).rejects.toThrow("removing mol_1 would change reaction step");
+        expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+        expect(f.document()).toBe(before);
+      }
+      expect(getDocument).toHaveBeenCalledOnce();
+      expect(getActiveDocument).not.toHaveBeenCalled();
+      expect(foreground.pages[0]!.objects).toEqual([]);
+    });
+
+    it("does not fall back to the foreground when the request document is unavailable", async () => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(f.document);
+      const getDocument = vi.fn(async () => undefined);
+      const host = new PluginHost({ getActiveDocument });
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": () => host.applyPatchForPlugin("org.test.scope", undefined,
+          { reason: "closed request tab", patch: { op: "removeObject", objectId: "mol_1" } }, {
+            objectIds: ["mol_1"], getDocument, apply: f.applyDocumentPatch
+          }) }
+      });
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot([]) }))
+        .rejects.toThrow("no request document is available to check reaction removal scope");
+      expect(getDocument).toHaveBeenCalledOnce();
+      expect(getActiveDocument).not.toHaveBeenCalled();
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
     });
   });
 
