@@ -11,7 +11,6 @@ import {
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
-import { planDocumentPageFit } from "../pageEnlargement";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
   type AssistantToolContext, type AssistantPageGrowth
@@ -124,10 +123,11 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   if (built.patch.op !== "batch" || built.patch.patches.length === 0 || built.patch.patches.length > 256) {
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
+  let patch: Extract<DocumentPatch, { op: "batch" }> = built.patch;
   const validated = applyPatch(document, built.patch, { now: context.now() });
   // Replacement, movement, restyling and cleanup use the same check as insertion plans.
   if (!built.pageGrowth) {
-    const pages = planDocumentPageFit(document, validated).growth;
+    const pages = context.planPageGrowth(document, validated);
     const growth = pages[0];
     if (growth) built = { ...built, pageGrowth: { ...growth, pages, description: "This content", itemCount: 1, items: [] } };
   }
@@ -138,7 +138,6 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   }
   let declined: string[] = [];
   let declineReason = PAGE_GROWTH_DECLINED;
-  let patch = built.patch;
   let summary = built.summary;
   if (built.pageGrowth) {
     context.signal?.throwIfAborted();
@@ -236,11 +235,11 @@ function insertWrite(pageId: string, objects: DocumentObject[], summary: string,
 }
 
 /** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
-function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
+function insertionPlan(context: AssistantToolContext, document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
   pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
   // Text SVG can paint beyond a constrained stored frame. Include those cells in the same
   // decision/timeout grouping, measuring through the shared check rather than a second bounds rule.
-  const measured = planDocumentPageFit(document, applyPatch(document, write.patch)).growth.find(page => page.pageId === pageId);
+  const measured = context.planPageGrowth(document, applyPatch(document, write.patch)).find(page => page.pageId === pageId);
   const ids = new Set(measured?.objectIds);
   const nonFitting = [...new Set([...plan.nonFitting, ...cells.flatMap((cell, index) => cell.some(object => ids.has(object.id)) ? [index] : [])])];
   const page = document.pages.find(page => page.id === pageId)!;
@@ -291,7 +290,7 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
     : needsRoom.length <= 3 && needsRoom.every(item => item.kind !== "text" && item.label)
       ? needsRoom.map(item => item.kind !== "text" ? item.label : "").join(", ")
       : `These ${needsRoom.length} structures`;
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects,
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects,
     `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`,
     sourceMolecules.flatMap(molecule => molecule.chemistry?.warnings?.map(warning => warning.message) ?? []), expected),
   placed.plan, placed.page.id, cells, labels, description);
@@ -344,7 +343,7 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
     placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
@@ -354,7 +353,7 @@ export function buildInsertText(context: AssistantToolContext, raw: unknown): As
   const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
   const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
   const placed = placement(context, object, pageId, input.relativeTo);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
     placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
 }
 export function buildInsertTable(context: AssistantToolContext, raw: unknown): AssistantWrite {
@@ -373,7 +372,7 @@ export function buildInsertTable(context: AssistantToolContext, raw: unknown): A
   const relative = besideObjectId ? { objectId: besideObjectId, side: "right" as const } : undefined;
   const pageId = besideObjectId ? findObject(document, besideObjectId).page.id : undefined;
   const placed = placement(context, [object], pageId, relative);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
     placed.plan, placed.page.id, [[object]], ["table"], "This table");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {

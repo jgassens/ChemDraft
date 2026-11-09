@@ -9,7 +9,7 @@ import type {
 export interface AssistantRect { x: number; y: number; width: number; height: number }
 export interface AssistantPageGrowth {
   pageId: string; width: number; height: number; description: string; itemCount: number;
-  pages?: { pageId: string; width: number; height: number }[];
+  pages?: { pageId: string; width: number; height: number; objectIds?: string[] }[];
 }
 export type AssistantStructureInspection =
   | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
@@ -27,6 +27,8 @@ export interface AssistantToolContext {
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
   signal?: AbortSignal;
+  /** Host-injected shared page-fit planner, including non-insertion writes. */
+  planPageGrowth(before: ChemDraftDocument, proposed: ChemDraftDocument): NonNullable<AssistantPageGrowth["pages"]>;
   /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
   confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.

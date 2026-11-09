@@ -4,15 +4,38 @@ import { moleculeVisualBoundsForArrangement, objectFrameBoundsForPageFit, tableV
 import { nativePrompt } from "./nativePrompt";
 import { documentObjectVisualBounds, translateDocumentPage } from "./documentWorkflow";
 
-/** One decision per action (or assistant request), including concurrent/batched writes. */
+export type PageEnlargementDecision = "enlarge" | "keep" | "unanswered";
+
+/** One decision per action (or assistant request), including concurrent/batched writes.
+ * An abandoned question stays unanswered for the action; a late native answer cannot authorize it.
+ */
 export class PageEnlargementConsent {
-  private decision?: Promise<boolean>;
+  private decision?: Promise<PageEnlargementDecision>;
+  private readonly promptAbort = new AbortController();
   constructor(private readonly platform?: ShortcutPlatform) {}
-  confirm(signal?: AbortSignal): Promise<boolean> {
-    return this.decision ??= nativePrompt({ title: "ChemDraft", owner: "document", kind: "info",
+  async confirm(signal?: AbortSignal): Promise<PageEnlargementDecision> {
+    if (signal?.aborted) {
+      this.promptAbort.abort();
+      this.decision ??= Promise.resolve("unanswered");
+      return "unanswered";
+    }
+    const decision = this.decision ??= nativePrompt({ title: "ChemDraft", owner: "document", kind: "info",
       message: "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.",
       choices: [{ id: "enlarge", label: "Enlarge" }, { id: "keep", label: "Keep Page Size", cancel: true }]
-    }, async () => "keep", signal, undefined, this.platform).then(choice => choice === "enlarge");
+    }, async () => "keep", this.promptAbort.signal, undefined, this.platform)
+      .then(choice => this.promptAbort.signal.aborted ? "unanswered" : choice === "enlarge" ? "enlarge" : "keep");
+    if (!signal) return decision;
+    let stop!: () => void;
+    try {
+      return await Promise.race([decision, new Promise<PageEnlargementDecision>(resolve => {
+        stop = () => {
+          this.promptAbort.abort();
+          resolve("unanswered");
+        };
+        signal.addEventListener("abort", stop, { once: true });
+        if (signal.aborted) stop();
+      })]);
+    } finally { signal.removeEventListener("abort", stop); }
   }
 }
 
@@ -101,9 +124,10 @@ export function commitWithPageFit(before: ChemDraftDocument, proposed: ChemDraft
   options.signal?.throwIfAborted();
   const plan = planDocumentPageFit(before, proposed);
   if (!plan.growth.length) { commit(proposed); return undefined; }
-  return (options.consent ?? new PageEnlargementConsent()).confirm(options.signal).then(enlarge => {
+  return (options.consent ?? new PageEnlargementConsent()).confirm(options.signal).then(decision => {
     options.signal?.throwIfAborted();
+    if (decision === "unanswered") throw new Error("No answer to the enlarge-page question; nothing was inserted.");
     if (options.isCurrent && !options.isCurrent()) throw new Error("The drawing changed while the page question was open; try the action again.");
-    commit(applyPageFitDecision(plan, enlarge));
+    commit(applyPageFitDecision(plan, decision === "enlarge"));
   });
 }

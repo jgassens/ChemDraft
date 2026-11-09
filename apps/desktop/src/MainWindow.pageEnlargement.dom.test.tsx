@@ -68,7 +68,10 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       }, { commandHandlers: { "plugin.pageShift.insert": async context => {
         const patch = { reason: "Insert oversized content", patch: { op: "addObject" as const, pageId: page.id, object } };
         if (path === "reviewed proposal") await context.documents!.proposePatch(patch);
-        else await context.documents!.applyPatch(patch);
+        else {
+          if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
+          await context.documents.applyPatch(patch);
+        }
       } } });
       await runtime.invokeCommand("plugin.pageShift.insert");
     });
@@ -77,7 +80,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
     }
     if (txId) await act(async () => {
-      expect(await transactions.pageEnlargementConsent(txId, platform).confirm()).toBe(answer === "enlarge");
+      expect(await transactions.pageEnlargementConsent(txId, platform).confirm()).toBe(answer);
       transactions.endAssistantTransaction(txId, { touchedIds: [object.id] });
     });
     const after = current();
@@ -145,7 +148,10 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
             { op: "addObject" as const, pageId: before.pages[0]!.id, object: { ...object, id: "second" } }
           ] } };
           if (action === "reviewed proposal") await context.documents!.proposePatch(patch);
-          else await context.documents!.applyPatch(patch);
+          else {
+            if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
+            await context.documents.applyPatch(patch);
+          }
         } } });
         await runtime.invokeCommand("plugin.pageTest.insert");
       });
@@ -257,7 +263,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
         for (const scale of [1, 10]) {
           let object = createSmilesMolecule(current(), { x: 600, y: 600 }, depictSmiles2D("CCCCCCCCCCCC"), "CCCCCCCCCCCC");
           object = normalizeNativeMoleculeGeometry({ ...object, atoms: object.atoms.map(atom => ({ ...atom, x: 600 + atom.x * scale })) });
-          await context.documents!.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id, object } });
+          if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
+          await context.documents.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id, object } });
         }
       } } });
       await runtime.invokeCommand("plugin.pageSequence.insert");
@@ -266,6 +273,40 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     await command("edit.undo"); await command("edit.undo"); expect(current()).toEqual(before);
     await act(async () => { await runtime.invokeCommand("plugin.pageSequence.insert"); });
     expect(prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a direct plugin patch after the request's page question went unanswered", async () => {
+    let answer!: (value: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    restorePrompt = setNativePromptProvider(prompt);
+    await act(async () => root.render(<MainWindow initialDocument={initial(20)} shortcutPlatform={platform}
+      initialActiveToolCommandId="tool.select" initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    const before = current(), runtime = captured.runtime!;
+    const pluginId = "org.chemdraft.pageUnanswered";
+    const transactions = getAssistantTransactions(getAssistantHistoryPort());
+    const txId = transactions.beginAssistantTransaction({ pluginId, runId: "unanswered-test",
+      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } });
+    const deadline = new AbortController();
+    const pending = transactions.pageEnlargementConsent(txId, platform).confirm(deadline.signal);
+    deadline.abort();
+    expect(await pending).toBe("unanswered");
+    let failure: unknown;
+    await act(async () => {
+      runtime.registerPlugin({ id: pluginId, name: "Unanswered", version: "0.1.0", apiVersion: "^0.1.20",
+        entry: "test.js", permissions: ["document.write"],
+        contributes: { commands: [{ id: "plugin.pageUnanswered.insert", title: "Insert" }] }
+      }, { commandHandlers: { "plugin.pageUnanswered.insert": async context => {
+        if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
+        await context.documents.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id,
+          object: DocumentObjectSchema.parse({ id: "unanswered-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 }) } });
+      } } });
+      try { await runtime.invokeCommand("plugin.pageUnanswered.insert"); } catch (error) { failure = error; }
+    });
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("No answer to the enlarge-page question");
+    await act(async () => { answer("enlarge"); transactions.endAssistantTransaction(txId, { touchedIds: [] }); });
+    expect(current()).toEqual(before);
+    expect(prompt).toHaveBeenCalledOnce();
   });
 
   it("rejects a plugin write if the command unregisters while its page question is open", async () => {
@@ -280,7 +321,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
         entry: "test.js", permissions: ["document.write"], contributes: { commands: [{ id: "plugin.pageCancelled.insert", title: "Insert" }] }
       }, { commandHandlers: { "plugin.pageCancelled.insert": async context => {
         const object = createSmilesMolecule(before, { x: 600, y: 600 }, depictSmiles2D("CCCCCCCCCCCC"), "CCCCCCCCCCCC");
-        await context.documents!.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id, object } });
+        if (!context.documents?.applyPatch) throw new Error("document.write capability is unavailable");
+        await context.documents.applyPatch({ reason: "Insert", patch: { op: "addObject", pageId: before.pages[0]!.id, object } });
       } } });
       finished = runtime.invokeCommand("plugin.pageCancelled.insert").then(() => "applied", () => "cancelled");
     });

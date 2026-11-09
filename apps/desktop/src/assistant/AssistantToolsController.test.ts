@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
-import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
+import { applyPluginDocumentPatch, createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { commitWithPageFit } from "../pageEnlargement";
 import { objectRect } from "./placement";
 import { buildMoveObjects, translateObject } from "./writeBuilder";
 import { applyChargeToolAtPoint } from "../documentWorkflow";
@@ -248,7 +249,7 @@ describe.each(["macos", "windows"] as const)("assistant host page enlargement on
       const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption line\n".repeat(100) } });
       expect(structure.isError).not.toBe(true); expect(caption.isError).not.toBe(true);
       // documents.applyPatch in MainWindow reads this same transaction-owned consent.
-      expect(await s.transactions.pageEnlargementConsent(requestId, platform).confirm()).toBe(accepted);
+      expect(await s.transactions.pageEnlargementConsent(requestId, platform).confirm()).toBe(accepted ? "enlarge" : "keep");
       expect(prompt).toHaveBeenCalledOnce();
       await s.controller.endRequest(s.plugin, { requestId });
       expect(s.history).toHaveLength(1);
@@ -455,8 +456,63 @@ describe.each(["macos", "windows"] as const)("assistant host page enlargement on
       expect(s.context.getDocument()).toEqual(after);
       expect(s.history).toHaveLength(includeFitting ? 1 : 0);
       expect(s.engine.respond).toHaveBeenCalledTimes(1);
+      // Another tool in the same request must not reinterpret the timeout as explicit Keep.
+      const second = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      expect(second.structuredContent?.reason).toBe(reason);
+      expect(second.structuredContent?.objectIds).toEqual([]);
+      // MainWindow uses this same preflight for direct documents.applyPatch writes.
+      const proposed = applyPluginDocumentPatch(after, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: after.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      await expect(commitWithPageFit(after, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).rejects.toThrow("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toEqual(after);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      expect(prompt).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
+  it("honours the tool's five-minute deadline when a direct plugin write opened the shared prompt first", async () => {
+    vi.useFakeTimers();
+    const s = placementSetup(platform);
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Mixed writes" });
+      const before = s.context.getDocument()!;
+      const proposed = applyPluginDocumentPatch(before, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: before.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-first", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      // This caller has no human-decision deadline. The later tool still has its own.
+      const direct = Promise.resolve(commitWithPageFit(before, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).then(() => "committed", error => (error as Error).message);
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect((await pending).structuredContent?.reason).toBe("declined: no answer to the enlarge-page question within 5 minutes");
+      expect(await direct).toContain("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+      answer("enlarge");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(s.context.getDocument()).toBe(before);
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("keep"); restore(); await s.finish(); }
   });
 
   it("ignores a late Enlarge answer after host cancellation and draws none of the pending call's items", async () => {

@@ -183,8 +183,23 @@ describe.each(["macos", "windows"] as const)("page enlargement paths on %s", pla
   it("shares one answer across successive and concurrent writes in an action", async () => {
     const consent = new PageEnlargementConsent(platform);
     dialog.message.mockResolvedValue("Enlarge");
-    expect(await Promise.all([consent.confirm(), consent.confirm(), consent.confirm()])).toEqual([true, true, true]);
-    expect(await consent.confirm()).toBe(true);
+    expect(await Promise.all([consent.confirm(), consent.confirm(), consent.confirm()])).toEqual(["enlarge", "enlarge", "enlarge"]);
+    expect(await consent.confirm()).toBe("enlarge");
+    expect(dialog.message).toHaveBeenCalledOnce();
+  });
+  it.each(["first", "later"])("honours the %s caller's abort and keeps the shared question unanswered", async caller => {
+    const consent = new PageEnlargementConsent(platform);
+    const abort = new AbortController();
+    let answer!: (value: string) => void;
+    dialog.message.mockImplementation(() => new Promise<string>(resolve => { answer = resolve; }));
+    const first = consent.confirm(caller === "first" ? abort.signal : undefined);
+    const second = consent.confirm(caller === "later" ? abort.signal : undefined);
+    await vi.waitFor(() => expect(dialog.message).toHaveBeenCalledOnce());
+    abort.abort();
+    expect(await Promise.all([first, second])).toEqual(["unanswered", "unanswered"]);
+    expect(await consent.confirm()).toBe("unanswered");
+    answer("Enlarge");
+    expect(await consent.confirm()).toBe("unanswered");
     expect(dialog.message).toHaveBeenCalledOnce();
   });
   it("holds the entire action until answered and rejects a stale tab/document", async () => {

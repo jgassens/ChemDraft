@@ -30,7 +30,14 @@ Ending/unregistering the command cancels pending writes; receipts wait for the a
 `AssistantTransactions.pageEnlargementConsent(requestId)` shares one answer across assistant tool
 calls and direct plugin patches in the same request. Scope, chemistry verification, Stop and the
 bounded human-decision deadline remain. Explicit Keep Page Size retains every proposed insertion;
-an unanswered assistant question still omits pending non-fitting cells.
+an unanswered assistant question still omits pending non-fitting cells. Consent records three outcomes:
+Enlarge, Keep Page Size, or unanswered. Each caller observes its own abort signal, even when another
+caller opened the shared prompt first. If a pending caller times out or cancels, the action's question
+stays unanswered: later overflowing tool calls decline and direct plugin patches fail without a
+commit. A late native answer cannot turn that outcome into Keep or Enlarge. Fitting writes may proceed.
+
+The assistant tool layer receives the shared planner through `AssistantToolContext.planPageGrowth`;
+only the transport/controller layer imports the private desktop page-enlargement helper.
 
 `textVisualBoundsForPageFit` in layout-engine measures explicit SVG lines and the stored text frame,
 using existing font/script metrics, alignment and the original rotation pivot. It is retained for

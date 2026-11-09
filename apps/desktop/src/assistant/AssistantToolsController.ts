@@ -80,6 +80,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       ended: false, cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
         getInsertedObjectIds: () => [...request.inserted],
+        planPageGrowth: (before, proposed) => planDocumentPageFit(before, proposed).growth,
         confirmPageGrowth: async () => { throw new Error("No tool call is running."); },
         write: async () => { throw new Error("No tool call is running."); } } };
     this.requests.set(requestId, request);
@@ -129,8 +130,8 @@ export class AssistantToolsController implements PluginHostAssistant {
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
-            if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
-            if (!accepted) return false;
+            if (accepted === "unanswered") return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
+            if (accepted === "keep") return false;
             approvedGrowth = { growth, document };
             return true;
           } finally {
