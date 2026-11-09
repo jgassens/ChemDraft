@@ -73,6 +73,21 @@ test("sidecar placeholder exemption is explicit and cannot exempt missing Java",
   assert.throws(() => verifyInventory({ ...bundle, allowSidecarPlaceholder: true }), /libjvm/);
 });
 
+test("Intel release gate checks the bundled Java launcher and every loose JRE library", () => {
+  for (const path of [
+    "Contents/Resources/resources/opsin/jre/bin/java",
+    "Contents/Resources/resources/opsin/jre/lib/server/libjvm.dylib",
+    "Contents/Resources/resources/opsin/jre/lib/libjava.dylib"
+  ]) {
+    for (const native of [thinMachO("arm64"), fatMachO([thinMachO(), thinMachO("arm64")])]) {
+      const bundle = validBundle();
+      bundle.records = bundle.records.filter((record) => record.path !== path);
+      bundle.records.push({ path, slices: machOSlices(native) });
+      assert.throws(() => verifyInventory(bundle), /opsin\/jre\/.*(missing x86_64|expected a thin x86_64)/);
+    }
+  }
+});
+
 test("bundle traversal finds extensionless helpers and handles framework aliases without loops", { skip: process.platform === "win32" }, () => {
   const temp = mkdtempSync(join(tmpdir(), "chemdraft-macos-check-"));
   try {

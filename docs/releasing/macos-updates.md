@@ -136,13 +136,89 @@ plist repeats the same Sparkle key and settings, changing only `SUFeedURL` to
 `https://raw.githubusercontent.com/jgassens/ChemDraft/main/appcast-intel.xml`.
 arm64 keeps `appcast.xml`. Keep the other plist settings synchronized.
 
+### Intel OPSIN runtime: JDK source and architecture checks
+
+Build locally from the repository root on the owner's Apple-silicon Mac:
+
+```bash
+./run-app -t x86_64-apple-darwin
+```
+
+`-t` and `--target` select the same packaged build. Before packaging Intel,
+the launcher runs `node scripts/build-opsin-runtime.mjs --target x86_64-apple-darwin`.
+That builder also accepts `--arch x86_64` or `OPSIN_TARGET_ARCH=x86_64`; an explicit
+flag takes precedence over the environment. It builds the trimmed runtime into
+`apps/desktop/src-tauri/resources/opsin/jre`, replacing the shared staging image.
+
+When `JAVA_HOME` is unset, an Intel macOS runtime build obtains **Eclipse Temurin
+25 LTS, version 25.0.5+8**, x64 macOS HotSpot, from this pinned Adoptium release asset:
+
+- [JDK tarball](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_mac_hotspot_25.0.5_8.tar.gz)
+- [Published SHA-256](https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_mac_hotspot_25.0.5_8.tar.gz.sha256.txt):
+  `32cd4d2151c91aa00d0fc911edfd05245ed40fa6b1aa894d5f35c928cd67a59d`
+
+The pin lives in `scripts/opsin-jdk.mjs`. The archive is cached outside the repository
+at `~/Library/Caches/ChemDraft/opsin-jdk/OpenJDK25U-jdk_x64_mac_hotspot_25.0.5_8.tar.gz`.
+Both fresh downloads and cache hits must match the pinned SHA-256 **before extraction**;
+a mismatch stops the build without extracting or using the archive. Remove a corrupt
+cached archive and retry. Each build extracts a fresh JDK into a temporary directory
+under that cache, runs its `bin/jlink`, and removes the extracted JDK afterwards.
+The cached tarball remains for future builds. Never commit the JDK or generated JRE.
+
+An explicit JDK still works and bypasses the download:
+
+```bash
+JAVA_HOME=/absolute/path/to/x86_64-jdk/Contents/Home ./run-app -t x86_64-apple-darwin
+# Or stage only the runtime:
+JAVA_HOME=/absolute/path/to/x86_64-jdk/Contents/Home node scripts/build-opsin-runtime.mjs --arch x86_64
+```
+
+`JAVA_HOME` must contain the target JDK's `bin/jlink` (JDK 21+); an invalid or
+wrong-architecture Intel override fails instead of falling back to PATH. Unset an
+arm64 `JAVA_HOME` to use the pinned Intel download. arm64 macOS, Windows and Linux
+keep their existing native JDK discovery; they do not use this download.
+
+On Apple silicon, the builder first probes Rosetta 2 and runs both jlink and the
+generated Java launcher via `/usr/bin/arch -x86_64`. If Rosetta is missing, it stops
+before downloading and names the installation command:
+
+```bash
+/usr/sbin/softwareupdate --install-rosetta --agree-to-license
+```
+
+On Intel, the same JDK and runtime run natively. Before linking, the builder parses
+the selected JDK's `bin/java` and `lib/server/libjvm.dylib` Mach-O headers and
+requires thin x86_64 binaries.
+It repeats those checks on the generated JRE and fails on any mismatch, then
+uses that JRE to smoke-test OPSIN's benzene conversion. This checks the actual
+native binaries rather than relying on the JDK version or runner architecture.
+
+`tauri.conf.json` includes `resources/opsin/jre` in bundle resources. After
+production packaging, run the existing release gate against the built app:
+
+```bash
+node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
+```
+
+It requires the bundled launcher and JVM at
+`Contents/Resources/resources/opsin/jre`, and rejects missing, non-x86_64 or
+universal JRE binaries, including the other loose JRE libraries.
+
+macOS release DMGs are built **locally**, on the owner's Apple-silicon Mac, using
+`./run-app` for arm64 and `./run-app -t x86_64-apple-darwin` for Intel, followed by
+the existing macOS-only release signing/notarization steps. `run-app` itself builds
+and launches the worktree `.app`; final production-identity packaging and the DMG
+remain part of that local release flow. GitHub Actions does not build macOS release
+DMGs. `.github/workflows/macos-intel-smoke.yml` builds only an unsigned `.app` and
+provides an advisory smoke check, using its explicitly supplied x64 JDK.
+
 ### Build order on the Apple-silicon release Mac
 
 Start at the repository root, on the exact commit being released, with the
 normal release prerequisites installed and the local signing/notarization
-instructions open. Install Rosetta and separate matching arm64 and x86_64 JDKs
-(JDK 21+, with deployment compatibility for the declared minimum macOS 11.0).
-The following are coordinator commands, not steps run by the tooling change.
+instructions open. Install Rosetta on Apple silicon and an arm64 JDK (JDK 21+,
+with deployment compatibility for the declared minimum macOS 11.0). Intel builds
+obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
 
 1. Build and validate the Intel sidecar from the pinned sources described in
    `native/avogadro3d-sidecar/README.md`:
@@ -181,6 +257,7 @@ The following are coordinator commands, not steps run by the tooling change.
 
    ```bash
    JAVA_HOME=/absolute/path/to/arm64-jdk/Contents/Home node scripts/build-opsin-runtime.mjs --arch arm64
+   ./run-app
    CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target aarch64-apple-darwin --bundles app,dmg
    node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ChemDraft.app --target aarch64-apple-darwin
    ```
@@ -192,13 +269,17 @@ The following are coordinator commands, not steps run by the tooling change.
 4. Only after packaging arm64, replace the shared staging runtime with Intel:
 
    ```bash
-   JAVA_HOME=/absolute/path/to/x86_64-jdk/Contents/Home node scripts/build-opsin-runtime.mjs --arch x86_64
+   # Leave JAVA_HOME unset to use the pinned, checksum-verified Intel JDK download.
+   ./run-app -t x86_64-apple-darwin
    CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app,dmg
    node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
    ```
 
-   Finish the same local signing/notarization/stapling validation independently
-   for Intel. Save its final DMG in `/absolute/path/release-intel` with a distinct
+   `run-app` creates and verifies the staged Intel JRE before building its worktree
+   app. The subsequent production package build above signs that staged JRE through
+   `scripts/sign-opsin-runtime.sh` before sealing the app. Finish the same local
+   signing/notarization/stapling validation independently for Intel. Save its final
+   DMG in `/absolute/path/release-intel` with a distinct
    architecture-specific name. Neither architecture may overwrite the other's
    artifact. The JRE output `resources/opsin/jre` is shared: never build these in
    parallel in one checkout. Rebuild arm64's runtime before another arm64 build.
@@ -208,8 +289,8 @@ when no target is supplied; on Apple silicon this writes arm64 artifacts under
 `src-tauri/target/release`. An explicit target passes through to Tauri and
 writes under `src-tauri/target/<triple>/release`. `./run-app` with no arguments
 retains its existing host-native build and `target/release` paths;
-`./run-app --target x86_64-apple-darwin` exercises the Intel packaged dev app
-after staging its matching JRE. `--dev` stays host-native. The launcher still
+`./run-app -t x86_64-apple-darwin` stages its matching JRE automatically and
+exercises the Intel packaged dev app. `--dev` stays host-native. The launcher still
 moves the bundle into this worktree's `app/`, uses the shared dev identity, keeps
 the worktree label, and removes the production feed; it cannot prove update
 acceptance. The stable app is never replaced by that launcher.

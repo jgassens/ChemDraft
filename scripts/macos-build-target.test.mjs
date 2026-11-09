@@ -34,9 +34,24 @@ test("Intel plist preserves the base Sparkle settings and only changes the feed"
 
 test("run-app rejects invalid targets and cross-target dev before any build or installation", { skip: process.platform === "win32" }, () => {
   const launcher = fileURLToPath(new URL("../run-app", import.meta.url));
-  for (const args of [["--target", "bad-target"], ["--dev", "--target", "x86_64-apple-darwin"], ["--target"], ["--target="], ["--target", "x86_64-apple-darwin", "--target", ""], ["--target", "x86_64-apple-darwin", "--target=aarch64-apple-darwin"]]) {
+  for (const args of [["--target", "bad-target"], ["-t", "bad-target"], ["--dev", "--target", "x86_64-apple-darwin"], ["--dev", "-t", "x86_64-apple-darwin"], ["-t"], ["--target"], ["--target="], ["--target", "x86_64-apple-darwin", "--target", ""], ["--target", "x86_64-apple-darwin", "--target=aarch64-apple-darwin"]]) {
     const result = spawnSync("bash", [launcher, ...args], { encoding: "utf8" });
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stdout, /target/);
+  }
+});
+
+test("run-app target aliases stage Intel OPSIN before packaging, with no native-default changes", { skip: process.platform === "win32" }, () => {
+  const source = readFileSync(new URL("../run-app", import.meta.url), "utf8");
+  // Execute the real argument parser and runtime preparation block with a mocked Node process.
+  // Skip launcher locks, installs, cargo, signing, builds and every other filesystem operation.
+  const parser = source.slice(source.indexOf("RUN_MODE="), source.indexOf("\nRELEASE_TARGET_DIR="));
+  const preparation = source.slice(source.indexOf('if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then\n  node'), source.indexOf("\n# The identifier must be overridden"));
+  assert.ok(preparation.includes("build-opsin-runtime.mjs"));
+  const script = `${parser}\nROOT_DIR=/fixture\nnode() { printf '%s\\n' "$@"; }\n${preparation}`;
+  for (const args of [["-t", "x86_64-apple-darwin"], ["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"], ["--target", "aarch64-apple-darwin"], []]) {
+    const result = spawnSync("bash", ["-c", script, "run-app", ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, args.some((arg) => arg.includes("x86_64")) ? "/fixture/scripts/build-opsin-runtime.mjs\n--target\nx86_64-apple-darwin\n" : "");
   }
 });

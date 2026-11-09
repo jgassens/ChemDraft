@@ -11,7 +11,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dev) RUN_MODE="--dev"; shift ;;
     app) shift ;;
-    --target)
+    --target|-t)
       if [ "$#" -lt 2 ]; then echo "--target needs a macOS target triple"; exit 2; fi
       if [ -n "$MACOS_TARGET" ] || [ -z "$2" ]; then echo "Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]"; exit 2; fi
       MACOS_TARGET="$2"; shift 2 ;;
@@ -100,7 +100,8 @@ Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]
 
 Default: build and launch the ChemDraft macOS app bundle.
   --dev   launch Tauri dev mode with Vite/HMR.
-  --target  build a packaged app for this macOS architecture (requires matching staged JRE).
+  -t, --target  build a packaged app for this macOS architecture.
+            Intel builds create a matching OPSIN JRE (pinned JDK download, or JAVA_HOME override).
             Without it, retain the existing host-native build and target/release paths.
 EOF
 }
@@ -856,6 +857,12 @@ if [ -e "$TAURI_OUTPUT_BUNDLE" ]; then
 fi
 
 force_tauri_context_rebuild
+
+# The Intel package must never inherit the shared arm64 OPSIN image. This obtains a checksum-pinned
+# JDK outside the checkout when JAVA_HOME is unset, links the JRE, and checks its native architecture.
+if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
+  node "$ROOT_DIR/scripts/build-opsin-runtime.mjs" --target "$MACOS_TARGET"
+fi
 
 # The identifier must be overridden at BUILD time, not patched into Info.plist afterwards:
 # `generate_context!()` bakes it in at compile time and Tauri derives app_data_dir() from it. Patching
