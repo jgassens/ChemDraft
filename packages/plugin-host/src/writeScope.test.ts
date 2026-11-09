@@ -42,6 +42,36 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it("accepts a native reaction referencing page drawables, including later batch insertions", async () => {
+    const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "Insert synthetic reaction", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {},
+          components: [{ role: "reactant", objectId: "mol_1" }, { role: "product", objectId: "mol_7" }],
+          conditionsTextObjectIds: ["conditions"], arrowObjectIds: ["arrow"], plusObjectIds: ["plus"], mappingState: "absent"
+        } },
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "arrow", type: "reaction-arrow", x: 30, y: 10, width: 40, height: 1, rotation: 0, style: {},
+          arrowKind: "forward", start: { kind: "point", point: { x: 30, y: 10 } },
+          end: { kind: "point", point: { x: 70, y: 10 } }, labels: []
+        } },
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "plus", type: "plus", x: 10, y: 10, width: 10, height: 10, rotation: 0, style: {}
+        } },
+        { op: "addObject", pageId: f.pageId, object: text("conditions") }
+      ]
+    } }));
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    const objects = f.document().pages[0].objects;
+    const reaction = objects.find(object => object.type === "reaction");
+    expect(reaction).toMatchObject({ arrowObjectIds: ["arrow"], plusObjectIds: ["plus"] });
+    if (reaction?.type !== "reaction") throw new Error("Expected reaction");
+    for (const id of [...reaction.components.map(component => component.objectId), ...reaction.conditionsTextObjectIds,
+      ...(reaction.arrowObjectIds ?? []), ...(reaction.plusObjectIds ?? [])]) {
+      expect(objects.some(object => object.id === id), id).toBe(true);
+    }
+  });
+
   it.each(["addObject", "addAnnotation"])("rejects a malformed %s batch with a validation error before applying anything", async op => {
     const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "malformed", patch: {
       op: "batch", patches: [

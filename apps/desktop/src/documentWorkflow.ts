@@ -14565,6 +14565,7 @@ export function duplicateSelectedDocumentObjects(
 
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
+  remapCopiedReactionReferences(patches, duplicateIdByOriginalId);
   const selectionIds = [
     ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
@@ -14834,9 +14835,26 @@ export function pasteSelectionClipboardPayload(
   const fallbackSelectionIds = selectedIds.length > 0
     ? selectedIds
     : [...idBySourceId.values()];
+  remapCopiedReactionReferences(patches, idBySourceId);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+/** A copied step refers to the copied drawables, including forward references and shared intermediates. */
+function remapCopiedReactionReferences(patches: DocumentPatch[], ids: ReadonlyMap<string, string>): void {
+  const remap = (id: string) => ids.get(id) ?? id;
+  for (const patch of patches) {
+    if (patch.op !== "addObject" || patch.object.type !== "reaction") continue;
+    const reaction = patch.object;
+    patch.object = {
+      ...reaction,
+      components: reaction.components.map(component => ({ ...component, objectId: remap(component.objectId) })),
+      conditionsTextObjectIds: reaction.conditionsTextObjectIds.map(remap),
+      ...(reaction.arrowObjectIds === undefined ? {} : { arrowObjectIds: reaction.arrowObjectIds.map(remap) }),
+      ...(reaction.plusObjectIds === undefined ? {} : { plusObjectIds: reaction.plusObjectIds.map(remap) })
+    };
+  }
 }
 
 export function rotateSelectedDocumentObjects90(document: ChemDraftDocument): ChemDraftDocument {

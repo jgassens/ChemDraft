@@ -4,6 +4,12 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Native `reaction` objects reference participants through `components` (`reactant`, `product`,
+`agent`) and text through `conditionsTextObjectIds`. Optional `arrowObjectIds` and `plusObjectIds`
+link the step's existing drawable objects. Multiple steps may reference the same molecule, including
+an intermediate used as one step's product and the next step's reactant. These additive optional
+fields follow the existing v1 convention; older reaction documents load without a migration.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,
