@@ -54,8 +54,8 @@ describe.each(colors)("toolbar color %s", color => {
       expect(molecule.style.bondColors).toMatchObject({ [molecule.bonds[0].id]: color });
     }
   });
-  it.each(targets)("renders %s in SVG", target => {
-    expect(exportPhase4Svg(colored(target, color).document).contents.toLowerCase()).toContain(color);
+  it.each(targets)("renders %s in SVG", async target => {
+    expect((await exportPhase4Svg(colored(target, color).document)).contents.toLowerCase()).toContain(color);
   });
   it.each(targets)("renders %s in PDF", async target => {
     const dom = new JSDOM("<!doctype html><html><body></body></html>", { pretendToBeVisual: true });

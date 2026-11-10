@@ -4829,10 +4829,12 @@ export function insertNativeBracket(
   end?: PagePoint
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const left = clamp(end ? Math.min(point.x, end.x) : point.x - 40, 0, page.width - 2);
-  const top = clamp(end ? Math.min(point.y, end.y) : point.y - nativeBracketDefaultSize.height / 2, 0, page.height - 2);
-  const boxWidth = Math.min(Math.max(end ? Math.abs(end.x - point.x) : 80, 2), page.width - left);
-  const height = Math.min(Math.max(end ? Math.abs(end.y - point.y) : nativeBracketDefaultSize.height, 2), page.height - top);
+  // Keep the requested placement and dimensions. The shared page-fit commit asks before
+  // enlarging the page; Keep Page Size must not squeeze or move the bracket pair.
+  const left = end ? Math.min(point.x, end.x) : point.x - 40;
+  const top = end ? Math.min(point.y, end.y) : point.y - nativeBracketDefaultSize.height / 2;
+  const boxWidth = Math.max(end ? Math.abs(end.x - point.x) : 80, 2);
+  const height = Math.max(end ? Math.abs(end.y - point.y) : nativeBracketDefaultSize.height, 2);
   const width = Math.min(nativeBracketDefaultSize.width, boxWidth / 3);
   const containedObjectIds = page.objects.filter(object => object.type !== "bracket" &&
     object.x >= left && object.y >= top && object.x + object.width <= left + boxWidth &&

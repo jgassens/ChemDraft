@@ -17,7 +17,7 @@ const native = vi.hoisted(() => ({
     if (event === "chemdraft://toolset-popover-content") native.visible = true;
   })
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: native.emit,
   listen: async () => () => {}

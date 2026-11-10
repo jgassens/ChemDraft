@@ -265,14 +265,16 @@ async function verifiedSourceCanonicalSmiles(
   warnings: string[] = [],
   writerWarnings: string[] = []
 ): Promise<string> {
+  // Check the drawn graph first: identifier computation deliberately declines query bonds,
+  // but that refusal must retain the specific bond-order diagnosis rather than a generic
+  // canonicalization failure. Never accept a source made from an already lossy molfile.
+  const notes: ExportWarning[] = [];
+  await currentMoleculeIdentityMolfile(built.molecule, writerWarnings, notes);
   if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
     throw new Error(
       "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
     );
   }
-  // Do not accept a supposedly verified canonical source made from an already lossy molfile.
-  const notes: ExportWarning[] = [];
-  await currentMoleculeIdentityMolfile(built.molecule, writerWarnings, notes);
   warnings.push(...notes.map((note) => note.message));
   return built.sourceCanonicalSmiles;
 }

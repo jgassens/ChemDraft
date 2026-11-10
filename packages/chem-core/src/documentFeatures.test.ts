@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChemDraftDocumentSchema as Released111DocumentSchema } from "./__fixtures__/v1.1.1/schemas";
 import { createEmptyDocument, parseDocument, readDocument, readSerializedDocument, serializeDocument } from "./document";
 import { minimumAppVersionForDocument, NativeDocumentFeatureVersions } from "./documentFeatures";
+import { NativeStylePresets, stylePresetToObjectStyle } from "./styles";
 
 const base = { id: "object", x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
 const text = { ...base, type: "text", text: "THF", spans: [] };
@@ -26,18 +27,31 @@ describe("integrated 1.2 native document features", () => {
     }
   });
 
-  it.each(["chemdraft.synthetic", "chemdraft.document", "chemdraft.acs1996", "chemdraft.rscjournal"])(
-    "versions object preset metadata %s and retains the applied style", stylePresetId => {
-      const document = documentWithObject({ ...text, style: { stylePresetId, fontSizePx: 10 } });
+  it.each(NativeStylePresets)(
+    "keeps $id in legacy open style metadata without requiring a newer reader", preset => {
+      const style = stylePresetToObjectStyle(preset);
+      const document = documentWithObject({ ...text, style });
+      document.styles.drawing = style;
+      document.styles.text = { stylePresetId: preset.id, color: "#12ab34" };
       const saved = JSON.parse(serializeDocument(document));
-      expect(saved).toMatchObject({ formatVersion: "1.2.0", minAppVersion: "1.2.0",
-        ignorableFields: ["pages.*.objects.*[type=text].style.stylePresetId"] });
-      expect(saved.pages[0].objects[0].style).toEqual({ stylePresetId, fontSizePx: 10 });
-      expect(readDocument(saved).document).toEqual({ ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0",
-        ignorableFields: saved.ignorableFields });
-      expect(Released111DocumentSchema.safeParse(saved).success).toBe(false);
+      expect(minimumAppVersionForDocument(document)).toBe("1.1.1");
+      expect(saved).toEqual(document);
+      expect(Released111DocumentSchema.parse(saved)).toEqual(document);
+      expect(readDocument(saved).document).toEqual(document);
     }
   );
+
+  it.each(NativeStylePresets)("versions $id on graphics, whose released style schema is strict", preset => {
+    const document = documentWithObject({ ...base, type: "graphic", graphicKind: "rect",
+      style: { stylePresetId: preset.id } });
+    const saved = JSON.parse(serializeDocument(document));
+    expect(saved).toEqual({ ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0",
+      ignorableFields: ["pages.*.objects.*[type=graphic].style.stylePresetId"] });
+    expect(readDocument(saved).document).toEqual(saved);
+    expect(Released111DocumentSchema.safeParse(saved).success).toBe(false);
+    const { formatVersion: _format, minAppVersion: _minimum, ignorableFields: _ignorable, ...withoutHeader } = saved;
+    expect(Released111DocumentSchema.safeParse(withoutHeader).success).toBe(false);
+  });
 
   it.each([
     ["waveSmoothness", 0], ["waveSmoothness", 100], ["waveHeight", 0], ["waveHeight", 48],

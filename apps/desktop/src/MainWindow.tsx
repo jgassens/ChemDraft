@@ -3900,11 +3900,11 @@ export function MainWindow({
   }, [atomLabelHistorySnapshot, installDocumentHistory]);
   // Inserted builders may use a drag preview. Keep its pre-placement undo snapshot while
   // leaving every transform/drawing commit on commitDocumentHistoryFrom.
-  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument) => {
+  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument, undoLabel?: string) => {
     proposed = prepareDocumentCommit(proposed);
     const tabId = activeDocumentTabIdRef.current;
     if (planDocumentPageFit(start, proposed).growth.length) replacePresentDocument(start);
-    const pending = commitWithPageFit(start, proposed, document => commitDocumentHistoryFrom(start, document), {
+    const pending = commitWithPageFit(start, proposed, document => commitDocumentHistoryFrom(start, document, undoLabel), {
       consent: new PageEnlargementConsent(shortcutPlatform),
       isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
         assistantDocumentContentUnchanged(start, documentRef.current)
@@ -15762,11 +15762,11 @@ export function MainWindow({
       return false;
     }
 
-    if (drag.kind === "template" || drag.kind === "orbital" ||
+    if (drag.kind === "template" || drag.kind === "orbital" || drag.kind === "bracket" ||
       (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
-      commitInsertionHistoryWithPageFit(drag.startDocument, placed);
+      commitInsertionHistoryWithPageFit(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
     } else {
-      commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
+      commitDocumentHistoryFrom(drag.startDocument, placed);
     }
     return true;
   }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);

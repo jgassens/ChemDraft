@@ -39,7 +39,12 @@ describe("native style presets", () => {
       const document = createEmptyDocument();
       document.pages[0]!.objects.push(object);
       const restored = deserializeDocument(serializeDocument(document));
-      expect(restored).toEqual(document);
+      // Graphics had strict style fields in 1.1.1; other objects already kept preset ids
+      // in open metadata. Retain the entire document in either compatibility envelope.
+      expect(restored).toEqual(fields.type === "graphic" && style.stylePresetId ? {
+        ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0",
+        ignorableFields: ["pages.*.objects.*[type=graphic].style.stylePresetId"]
+      } : document);
       expect(restored.schema).toBe(DocumentSchemaVersion);
       expect(restored.pages[0]!.objects[0]!.style).toEqual(style);
     }

@@ -54,7 +54,10 @@ describe("synthetic CDXML reaction schemes", () => {
     expect(summary(document)[0].conditions[0].text).toBe(expected);
     const xml = exportDocumentToCdxml(document).contents;
     // Inspect standard visible content, independently of embedded native restoration.
-    expect(xml).toContain(`>${expected}</t>`);
+    const visibleConditions = xml.match(/<t\b[^>]*\bid="60"[^>]*>([\s\S]*?)<\/t>/)![1];
+    const runs = [...visibleConditions.matchAll(/<s\b[^>]*>([\s\S]*?)<\/s>/g)];
+    expect(runs.map(run => run[1]).join("")).toBe(expected);
+    expect(runs.filter(run => /\bface="32"/.test(run[0])).map(run => run[1])).toEqual(["2", "3"]);
     const xmlDocument = importFixture(visibleOnly(xml)).document;
     const binaryDocument = importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes).document!;
     const chained = importCdx(exportDocumentToCdx(xmlDocument, { embedNativePayload: false }).bytes).document!;
@@ -115,7 +118,9 @@ describe("synthetic CDXML reaction schemes", () => {
     expect(exported.warnings).toEqual([]);
     expect(stepAttributes(exported.contents)).toEqual(stepAttributes(source));
     expect(exported.contents).toContain('<scheme Z="9" id="900">');
-    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+    expect(openChemDraftPayload(exported.contents).document).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
     const reopened = importFixture(visibleOnly(exported.contents)).document;
     expect(summary(reopened)).toEqual(summary(document));
     const graph = (doc: ChemDraftDocument) => objects(doc).flatMap(object => object.type === "molecule" ? [{
@@ -338,6 +343,8 @@ describe("synthetic CDXML reaction schemes", () => {
     });
     const exported = exportDocumentToCdxml(document);
     expect(exported.warnings.map(warning => warning.code)).toContain("cdxml.reaction_children_payload_only");
-    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+    expect(openChemDraftPayload(exported.contents).document).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
   });
 });

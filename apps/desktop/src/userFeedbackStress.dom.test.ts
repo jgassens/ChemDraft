@@ -496,6 +496,16 @@ describe("user feedback app stress", () => {
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: tip.id });
     await key("3");
     expectRingWarning(tip.id);
+    const ring = molecules(current())[0];
+    expect(ring.atoms).toHaveLength(chainMol.atoms.length + 5);
+    expect(ring.bonds).toHaveLength(chainMol.bonds.length + 6);
+    expect(ring.atoms.slice(0, chainMol.atoms.length)).toEqual(molecules(labeled)[0].atoms);
+    expect(ring.bonds.slice(0, chainMol.bonds.length)).toEqual(chainMol.bonds);
+    expect(status()).toBe("Ph attaches by 1 bond; this atom has 4.");
+    expect(container.querySelector(`[data-invalid-atom-id="${tip.id}"]`)?.getAttribute("aria-label"))
+      .toBe("Atom problem: Ph attaches by 1 bond; this atom has 4.");
+    // The hovered problem takes priority; moving away reveals the successful edit status.
+    await pointer("pointermove", { x: 50, y: 50 });
     expect(status()).toBe("Added benzene ring");
 
     // Reusing a three-bond corner is allowed; the former degree-3 cap is gone.
@@ -543,6 +553,16 @@ describe("user feedback app stress", () => {
       const after = molecules(current())[0];
       expect(after.bonds.length).toBeGreaterThan(mol.bonds.length);
       expectRingWarning(tip.id);
+      expect(after.atoms.slice(0, mol.atoms.length)).toEqual(mol.atoms);
+      expect(after.bonds.slice(0, mol.bonds.length)).toEqual(mol.bonds);
+      // Methylidene adds a double bond; 9 adds two methyls to this non-carbon label.
+      // Carbonyl sprouts a new C=O through one single bond to OMe.
+      const valence = press === "8" || press === "9" ? 3 : 2;
+      const warning = `OMe attaches by 1 bond; this atom has ${valence}.`;
+      expect(status()).toBe(warning);
+      expect(container.querySelector(`[data-invalid-atom-id="${tip.id}"]`)?.getAttribute("aria-label"))
+        .toBe(`Atom problem: ${warning}`);
+      await pointer("pointermove", { x: 50, y: 50 });
       expect(status()).toMatch(/^Added /);
       await command("edit.undo");
       expect(molecules(current())[0]).toEqual(mol);

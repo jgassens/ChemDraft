@@ -44,7 +44,7 @@ const current = () => getAssistantHistoryPort().read("initial")!;
 function initial(size: number) {
   return setDocumentCustomPageSize(createEmptyDocument(), { width: size, height: size, unit: "css-px" });
 }
-const actions = ["template", "text paste", "private paste", "duplicate", "cleanup", "plugin batch", "reviewed proposal"] as const;
+const actions = ["template", "bracket stamp", "bracket drag", "text paste", "private paste", "duplicate", "cleanup", "plugin batch", "reviewed proposal"] as const;
 describe.each(["macos", "windows"] as const)("mounted page commits on %s", platform => {
   it.each(["plugin", "assistant patch", "reviewed proposal"].flatMap(path => ["enlarge", "keep"].map(answer => ({ path, answer }))))(
     "$path / $answer shifts all affected-page content with one undo and selects only the insertion", async ({ path, answer }) => {
@@ -122,6 +122,22 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
       initialActiveToolCommandId="tool.select" initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const before = current();
     if (action === "template") await command(`template.insert.${resolveStructureTemplateName("beta-cyclodextrin")!.id}`);
+    if (action === "bracket stamp" || action === "bracket drag") {
+      await command("tool.squareBracket");
+      const page = container.querySelector<HTMLElement>(".page")!;
+      page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: size, bottom: size,
+        width: size, height: size, toJSON: () => ({}) });
+      page.setPointerCapture = () => {};
+      page.hasPointerCapture = () => false;
+      const start = size === 2000 ? 100 : 10;
+      for (const type of ["pointerdown", ...(action === "bracket drag" ? ["pointermove"] : []), "pointerup"]) {
+        const end = action === "bracket drag" && type !== "pointerdown";
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === "pointerup" ? 0 : 1, clientX: end ? start + 150 : start, clientY: end ? start + 130 : start });
+        Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        await act(async () => page.dispatchEvent(event));
+      }
+    }
     if (action === "text paste" || action === "private paste") {
       let text = "Ordinary caption\nSecond caption\nThird caption";
       let type = "text/plain";
@@ -169,6 +185,13 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const after = current();
     expect(after).not.toEqual(before);
     expect(after.selection.objectIds.length).toBeGreaterThan(0);
+    if (action === "bracket stamp" || action === "bracket drag") {
+      const brackets = after.pages[0]!.objects.filter(object => object.type === "bracket");
+      expect(brackets).toHaveLength(2);
+      expect(after.selection.objectIds).toEqual(brackets.map(bracket => bracket.id));
+      expect(brackets.map(bracket => bracket.height)).toEqual(action === "bracket stamp" ? [64, 64] : [130, 130]);
+      expect(brackets[1]!.x - brackets[0]!.x).toBe(action === "bracket stamp" ? 64 : 134);
+    }
     if (answer === "enlarge") expect(after.pages[0]!.width > size || after.pages[0]!.height > size).toBe(true);
     else expect(after.pages[0]!.layout).toEqual(before.pages[0]!.layout);
     await command("edit.undo");

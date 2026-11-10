@@ -3625,11 +3625,15 @@ mod tests {
                 monitor: "removed".into(),
                 ..saved.clone()
             };
-            // Removing a monitor resets placement, while the user's client size still wins
-            // over the kind's default and a fresh content measurement.
+            // Removing a monitor resets placement. Preferences keeps its user size;
+            // nonresizable Custom Page Size uses its default without a content measurement.
             assert_eq!(
                 dialog_client_size(&kind_spec(kind).unwrap(), None, Some(&missing), false),
-                (500.0, 400.0),
+                if kind == "preferences" {
+                    (500.0, 400.0)
+                } else {
+                    size
+                },
                 "{kind}"
             );
             assert!(restorable_position(Some(&missing), &monitors).is_none());

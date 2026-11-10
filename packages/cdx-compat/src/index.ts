@@ -4019,8 +4019,11 @@ function importGraphic(
       context.warnings.push({ code: "cdxml.bracket_style_preserved", sourceObjectId: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`,
         message: "Bracket styling that has no native mapping was preserved in compatibility metadata; the default native glyph style is displayed." });
     }
+    // An absent side already draws the legacy opening glyph. Writing its default here would
+    // turn an otherwise 1.1.1-compatible standalone bracket into a 1.2-only document.
+    // Bracket groups assign explicit sides when they establish a meaningful relation.
     return { id: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`, type: "bracket", ...box, rotation: 0, style: {},
-      bracketKind: element.attributes.BracketType === "Round" ? "round" : "square", side: "open",
+      bracketKind: element.attributes.BracketType === "Round" ? "round" : "square",
       containedObjectIds: [], compatibility: { sourceFormat: "cdxml", originalId: element.attributes.id,
         warnings: [], unknown: { cdxmlBracket: element, cdxmlCoordinateSpace: "xy", cdxmlBracketState: JSON.stringify([undefined, undefined, undefined, undefined]),
           ...(element.attributes.color !== undefined ? { cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) } : {}),

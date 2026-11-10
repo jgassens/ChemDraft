@@ -5,14 +5,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { PluginApiVersion } from "@chemdraft/plugin-api";
 
 import { extractPlugin, parseCliArgs, PluginExtractionError, repositoryRoot } from "./extract";
 import { readZipEntryNames } from "./zip";
 import { sdkVersionFrom } from "./gates";
 
-it(`extracts the ${PluginApiVersion} SDK version used by distribution gates`, () => {
-  expect(sdkVersionFrom(repositoryRoot, message => new PluginExtractionError(message))).toBe(PluginApiVersion);
+it("extracts the literal 0.1.25 SDK version used by distribution gates", () => {
+  expect(sdkVersionFrom(repositoryRoot, message => new PluginExtractionError(message))).toBe("0.1.25");
 });
 
 // Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can

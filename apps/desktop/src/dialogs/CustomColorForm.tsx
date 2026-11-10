@@ -38,7 +38,7 @@ export function CustomColorForm({ initial, onSubmit, onCancel, onClear, onReady,
       if (event.key === "F5" || modifier && event.key.toLowerCase() === "r") event.preventDefault();
     }} onSubmit={event => { event.preventDefault(); if (!parsed.ok || busy || submitting.current || composing.current) return; submitting.current = true; onSubmit(parsed.hex); }}>
     <div className="cd-dialog-fit-body"><h2>Custom Color {initial.swatch}, Slot {initial.slot}</h2>
-      <label>Color mode<select autoFocus value={mode} disabled={busy} onChange={event => {
+      <label>Color mode<select className="native-dialog-panel-select" autoFocus value={mode} disabled={busy} onChange={event => {
         const next = event.target.value as Mode; setMode(next); setValues(valuesFor(next, lastValid.current));
       }}>{(["Hex", "RGB", "CMYK"] as const).map(value => <option key={value}>{value}</option>)}</select></label>
       <div className="cd-page-size-fields">{labels.map((label, index) => <label key={label}>{label}<input type="text" inputMode={mode === "Hex" ? "text" : "decimal"}

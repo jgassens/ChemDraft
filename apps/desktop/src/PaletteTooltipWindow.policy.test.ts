@@ -127,7 +127,11 @@ it("requires every native select in desktop source to use a shared readable menu
   const uncovered: string[] = [];
   let count = 0;
   for (const path of sources(new URL("./", import.meta.url))) {
-    const source = ts.createSourceFile(path.pathname, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const text = readFileSync(path, "utf8");
+    // A tag whose source text is exactly "select" requires that word. Avoid parsing the
+    // rest of the desktop for this policy, especially during the full parallel gauntlet.
+    if (!/\bselect\b/.test(text)) continue;
+    const source = ts.createSourceFile(path.pathname, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     function classes(opening: ts.JsxOpeningLikeElement): string[] {
       const attribute = opening.attributes.properties.find((attr): attr is ts.JsxAttribute => ts.isJsxAttribute(attr) && attr.name.getText(source) === "className");
       const value = attribute?.initializer;

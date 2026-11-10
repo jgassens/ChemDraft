@@ -9,6 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: host.invoke }));
 vi.mock("./dialogs/dialogContentFit", () => ({ measureDialogContentWhenFontsReady: host.measure }));
 vi.mock("./window-manager", () => ({
   isDesktopRuntime: () => host.desktop,
+  listenForDrawingSettings: async () => () => {},
   broadcastCompoundLayoutSettings: vi.fn(), broadcastKeybindingSettings: vi.fn(),
   broadcastSpin3dSettings: vi.fn(), broadcastQuitSettings: vi.fn(), broadcastExportPreviewSettings: vi.fn()
 }));

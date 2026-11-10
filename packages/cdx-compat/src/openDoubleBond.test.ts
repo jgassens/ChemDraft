@@ -68,7 +68,9 @@ describe("CDXML wavy single bonds", () => {
     expect(bond).toContain(`B="${atomIds[reverse ? 1 : 0]}"`);
     expect(bond).toContain(`E="${atomIds[reverse ? 0 : 1]}"`);
     expect(exported.warnings).toEqual([]);
-    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+    expect(openChemDraftPayload(exported.contents).document).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
   });
 
   it("round-trips the visible atom and directed bond graph without the native payload", () => {

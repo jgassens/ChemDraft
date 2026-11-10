@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { ChemDraftDocumentSchema as Released111DocumentSchema } from "./__fixtures__/v1.1.1/schemas";
+import { ChemDraftDocumentSchema as Released111DocumentSchema,
+  DocumentObjectSchema as Released111ObjectSchema } from "./__fixtures__/v1.1.1/schemas";
 import { createEmptyDocument, deserializeDocument, parseDocument, readDocument, readSerializedDocument, serializeDocument } from "./document";
 import { ChemDraftDocumentSchema, MoleculeBondSchema, type MoleculeObject } from "./schemas";
 import { NativeDocumentReadError } from "./documentRead";
@@ -58,6 +59,21 @@ describe("native feature version registry", () => {
       "value:objects.*[type=molecule].style=\"wavy\"", "field:objects.*[type=molecule].label",
       "field:objects.*[type=new-object].value", "value:objects.*[type=new-object].type=\"new-object\""
     ]));
+  });
+
+  it("proves every baseline-preservation exemption against the frozen reader's style schema", () => {
+    const exemptions = Object.entries(NativeDocumentFeatureVersions).filter(([, feature]) => feature.preservedByBaseline);
+    expect(exemptions).toHaveLength(15);
+    const style = { stylePresetId: "chemdraft.acs1996", color: "#12ab34", bondLengthPx: 22 };
+    for (const [token] of exemptions) {
+      const match = /^field:pages\.\*\.objects\.\*\[type=([^\]]+)\]\.style\.stylePresetId$/.exec(token);
+      expect(match, token).not.toBeNull();
+      const kind = match![1]!;
+      const released = Released111ObjectSchema.innerType().options.find(option => option.shape.type.value === kind)!;
+      expect(released.shape.style.parse(style), token).toEqual(style);
+    }
+    const graphic = Released111ObjectSchema.innerType().options.find(option => option.shape.type.value === "graphic")!;
+    expect(graphic.shape.style.safeParse({ stylePresetId: "chemdraft.acs1996" }).success).toBe(false);
   });
 
   it("computes the maximum introduction version from fields and enum values actually used", () => {

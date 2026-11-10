@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyPatch, createEmptyDocument, type BracketObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, serializeDocument, type BracketObject } from "@chemdraft/chem-core";
+import { ChemDraftDocumentSchema as Released111DocumentSchema } from "../../chem-core/src/__fixtures__/v1.1.1/schemas";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx } from "./cdxBinary";
@@ -165,7 +166,7 @@ describe("native bracket group interchange", () => {
       .map(object => [object.compatibility!.originalId, object.side, object.label]));
     expect(sides[0]).toEqual(sides[1]);
     if (mode === "identical") {
-      expect(sides[0]).toEqual([["20", "open", undefined], ["21", "open", undefined]]);
+      expect(sides[0]).toEqual([["20", undefined, undefined], ["21", undefined, undefined]]);
       for (const result of results) expect(result.warnings.map(warning => warning.code)).toContain("cdxml.bracket_sides_ambiguous");
     } else expect(sides[0]).toEqual([["20", "open", undefined], ["21", "close", "x-y"]]);
   });
@@ -337,12 +338,17 @@ describe("CDXML bracket graphics", () => {
     const imported = openChemDraftPayload(source);
     const objects = imported.document!.pages[0].objects;
     expect(objects).toHaveLength(1);
-    expect(objects[0]).toMatchObject({ type: "bracket", bracketKind: "round", side: "open", containedObjectIds: [] });
+    expect(objects[0]).toMatchObject({ type: "bracket", bracketKind: "round", containedObjectIds: [] });
+    expect(objects[0]).not.toHaveProperty("side");
     const bracket = objects[0] as BracketObject;
     expect(bracket.pairId).toBeUndefined();
     expect(bracket.repeatUnit).toBeUndefined();
     expect(bracket.label).toBeUndefined();
     const exported = exportDocumentToCdxml(imported.document!);
+    expect(openChemDraftPayload(exported.contents).document).toEqual(imported.document);
+    const saved = JSON.parse(serializeDocument(imported.document!));
+    expect(saved).toEqual(imported.document);
+    expect(Released111DocumentSchema.parse(saved)).toEqual(imported.document);
     expect(exported.contents).toContain('GraphicType="Bracket"');
     expect(exported.contents).not.toContain("<bracketedgroup");
     expect(exported.warnings).toEqual([]);

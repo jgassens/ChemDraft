@@ -1059,7 +1059,9 @@ describe("documents in one window", () => {
           await act(async () => native.events.get("tauri://drag-drop")!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
         } else {
           native.desktop = false;
-          const file = { name: "future.chemdraft", text: async () => contents };
+          // Browser opening now reads bounded bytes so CDX and BOM-encoded text share a transport.
+          const bytes = new TextEncoder().encode(contents);
+          const file = { name: "future.chemdraft", size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
           if (path === "browser drop") {
             const event = new Event("drop", { bubbles: true, cancelable: true });
             Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });

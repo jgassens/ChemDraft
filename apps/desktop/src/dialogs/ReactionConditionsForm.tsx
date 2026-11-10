@@ -112,7 +112,7 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
       {text ? <ConditionsPreview draft={draft} /> : "Formatted preview"}
     </div>
     <label htmlFor={`${id}-side`}>Label position</label>
-    <select id={`${id}-side`} value={draft.side} disabled={busy} onChange={event => onChange({ ...draft, side: event.currentTarget.value as ReactionConditionsDraft["side"] })}>
+    <select className="native-dialog-panel-select" id={`${id}-side`} value={draft.side} disabled={busy} onChange={event => onChange({ ...draft, side: event.currentTarget.value as ReactionConditionsDraft["side"] })}>
       <option value="above">Top / inside</option><option value="below">Bottom / outside</option>
     </select>
     <p>Labels follow their arrow. Top uses the inside of a curve; Bottom uses the outside. Straight arrows use page top and bottom. Drag a label to adjust crowded positions, or double-click to edit. Clear the text to remove it.</p>

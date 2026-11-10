@@ -112,7 +112,7 @@ describe("interchange graphics and page extent", () => {
   };
 
   it("never writes an Unknown graphic for any native graphic kind or art path kind", () => {
-    const kinds = GraphicObjectSchema._def.schema.shape.graphicKind._def.innerType.options;
+    const kinds = GraphicObjectSchema._def.schema.shape.graphicKind.options;
     const paths = GraphicObjectDataSchema.shape.artPathKind.unwrap().options;
     for (const graphicKind of kinds) for (const artPathKind of [undefined, ...paths]) {
       const graphic = nativeGraphic({ artPathKind, lineStart: { x: 40, y: 60 }, lineEnd: { x: 160, y: 60 },
