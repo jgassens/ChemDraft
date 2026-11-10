@@ -7,6 +7,40 @@ const loadText = () => readFile(nameDictionaryUrl).then(bytes => gunzipSync(byte
 const miss = async () => ({ failureReason: "OPSIN could not parse the supplied name" });
 
 describe("offline name resolution", () => {
+  it("accepts exact column-5 names only after an OPSIN miss, without fuzzy matching", async () => {
+    const dictionary = createNameDictionary(async () =>
+      "CC(=O)Oc1ccccc1C(=O)O\t!ASA\t50-78-2\tBSYNRYMUTXBXSQ-UHFFFAOYSA-N\tacetylsalicylic acid|Aspirin\n");
+    expect(await resolveChemicalName("acetylsalicylic acid", miss, dictionary)).toMatchObject({
+      source: "dictionary", matchedName: "acetylsalicylic acid", smiles: "CC(=O)Oc1ccccc1C(=O)O"
+    });
+    expect(await resolveChemicalName("aspirin", async () => ({ smiles: "OPSIN result" }), dictionary))
+      .toMatchObject({ source: "opsin", smiles: "OPSIN result" });
+    expect(await dictionary("ASPIRIN")).toMatchObject({ matchedName: "Aspirin" });
+    expect(await dictionary("ASA")).toMatchObject({ matchedName: "ASA" });
+    expect(await dictionary("aspirin typo")).toBeUndefined();
+  });
+
+  it("rejects cross-compound name collisions in either column, in either row order", async () => {
+    const rows = [
+      "CCO\tethanol|shared name\t64-17-5\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\tcolumn five collision|alcohol",
+      "O\twater|column five collision\t7732-18-5\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tShared-name|alcohol",
+      "CCO\tSHARED NAME\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\t"
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const dictionary = createNameDictionary(async () => ordered.join("\n"));
+      for (const name of ["shared name", "column five collision", "alcohol"]) expect(await dictionary(name)).toBeUndefined();
+      expect(await dictionary("ethanol")).toMatchObject({ smiles: "CCO" });
+    }
+  });
+
+  it("allows duplicate names for the same InChIKey with differently written SMILES", async () => {
+    const dictionary = createNameDictionary(async () => [
+      "CCO\tethanol\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\talcohol",
+      "OCC\t\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\tAlcohol"
+    ].join("\n"));
+    expect(await dictionary("alcohol")).toMatchObject({ smiles: "CCO" });
+  });
+
   it("uses OPSIN first and loads the dictionary only on a parse miss, once", async () => {
     const load = vi.fn(loadText);
     const dictionary = createNameDictionary(load);

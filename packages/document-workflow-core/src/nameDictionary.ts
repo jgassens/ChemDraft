@@ -19,16 +19,28 @@ export function createNameDictionary(loadText: () => Promise<string>) {
     if (!text || text.length > 200) return undefined;
     loading ??= (async () => {
       const names = new Map<string, DictionaryMatch>();
+      const identities = new Map<string, string>();
+      const ambiguous = new Set<string>();
       const cas = new Map<string, DictionaryMatch>();
       const lines = (await loadText()).split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (i % 2000 === 1999) await new Promise<void>(resolve => setTimeout(resolve, 0));
-        const [smiles, nameList, casList] = lines[i]!.split("\t");
+        const [smiles, nameList, casList, inchiKey, opsinNames] = lines[i]!.split("\t");
         if (!smiles || smiles.length > 4000) continue;
-        for (const raw of nameList?.split("|") ?? []) {
+        // Column 5 contains exact source names that upstream used only for suggestions
+        // because its OPSIN already read them. They are valid on our parse-miss path too.
+        for (const raw of [...(nameList?.split("|") ?? []), ...(opsinNames?.split("|") ?? [])]) {
           const matchedName = raw.replace(/^!/, "");
           const key = nameKey(matchedName);
-          if (key && !names.has(key)) names.set(key, { smiles, matchedName });
+          if (!key || ambiguous.has(key)) continue;
+          const identity = inchiKey || smiles;
+          if (identities.has(key) && identities.get(key) !== identity) {
+            names.delete(key);
+            ambiguous.add(key);
+          } else if (!names.has(key)) {
+            identities.set(key, identity);
+            names.set(key, { smiles, matchedName });
+          }
         }
         for (const matchedCas of casList?.split("|") ?? []) {
           if (matchedCas && !cas.has(matchedCas)) cas.set(matchedCas, { smiles, matchedCas });

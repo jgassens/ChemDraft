@@ -1,0 +1,321 @@
+{
+  "head": {
+    "vars": [
+      "item",
+      "kind",
+      "v"
+    ]
+  },
+  "results": {
+    "bindings": [
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "l"
+        },
+        "v": {
+          "type": "literal",
+          "value": "aspirin",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "Aspirin™",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "acetylsalicylic acid",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "ASA",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "shared name",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "second collision",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "C9H8O4",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "g"
+        },
+        "v": {
+          "type": "literal",
+          "value": "Acetylsalicylsäure",
+          "xml:lang": "de"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "g"
+        },
+        "v": {
+          "type": "literal",
+          "value": "same short name",
+          "xml:lang": "de"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "c"
+        },
+        "v": {
+          "type": "literal",
+          "value": "CC(=O)OC1=CC=CC=C1C(=O)O"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "r"
+        },
+        "v": {
+          "type": "literal",
+          "value": "50-78-2"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "r"
+        },
+        "v": {
+          "type": "literal",
+          "value": "50-78-3"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q18216"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "k"
+        },
+        "v": {
+          "type": "literal",
+          "value": "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "l"
+        },
+        "v": {
+          "type": "literal",
+          "value": "paracetamol",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "acetaminophen",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "shared-name",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "a"
+        },
+        "v": {
+          "type": "literal",
+          "value": "second collision",
+          "xml:lang": "en"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "g"
+        },
+        "v": {
+          "type": "literal",
+          "value": "same short name",
+          "xml:lang": "de"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "c"
+        },
+        "v": {
+          "type": "literal",
+          "value": "CC(=O)NC1=CC=C(C=C1)O"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "r"
+        },
+        "v": {
+          "type": "literal",
+          "value": "103-90-2"
+        }
+      },
+      {
+        "item": {
+          "type": "uri",
+          "value": "http://www.wikidata.org/entity/Q57055"
+        },
+        "kind": {
+          "type": "literal",
+          "value": "k"
+        },
+        "v": {
+          "type": "literal",
+          "value": "RZVAJINKPMORJF-UHFFFAOYSA-N"
+        }
+      }
+    ]
+  }
+}
