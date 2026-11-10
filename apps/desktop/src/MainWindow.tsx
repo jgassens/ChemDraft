@@ -21,6 +21,7 @@ import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
+import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
 import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
@@ -3557,13 +3558,16 @@ export function MainWindow({
     if (label) documentUndoLabelsRef.current.set(present, label);
     return present;
   }, []);
+  const pageFitPendingRef = useRef(0);
+  const pluginPageConsentsRef = useRef(new WeakMap<AbortSignal, PageEnlargementConsent>());
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    undoLabel?: string
+    undoLabel?: string,
+    textCheckpointed = false
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Record typing before the command, retaining main's editor lifetime in its callers.
-    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
+    const resumeTextEdit = textCheckpointed ? undefined : checkpointTextEditBeforeCommitRef.current();
     let changed = false;
     try {
       installDocumentHistory((currentHistory) => {
@@ -3589,6 +3593,32 @@ export function MainWindow({
     });
     return true;
   }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
+  // Only insertion and automatic re-layout callers opt into the pre-commit page question.
+  // Hand gestures, typing, styling and arrange commands use the synchronous commit above.
+  const commitDocumentChangeWithPageFit = useCallback((
+    update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string
+  ): boolean => {
+    if (pageFitPendingRef.current) { setStatus("Finish the page size question before editing."); return false; }
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
+    try {
+      if (pageFitPendingRef.current) return false;
+      const before = documentRef.current;
+      const next = typeof update === "function" ? update(before) : update;
+      if (next === before) return false;
+      const proposed = prepareDocumentCommit(next, label);
+      const tabId = activeDocumentTabIdRef.current;
+      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true), {
+        consent: new PageEnlargementConsent(shortcutPlatform),
+        isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
+          assistantDocumentContentUnchanged(before, documentRef.current)
+      });
+      if (pending) {
+        pageFitPendingRef.current += 1;
+        void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+      }
+      return true;
+    } finally { resumeTextEdit?.(); }
+  }, [commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
   settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
@@ -3770,6 +3800,22 @@ export function MainWindow({
       return nextFileState;
     });
   }, [atomLabelHistorySnapshot, installDocumentHistory]);
+  // Inserted builders may use a drag preview. Keep its pre-placement undo snapshot while
+  // leaving every transform/drawing commit on commitDocumentHistoryFrom.
+  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument) => {
+    proposed = prepareDocumentCommit(proposed);
+    const tabId = activeDocumentTabIdRef.current;
+    if (planDocumentPageFit(start, proposed).growth.length) replacePresentDocument(start);
+    const pending = commitWithPageFit(start, proposed, document => commitDocumentHistoryFrom(start, document), {
+      consent: new PageEnlargementConsent(shortcutPlatform),
+      isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
+        assistantDocumentContentUnchanged(start, documentRef.current)
+    });
+    if (pending) {
+      pageFitPendingRef.current += 1;
+      void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+    }
+  }, [commitDocumentHistoryFrom, prepareDocumentCommit, replacePresentDocument, shortcutPlatform]);
   const applyArtTransformQaScene = useCallback(() => {
     const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
     if (changed) {
@@ -4875,7 +4921,7 @@ export function MainWindow({
     });
     const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
     if (engineTargetIds.length === 0) {
-      const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
+      const changed = commitDocumentChangeWithPageFit((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
       resetCleanupChrome();
       setStatus(cleanedStatus(changed));
       return;
@@ -4916,13 +4962,13 @@ export function MainWindow({
           setStatus("Clean up cancelled because the document changed");
           return;
         }
-        const changed = commitDocumentChange(() => prepared);
+        const changed = commitDocumentChangeWithPageFit(() => prepared);
         setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, selectedNativeMoleculePart]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
@@ -5090,7 +5136,7 @@ export function MainWindow({
         engine: state.engine
       });
     }
-    commitDocumentChange(committedDocument);
+    commitDocumentChangeWithPageFit(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
     // A dense polycyclic structure can emit the SAME benign warning (e.g. degenerate-drawn-parity)
@@ -5111,7 +5157,7 @@ export function MainWindow({
       ? ` — note: ${unrepresentableStereoKinds.join(" & ")} stereochemistry isn't captured by the flat drawing (kept in the 3D model; lost on export or a structural edit)`
       : "";
     setStatus(baseStatus + stereoNote);
-  }, [applySpin, commitDocumentChange]);
+  }, [applySpin, commitDocumentChangeWithPageFit]);
 
   // Preload the OCL stereo perceiver once so the synchronous rotate-commit paths can run the
   // read-back guard. Perception depends only on the molecule graph, so a single load serves every
@@ -5884,7 +5930,7 @@ export function MainWindow({
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
-        const changed = commitDocumentChange((current) =>
+        const changed = commitDocumentChangeWithPageFit((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
             warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
@@ -5895,7 +5941,7 @@ export function MainWindow({
         setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, selectedNativeMoleculePart]);
 
   const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
     const scheduler = interactive3dDragSchedulerRef.current;
@@ -6959,19 +7005,19 @@ export function MainWindow({
   // editor, unlike tool.text.
   const applySymbolGlyphAtPoint = useCallback((point: ClientPoint, glyph: string) => {
     const currentDocument = documentRef.current;
-    commitDocumentChange(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
+    commitDocumentChangeWithPageFit(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Stamped ${glyph}`);
-  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange, textStyleDefaults]);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChangeWithPageFit, textStyleDefaults]);
 
   const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
     const currentDocument = documentRef.current;
-    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind));
+    commitDocumentChangeWithPageFit(insertNativeBracket(currentDocument, point, bracketKind));
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Inserted ${bracketKind} bracket`);
-  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange]);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChangeWithPageFit]);
 
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
     const currentDocument = documentRef.current;
@@ -6981,7 +7027,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChangeWithPageFit(nextDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7000,7 +7046,7 @@ export function MainWindow({
     }
     switchToSelectTool();
     setStatus(selectToolStatusLabel());
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, switchToSelectTool]);
 
   const resetPasteUiState = useCallback(() => {
     setActiveEditorObjectId(undefined);
@@ -7021,7 +7067,7 @@ export function MainWindow({
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChange(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+      commitDocumentChangeWithPageFit(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -7031,7 +7077,7 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
+  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
@@ -7101,17 +7147,10 @@ export function MainWindow({
       terminal = terminalResult();
       if (terminal) return terminal;
       if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-      commitDocumentChange(nextDocument, "Paste SMILES");
+      commitDocumentChangeWithPageFit(nextDocument, "Paste SMILES");
       resetPasteUiState();
-      // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
-      // the same page-resize prompt the external-CDXML import path uses, when the pasted
-      // content overflows and a larger preset (up to A0) would fit it.
-      const fit = recommendImportedPageFit(nextDocument);
-      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
-      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
-      const pasteStatus = fit
-        ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
-        : baseStatus;
+      setPageFitPrompt(undefined);
+      const pasteStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
       setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
       return { outcome: "success" };
     } catch (error) {
@@ -7127,7 +7166,7 @@ export function MainWindow({
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
 
   const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7136,13 +7175,13 @@ export function MainWindow({
     try {
       const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
         prefix => `${prefix}-${crypto.randomUUID()}`);
-      commitDocumentChange(result.document, "Paste table");
+      commitDocumentChangeWithPageFit(result.document, "Paste table");
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
       setStatus(tableValidationMessage(error));
     }
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
@@ -7202,7 +7241,7 @@ export function MainWindow({
           (engineUnavailable ? "; pasted as text" : "")
         : baseStatus;
       if (result.objectIds.length > 0) {
-        commitDocumentChange(result.document, "Paste SMILES list");
+        commitDocumentChangeWithPageFit(result.document, "Paste SMILES list");
         resetPasteUiState();
         setPageFitPrompt(undefined);
         setStatus(status);
@@ -7220,7 +7259,7 @@ export function MainWindow({
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
     });
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7352,7 +7391,7 @@ export function MainWindow({
     }
 
     selectionClipboardPasteStateRef.current = placement.state;
-    commitDocumentChange(nextDocument);
+    commitDocumentChangeWithPageFit(nextDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7361,7 +7400,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setStatus("Pasted ChemDraft selection");
-  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointerPagePoint]);
+  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, pastePointerPagePoint]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
@@ -9663,6 +9702,34 @@ export function MainWindow({
     }
   }, []);
 
+  const commitInsertionToTabWithPageFit = useCallback((tabId: string, source: ChemDraftDocument,
+    proposed: ChemDraftDocument, label: string, status = label) => {
+    proposed = prepareDocumentCommit(proposed, label);
+    const pending = commitWithPageFit(source, proposed, document => {
+      if (tabId === activeDocumentTabIdRef.current) {
+        commitDocumentChange(document, label);
+        setSelectedNativeMoleculePart(undefined);
+        setStatus(status);
+      } else {
+        const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+        const present = prepareDocumentCommit(document, label);
+        for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+        documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+          history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+          parts: [], file: { ...snapshot.file, dirty: true }, status });
+        nonPristineTabsRef.current.add(tabId);
+        setDocumentTabs([...documentTabsRef.current]);
+      }
+    }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () => {
+      const latest = assistantHistoryPort.read(tabId);
+      return !quitMutationFrozenRef.current && !!latest && assistantDocumentContentUnchanged(source, latest);
+    } });
+    if (pending) {
+      pageFitPendingRef.current += 1;
+      void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+    }
+  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
+
   const insertTemplateToTab = useCallback((tabId: string, id: string) => {
     if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
     if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
@@ -9691,21 +9758,9 @@ export function MainWindow({
     const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
       : { x: page.width / 2, y: page.height / 2 };
     const result = insertStructureTemplate(source, id, centre);
-    if (active) {
-      commitDocumentChange(result.document, result.label);
-      setSelectedNativeMoleculePart(undefined);
-      setStatus(result.label);
-    } else if (snapshot) {
-      const present = prepareDocumentCommit(result.document, result.label);
-      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
-      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
-        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
-        parts: [], file: { ...snapshot.file, dirty: true }, status: result.label });
-      nonPristineTabsRef.current.add(tabId);
-      setDocumentTabs([...documentTabsRef.current]);
-    }
+    commitInsertionToTabWithPageFit(tabId, source, result.document, result.label);
   // isSnapshotSessionActive is declared later and reads only stable refs.
-  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit]);
+  }, [assistantHistoryPort, commitInsertionToTabWithPageFit]);
 
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
@@ -10956,19 +11011,7 @@ export function MainWindow({
       : { x: page.width / 2, y: page.height / 2 };
     const next = insertTableIntoDocument(source, { ...dimensions, preset, center, textStyle: textStyleDefaults,
       newId: prefix => `${prefix}-${crypto.randomUUID()}` });
-    if (active) {
-      commitDocumentChange(next, "Insert table");
-      setStatus("Inserted table");
-    } else if (snapshot) {
-      const present = normalizeCommittedDocument(next);
-      documentUndoLabelsRef.current.set(present, "Insert table");
-      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
-      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
-        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
-        file: { ...snapshot.file, dirty: true }, status: "Inserted table" });
-      nonPristineTabsRef.current.add(tabId);
-      setDocumentTabs([...documentTabsRef.current]);
-    }
+    commitInsertionToTabWithPageFit(tabId, source, next, "Insert table", "Inserted table");
   };
 
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
@@ -10983,6 +11026,7 @@ export function MainWindow({
   const isSnapshotSessionActive = useCallback(
     (): boolean =>
       nativeBondDragRef.current !== null ||
+      pageFitPendingRef.current > 0 ||
       nativePlacementDragRef.current !== null ||
       nativeBondEditDragRef.current !== null ||
       nativePartDragRef.current !== null ||
@@ -11507,7 +11551,7 @@ export function MainWindow({
         }
 
         if (action.id === "layout.duplicate") {
-          const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current));
+          const changed = commitDocumentChangeWithPageFit((current) => duplicateSelectedDocumentObjects(current));
           setStatus(changed ? action.title : "No selected object");
           return;
         }
@@ -11857,6 +11901,7 @@ export function MainWindow({
     cleanUpSelectedStructure,
     startSpin3d,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     copySelectionToClipboard,
     currentArtStyle,
     currentEyedropperStatus,
@@ -11997,7 +12042,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -12007,22 +12052,38 @@ export function MainWindow({
       if (isSnapshotSessionActive()) {
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
-      return gate.run(() => {
+      return gate.run(async () => {
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
-        const previousIds = new Set(documentRef.current.pages.flatMap(page => page.objects.map(object => object.id)));
-        const applied = applyPluginDocumentPatch(documentRef.current, patch, {
+        const before = documentRef.current;
+        const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+        const applied = applyPluginDocumentPatch(before, patch, {
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
         });
         const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, activeDocumentTabIdRef.current);
-        if (assistantTxId) {
-          assistantTransactions.writeAssistantTransaction(assistantTxId, applied.document, applied.receipt.objectIds);
-        } else if (assistantTransactions.activeTransactionForPlugin(plugin.id)) {
+        if (!assistantTxId && assistantTransactions.activeTransactionForPlugin(plugin.id)) {
           throw new Error("The assistant request belongs to another document tab; write refused.");
-        } else commitDocumentChange(applied.document, undoLabel);
+        }
+        let consent = signal && pluginPageConsentsRef.current.get(signal);
+        if (!consent) {
+          consent = new PageEnlargementConsent(shortcutPlatform);
+          if (signal) pluginPageConsentsRef.current.set(signal, consent);
+        }
+        const prepared = normalizeCommittedDocument(applied.document);
+        const pending = commitWithPageFit(before, prepared, document => {
+          if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared);
+          else commitDocumentChange(document, undoLabel);
+        }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
+            : consent, signal,
+          isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current) });
+        if (pending) {
+          pageFitPendingRef.current += 1;
+          try { await pending; } finally { pageFitPendingRef.current -= 1; }
+        }
         setSelectedNativeMoleculePart(undefined);
         const insertedObject = patch.patch.op === "addObject" ? patch.patch.object : undefined;
         const insertedDescription = insertedObject?.type === "molecule"
@@ -12278,7 +12339,7 @@ export function MainWindow({
   // selected in the same history entry, and every outcome — success included — is reported: the
   // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
+    async (proposal: QueuedProposedPatch): Promise<ProposalDecisionOutcome> => {
       const host = pluginRuntime.runtime.host;
       const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
       const recognized = proposal.proposal.recognition !== undefined;
@@ -12309,14 +12370,21 @@ export function MainWindow({
       // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
-        // The proposal's own tab is now installed, including its independent undo history.
-        const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
-          apply: (current, proposed, options) => applyAcceptedPluginProposal(current, proposed, options).document
+        const before = documentRef.current;
+        const documentIdentity = documentIdentityRef.current;
+        const prepared = normalizeCommittedDocument(applyAcceptedPluginProposal(before, proposal.proposal).document);
+        // Keep the proposal pending until the page question and stale-document check succeed.
+        const pending = commitWithPageFit(before, prepared, document => {
+          const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
+          commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
+        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
+          mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current)
         });
-        commitDocumentChange(
-          updated,
-          `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`
-        );
+        if (pending) {
+          pageFitPendingRef.current += 1;
+          try { await pending; } finally { pageFitPendingRef.current -= 1; }
+        }
         setSelectedNativeMoleculePart(undefined);
         const inserted = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
         const message = screenCapture
@@ -12330,7 +12398,7 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
+    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
   );
 
   const rejectPluginProposal = useCallback(
@@ -12454,7 +12522,7 @@ export function MainWindow({
   }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
   useEffect(
     () =>
-      listenForAnalysisWindowActions((action: AnalysisWindowAction, sourceLabel?: string) => {
+      listenForAnalysisWindowActions(async (action: AnalysisWindowAction, sourceLabel?: string) => {
         const handlers = analysisWindowActionHandlersRef.current;
         if (sourceLabel !== undefined || isDesktopRuntime()) {
           const identity = sourceLabel ? parsePluginPanelWindowLabel(sourceLabel) : undefined;
@@ -12503,7 +12571,7 @@ export function MainWindow({
               outcome = { ok: false, message: "That proposal was already resolved, so nothing changed." };
               setStatus(outcome.message);
             } else if (action.kind === "acceptPluginProposal") {
-              outcome = handlers.acceptPluginProposal(proposal);
+              outcome = await handlers.acceptPluginProposal(proposal);
             } else {
               outcome = handlers.rejectPluginProposal(proposal);
             }
@@ -14861,7 +14929,7 @@ export function MainWindow({
       : currentDocument;
     const changed = nextDocument !== currentDocument;
     if (changed) {
-      commitDocumentChange(
+      commitDocumentChangeWithPageFit(
         nextDocument,
         plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
       );
@@ -14879,7 +14947,7 @@ export function MainWindow({
     setStatus(refusal
       ? `Cannot add ${nativeTemplateStatusLabel(templateId)} here: ${nativeTemplateFallbackReasonText(refusal)}`
       : nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit]);
 
   const startNativePlacementDrag = useCallback((
     event: ObjectPointerEvent,
@@ -14973,10 +15041,10 @@ export function MainWindow({
     }
     const nextDocument = applyNativeArtLineToolDefaultAtPoint(documentRef.current, point, commandId);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChangeWithPageFit(nextDocument);
       setStatus(`Inserted ${title.toLowerCase()}`);
     }
-  }, [commitDocumentChange, startNativePlacementDrag]);
+  }, [commitDocumentChangeWithPageFit, startNativePlacementDrag]);
 
   const applyNativeBondDisplayStyleDocumentTarget = useCallback((
     target: NativeBondOrderTarget,
@@ -15390,9 +15458,14 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, placed);
+    if (drag.kind === "template" || drag.kind === "orbital" ||
+      (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
+      commitInsertionHistoryWithPageFit(drag.startDocument, placed);
+    } else {
+      commitDocumentHistoryFrom(drag.startDocument, placed);
+    }
     return true;
-  }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   // A placement drag's move and release, shared by the page handlers and the object handlers. A
   // press that starts on an object (a chain off an atom, an arrow drawn from atop a reagent)
@@ -17113,7 +17186,7 @@ export function MainWindow({
         if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
           const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
           if (nextDocument !== documentRef.current) {
-            commitDocumentChange(nextDocument);
+            commitDocumentChangeWithPageFit(nextDocument);
             setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
           }
         }
@@ -17206,6 +17279,7 @@ export function MainWindow({
     applySymbolGlyphAtPoint,
     applyTextDocumentAtPoint,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     document,
     pagePointFromPointerEvent,
     startAtomLabelEdit,
@@ -18486,7 +18560,7 @@ export function MainWindow({
         if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
           const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
           if (nextDocument !== documentRef.current) {
-            commitDocumentChange(nextDocument);
+            commitDocumentChangeWithPageFit(nextDocument);
             setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
           }
         }
@@ -19177,6 +19251,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     currentEyedropperStatus,
     cycleNativeBondOrder,
     document,
@@ -20935,13 +21010,13 @@ export function MainWindow({
     // A side-dependent label the save could not carry is read again from its drawing: say so (short
     // on the status line, each atom named in the log) rather than let the save change it silently.
     const applied = applyEditorSaveResultWithLabelWarnings(documentRef.current, result);
-    commitDocumentChange(applied.document);
+    commitDocumentChangeWithPageFit(applied.document);
     const labelStatus = editorSaveLabelWarningsStatus(applied.labelWarnings);
     if (labelStatus) {
       setStatus(labelStatus);
       applied.labelWarnings.forEach((warning) => console.info(warning.detail));
     }
-  }, [commitDocumentChange]);
+  }, [commitDocumentChangeWithPageFit]);
 
   const createAgentSnapshot = useCallback((): AgentSnapshot => {
     const currentDocument = documentRef.current;

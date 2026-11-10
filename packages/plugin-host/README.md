@@ -39,6 +39,12 @@ patches (1–256 operations) are checked as a whole before application. `invokeC
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
 calling the plugin-visible selection provider. `writePatchOps` flattens a validated batch.
 
+The embedding `applyDocumentPatch` callback also receives an optional host-only `signal`, stable
+across writes in one command and aborted when that command ends or unregisters. The desktop uses
+its identity to ask about page enlargement once per user action, and its cancellation to reject
+late writes while a native page question is open. This is not a plugin-visible capability or a
+change to `@chemdraft/plugin-api`.
+
 Canvas overlays are registered only with `ui.canvas`, owned command references, and an overlay id
 unique across registered plugins. `listCanvasOverlays()` returns `{ pluginId, overlay }` entries.
 An embedding host can supply `overlays.setStatus(pluginId, overlayId, text)`; the capability

@@ -53,7 +53,9 @@ export function applyPluginDocumentPatch(
     const outside = bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > page.width || bounds.y + bounds.height > page.height;
     if (!outside) continue;
     if (bounds.width > page.width || bounds.height > page.height) {
-      throw new Error("Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.");
+      // Preserve authored geometry. The desktop's shared pre-commit question offers growth,
+      // or keeps this exact placement on the existing page, as one history entry either way.
+      continue;
     }
     const overlaps = bounds.x < page.width && bounds.y < page.height &&
       bounds.x + bounds.width > 0 && bounds.y + bounds.height > 0;

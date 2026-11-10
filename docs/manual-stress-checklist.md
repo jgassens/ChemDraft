@@ -760,9 +760,28 @@ and Art toolbars open, including at 125%/150% display scale:
   when it was the last one). Save closes only after success. Cancel the save picker, simulate a write
   failure, and edit during a slow save: the tab remains open and the next prompt includes the reason.
   Queue an OS open-with while prompted: it waits, and Save still writes the prompted drawing.
-- Import oversized CDXML or paste oversized content: "Change the page to … to fit the imported
+- Import oversized CDXML: "Change the page to … to fit the imported
   content?" Use the recommended page (e.g. Use A3 Page) / Cancel. Escape keeps the original page and overflow; resize remains one undoable layout operation and
   preserves chemical identity and editable objects.
+- On macOS and Windows, paste an oversized selection, a SMILES list, MOL/RXN, picture, plain text or
+  Office table; insert a template or table; run Name to Structure, Clean Up and a plugin batch.
+  Before insertion, expect exactly one native box: "This doesn't fit on the page. Enlarge the page
+  to fit? Content on the page may shift to make room." with Enlarge / Keep Page Size. Enlarge and all content undo together; Keep Page Size keeps
+  the exact proposed positions without resizing. Fitting content asks nothing. Repeat with an
+  assistant request containing several tool calls and direct patches: only one question per request,
+  one Undo, and Redo never reopens the question. Check template/table dialogs targeting an inactive
+  tab, changes or tab closure while a question is pending, and Stop during an assistant question.
+  Duplicate, structure-editor Save, Spin Flatten/Release and native ring/bracket/symbol/art stamps
+  also use this question when they overflow. Hand gestures must ask nothing: drag/move, rotate
+  (including typed rotation/tilt), resize, drawing/freehand/Bezier/marker/path edits, typing text
+  (including first typing and font changes), atom labels/hotkeys, table cell/row/column edits, and
+  arrange/align/distribute/rotate/flip commands. Check that these retain main's page and history behavior.
+  Repeat with left-only, top-only, left+bottom and all-four-side overflow, including an affected second
+  page. Enlarge must translate every object on only that page right/down without changing chemistry or
+  relative positions, leave only inserted/edited content selected, and undo/redo positions and size
+  together. Keep Page Size must retain the proposal's exact coordinates.
+  The exact Keep Page Size title has no automatic Escape binding in AppKit; click it
+  explicitly on macOS. Windows Escape/close maps to Keep Page Size.
 - Apply a whole-molecule appearance change to a molecule with per-ring attributes:
   Keep Overrides / Clear Overrides / Cancel. Cancel changes nothing; Keep retains ring attributes;
   Clear removes them for the selected molecule with the existing labelled undo entry. Undo restores
