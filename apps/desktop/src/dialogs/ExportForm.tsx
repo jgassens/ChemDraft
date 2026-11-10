@@ -172,6 +172,10 @@ function ExportFormBody({
         </label>
         <input
           autoFocus
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          autoComplete="off"
           id="chemdraft-export-filename"
           disabled={state.busy}
           value={state.filename}

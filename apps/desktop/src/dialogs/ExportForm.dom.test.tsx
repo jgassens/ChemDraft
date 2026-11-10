@@ -77,6 +77,17 @@ it("lists every implemented desktop export format without planned/deferred rows 
   expect(updateExportDialogFormat({ ...exportFixture(), filename: "compound.mol", busy: false }, "pdf").filename).toBe("compound.pdf");
 });
 
+it("disables text correction and completion on the export filename field", () => {
+  act(() => root.render(createElement(ExportForm, {
+    state: { ...exportFixture(), busy: false }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+  })));
+  const input = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  expect(input.getAttribute("autocorrect")).toBe("off");
+  expect(input.getAttribute("autocapitalize")).toBe("off");
+  expect(input.getAttribute("spellcheck")).toBe("false");
+  expect(input.getAttribute("autocomplete")).toBe("off");
+});
+
 it.each(["macos", "windows"] as const)("suggests one extension for every implemented format on %s", platform => {
   const folder = platform === "macos" ? "/Users/me/Figures/" : "C:\\Figures\\";
   const sourceExtensions = new Set(["chemdraft", ...desktopExportFormatDescriptors.flatMap(descriptor => descriptor.extensions)]);
