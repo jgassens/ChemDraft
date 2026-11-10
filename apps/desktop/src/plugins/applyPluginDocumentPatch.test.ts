@@ -5,13 +5,17 @@ import {
   DocumentObjectSchema,
   redo,
   undo,
+  type BracketObject,
   type DocumentHistory,
   type DocumentObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
+import { setReactionArrowConditions } from "@chemdraft/document-workflow-core";
+import { repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
+import { createNativeArtLineGraphicObject, moveDocumentObjects, normalizeCommittedDocument } from "../documentWorkflow";
 
 import {
   applyAcceptedPluginProposal,
@@ -39,7 +43,95 @@ function moleculeObject(): MoleculeObject {
   };
 }
 
+function repeatUnitObjects(): [MoleculeObject, BracketObject, BracketObject] {
+  const molecule: MoleculeObject = { ...moleculeObject(), id: "mol", structure: "CC",
+    atoms: [
+      { id: "a1", element: "C", x: 100, y: 120, formalCharge: 0 },
+      { id: "a2", element: "C", x: 130, y: 120, formalCharge: 0 }
+    ],
+    bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
+  };
+  const open: BracketObject = { id: "open", type: "bracket", bracketKind: "square", side: "open",
+    pairId: "pair", repeatUnit: true, bracketUsage: "sru", containedObjectIds: [molecule.id],
+    x: 70, y: 96, width: 16, height: 120, rotation: 0, style: {} };
+  return [molecule, open, { ...open, id: "close", side: "close", x: 250, label: "n" }];
+}
+
 describe("desktop direct plugin patch application", () => {
+  it("preserves two independent exportable SRUs when the same insertion batch is applied twice (F1a)", () => {
+    const document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const proposed = ProposedDocumentPatchSchema.parse({ reason: "Insert repeat unit", patch: {
+      op: "batch", patches: repeatUnitObjects().map(object => ({ op: "addObject", pageId, object }))
+    } });
+    const first = applyPluginDocumentPatch(document, proposed);
+    const firstMolecules = first.document.pages[0].objects.filter(object => object.type === "molecule");
+    expect(repeatUnitMolfileGroups(first.document, firstMolecules, [])).toHaveLength(1);
+
+    const second = applyPluginDocumentPatch(first.document, proposed);
+    const objects = second.document.pages[0].objects;
+    const molecules = objects.filter(object => object.type === "molecule");
+    expect(new Set(objects.map(object => object.id)).size).toBe(6);
+    expect(repeatUnitMolfileGroups(second.document, molecules, [])).toHaveLength(2);
+    expect(objects.slice(0, 3)).toEqual(first.document.pages[0].objects);
+    const brackets = objects.filter(object => object.type === "bracket");
+    expect(brackets).toHaveLength(4);
+    expect(new Set(brackets.map(bracket => bracket.pairId)).size).toBe(2);
+    for (const molecule of molecules) {
+      const pair = brackets.filter(bracket => bracket.containedObjectIds.includes(molecule.id));
+      expect(pair).toHaveLength(2);
+      expect(pair[0].pairId).toBeDefined();
+      expect(pair[1].pairId).toBe(pair[0].pairId);
+      expect(pair.map(bracket => bracket.side)).toEqual(["open", "close"]);
+      expect(pair.every(bracket => bracket.repeatUnit && bracket.bracketUsage === "sru")).toBe(true);
+      expect(pair[1].label).toBe("n");
+    }
+  });
+
+  it("rebases bracket crossing-bond owners to the inserted molecule on an id collision (F1b)", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const [molecule, open, close] = repeatUnitObjects();
+    document = applyPatch(document, { op: "addObject", pageId, object: molecule });
+    const objects = [molecule, ...[open, close].map(bracket => ({ ...bracket,
+      crossingBondIds: [{ objectId: molecule.id, bondId: "b1" }]
+    }))];
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Copy bracketed molecule", patch: {
+      op: "batch", patches: objects.map(object => ({ op: "addObject", pageId, object }))
+    } }));
+    const [original, inserted, ...brackets] = result.document.pages[0].objects;
+    expect(original).toEqual(molecule);
+    expect(inserted.id).not.toBe(molecule.id);
+    for (const bracket of brackets) {
+      expect(bracket).toMatchObject({ containedObjectIds: [inserted.id],
+        crossingBondIds: [{ objectId: inserted.id, bondId: "b1" }] });
+    }
+  });
+
+  it("attaches copied reaction conditions to the rebased arrow so they follow its movement (F3)", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const arrow = createNativeArtLineGraphicObject(document, { x: 150, y: 300 }, { x: 390, y: 300 }, "tool.art.reactionArrow")!;
+    document = applyPatch(document, { op: "addObject", pageId, object: arrow });
+    document = setReactionArrowConditions(document, arrow.id, { side: "above", spans: [{ text: "80 °C", script: "normal" }] });
+    const originalObjects = document.pages[0].objects;
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Copy arrow and conditions", patch: {
+      op: "batch", patches: originalObjects.map(object => ({ op: "addObject", pageId, object }))
+    } }));
+    const copies = result.document.pages[0].objects.filter(object => result.receipt.objectIds.includes(object.id));
+    const copiedArrow = copies.find(object => object.type === "graphic")!;
+    const copiedConditions = copies.find(object => object.type === "text")!;
+    expect(copiedArrow.id).not.toBe(arrow.id);
+    expect(copiedConditions.id).not.toBe(originalObjects[1].id);
+    expect.soft(copiedConditions.arrowAttachment?.parentObjectId).toBe(copiedArrow.id);
+
+    const moved = normalizeCommittedDocument(moveDocumentObjects(result.document, [copiedArrow.id], 100, 0));
+    const movedConditions = moved.pages[0].objects.find(object => object.id === copiedConditions.id)!;
+    expect(movedConditions.x).toBeCloseTo(copiedConditions.x + 100);
+    expect(movedConditions.y).toBeCloseTo(copiedConditions.y);
+    expect(moved.pages[0].objects.slice(0, originalObjects.length)).toEqual(originalObjects);
+  });
+
   it.each([undefined, { x: 300, y: 400, width: 200, height: 200 }])("preserves authored on-page geometry with viewport %j", bounds => {
     const document = createEmptyDocument();
     const page = document.pages[0];

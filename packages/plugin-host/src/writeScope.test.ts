@@ -53,6 +53,29 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it("allows a colliding insertion followed by a selected removal through the embedding rebaser atomically (F2)", async () => {
+    const f = fixture(["remove-me"], context => context.documents.applyPatch!({ reason: "Insert and remove", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: f.pageId, object: text("existing") },
+        { op: "removeObject", objectId: "remove-me" }
+      ]
+    } }), undefined, [text("existing"), text("remove-me")]);
+    const apply = f.applyDocumentPatch.getMockImplementation()!;
+    // Model the embedding desktop's collision rebasing before its atomic core application.
+    f.applyDocumentPatch.mockImplementation(request => apply({ ...request, patch: { ...request.patch, patch: {
+      op: "batch", patches: writePatchOps(request.patch.patch as DocumentPatch).map(op =>
+        op.op === "addObject" && op.object.id === "existing"
+          ? { ...op, object: { ...op.object, id: "existing_copy" } } : op)
+    } } }));
+
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toEqual({ applied: true, objectIds: ["existing_copy"] });
+    expect(f.applyDocumentPatch).toHaveBeenCalledTimes(1);
+    expect(f.document().pages[0].objects).toEqual([
+      text("mol_1"), text("mol_7"), text("existing"), { ...text("existing"), id: "existing_copy" }
+    ]);
+    expect(f.document().pages[0].objects.some(object => object.id === "remove-me")).toBe(false);
+  });
+
   it("gives all writes one live signal per command and aborts it when the command ends", async () => {
     let index = 0;
     const f = fixture([], async ctx => {
