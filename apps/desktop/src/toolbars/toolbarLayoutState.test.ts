@@ -93,9 +93,19 @@ describe("Main toolbar defaults migration", () => {
 
   it.each([
     { toolsetId: "core.main", visible: true },
+    { toolsetId: "core.main", title: "My toolbar", mode: "floating", preferredWindowSize: { width: 500, height: 80 } }
+  ])("uses new defaults for a non-layout override: %j", override => {
+    const migrated = migrate({ ...emptyLayoutState(), toolsetOverrides: [override] });
+    expect(ids(migrated)).toEqual(defaults);
+    expect(migrated.toolsetOverrides).toEqual([override]);
+  });
+
+  it.each([
     { toolsetId: "core.main", hiddenCommandIds: ["tool.eraser"] },
-    { toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.chain", "tool.select"] } }
-  ])("preserves the previous toolbar exactly for an existing override: %j", override => {
+    { toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.chain", "tool.select"] } },
+    { toolsetId: "core.main", itemOverrides: [{ commandId: "tool.eraser", hidden: true }] },
+    { toolsetId: "core.main", itemAdditions: [{ groupId: "core.main.items", index: 6, item: { id: "user.space.1", kind: "spacer", primary: { type: "none" } } }] }
+  ])("preserves the previous toolbar exactly for a layout override: %j", override => {
     const state = { ...emptyLayoutState(), toolsetOverrides: [override] };
     const snapshot = structuredClone(state);
     // Apply the same saved override to an independent pre-change manifest as the reference.
@@ -111,6 +121,15 @@ describe("Main toolbar defaults migration", () => {
     expect(ids(migrated)).not.toContain("tool.doubleBond");
     expect(ids(migrated)).not.toContain("tool.tripleBond");
     expect(state).toEqual(snapshot);
+  });
+
+  it("preserves the previous toolbar for legacy group order", () => {
+    const state = { ...emptyLayoutState(), toolsetOverrides: [{ toolsetId: "core.main", groupOrder: ["core.main.structure", "core.main.selection"] }] };
+    const result = ids(migrate(state));
+    expect(result).toContain("tool.chain");
+    expect(result).not.toContain("tool.doubleBond");
+    expect(result).not.toContain("tool.tripleBond");
+    expect(result.indexOf("tool.chain")).toBeLessThan(result.indexOf("tool.select"));
   });
 
   it("preserves addition indices and partial orders, including structural additions", () => {
@@ -133,6 +152,20 @@ describe("Main toolbar defaults migration", () => {
     expect(ids(migrated)).not.toContain("tool.chain");
     expect(ids(migrated).indexOf("tool.doubleBond")).toBe(6);
     expect(ids(migrated)).not.toContain("tool.tripleBond");
+  });
+
+  it("preserves both manually added multiple bonds in a customized layout", () => {
+    let state = emptyLayoutState();
+    for (const commandId of ["tool.doubleBond", "tool.tripleBond"]) {
+      state = addToolsetItemAddition(state, "core.main", {
+        groupId: "core.main.items", index: 6,
+        item: { commandId, title: commandId, primary: { type: "command", commandId } }
+      });
+    }
+    const result = ids(migrate(state));
+    expect(result).toContain("tool.chain");
+    expect(result).toContain("tool.doubleBond");
+    expect(result).toContain("tool.tripleBond");
   });
 
   it("is idempotent across serialization and never undoes later removal of Chain or addition of Double Bond", () => {

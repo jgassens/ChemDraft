@@ -144,7 +144,7 @@ function previousMainToolbarGroups(): ToolsetGroupDefinition<IconName, ToolbarAs
   });
 }
 
-/** Preserve existing overrides against the old defaults once; fresh layouts use the new defaults.
+/** Preserve customized layouts against the old defaults once; other overrides use the new defaults.
  * Complete the old order before adding Chain back, since addition indices precede reorder/hide and
  * were measured against the old manifest. Keep a top-level marker even when no Main override exists.
  */
@@ -161,7 +161,11 @@ export function migrateMainToolbarDefaultsLayoutState(state: unknown): unknown {
   return withCurrentMainToolbarDefaults({
     ...parsed,
     toolsetOverrides: parsed.toolsetOverrides.map(override => {
-      if (override.toolsetId !== "core.main") return override;
+      if (override.toolsetId !== "core.main" || !(
+        override.groupOrder !== undefined || override.itemOrder !== undefined ||
+        override.hiddenCommandIds !== undefined || override.itemOverrides !== undefined ||
+        override.itemAdditions !== undefined
+      )) return override;
       const groups = mergeToolsetItemAdditions(previousGroups, override.itemAdditions);
       const ids = groups[0].items.map(item => toolsetItemCustomizationId(item)!);
       const newlyIntroducedIds = MULTIPLE_BOND_IDS.filter(id => !ids.includes(id));
