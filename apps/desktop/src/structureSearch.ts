@@ -11,6 +11,18 @@ export type StructureSearchSite = "pubchem" | "reaxys";
 export const STRUCTURE_SEARCH_SITES = ["pubchem", "reaxys"] as const;
 export const STRUCTURE_SEARCH_SELECTION_REASON = "Select a structure to search.";
 
+// Search scopes contain only molecules; retain the original brackets' semantics separately.
+const searchBracketUsages = new WeakMap<ChemDraftDocument, Set<string>>();
+
+export class StructureSearchRefusal extends Error {
+  override name = "StructureSearchRefusal";
+}
+
+export function structureSearchErrorStatus(error: unknown): string {
+  if (error instanceof StructureSearchRefusal) return error.message;
+  return `Structure search failed: ${error instanceof Error ? error.message : String(error)}`;
+}
+
 export function structureSearchSite(commandId: string): StructureSearchSite | undefined {
   return STRUCTURE_SEARCH_SITES.find(site => commandId === `search.${site}`);
 }
@@ -39,13 +51,16 @@ export function structureSearchDocument(
   // Read membership from the original graph and brackets, before discarding either. Only
   // selected member atoms carry the warning into the graph-only serializer's existing channel.
   const units = repeatUnits(document, molecules);
+  const bracketUsages = new Set<string>();
   const repeatWarnings = repeatUnitExportWarnings(document, "SMILES", { molecules });
   const searchMolecules = molecules.map(molecule => {
     const atomIds = new Set(molecule.atoms.map(atom => atom.id));
-    const bracketIds = new Set(units.filter(unit => !unit.members.length || unit.members.some(member =>
+    const selectedUnits = units.filter(unit => !unit.members.length || unit.members.some(member =>
       member.molecule.id === molecule.id &&
       (!member.atomIds.length || member.atomIds.some(id => atomIds.has(id)))
-    )).map(unit => unit.objectId));
+    ));
+    selectedUnits.forEach(unit => bracketUsages.add(unit.usage));
+    const bracketIds = new Set(selectedUnits.map(unit => unit.objectId));
     const warnings = repeatWarnings.filter(warning => warning.objectId !== undefined && bracketIds.has(warning.objectId))
       .map(warning => ({ code: "chemistry.bracket_multiplier", objectId: molecule.id, message: warning.message }));
     return warnings.length ? { ...molecule, chemistry: {
@@ -60,7 +75,9 @@ export function structureSearchDocument(
     ...document, pages: [{ ...page, objects: searchMolecules }],
     selection: { ...document.selection, pageId: page.id, objectIds: molecules.map(object => object.id) }
   };
-  return copyAsScopeMolecules(scoped).length ? scoped : undefined;
+  if (!copyAsScopeMolecules(scoped).length) return undefined;
+  searchBracketUsages.set(scoped, bracketUsages);
+  return scoped;
 }
 
 export function stripSearchCxSmiles(smiles: string): string {
@@ -98,11 +115,23 @@ export function createStructureSearchController(deps: SearchDependencies) {
     if (busy || now() < nextAllowed) return;
     busy = true;
     try {
-      const serializableIds = new Set(copyAsScopeMolecules(document).map(molecule => molecule.id));
+      const molecules = copyAsScopeMolecules(document);
+      const serializableIds = new Set(molecules.map(molecule => molecule.id));
       const omitted = document.pages.flatMap(page => page.objects).filter(object =>
         object.type === "molecule" && !serializableIds.has(object.id));
       if (omitted.length) {
         throw new Error(`Part of the selection cannot be searched: structures without editable native graphs (${omitted.map(object => object.id).join(", ")}). Select only drawn structures.`);
+      }
+      // The scoped document carries bracket membership on its selected atoms.
+      // Refuse before serialization: copy/export diagnostics may contain bracket ids
+      // and repeated context, which should not become the search status message.
+      if (molecules.some(molecule => molecule.chemistry?.warnings.some(
+        warning => warning.code === "chemistry.bracket_multiplier"
+      ))) {
+        const usages = searchBracketUsages.get(document) ?? new Set(repeatUnits(document, molecules).map(unit => unit.usage));
+        const description = usages.has("sru") ? "a polymer repeat unit" : usages.has("multiple")
+          ? "a repeated (multiple) bracket group" : "bracketed structure";
+        throw new StructureSearchRefusal(`Search can't include ${description}. Select atoms outside the brackets.`);
       }
       const warnings: string[] = [];
       const result = await (deps.serialize ?? copyAsSmiles)(document, warnings);
