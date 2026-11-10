@@ -2296,6 +2296,7 @@ export function MainWindow({
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
+  const pointerInsideCanvasRef = useRef(false);
   const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
   /**
    * Run the property suite for the selected structure through the analysis worker and show the report.
@@ -2823,8 +2824,8 @@ export function MainWindow({
   // neighbour, or empty canvas). Once that label is no longer in progress, the hover goes back to
   // whatever is under the pointer, so the next Delete or digit acts on what the user is pointing at.
   const hoverRetargetedForLabelRef = useRef(false);
-  // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
-  // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
+  // Latest binding of the pointermove hover derivation, re-invoked by hover keys after a
+  // commit. The hotkeys are declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
   // exists); the render-body assignment keeps the binding current without a stale closure.
   const rederiveNativeCanvasHoverRef = useRef<(sourceDocument: ChemDraftDocument) => void>(() => undefined);
@@ -13548,6 +13549,20 @@ export function MainWindow({
   }, [shortcutRegistry]);
 
   useEffect(() => {
+    const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {
+      const before = documentRef.current;
+      // Check before dispatch too: a command may itself end an editor or cancel a gesture.
+      const canRehit = () => !activeAtomLabelEditRef.current && !activeTextEditObjectIdRef.current &&
+        !isSnapshotSessionActive() && !selectionMarqueeRef.current && !selectionLassoRef.current &&
+        !tapeMeasureDragRef.current && !spin3dTugDragRef.current;
+      const rehit = rehitAfterEdit && canRehit();
+      invokeCommandRef.current(commandId);
+      // Native hover edits and document undo/redo commit synchronously. Re-hit after their
+      // cleanup has cleared hover, using the updated document and pointermove's derivation.
+      if (rehit && documentRef.current !== before && canRehit() && pointerInsideCanvasRef.current) {
+        rederiveNativeCanvasHoverRef.current(documentRef.current);
+      }
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       // WebKit reports the typed character during IME composition; WebView2 uses Process/229.
       // Neither is a canvas shortcut or hover-label continuation until composition commits.
@@ -13822,7 +13837,9 @@ export function MainWindow({
           const beforeHotkeyDocument = documentRef.current;
           const hotkeyUndoState = { history: documentHistoryRef.current, file: fileStateRef.current };
           const saveRevision = documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0;
-          invokeCommandRef.current(hoveredTargetCommandId);
+          // A label key deliberately pins hover to its atom until continuation ends. Keep that
+          // existing handoff; all other hover edits re-hit as soon as their command returns.
+          invokeCanvasKeyCommand(hoveredTargetCommandId, !hoverRetargetedForLabelRef.current);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
           const assignedElement = nativeElementFromKeyboardKey(event.key);
@@ -13860,7 +13877,11 @@ export function MainWindow({
       // This key already passed the event-target text-field guard. A delayed inline-editor
       // focus retry can make activeElement disagree with that target; preserve the canvas
       // routing decision rather than reclassifying Undo/Redo as text history in invoke.
-      invokeCommandRef.current(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId);
+      const historyDirection = editHistoryDirection(commandId);
+      invokeCanvasKeyCommand(
+        historyDirection ? forceDocumentHistoryCommandId(commandId) : commandId,
+        Boolean(historyDirection) || hoveredNativeDeleteTargetRef.current !== undefined
+      );
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -13876,6 +13897,7 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     clearTapeMeasureDrag,
     finishNativePathArtDraw,
+    isSnapshotSessionActive,
     replacePresentDocument,
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
@@ -14994,9 +15016,8 @@ export function MainWindow({
     updateBondGrowthPreview
   ]);
 
-  // Charge-mark hotkeys stack on repeated presses while the pointer stays put, so a charge commit
-  // re-derives the hover from the last canvas pointer position through the SAME path pointermove
-  // uses — never a duplicate derivation, and a press over empty canvas still clears the hover.
+  // Hover-key edits, keyboard history navigation and label continuation all reuse pointermove's
+  // hover derivation at the last canvas pointer position, against the updated document.
   const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
     const clientPoint = lastCanvasPointerClientPointRef.current;
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
@@ -15010,21 +15031,33 @@ export function MainWindow({
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
+    const clearCanvasHover = () => {
+      pointerInsideCanvasRef.current = false;
+      updateNativeCanvasHover(documentRef.current, undefined);
+    };
+    const handleVisibilityChange = () => {
+      if (window.document.hidden) clearCanvasHover();
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
-      if (canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect())) {
+      pointerInsideCanvasRef.current = Boolean(canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()));
+      if (pointerInsideCanvasRef.current) {
         lastCanvasPointerClientPointRef.current = clientPoint;
       }
     };
 
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
+    window.addEventListener("blur", clearCanvasHover);
+    window.document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
+      window.removeEventListener("blur", clearCanvasHover);
+      window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [updateNativeCanvasHover]);
 
   const updateFreeformBondPreview = useCallback((
     sourceDocument: ChemDraftDocument,
@@ -21418,6 +21451,7 @@ export function MainWindow({
           tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
+          onPointerLeave={() => { pointerInsideCanvasRef.current = false; }}
           onKeyDown={(event) => {
             if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
               const targets = currentMoleculeInspector.targets.bondTargets;
