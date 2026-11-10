@@ -133,4 +133,12 @@ describe.each(["macos", "windows"] as const)("Text tool click-away (%s)", platfo
     expect(status()).not.toContain("Editing text");
     if (finish !== "tool switch") expect(status()).toBe("");
   });
+
+  it("keeps the selection tool status when switching tools closes the text editor", async () => {
+    await startEditing();
+    await act(async () => window.__CHEMDRAFT_AGENT__!.command("tool.select"));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(editor()).toBeNull();
+    expect(status()).toBe("Selection: click object or canvas; drag moves or selects; choose another tool");
+  });
 });
