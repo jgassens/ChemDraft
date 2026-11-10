@@ -4,6 +4,7 @@ import {
   type PluginChemistryPropertiesResult
 } from "@chemdraft/plugin-api";
 import { analysisClient, type AnalysisClient } from "../analysisClient";
+import { chemistryPropertiesInputError } from "@chemdraft/plugin-host";
 
 export const PLUGIN_PROPERTIES_METHODS = ["rdkit.composition", "rdkit.average-mass", "rdkit.monoisotopic-mass"];
 let nextSlot = 0;
@@ -15,7 +16,7 @@ export async function computePropertiesForPlugin(
   client: AnalysisClient | null = analysisClient()
 ): Promise<PluginChemistryPropertiesResult> {
   const parsed = PluginChemistryPropertiesRequestSchema.safeParse(request);
-  if (!parsed.success) return { available: false, reason: `Invalid chemistry properties input: ${parsed.error.message}` };
+  if (!parsed.success) return { available: false, reason: chemistryPropertiesInputError(request, parsed.error) };
   if (!client) return { available: false, reason: "The RDKit analysis engine is unavailable in this environment." };
   try {
     const { format, structure } = parsed.data;
