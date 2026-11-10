@@ -88,7 +88,7 @@ describe("chemdraft stereo", () => {
     const { output } = await inspect("CC(N)C(=O)O");
     expect(output.stereoCenters[0]).toMatchObject({ atomIndex: 1, descriptor: "unspecified" });
     expect(output.unspecifiedCount).toBe(1);
-    expect(output.warnings).toContain("1 stereocentre(s) left unspecified");
+    expect(output.warnings).toContain("1 stereocenter(s) left unspecified");
   });
 
   it("reports allene axial stereochemistry as unrepresentable", async () => {

@@ -208,7 +208,7 @@ function rejectUnusableDimensions(width: number, height: number, subject: string
 }
 
 function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw new DOMException("Image acquisition was cancelled.", "AbortError");
+  if (signal.aborted) throw new DOMException("Image acquisition was canceled.", "AbortError");
 }
 
 function normalizeScreenCaptureError(error: unknown): ImageSourceError {

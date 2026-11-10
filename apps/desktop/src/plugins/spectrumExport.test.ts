@@ -302,7 +302,7 @@ describe("standaloneSpectrumSvg", () => {
     expect(out).toContain('class="lf-curve is-estimated"'); // original provenance class preserved
     expect(out).toContain('class="lf-curve is-alternative"');
     expect(out).toContain("Height = predicted equivalent nuclei (not experimental integration)");
-    expect(out).toContain("grey dashed = rule-estimated");
+    expect(out).toContain("gray dashed = rule-estimated");
     expect(out).toContain("dashed orange = increment");
     expect(out).not.toContain("HOSE"); // all primary peaks are rule estimates
     expect(out).toContain('data-comparison-mode="both"');
@@ -334,7 +334,7 @@ describe("standaloneSpectrumSvg", () => {
     const peaks = spectrum.peaks.map((peak, index) => ({ ...peak, estimated: mode === "all" || index === 0 }));
     const out = standaloneSpectrumSvg(svg, "increment", "HOSE", peaks);
     const exported = new DOMParser().parseFromString(out, "image/svg+xml").documentElement;
-    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("grey dashed = rule-estimated");
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("gray dashed = rule-estimated");
     expect(out).not.toContain("method = HOSE only");
     if (mode === "all") expect(out).not.toContain("HOSE");
     else expect(out).toContain("HOSE = non-estimated primary peaks only");

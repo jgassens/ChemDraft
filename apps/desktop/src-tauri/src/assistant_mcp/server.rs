@@ -361,7 +361,7 @@ async fn handle(request: Request<Incoming>, port: u16, manager: Weak<SessionMana
                     if let Some(pending) = session.pending.lock().unwrap().remove(&request_id) {
                         let _ = pending
                             .answer
-                            .send(Err("ChemDraft request cancelled".into()));
+                            .send(Err("ChemDraft request canceled".into()));
                     }
                 }
             }

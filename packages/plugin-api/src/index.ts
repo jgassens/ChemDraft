@@ -495,7 +495,7 @@ function isPanelPayload(value: unknown, maxCharacters = 4000, maxNodes = 4000, a
 }
 
 export const PluginPanelPayloadSchema = z.custom<PluginPanelPayload>(isPanelPayload,
-  "Panel payload must be JSON-serialisable, at most 4000 characters, and contain no prototype-polluting keys.");
+  "Panel payload must be JSON-serializable, at most 4000 characters, and contain no prototype-polluting keys.");
 
 
 

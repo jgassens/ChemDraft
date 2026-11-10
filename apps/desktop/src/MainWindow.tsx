@@ -1769,7 +1769,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.13.55-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -5087,7 +5087,7 @@ export function MainWindow({
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
         if (documentRef.current !== currentDocument || selectedNativeMoleculePartsRef.current !== selectedParts) {
-          setStatus("Clean up cancelled because the document changed");
+          setStatus("Clean up canceled because the document changed");
           return;
         }
         const changed = commitDocumentChangeWithPageFit(() => prepared, partialSelections.length ? "Clean Up Selection" : undefined, undefined,
@@ -5633,7 +5633,7 @@ export function MainWindow({
       // Spin may only begin if the molecule is still selected and unchanged.
       if (documentRef.current.pages[0]?.objects.find((object) => object.id === objectId) !== molecule) {
         traceInfo("spin.cancelled", { message: "selection changed" });
-        setStatus("Selection changed; spin cancelled");
+        setStatus("Selection changed; spin canceled");
         return;
       }
       const embeddedCoords = conformer.mapping.coords3dByOriginalAtom;
@@ -7180,7 +7180,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget]);
 
   const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
@@ -7207,7 +7207,7 @@ export function MainWindow({
   }> => {
     const terminalResult = () => {
       if (quitInteractionRef.current) {
-        setStatus("Paste cancelled while quitting");
+        setStatus("Paste canceled while quitting");
         return { outcome: "terminal" as const };
       }
       if (signal.aborted) return { outcome: "terminal" as const };
@@ -7291,7 +7291,7 @@ export function MainWindow({
 
   const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
     smilesListPasteAbortRef.current?.abort();
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     if (!parsed.ok) { setStatus(parsed.reason); return; }
     try {
       const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
@@ -7311,7 +7311,7 @@ export function MainWindow({
     const pasteDocument = documentRef.current;
     const terminalResult = (checkDocument = false) => {
       if (quitInteractionRef.current) {
-        setStatus("Paste cancelled while quitting");
+        setStatus("Paste canceled while quitting");
         return { outcome: "terminal" as const, pasteAsText: false };
       }
       if (signal.aborted) return { outcome: "terminal" as const, pasteAsText: false };
@@ -7449,7 +7449,7 @@ export function MainWindow({
         void (async () => {
           let firstFallback: (() => void) | undefined;
           for (const candidate of chemistryCandidates) {
-            if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+            if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
             if (listAbort.signal.aborted) return;
             if (candidate.kind === "smiles") {
               const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
@@ -7461,7 +7461,7 @@ export function MainWindow({
               firstFallback ??= () => finishListFallback(result);
             }
           }
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+          if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (listAbort.signal.aborted) return;
           if (!pasteFallbackImage()) firstFallback?.();
         })();
@@ -7472,7 +7472,7 @@ export function MainWindow({
         // Keep ordinary single SMILES pastes independent of later pastes, as before.
         // Only lists and picture candidate loops register their cancellation controller.
         void renderPastedSmiles(trimmedText, new AbortController().signal).then(result => {
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+          if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (result.outcome !== "no-structure") return;
           if (!pasteFallbackImage()) finishSingleFallback(result);
         });
@@ -7486,7 +7486,7 @@ export function MainWindow({
         return;
       }
       void pendingList.then(result => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         if (result.outcome !== "no-structure" || listAbort.signal.aborted) return;
         if (!pasteFallbackImage()) finishListFallback(result);
       });
@@ -7497,7 +7497,7 @@ export function MainWindow({
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
     smilesListPasteAbortRef.current?.abort();
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const placement = nextSelectionClipboardPastePlacement(
       payload,
       selectionClipboardPasteStateRef.current,
@@ -7532,7 +7532,7 @@ export function MainWindow({
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
     wholeObjectIds: readonly string[]
   ) => {
-    if (quitInteractionRef.current) { setStatus("Cut cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Cut canceled while quitting"); return; }
     const currentDocument = documentRef.current;
     // Use the selection that produced the successful clipboard write. It may include both
     // whole objects and fragments, and the user may have changed selection while it was writing.
@@ -7758,12 +7758,12 @@ export function MainWindow({
     } catch (error) {
       readFailure = error instanceof Error ? error.message : String(error);
     }
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
     for (const candidate of [rawPayload, fallbackPayload]) {
       const unguardedPayload = await candidate;
-      if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+      if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
       if (!unguardedPayload) continue;
       const guarded = guardedClipboardPasteDecision(unguardedPayload);
       if (guarded.kind === "refused") { setStatus(guarded.message); return; }
@@ -9401,7 +9401,7 @@ export function MainWindow({
   ]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
-    if (cancelSpin3dSession("Spin cancelled")) {
+    if (cancelSpin3dSession("Spin canceled")) {
       return;
     }
 
@@ -10952,7 +10952,7 @@ export function MainWindow({
         }
         if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
           ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
-          setStatus("A document changed while saving. Quit cancelled; save again before quitting.");
+          setStatus("A document changed while saving. Quit canceled; save again before quitting.");
           await cancelQuitPrompt(requestId);
           return;
         }
@@ -11624,7 +11624,7 @@ export function MainWindow({
           }
           const molecule = getSelectedMolecule(document);
           if (!molecule) {
-            setStatus("Molecular Inspector opened — select a structure to analyse it");
+            setStatus("Molecular Inspector opened — select a structure to analyze it");
             return;
           }
           await runMolecularProperties(molecule, analysisInterpretation);
@@ -12052,7 +12052,7 @@ export function MainWindow({
           setStatus(`Cleared Custom Color ${parsed.swatch}, Slot ${parsed.slot} (${color.toUpperCase()})`);
         }
       } else if (parsed.action === "apply") {
-        if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Colour ${color.toUpperCase()}`);
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Color ${color.toUpperCase()}`);
       } else {
         const coordinator = dialogCoordinatorRef.current;
         if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }
@@ -13645,7 +13645,7 @@ export function MainWindow({
         return;
       }
       void domPayload.then((unguardedPayload) => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         const guarded = guardedClipboardPasteDecision(unguardedPayload);
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
         const { payload, decision } = guarded;
@@ -14729,14 +14729,14 @@ export function MainWindow({
     if (spin3dStateRef.current) {
       event.preventDefault();
       event.stopPropagation();
-      cancelSpin3dSession("Spin cancelled");
+      cancelSpin3dSession("Spin canceled");
       return;
     }
     const pendingSpin = spin3dPendingRef.current;
     if (pendingSpin) {
       event.preventDefault();
       event.stopPropagation();
-      cancelSpin3dSession("3D generation cancelled");
+      cancelSpin3dSession("3D generation canceled");
     }
   };
   window.addEventListener("keydown", handleSpinEscape, { capture: true });
@@ -15454,7 +15454,7 @@ export function MainWindow({
       try {
         cachedOclAdapter = await import("@chemdraft/ocl-adapter");
       } catch {
-        setStatus("Cannot set wavy bond: stereocentre perception is unavailable");
+        setStatus("Cannot set wavy bond: stereocenter perception is unavailable");
         return;
       }
       if (documentRef.current !== currentDocument) {
@@ -26305,7 +26305,7 @@ export function ObjectLayerContextMenu({
               className="object-context-menu-item" data-command-id={action.id}
               disabled={action.enabled === false} title={action.disabledReason}
               onClick={() => onInvoke(action.id)}>
-              {({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as
+              {({ left: "Left", center: "Center", right: "Right", decimal: "Decimal" } as
                 Record<string, string>)[action.id.split(".").at(-1)!]}
             </button>)}
           </div> : null}

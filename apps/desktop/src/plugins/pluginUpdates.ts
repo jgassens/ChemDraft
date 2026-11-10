@@ -85,7 +85,7 @@ const OFFICIAL_PLUGIN_SOURCES = new Map(
  *  output is surfaced to the user. Kept here so every surface quotes the same wording. */
 export const EXPERIMENTAL_PLUGIN_NOTICE =
   "Experimental: works best on clean, computer-drawn structures; hand-drawn, sketch-style or " +
-  "colour-filled drawings and images with grid lines are often misread. Check every result " +
+  "color-filled drawings and images with grid lines are often misread. Check every result " +
   "before inserting.";
 
 /** Compact form of the notice for space-constrained surfaces such as a proposal review row. */
@@ -148,7 +148,7 @@ function diagnosedFetch(options: DownloadOptions): HostFetch {
       return await fetch(url, init);
     } catch (cause: unknown) {
       // withUpdateTimeout owns cancellation and its existing, specific timeout wording.
-      if (init?.signal?.aborted) throw new Error("Download cancelled.");
+      if (init?.signal?.aborted) throw new Error("Download canceled.");
       const host = new URL(url).hostname;
       console.warn(`Download transport failure for ${host}: ${messageOf(cause)}`);
       let diagnosis: NetworkDiagnosis;

@@ -22,7 +22,7 @@ export function EngineInstallForm({ snapshot, onAction, onReady, busy = false, e
     return () => document.removeEventListener("keydown", key, true);
   }, [onAction, platform]);
   const state = snapshot.state;
-  const cancelled = state.status === "failed" && state.message === "Installation was cancelled.";
+  const cancelled = state.status === "failed" && state.message === "Installation was canceled.";
   const short = isShortOfSpace(snapshot.requiredDiskBytes, snapshot.freeDiskBytes);
   return <section ref={root} className="cd-dialog-fit cd-install-form" role="dialog" aria-label={snapshot.title} style={{ padding: 20, boxSizing: "border-box" }}>
     <div className="cd-dialog-fit-body">

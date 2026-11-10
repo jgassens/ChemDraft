@@ -368,7 +368,7 @@ export async function clipboardPayloadFromDataTransfer(
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result));
       reader.onerror = () => reject(reader.error ?? new Error(`Could not read clipboard ${type} file.`));
-      reader.onabort = () => reject(new Error(`Reading clipboard ${type} file was cancelled.`));
+      reader.onabort = () => reject(new Error(`Reading clipboard ${type} file was canceled.`));
       reader.readAsDataURL(file);
     });
     const bytesBase64 = dataUrl.slice(dataUrl.indexOf(",") + 1);

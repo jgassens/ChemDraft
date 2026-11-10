@@ -41,7 +41,7 @@ const MODES: RadioOption<Spin3dRefinementMode>[] = [
 
 const DOUBLE_BONDS: RadioOption<DefaultDoubleBond>[] = [
   { value: "offset", title: "Offset", description: "Use the usual automatic placement, toward the ring interior or substituents." },
-  { value: "centred", title: "Centred", description: "Use equal lines on either side of the bond axis." }
+  { value: "centred", title: "Centered", description: "Use equal lines on either side of the bond axis." }
 ];
 
 const ENGINES: RadioOption<Spin3dEnginePreference>[] = [

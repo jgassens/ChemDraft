@@ -109,9 +109,9 @@ describe.each(["macos", "windows"] as const)("custom swatch application (%s comm
     expect(element.querySelector(`[data-page-svg-object-visual="${source.arrow.id}"]`)!.innerHTML).toBe(presetArrow);
     expect(presetArrow).toContain('#1f5fbf');
     await command("edit.undo"); expect(snapshot()).toEqual(before);
-    expect(element.querySelector('[role="status"]')?.textContent).toBe("Undid Apply Colour #1F5FBF");
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Undid Apply Color #1F5FBF");
     await command("edit.redo");
-    expect(element.querySelector('[role="status"]')?.textContent).toBe("Redid Apply Colour #1F5FBF");
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Redid Apply Color #1F5FBF");
   });
 
   it("colours the selected characters through the same editor path as presets", async () => {

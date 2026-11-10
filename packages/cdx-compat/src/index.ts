@@ -461,7 +461,7 @@ function exportCdxml(
     const uniqueIds = [...new Set(droppedIds)];
     const idList = uniqueIds.slice(0, 20).join(", ")
       + (uniqueIds.length > 20 ? ` … and ${uniqueIds.length - 20} more` : "");
-    const description = unknownObjects.hasDroppedNativeObjects ? "" : "unrecognised ";
+    const description = unknownObjects.hasDroppedNativeObjects ? "" : "unrecognized ";
     const origin = unknownObjects.hasDroppedNativeObjects ? "" : " from the original file";
     warnings.push(warning("cdxml.unknown_objects_not_saved",
       `${droppedIds.length} ${description}${droppedIds.length === 1 ? "object" : "objects"}${origin} ${droppedIds.length === 1 ? "was" : "were"} not saved (ids ${idList}).`));
@@ -1378,7 +1378,7 @@ function exportVisibleObject(
       : "was not saved: this file has no embedded ChemDraft data.";
     warnings.push({
       code: "cdxml.object_export_unsupported",
-      message: `Unrecognised <${object.sourceObjectType}> object ${originalId} from the original file ${outcome}`,
+      message: `Unrecognized <${object.sourceObjectType}> object ${originalId} from the original file ${outcome}`,
       sourceObjectId: object.id
     });
     if (!unknownObjects.embedNativePayload) unknownObjects.droppedOriginalIds.push(originalId);
@@ -2389,7 +2389,7 @@ function warnForGraphicCdxmlLimitations(
   if (!exportsCurve && typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && normalizeHexColor(color) === undefined) {
     warnings.push({
       code: "cdxml.graphic_color_approximation",
-      message: `Native graphic color "${color}" cannot be represented as an RGB colour and is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `Native graphic color "${color}" cannot be represented as an RGB color and is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }
@@ -5689,7 +5689,7 @@ function colorForCdxmlIndex(value: string | undefined, colorTable: CdxmlColorTab
   const index = /^\d+$/.test(value.trim()) ? Number(value) : NaN;
   const color = colorTable.colorByIndex.get(index);
   if (color === undefined) {
-    colorTable.warnings.push(warning("cdxml.color_index_invalid", `CDXML colour index "${value}" is invalid or outside the colour table; the default or inherited colour was used.`));
+    colorTable.warnings.push(warning("cdxml.color_index_invalid", `CDXML color index "${value}" is invalid or outside the color table; the default or inherited color was used.`));
   }
   return color;
 }

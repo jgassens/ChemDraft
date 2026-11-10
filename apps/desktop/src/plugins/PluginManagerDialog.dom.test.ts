@@ -178,7 +178,7 @@ describe("naming engine catalog ownership", () => {
       "Naming engine: not installed"
     );
     expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
-      "Installation was cancelled."
+      "Installation was canceled."
     );
     // Unmounting this component clears its elapsed-time interval, so the display cannot keep ticking.
     expect(document.querySelector('[data-testid="recognition-install-progress"]')).toBeNull();
@@ -203,7 +203,7 @@ describe("naming engine catalog ownership", () => {
     await act(async () => document.querySelector<HTMLButtonElement>('[data-action="install-naming-engine"]')!.click());
     await act(async () => document.querySelector<HTMLButtonElement>('[data-action="cancel-naming-engine-install"]')!.click());
     const message = document.querySelector('[data-testid="molscribe-engine-install-error"]')!;
-    expect(message.textContent).toBe("Installation was cancelled.");
+    expect(message.textContent).toBe("Installation was canceled.");
     expect(message.className).not.toContain("is-error");
     expect(message.getAttribute("role")).toBe("status");
   });
@@ -2006,7 +2006,7 @@ describe("PluginManagerDialog one-click engine install", () => {
       ),
       // Like Rust's `ocsr_engine_cancel_install`: it returns nothing; the install's rejection reports it.
       cancelInstall: vi.fn(async () => {
-        fail?.({ code: "cancelled", message: "MolScribe installation was cancelled." });
+        fail?.({ code: "cancelled", message: "MolScribe installation was canceled." });
       }),
       uninstall: vi.fn(async () => notInstalled),
       recognizeImage: vi.fn(async () => ({ status: "notInstalled" as const }))
@@ -2209,7 +2209,7 @@ describe("PluginManagerDialog one-click engine install", () => {
     });
     expect(fake.engine.cancelInstall).toHaveBeenCalledOnce();
     expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
-      "Installation was cancelled."
+      "Installation was canceled."
     );
     expect(document.querySelector('[data-action="install-recognition-engine"]')?.textContent).toBe(
       "Install engine again"
@@ -2281,7 +2281,7 @@ describe("PluginManagerDialog one-click engine install", () => {
     await act(async () => cancel.click());
     expect(fake.engine.cancelInstall).toHaveBeenCalledOnce();
     expect(document.querySelector('[data-testid="molscribe-engine-install-error"]')?.textContent).toBe(
-      "Installation was cancelled."
+      "Installation was canceled."
     );
     const retry = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
     expect(retry.textContent).toBe("Install engine again");

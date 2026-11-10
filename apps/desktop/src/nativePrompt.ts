@@ -50,11 +50,11 @@ export function nativePromptButtons(prompt: NativePromptOptions,
       choices.filter((choice) => choice.destructive).length > 1 ||
       new Set(choices.map((choice) => choice.id)).size !== choices.length ||
       new Set(choices.map((choice) => choice.label)).size !== choices.length) {
-    throw new Error("A prompt needs one safe cancel choice and one to three distinct labelled choices.");
+    throw new Error("A prompt needs one safe cancel choice and one to three distinct labeled choices.");
   }
   const actions = choices.filter((choice) => !choice.cancel);
   if (!actions.length) {
-    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
+    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labeled OK.");
     return { ok: cancel.label };
   }
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL && cancel.label !== "Keep Page Size") {
