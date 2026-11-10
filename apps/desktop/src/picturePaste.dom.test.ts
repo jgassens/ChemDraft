@@ -13,7 +13,7 @@ import * as clipboard from "./clipboard";
 import * as smilesPaste from "./smilesListPaste";
 import * as smilesIdentity from "./smilesPasteIdentity";
 import * as windowManager from "./window-manager";
-import { createPhase4Document } from "./documentWorkflow";
+import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
 import { pictureSvg } from "./testSupport/imageFixture";
 
 const picturePngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAJAAAABICAYAAAAZK3z6AAAA80lEQVR4nO3OsQkAMBDEsNt/6c8OaYzBhXptu0v+4YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YGYPTnRs7EzXJbBAAAAAElFTkSuQmCC";
@@ -257,6 +257,19 @@ describe("picture paste and canvas", { timeout: 30_000 }, () => {
     await command("edit.redo");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Redid Paste Picture");
     expect(snapshot().pages[0]!.objects).toEqual(document.pages[0]!.objects);
+  });
+
+  it.each([undefined, 0, 0.35, 1])("renders a pasted picture with object opacity %s", async opacity => {
+    const drawing = structuredClone(applyClipboardPastePayload(createPhase4Document("Picture opacity"),
+      inspectClipboardPayload(nativeImage), { x: 250, y: 220 }).document);
+    const picture = drawing.pages[0]!.objects[0]!;
+    // The object's opacity can be changed after paste and survives save/reopen.
+    picture.style = opacity === undefined ? {} : { opacity };
+    await render(drawing);
+    const glyph = container.querySelector(".graphic-glyph-image")!;
+    expect(glyph.closest(".graphic-glyph")!.getAttribute("opacity"))
+      .toBe(opacity === undefined || opacity === 1 ? null : String(opacity));
+    expect(snapshot().pages[0]!.objects[0]!.style).toEqual(picture.style);
   });
 
   it.each(sizeCases.flatMap(picture => [22, 34].map(bondLengthPx => ({ ...picture, bondLengthPx }))))(
