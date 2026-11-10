@@ -33,6 +33,7 @@ fn main() {
             "external_tool_run_cancel",
             "external_tool_conversation_clear",
             "read_plugin_package",
+            "preferences_ready",
             "dialog_open",
             "dialog_request",
             "dialog_send",

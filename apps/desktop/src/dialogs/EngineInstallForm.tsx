@@ -1,11 +1,14 @@
+import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef } from "react";
 import { installSpaceStatement, isShortOfSpace } from "./engineInstallText";
 import { detectDialogPlatform, type DialogPlatform, type EngineInstallAction, type EngineInstallSnapshot } from "./dialogProtocol";
 
-export function EngineInstallForm({ snapshot, onAction, busy = false, error, platform = detectDialogPlatform() }: {
+export function EngineInstallForm({ snapshot, onAction, onReady, busy = false, error, platform = detectDialogPlatform() }: {
+  onReady?(element: HTMLElement): void;
   snapshot: EngineInstallSnapshot; onAction(action: EngineInstallAction): void;
   busy?: boolean; error?: string; platform?: DialogPlatform;
 }) {
+  const root = useDialogContentReady<HTMLElement>(onReady);
   const close = useRef<HTMLButtonElement>(null);
   useEffect(() => { close.current?.focus(); }, []);
   useEffect(() => {
@@ -21,7 +24,8 @@ export function EngineInstallForm({ snapshot, onAction, busy = false, error, pla
   const state = snapshot.state;
   const cancelled = state.status === "failed" && state.message === "Installation was cancelled.";
   const short = isShortOfSpace(snapshot.requiredDiskBytes, snapshot.freeDiskBytes);
-  return <section role="dialog" aria-label={snapshot.title} style={{ padding: 20 }}>
+  return <section ref={root} className="cd-dialog-fit cd-install-form" role="dialog" aria-label={snapshot.title} style={{ padding: 20, boxSizing: "border-box" }}>
+    <div className="cd-dialog-fit-body">
     <h2>{snapshot.engineName} needs a local engine</h2>
     <p>Requested by {snapshot.pluginName} ({snapshot.pluginId})</p>
     <p>{snapshot.disclosure}</p>
@@ -35,7 +39,8 @@ export function EngineInstallForm({ snapshot, onAction, busy = false, error, pla
       {state.bytesTotal ? <p>{state.estimated ? "Estimated: " : ""}{state.bytesDone.toLocaleString()} of {state.bytesTotal.toLocaleString()} bytes</p> : null}
     </div> : null}
     {error ? <p role="alert">{error}</p> : null}
-    <div className="cd-page-size-buttons">
+    </div>
+    <div className="cd-page-size-buttons cd-dialog-fit-footer">
       {snapshot.buttons.includes("install") ? <button type="button" disabled={busy || short} onClick={() => onAction("install")}>{state.status === "broken" ? "Install engine again" : "Install"}</button> : null}
       {snapshot.buttons.includes("cancelInstall") ? <button type="button" onClick={() => onAction("cancelInstall")}>Cancel installation</button> : null}
       <button ref={close} type="button" onClick={() => onAction("close")}>Close</button>

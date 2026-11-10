@@ -1121,3 +1121,35 @@ one step and preserve selection. Highlight characters inside one box and confirm
 formatted.
 
 - **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.
+
+
+### Content-sized native dialogs (macOS and Windows, 1.2)
+
+- With fresh dialog frames, open Preferences, Insert Table, Export (preview preference off and on),
+  Custom Page Size, Adjust Arrangement Spacing, Engine Installation, Tool Installation and the
+  Vibe Code guide. Each first opens centred over the document at its natural content height, capped
+  inside the current monitor's work area with a visible margin. Check there is no old 60px empty
+  band in Insert Table and no needless Export scrolling when the screen has room. Preferences is
+  wider than the old 460px window; on a short display only its content body scrolls.
+- On each resizable form, resize shorter and taller and change its width. Buttons stay visible,
+  fields/messages scroll as needed, and no form content is squeezed out of reach. Close and reopen,
+  including after restarting the app: both position and user client size return. Move without
+  resizing and verify it does not overwrite a previously chosen size. Custom Page Size remains
+  nonresizable. Templates keeps a browsing viewport and also restores its chosen frame.
+- Repeat with the document on a 100% monitor and the dialog remembered on a 150% or 200% monitor,
+  then swap their monitors. Include a display above/left of primary. The restored client keeps its
+  logical size, decorations stay inside the destination work area, and there is no double scaling.
+  Repeat on macOS between Retina and non-Retina monitors.
+- Save a large dialog near a screen edge, close it, then lower the display resolution, enlarge/move
+  the taskbar or Dock, or remove that display. Reopen it and also reopen a still-live hidden
+  Preferences window: the whole outer frame fits on the available screen, with a reachable title
+  bar and actions. An oversized remembered frame must shrink rather than open off-screen.
+- Minimize the document (and, with an external window tool if necessary, a dialog), restore it,
+  then close/reopen and restart. No minimized coordinates or tiny client size may be saved. Check
+  immediate close after a drag/resize and a burst of resize events still saves the latest frame.
+- In Preferences, check Windows ownership/no taskbar entry, macOS hiding on Cmd-Tab, front ordering
+  above floating toolbars, hide/reopen via its menu command, native-prompt suspension/restoration,
+  and dismissal when the document closes. Test keyboard access to every setting after scrolling.
+- Increase OS text scaling or webview zoom and use long drawing names/disclosure/error text. Verify
+  content fits when possible and otherwise scrolls above the actions; install progress, failures,
+  Export format changes and preview results must never move the buttons below the window edge.

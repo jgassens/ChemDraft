@@ -12,6 +12,12 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+Content-fit dialogs measure intrinsic minimum width in the shared dialog host. Text styled with
+`text-overflow: ellipsis` and horizontal `overflow: hidden` or `clip` contributes its declared
+minimum width or a small 32px floor instead of its full text width. Measurement overrides are
+temporary. Width reports are capped at 4096 CSS pixels; native placement further caps both
+dimensions to the destination work area, keeping the footer accessible.
+
 Ring templates are grouped under the benzene button in Main and Structure. Long-press or
 press Arrow Down for saturated 3–8-membered rings, benzene and the two chair cyclohexanes.
 

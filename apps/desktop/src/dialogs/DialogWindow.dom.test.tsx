@@ -27,6 +27,45 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it.each(["macos", "windows"] as const)("requests a new content fit after Choose → Cancel on %s, then disconnects on close", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  const disconnect = vi.fn();
+  const observe = vi.fn();
+  let resized: (() => void) | undefined;
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resized = callback; }
+    observe = observe; unobserve = vi.fn(); disconnect = disconnect;
+  });
+  const layout = vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLFormElement) {
+    return { top: 0, height: this.textContent?.includes("Export location unchanged") ? 644 : 620 } as DOMRect;
+  });
+  try {
+    act(() => root.unmount()); root = createRoot(container);
+    host.send.mockClear();
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+    const exportedSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", data: { title: "Origin", options: exportFixture() } };
+    await act(async () => { host.receive!(exportedSnapshot); await import("./ExportForm"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const fits = () => host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready");
+    expect(fits().map(message => message.data)).toEqual([{ contentHeight: 620, pixelRatio: 1 }]);
+    const choose = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.startsWith("Choose"))!;
+    await act(async () => choose.click());
+    const action = host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "action").at(-1)!;
+    await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: action.requestId, data: { status: "cancelled", notice: "Export location unchanged" } }));
+    // A child-list/text mutation must trigger this even if the viewport-sized root never resizes.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fits().map(message => message.data)).toEqual([{ contentHeight: 620, pixelRatio: 1 }, { contentHeight: 644, pixelRatio: 1 }]);
+    expect(container.textContent).toContain("Compress PDF");
+    expect(observe).toHaveBeenCalledWith(container.querySelector("form"));
+    expect(observe).toHaveBeenCalledWith(container.querySelector("input"));
+    await act(async () => { resized!(); resized!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fits()).toHaveLength(2); // Native resize notifications cannot start a feedback loop.
+    act(() => root.unmount()); root = createRoot(container);
+    expect(disconnect).toHaveBeenCalledOnce();
+    await act(async () => { resized!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fits()).toHaveLength(2);
+  } finally { layout.mockRestore(); }
+});
 it("suppresses browser context menus except on editable fields", () => {
   const menu = (target: Element) => {
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
