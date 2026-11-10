@@ -1,4 +1,4 @@
-import { applyPatch, createEmptyDocument, type DocumentPatch, type DocumentObject, type ReactionObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, type BracketObject, type DocumentPatch, type DocumentObject, type ReactionObject } from "@chemdraft/chem-core";
 import type { PluginCommandContext, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import { PluginHost, writePatchOps, type PluginPatchApplicationRequest } from "./index";
@@ -8,6 +8,11 @@ const text = (id: string): DocumentObject => ({
   id, type: "text", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {}, text: id, spans: []
 });
 const snapshot = (objectIds: string[]): PluginSelectionSnapshot => ({ objectIds, molecules: [] });
+const bracket = (id: string, pairId: string, side: "open" | "close"): BracketObject => ({
+  id, type: "bracket", bracketKind: "square", pairId, side, repeatUnit: true, bracketUsage: "sru",
+  ...(side === "close" ? { label: "n" } : {}), containedObjectIds: [],
+  x: 100, y: 100, width: 10, height: 100, rotation: 0, style: {}
+});
 const reaction = (reference: "components" | "conditions" | "arrows" | "plusses" | "metadata"): ReactionObject => ({
   id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {}, mappingState: "absent",
   components: reference === "components" ? [{ role: "agent", objectId: "mol_1" }] : [],
@@ -53,6 +58,62 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it.each(["selected", "inserted", "colliding insertion"] as const)("refuses pairId hijacking by a %s bracket atomically", async mode => {
+    const inserted = mode !== "selected";
+    const id = mode === "colliding insertion" ? "old-open" : "editable";
+    const f = fixture(inserted ? [] : [id, "editable-close"], ctx => ctx.documents.applyPatch!({
+      reason: "Hijack an existing pair", patch: { op: "batch", patches: [
+        ...(inserted ? [
+          { op: "addObject" as const, pageId: f.pageId, object: bracket(id, "new-pair", "open") },
+          { op: "addObject" as const, pageId: f.pageId, object: bracket("editable-close", "new-pair", "close") }
+        ] : []),
+        { op: "updateObject", objectId: id, changes: { pairId: "old-pair" } }
+      ] }
+    }), undefined, [bracket("old-open", "old-pair", "open"), bracket("old-close", "old-pair", "close"),
+      ...(!inserted ? [bracket(id, "new-pair", "open"), bracket("editable-close", "new-pair", "close")] : [])]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "old-open", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
+  it("refuses removing one bracket when its partner is outside the write scope", async () => {
+    const f = fixture(["open"], ctx => ctx.documents.applyPatch!({ reason: "Remove half a pair", patch: {
+      op: "removeObject", objectId: "open"
+    } }), undefined, [bracket("open", "pair", "open"), bracket("close", "pair", "close")]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "close", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
+  it.each(["edit", "remove one", "remove both"] as const)("allows an in-scope bracket pair operation: %s", async operation => {
+    const f = fixture(operation === "edit" ? ["close"] : ["open", "close"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected pair", patch:
+      operation === "edit" ? { op: "updateObject", objectId: "close", changes: { label: "m" } } :
+        { op: "batch", patches: (operation === "remove one" ? ["open"] : ["open", "close"]).map(objectId =>
+          ({ op: "removeObject", objectId })) }
+    }), undefined, [bracket("open", "pair", "open"), bracket("close", "pair", "close")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    expect(f.applyDocumentPatch).toHaveBeenCalledOnce();
+    if (operation === "edit") expect(f.document().pages[0].objects.find(object => object.id === "close"))
+      .toMatchObject({ pairId: "pair", label: "m", bracketUsage: "sru" });
+  });
+
+  it("names the actual removal that would change an out-of-scope reaction", async () => {
+    const f = fixture(["mol_7", "mol_1"], ctx => ctx.documents.applyPatch!({ reason: "Remove drawables", patch: {
+      op: "batch", patches: [
+        { op: "removeObject", objectId: "mol_7" },
+        { op: "removeObject", objectId: "mol_1" }
+      ]
+    } }), undefined, [reaction("metadata")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(
+      "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+    );
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
   it("allows a colliding insertion followed by a selected removal through the embedding rebaser atomically (F2)", async () => {
     const f = fixture(["remove-me"], context => context.documents.applyPatch!({ reason: "Insert and remove", patch: {
       op: "batch", patches: [
@@ -97,7 +158,7 @@ describe("direct-write invocation scope", () => {
     expect(f.applyDocumentPatch.mock.calls[2]![0].signal?.aborted).toBe(true);
   });
   describe.each(["missing", "unavailable"] as const)("document provider %s", provider => {
-    it.each([false, true])("applies patches without removals without reading the document (batch = %s)", async batch => {
+    it.each([false, true])("refuses writes without removals when scope cannot be checked (batch = %s)", async batch => {
       const f = fixture([], () => {});
       const getActiveDocument = vi.fn(() => undefined);
       const host = new PluginHost({
@@ -122,11 +183,12 @@ describe("direct-write invocation scope", () => {
         } }
       });
       // Explicit Send scope avoids the separate invocation-start selection read.
-      await host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1", "mol_7"]) });
-      expect(getActiveDocument).not.toHaveBeenCalled();
-      expect(f.applyDocumentPatch).toHaveBeenCalledTimes(batch ? 1 : patches.length);
-      expect(f.document().pages[0]!.objects.find(object => object.id === "mol_1"))
-        .toMatchObject({ text: "edited", x: 10, y: 20 });
+      const before = f.document();
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1", "mol_7"]) }))
+        .rejects.toThrow("no active document is available to check write scope");
+      expect(getActiveDocument).toHaveBeenCalledTimes(provider === "unavailable" ? 1 : 0);
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
     });
 
     it.each([false, true])("refuses removals when their reaction scope cannot be checked (request scope = %s)", async requestScope => {

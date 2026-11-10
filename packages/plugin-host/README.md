@@ -6,7 +6,7 @@ API 0.1.19 rejects oversized or non-finite panel reports through the existing `s
 validation failure path, before forwarding any content to the panel. See the SDK's
 `PluginPanelReportLimits` and `docs/plugin-architecture/AUTHORING.md` for the complete limits.
 
-This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
+This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for review, and applies `document.write` patches directly through the embedding host, only from the owning plugin's active command invocation. Recognition results require proposal review. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
 Preserve it when copying bonds; it is valid only on double bonds.
@@ -33,9 +33,11 @@ snapshots the input, requires the invoked plugin to declare its `panelId`, and d
 `context.input` only for that invocation. Reports may bind prompt, select, and action controls only
 to commands declared and registered by the reporting plugin.
 
-Direct writes enforce an invocation's initial selection plus its accepted insertions. Scope/removal
+Direct writes enforce an invocation's initial selection plus its accepted insertions. Write-scope
 preflight and desktop application share `rebasePluginPatch`, including object references and independent
-bracket pair ids. Removal checks inspect the core's atomic draft before removal, without normalizing
+bracket pair ids. Every write is applied to an atomic draft and refused if core validation changes
+any object outside that scope, naming the first offending object. Removal checks also inspect
+the core's atomic draft before removal, without normalizing
 partly inserted groups between operations. Embedding hosts rebase again against their commit-time document.
 Flat `batch` patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise

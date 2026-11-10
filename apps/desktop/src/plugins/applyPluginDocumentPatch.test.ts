@@ -115,6 +115,7 @@ describe("desktop direct plugin patch application", () => {
     document = applyPatch(document, { op: "addObject", pageId, object: arrow });
     document = setReactionArrowConditions(document, arrow.id, { side: "above", spans: [{ text: "80 °C", script: "normal" }] });
     const originalObjects = document.pages[0].objects;
+    const originalConditions = originalObjects.find(object => object.type === "text")!;
     const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Copy arrow and conditions", patch: {
       op: "batch", patches: originalObjects.map(object => ({ op: "addObject", pageId, object }))
     } }));
@@ -124,10 +125,14 @@ describe("desktop direct plugin patch application", () => {
     expect(copiedArrow.id).not.toBe(arrow.id);
     expect(copiedConditions.id).not.toBe(originalObjects[1].id);
     expect.soft(copiedConditions.arrowAttachment?.parentObjectId).toBe(copiedArrow.id);
+    expect(copiedConditions.arrowAttachment).toEqual({ ...originalConditions.arrowAttachment,
+      parentObjectId: copiedArrow.id });
 
-    const moved = normalizeCommittedDocument(moveDocumentObjects(result.document, [copiedArrow.id], 100, 0));
+    // Move clear of the original group: ordinary arrow moves still run the release collision
+    // solver, which may reposition automatic labels beside an overlapping arrow/conditions copy.
+    const moved = normalizeCommittedDocument(moveDocumentObjects(result.document, [copiedArrow.id], 350, 0));
     const movedConditions = moved.pages[0].objects.find(object => object.id === copiedConditions.id)!;
-    expect(movedConditions.x).toBeCloseTo(copiedConditions.x + 100);
+    expect(movedConditions.x).toBeCloseTo(copiedConditions.x + 350);
     expect(movedConditions.y).toBeCloseTo(copiedConditions.y);
     expect(moved.pages[0].objects.slice(0, originalObjects.length)).toEqual(originalObjects);
   });
@@ -386,6 +391,7 @@ describe("desktop direct plugin patch application", () => {
     const pageId = document.pages[0].id;
     document = applyPatch(document, { op: "addObject", pageId, object: moleculeObject() });
     const host = new PluginHost({
+      getActiveDocument: () => document,
       getSelection: () => ({ objectIds: [], molecules: [] }),
       applyDocumentPatch: (request) => {
         const result = applyPluginDocumentPatch(document, request.patch);

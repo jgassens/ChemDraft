@@ -16,6 +16,21 @@ import {
 } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 
+/** Compare document data deeply without depending on property insertion order or object identity. */
+function sameDocumentValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+      left.every((value, index) => sameDocumentValue(value, right[index]));
+  }
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key =>
+    Object.prototype.hasOwnProperty.call(b, key) && sameDocumentValue(a[key], b[key]));
+}
+
 export function chemistryPropertiesInputError(
   request: unknown,
   error: Extract<ReturnType<typeof PluginChemistryPropertiesRequestSchema.safeParse>, { success: false }>['error']
@@ -1191,10 +1206,10 @@ export class PluginHost {
     if (!apply) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
     }
-    if (ops.some(op => op.op === "removeObject")) {
+    {
       const document = await (requestScope ? requestScope.getDocument() : this.getActiveDocument?.());
       if (!document) {
-        throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check reaction removal scope.`);
+        throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check ${ops.some(op => op.op === "removeObject") ? "reaction removal scope" : "write scope"}.`);
       }
       // Keep the authored patch for the embedding host, which rebases against its commit-time
       // document after gesture gating. Preflight uses that same allocator and reference mapping.
@@ -1213,14 +1228,16 @@ export class PluginHost {
       }
       // Inspect the actual atomic draft. Applying leaves separately normalizes incomplete bracket
       // pairs and forward references between operations, unlike the desktop's one batch commit.
-      applyPatch(document, preflight.patch, { beforeRemoveObjects: (draft, objectIds) => {
+      const validated = applyPatch(document, preflight.patch, { beforeRemoveObjects: (draft, objectIds) => {
         const removed = new Set(objectIds);
         for (const page of draft.pages) {
           for (const object of page.objects) {
             if (object.type === "reaction" && !removed.has(object.id) && !scope.has(object.id)
-              && pruneReactionObjectReferences(object, removed) !== object
+              && !sameDocumentValue(pruneReactionObjectReferences(object, removed), object)
               && page.objects.some(candidate => removed.has(candidate.id))) {
-              const id = objectIds.find(id => pruneReactionObjectReferences(object, new Set([id])) !== object)!;
+              const id = objectIds.find(id => page.objects.some(candidate => candidate.id === id) &&
+                !sameDocumentValue(pruneReactionObjectReferences(object, new Set([id])), object));
+              if (id === undefined) continue;
               throw new PluginHostError(
                 `Plugin patch refused: removing ${id} would change reaction ${object.id}, which this command may not modify.`
               );
@@ -1228,6 +1245,16 @@ export class PluginHost {
           }
         }
       } });
+      // Core validation can also change objects indirectly (for example, normalizing an SRU
+      // after a pairId edit). Compare the final atomic result, including removals, on every write.
+      const validatedObjects = new Map(validated.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
+      for (const page of document.pages) {
+        for (const object of page.objects) {
+          if (!scope.has(object.id) && !sameDocumentValue(object, validatedObjects.get(object.id))) {
+            throw new PluginHostError(`Patch would change object "${object.id}", which is not selected`);
+          }
+        }
+      }
     }
     if (!requestScope && this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
       throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
