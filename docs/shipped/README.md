@@ -5,6 +5,7 @@
 PR #340 adds persistent custom colour swatches to the Main toolbar's customization gallery and
 applies their colours to selected objects. Double and Triple Bond join the default Main toolbar;
 Chain moves to the gallery. Used object colours also round-trip through the CDXML colour table.
+Empty swatches open the colour editor, and toolbar layout metadata remains readable by 1.1.1.
 See the [manual checklist](../manual-stress-checklist.md).
 
 ## CDXML and CDX fidelity (2026-11-10)
@@ -12,7 +13,19 @@ See the [manual checklist](../manual-stress-checklist.md).
 PRs #324, #325, #326, #328, #329, #335, #338 and #339 improve crossed double bonds,
 isotope labels, unsupported bond orders, wavy bonds, curves, reaction schemes and bracketed
 groups. Unsupported or lossy details are preserved where possible or reported in warnings;
-compatibility remains fixture-limited. See the [manual checklist](../manual-stress-checklist.md).
+PR #339 also improves abbreviation, R-group, text-run, page setup and reaction-step round trips.
+Compatibility remains fixture-limited. See the [manual checklist](../manual-stress-checklist.md).
+
+## Clean Up Structure 2D selection (2026-11-10)
+
+PR #345 cleans up selected parts of molecules while keeping unselected atoms fixed. It retains
+selection and records one Undo entry; a lone selected atom is unchanged. Cleanup refuses when it
+cannot preserve stereochemistry. See the [manual checklist](../manual-stress-checklist.md).
+
+## Plugin reports and NMR exports (2026-11-10)
+
+PR #346 makes plugin reports detect isotope-only chemistry edits and discloses rule-based shift
+estimates in exported spectra. NMRShiftDB2 does not mark which assignments are experimental.
 
 ## Forward-compatible native files (2026-11-10)
 
@@ -104,7 +117,8 @@ Orthonym naming engine remains unsupported on Intel Macs.
 
 PRs #278, #279, #282, #288, #289, #296 and #330 fix hover-label cancellation and re-hit,
 wedge keys and abbreviations, quitting with a label draft, Text-tool Escape, keyboard nudging,
-flyout navigation and dialog sizing. PRs #283–#286, #291, #295 and #308 fix table paste, picture
+flyout navigation and dialog sizing, including overflowing dialog content. Retyping a bonded
+heteroatom still performs an ordinary relabel. PRs #283–#286, #291, #295 and #308 fix table paste, picture
 opacity, text placement, Windows controls, NMR labels, Preferences/flyouts and export details.
 PR #274 hardens tests. See the [manual checklist](../manual-stress-checklist.md).
 
@@ -115,6 +129,7 @@ Edits use registered value-specific commands, live preview and one Undo entry pe
 Escape/cancel restores the starting document. Settings persist in native documents and share
 canvas/export geometry. Only selected wavy art paths change; molecular bonds and other graphics
 are untouched. Lines without wave metadata retain main's legacy geometry until explicitly adjusted.
+Keyboard slider steps have labelled Undo entries; an open menu or dialog gets Escape before a drag.
 See [the implementation notes](../wavy-lines-handoff.md) and the
 [macOS/Windows manual checklist](../manual-stress-checklist.md).
 
