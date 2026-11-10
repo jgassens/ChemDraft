@@ -14,6 +14,7 @@ import { getAssistantTransactions, type AssistantTransactions } from "./assistan
 import { assistantDocumentContentUnchanged, getAssistantHistoryPort } from "./historyPort";
 import type { AssistantMcpEngine, McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { recheckNormalizedAssistantWrite, verifyNormalizedAssistantWrite } from "./normalizedWrite";
+import { loadRdkitWithAppLoader } from "../plugins/rdkitAppLoader";
 
 type Plugin = { id: string; name: string };
 const assistantToolDeadlineMs = (name: string): number =>
@@ -84,6 +85,10 @@ export class AssistantToolsController implements PluginHostAssistant {
     const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
       ended: false, cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
+        chemistry: { ...services.chemistry, reactionProductAligner: async () => {
+          const adapter = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter/depiction"));
+          return adapter.createReactionProductAligner();
+        } },
         getInsertedObjectIds: () => [...request.inserted],
         planPageGrowth: (before, proposed) => planDocumentPageFit(before, proposed).growth,
         confirmPageGrowth: async () => { throw new Error("No tool call is running."); },

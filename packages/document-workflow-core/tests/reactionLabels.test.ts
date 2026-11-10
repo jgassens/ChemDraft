@@ -243,7 +243,7 @@ describe("reaction label policy", () => {
     expect(result.caption!.y).toBeCloseTo(Math.max(150, result.below!.y + result.below!.height) + 0.8 * 15);
   });
 
-  it.each([{ lines: [], length: 55 }, { lines: ["heat"], length: 57.9 }])("uses the minimum or head-padded arrow for $lines", ({ lines, length }) => {
+  it.each([{ lines: [], length: 66 }, { lines: ["heat"], length: 66 }])("uses the minimum or head-padded arrow for $lines", ({ lines, length }) => {
     const result = labels({ above: lines, below: [], caption: undefined });
     expect(result.plan.arrowLength).toBeCloseTo(length);
     expect(result.below).toBeUndefined();

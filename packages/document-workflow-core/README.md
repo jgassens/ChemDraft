@@ -124,11 +124,18 @@ and an optional `textStyle` override. Document style applies `DocumentTextStyle`
 reaction conditions and plus signs; measurements and placement use the same resolved text style.
 Grid cells in document style accommodate the wider of the molecule or label, and the custom page
 fits all rows and columns with margins given by the anchor. Reaction pages fit the complete scheme;
-above/below block width sets arrow length and plus-sign width sets component spacing.
+above/below block width sets arrow length. The renderer's actual bond/atom-label bounds set
+component spacing, excluding padded storage frames. Gaps on either side of a plus or arrow are
+1.25 actual bond lengths. Molecule bounding-box centres and plus signs share the arrow line.
+Plus size and stroke come from the molecule's resolved label font and bond stroke.
 Callers supply pre-depicted molecules at the intended bond length. Reaction schemes preserve the
 anchor when it leaves room for page padding, otherwise translating the whole scheme together.
 These layout functions translate molecules without
 rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
+Hosts may inject `createReactionProductAligner` from rdkit-adapter. The shared planner uses its
+FMCS and `generate_aligned_coords` result to orient each product against the largest reactant
+core (a complete ring or six heavy atoms), retaining directed stereo and canonical identity.
+Unavailable or refused alignment leaves the original depiction and reports a warning.
 
 Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
@@ -139,7 +146,7 @@ Entirely numbered authored blocks
 align left with their visible text centred on the arrow, including wrapped steps; other blocks and captions align centre.
 
 Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond
-lengths**, minimum arrow **2.5 bond lengths**, arrow padding beyond the widest estimated content
+lengths**, minimum arrow **3 bond lengths**, arrow padding beyond the widest estimated content
 width **2 × (actual head/chevron depth + 0.25 em)**, label ink clearance from the outer shaft stroke **0.3 em**, caption top clearance
 **0.8 em**, caption wrap width at least **8 bond lengths**, and default label font **14 px** centred.
 Spaces and tabs are the only wrap points; NBSP/narrow NBSP and oversized tokens stay whole. Captions wrap to the greater of

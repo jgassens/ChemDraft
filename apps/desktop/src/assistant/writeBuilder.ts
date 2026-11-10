@@ -329,11 +329,18 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   }
   const molecules: MoleculeObject[] = [];
   for (const smiles of [...input.reactants, ...input.products]) molecules.push(await buildMolecule(context, smiles));
-  const components = molecules.map(molecule => { const rect = objectRect(molecule);
-    return { molecule, bounds: { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height } };
-  });
+  const components = molecules.map(molecule => ({ molecule }));
   const defaults = documentDrawingDefaults(document);
+  // The host owns engine loading; this tool passes the injected adapter to the shared planner.
+  let alignProduct: Parameters<typeof layoutReactionScheme>[0]["alignProduct"];
+  const layoutWarnings: string[] = [];
+  try {
+    alignProduct = await context.chemistry.reactionProductAligner?.();
+  } catch (error) {
+    layoutWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+    alignProduct,
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
     above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],
     caption: input.caption, textStyle: defaults.textStyle,
@@ -343,7 +350,7 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [...layoutWarnings, ...scheme.warnings], expected),
     placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {

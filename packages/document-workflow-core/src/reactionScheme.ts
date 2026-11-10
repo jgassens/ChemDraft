@@ -11,8 +11,12 @@ import {
   type TextObject,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
-import type { FigureStyle } from "@chemdraft/layout-engine";
+import { moleculeInkBounds, reactionArrowInkBounds, reactionSchemeDrawingMetrics, representativeMoleculeBondLength,
+  type FigureStyle } from "@chemdraft/layout-engine";
+import type { ReactionProductAligner } from "@chemdraft/rdkit-adapter";
 import { createNativeReactionArrow } from "./reactionArrows";
+import { defaultDoubleBondSide, normalizeNativeMoleculeGeometry, pastedStructureDepictionFromMolfile,
+  stereoPerceptionMolfile } from "./molecule";
 import { layoutReactionLabels, planReactionLabels } from "./reactionLabels";
 import { phase4Timestamp } from "./shared";
 import { nativeTextObjectSizeForText } from "./textObjects";
@@ -26,7 +30,8 @@ export interface LayoutBounds {
 
 export interface ReactionSchemeComponent {
   molecule: MoleculeObject;
-  bounds: LayoutBounds;
+  /** Legacy hint; measured renderer ink bounds are authoritative. */
+  bounds?: LayoutBounds;
 }
 
 export interface ReactionSchemeLayout {
@@ -37,6 +42,7 @@ export interface ReactionSchemeLayout {
   above?: TextObject;
   below?: TextObject;
   caption?: TextObject;
+  warnings: string[];
 }
 
 export interface ReactionSchemeLayoutOptions {
@@ -53,12 +59,13 @@ export interface ReactionSchemeLayoutOptions {
   conditionText?: string;
   /** Left edge of the first molecule and vertical centre of the scheme. */
   anchor: { x: number; y: number };
+  /** Legacy input retained for callers; ink gaps now follow the actual bond length. */
   gutter: number;
   bondLength: number;
   pagePadding: number;
+  /** Host supplies the adapter after loading its engine. Core never loads an engine. */
+  alignProduct?: ReactionProductAligner;
 }
-
-const PLUS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 20, textAlign: "center" };
 
 /** Read the native roles of every step in page order, including shared intermediates. */
 export function documentReactionSummary(document: ChemDraftDocument) {
@@ -85,27 +92,55 @@ export function documentReactionSummary(document: ChemDraftDocument) {
  */
 export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): ReactionSchemeLayout {
   const textStyle = { ...(options.style === "document" ? DocumentTextStyle : {}), ...options.textStyle };
-  const plusStyle = { ...PLUS_STYLE, ...textStyle };
-  const visible = [...options.reactants, ...options.products];
+  const warnings: string[] = [];
+  const products = options.products.map(component => {
+    if (!options.alignProduct || !options.reactants.length) return component;
+    try {
+      const writerWarnings: string[] = [];
+      const references = options.reactants.map(reference => stereoPerceptionMolfile(reference.molecule, writerWarnings));
+      const product = stereoPerceptionMolfile(component.molecule, writerWarnings);
+      if (writerWarnings.length) throw new Error(writerWarnings.join(" "));
+      const alignment = options.alignProduct(references, product);
+      return alignment ? { ...component, molecule: alignedMolecule(component.molecule, alignment.molfile) } : component;
+    } catch (error) {
+      warnings.push(`Shared-core orientation unavailable for ${component.molecule.id}: ${error instanceof Error ? error.message : String(error)}`);
+      return component;
+    }
+  });
+  // Bounds supplied by older callers may include storage padding. Always measure the same bond
+  // and atom-label plans that paint the canvas, after orientation matching has finished.
+  const measure = (component: ReactionSchemeComponent) => {
+    const b = moleculeInkBounds(component.molecule);
+    return { molecule: component.molecule, bounds: { minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height } };
+  };
+  const reactants = options.reactants.map(measure);
+  const measuredProducts = products.map(measure);
+  const visible = [...reactants, ...measuredProducts];
   if (visible.length === 0) throw new Error("A reaction scheme needs at least one molecule.");
+  const bondLength = representativeMoleculeBondLength(visible[0]!.molecule) ?? options.bondLength;
+  const gap = 1.25 * bondLength;
+  const drawing = reactionSchemeDrawingMetrics(visible[0]!.molecule);
+  const plusStyle = { ...textStyle, fontSizePx: drawing.fontSizePx, textAlign: "center" as const };
 
   const labelPlan = planReactionLabels({
     above: [...(options.conditionText === undefined ? [] : [options.conditionText]), ...(options.above ?? [])],
     below: options.below ?? [],
     caption: options.caption,
     textStyle,
-    bondLength: options.bondLength,
-    arrowKind: options.arrowKind
+    bondLength,
+    arrowKind: options.arrowKind,
+    arrowStrokeWidth: drawing.strokeWidth
   });
-  const plusSize = nativeTextObjectSizeForText("+", plusStyle);
+  const plusSize = { width: drawing.plusSize, height: drawing.plusSize };
   const arrowLength = labelPlan.arrowLength;
+  const arrowInk = reactionArrowInkBounds(options.arrowKind, arrowLength, drawing.strokeWidth);
 
   let cursor = options.anchor.x;
   let moleculeNumber = 0;
   let molecules: MoleculeObject[] = [];
   const moleculeFrames: Array<{ x: number; y: number; width: number; height: number }> = [];
   const plusPoints: Array<{ x: number; y: number }> = [];
-  const placeGroup = (components: readonly ReactionSchemeComponent[]): void => {
+  const placeGroup = (components: readonly ReturnType<typeof measure>[]): void => {
     components.forEach((component, index) => {
       const width = component.bounds.maxX - component.bounds.minX;
       const height = component.bounds.maxY - component.bounds.minY;
@@ -119,20 +154,20 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
       moleculeNumber += 1;
       cursor += width;
       if (index < components.length - 1) {
-        cursor += options.gutter;
+        cursor += gap;
         plusPoints.push({ x: cursor, y: options.anchor.y - plusSize.height / 2 });
-        cursor += plusSize.width + options.gutter;
+        cursor += plusSize.width + gap;
       }
     });
   };
 
-  const leftSide = options.arrowKind === "retrosynthesis" ? options.products : options.reactants;
-  const rightSide = options.arrowKind === "retrosynthesis" ? options.reactants : options.products;
+  const leftSide = options.arrowKind === "retrosynthesis" ? measuredProducts : reactants;
+  const rightSide = options.arrowKind === "retrosynthesis" ? reactants : measuredProducts;
   placeGroup(leftSide);
-  cursor += options.gutter;
-  const arrowStart = cursor;
+  cursor += gap;
+  const arrowStart = cursor - arrowInk.x;
   const arrowEnd = arrowStart + arrowLength;
-  cursor = arrowEnd + options.gutter;
+  cursor = arrowStart + arrowInk.x + arrowInk.width + gap;
   placeGroup(rightSide);
 
   const maximumMoleculeHeight = Math.max(
@@ -147,12 +182,14 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
     { x: arrowEnd, y: options.anchor.y },
     options.arrowKind
   );
-  let pluses = plusPoints.map((point, index) => createLayoutText(
+  arrow = { ...arrow, style: { ...arrow.style, strokeWidth: drawing.strokeWidth } };
+  let pluses = plusPoints.map((point, index): TextObject => ({ ...createLayoutText(
     nextLayoutId("text", molecules.length + 2 + index),
     point,
     "+",
     plusStyle
-  ));
+  ), ...plusSize, style: { ...textStyleToObjectStyle(plusStyle), reactionPlus: true,
+    strokeWidth: drawing.strokeWidth, textBoxSizingMode: "fixed" } }));
   let { above, below, caption } = layoutReactionLabels(labelPlan, {
     arrowMidpoint: { x: (arrowStart + arrowEnd) / 2, y: options.anchor.y },
     // Callers may include visible atom-label overhangs in bounds, outside the molecule frame.
@@ -203,10 +240,37 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
     molecules,
     pluses,
     arrow,
+    warnings,
     ...(above ? { above } : {}),
     ...(below ? { below } : {}),
     ...(caption ? { caption } : {})
   };
+}
+
+/** Copy only the engine's coordinates and directed stereo spelling onto the original graph.
+ * Atom/bond ids, chemistry, annotations and styles remain native. RDKit checked canonical identity. */
+function alignedMolecule(molecule: MoleculeObject, molfile: string): MoleculeObject {
+  const depiction = pastedStructureDepictionFromMolfile(molfile);
+  if (depiction.atoms.length !== molecule.atoms.length || depiction.bonds.length !== molecule.bonds.length) {
+    throw new Error("Aligned depiction changed the native atom or bond count.");
+  }
+  const pair = (a: string, b: string) => [a, b].sort().join(":");
+  const originalBonds = new Map(molecule.bonds.map(bond => [pair(bond.fromAtomId, bond.toAtomId), bond]));
+  const atoms = molecule.atoms.map((atom, index) => ({ ...atom,
+    x: depiction.atoms[index]!.x, y: -depiction.atoms[index]!.y }));
+  const bonds = depiction.bonds.map(bond => {
+    const fromAtomId = atoms[bond.from]!.id, toAtomId = atoms[bond.to]!.id;
+    const original = originalBonds.get(pair(fromAtomId, toAtomId));
+    if (!original) throw new Error("Aligned depiction changed the native atom connectivity.");
+    const display = { ...original.display };
+    if (display.bondStyle === "wedge" || display.bondStyle === "hashed") delete display.bondStyle;
+    if (bond.wedge) display.bondStyle = bond.wedge;
+    return { ...original, fromAtomId, toAtomId, display };
+  });
+  let result = normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds, structureFormat: "molfile-v2000", structure: molfile });
+  result = { ...result, bonds: result.bonds.map(bond => bond.order === "double"
+    ? { ...bond, display: { ...bond.display, doubleBondSide: defaultDoubleBondSide(result, bond) } } : bond) };
+  return result;
 }
 
 function translateMolecule(molecule: MoleculeObject, id: string, dx: number, dy: number): MoleculeObject {

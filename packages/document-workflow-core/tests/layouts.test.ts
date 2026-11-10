@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { reactionArrowHeadLengthPx } from "@chemdraft/layout-engine";
+import { moleculeInkBounds, planPageSvgRender, planReactionArrowGeometry, reactionArrowHeadLengthPx,
+  reactionArrowInkBounds, reactionSchemeDrawingMetrics, representativeMoleculeBondLength } from "@chemdraft/layout-engine";
+import { ensureRdkit } from "@chemdraft/rdkit-adapter";
+import { renderReactionScheme } from "../../chemdraft-cli/src/commands/reaction";
+import { canonicalSmiles } from "../../chemdraft-cli/src/document";
 
-import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
+import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText,
+  planReactionLabels, stereoPerceptionMolfile, type LayoutBounds } from "../src/index";
 
 function molecule(id: string, width = 40, height = 20): MoleculeObject {
   return {
@@ -38,8 +43,10 @@ describe("shared reaction and grid layout", () => {
     const second = layoutReactionScheme(options);
 
     expect(first.document).toEqual(second.document);
-    expect(first.molecules[0]).toMatchObject({ x: 80, y: 110 });
-    expect(first.arrow.start).toEqual({ kind: "point", point: { x: 144, y: 120 } });
+    const ink = moleculeInkBounds(first.molecules[0]!);
+    expect(ink.x).toBe(80);
+    expect(ink.y + ink.height / 2).toBeCloseTo(120);
+    expect(first.arrow.start.point!.x - Number(first.arrow.style.strokeWidth) / 2 - ink.x - ink.width).toBeCloseTo(1.25 * 30);
     expect(overlaps(first.molecules[0]!, first.molecules[1]!)).toBe(false);
     expect(first.above?.y).toBeLessThan(first.arrow.y);
   });
@@ -123,29 +130,31 @@ describe("shared reaction and grid layout", () => {
     const condition = layout.above!;
     const plus = layout.pluses[0]!;
     const conditionSize = nativeTextObjectSizeForText(options.conditionText, DocumentTextStyle);
-    const plusSize = nativeTextObjectSizeForText("+", DocumentTextStyle);
+    const drawing = reactionSchemeDrawingMetrics(layout.molecules[0]!);
 
     expect(nativeTextStyleFromObjectStyle(condition.style)).toMatchObject(DocumentTextStyle);
-    expect(nativeTextStyleFromObjectStyle(plus.style)).toMatchObject(DocumentTextStyle);
+    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(drawing.fontSizePx);
+    expect(plus.width).toBe(drawing.plusSize);
+    expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
     expect(condition).toMatchObject({ width: conditionSize.width, height: conditionSize.height });
     expect(layout.arrow.width).toBeCloseTo(estimateNativeTextLineWidth(options.conditionText,
       nativeTextStyleFromObjectStyle(condition.style)) + 2 * (reactionArrowHeadLengthPx + 0.25 * DocumentTextStyle.fontSizePx));
-    expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
+    const firstInk = moleculeInkBounds(layout.molecules[0]!), secondInk = moleculeInkBounds(layout.molecules[1]!);
+    expect(secondInk.x - firstInk.x).toBeCloseTo(firstInk.width + 2 * 1.25 * 22 + plus.width);
     const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
     expect(condition.y + conditionStyle.fontSizePx).toBeCloseTo(
-      120 - 0.75 - (0.3 + 0.21) * conditionStyle.fontSizePx
+      120 - drawing.strokeWidth / 2 - (0.3 + 0.21) * conditionStyle.fontSizePx
     );
     const page = layout.document.pages[0]!;
-    expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);
+    expect(page.width).toBeGreaterThanOrEqual(layout.molecules[2]!.x + layout.molecules[2]!.width + 24);
     expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
     expect(options).toEqual(original);
 
     const textStyle = { fontSizePx: 24, fontWeight: 700 };
     const styled = layoutReactionScheme({ ...options, style: "document", textStyle });
     expect(styled.arrow.width).toBeGreaterThan(layout.arrow.width);
-    for (const text of [styled.above!, ...styled.pluses]) {
-      expect(nativeTextStyleFromObjectStyle(text.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
-    }
+    expect(nativeTextStyleFromObjectStyle(styled.above!.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
+    expect(nativeTextStyleFromObjectStyle(styled.pluses[0]!.style).fontSizePx).toBe(drawing.fontSizePx);
   });
 
   it("adapts legacy conditions before above lines without splitting punctuation or changing text", () => {
@@ -183,28 +192,113 @@ describe("shared reaction and grid layout", () => {
     }
     expect(layout.arrow.start.kind).toBe("point");
     if (layout.arrow.start.kind !== "point") throw new Error("Expected a point anchor");
-    expect(layout.molecules[0]!.x + 40 + 24).toBe(layout.arrow.start.point.x);
-    expect(layout.molecules[0]!.y + 40).toBe(layout.arrow.start.point.y);
+    const ink = moleculeInkBounds(layout.molecules[0]!);
+    expect(ink.x + ink.width + 1.25 * 22 + Number(layout.arrow.style.strokeWidth) / 2).toBeCloseTo(layout.arrow.start.point!.x);
+    expect(ink.y + ink.height / 2).toBeCloseTo(layout.arrow.start.point!.y);
     expect(layout.caption!.text).toContain("\n");
     expect(layout.caption!.spans.every((span) => span.script === "normal")).toBe(true);
     expect(layout.caption!.text).toContain("CH2Cl2");
     expect(layout.caption!.y).toBeCloseTo(Math.max(
-      ...layout.molecules.map((entry) => entry.y + entry.height), layout.below!.y + layout.below!.height
+      ...layout.molecules.map(moleculeInkBounds).map(b => b.y + b.height), layout.below!.y + layout.below!.height
     ) + 0.8 * 15);
-    const left = Math.min(...layout.molecules.map((entry) => entry.x));
-    const right = Math.max(...layout.molecules.map((entry) => entry.x + entry.width));
+    const left = Math.min(...layout.molecules.map(moleculeInkBounds).map(b => b.x));
+    const right = Math.max(...layout.molecules.map(moleculeInkBounds).map(b => b.x + b.width));
     expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((left + right) / 2);
     expect(component).toEqual(original);
   });
 
-  it("centres the caption using supplied visible molecule bounds, including label overhangs", () => {
+  it("centres the caption using measured ink rather than a stale supplied frame", () => {
     const layout = layoutReactionScheme({
       reactants: [{ molecule: molecule("reactant", 20, 20), bounds: bounds(80, 100) }],
       products: [], arrowKind: "forward", caption: "Product",
       anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
     });
     if (layout.arrow.end.kind !== "point") throw new Error("Expected a point anchor");
-    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((24 + layout.arrow.end.point.x) / 2);
-    expect(layout.caption!.y).toBeCloseTo(170 + 0.8 * 14);
+    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((24 + layout.arrow.end.point!.x) / 2);
+    const ink = moleculeInkBounds(layout.molecules[0]!);
+    expect(layout.caption!.y).toBeCloseTo(Math.max(ink.y + ink.height, layout.arrow.y + layout.arrow.height) + 0.8 * 14);
   });
+});
+
+
+describe("reaction scheme geometry and chemical identity", () => {
+  it.each([
+    { name: "aspirin", reactants: ["OC(=O)c1ccccc1O", "CC(=O)OC(C)=O"],
+      products: ["CC(=O)Oc1ccccc1C(=O)O", "CC(=O)O"], above: ["H2SO4"], below: ["85 °C, 15 min"] },
+    { name: "three reactants", reactants: ["O=Cc1ccccc1", "CC(C)=O", "[Na+].[OH-]"],
+      products: ["CC(=O)/C=C/c1ccccc1"], above: ["H2O"], below: ["room temperature, 30 min"] }
+  ])("uses measured ink gaps and a common centre line: $name", async fixture => {
+    const rendered = await renderReactionScheme({ ...fixture, agents: [] }, { style: "document",
+      above: fixture.above, below: fixture.below });
+    const objects = rendered.document.pages[0]!.objects;
+    const molecules = objects.filter(o => o.type === "molecule");
+    const arrow = objects.find(o => o.type === "reaction-arrow")!;
+    const pluses = objects.filter(o => o.type === "text" && o.text === "+");
+    const start = arrow.start.point!, end = arrow.end.point!;
+    const bounds = molecules.map(moleculeInkBounds);
+    const bondLength = representativeMoleculeBondLength(molecules[0]!)!;
+    const expectedGap = 1.25 * bondLength;
+    const arrowInk = reactionArrowInkBounds(arrow.arrowKind, end.x - start.x, Number(arrow.style.strokeWidth));
+    const ordered = [...bounds, ...pluses, { ...arrowInk, x: start.x + arrowInk.x, y: start.y + arrowInk.y }]
+      .sort((a, b) => a.x - b.x);
+    ordered.slice(1).forEach((b, i) => {
+      const a = ordered[i]!;
+      expect(Math.abs(b.x - a.x - a.width - expectedGap)).toBeLessThan(0.5);
+    });
+    bounds.forEach(b => expect(Math.abs(b.y + b.height / 2 - start.y)).toBeLessThan(0.01));
+    const drawing = reactionSchemeDrawingMetrics(molecules[0]!);
+    pluses.forEach(plus => {
+      expect(plus.y + plus.height / 2).toBeCloseTo(start.y, 6);
+      expect(plus.width).toBeGreaterThanOrEqual(drawing.fontSizePx * 0.9);
+      expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
+      const strokes = planPageSvgRender(rendered.document.pages[0]!).fragments
+        .filter(f => f.attrs["data-object-id"] === plus.id && f.tag === "line");
+      expect(strokes).toHaveLength(2);
+    });
+    const labelPlan = planReactionLabels({ above: fixture.above, below: fixture.below,
+      textStyle: nativeTextStyleFromObjectStyle(objects.find(o => o.type === "text" && o.text !== "+")!.style),
+      bondLength, arrowKind: "forward" });
+    expect(end.x - start.x).toBeGreaterThanOrEqual(labelPlan.arrowLength - 0.001);
+    expect(end.x - start.x).toBeGreaterThanOrEqual(3 * bondLength - 0.001);
+    const geometry = planReactionArrowGeometry("forward", start, end);
+    expect(geometry.lines[0]!.end.x).toBeLessThan(end.x - Number(arrow.style.strokeWidth) / 2);
+    expect(geometry.lines[0]!.end.x).toBeGreaterThan(geometry.heads[0]!.points[1]!.x);
+    const inputs = [...fixture.reactants, ...fixture.products];
+    for (let i = 0; i < molecules.length; i++) {
+      expect(await canonicalSmiles(stereoPerceptionMolfile(molecules[i]!), "placed molecule"))
+        .toBe(await canonicalSmiles(inputs[i]!, "input"));
+    }
+    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
+    if (fixture.name === "aspirin") {
+      // The salicylate query disambiguates the six symmetry-equivalent ring matches using both
+      // substituents; testing an unconstrained benzene query could hide a reversed core.
+      const rdkit = await ensureRdkit() as unknown as {
+        get_mol(value: string): { get_substruct_match(query: unknown): string; delete(): void };
+      };
+      const query = rdkit.get_mol(fixture.reactants[0]!);
+      const handles = [rdkit.get_mol(stereoPerceptionMolfile(molecules[0]!)),
+        rdkit.get_mol(stereoPerceptionMolfile(molecules[2]!))];
+      try {
+        const points = handles.map((handle, i) => {
+          const indices = (JSON.parse(handle.get_substruct_match(query)) as { atoms: number[] }).atoms;
+          return indices.slice(3, 9).map(index => molecules[i === 0 ? 0 : 2]!.atoms[index]!);
+        });
+        const deltas = points[0]!.map((a, i) => ({ x: points[1]![i]!.x - a.x, y: points[1]![i]!.y - a.y }));
+        const dx = deltas.reduce((s, d) => s + d.x, 0) / 6, dy = deltas.reduce((s, d) => s + d.y, 0) / 6;
+        const rmsd = Math.sqrt(deltas.reduce((s, d) => s + (d.x - dx) ** 2 + (d.y - dy) ** 2, 0) / 6);
+        expect(rmsd).toBeLessThan(0.15);
+      } finally { handles.forEach(h => h.delete()); query.delete(); }
+    }
+  });
+
+  it("preserves tetrahedral stereo when aligning a substituted ring product", async () => {
+    const reactant = "OC[C@H](O)c1ccccc1", product = "CC(=O)OC[C@H](O)c1ccccc1";
+    const rendered = await renderReactionScheme({ reactants: [reactant], agents: [], products: [product] });
+    const molecule = rendered.document.pages[0]!.objects.filter(o => o.type === "molecule")[1]!;
+    expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "aligned product"))
+      .toBe(await canonicalSmiles(product, "input"));
+    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
+  });
+
+
 });
