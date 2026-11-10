@@ -61,6 +61,7 @@ import {
   distributeModeCommandIds,
   objectFillOpacityCommandId,
   objectOpacityCommandId,
+  electronMarkStyleCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
   objectGradientAddStopCommand,
@@ -2372,13 +2373,14 @@ function ArtToolbarStyleControls() {
     value: number,
     commandId: (opacity: number) => string,
     supportedCount = selectedCount,
-    numeric?: { min: number; max: number; step: number; unit: string; mixed: boolean }
+    numeric?: { min: number; max: number; step: number; unit: string; mixed: boolean },
+    valueLabel?: string
   ) => {
     const min = numeric?.min ?? 0, max = numeric?.max ?? 100, step = numeric?.step ?? 1;
     const percent = numeric ? value : Math.round(value * 100);
     const snap = (next: number) => Math.max(min, Math.min(max, Math.round((next - min) / step) * step + min));
     const commandForValue = (next: number) => commandId(numeric ? snap(next) : snap(next) / 100);
-    const displayValue = numeric?.mixed ? "Mixed" : `${percent}${numeric?.unit ?? "%"}`;
+    const displayValue = numeric?.mixed ? "Mixed" : valueLabel ?? `${percent}${numeric?.unit ?? "%"}`;
     const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
     const applySliderPercent = (nextPercent: number, commit: boolean) => {
       const command = commandForValue(nextPercent);
@@ -2397,7 +2399,7 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, commit);
     };
     const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      if (numeric && event.key === "Escape") {
+      if ((numeric || valueLabel) && event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         sliderDragRef.current = null;
@@ -2476,7 +2478,7 @@ function ArtToolbarStyleControls() {
                   event.currentTarget.releasePointerCapture(event.pointerId);
                 }
                 sliderDragRef.current = null;
-                if (numeric) onCancel?.();
+                if (numeric || valueLabel) onCancel?.();
               }
             }}
             onChange={(event) => {
@@ -2488,7 +2490,7 @@ function ArtToolbarStyleControls() {
             onBlur={() => {
               if (sliderDragRef.current?.sliderKey === sliderKey) {
                 sliderDragRef.current = null;
-                if (numeric) onCancel?.();
+                if (numeric || valueLabel) onCancel?.();
               }
             }}
           />
@@ -2496,6 +2498,24 @@ function ArtToolbarStyleControls() {
       </PaletteControlTooltip>
     );
   };
+
+  const marks = currentArtStyle?.electronMarks;
+  const markSliders = marks ? (
+    <div className="art-inspector-row" data-electron-mark-controls="true">
+      {opacitySlider("Electron mark size", "Size", (marks.sizePx - 8) / 100,
+        value => electronMarkStyleCommandId("size", value * 100), marks.count, undefined,
+        `${Math.round(marks.sizePx * 10) / 10}px`)}
+      {opacitySlider("Electron mark thickness", "Thickness", (marks.thicknessPx - 0.5) / 5,
+        value => electronMarkStyleCommandId("thickness", value * 100), marks.count, undefined,
+        `${Math.round(marks.thicknessPx * 100) / 100}px`)}
+    </div>
+  ) : null;
+  if (marks && marks.count === selectedCount) {
+    return <div className="art-toolbar-style-controls" data-toolbar-style-controls="art"
+      onKeyDown={event => { if (event.key === "Escape") onCancel?.(); }}>
+      {markSliders}
+    </div>;
+  }
 
   return (
     <div
@@ -2520,6 +2540,7 @@ function ArtToolbarStyleControls() {
         }
       }}
     >
+      {markSliders}
       <div className="art-inspector-row art-inspector-main-row">
         <div className="art-target-toggle" role="group" aria-label="Art paint target">
           {supportsFill ? (

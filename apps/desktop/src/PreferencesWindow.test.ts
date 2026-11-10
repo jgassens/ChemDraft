@@ -7,6 +7,7 @@ import { saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { saveAutomaticPluginUpdates } from "./pluginUpdateSettings";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
 import { saveDrawingSettings } from "./drawingSettings";
+import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing, saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
 const KEYBINDINGS_STORAGE_KEY = "chemdraft.keybindings.v1";
@@ -32,6 +33,21 @@ const checkboxLabel = (markup: string, text: string) =>
   markup.match(/<label\b[^>]*>[\s\S]*?<\/label>/g)?.find(label => label.includes(text)) ?? "";
 
 describe("PreferencesWindow", () => {
+  it("offers direct electron-mark editing off by default and persists only a boolean opt-in", () => {
+    expect(loadDirectElectronMarkEditing()).toBe(false);
+    let markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(checkboxLabel(markup, "Direct electron-mark editing")).not.toMatch(/type="checkbox"[^>]*checked/);
+    for (const invalid of ["null", "{}", "1", "\"true\"", "broken"]) {
+      storage.setItem(ELECTRON_MARK_EDITING_STORAGE_KEY, invalid);
+      expect(loadDirectElectronMarkEditing()).toBe(false);
+    }
+    saveDirectElectronMarkEditing(true);
+    expect(loadDirectElectronMarkEditing()).toBe(true);
+    markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(checkboxLabel(markup, "Direct electron-mark editing")).toMatch(/type="checkbox"[^>]*checked/);
+    saveDirectElectronMarkEditing(false);
+    expect(loadDirectElectronMarkEditing()).toBe(false);
+  });
   it("offers automatic plugin checks on by default and reflects opt-out", () => {
     let markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(checkboxLabel(markup, "Check for plugin updates automatically")).toMatch(/type="checkbox"[^>]*checked/);

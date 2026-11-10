@@ -10,6 +10,7 @@ import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, type DrawingSettings } from "../drawingSettings";
+import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing } from "../electronMarkEditingSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent, safeTauriWindowListen } from "./tauriEvents";
@@ -1763,6 +1764,33 @@ export async function listenForDrawingSettings(handler: (settings: DrawingSettin
     if (isDrawingSettings(event.payload)) handler(event.payload);
   });
   return () => { removeStorage(); unlistenDom(); unlistenTauri(); };
+}
+
+export const ELECTRON_MARK_EDITING_SETTINGS_EVENT = "chemdraft://electron-mark-editing-settings";
+
+export async function broadcastElectronMarkEditingSettings(enabled: boolean): Promise<void> {
+  dispatchDomToolsetEvent(ELECTRON_MARK_EDITING_SETTINGS_EVENT, enabled);
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(ELECTRON_MARK_EDITING_SETTINGS_EVENT, enabled);
+}
+
+export async function listenForElectronMarkEditingSettings(handler: (enabled: boolean) => void): Promise<Unlisten> {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === ELECTRON_MARK_EDITING_STORAGE_KEY || event.key === null) handler(loadDirectElectronMarkEditing());
+  };
+  globalThis.addEventListener?.("storage", onStorage);
+  const unlistenDom = listenForDomToolsetEvent(ELECTRON_MARK_EDITING_SETTINGS_EVENT, event => {
+    if (typeof event.detail === "boolean") handler(event.detail);
+  });
+  const unlistenTauri = isDesktopRuntime() ? await listenTauriEvent<boolean>(ELECTRON_MARK_EDITING_SETTINGS_EVENT, event => {
+    if (typeof event.payload === "boolean") handler(event.payload);
+  }) : undefined;
+  return () => {
+    globalThis.removeEventListener?.("storage", onStorage);
+    unlistenDom();
+    unlistenTauri?.();
+  };
 }
 
 export async function broadcastCompoundLayoutSettings(settings: CompoundLayoutSettings): Promise<void> {

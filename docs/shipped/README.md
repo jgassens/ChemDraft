@@ -10,6 +10,21 @@ are untouched. Lines without wave metadata retain main's legacy geometry until e
 See [the implementation notes](../wavy-lines-handoff.md) and the
 [macOS/Windows manual checklist](../manual-stress-checklist.md).
 
+## Electron-mark repositioning (2026-10-25)
+
+Direct electron-mark editing is an opt-in drawing preference, off by default. When enabled,
+circled/plain charges, radical ions, radical dots and lone pairs gain frame-wide picking,
+electron-tool dragging and resize/rotation handles. The default retains painted-ink picking,
+repeated radical/lone-pair placement and the previous default glyph geometry.
+Art toolbar Size and Thickness commands remain available in either mode; custom appearance
+survives save/reopen and opt-out and uses the same geometry in canvas and SVG/PDF export.
+Moves and transforms retain the previous chemistry association rules in one exported pure policy,
+which reports reassociation for a future owner decision. Charges may change chemical association;
+radicals/lone pairs retain sticky atom anchors while in range; valence warnings never reassign a mark to a different atom.
+Edits have labelled Undo entries. CDXML warns by mark ID that its visible annotation, including
+position, size, thickness and rotation, survives only in the embedded native payload.
+Native interaction checks remain in the shared [manual checklist](../manual-stress-checklist.md).
+
 ## Agent skill: one document style for structures, and structure naming (2026-10-22)
 
 Fixed-scale `--style document` on `render`, `grid`, `reaction`, `render-document`, and

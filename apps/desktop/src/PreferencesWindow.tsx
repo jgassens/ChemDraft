@@ -23,6 +23,8 @@ import {
 import { compoundLayoutFeatures, loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { loadDrawingSettings, saveDrawingSettings, type DefaultDoubleBond } from "./drawingSettings";
 import { broadcastDrawingSettings, listenForDrawingSettings } from "./window-manager";
+import { loadDirectElectronMarkEditing, saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
+import { broadcastElectronMarkEditingSettings } from "./window-manager";
 import { broadcastCompoundLayoutSettings, broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings, broadcastExportPreviewSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
@@ -124,6 +126,7 @@ export function PreferencesWindow() {
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
   const [drawing, setDrawing] = useState(loadDrawingSettings);
+  const [directElectronMarkEditing, setDirectElectronMarkEditing] = useState(loadDirectElectronMarkEditing);
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
   const [automaticPluginUpdates, setAutomaticPluginUpdates] = useState(loadAutomaticPluginUpdates);
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
@@ -215,6 +218,19 @@ export function PreferencesWindow() {
             <span className="preferences-radio-body"><strong>{title}</strong><small>{description}</small></span>
           </label>)}
         </fieldset>
+      </section>
+      <section className="preferences-section">
+        <h2>Drawing and editing</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={directElectronMarkEditing} onChange={event => {
+            const enabled = event.currentTarget.checked;
+            setDirectElectronMarkEditing(enabled);
+            saveDirectElectronMarkEditing(enabled);
+            void broadcastElectronMarkEditingSettings(enabled);
+          }} />
+          <span className="preferences-radio-body"><span>Direct electron-mark editing</span>
+            <small>Grab marks anywhere in their frame, drag them with electron tools, and resize or rotate them with handles. Use scaled symbol rendering. Off by default.</small></span>
+        </label>
       </section>
       <section className="preferences-section">
         <h2>Startup</h2>

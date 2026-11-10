@@ -414,7 +414,28 @@ hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), with tool keys
 following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
 while ChemDraft's `e` arms the eraser; charge stacking
-by hotkey and by the charge tool up to ±9 and back down to mark removal; the Clear/Restore
+by hotkey and by the charge tool up to ±9 and back down to mark removal;
+with **Direct electron-mark editing** off (the default), check painted-ink-only picking over
+atoms, bonds and filled rings, repeated radical/lone-pair tool placement on existing ink, and
+absence of mark resize/rotation handles. Enable the preference live, then drag circled/plain
+charges, radical ions, radical dots and lone pairs from blank corners of their rotated frames
+with Select and electron tools; check overlap picking and no duplicates. Resize with corners,
+rotate with handles and typed entry, and check one labelled Undo/Redo per gesture. Adjust Art
+toolbar Size (8–108 px) and Thickness (0.5–5.5 px) in either mode; check preview, cancellation,
+labelled Undo/Redo, save/reopen and custom appearance after disabling the preference. Check all
+eight variants plus multi-charges at 18, 60 and 108 px and thickness extremes: default marks
+with the preference off match the previous rendering, while custom/scaled lone-pair dots and
+radical-ion dot/sign geometry remain separated. Compare canvas, SVG and PDF; CDXML must warn by
+mark ID that annotation position, size, thickness and rotation remain in the native payload only.
+Check charge/radical counts, formula and canonical SMILES before and after appearance-only edits.
+Move marks within the original atom's radius, onto nearby/far atoms and into empty space; charge
+moves retain the previous nearest-atom reassociation, while radical/lone-pair moves keep sticky
+anchors until out of range or unsupported. In a crowded placement, a general charge transform
+can reset its sticky anchor and reassign it even with a stationary centre; retain and record this
+existing behaviour pending the owner's policy choice. The owner has not yet chosen whether chemistry changes
+from moves should be kept, warned about or forbidden. Repeat native pointer capture, palette focus
+and these checks in macOS and Windows; DOM tests do not establish native interaction results.
+Also exercise the Clear/Restore
 Warnings context menu under whole-molecule and partial selections; element-symbol text converting
 to a naked atom on every edit-ending gesture (Escape, click-away, tool switch), and Delete
 stripping a labeled atom back to skeleton carbon before the second press deletes it; a bond

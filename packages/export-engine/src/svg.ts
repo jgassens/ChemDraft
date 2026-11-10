@@ -14,6 +14,8 @@ import {
 import type { ExportWarning } from "./results";
 
 export interface SvgExportOptions {
+  /** Match the editor's opt-in electron-mark rendering; custom stored styling always renders. */
+  directElectronMarkEditing?: boolean;
   pageIndex?: number;
   includePageGuides?: boolean;
   includeWarnings?: boolean;
@@ -94,7 +96,9 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const pointsPerUnit = Math.min(svgLengthInPoints(outputWidth) / page.width, svgLengthInPoints(outputHeight) / page.height);
   const missingPictures = page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && !object.data.image && object.data.imageHref === undefined);
   const missingIds = new Set(missingPictures.map((object) => object.id));
-  const plan = planPageSvgRender({ ...page, objects: page.objects.filter((object) => !missingIds.has(object.id)) });
+  const plan = planPageSvgRender({ ...page, objects: page.objects.filter((object) => !missingIds.has(object.id)) }, {
+    directElectronMarkEditing: options.directElectronMarkEditing
+  });
   const images = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
     .map((object) => [object.id, object]));
   const renderedImages = new Set<string>();

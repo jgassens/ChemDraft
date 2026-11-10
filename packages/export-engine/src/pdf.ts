@@ -17,6 +17,7 @@ const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
 
 export interface PdfExportOptions {
+  directElectronMarkEditing?: boolean;
   pageIndex?: number;
   domParser?: DOMParser;
   compress?: boolean;
@@ -53,6 +54,7 @@ export async function exportDocumentToPdf(
 
   const descriptor = getExportFormatDescriptor("pdf");
   const svgResult = exportDocumentToSvg(document, {
+    directElectronMarkEditing: options.directElectronMarkEditing,
     pageIndex,
     includePageGuides: options.includePageGuides
   });

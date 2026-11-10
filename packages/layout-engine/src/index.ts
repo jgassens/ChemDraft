@@ -1700,6 +1700,8 @@ export function planPageSvgRender(
      * atom must look the atom up in the unfiltered page.
      */
     anchorResolutionPage?: DocumentPage;
+    /** Opt-in rendering for default-sized electron marks; stored custom styling always renders. */
+    directElectronMarkEditing?: boolean;
   } = {}
 ): PageSvgRenderPlan {
   if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
@@ -1720,7 +1722,7 @@ export function planPageSvgRender(
       if (object.type === "molecule") {
         return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
       }
-      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page, options.directElectronMarkEditing);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
@@ -1834,7 +1836,8 @@ function planDocumentObjectSvg(
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
-  page?: DocumentPage
+  page?: DocumentPage,
+  directElectronMarkEditing = false
 ): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
@@ -1851,10 +1854,10 @@ function planDocumentObjectSvg(
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "electron-mark":
       if (object.markKind === "charge") {
-        return chargeMarkFragment(object, layerIndex);
+        return chargeMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       if (object.markKind === "lone-pair" || object.markKind === "radical-dot") {
-        return electronDotMarkFragment(object, layerIndex);
+        return electronDotMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
@@ -4035,13 +4038,26 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   return [{ text: object.text, script: "normal", style: {} }];
 }
 
+/** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */
+export function electronMarkHitCatcherAttributes(object: ElectronMarkObject) {
+  return {
+    x: object.x, y: object.y, width: object.width, height: object.height,
+    transform: rotationTransform(object)
+  };
+}
+
+function electronMarkUsesScaledGeometry(object: ElectronMarkObject, directEditing = false): boolean {
+  return directEditing || object.width !== 18 || object.height !== 18 ||
+    (typeof object.style.strokeWidth === "number" && Number.isFinite(object.style.strokeWidth) && object.style.strokeWidth !== 1.5);
+}
+
 /**
  * Single charge and electron symbols use vector strokes so their circled forms stay crisp at any
  * zoom, while multi-magnitude marks use a text glyph such as "2+" or "3−". The default single
  * charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant — and a `radical`
  * charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
-function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
     ? object.charge
     : 1;
@@ -4051,9 +4067,12 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
   const centerY = object.y + object.height / 2;
   const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
-  const strokeWidth = 1.5;
+  const strokeWidth = scaled ? electronMarkStrokeWidth(object) : 1.5;
+  const sizeScale = Math.min(object.width, object.height) / 18;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
   const children: PageSvgElementFragment[] = [];
+  let radicalDotRadius = scaled ? (1.35 + strokeWidth * 0.5) * sizeScale : 2.1;
+  let radicalDotX = centerX - radius * 0.75;
 
   if (circled) {
     children.push(elementFragment("circle", `charge-circle-${object.id}`, {
@@ -4068,6 +4087,10 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 
   if (magnitude > 1) {
     // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    // Below the legacy thickness use the regular face, then add a small positive outline.
+    // Numeric weights between regular/bold can resolve to the same face on non-variable fonts.
+    const thin = scaled && strokeWidth < 1.5;
+    const textStrokeWidth = thin ? Math.max(0, strokeWidth - 0.5) * 0.4 : Math.max(0, strokeWidth - 1.5) * 0.4;
     children.push(elementFragment("text", `charge-count-${object.id}`, {
       x: centerX,
       y: centerY,
@@ -4075,12 +4098,23 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
       "dominant-baseline": "central",
       "font-family": "Arial, Helvetica, sans-serif",
       "font-size": radius * 1.35,
-      "font-weight": 700,
-      fill: "#111111"
+      "font-weight": thin ? 400 : 700,
+      fill: "#111111",
+      ...(scaled ? { stroke: "#111111", "stroke-width": textStrokeWidth } : {})
     }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
   } else {
-    const signHalf = circled ? barHalf : radius * 0.85;
-    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    let signHalf = circled ? barHalf : radius * 0.85;
+    let signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    if (object.radical === true && scaled) {
+      // Keep the dot separate from the sign's round cap, even at maximum thickness.
+      const gap = 0.5 * sizeScale;
+      const fit = Math.max(0, Math.min(1, (object.width - strokeWidth - gap) / (2 * radicalDotRadius + 2 * signHalf)));
+      radicalDotRadius *= fit;
+      signHalf *= fit;
+      const totalWidth = 2 * radicalDotRadius + 2 * signHalf + strokeWidth + gap;
+      radicalDotX = centerX - totalWidth / 2 + radicalDotRadius;
+      signX = centerX + totalWidth / 2 - signHalf - strokeWidth / 2;
+    }
     children.push(elementFragment("line", `charge-bar-${object.id}`, {
       x1: signX - signHalf,
       y1: centerY,
@@ -4103,15 +4137,15 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }
   }
   if (object.radical === true) {
-    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
-    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
-    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
-    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
-    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
+    if (magnitude > 1) {
+      radicalDotX = scaled
+        ? centerX - radius * 1.35 * 0.6 - radicalDotRadius - sizeScale
+        : centerX - (radius * 1.35 * 0.6 + 3.1);
+    }
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radicalDotOffset,
+      cx: radicalDotX,
       cy: centerY,
-      r: 2.1,
+      r: radicalDotRadius,
       fill: "#111111"
     }));
   }
@@ -4279,12 +4313,19 @@ function mechanismArrowFragment(
 }
 
 /** A lone pair (two dots) or a single unpaired-electron dot. */
-function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function electronMarkStrokeWidth(object: ElectronMarkObject): number {
+  const width = object.style.strokeWidth;
+  return typeof width === "number" && Number.isFinite(width) ? Math.max(0.5, Math.min(5.5, width)) : 1.5;
+}
+
+function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const dotRadius = 2.1;
+  const sizeScale = Math.min(object.width, object.height) / 18;
+  const dotRadius = scaled ? (1.35 + electronMarkStrokeWidth(object) * 0.5) * sizeScale : 2.1;
+  const spacing = scaled ? Math.max(2.1 * 1.6 * sizeScale, dotRadius * 1.1) : dotRadius * 1.6;
   const dots = object.markKind === "lone-pair"
-    ? [centerX - dotRadius * 1.6, centerX + dotRadius * 1.6]
+    ? [centerX - spacing, centerX + spacing]
     : [centerX];
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
