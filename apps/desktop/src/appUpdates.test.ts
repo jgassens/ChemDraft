@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 // These tests exercise update policy and injected flow dependencies without loading native UI.
@@ -24,13 +25,19 @@ import {
 const released = { isDesktop: true, platform: "windows", identifier: STABLE_APP_IDENTIFIER, isDevServer: false };
 
 describe("which builds check for updates", () => {
-  it.each(["macos", "windows"])("shows the development notice and preserves release checks on %s", (platform) => {
-    const stable = { ...released, platform };
+  it("shows the development notice for dev identifiers and the dev server, but not the stable build", () => {
     const notice = "Updates are off in development builds. Install the released ChemDraft to get updates.";
-    expect(appUpdateChannelNotice({ ...stable, identifier: "org.chemdraft.desktop.dev" })).toBe(notice);
-    expect(appUpdateChannelNotice({ ...stable, identifier: undefined })).toBe(notice);
-    expect(appUpdateChannelNotice({ ...stable, isDevServer: true })).toBe(notice);
-    expect(appUpdateChannelNotice(stable)).toBeUndefined();
+    expect(appUpdateChannelNotice({ ...released, identifier: "org.chemdraft.desktop.dev" })).toBe(notice);
+    expect(appUpdateChannelNotice({ ...released, identifier: undefined })).toBe(notice);
+    expect(appUpdateChannelNotice({ ...released, isDevServer: true })).toBe(notice);
+    expect(appUpdateChannelNotice(released)).toBeUndefined();
+  });
+
+  it("keeps the webview status-line notice equal to the native message", () => {
+    const nativeSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const nativeMessage = nativeSource.match(/const DEVELOPMENT_UPDATES_MESSAGE: &str =\s*"([^"]+)";/)?.[1];
+    expect(nativeMessage).toBeDefined();
+    expect(appUpdateChannelNotice({ ...released, identifier: "org.chemdraft.desktop.dev" })).toBe(nativeMessage);
   });
 
   it("offers the channel on Windows desktop only", () => {

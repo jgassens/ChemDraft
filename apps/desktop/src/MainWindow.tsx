@@ -920,6 +920,7 @@ import {
 import {
   APP_CHECK_FOR_UPDATES_COMMAND_ID,
   AUTO_CHECK_DELAY_MS,
+  appUpdateChannelNotice,
   appUpdateChecksAllowed,
   appUpdatesSupported,
   autoCheckDue,
@@ -10582,8 +10583,9 @@ export function MainWindow({
     try {
       const info = await currentUpdateBuildInfo(isDesktopRuntime(), detectDesktopShortcutPlatform());
       if (!appUpdateChecksAllowed(info)) {
-        if (mode === "manual") {
-          setStatus("Updates go to the released ChemDraft only; this is a development build");
+        const notice = appUpdateChannelNotice(info);
+        if (mode === "manual" && notice) {
+          setStatus(notice);
         }
         return;
       }

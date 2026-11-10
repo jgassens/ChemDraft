@@ -38,11 +38,10 @@ export function appUpdatesSupported(info: Pick<UpdateBuildInfo, "isDesktop" | "p
   return info.isDesktop && info.platform === "windows";
 }
 
-/** The native menu shows this notice before calling either platform's updater. macOS's feed check
- *  lives in Rust; this pure identity check also gates the Windows webview's automatic checks. */
-export function appUpdateChannelNotice(info: UpdateBuildInfo): string | undefined {
-  if (info.isDesktop && (info.platform === "macos" || info.platform === "windows") &&
-      !info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER) {
+/** Notice for the Windows webview's refused-check status line; also gates automatic checks by build identity. */
+// This text and Rust's DEVELOPMENT_UPDATES_MESSAGE in src-tauri/src/lib.rs must match.
+export function appUpdateChannelNotice(info: Pick<UpdateBuildInfo, "identifier" | "isDevServer">): string | undefined {
+  if (!info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER) {
     return undefined;
   }
   return "Updates are off in development builds. Install the released ChemDraft to get updates.";
