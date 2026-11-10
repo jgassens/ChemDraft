@@ -1763,7 +1763,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.09.48-codex";
+const CURRENT_BUILD_STAMP = "11.10.09.55-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11332,6 +11332,7 @@ export function MainWindow({
       if (moved === current) {
         // Repeats against a page edge are still presses, so they renew an existing burst.
         arrowNudgeBurstRef.current = continuesBurst ? { history: documentHistoryRef.current, lastPress: now } : undefined;
+        setStatus("Selection is already at the page edge");
         return;
       }
       // Like assistant-history amendments, retain the first before-snapshot and replace only
@@ -11341,21 +11342,34 @@ export function MainWindow({
         replacePresentDocument(prepareDocumentCommit(moved, "Move"));
       } else commitDocumentChange(moved, "Move");
       arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
-      const axis = delta.x ? "x" : "y";
-      const distances = current.pages.flatMap(page => page.objects.flatMap(object => {
-        const next = moved.pages.flatMap(item => item.objects).find(item => item.id === object.id);
-        if (!next) return [];
+      const nextObjects = new Map(moved.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
+      let dx = 0, dy = 0, finite = true;
+      const measure = (before: { x: number; y: number }, after: { x: number; y: number }) => {
+        const x = after.x - before.x, y = after.y - before.y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) { finite = false; return; }
+        if (Math.abs(x) > Math.abs(dx)) dx = x;
+        if (Math.abs(y) > Math.abs(dy)) dy = y;
+      };
+      current.pages.forEach(page => page.objects.forEach(object => {
+        const next = nextObjects.get(object.id);
+        if (!next) return;
         if (object.type === "molecule" && next.type === "molecule") {
-          return object.atoms.flatMap(atom => {
-            const after = next.atoms.find(item => item.id === atom.id);
-            return after && after[axis] !== atom[axis] ? [Math.abs(after[axis] - atom[axis])] : [];
+          const nextAtoms = new Map(next.atoms.map(atom => [atom.id, atom] as const));
+          object.atoms.forEach(atom => {
+            const after = nextAtoms.get(atom.id);
+            if (after) measure(atom, after);
           });
+        } else {
+          measure(object, next);
         }
-        return next[axis] !== object[axis] ? [Math.abs(next[axis] - object[axis])] : [];
       }));
-      const distance = Math.round(Math.max(...distances) * 1000) / 1000;
-      const direction = delta.x < 0 ? "left" : delta.x > 0 ? "right" : delta.y < 0 ? "up" : "down";
-      setStatus(`Moved selection ${direction} by ${distance} px`);
+      const distance = (value: number) => Number(Math.abs(value).toFixed(3));
+      const horizontal = dx ? `${distance(dx)} px ${dx < 0 ? "left" : "right"}` : "";
+      const vertical = dy ? `${distance(dy)} px ${dy < 0 ? "up" : "down"}` : "";
+      if (!finite) setStatus("Moved selection");
+      else if (!dx && !dy) setStatus("Selection is already at the page edge");
+      else if (dx && dy) setStatus(`Moved selection by ${horizontal} and ${vertical}`);
+      else setStatus(`Moved selection ${dx ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down")} by ${distance(dx || dy)} px`);
     }));
 
     atomProblemCommands(document).forEach(({ spec, target, action }) => register(spec, async () => {
