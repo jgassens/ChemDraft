@@ -2870,25 +2870,30 @@ function importPageObjects(
       return { objects: [object], rootIds: [object.id] };
     };
     if (element.name === "fragment") {
-      const molecule = single(importFragment(element, pageIndex, objectIndex, warnings, context));
-      // Fragment captions and local groups use the page importers. Stop at imported containers
-      // so grouped graphics appear once; node-label text remains part of its atom.
-      const importDisplayChildren = (container: XmlElementView) => {
-        for (const node of container.children) {
+      // Lift display objects before taking abbreviation snapshots. Unexpandable nodes restore
+      // their snapshots verbatim on export, so keeping a lifted caption there would duplicate it.
+      // Stop at imported containers so grouped graphics appear once; atom labels stay on atoms.
+      const displayChildren: XmlElementView[] = [];
+      const separateDisplayChildren = (container: XmlElementView): XmlElementView => ({
+        ...container,
+        children: container.children.flatMap(node => {
           const child = elementView(node);
-          if (!child) continue;
+          if (!child) return [node];
           if (child.name === "t") {
-            if (container.name !== "fragment") continue;
+            if (container.name !== "fragment") return [node];
           } else if (!["group", "graphic", "arrow", "curve"].includes(child.name)) {
-            importDisplayChildren(child);
-            continue;
+            return [{ ...node, [child.name]: separateDisplayChildren(child).children }];
           }
-          const imported = importElement(child);
-          molecule.objects.push(...imported.objects);
-          molecule.rootIds.push(...imported.rootIds);
-        }
-      };
-      importDisplayChildren(element);
+          displayChildren.push(child);
+          return [];
+        })
+      });
+      const molecule = single(importFragment(separateDisplayChildren(element), pageIndex, objectIndex, warnings, context));
+      for (const child of displayChildren) {
+        const imported = importElement(child);
+        molecule.objects.push(...imported.objects);
+        molecule.rootIds.push(...imported.rootIds);
+      }
       return molecule;
     }
     if (element.name === "t") {

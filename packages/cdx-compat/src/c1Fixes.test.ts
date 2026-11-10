@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { XMLParser } from "fast-xml-parser";
 import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { cdxElementFromOrderedTree, writeCdx } from "./cdxBinary";
+import { cdxElementFromOrderedTree, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 
 const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false });
@@ -61,6 +61,46 @@ describe.each(["CDXML", "CDX"] as const)("C1 visible %s regressions", format => 
       expect(texts).toHaveLength(1);
       expect(texts[0]).toMatchObject({ text: "Fragment caption", x: 40, y: 80 });
       document = requireDocument(roundTrip(document));
+    }
+  });
+
+  it.each(["direct", "grouped"])("keeps a %s caption inside an unexpandable snapshot exactly once through three round trips", placement => {
+    const caption = '<t id="7" p="0 30"><s>caption</s></t>';
+    const source = page(`<fragment id="2"><n id="3" NodeType="Nickname" Charge="1" p="0 0">
+      <t><s>Me</s></t><fragment id="5"><n id="6" Element="6"/>
+        ${placement === "grouped" ? `<group id="8">${caption}</group>` : caption}
+      </fragment></n></fragment>`);
+    const textOf = (node: CdxElement): string => node.text + node.kids.map(textOf).join("");
+    const captionsIn = (node: CdxElement): CdxElement[] => [
+      ...(node.name === "t" && textOf(node) === "caption" ? [node] : []),
+      ...node.kids.flatMap(captionsIn)
+    ];
+    const expectOneNativeCaption = (document: ChemDraftDocument) => {
+      const objects = document.pages[0].objects;
+      const texts = objects.filter(object => object.type === "text");
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatchObject({ text: "caption", x: 0, y: 40 });
+      const molecule = objects.find(object => object.type === "molecule")!;
+      expect(molecule.atoms).toHaveLength(1);
+      expect(molecule.atoms[0]).toMatchObject({ element: "Me", formalCharge: 1 });
+      expect(molecule.bonds).toHaveLength(0);
+      expect(molecule.superatoms).toHaveLength(0);
+    };
+    const opened = open(source);
+    expect(opened.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.abbreviation_not_expanded" }));
+    let document = requireDocument(opened);
+    expectOneNativeCaption(document);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      if (format === "CDX") {
+        const { bytes } = exportDocumentToCdx(document, { embedNativePayload: false });
+        expect(captionsIn(readCdx(bytes))).toHaveLength(1);
+        document = requireDocument(importCdx(bytes));
+      } else {
+        const { contents } = exportDocumentToCdxml(document, { embedNativePayload: false });
+        expect(captionsIn(cdxElementFromOrderedTree(parser.parse(contents)))).toHaveLength(1);
+        document = requireDocument(openChemDraftPayload(contents));
+      }
+      expectOneNativeCaption(document);
     }
   });
 

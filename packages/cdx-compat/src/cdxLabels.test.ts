@@ -428,7 +428,8 @@ describe("synthetic numbered R-group attachments", () => {
     expect(molecule.rGroups.map((group) => group.label)).toEqual(labels);
     expect(molecule.rGroups.map((group) => rGroupNumberFromLabel(group.label))).toEqual(labels.map(rGroupNumberFromLabel));
     for (const group of molecule.rGroups) {
-      expect(group.querySemantics).toBe("display-only");
+      // Imported nickname text supplies no evidence of display-only or query semantics.
+      expect(group.querySemantics).toBe("unknown");
       expect(group.attachmentPoints).toEqual([{
         kind: "atom", objectId: molecule.id,
         atomId: molecule.atoms.find((atom) => atom.element === group.label)!.id

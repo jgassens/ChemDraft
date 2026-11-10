@@ -42,8 +42,10 @@ kinds even when multiple groups contain exactly the same atoms; synthetic covera
 three nesting levels with equal and differing memberships.
 Edits to expansion atoms export their current chemistry, rather than restoring the source snapshot.
 
-`compatibility.unknown.cdxmlAbbreviations` retains complete source nodes, including unsupported
-expansions. Multiple external connection points, ambiguous attachment bonds, wrapper charge and
+`compatibility.unknown.cdxmlAbbreviations` retains source nodes, including unsupported
+expansions. Fragment captions and local display objects lifted into native objects are removed
+from these snapshots, so restoring an unsupported expansion cannot duplicate them on export.
+Multiple external connection points, ambiguous attachment bonds, wrapper charge and
 other unrepresentable states emit `cdxml.abbreviation_not_expanded`; they retain the literal atom
 label and original source expansion instead of silently flattening it. Original `BeginAttach` and
 `EndAttach` values survive unchanged bond endpoints. A stale or overlapping native group that
