@@ -120,6 +120,10 @@ describe("MainWindow wavy bond undo", () => {
     await command("tool.wavyBond"); await bondClick();
     expect(molecule()!.bonds[0]).toEqual({ ...wedge.bonds[0], display: { ...wedge.bonds[0]!.display, bondStyle: "wavy" } });
     await command("edit.undo"); expect(molecule()).toEqual(wedge);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Make bond wavy");
+    await command("edit.redo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Redid Make bond wavy");
+    await command("edit.undo"); expect(molecule()).toEqual(wedge);
     await command("edit.undo"); expect(molecule()).toEqual(reversed);
     await command("edit.undo"); expect(molecule()).toEqual(wave);
     await command("edit.undo"); expect(molecule()).toBeUndefined();
