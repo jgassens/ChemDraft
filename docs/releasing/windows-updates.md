@@ -40,7 +40,7 @@ The NSIS installer hook quotes both the executable path and `.chemdraft` documen
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
 - **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to
-  the macOS `appcast.xml`; joint releases use the same commit and version for both platforms.
+  the macOS `appcast.xml` and `appcast-intel.xml`; joint releases use the same commit and version for all three builds.
 - **Public key:** `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.windows.conf.json`.
 - **Private key:** `%USERPROFILE%\.tauri\chemdraft-updater.key`.
   - It is outside the repository. Never commit it, and never print it.
@@ -75,9 +75,10 @@ repository secrets/variables, workflow inputs and release checks.
 
 Dispatch on the release tag with the same tag in `ref`; optionally provide a tracked Windows notes
 file and an existing draft release tag in `upload_to_release`. The final `windows-release` artifact
-contains the installer, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
+contains the installer, `.exe.build.json`, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
-publishes a release or commits the feed. Review both platform artifacts from the same commit/version,
+publishes a release or commits the feed. Collect all three artifacts and their `.build.json` records
+and run the [joint release body check](three-builds.md) against the release tag or explicit `--commit`,
 publish the joint release, then commit the generated feed to `main` only after its installer URL works.
 
 ### Windows VM path (retired)
@@ -132,7 +133,11 @@ An end-to-end test needs two signed stable builds with increasing versions and a
    - accepting it downloads, saves the session, shows the passive installer, and reopens ChemDraft
      on the newer version;
    - a drawing made before the update is still there after the relaunch.
-5. Uninstall the test build.
+5. Uninstall the test build. The NSIS installer remembers the folder it last installed to, so a
+   silent install (`/S`) without `/D=<folder>` reuses that remembered folder instead of the default
+   per-user location. After installing a test build into a separate folder with `/D=...`, pass
+   `/D=%LOCALAPPDATA%\ChemDraft` explicitly when reinstalling the stable release (or it lands in the
+   test folder); `/D` must be the last argument and must not be quoted.
 
 To drive the prompt from a script: it is a Windows task dialog, and on Windows 11 its buttons are
 exposed to UI Automation as bare panes with no Invoke pattern. Find the window instead

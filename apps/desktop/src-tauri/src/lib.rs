@@ -6426,7 +6426,7 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
 const SIDECAR_PLACEHOLDER_MARKER: &[u8] = b"avogadro3d-sidecar placeholder";
 
 /// A file that can actually be started as the sidecar. The `binaries/` placeholders for targets
-/// without a real build (Intel macOS, Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
+/// without a real build (Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
 /// accepted them, so status said "bundled" and every session failed when the script exited. They
 /// are recognised by their marker on every platform; Windows additionally requires a PE image
 /// (a text placeholder there failed to start with OS error 193).
@@ -9216,17 +9216,14 @@ mod tests {
     #[test]
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        for triple in [
-            "x86_64-apple-darwin",
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-        ] {
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
             assert!(is_sidecar_placeholder(&placeholder), "{triple}");
             assert!(!is_runnable_sidecar(&placeholder), "{triple}");
         }
         for real in [
             "avogadro3d-sidecar-aarch64-apple-darwin",
+            "avogadro3d-sidecar-x86_64-apple-darwin",
             "avogadro3d-sidecar-x86_64-pc-windows-msvc.exe",
         ] {
             assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");

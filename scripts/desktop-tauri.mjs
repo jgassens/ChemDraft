@@ -21,24 +21,40 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEV_PRODUCT_NAME, isStableBuild, prependToPath, worktreeIdentity, worktreeLabelFor } from "./worktree-identity.mjs";
+import { macosBuildArgs, macosBuildTarget } from "./macos-build-target.mjs";
+import { preflightReleaseOpsinRuntime } from "./check-release-opsin-runtime.mjs";
+import { macosReleasePlist } from "../tools/release/macos-build-plist.mjs";
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
 const PACKAGE_BUILD_FLAG = "--package-build";
 const isPackageBuild = process.argv[2] === PACKAGE_BUILD_FLAG;
-const args = isPackageBuild ? ["build", ...process.argv.slice(3)] : process.argv.slice(2);
+const inputArgs = isPackageBuild ? ["build", ...process.argv.slice(3)] : process.argv.slice(2);
+const args = process.platform === "darwin"
+  ? macosBuildArgs(inputArgs, join(APP_DIR, "src-tauri", "tauri.intel.conf.json"), process.arch)
+  : inputArgs;
 
 const env = { ...process.env };
 const identity = worktreeIdentity(ROOT_DIR);
 env.CHEMDRAFT_WORKTREE_LABEL = worktreeLabelFor({ command: args[0], identity, env });
 
 if (process.platform === "darwin") {
-  const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
-  const result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...args], {
-    cwd: APP_DIR,
-    env,
-    stdio: "inherit"
+  // Fail before signing or Tauri packaging; dev/debug/non-bundle builds keep OPSIN optional.
+  preflightReleaseOpsinRuntime(args);
+  const releasePlist = macosReleasePlist(args, {
+    rootDir: ROOT_DIR,
+    target: args[0] === "build" ? macosBuildTarget(args) : undefined,
+    stable: isStableBuild({ command: args[0], branch: identity.branch, env })
   });
+  const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
+  let result;
+  try {
+    result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...(releasePlist?.args ?? args)], {
+      cwd: APP_DIR,
+      env,
+      stdio: "inherit"
+    });
+  } finally { releasePlist?.cleanup(); }
   process.exit(result.status ?? 1);
 }
 

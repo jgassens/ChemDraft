@@ -222,6 +222,10 @@ fn extra_pip_arguments_are_additive_and_default_argv_is_unchanged() {
 struct Stub;
 struct StubPlatform;
 impl EnginePlatform for StubPlatform {
+    fn target(&self) -> platform::EngineTarget {
+        platform::EngineTarget::Unsupported
+    }
+
     fn uv_asset(&self) -> &'static str {
         "stub.tar.gz"
     }
