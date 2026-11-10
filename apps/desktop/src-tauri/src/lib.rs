@@ -9216,10 +9216,7 @@ mod tests {
     #[test]
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        for triple in [
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-        ] {
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
             assert!(is_sidecar_placeholder(&placeholder), "{triple}");
             assert!(!is_runnable_sidecar(&placeholder), "{triple}");

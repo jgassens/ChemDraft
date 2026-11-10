@@ -803,7 +803,10 @@ fn capability_is_only_main_and_grants_exactly_six_commands() {
     assert_eq!(capability["permissions"], expected);
     let config: serde_json::Value =
         serde_json::from_str(include_str!("../../tauri.conf.json")).expect("Tauri config");
-    assert_eq!(config["bundle"]["resources"]["resources/naming"], "resources/naming");
+    assert_eq!(
+        config["bundle"]["resources"]["resources/naming"],
+        "resources/naming"
+    );
 }
 
 #[test]

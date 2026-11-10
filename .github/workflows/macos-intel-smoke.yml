@@ -56,7 +56,7 @@ jobs:
         env:
           # The .test.ts suites use Vitest; this command runs the Node .test.mjs suites.
           NODE_OPTIONS: --no-experimental-strip-types
-        run: node --test scripts/ tools/release/
+        run: node --test "scripts/*.test.mjs" "tools/release/*.test.mjs"
       - name: Build Intel OPSIN runtime and smoke test benzene
         run: node scripts/build-opsin-runtime.mjs --arch x86_64
       - name: Inspect committed Intel sidecar
