@@ -59,6 +59,14 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             min_size: (360.0, 260.0),
             fit_content: false,
         }),
+        "customColor" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Custom Color",
+            size: (460.0, 320.0),
+            min_size: (360.0, 240.0),
+            fit_content: true,
+        }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -137,6 +145,28 @@ struct Snapshot {
     width: f64,
     height: f64,
     unit: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CustomColorSnapshot {
+    title: String,
+    swatch: u8,
+    slot: u8,
+    color: Option<String>,
+}
+fn valid_custom_color(hex: &str) -> bool {
+    hex.len() == 7
+        && hex.starts_with('#')
+        && hex.as_bytes()[1..]
+            .iter()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum CustomColorAction {
+    Apply { hex: String },
+    Clear {},
+    Cancel {},
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -778,6 +808,25 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "customColor" => {
+                self.data.get("color").is_some()
+                    && serde_json::from_value::<CustomColorSnapshot>(self.data.clone()).is_ok_and(
+                        |s| {
+                            valid_title(&s.title)
+                                && !s.title.contains('\0')
+                                && (1..=4).contains(&s.swatch)
+                                && (1..=2).contains(&s.slot)
+                                && s.color.as_deref().is_none_or(valid_custom_color)
+                        },
+                    )
+            }
+            "action" if self.dialog_kind == "customColor" => serde_json::from_value::<
+                CustomColorAction,
+            >(self.data.clone())
+            .is_ok_and(|a| match a {
+                CustomColorAction::Apply { hex } => valid_custom_color(&hex),
+                CustomColorAction::Clear {} | CustomColorAction::Cancel {} => true,
+            }),
             "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
                 serde_json::from_value::<VibeGuideSnapshot>(self.data.clone())
                     .is_ok_and(|s| valid_title(&s.title) && !s.title.contains('\0'))
@@ -1422,6 +1471,9 @@ pub(crate) async fn dialog_send(
             .ok_or("Unknown dialog host")?;
         authorize(session, window.label(), false, Some(&message))?;
         let reveal = message.message_type == "ready" && !session.ready;
+        let refit = message.message_type == "ready"
+            && session.ready
+            && session.snapshot.dialog_kind == "customColor";
         if message.message_type == "action" {
             if !session.ready {
                 return Err("Dialog is not ready".into());
@@ -1433,17 +1485,17 @@ pub(crate) async fn dialog_send(
                 return Ok(());
             }
         }
-        if reveal {
+        if reveal || refit {
             session.ready = true;
             session.content_fit =
                 MeasuredContent::new(ContentFit::from_ready(&message.data), scale_at_ready);
         }
         // Only this Rust-validated path can write the owner's private channel.
         send_owner(session, window.label(), &message)?;
-        reveal
+        (reveal, refit.then_some(session.content_fit).flatten())
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
-    if reveal {
+    if reveal.0 {
         let target = window.clone();
         if let Err(error) =
             super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
@@ -1453,7 +1505,72 @@ pub(crate) async fn dialog_send(
             close_session(&app, &host_id, "error");
             return Err(error);
         }
+    } else if let Some(fit) = reveal.1 {
+        let target = window.clone();
+        if let Err(error) =
+            super::run_on_main_thread_blocking(&window, move || refit_custom_color(&target, fit))
+                .and_then(|result| result)
+        {
+            eprintln!("Could not refit custom color dialog: {error}");
+        }
     }
+    Ok(())
+}
+
+fn refit_custom_color<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    fit: MeasuredContent,
+) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("Dialog monitor unavailable")?;
+    let work = WorkArea::from_monitor(&monitor);
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let client = window.inner_size().map_err(|e| e.to_string())?;
+    let spec = kind_spec("customColor")?;
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
+        .map_err(|e| e.to_string())?;
+    finish_placement(
+        (
+            (f64::from(position.x), f64::from(position.y), scale),
+            (
+                f64::from(client.width) / scale,
+                fit.logical_height(spec.min_size.1),
+            ),
+        ),
+        &work,
+        true,
+        None,
+        |x, y| {
+            window
+                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
+                .map_err(|e| e.to_string())
+        },
+        |w, h| {
+            window
+                .set_size(tauri::PhysicalSize::new(w, h))
+                .map_err(|e| e.to_string())
+        },
+        || {
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let client = window.inner_size().map_err(|e| e.to_string())?;
+            Ok(DialogFrame {
+                outer: (outer.width, outer.height),
+                client: (client.width, client.height),
+            })
+        },
+    )?;
+    let client = window.inner_size().map_err(|e| e.to_string())?;
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(
+            (f64::from(client.width) / scale).min(spec.min_size.0),
+            f64::from(client.height) / scale,
+        )))
+        .map_err(|e| e.to_string())?;
+    mark_transient(window.label());
     Ok(())
 }
 
@@ -3225,6 +3342,7 @@ mod tests {
             "structureTemplates",
             "pageSize",
             "arrangementSpacing",
+            "customColor",
             "insertTable",
             "export",
             "engineInstall",
@@ -3232,7 +3350,7 @@ mod tests {
         ] {
             assert_eq!(
                 kind_spec(kind).unwrap().fit_content,
-                matches!(kind, "insertTable" | "vibeCodeGuide")
+                matches!(kind, "insertTable" | "vibeCodeGuide" | "customColor")
             );
         }
     }
@@ -3573,6 +3691,53 @@ mod tests {
         assert!(message.validate().is_err());
         message.data = json!({"action":"preview", "percent":80});
         assert!(message.validate().is_err());
+    }
+    #[test]
+    fn custom_color_registers_labels_and_validates_payloads() {
+        let spec = kind_spec("customColor").unwrap();
+        assert!(!spec.maximizable);
+        assert!(spec.resizable);
+        assert!(
+            include_str!("../capabilities/dialog-host.json").contains("dialog-main-customColor-*")
+        );
+        let mut message = snapshot();
+        message.dialog_kind = "customColor".into();
+        message.data =
+            json!({"title":"Custom Color 1, Slot 2", "swatch":1, "slot":2, "color":null});
+        assert!(message.validate().is_ok());
+        let (registration, _) = register(&mut Registry::default(), message.clone(), false).unwrap();
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-customColor-"));
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(!is_dialog_label("dialog-main-customColor-../main"));
+        for (field, value) in [
+            ("swatch", json!(5)),
+            ("slot", json!(0)),
+            ("color", json!("#abcd")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data[field] = value;
+            assert!(invalid.validate().is_err());
+        }
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"apply", "hex":"#1f5fbf"}),
+            json!({"action":"clear"}),
+            json!({"action":"cancel"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_ok());
+        }
+        for data in [
+            json!({"action":"apply", "hex":"#ABCDEF"}),
+            json!({"action":"apply", "hex":"#12345678"}),
+            json!({"action":"clear", "swatch":1}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
     }
     #[test]
     fn validates_kind_label_owner_and_payload() {

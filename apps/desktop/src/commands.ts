@@ -1,3 +1,4 @@
+import { allCustomSwatchCommandIds, loadCustomSwatches, parseCustomSwatchCommandId, type CustomSwatchState } from "./customColorSwatches";
 import {
   MinimalPageSizePresetIds,
   findPageSizePreset,
@@ -62,6 +63,7 @@ export interface CommandAvailability {
 }
 
 export interface ShellCommandOptions {
+  customSwatches?: CustomSwatchState;
   activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
   availability?: CommandAvailability;
@@ -2352,6 +2354,7 @@ export function allShellCommands(
 ): CommandSpec[] {
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
+    ...createCustomSwatchActions(options.customSwatches ?? loadCustomSwatches(), document.selection.objectIds.length > 0 || options.availability?.hasMoleculeFragmentSelection === true),
     ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled),
@@ -2373,6 +2376,19 @@ export function allShellCommands(
     ...objectStyleActions,
     ...toolbarCustomizationActions
   ]);
+}
+
+/** Finite value-encoded family. Only the two-slot widgets are offered by the toolbar gallery. */
+export function createCustomSwatchActions(state: CustomSwatchState, hasSelection: boolean): CommandSpec[] {
+  return allCustomSwatchCommandIds().map(id => {
+    const { swatch, slot, action } = parseCustomSwatchCommandId(id)!;
+    const color = state[swatch][`slot${slot}`];
+    const disabledReason = action === "apply" ? !color ? "Set this custom color first" : !hasSelection ? "Select an object to change its color" : undefined
+      : action === "clear" && !color ? "This custom color is empty" : undefined;
+    const verb = { apply: "Apply", edit: "Edit", clear: "Clear" }[action];
+    return { id, title: `${verb} Custom Color ${swatch}, Slot ${slot}${action === "edit" ? "…" : ""}`,
+      source: "core", icon: "style", category: "color", enabled: disabledReason === undefined, disabledReason };
+  });
 }
 
 function dedupeCommands(commands: CommandSpec[]): CommandSpec[] {

@@ -1050,6 +1050,7 @@ export function PaletteWindow({
         onInvoke={invokeCommand}
         customize={customizeThisPalette ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
         widgetState={{
+          commandSpecs: allCommands,
           colorContextKey,
           currentObjectColor: currentTextStyle.color,
           currentArtStyle,

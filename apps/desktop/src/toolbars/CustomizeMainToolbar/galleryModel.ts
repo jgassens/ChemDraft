@@ -1,4 +1,5 @@
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import { parseCustomSwatchCommandId } from "../../customColorSwatches";
 import type { CommandSpec } from "../../commands";
 import { isRenamedCommandId } from "../../renamedCommands";
 import type { IconName } from "../../icons";
@@ -97,7 +98,7 @@ export function buildGalleryModel(
   const seen = new Set<string>();
   const commandEntries: GalleryEntry[] = [];
   for (const command of commands) {
-    if (seen.has(command.id)) {
+    if (seen.has(command.id) || parseCustomSwatchCommandId(command.id)) {
       continue;
     }
     seen.add(command.id);
@@ -173,7 +174,7 @@ const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }>
   { pattern: /^view\.toolset\.toggle\./, section: "toolbars" },
   { pattern: /^view\.toggle(MoleculeInspector|RingInspector|ToolPalette)$/, section: "toolbars" },
   { pattern: /^tool\.(select|lasso|eraser)$/, section: "selection" },
-  { pattern: /^tool\.(bond|wedgeBond|hashedBond|dashedBond|boldBond|chain)$/, section: "bonds" },
+  { pattern: /^tool\.(bond|doubleBond|tripleBond|wedgeBond|hashedBond|dashedBond|boldBond|chain|chainFlexible)$/, section: "bonds" },
   { pattern: /^bond\./, section: "bonds" },
   { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane)/, section: "rings" },
   { pattern: /^atom\./, section: "atoms" },
@@ -284,7 +285,7 @@ export function buildGallerySections(
       entry.kind === "spacer" || entry.kind === "separator"
         ? "layout"
         : entry.kind === "widget"
-          ? "widgets"
+          ? entry.widgetId?.startsWith("widget.core.customColorSwatch") ? "objectStyle" : "widgets"
           : commandSectionId(entry.commandId ?? "");
     const bucket = bySection.get(section) ?? [];
     bucket.push({ ...entry, title: sectionDisplayTitle(section, entry) });

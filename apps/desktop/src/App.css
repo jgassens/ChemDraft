@@ -1658,6 +1658,12 @@ textarea:focus-visible,
   cursor: pointer;
 }
 
+.custom-color-swatch-widget { display: flex; gap: 4px; align-items: center; height: 24px; }
+.custom-color-slot { flex: 0 0 24px; color: var(--cd-text-primary); font-weight: 600; }
+.custom-color-slot[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.custom-color-preview { width: 64px; height: 40px; margin-top: 12px; border: 1px solid var(--cd-border-control); }
+.cd-custom-color-form select { margin-left: 8px; }
+
 .toolbar-color-picker {
   position: relative;
   display: flex;

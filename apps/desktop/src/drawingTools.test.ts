@@ -30,9 +30,9 @@ describe("Phase 7 drawing tool activation", () => {
     expect(commandsForKind("art")).toContain("tool.art.arc90Dashed");
   });
 
-  it.each(["double", "triple"])("keeps the %s bond tool off the default toolbar but registered for Customize", (order) => {
+  it.each(["double", "triple"])("puts the %s bond tool on the default toolbar and registers it for Customize", (order) => {
     const id = `tool.${order}Bond`;
-    expect(getToolsetCommandSpecs().some(candidate => candidate.id === id)).toBe(false);
+    expect(getToolsetCommandSpecs().some(candidate => candidate.id === id)).toBe(true);
     const command = withStandaloneDrawingToolCommands(getToolsetCommandSpecs()).find(candidate => candidate.id === id)!;
     expect(command).toBeDefined();
     expect(command.icon).toBe(`${order}Bond`);
@@ -40,7 +40,7 @@ describe("Phase 7 drawing tool activation", () => {
     expect(getDrawingToolCommandSpecs(getToolsetCommandSpecs()).some(candidate => candidate.id === id)).toBe(true);
   });
 
-  it.each(["double", "triple"])("activates the standalone %s bond tool", (order) => {
+  it.each(["double", "triple"])("activates the %s bond tool", (order) => {
     const command = withStandaloneDrawingToolCommands(getToolsetCommandSpecs()).find(candidate => candidate.id === `tool.${order}Bond`)!;
     expect(command.enabled).not.toBe(false);
     expect(activateDrawingToolCommand(createActiveToolState(), command).state).toMatchObject({
