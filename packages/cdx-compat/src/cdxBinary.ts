@@ -337,6 +337,7 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
   const u32 = () => { need(4); const v = view.getUint32(pos, little); pos += 4; return v; };
   const num = (v: number) => (exact ? String(v) : fmt(v));
   const fonts = new Map<number, number>(); // font id to charset code
+  const pendingText: ({ el: CdxElement; bytes: Uint8Array; unicode: boolean } & ({ at: number } | { attribute: string }))[] = [];
   let root: CdxElement | undefined;
 
   // An integer of 1, 2 or 4 bytes, signed or not.
@@ -437,7 +438,10 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "f64": if (n === 8) a[name] = String(d.getFloat64(0, little)); return;
       case "lh": { const v = n === 4 ? d.getInt32(0, little) / 65536 : int(d, true); if (v !== undefined) a[name] = n !== 4 && v === 1 ? "auto" : n !== 4 && v === 0 ? "variable" : String(n === 4 ? v : v / 20); return; }
       case "wrap": { const v = n === 4 ? d.getInt32(0, little) / 65536 : int(d, true); if (v !== undefined) a[name] = num(v); return; }
-      case "str": a[name] = runsOf(b, tag === 0x1500 || tag === 0x1501, el).map((run) => run.text).join(""); return;
+      case "str":
+        a[name] = "";
+        pendingText.push({ el, bytes: b, unicode: tag === 0x1500 || tag === 0x1501, attribute: name });
+        return;
       case "plain": a[name] = decode(b, 10000, el); return;
       case "hex": a[name] = hex(b); return;
       case "ids": if (n % 4 === 0) a[name] = Array.from({ length: n / 4 }, (_, k) => d.getInt32(4 * k, little)).join(" "); return;
@@ -465,7 +469,10 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
         const t = a.TagType;
         if (t === "Double" && n === 8) a[name] = String(d.getFloat64(0, little));
         else if (t === "Long") { const v = int(d, true); if (v !== undefined) a[name] = String(v); }
-        else if (t === "String") a[name] = runsOf(b, false, el).map((run) => run.text).join("");
+        else if (t === "String") {
+          a[name] = "";
+          pendingText.push({ el, bytes: b, unicode: false, attribute: name });
+        }
         else raw();
         return;
       }
@@ -546,8 +553,9 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
     }
     // UTF-8 text wins over the legacy copy (as CDX reads it).
     if (el.name === "spectrum" && el.text) { delete el.attrs.YLow; delete el.attrs.YScale; }
-    const runs = text.unicode?.length ? runsOf(text.unicode, true, el) : text.legacy ? runsOf(text.legacy, false, el) : [];
-    el.kids = [...el.kids, ...runs, ...objects0];
+    const unicode = Boolean(text.unicode?.length), textBytes = unicode ? text.unicode : text.legacy;
+    if (textBytes) pendingText.push({ el, bytes: textBytes, unicode, at: el.kids.length });
+    el.kids = [...el.kids, ...objects0];
     return el;
   };
   // The format writes the document's tag and id after the header; other writers (Indigo) leave them as zeros.
@@ -555,8 +563,17 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
   if (tag !== 0x8000 && (tag || id)) fail("invalid document object tag 0x" + tag.toString(16).padStart(4, "0"));
   root = { name: "CDXML", attrs: Object.create(null), kids: [], text: "" };
   const result = object(0x8000, id, 0);
+  // Document font tables and default fonts may follow pages containing legacy text.
+  // Decode styled attributes and text only after all metadata is known; keep text before child objects.
+  for (const pending of pendingText) {
+    const { el, bytes: textBytes, unicode } = pending;
+    const runs = runsOf(textBytes, unicode, el);
+    if ("attribute" in pending) el.attrs[pending.attribute] = runs.map((run) => run.text).join("");
+    else el.kids = [...el.kids.slice(0, pending.at), ...runs, ...el.kids.slice(pending.at)];
+  }
   // Producer/envelope properties can follow child objects, so select the legacy convention
-  // only after reading the whole document. This also preserves old envelopes' visible hashes.
+  // only after reading the whole document and decoding CreationProgram above.
+  // This also preserves old envelopes' visible hashes.
   if (isLegacyChemDraftCdx(result, warn)) {
     const restore = (element: CdxElement) => {
       for (const [name, value] of Object.entries(element.attrs)) {
