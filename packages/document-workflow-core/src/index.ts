@@ -1,6 +1,7 @@
 export * from "./chemicalIdentity";
 export * from "./atomProblems";
 export * from "./exportWarnings";
+export * from "./cleanupSelection";
 export * from "./formulaText";
 export * from "./atoms";
 export * from "./documentInventory";
