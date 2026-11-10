@@ -12129,9 +12129,9 @@ export function MainWindow({
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("toggle_preferences_window");
             perfHook(() => perfToggleResolved("preferences", open, input));
-          })().catch(() => {
+          })().catch((error: unknown) => {
             if (input) perfHook(() => perfProbe?.complete(input, "failed"));
-            setStatus("Preferences unavailable");
+            setStatus(`Preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
           });
           return;
         }

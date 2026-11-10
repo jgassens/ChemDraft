@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { createPhase4Document } from "../documentWorkflow";
 import type { PerfProbe } from "./probe";
@@ -63,6 +63,10 @@ vi.mock("../plugins/createPluginRuntime", async original => {
 });
 let root: Root | undefined, container: HTMLDivElement, paletteRoot: Root | undefined, paletteContainer: HTMLDivElement;
 let runtime: typeof import("./runtime");
+// Keep the cold MainWindow transform out of the first test's timeout. A timed-out
+// mount keeps running and can overlap the next test's act scope and shared root.
+// mount still resets modules so every test gets its own runtime and probe state.
+beforeAll(async () => { await import("../MainWindow"); });
 afterEach(() => {
   act(() => root?.unmount()); root = undefined; container?.remove();
   act(() => paletteRoot?.unmount()); paletteRoot = undefined; paletteContainer?.remove();
@@ -131,6 +135,40 @@ async function mount(options: { web?: boolean; inline?: boolean; document?: Retu
   })));
   await runtime.startPerfProbe("fault-test");
 }
+
+it.each([
+  new Error("Could not restore document for Preferences: unminimize failed"),
+  "Dialog owner is hidden",
+  "Document monitor unavailable"
+])("reports the native Preferences opening error in document status: %s", async error => {
+  await mount(); vi.useFakeTimers();
+  const invoke = native.invoke.getMockImplementation()!;
+  native.invoke.mockImplementation(async (name: string, args?: { label: string }) => {
+    if (name === "toggle_preferences_window") throw error;
+    return invoke(name, args);
+  });
+  try {
+    // command's awaited act flushes the fire-and-forget IPC rejection and status
+    // render, just as in the existing failed-IPC cases below; no polling escapes it.
+    await command("view.togglePreferences");
+    expect(container.querySelector("[data-status-message]")?.textContent)
+      .toBe(`Preferences unavailable: ${error instanceof Error ? error.message : error}`);
+    expect(native.invoke).toHaveBeenCalledWith("toggle_preferences_window");
+    expect(native.windows.has("toggle_preferences_window")).toBe(false);
+  } finally {
+    native.invoke.mockImplementation(invoke);
+  }
+});
+
+it("opens Preferences successfully without adding a failure status", async () => {
+  await mount(); vi.useFakeTimers();
+  const status = container.querySelector("[data-status-message]")!.textContent;
+  await command("view.togglePreferences");
+  expect(native.windows.has("toggle_preferences_window")).toBe(true);
+  expect(native.invoke).toHaveBeenCalledWith("toggle_preferences_window");
+  expect(container.querySelector("[data-status-message]")?.textContent).toBe(status);
+  expect(container.querySelector("[data-status-message]")?.textContent).not.toContain("Preferences unavailable");
+});
 
 it.each([false, true].flatMap(inline => ["throw", "reject"].map(failure => ({ inline, failure }))))
   ("ring close finishes selection cleanup and status after a failed completion hook ($failure, inline=$inline)", async ({ inline, failure }) => {

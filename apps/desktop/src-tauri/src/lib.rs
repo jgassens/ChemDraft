@@ -6648,6 +6648,70 @@ async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> 
 fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    let target = app.clone();
+    with_preferences_owner_restored(
+        || {
+            run_on_main_thread_blocking(app, move || {
+                restore_preferences_owner_if_needed(
+                    quit_in_progress(),
+                    utility_windows_suspended(),
+                    || {
+                        let owner = target
+                            .get_webview_window(MAIN_WINDOW_LABEL)
+                            .ok_or("Main document window is not available.")?;
+                        Ok((
+                            owner.is_minimized().map_err(|error| error.to_string())?,
+                            owner.is_visible().map_err(|error| error.to_string())?,
+                        ))
+                    },
+                    || {
+                        focus_main_document_window_impl(&target, MainWindowFocusMode::Force)
+                            .map(|_| ())
+                    },
+                )
+            })
+            .map_err(|error| format!("Could not restore document for Preferences: {error}"))
+            .and_then(|result| result)
+        },
+        || create_or_raise_preferences_window(app),
+    )
+}
+
+/// Placement needs the restored document's monitor/frame, and Windows hides owned windows while
+/// their owner is minimized. Complete restoration before either the create or retained reveal path.
+fn with_preferences_owner_restored<T>(
+    restore_owner: impl FnOnce() -> Result<(), String>,
+    create_or_raise: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    restore_owner()?;
+    create_or_raise()
+}
+
+/// Main-thread-only in production. Leave visible documents in their current stacking order;
+/// suspended reveals continue through the shared dialog path, which defers them until release.
+fn restore_preferences_owner_if_needed(
+    quitting: bool,
+    utilities_suspended: bool,
+    owner_state: impl FnOnce() -> Result<(bool, bool), String>,
+    restore_owner: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if quitting {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    if utilities_suspended {
+        return Ok(());
+    }
+    let restore_error = |error| format!("Could not restore document for Preferences: {error}");
+    let (minimized, visible) = owner_state().map_err(restore_error)?;
+    if minimized || !visible {
+        restore_owner().map_err(restore_error)?;
+    }
+    Ok(())
+}
+
+fn create_or_raise_preferences_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         let target = window.clone();
         run_on_main_thread_blocking(&window, move || dialog_windows::show_preferences(&target))
@@ -9545,6 +9609,198 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn preferences_restores_hidden_and_iconic_owners_before_create_or_raise() {
+        use std::cell::RefCell;
+
+        #[derive(Clone, Copy)]
+        struct Owner {
+            visible: bool,
+            minimized: bool,
+            monitor: Option<&'static str>,
+            frame: (i32, i32, u32, u32),
+        }
+
+        for (platform, initial) in [
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: true,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: true,
+                    minimized: true,
+                    monitor: Some("nearest"),
+                    frame: (-32_000, -32_000, 0, 0),
+                },
+            ),
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+        ] {
+            for retained in [false, true] {
+                let owner = RefCell::new(initial);
+                let events = RefCell::new(Vec::new());
+                with_preferences_owner_restored(
+                    || {
+                        restore_preferences_owner_if_needed(
+                            false,
+                            false,
+                            || {
+                                let owner = owner.borrow();
+                                Ok((owner.minimized, owner.visible))
+                            },
+                            || {
+                                events.borrow_mut().push("unminimize");
+                                let mut owner = owner.borrow_mut();
+                                owner.minimized = false;
+                                owner.monitor = Some("document");
+                                owner.frame = (100, 100, 1200, 800);
+                                events.borrow_mut().push("show");
+                                owner.visible = true;
+                                Ok(())
+                            },
+                        )
+                    },
+                    || {
+                        let owner = owner.borrow();
+                        assert!(owner.visible && !owner.minimized, "{platform}");
+                        if !retained {
+                            if platform == "windows" {
+                                events.borrow_mut().push("parent");
+                            }
+                            events.borrow_mut().push("create");
+                        }
+                        events.borrow_mut().push("monitor");
+                        assert_eq!(owner.monitor, Some("document"), "{platform}");
+                        events.borrow_mut().push("frame");
+                        assert_eq!(owner.frame, (100, 100, 1200, 800), "{platform}");
+                        events.borrow_mut().push("raise");
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                let mut expected = vec!["unminimize", "show"];
+                if !retained {
+                    if platform == "windows" {
+                        expected.push("parent");
+                    }
+                    expected.push("create");
+                }
+                expected.extend(["monitor", "frame", "raise"]);
+                assert_eq!(*events.borrow(), expected, "{platform}, retained={retained}");
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_leaves_visible_non_minimized_owner_order_unchanged() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    false,
+                    || Ok((false, true)),
+                    || panic!("Opening Preferences must not raise an already visible document"),
+                )
+            },
+            || {
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_does_not_restore_or_open_during_quit() {
+        for suspended in [false, true] {
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        true,
+                        suspended,
+                        || panic!("Quitting must be checked before querying the owner"),
+                        || panic!("Quitting must not restore the document"),
+                    )
+                },
+                || -> Result<(), String> { panic!("Quitting must not create or raise Preferences") },
+            );
+            assert_eq!(result, Err(QUITTING_WINDOW_REFUSAL.to_string()));
+        }
+    }
+
+    #[test]
+    fn preferences_skips_owner_restore_during_utility_suspension() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    true,
+                    || panic!("Suspension must be checked before querying the owner"),
+                    || panic!("Suspension must not restore the document"),
+                )
+            },
+            || {
+                // The existing show path enrolls the reveal in utility restoration.
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_owner_restore_failure_prevents_create_and_retained_reveal() {
+        for error in ["unminimize failed", "show failed", "main thread unavailable"] {
+            let continued = std::cell::Cell::new(false);
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        false,
+                        false,
+                        || Ok((true, false)),
+                        || Err(error.to_string()),
+                    )
+                },
+                || {
+                    continued.set(true);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result,
+                Err(format!("Could not restore document for Preferences: {error}"))
+            );
+            assert!(!continued.get());
+        }
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
