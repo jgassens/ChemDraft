@@ -150,6 +150,7 @@ import {
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
+import { registerInlinePopover } from "./window-manager/popoverEscape";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -2155,6 +2156,14 @@ function ArtToolbarStyleControls() {
   }, [activeGradientStops.length, activeGradientStopsKey]);
 
   useEffect(() => {
+    if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) return;
+    return registerInlinePopover(() => {
+      setColorOpen(false); setEffectColorOpen(false); setGradientStopColorOpen(false);
+      onCancel?.();
+    });
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onCancel]);
+
+  useEffect(() => {
     if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) {
       return undefined;
     }
@@ -3208,6 +3217,8 @@ function ColorPickerControl({
   const [open, setOpen] = useState(false);
   const [draftHex, setDraftHex] = useState(normalizedCurrentColor);
 
+  useEffect(() => open ? registerInlinePopover(() => setOpen(false)) : undefined, [open]);
+
   useEffect(() => {
     onOpenChange?.(open);
   }, [onOpenChange, open]);
@@ -3936,6 +3947,8 @@ function ToolbarPaletteItem({
     clearHoldTimer();
   }, [clearHoldTimer]);
 
+  useEffect(() => menuOpen ? registerInlinePopover(() => setMenuOpen(false)) : undefined, [menuOpen]);
+
   useEffect(() => {
     if (!menuOpen) {
       return undefined;
@@ -4644,6 +4657,8 @@ function DistributeCommandIconButton({
   useEffect(() => () => {
     clearHoldTimer();
   }, [clearHoldTimer]);
+
+  useEffect(() => menuOpen ? registerInlinePopover(() => setMenuOpen(false)) : undefined, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) {

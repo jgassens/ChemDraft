@@ -1,3 +1,4 @@
+import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
@@ -45,6 +46,7 @@ import {
   closeToolsetWindow,
   closeToolsetPopoverWindow,
   isToolsetPopoverWindowVisible,
+  newToolsetPopoverOpening,
   currentWindowLogicalPosition,
   currentWindowLogicalWorkArea,
   fitCurrentPaletteWindow,
@@ -153,6 +155,8 @@ export function PaletteWindow({
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
   const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  useEffect(() => installPopoverEscapeRouting(), []);
+
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -820,53 +824,79 @@ export function PaletteWindow({
   const lastPopoverPayloadRef = useRef<{ content: ToolsetPopoverContent; anchor: ToolsetPopoverAnchor } | undefined>(
     undefined
   );
-
-  const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
-    content = { ...content, openedAt: toolsetPopoverTimestamp() };
-    return (async () => {
-      // No silent origin fallback: a failed position read once sent the first popover
-      // open to the anchor offset from (0,0) — inches from its button — while every
-      // later open worked. Retry once, then abort; a popout that doesn't appear (and
-      // works on the next press) beats one that appears in the wrong place.
-      const windowPosition =
-        (await currentWindowLogicalPosition().catch(() => undefined)) ??
-        (await currentWindowLogicalPosition().catch(() => undefined));
-      if (!windowPosition) {
-        return;
-      }
-      const screenX = windowPosition.x + anchor.left;
-      const screenY = windowPosition.y + anchor.bottom + 4;
-      // Armed only once the open is actually going through. Priming it before the abortable read
-      // above meant a press that never opened anything still armed the replay, so the prewarmed
-      // window's mount request got answered and revealed a popover nobody asked for at (0, 0).
-      lastPopoverPayloadRef.current = { content, anchor: { x: screenX, y: screenY } };
-      await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
-      // The anchor rides along so the popover can re-assert its position AFTER sizing to
-      // content — a bottom-anchored macOS resize otherwise shifts the first open down by
-      // the height delta (Rust positions the old-size window; the resize moves its top).
-      await setToolsetPopoverContent(toolset.id, content, { x: screenX, y: screenY });
-    })().catch(() => undefined);
+  const popoverOperationsRef = useRef(Promise.resolve());
+  // A flyout press invalidates older work immediately, even while its native open is queued.
+  // Swatch presses themselves remain ordered toggles rather than cancelling one another.
+  const popoverRequestRef = useRef(0);
+  const enqueuePopoverOperation = (operation: () => Promise<void>) => {
+    popoverOperationsRef.current = popoverOperationsRef.current.then(operation).catch(() => undefined);
   };
 
-  const colorToggleRef = useRef(Promise.resolve());
-  // Serialize swatch presses and consult native visibility so external dismissal never consumes
-  // the next click. A flyout sharing this palette's window must switch to colour rather than close.
+  const openPopover = async (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent, request: number) => {
+    const isCurrent = () => popoverRequestRef.current === request;
+    if (!isCurrent()) return false;
+    // No silent origin fallback: a failed position read once sent the first popover
+    // open to the anchor offset from (0,0) — inches from its button — while every
+    // later open worked. Retry once, then abort; a popout that doesn't appear (and
+    // works on the next press) beats one that appears in the wrong place.
+    let windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
+    if (!isCurrent()) return false;
+    if (!windowPosition) {
+      windowPosition = await currentWindowLogicalPosition().catch(() => undefined);
+      if (!isCurrent()) return false;
+    }
+    if (!windowPosition) {
+      return false;
+    }
+    const screenX = windowPosition.x + anchor.left;
+    const screenY = windowPosition.y + anchor.bottom + 4;
+    // Armed only once the open is actually going through. Priming it before the abortable read
+    // above meant a press that never opened anything still armed the replay, so the prewarmed
+    // window's mount request got answered and revealed a popover nobody asked for at (0, 0).
+    lastPopoverPayloadRef.current = { content, anchor: { x: screenX, y: screenY } };
+    await openToolsetPopoverWindow(toolset.id, kind, screenX, screenY);
+    if (!isCurrent() || lastPopoverPayloadRef.current?.content !== content) return false;
+    // The anchor rides along so the popover can re-assert its position AFTER sizing to
+    // content — a bottom-anchored macOS resize otherwise shifts the first open down by
+    // the height delta (Rust positions the old-size window; the resize moves its top).
+    await setToolsetPopoverContent(toolset.id, content, { x: screenX, y: screenY });
+    return isCurrent() && lastPopoverPayloadRef.current?.content === content;
+  };
+
+  // Flyout opens and swatch toggles share the entire native operation, including visibility reads.
+  // Snapshot the opening before awaiting: a late reply never authorizes closing its replacement.
   const openArtColorPopover = (anchor: ToolbarPopoverAnchor) => {
-    colorToggleRef.current = colorToggleRef.current.then(async () => {
-      if (lastPopoverPayloadRef.current?.content.kind === "artColor"
-          && await isToolsetPopoverWindowVisible(toolset.id)) {
-        lastPopoverPayloadRef.current = undefined;
-        await dismissToolsetPopovers(toolsetPopoverTimestamp());
-        await closeToolsetPopoverWindow(toolset.id);
-        return;
+    const request = popoverRequestRef.current;
+    enqueuePopoverOperation(async () => {
+      if (popoverRequestRef.current !== request) return;
+      const opening = lastPopoverPayloadRef.current?.content;
+      const isCurrent = () => popoverRequestRef.current === request && lastPopoverPayloadRef.current?.content === opening;
+      if (opening?.kind === "artColor") {
+        const visible = await isToolsetPopoverWindowVisible(toolset.id);
+        if (!isCurrent()) return;
+        if (visible) {
+          const requestedAt = toolsetPopoverTimestamp();
+          await dismissToolsetPopovers(requestedAt, undefined, [{
+            toolsetId: toolset.id, openedAt: opening.openedAt, generation: opening.generation
+          }]);
+          if (!isCurrent()) return;
+          await closeToolsetPopoverWindow(toolset.id, opening.openedAt, opening.generation);
+          if (!isCurrent()) return;
+          lastPopoverPayloadRef.current = undefined;
+          return;
+        }
       }
-      await openPopover(anchor, "artColor", { kind: "artColor" });
-      await requestToolsetTextStyle();
-    }).catch(() => undefined);
+      const content: ToolsetPopoverContent = { kind: "artColor", ...newToolsetPopoverOpening() };
+      if (await openPopover(anchor, "artColor", content, request)) {
+        await requestToolsetTextStyle();
+      }
+    });
   };
 
   const openFlyoutPopover = (request: ToolbarFlyoutRequest) => {
-    openPopover(request.anchor, "flyout", { kind: "flyout", flyout: request.flyout });
+    const sequence = ++popoverRequestRef.current;
+    const content: ToolsetPopoverContent = { kind: "flyout", flyout: request.flyout, ...newToolsetPopoverOpening() };
+    enqueuePopoverOperation(async () => { await openPopover(request.anchor, "flyout", content, sequence); });
   };
 
   // Build this palette's popover window hidden, ahead of the first flyout/color press. The cold
@@ -888,7 +918,11 @@ export function PaletteWindow({
   // If this palette goes away, don't leave its popover window orphaned on screen.
   useEffect(() => {
     return () => {
-      void closeToolsetPopoverWindow(toolset.id).catch(() => undefined);
+      ++popoverRequestRef.current;
+      const opening = lastPopoverPayloadRef.current?.content;
+      enqueuePopoverOperation(async () => {
+        await closeToolsetPopoverWindow(toolset.id, opening?.openedAt, opening?.generation);
+      });
     };
   }, [toolset.id]);
 

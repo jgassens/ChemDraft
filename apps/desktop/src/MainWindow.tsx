@@ -1,3 +1,4 @@
+import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
@@ -13596,6 +13597,10 @@ export function MainWindow({
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
   }, [finishAtomLabelEdit]);
+
+  useEffect(() => installPopoverEscapeRouting(() => Boolean(
+    activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current
+  )), []);
 
   useEffect(() => {
     // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must

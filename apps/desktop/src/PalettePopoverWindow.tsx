@@ -7,6 +7,9 @@ import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
 import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
 import {
   listenForToolsetPopoverContent,
+  notifyToolsetPopoverClosed,
+  compareToolsetPopoverOpenings,
+  newToolsetPopoverOpening,
   listenForToolsetPopoverDismiss,
   listenForToolsetPopoverRelease,
   listenForBondStereoPopoverActions,
@@ -26,7 +29,8 @@ import {
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
   type ToolsetPopoverAnchor,
-  type ToolsetPopoverContent
+  type ToolsetPopoverContent,
+  type ToolsetPopoverOpening
 } from "./window-manager";
 
 /**
@@ -62,6 +66,7 @@ export function PalettePopoverWindow({
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
   const contentOpenedAt = useRef(0);
+  const closedOpening = useRef<ToolsetPopoverOpening | undefined>(undefined);
   const latestDismissAt = useRef(-Infinity);
   const perfShownRef = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
@@ -70,6 +75,10 @@ export function PalettePopoverWindow({
   const keepWindowFocusRef = useRef(false);
   const hidePopoverWindow = () => {
     keepWindowFocusRef.current = false;
+    if (!closedOpening.current || compareToolsetPopoverOpenings(contentRef.current, closedOpening.current) > 0) {
+      closedOpening.current = contentRef.current;
+    }
+    void notifyToolsetPopoverClosed(toolsetId, contentOpenedAt.current, contentRef.current.generation).catch(() => undefined);
     hideNativePopoverWindow();
   };
   const closedBondStereoSessions = useRef(new Set<string>());
@@ -168,8 +177,14 @@ export function PalettePopoverWindow({
       if (payload.toolsetId !== toolsetId) {
         return;
       }
-      contentPushedRef.current = true;
-      const openedAt = payload.openedAt ?? toolsetPopoverTimestamp();
+      // Unstamped pushes have no replay identity: each is a fresh opening, even when the
+      // clock has not advanced. Stamped owner replays retain their original identity.
+      const opening = payload.openedAt === undefined && payload.generation === undefined
+        ? newToolsetPopoverOpening()
+        : { openedAt: payload.openedAt ?? toolsetPopoverTimestamp(), generation: payload.generation };
+      const { openedAt } = opening;
+      if (closedOpening.current && compareToolsetPopoverOpenings(opening, closedOpening.current) <= 0) return;
+      if (contentPushedRef.current && compareToolsetPopoverOpenings(opening, contentRef.current) <= 0) return;
       // Dismiss IPC and content IPC can arrive in either order. A genuine press
       // after this open began wins even if the window had no content at the time.
       if (latestDismissAt.current >= openedAt) {
@@ -186,12 +201,13 @@ export function PalettePopoverWindow({
       if (perfShownRef.current) perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
       perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       // A fresh push is a fresh open — it may follow a dismissal.
+      contentPushedRef.current = true;
       contentOpenedAt.current = openedAt;
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
       }
-      const next: ToolsetPopoverContent = payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" };
+      const next: ToolsetPopoverContent = { ...payload, ...opening };
       contentRef.current = next;
       setContent(next);
     })
@@ -380,7 +396,7 @@ export function PalettePopoverWindow({
   // Escape dismisses (and cancels any in-flight colour preview).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") {
+      if (event.key !== "Escape" || dismissedRef.current) {
         return;
       }
       event.preventDefault();
@@ -418,15 +434,27 @@ export function PalettePopoverWindow({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listenForToolsetPopoverDismiss(payload => {
+      if (payload?.openings) {
+        const target = payload.openings.find(opening => opening.toolsetId === toolsetId);
+        if (!target) return;
+        if (!closedOpening.current || compareToolsetPopoverOpenings(target, closedOpening.current) > 0) {
+          closedOpening.current = target;
+        }
+        if (compareToolsetPopoverOpenings(target, contentRef.current) < 0) return;
+      }
       // Remember even an out-of-order broadcast for content still in transit.
       // Only presses before the originating open are stale, not presses before
       // the content arrived in this webview.
-      if (payload?.requestedAt !== undefined) {
+      if (payload?.requestedAt !== undefined && !payload.openings) {
         latestDismissAt.current = Math.max(latestDismissAt.current, payload.requestedAt);
         if (payload.requestedAt < contentOpenedAt.current) return;
       }
+      const cancelPreview = payload?.reason === "escape" && contentPushedRef.current && !dismissedRef.current;
       dismissedRef.current = true;
       notifyBondStereoClose();
+      if (cancelPreview) {
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+      }
       hidePopoverWindow();
     })
       .then((cleanup) => {

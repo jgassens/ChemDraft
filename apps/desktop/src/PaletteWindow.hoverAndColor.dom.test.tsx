@@ -34,14 +34,14 @@ vi.mock("./window-manager", async importOriginal => ({
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-describe("native palette tooltip and colour handoff", () => {
+describe.each(["macos", "windows"] as const)("native palette tooltip and colour handoff on %s", platform => {
   let container: HTMLDivElement;
   let root: Root;
   beforeEach(async () => {
     vi.clearAllMocks(); native.visible = false;
     container = document.createElement("div"); document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.art" })));
+    await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.art", platform })));
   });
   afterEach(async () => {
     await act(async () => root.unmount()); container.remove();
@@ -74,7 +74,7 @@ describe("native palette tooltip and colour handoff", () => {
     expect(native.dismiss).not.toHaveBeenCalled(); // The opening pointerdown is not click-away.
     await clickSwatch();
     expect(native.visible).toBe(false);
-    expect(native.close).toHaveBeenCalledExactlyOnceWith("core.art");
+    expect(native.close).toHaveBeenCalledExactlyOnceWith("core.art", expect.any(Number), expect.any(Number));
     expect(native.open).toHaveBeenCalledTimes(1);
     expect(native.dismiss).toHaveBeenCalledTimes(1);
     await clickSwatch();
@@ -91,6 +91,79 @@ describe("native palette tooltip and colour handoff", () => {
     await clickSwatch();
     expect(native.open).toHaveBeenCalledExactlyOnceWith("core.art", "artColor", expect.any(Number), expect.any(Number));
     expect(native.close).not.toHaveBeenCalled();
+  });
+
+  async function openFlyout() {
+    const button = container.querySelector<HTMLButtonElement>(".command-flyout-button")!;
+    expect(button).not.toBeNull();
+    await act(async () => button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  }
+
+  it("keeps a newer flyout open when an old colour toggle's visibility reply arrives", async () => {
+    await selectArt("fill");
+    await clickSwatch();
+    let resolveVisibility!: (visible: boolean) => void;
+    native.isVisible.mockImplementationOnce(() => new Promise(resolve => { resolveVisibility = resolve; }));
+    await clickSwatch();
+    expect(native.isVisible).toHaveBeenCalledTimes(1);
+    await openFlyout();
+    // Native operations share a queue: the newer flyout cannot race the old visibility read.
+    const opensWhilePending = native.open.mock.calls.length;
+    await act(async () => resolveVisibility(true));
+    expect(native.open).toHaveBeenLastCalledWith("core.art", "flyout", expect.any(Number), expect.any(Number));
+    expect(native.visible).toBe(true);
+    expect(native.close).not.toHaveBeenCalled();
+    expect(native.dismiss).not.toHaveBeenCalled();
+    expect(native.setContent).toHaveBeenLastCalledWith("core.art", expect.objectContaining({ kind: "flyout" }), expect.anything());
+    expect(opensWhilePending).toBe(1);
+  });
+
+  it("keeps a newer flyout open when the colour toggle's dismissal finishes late", async () => {
+    await selectArt("fill");
+    await clickSwatch();
+    let resolveDismiss!: () => void;
+    native.dismiss.mockImplementationOnce(() => new Promise<void>(resolve => { resolveDismiss = resolve; }));
+    await clickSwatch();
+    expect(native.dismiss).toHaveBeenCalledTimes(1);
+    await openFlyout();
+    const opensWhilePending = native.open.mock.calls.length;
+    await act(async () => resolveDismiss());
+    expect(native.open).toHaveBeenLastCalledWith("core.art", "flyout", expect.any(Number), expect.any(Number));
+    expect(native.visible).toBe(true);
+    expect(native.close).not.toHaveBeenCalled();
+    expect(opensWhilePending).toBe(1);
+  });
+
+  it("waits for an already invoked native close before opening the newer flyout", async () => {
+    await selectArt("fill");
+    await clickSwatch();
+    let resolveClose!: () => void;
+    native.close.mockImplementationOnce(() => new Promise<void>(resolve => {
+      resolveClose = () => { native.visible = false; resolve(); };
+    }));
+    await clickSwatch();
+    expect(native.close).toHaveBeenCalledTimes(1);
+    await openFlyout();
+    const opensWhilePending = native.open.mock.calls.length;
+    await act(async () => resolveClose());
+    expect(native.open).toHaveBeenLastCalledWith("core.art", "flyout", expect.any(Number), expect.any(Number));
+    expect(native.visible).toBe(true);
+    expect(native.close).toHaveBeenCalledTimes(1);
+    expect(opensWhilePending).toBe(1);
+  });
+
+  it("still serializes rapid swatch presses into open, close, open", async () => {
+    await selectArt("fill");
+    let resolvePosition!: (position: { x: number; y: number }) => void;
+    native.position.mockImplementationOnce(() => new Promise(resolve => { resolvePosition = resolve; }));
+    await clickSwatch();
+    await clickSwatch();
+    await clickSwatch();
+    expect(native.open).not.toHaveBeenCalled();
+    await act(async () => resolvePosition({ x: 100, y: 100 }));
+    expect(native.open).toHaveBeenCalledTimes(2);
+    expect(native.close).toHaveBeenCalledTimes(1);
+    expect(native.visible).toBe(true);
   });
 
   function tooltip(detail: PaletteTooltipDomDetail) {

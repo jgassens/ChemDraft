@@ -148,7 +148,9 @@ describe("document-owned bond stereo popover", () => {
       else if (trigger === "viewport") (container.querySelector(".page-stage") as HTMLElement).style.setProperty("--viewport-scale", "2");
       else native.events[trigger === "scale" ? "tauri://scale-change" : `tauri://${trigger}`]?.();
     });
-    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo",
+      vi.mocked(setToolsetPopoverContent).mock.calls[0][1].openedAt,
+      vi.mocked(setToolsetPopoverContent).mock.calls[0][1].generation);
     expect(sendBondStereoPopoverAction).toHaveBeenCalledWith(expect.objectContaining({ action: "close" }));
   });
 });
@@ -211,6 +213,46 @@ describe("open-bond native popover body", () => {
         commands: [{ id: "tool.rectangle", title: "Rectangle", enabled: true, active: false }] }
     };
   }
+  it("a delayed Escape only dismisses its checked generation, even at an identical timestamp", async () => {
+    const old = { ...snapshot("menu", 100), generation: 1 };
+    const current = { ...snapshot("menu", 100), generation: 2 };
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="flyout" prewarm />));
+    await act(async () => native.content?.(current));
+    await act(async () => native.content?.(old));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    await act(async () => native.dismiss?.({ requestedAt: 200, reason: "escape", openings: [old] }));
+    expect(native.hide).not.toHaveBeenCalled();
+    await act(async () => native.dismiss?.({ requestedAt: 200, reason: "escape", openings: [current] }));
+    expect(native.hide).toHaveBeenCalledTimes(1);
+    await act(async () => native.content?.(current));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    await act(async () => native.content?.({ ...current, generation: 3 }));
+    expect(native.show).toHaveBeenCalledTimes(2);
+  });
+  it("a newer generation's Escape hides older visible content before its delayed content arrives", async () => {
+    const old = { ...snapshot("menu", 100), generation: 1 };
+    const current = { ...snapshot("menu", 100), generation: 2 };
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="flyout" prewarm />));
+    await act(async () => native.content?.(old));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    // The document has generation 2 and its native visibility check succeeds,
+    // but this renderer still displays generation 1 when Escape arrives.
+    await act(async () => native.dismiss?.({ requestedAt: 200, reason: "escape", openings: [current] }));
+    expect(native.hide).toHaveBeenCalledTimes(1);
+    await act(async () => native.content?.(current));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    await act(async () => native.content?.({ ...current, generation: 3 }));
+    expect(native.show).toHaveBeenCalledTimes(2);
+  });
+  it("a generation-specific Escape delivered before content prevents its delayed reveal", async () => {
+    const payload = { ...snapshot("menu", 100), generation: 1 };
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="flyout" prewarm />));
+    await act(async () => native.dismiss?.({ requestedAt: 200, reason: "escape", openings: [payload] }));
+    await act(async () => native.content?.(payload));
+    expect(native.show).not.toHaveBeenCalled();
+    await act(async () => native.content?.({ ...payload, generation: 2 }));
+    expect(native.show).toHaveBeenCalledTimes(1);
+  });
   it.each(["artColor", "menu", "bondStereo"] as const)("never reveals delayed %s content after a genuine dismiss arrived first", async variant => {
     vi.spyOn(performance, "now").mockReturnValue(300);
     const payload = snapshot(variant, performance.timeOrigin + 100);
