@@ -26,12 +26,18 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
   const value = group.attributes.BracketedObjectIDs;
   const sourceIds = typeof value === "string" ? [...new Set(value.trim().split(/\s+/).filter(Boolean))] : [];
   const members = new Map<string, Set<string>>();
+  const referencedObjectIds = new Set(pair.flatMap(object => {
+    const atomMemberObjects = object.compatibility?.unknown.cdxmlBracketMemberObjectIds;
+    return [...object.containedObjectIds, ...(object.crossingBondIds ?? []).map(ref => ref.objectId),
+      ...(Array.isArray(atomMemberObjects) ? atomMemberObjects.filter((id): id is string => typeof id === "string") : [])];
+  }));
   let reason = sourceIds.length ? undefined : "its imported BracketedObjectIDs membership is empty or invalid";
   for (const sourceId of sourceIds) {
     const records = pair.flatMap(object => {
       const entries = object.compatibility?.unknown.cdxmlBracketMembers;
       return Array.isArray(entries) ? entries.filter(entry => record(entry) && entry.sourceId === sourceId) : [];
     });
+    records.forEach(entry => { if (typeof entry.objectId === "string") referencedObjectIds.add(entry.objectId); });
     const unique = [...new Map(records.map(entry => [JSON.stringify(entry), entry])).values()];
     const member = unique.length === 1 && record(unique[0]) ? unique[0] : undefined;
     const molecule = member && objects.find(object => object.id === member.objectId);
@@ -44,7 +50,7 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
     atoms.forEach(atom => ids.add(atom.id));
     members.set(molecule!.id, ids);
   }
-  return { members, reason };
+  return { members, reason, referencedObjectIds };
 }
 
 /** The MOL writer derives boundary bonds; decline any imported references it cannot preserve. */
@@ -63,7 +69,7 @@ function crossingReason(pair: BracketObject[], members: RepeatUnit["members"], m
       const molecule = molecules.find(molecule => molecule.id === ref.objectId);
       const bond = molecule?.bonds.find(bond => bond.id === ref.bondId);
       if (entry.bondIdentity !== undefined && entry.bondIdentity !== JSON.stringify(bond && [bond.fromAtomId, bond.toAtomId])) {
-        return `its imported crossing bond "${attributes.BondID}" no longer has its original endpoints`;
+        return `its imported crossing bond "${attributes.BondID ?? ref.bondId}" no longer has its original endpoints`;
       }
       if (attributes.InnerAtomID !== undefined && (!bond ||
         ![bond.fromAtomId, bond.toAtomId].includes(String(entry.innerAtomId)) ||
@@ -111,7 +117,8 @@ function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeO
         ? [{ molecule: object, atomIds, context }] : [];
     });
     const members = allMembers.filter(member => !exported || exported.has(member.molecule.id));
-    if (!members.length && !(imported && page.objects.some(object => object.type === "molecule" && (!exported || exported.has(object.id))))) return [];
+    if (!members.length && !(imported?.reason && page.objects.some(object => object.type === "molecule" &&
+      imported.referencedObjectIds.has(object.id) && (!exported || exported.has(object.id))))) return [];
     const missing = [...explicit].some(id => !page.objects.some(object => object.id === id && object.type === "molecule"));
     const excluded = allMembers.some(member => exported && !exported.has(member.molecule.id));
     const reason = usage !== "sru" ? `its ${usage === "multiple" ? "multiple-group" : "unknown group"} semantics cannot be represented as an SRU`

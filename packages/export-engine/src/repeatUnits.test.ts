@@ -100,6 +100,39 @@ describe("repeat-unit export membership", () => {
     expect(warnings).toEqual([]);
   });
 
+  it.each(["sru", "multiple", "unknown"] as const)("skips an imported %s bracket when only an unrelated molecule is exported", usage => {
+    const { document, molecule, brackets } = imported();
+    for (const bracket of brackets) bracket.bracketUsage = usage;
+    const neighbour = { ...molecule, id: "neighbour" };
+    document.pages[0].objects.push(neighbour);
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [neighbour], warnings)).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(repeatUnitExportWarnings(document, "SMILES", { molecules: [neighbour] })).toEqual([]);
+  });
+
+  it("skips unresolved imported membership whose native references are outside the export selection", () => {
+    const { document, molecule } = imported("11 missing");
+    const neighbour = { ...molecule, id: "neighbour" };
+    document.pages[0].objects.push(neighbour);
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [neighbour], warnings)).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(repeatUnitExportWarnings(document, "SMILES", { molecules: [neighbour] })).toEqual([]);
+  });
+
+  it("declines an imported bracket whose member molecules are only partly selected", () => {
+    const cdxml = source.replace("</fragment>", '</fragment><fragment id="40"><n id="41" Element="6" p="200 110"/></fragment>');
+    const { document, molecule, close } = imported("11 41", cdxml);
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
+    expect(warnings).toEqual([expect.objectContaining({ objectId: close.id,
+      message: expect.stringContaining("part of its atom membership is outside the export selection") })]);
+    expect(repeatUnitExportWarnings(document, "SMILES", { molecules: [molecule] })).toEqual([
+      expect.objectContaining({ objectId: close.id, message: expect.stringContaining("around 1 atoms") })
+    ]);
+  });
+
   it("resolves whole-molecule imported membership without geometric additions", () => {
     const { document, molecule } = imported("10", source.replace(/<crossingbond[^>]*\/>/, ""));
     const neighbour = { ...molecule, id: "neighbour" };
@@ -126,5 +159,20 @@ describe("repeat-unit export membership", () => {
     const warnings: ExportWarning[] = [];
     expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
     expect(warnings[0].message).toContain("crossing-bond references do not match the boundary of its atom membership");
+  });
+
+  it("names a crossing bond by its native id when changed endpoints have no imported BondID", () => {
+    const { document, molecule, brackets } = imported();
+    for (const bracket of brackets) {
+      const crossings = bracket.compatibility!.unknown.cdxmlBracketCrossings as { attributes: Record<string, unknown> }[];
+      for (const crossing of crossings) delete crossing.attributes.BondID;
+    }
+    const bond = molecule.bonds[0];
+    [bond.fromAtomId, bond.toAtomId] = [bond.toAtomId, bond.fromAtomId];
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].message).toContain(`imported crossing bond "${bond.id}" no longer has its original endpoints`);
+    expect(warnings[0].message).not.toContain("undefined");
   });
 });
