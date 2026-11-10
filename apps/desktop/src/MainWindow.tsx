@@ -894,6 +894,7 @@ import {
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
+import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
@@ -11121,7 +11122,7 @@ export function MainWindow({
       if (!exportPreviewEnabledRef.current) options = { ...options, presentation: undefined };
       const result = await createDialogExportResult(source, { ...options, busy: false });
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
-      const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
+      const filename = exportDefaultPath(options.filename, descriptor.extensions);
       if (!isDesktopRuntime()) downloadExportResult(filename, result);
       else {
         const grant = exportGrantsRef.current.get(tabId);
@@ -33762,7 +33763,7 @@ async function pickNativeExportPath(
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
-    defaultPath,
+    defaultPath: exportDefaultPath(defaultPath, extensions),
     filters: [{ name: formatLabel, extensions: [...extensions] }]
   }, focusExportSessionId);
   return selected ?? undefined;
@@ -33910,8 +33911,8 @@ function downloadBlob(filename: string, blob: Blob): void {
 }
 
 function createExportFilename(document: ChemDraftDocument, extension: string, savedDocumentPath?: string): string {
-  const title = savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title;
-  const baseName = title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
+  const stem = stripExportFileExtension(savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title);
+  const baseName = stem.trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
   // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
   // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
   return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;

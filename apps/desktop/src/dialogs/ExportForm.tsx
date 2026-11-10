@@ -1,6 +1,7 @@
 import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
-import { type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { type ExportFormatId, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { replaceExportFileExtension } from "../exportFilename";
 import { desktopExportFormatDescriptors as exportFormatDescriptors, getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "../desktopExportFormats";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { isDesktopRuntime } from "../window-manager";
@@ -24,7 +25,7 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
   legacy: "Legacy",
   model3d: "3D"
 };
-const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
+const implementedExportFormats = exportFormatDescriptors.filter((descriptor) => descriptor.status === "implemented");
 interface ExportDialogProps {
   state: ExportDialogState;
   previewEnabled: boolean;
@@ -190,9 +191,9 @@ function ExportFormBody({
             onFormatChange(event.currentTarget.value as ExportDialogFormat);
           }}
         >
-          {exportFormatGroups.map((group) => (
+          {exportFormatGroups.filter((group) => implementedExportFormats.some((candidate) => candidate.group === group)).map((group) => (
             <optgroup key={group} label={exportFormatGroupLabels[group]}>
-              {exportFormatDescriptors
+              {implementedExportFormats
                 .filter((candidate) => candidate.group === group)
                 .map((candidate) => {
                   const rasterOnly = rasterExportFormatForDialogFormat(candidate.id) !== undefined;
@@ -200,7 +201,6 @@ function ExportFormBody({
                   return (
                     <option key={candidate.id} value={candidate.id} disabled={unavailableInBrowser}>
                       {candidate.label}
-                      {candidate.status === "implemented" ? "" : ` (${candidate.status})`}
                       {unavailableInBrowser ? " (desktop only)" : ""}
                     </option>
                   );
@@ -210,7 +210,7 @@ function ExportFormBody({
         </select>
         {descriptor.warningSummary || !implemented ? (
           <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
-            {descriptor.warningSummary ?? `${descriptor.menuLabel} export is not available yet.`}
+            {implemented ? descriptor.warningSummary : `${descriptor.menuLabel} export is not available yet.`}
           </p>
         ) : null}
 
@@ -517,7 +517,7 @@ export function ExportForm({ state: ownerState, onChange: publish, onReady, ...p
 export function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
   const descriptor = getExportFormatDescriptor(format);
   const rasterFormat = rasterExportFormatForDialogFormat(format);
-  const filename = replaceExportFileExtension(state.filename, descriptor);
+  const filename = replaceExportFileExtension(state.filename, descriptor.extensions[0] ?? descriptor.id);
   return {
     ...state,
     format,
@@ -541,14 +541,6 @@ function exportPathWithFilename(path: string | undefined, filename: string): str
 
 export function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {
   return rasterExportFormatsByFormatId[format];
-}
-
-function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
-  const extension = descriptor.extensions[0] ?? descriptor.id;
-  const trimmed = filename.trim() || "Untitled";
-  const escapedExtensions = exportFormatOptionExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
-  return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
 }
 
 const exportDialogPanelStyle: CSSProperties = {

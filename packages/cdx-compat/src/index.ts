@@ -302,6 +302,8 @@ interface IdAllocator {
 type ExportColorTable = string[];
 
 interface VisibleExportContext {
+  format: "CDXML" | "CDX";
+  embedNativePayload: boolean;
   colors: ExportColorTable;
   ids: Map<string, string>;
   bondIdsByRefKey: Map<string, string>;
@@ -956,7 +958,7 @@ function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversi
 }
 
 function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly CdxmlFont[], colors: ExportColorTable, allocator: IdAllocator, unknownObjects: UnknownObjectExportDiagnostics): string {
-  const context = createVisibleExportContext(page, colors);
+  const context = createVisibleExportContext(page, colors, unknownObjects.format === "cdx" ? "CDX" : "CDXML", unknownObjects.embedNativePayload);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(needsSourceGraphicIds);
   for (const object of page.objects) {
@@ -1290,10 +1292,10 @@ function exportVisibleObject(
     return exportMoleculeObject(object, context, allocator, warnings);
   }
   if (object.type === "text") {
-    return exportTextObject(object, context.ids, allocator, context.colors, warnings);
+    return exportTextObject(object, context, allocator, warnings);
   }
   if (object.type === "plus") {
-    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator, context.colors, warnings);
+    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context, allocator, warnings);
   }
   if (object.type === "reaction-arrow") {
     return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings, context.colors);
@@ -1488,7 +1490,7 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
     const requestedMembers = [...new Set(pair.flatMap(object => object.containedObjectIds))];
     const members = requestedMembers.filter(id => objectsById.get(id)?.type === "molecule").map(id => idFor(context.ids, id, allocator));
     if (members.length !== requestedMembers.length) warnings.push({ code: "cdxml.bracket_membership_payload_only", sourceObjectId: closing.id,
-      message: "Bracket membership for missing or non-molecule objects is preserved only in the ChemDraft payload; visible CDXML membership includes whole molecule objects only." });
+      message: `Bracket membership for missing or non-molecule objects is preserved only in the ChemDraft payload; visible ${context.format} membership includes whole molecule objects only.` });
     const memberRecords = closing.compatibility?.unknown.cdxmlBracketMembers;
     const preservedMembers = splitCdxmlIdList(attrs.BracketedObjectIDs).flatMap(sourceId => {
       const record = Array.isArray(memberRecords) ? memberRecords.find(record => isRecord(record) && record.sourceId === sourceId) : undefined;
@@ -1592,7 +1594,7 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
   return groups;
 }
 
-function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable): VisibleExportContext {
+function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable, format: VisibleExportContext["format"], embedNativePayload: boolean): VisibleExportContext {
   const crossingPartnerKeysByRefKey = new Map<string, Set<string>>();
   const crossingFrontKeysByRefKey = new Map<string, { front: number; back: number }>();
 
@@ -1607,6 +1609,8 @@ function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable
   });
 
   return {
+    format,
+    embedNativePayload,
     colors,
     ids: new Map(),
     bondIdsByRefKey: new Map(),
@@ -1704,11 +1708,12 @@ function exportMoleculeObject(
     const recordedNeighbour = record ? molecule.atoms.find((candidate) => candidate.id === record.atomId) : undefined;
     const drawnSide = recordedNeighbour ? drawnLabelBondSide(atom, [recordedNeighbour]) : undefined;
     if (record && drawnSide && drawnSide !== record.side) {
+      const recordedReadingPreservation = context.embedNativePayload ? " ChemDraft's embedded document keeps the recorded reading." : "";
       warnings.push({
         code: "cdxml.label_bond_side_turned",
         message: record.side === "left"
-          ? `Label "${atom.element}" on atom ${atom.id} is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible CDXML reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps the recorded reading.`
-          : `Label "${atom.element}" on atom ${atom.id} is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible CDXML reads as its cyano group. ChemDraft's embedded document keeps the recorded reading.`,
+          ? `Label "${atom.element}" on atom ${atom.id} is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible ${context.format} reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula).${recordedReadingPreservation}`
+          : `Label "${atom.element}" on atom ${atom.id} is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible ${context.format} reads as its cyano group.${recordedReadingPreservation}`,
         sourceObjectId: molecule.id
       });
     }
@@ -1943,7 +1948,8 @@ function textSourceState(text: TextObject): string {
   return JSON.stringify([text.text, text.spans, text.style, text.width, text.height, text.rotation]);
 }
 
-function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator, colors: ExportColorTable, warnings: CompatibilityConversionWarning[]): string {
+function exportTextObject(text: TextObject, context: VisibleExportContext, allocator: IdAllocator, warnings: CompatibilityConversionWarning[]): string {
+  const { ids, colors, format } = context;
   const textId = idFor(ids, text.id, allocator);
   const source = text.compatibility?.unknown.cdxmlTextElement;
   if (typeof source === "string") {
@@ -1981,7 +1987,7 @@ function exportTextObject(text: TextObject, ids: Map<string, string>, allocator:
   if (styledSpan || styledObject || typeof text.style.color === "string" && normalizeHexColor(text.style.color) === undefined) {
     warnings.push({
       code: "cdxml.text_format_native_only",
-      message: "Some text formatting is preserved only in the embedded ChemDraft data; the visible CDXML retains colors and subscript/superscript but may look different in other apps.",
+      message: `Some text formatting is preserved only in the embedded ChemDraft payload; the visible ${format} retains colors and subscript/superscript but may look different in other apps.`,
       sourceObjectId: text.id
     });
   }

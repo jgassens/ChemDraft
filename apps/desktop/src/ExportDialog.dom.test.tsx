@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, type ChemDraftDocument, type TextObject } from "@chemdraft/chem-core";
 import { createDefaultExportDialogState, createDialogExportResult, createDialogExportPreview, exportDialogFrame } from "./MainWindow";
-import { ExportForm } from "./dialogs/ExportForm";
+import { ExportForm, updateExportDialogFormat } from "./dialogs/ExportForm";
 import { defaultExportPresentation } from "./dialogs/exportPresentation";
 import type { ExportDialogState } from "./dialogs/exportOptions";
 import { copyAsScopedDocument, createPhase4Document, exportPhase4Pdf, exportPhase4Svg } from "./documentWorkflow";
@@ -22,6 +22,41 @@ vi.mock("./documentWorkflow", async (original) => {
 vi.mock("./nativeRasterExport", () => ({ rasterizeSvgNative: vi.fn() }));
 const raster: NativeRasterExportResult = { bytes: new Uint8Array([1]), width: 800, height: 400, warnings: [] };
 const mounted: Array<() => Promise<void>> = [];
+it.each([
+  ["sru-nopattern.cdxml", "cdx", "sru-nopattern.cdx"],
+  ["sru-nopattern.cdxml", "svg", "sru-nopattern.svg"],
+  ["sru-nopattern.cdxml", "pdf", "sru-nopattern.pdf"],
+  ["Mixed.CDXML", "pdf", "Mixed.pdf"],
+  ["compound.v2.cdxml", "cdx", "compound.v2.cdx"],
+  ["drawing.chemdraft", "pdf", "drawing.pdf"],
+  ["Untitled", "pdf", "Untitled.pdf"],
+  ["C:\\Drawings\\compound.v2.cdxml", "svg", "compound.v2.svg"],
+  ["drawing.svg", "svg", "drawing.svg"],
+  ["compound.unknown", "pdf", "compound.unknown.pdf"],
+  ["compound.cdxml.svg", "pdf", "compound.cdxml.pdf"]
+] as const)("suggests an export filename for %s as %s", (path, format, expected) => {
+  const initial = createDefaultExportDialogState(createPhase4Document(), undefined, path);
+  expect(updateExportDialogFormat(initial, format).filename).toBe(expected);
+});
+it.each(["chemdraft", "cdxml", "cdx", "mol", "sdf", "smi", "smiles", "rxn", "svg", "pdf", "png", "jpeg"])(
+  "strips the known %s extension from an unsaved document title", extension => {
+    const document = { ...createPhase4Document(), title: `compound.${extension.toUpperCase()}` };
+    expect(createDefaultExportDialogState(document).filename).toBe("compound.pdf");
+  }
+);
+it("uses the untitled document name without a saved path", () => {
+  const document = { ...createPhase4Document(), title: "Untitled" };
+  expect(createDefaultExportDialogState(document).filename).toBe("Untitled.pdf");
+});
+it.each([
+  ["Reaction 1/2", "Reaction-1-2.pdf"],
+  ["x.cdxml ", "x.pdf"],
+  ["x.", "x.pdf"],
+  ["x.cdxml.  ", "x.pdf"]
+])("sanitizes the unsaved title %s as %s", (title, expected) => {
+  const document = { ...createPhase4Document(), title };
+  expect(createDefaultExportDialogState(document).filename).toBe(expected);
+});
 const createUrl = vi.fn(() => "blob:preview");
 beforeEach(() => {
   vi.stubGlobal("localStorage", new MemoryStorage());
