@@ -48,7 +48,35 @@ timestamp. Those helpers sit outside every standard nested-code location, so no 
 reaches them, and Apple notarization rejects the app without this. The desktop build wrapper sets
 `CHEMDRAFT_RELEASE_BUILD=1` automatically for stable release DMG packaging and refuses a missing
 `APPLE_SIGNING_IDENTITY` before preparation or downloads. Dev and app-only smoke builds keep their
-existing signing behavior.
+existing signing behavior. The explicit local-only escape below is the sole exception for stable DMGs.
+
+### Local unsigned stable rebuilds (never publish)
+
+For a deliberate local stable DMG rebuild without a Developer ID identity, unset
+`APPLE_SIGNING_IDENTITY` and opt in for that command only:
+
+```bash
+env -u APPLE_SIGNING_IDENTITY CHEMDRAFT_STABLE_BUILD=1 CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 pnpm --filter @chemdraft/desktop build --bundles app,dmg
+```
+
+Only the exact value `1` enables `CHEMDRAFT_ALLOW_UNSIGNED_STABLE`; it is never enabled by default.
+Setting it together with a nonempty `APPLE_SIGNING_IDENTITY` fails before preparation and asks you
+to pick one. The wrapper prints a multi-line **WARNING** at the start and end (including failure),
+sets `CHEMDRAFT_RELEASE_BUILD=0`, and skips identity signing just as an unsigned dev build does.
+Sparkle preparation and the OPSIN architecture preflight still run. The existing clean-source-tree
+requirement for stable DMGs still applies.
+
+The generated Info.plist carries the boolean `ChemDraftUnsignedBuild = true` alongside
+`ChemDraftSourceCommit`. The wrapper sets the existing build label to `ChemDraft (unsigned)`,
+which is consumed by the frontend build stamp and window title without app source changes.
+**This build is UNSIGNED and must NEVER be published**, uploaded as a release, or used to generate
+an update feed. `verify-macos-app.mjs --release`, `record-build.mjs` for either DMG, and
+`check-release-assets.mjs` on macOS refuse an unsigned-stamped payload even when its commit,
+hash and size match. A smoke check without `--release` is still permitted.
+
+For a publishable build, remove the escape flag, configure `APPLE_SIGNING_IDENTITY`, and rebuild
+before following the signing, notarization and verification steps below. Signing a previously
+unsigned-stamped app does not remove the marker or make it pass the gates.
 
 ## The bundled OPSIN Java runtime
 
@@ -64,7 +92,8 @@ which signs all 31 innermost-first with the hardened runtime, a secure timestamp
 JRE must be signed **before** the `.app` is sealed around it. With no `APPLE_SIGNING_IDENTITY` set
 the script prints a notice and exits 0 for dev/smoke builds. Stable release DMG builds automatically
 set `CHEMDRAFT_RELEASE_BUILD=1`, so a missing identity is an error even when the caller forgets the
-flag. Both signing scripts also enforce this flag when invoked directly.
+flag. Both signing scripts also enforce this flag when invoked directly, with only the exact
+`CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1` local escape and no signing identity permitted to bypass it.
 
 Two entitlements ride along, and they are for the JVM specifically:
 `com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-unsigned-executable-memory`. A

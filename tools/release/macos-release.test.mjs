@@ -137,6 +137,13 @@ test("release app verification requires embedded commit and cannot exempt sideca
     if (command === "/usr/bin/xcrun") assert.deepEqual(args, ["stapler", "validate", "ChemDraft.dmg"]);
   }
   assert.equal(verifyApp(undefined, bundle.target, options), 4);
+  bundle.plist.ChemDraftUnsignedBuild = true;
+  calls.length = 0;
+  assert.throws(() => verifyApp(undefined, bundle.target, options), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+  assert.deepEqual(calls.map(({ args }) => args[0]), ["attach", "detach"]);
+  // The unsigned marker is allowed for a local smoke check, never for production acceptance.
+  assert.equal(verifyApp(mounted, bundle.target, { run, inventory: () => bundle.records, commit: options.commit }), 4);
+  delete bundle.plist.ChemDraftUnsignedBuild;
   assert.throws(() => verifyApp("build-folder.app", bundle.target, {
     ...options, run: (command, args, config) => command === "/usr/bin/codesign"
       ? { status: 1, stderr: "invalid shipped signature" } : run(command, args, config)

@@ -14,6 +14,19 @@ test("folder gate accepts exactly three builds from the tag's commit", (t) => {
   assert.deepEqual(check(args), { complete: true, commit, builds: [arm, intel, installer] });
 });
 
+for (const name of [arm, intel]) {
+  test(`macOS asset gate refuses unsigned ${name} despite matching hashes and source records`, (t) => {
+    const args = releaseFixture(t);
+    for (const skipDmgProvenance of [false, true]) {
+      const calls = [];
+      assert.throws(() => check({ ...args, skipDmgProvenance }, {
+        run: fakeReleaseRunner({ unsigned: (dmg) => dmg === join(args.assets, name), calls })
+      }), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+      assert.equal(calls.at(-1).args[0], "detach");
+    }
+  });
+}
+
 for (const name of [arm, intel, installer, ...[arm, intel, installer].map((name) => `${name}.build.json`)]) {
   test(`asset checker names missing ${name}; incomplete workflow mode is not a pass`, (t) => {
     const args = releaseFixture(t);

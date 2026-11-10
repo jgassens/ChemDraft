@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifySourceCommit } from "./source-commit.mjs";
 
+export function refuseUnsignedBuild(plist) {
+  if (plist.ChemDraftUnsignedBuild !== undefined && plist.ChemDraftUnsignedBuild !== false) {
+    throw new Error("ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published; rebuild without CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 using APPLE_SIGNING_IDENTITY");
+  }
+}
+
 export function readAppPlist(app, run = spawnSync) {
   const result = run("/usr/bin/plutil", ["-convert", "json", "-o", "-", join(app, "Contents", "Info.plist")], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`Cannot read bundle Info.plist: ${result.stderr || result.error?.message}`);
@@ -63,6 +69,8 @@ export function withDmgApps(dmg, checkApp, {
 export function verifyDmgSourceCommit(dmg, commit, { run = spawnSync, recordCommit, ...options } = {}) {
   return withDmgApps(dmg, (app) => {
     const plist = readAppPlist(app, run);
+    // Shared by record-build, release body drafting and the final macOS asset gate.
+    refuseUnsignedBuild(plist);
     verifySourceCommit(plist, commit);
     if (recordCommit !== undefined) verifySourceCommit(plist, recordCommit);
   }, { ...options, run });

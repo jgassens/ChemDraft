@@ -48,6 +48,18 @@ test("all three release artifacts record the checked-out full commit, version, t
 });
 
 for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+  test(`recording ${target} refuses an unsigned-stamped app even with the correct source commit`, (t) => {
+    const { rootDir, commit } = fixture(t);
+    const artifact = join(rootDir, "assets", `ChemDraft_1.2.3_${BUILD_TARGETS[target]}`);
+    writeFileSync(artifact, "synthetic unsigned DMG");
+    const calls = [];
+    assert.throws(() => recordBuild({ artifact, target, rootDir }, {
+      run: recordRunner({ embeddedCommit: commit, unsigned: true, calls })
+    }), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+    assert.equal(existsSync(`${artifact}.build.json`), false);
+    assert.deepEqual(calls.filter(({ command }) => command === "/usr/bin/hdiutil").map(({ args }) => args[0]), ["attach", "detach"]);
+  });
+
   test(`recording ${target} checks the DMG's embedded commit before writing a record`, (t) => {
     const { rootDir, commit } = fixture(t);
     const artifact = join(rootDir, "assets", `ChemDraft_1.2.3_${BUILD_TARGETS[target]}`);
@@ -95,6 +107,23 @@ test("non-release macOS builds need no source record or generated plist", () => 
     [["dev"], true], [["build", "--bundles", "app"], true], [["build", "--bundles=nsis"], true],
     [["build", "--debug"], true], [["build", "--no-bundle"], true], [["build"], false]
   ]) assert.equal(macosReleasePlist(args, { stable }), undefined);
+});
+
+test("unsigned stable DMGs merge a boolean unsigned stamp alongside the commit for both targets", (t) => {
+  const { rootDir, tauriDir, commit } = fixture(t);
+  for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+    const prepared = macosReleasePlist(["build", "--target", target], { rootDir, target, stable: true, unsigned: true });
+    const config = JSON.parse(prepared.args[prepared.args.indexOf("--config") + 1]);
+    const file = config.bundle.macOS.infoPlist;
+    try {
+      const plist = readFileSync(file, "utf8");
+      const stamp = `  <key>ChemDraftSourceCommit</key>\n  <string>${commit}</string>\n  <key>ChemDraftUnsignedBuild</key>\n  <true/>\n`;
+      assert.ok(plist.includes(stamp));
+      const base = readFileSync(join(tauriDir, target.startsWith("x86_64") ? "Info.intel.plist" : "Info.plist"), "utf8");
+      assert.equal(plist.replace(stamp, ""), base);
+    } finally { prepared.cleanup(); }
+    assert.equal(existsSync(file), false);
+  }
 });
 
 test("Windows records before staging and carries the record through installer uploads", () => {

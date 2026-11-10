@@ -23,7 +23,7 @@ export function releaseFixture(t) {
   return { rootDir, assets, version };
 }
 
-export function fakeReleaseRunner({ taggedCommit = commit, embeddedCommit = commit, calls = [], downloadFrom } = {}) {
+export function fakeReleaseRunner({ taggedCommit = commit, embeddedCommit = commit, unsigned = false, calls = [], downloadFrom } = {}) {
   return (command, args, options) => {
     calls.push({ command, args });
     assert.equal(options.encoding, "utf8");
@@ -46,7 +46,10 @@ export function fakeReleaseRunner({ taggedCommit = commit, embeddedCommit = comm
         assert.equal(args.length, 6);
         const app = join(args[4], "ChemDraft.app", "Contents");
         mkdirSync(app, { recursive: true });
-        writeFileSync(join(app, "Info.plist"), JSON.stringify({ ChemDraftSourceCommit: typeof embeddedCommit === "function" ? embeddedCommit(args[5]) : embeddedCommit }));
+        writeFileSync(join(app, "Info.plist"), JSON.stringify({
+          ChemDraftSourceCommit: typeof embeddedCommit === "function" ? embeddedCommit(args[5]) : embeddedCommit,
+          ...((typeof unsigned === "function" ? unsigned(args[5]) : unsigned) ? { ChemDraftUnsignedBuild: true } : {})
+        }));
       } else assert.deepEqual(args, ["detach", args[1]]);
       return { status: 0 };
     }

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fail before cache checks or downloads. Dev and unsigned smoke builds explicitly leave this unset.
-if [ "${CHEMDRAFT_RELEASE_BUILD:-0}" = "1" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+# Fail before cache checks or downloads. Only the exact local escape permits an unsigned stable build.
+if [ "${CHEMDRAFT_ALLOW_UNSIGNED_STABLE:-0}" = "1" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "error: CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 and APPLE_SIGNING_IDENTITY cannot be used together. Pick one: unset the flag to sign, or unset the identity for a local UNSIGNED build." >&2
+  exit 1
+fi
+if [ "${CHEMDRAFT_RELEASE_BUILD:-0}" = "1" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && [ "${CHEMDRAFT_ALLOW_UNSIGNED_STABLE:-0}" != "1" ]; then
   echo "error: APPLE_SIGNING_IDENTITY is required when CHEMDRAFT_RELEASE_BUILD=1." >&2
   exit 1
 fi

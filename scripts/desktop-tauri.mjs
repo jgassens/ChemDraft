@@ -9,6 +9,7 @@
 // On both platforms it sets CHEMDRAFT_WORKTREE_LABEL for the child: the worktree label (AGENTS.md
 // §21.1) for dev and branch builds, and the EMPTY string for a stable package build (on main, or with
 // CHEMDRAFT_STABLE_BUILD=1), so a release is titled plain "ChemDraft" and does not fall back to git.
+// The explicit local-only CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 escape labels a stable DMG "(unsigned)".
 //
 //   node scripts/desktop-tauri.mjs --package-build [tauri build args…]   (the package `build` script)
 //   node scripts/desktop-tauri.mjs <any tauri subcommand…>               (the package `tauri` script)
@@ -29,27 +30,43 @@ const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
 
 export function buildMacosDesktop(args, { env, stable, isPackageBuild }, {
-  run = spawnSync, preflight = preflightReleaseOpsinRuntime, preparePlist = macosReleasePlist
+  run = spawnSync, preflight = preflightReleaseOpsinRuntime, preparePlist = macosReleasePlist, warn = console.warn
 } = {}) {
-  if (isStableDmgBuild(args, stable)) {
-    env.CHEMDRAFT_RELEASE_BUILD = "1";
-    if (!env.APPLE_SIGNING_IDENTITY?.trim()) throw new Error("APPLE_SIGNING_IDENTITY is required for stable macOS DMG builds (CHEMDRAFT_RELEASE_BUILD=1)");
+  const allowUnsigned = env.CHEMDRAFT_ALLOW_UNSIGNED_STABLE === "1";
+  if (allowUnsigned && env.APPLE_SIGNING_IDENTITY) {
+    throw new Error("CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 and APPLE_SIGNING_IDENTITY cannot be used together. Pick one: unset the flag to sign, or unset the identity for a local UNSIGNED build.");
   }
-  // Fail before signing or Tauri packaging; dev/debug/non-bundle builds keep OPSIN optional.
-  preflight(args);
-  const releasePlist = preparePlist(args, {
-    rootDir: ROOT_DIR,
-    target: args[0] === "build" ? macosBuildTarget(args) : undefined,
-    stable
-  });
-  const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
+  const unsigned = isStableDmgBuild(args, stable) && allowUnsigned;
+  const warning = "WARNING: This stable macOS build is UNSIGNED.\nCHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 is a local-only escape.\nThis build must NEVER be published.";
+  if (isStableDmgBuild(args, stable)) {
+    env.CHEMDRAFT_RELEASE_BUILD = unsigned ? "0" : "1";
+    if (!unsigned && !env.APPLE_SIGNING_IDENTITY?.trim()) throw new Error("APPLE_SIGNING_IDENTITY is required for stable macOS DMG builds (CHEMDRAFT_RELEASE_BUILD=1); use CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 only for a local UNSIGNED build that must never be published");
+  }
+  if (unsigned) {
+    warn(warning);
+    // Vite's stamp and the native title already consume this label; no app source change needed.
+    env.CHEMDRAFT_WORKTREE_LABEL = `${env.CHEMDRAFT_WORKTREE_LABEL?.trim() || "ChemDraft"} (unsigned)`;
+  }
+  let releasePlist;
   try {
+    // Fail before signing or Tauri packaging; dev/debug/non-bundle builds keep OPSIN optional.
+    preflight(args);
+    releasePlist = preparePlist(args, {
+      rootDir: ROOT_DIR,
+      target: args[0] === "build" ? macosBuildTarget(args) : undefined,
+      stable,
+      unsigned
+    });
+    const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
     return run("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...(releasePlist?.args ?? args)], {
       cwd: APP_DIR,
       env,
       stdio: "inherit"
     });
-  } finally { releasePlist?.cleanup(); }
+  } finally {
+    try { releasePlist?.cleanup(); }
+    finally { if (unsigned) warn(warning); }
+  }
 }
 
 function main() {

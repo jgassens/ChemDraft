@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { isMachO, machOSlices, packedVersion, targetArchitecture, versionString } from "./macos-mach-o.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
 import { gitOutput } from "./record-build.mjs";
-import { readAppPlist, withDmgApps } from "./macos-dmg.mjs";
+import { readAppPlist, refuseUnsignedBuild, withDmgApps } from "./macos-dmg.mjs";
 import { verifySourceCommit } from "./source-commit.mjs";
 
 export { readAppPlist } from "./macos-dmg.mjs";
@@ -110,7 +110,10 @@ export function verifyApp(app, target, { run = spawnSync, inventory = inventoryA
   if (release && (!dmg || !dmg.endsWith(".dmg"))) throw new Error("Release verification requires --dmg <final.dmg> to check the shipped app");
   const checkApp = (payload) => {
     const plist = readAppPlist(payload, run);
-    if (release) verifySourceCommit(plist, commit);
+    if (release) {
+      refuseUnsignedBuild(plist);
+      verifySourceCommit(plist, commit);
+    }
     if (commit === undefined && plist.ChemDraftSourceCommit !== undefined) {
       commit = gitOutput(fileURLToPath(new URL("../../", import.meta.url)), ["rev-parse", "HEAD"], run);
     }
