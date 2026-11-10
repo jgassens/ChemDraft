@@ -88,6 +88,7 @@ async function writeMoleculeSmiles(
   options: { requireEngineAtomStates?: boolean },
   evidence: ExportProblemEvidence
 ): Promise<string> {
+  const warningStart = warnings.length;
   const invalidWarnings = nativeMoleculeExportWarnings(molecule);
   const requireEngineAtomStates = options.requireEngineAtomStates ?? false;
   // Both the V2000 input to RDKit and the native fallback approximate these features.
@@ -109,7 +110,8 @@ async function writeMoleculeSmiles(
   });
   for (const label of nativeMoleculeUnspellableLabels(molecule)) {
     evidence.unrecognizedLabels?.add(label);
-    warnings.push({
+    if (!warnings.some(warning => warning.objectId === molecule.id && warning.code === "export.sdf_v2000_loss" &&
+      warning.message.startsWith(`Atom label "${label}" is not an element symbol`))) warnings.push({
       code: "export.smiles_atom_label",
       message: `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`,
       severity: "warning",
@@ -162,6 +164,14 @@ async function writeMoleculeSmiles(
           warnings.push(...engineSmilesAtomWarnings(molecule, identifiers, evidence));
         }
         // Only report these losses when the engine's molfile route supplied the output.
+        for (const message of writerWarnings) {
+          for (const label of evidence.unrecognizedLabels ?? []) {
+            if (!message.startsWith(`Atom label "${label}" is not an element symbol`)) continue;
+            const duplicate = warnings.findIndex((warning, index) => index >= warningStart && warning.code === "export.smiles_atom_label" &&
+              warning.objectId === molecule.id && warning.message === `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`);
+            if (duplicate >= 0) warnings.splice(duplicate, 1);
+          }
+        }
         warnings.push(...writerWarnings.map((message): ExportWarning => ({
           code: "export.smiles_v2000_loss",
           message,

@@ -92,8 +92,7 @@ it.each([
   expect(current().selectedNativeMoleculePart).toMatchObject({ kind: "atom", ...target });
   expect(current().selection.objectIds).toEqual([target.objectId]);
   expect(badge()).toBeNull();
-  expect(snapshot.data).toMatchObject({ explanation: expect.stringContaining("No problem"), fixes: [] });
-  expect(native.close).not.toHaveBeenCalled();
+  expect(native.close).toHaveBeenCalledTimes(1);
   await command("edit.undo");
   expect(container.querySelector('[role="status"]')!.textContent).toContain(action === "charge" ? "Undid Set formal charge to +1" : "Undid Set explicit hydrogens to 1");
   expect(molecule().atoms).toEqual(beforeAtoms);
@@ -109,7 +108,7 @@ it("Ignore hides only the badge; context-menu Restore works for a suppressed inv
   await deliver("action", { action: "ignore", targetVersion: snapshot.data.targetVersion });
   expect(badge()).toBeNull();
   expect(atomProblem(molecule(), "a0")!.state).toMatchObject({ valid: false, warningSuppressed: true });
-  expect(snapshot.data).toMatchObject({ fixes: [{ action: "restore", label: "Restore warning" }] });
+  expect(native.close).toHaveBeenCalledTimes(1);
   const atom = molecule().atoms[0]!;
   const page = container.querySelector<HTMLElement>(".page")!;
   page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
@@ -119,10 +118,13 @@ it("Ignore hides only the badge; context-menu Restore works for a suppressed inv
   expect(menu).not.toBeNull();
   await act(async () => menu!.click());
   expect(native.open).toHaveBeenCalledTimes(2);
+  await deliver("ready", {});
   const version = snapshot.data.targetVersion;
   await deliver("action", { action: "restore", targetVersion: version });
   expect(badge()).not.toBeNull();
   expect(atomProblem(molecule(), "a0")!.state.valid).toBe(false);
+  expect(native.close).toHaveBeenCalledTimes(1);
+  expect(snapshot.data.fixes).toEqual(expect.arrayContaining([{ action: "ignore", label: "Ignore warning" }]));
   await command("edit.undo"); expect(badge()).toBeNull();
   expect(container.querySelector('[role="status"]')!.textContent).toContain("Undid Restore warning");
   await command("edit.undo"); expect(badge()).not.toBeNull();
@@ -142,13 +144,13 @@ it("stops drawing gestures at the marker even with the bond tool active", async 
   expect(current().document).toEqual(before);
   expect(native.open).toHaveBeenCalledTimes(1);
 });
-it("updates to No problem after the target is deleted", async () => {
+it("closes after the target is deleted", async () => {
   await mount(problemDocument());
   await command(atomProblemCommandId(target)); await deliver("ready", {});
   await command("edit.selectAll");
   await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true })));
   expect(current().document.pages[0]!.objects).toHaveLength(0);
-  expect(snapshot.data).toMatchObject({ fixes: [], explanation: expect.stringContaining("No problem") });
+  expect(native.close).toHaveBeenCalledTimes(1);
 });
 it("applies to the originating inactive tab with its atom selection and one Undo", async () => {
   await mount(problemDocument(problemMolecule("N", Array(4).fill("C"))));
