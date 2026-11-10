@@ -38,7 +38,7 @@ Czodrowski.
 | Later paired candidate experiment | — | — | **397** | Common support between two ChemDraft artifacts, covering 390 families. One additional row is lost only for that paired experiment. It does **not** replace the 398-row baseline record. |
 
 The four ChemDraft omissions are zero-based Novartis source indices **70, 87, 113, and 127**. Each is
-labelled basic in the SDF and `protonated()` returns no constructible acid state.
+labeled basic in the SDF and `protonated()` returns no constructible acid state.
 
 The largest possible exact intersection between ChemDraft and a competitor is therefore 276 Novartis
 rows and 122 literature rows. No row-level competitor prediction bundle is committed, so a paired

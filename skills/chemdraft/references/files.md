@@ -40,7 +40,7 @@ do one of these, never a guess:
   convert it with `name`.
 
 Then confirm the formula with `analyze` (method `rdkit.composition`)
-against the database or expected formula, and the stereocentres with
+against the database or expected formula, and the stereocenters with
 `stereo`. Otherwise request a systematic name or confirmed SMILES.
 
 | CLI flag | Meaning / default |

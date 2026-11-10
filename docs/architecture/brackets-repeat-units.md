@@ -1,7 +1,7 @@
 # Brackets and repeat units
 
 Square and round tools create two native `BracketObject` glyphs around the drag rectangle, in one
-patch batch, one labelled history entry, with both selected. A click places an 80 × 64 pair. The
+patch batch, one labeled history entry, with both selected. A click places an 80 × 64 pair. The
 round icon is original 24-unit line art from ui-kit. Both default palettes place its registered
 `tool.roundBracket` command beside `tool.squareBracket`.
 Completed placement returns to Select so both members' selection chrome is visible. Older saved
@@ -21,7 +21,7 @@ UI choice for coordinator review: the object context menu offers **Mark as Repea
 **Remove Repeat Unit** and **Edit Repeat Label**. Both are registered commands. Marking applies to
 the pair even when only one member is selected. The closing glyph defaults to `n`. Label editing
 uses in-place annotation input, consistent with atom labels and table captions: Enter or blur commits
-one labelled undo entry; Escape cancels. This avoids a new dialog or palette for a single label.
+one labeled undo entry; Escape cancels. This avoids a new dialog or palette for a single label.
 Double-clicking the painted repeat label invokes the same Edit Repeat Label command. As with
 existing text objects, a single click with Select selects without opening the editor.
 The original pair shape remains independent of its repeat-unit status. Removing the mark hides the
@@ -59,10 +59,10 @@ positive integer repeatCount. An absent group usage falls back to graphic-level 
 Other usages map to unknown with cdxml.bracket_usage_unknown. SRULabel supplies the closing glyph's
 free-text label. A group without SRULabel keeps independent text and still warns about association.
 
-Geometry decides sides: the glyph centre to the left opens the pair. Endpoint order does not decide
+Geometry decides sides: the glyph center to the left opens the pair. Endpoint order does not decide
 orientation. Source BoundingBox text is retained verbatim until the native geometry changes. LipSize,
-Z, IgnoreWarnings, Warning, line width, colour and other source attributes stay in compatibility data
-and are re-emitted. Custom colour indices are allocated against the output colour table to retain RGB.
+Z, IgnoreWarnings, Warning, line width, color and other source attributes stay in compatibility data
+and are re-emitted. Custom color indices are allocated against the output color table to retain RGB.
 Unmapped native appearance warns on import. Additional group data and children remain opaque and
 round-trip with a named warning.
 

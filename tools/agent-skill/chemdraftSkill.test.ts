@@ -472,7 +472,7 @@ describe("ChemDraft agent skill drift guard", () => {
     const v2000 = moleculeToMolfileV2000(molecule, options).contents.split("\n");
     expect(Number(v2000[6]!.slice(9, 12))).toBe(4);
     expect(moleculeToMolfileV3000(molecule, options).contents).toContain("CFG=2");
-    expect(section).toContain("unknown centre at `fromAtomId`");
+    expect(section).toContain("unknown center at `fromAtomId`");
     expect(entrypoint).toContain("not a cosmetic effect");
   });
 

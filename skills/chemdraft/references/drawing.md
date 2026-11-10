@@ -48,9 +48,9 @@ one-off `--style fit` image requested at a particular size.
 Use `--background transparent` for slide backgrounds; view on the actual
 slide background to check contrast. `both` writes `.svg` and `.png`.
 Check label masks too: a transparent canvas does not ensure that atom-label
-backgrounds blend with a coloured slide. Known limitation: `render` paints
+backgrounds blend with a colored slide. Known limitation: `render` paints
 an opaque white patch behind every atom label even with
-`--background transparent`. For a figure on a coloured background, use
+`--background transparent`. For a figure on a colored background, use
 `document` and `render-document` with the molecule's
 `atomLabelBackgroundColor` set to `"transparent"` ([art](art.md)).
 Render results include specified and unspecified stereo counts and warnings.
@@ -187,7 +187,7 @@ native preset or detailed art options. Styling is available headlessly.
 `document` (MCP `build_document`) writes the native
 document with atom, bond and ring ids; edit its JSON and render it with
 `render-document` (MCP `render_document`). That covers ring fills and
-gradients, ring letters, bond and atom-label colours and weights, bold or
+gradients, ring letters, bond and atom-label colors and weights, bold or
 hashed bonds, wavy single bonds, explicit H and Me, the Sketch handwriting,
 shadow and glow effects, text, lines, curved arrows, mechanism arrows and
 fishhooks, electron marks, and paired round brackets with repeat labels.

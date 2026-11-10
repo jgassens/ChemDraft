@@ -14,7 +14,7 @@ was reproduced before it was fixed and re-checked on a fresh installer build aft
 | 3 | Hovering a palette button greyed the document's title bar; keys went to the tooltip | `window.show()` on Windows is `SW_SHOW`, which activates despite `focusable(false)` | Build utility windows `focused(false)` (tao then shows them with `SW_SHOWNOACTIVATE`) and owned by the document window (off the taskbar, always above it) |
 | 4 | Tooltips drawn behind their palette (after 3) | `SW_SHOWNOACTIVATE` keeps the old z-order | `SetWindowPos(HWND_TOP, SWP_NOMOVE \| SWP_NOSIZE \| SWP_NOACTIVATE)` after the show |
 | 5 | Tooltip left on screen, empty, after the pointer moved away | Hide went through the JS window API (a different IPC path that could overtake a show), and tao's `hide()` was a no-op because tao never saw the raw show | New sync `hide_toolset_tooltip_window` command. With the show going through tao again (row 3), tao's `hide()` works; a generation counter drops a show that a hide overtook |
-| 6 | Typing `#1E88E5` in a colour picker's HEX field produced `#11EE88` | Every keystroke was committed, and `#1E8` is valid shorthand | Live-apply only six-digit values; shorthand on Enter/blur; invalid input restored on blur (all platforms) |
+| 6 | Typing `#1E88E5` in a color picker's HEX field produced `#11EE88` | Every keystroke was committed, and `#1E8` is valid shorthand | Live-apply only six-digit values; shorthand on Enter/blur; invalid input restored on blur (all platforms) |
 | 7 | Ctrl+, "did nothing" when Preferences was open behind the document (same for the 3D Debugger toggle) | The toggle hid any visible window | Hide only when visible, not minimized, and not covered by the document window (a z-order walk from the document window — a non-activating window is never "focused"); otherwise bring it forward |
 | 8 | Palettes restored stacked in the screen's top-left corner | Minimizing the document minimizes its palettes; Windows parks them off-screen and the `Moved` event saved (-16000, -16000) | Don't persist palette frames while the palette or the document is minimized |
 
@@ -42,16 +42,16 @@ carries avogadrolibs and Eigen for the shipped sidecars.
 Palettes stay above the document; minimize/restore hides and shows them; maximize/restore. Menu bar on
 the document window only (Preferences, 3D Debugger, plugin panel windows have none); checkmarks update
 (View ▸ Show Rulers). Bond and ring drawing; Ctrl+Z/Y/N/S/O/R/Ctrl+,; menus read "Ctrl+…". Keybinding
-scheme switch rebuilds the menu live (Export: Ctrl+Shift+E ↔ Ctrl+E). Colour picker popover opens at
+scheme switch rebuilds the menu live (Export: Ctrl+Shift+E ↔ Ctrl+E). Color picker popover opens at
 the swatch and takes typing. Copy As SMILES → Notepad, Notepad → paste as structure, Copy As PNG → Paint.
-Save / reopen round trip (fill colour preserved). Help ▸ About shows 0.3.4. File ▸ Exit and the close
+Save / reopen round trip (fill color preserved). Help ▸ About shows 0.3.4. File ▸ Exit and the close
 button both exit with code 0. Analyze ▸ Mass (IsoSpec WASM) in panel and pop-out window. Spin 3D and
 Interactive 3D (sidecar): rotate, flatten, and Esc cancel (Esc checked through DevTools input — see below).
 
 ## Known issues, not fixed
 
 - **Native `title=` tooltips render as a solid black box in palette windows** (seen on the disabled Art
-  colour trigger). Chromium draws these itself; the palettes' own tooltips are unaffected. Cause not
+  color trigger). Chromium draws these itself; the palettes' own tooltips are unaffected. Cause not
   established; 62 `title=` attributes in the UI, so the fix needs a decision (route them through the
   floating tooltip, or find why WebView2's native tooltip is unpainted in these windows).
 - Palette tooltips sometimes took ~2 s rather than the 500 ms delay when moving between adjacent
