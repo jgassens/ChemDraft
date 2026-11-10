@@ -19836,6 +19836,41 @@ export function MainWindow({
     return true;
   }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
+  const selectMoleculePartThroughTransformHandle = useCallback((object: MoleculeObject, event: PointerEvent<HTMLButtonElement>): boolean => {
+    if (event.button !== 0 || activeToolState.activeKind !== "selection" || selectionModeFromEvent(event, {
+      gesture: "click",
+      shiftFallback: shiftKeyPressedRef.current
+    }) !== "toggle") {
+      return false;
+    }
+    const selectedPart = selectedNativeMoleculePartRef.current;
+    const target = selectedPart?.objectId === object.id ? nativeTransformableSelectionPart(selectedPart) : undefined;
+    const bounds = target ? nativeMoleculePartBounds(object, target) : undefined;
+    if (!bounds) {
+      return false;
+    }
+    const frame = moleculeTransformFrameForSelection(object, bounds);
+    // Only compact fragments whose frame is expanded in both dimensions need this exception.
+    // Normal-sized selection handles retain their existing priority, including Shift stretching.
+    if (frame.width <= bounds.width || frame.height <= bounds.height) {
+      return false;
+    }
+    const point = pagePointFromPointerEvent(event);
+    const hit = point ? nativeMoleculeCanvasHoverTarget(
+      documentRef.current,
+      point,
+      undefined,
+      hitToleranceForScale(viewportRef.current.scale)
+    ) : undefined;
+    if (!hit) {
+      return false;
+    }
+    // Small fragment frames can put a handle over the next atom or bond. A Shift pick there
+    // belongs to the ordinary selection policy; empty-space handles still start transforms.
+    handleObjectPointerDown(hit.objectId, event);
+    return true;
+  }, [activeToolState.activeKind, handleObjectPointerDown, pagePointFromPointerEvent]);
+
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -19848,6 +19883,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
     if (object && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
       openObjectRotateInput(objectId);
       return;
@@ -19930,6 +19968,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     replacePresentDocument,
     openObjectRotateInput,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
     spin3dRotateSnapshotFor,
   ]);
@@ -20017,6 +20056,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
     if (object?.type === "graphic" && graphicObjectIsFreehandPath(object)) {
       setStatus("X/Y rotate is disabled for freehand art while transform previews are optimized");
       return;
@@ -20128,6 +20170,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     openProjectedPlaneTiltInput,
     replacePresentDocument,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
     spin3dRotateSnapshotFor,
   ]);
@@ -20535,6 +20578,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
     if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
       openObjectResizeInput(objectId, corner);
       return;
@@ -20610,6 +20656,7 @@ export function MainWindow({
     openObjectResizeInput,
     pagePointFromPointerEvent,
     replacePresentDocument,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
   ]);
 
