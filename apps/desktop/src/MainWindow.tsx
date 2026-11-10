@@ -248,6 +248,9 @@ import {
   nativeMoleculeRings,
   nativeTextScriptFontScale,
   measureNativeTextSpanLineWidth,
+  planTextObjectPlacement,
+  planTextObjectEditorPlacement,
+  type NativeTextCssMetrics,
   textObjectSpanLines,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
@@ -272,6 +275,7 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
+import { measureTextEditorMetrics, measureTextEditorViewport } from "./textEditorMetrics";
 // `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
 // 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
 // 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
@@ -27692,7 +27696,7 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
-  /** The HTML editing preview owns this text's paint until its edit ends. */
+  /** The SVG editing preview owns this text's paint until its edit ends. */
   editingTextObjectId?: string;
   editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
@@ -27749,55 +27753,65 @@ function PageSvgSurfaceContent({
             const editingText = object.type === "text" && object.id === editingTextObjectId;
             const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
-              <g
-                key={object.id}
-                data-page-svg-object-visual={object.id}
-                data-object-type={object.type}
-                data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
-                opacity={object.id === spinningObjectId ? 0.1 : undefined}
-                visibility={editingText ? "hidden" : undefined}
-                transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
-                onPointerDown={event => handlers.onPointerDown(object.id, event)}
-                onPointerMove={event => handlers.onPointerMove(object.id, event)}
-                onPointerUp={event => handlers.onPointerUp(object.id, event)}
-                onPointerCancel={handlers.onPointerCancel}
-                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
-                onContextMenu={event => handlers.onContextMenu(object.id, event)}
-                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
-              >
-                {object.type === "graphic" ? (
-                  // Keep the existing art renderer and its generous stroke/fill catchers.
-                  // It uses the same art-engine geometry as export, in local coordinates.
-                  <svg x={object.x} y={object.y} width={object.width} height={object.height}
-                    viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
-                    <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
-                      {preview?.artPreviewProxies?.[object.id]
-                        ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
-                        : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
-                    </g>
-                  </svg>
-                ) : (
-                  <>
-                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y}
-                        width={tableLayout?.width ?? object.width}
-                        height={tableLayout?.height ?? object.height}
-                        data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
-                          : projectedPlaneSvgTransformForObject(object)}
-                        fill="transparent" pointerEvents="all" />
-                    ) : null}
-                    {fragments.map(fragment => {
-                      const prefix = editingTableCell?.tableId === object.id
-                        ? `${tableCellElementId(object.id, editingTableCell.rowId,
-                          editingTableCell.columnId)}-line-` : undefined;
-                      return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
-                        child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
-                    })}
-                  </>
-                )}
-              </g>
+              <Fragment key={object.id}>
+                <g
+                  data-page-svg-object-visual={object.id}
+                  data-object-type={object.type}
+                  data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
+                  opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                  visibility={editingText ? "hidden" : undefined}
+                  transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
+                  style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
+                  onPointerDown={event => handlers.onPointerDown(object.id, event)}
+                  onPointerMove={event => handlers.onPointerMove(object.id, event)}
+                  onPointerUp={event => handlers.onPointerUp(object.id, event)}
+                  onPointerCancel={handlers.onPointerCancel}
+                  onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
+                  onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                  onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+                >
+                  {object.type === "graphic" ? (
+                    // Keep the existing art renderer and its generous stroke/fill catchers.
+                    // It uses the same art-engine geometry as export, in local coordinates.
+                    <svg x={object.x} y={object.y} width={object.width} height={object.height}
+                      viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
+                      <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
+                        {preview?.artPreviewProxies?.[object.id]
+                          ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
+                          : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
+                      </g>
+                    </svg>
+                  ) : (
+                    <>
+                      {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
+                        <rect x={object.x} y={object.y}
+                          width={tableLayout?.width ?? object.width}
+                          height={tableLayout?.height ?? object.height}
+                          data-table-hit-target={object.type === "table" ? object.id : undefined}
+                          transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
+                            : projectedPlaneSvgTransformForObject(object)}
+                          fill="transparent" pointerEvents="all" />
+                      ) : null}
+                      {fragments.map(fragment => {
+                        const prefix = editingTableCell?.tableId === object.id
+                          ? `${tableCellElementId(object.id, editingTableCell.rowId,
+                            editingTableCell.columnId)}-line-` : undefined;
+                        return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
+                          child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
+                      })}
+                    </>
+                  )}
+                </g>
+                {editingText ? (
+                  // Share the canvas viewport, transform and inherited text styles.
+                  // A second SVG in HTML chrome resolves its fractional viewport
+                  // independently, even with identical text attributes and viewBox math.
+                  <g className="text-object-edit-preview" aria-hidden="true"
+                    transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}>
+                    {fragments.map(renderStaticPageSvgFragment)}
+                  </g>
+                ) : null}
+              </Fragment>
             );
           })}
         </svg>
@@ -28189,6 +28203,46 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const textEditorStyle = object.type === "text" ? nativeTextStyleFromObjectStyle(object.style) : undefined;
+  const [textEditorLayout, setTextEditorLayout] = useState<{
+    metrics: NativeTextCssMetrics | undefined;
+    scale: number;
+    offset: { x: number; y: number };
+  }>();
+
+  useLayoutEffect(() => {
+    if (!editingText || object.type !== "text") return;
+    const placement = planTextObjectPlacement(object);
+    const measure = () => {
+      const viewport = measureTextEditorViewport(interactionLayer) ?? { scale: pageScale ?? 1, offset: { x: 0, y: 0 } };
+      setTextEditorLayout({ ...viewport,
+        metrics: measureTextEditorMetrics(placement.style, viewport.scale, placement.lineAdvance * viewport.scale) });
+    };
+    // A monitor move can change browser font rounding without changing page zoom.
+    // Watch the current resolution again after each change, including a move back.
+    let resolution: MediaQueryList | undefined;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution?.addEventListener("change", onResolutionChange);
+    };
+    const onResolutionChange = () => {
+      watchResolution();
+      measure();
+    };
+    const resizeObserver = new ResizeObserver(measure);
+    for (const target of [interactionLayer?.closest(".page"), interactionLayer?.closest(".canvas-region")]) {
+      if (target) resizeObserver.observe(target);
+    }
+    watchResolution();
+    measure();
+    return () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resizeObserver.disconnect();
+    };
+  }, [editingText, object.type, textEditorStyle?.fontFamily, textEditorStyle?.fontSizePx,
+    textEditorStyle?.fontWeight, textEditorStyle?.fontStyle, textEditorStyle?.lineHeight,
+    textEditorStyle?.paragraphSpacingPx, pageScale, pageWidth, pageHeight, interactionLayer]);
 
   useEffect(() => {
     if (!editingText || object.type !== "text") {
@@ -28999,23 +29053,24 @@ function DocumentObjectViewContent({
   if (object.type === "text") {
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
-    const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
-    // Editor chrome only; never rewrite old/undone stored frames on open. Content and
-    // the 0.5 page-unit metric safety margin scale with zoom. Two borders, one caret
-    // pixel and one CSS pixel for browser layout rounding remain screen-sized.
+    const scale = textEditorLayout?.scale ?? pageScale ?? 1;
+    const contentWidth = editingText ? Math.max(0, ...textObjectSpanLines(object).map(line =>
+      measureNativeTextSpanLineWidth(line, textStyle))) : 0;
+    const editorPlacement = planTextObjectEditorPlacement(object, scale, contentWidth,
+      // Replaced in the layout effect before paint. Non-layout hosts (jsdom) have
+      // no measurable CSS font metrics; they can inject them through the reader.
+      textEditorLayout?.metrics ?? { ascentPx: textStyle.fontSizePx * scale, descentPx: 0 }, textEditorLayout?.offset);
+    // Editor chrome only; never rewrite old/undone stored frames on open.
     const editorFrameCss: CSSProperties = {};
-    if (editingText && !fixedTextWidth) {
-      const scale = pageScale ?? 1;
-      const contentWidth = Math.max(0, ...textObjectSpanLines(object).map(line =>
-        measureNativeTextSpanLineWidth(line, textStyle)));
-      const width = Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
-      const growth = width - object.width * scale;
-      const anchor = textStyle.textAlign === "right" ? 1 : textStyle.textAlign === "center" ? 0.5 : 0;
-      // Grow away from the alignment anchor. Keep the original rotation pivot in page
-      // space by moving it inside the expanded frame by the same amount as its left edge.
-      editorFrameCss.width = `${width}px`;
-      editorFrameCss.left = `${object.x * scale - anchor * growth}px`;
-      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth}px ${object.height * scale / 2}px`;
+    if (editingText) {
+      const frame = editorPlacement.frame;
+      editorFrameCss.width = `${frame.width}px`;
+      editorFrameCss.left = `${frame.left}px`;
+      editorFrameCss.top = `${frame.top}px`;
+      editorFrameCss.height = `${frame.height}px`;
+      editorFrameCss.transformOrigin = `${frame.originX}px ${frame.originY}px`;
+      // Rich-text spans use this inherited scale too, including explicit run sizes.
+      Object.assign(editorFrameCss, { "--page-scale": scale });
     }
 
     const textCss = {
@@ -29031,6 +29086,7 @@ function DocumentObjectViewContent({
     } as CSSProperties;
     const textEditorCss = {
       ...textCss,
+      ...editorPlacement.content,
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
@@ -29106,7 +29162,6 @@ function DocumentObjectViewContent({
         ) : null}
         {editingText ? (
           <>
-            <TextObjectContent object={object} editing />
             <textarea
               aria-label="Text object"
               autoFocus
@@ -31820,9 +31875,11 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object, noWrap = false }: { editing?: boolean; object: TextObject; noWrap?: boolean }) {
+function TextObjectContent({ object, noWrap = false }: {
+  object: TextObject; noWrap?: boolean;
+}) {
   return (
-    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
+    <span className="text-object-content"
       style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
