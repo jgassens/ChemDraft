@@ -2427,10 +2427,7 @@ export function MainWindow({
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
-  const pendingDocumentOpensRef = useRef<Array<{
-    contents: string; displayName: string; path?: string;
-    options?: { dirty?: boolean; statusOverride?: string };
-  }>>([]);
+  const pendingDocumentOpensRef = useRef<Array<() => void>>([]);
   const documentTabSnapshotsRef = useRef(new Map<string, {
     history: DocumentHistory;
     file: NativeFileState;
@@ -9432,14 +9429,18 @@ export function MainWindow({
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions,
-    reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
+    reportOutcome?: (outcome: "queued" | "resumed" | "already-open" | "installed") => void
   ) => {
-    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
-      // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
+    const waitUntilReady = async () => {
+      while (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+        // Keep this open's original queue slot while a prompt or startup restore blocks it.
+        // Releasing the slot and re-enqueuing would put later batch members ahead of it.
+        perfHook(() => reportOutcome?.("queued"));
+        await new Promise<void>(resolve => pendingDocumentOpensRef.current.push(resolve));
+        perfHook(() => reportOutcome?.("resumed"));
+      }
+    };
+    await waitUntilReady();
     const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
     const existing = documentTabsRef.current.find((tab) =>
       path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
@@ -9454,11 +9455,7 @@ export function MainWindow({
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
-    if (quitInteractionRef.current) {
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
+    await waitUntilReady();
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -9509,12 +9506,16 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ): Promise<void> => {
-    const timing = perfHook(() => perfProbe?.documentOpenStarted());
+    let timing = perfHook(() => perfProbe?.documentOpenStarted());
     // A deferred read reserves its place immediately, so every file in a drop can be enqueued
     // before reading the first file or waiting for its page-size prompt.
     const run = documentOpenQueueRef.current.then(async () =>
       openDocumentContentsNowRef.current(typeof contents === "string" ? contents : await contents(), displayName, path, options, outcome => {
         perfHook(() => {
+          if (outcome === "resumed") {
+            timing = perfProbe?.documentOpenStarted();
+            return;
+          }
           if (!timing) return;
           if (outcome === "installed") return perfProbe?.documentOpenCommitted(timing);
           return perfProbe?.documentOpenSkipped(timing, outcome);
@@ -9527,15 +9528,9 @@ export function MainWindow({
     return run;
   }, []);
 
-  const openDocumentContentsRef = useRef(openDocumentContents);
-  openDocumentContentsRef.current = openDocumentContents;
-
   useEffect(() => {
     if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
-    const opens = pendingDocumentOpensRef.current.splice(0);
-    void Promise.all(opens.map(request =>
-      openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options)
-        .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
+    for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
   }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
 
   const acceptPageFitRecommendation = useCallback(() => {
@@ -9974,10 +9969,7 @@ export function MainWindow({
             setKeptDrawingsPrompt("notice");
             return;
           }
-          const opens = pendingDocumentOpensRef.current.splice(0);
-          await Promise.all(opens.map(request =>
-            openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options)
-              .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
+          for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
         }
       });
 

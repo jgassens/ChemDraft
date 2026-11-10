@@ -1082,6 +1082,38 @@ describe("documents in one window", () => {
       await modalButton(label);
     }
 
+    it("keeps a delayed batch read ahead of later files after cancelling a close", async () => {
+      let finishB!: (contents: Uint8Array) => void;
+      let finishC!: (contents: Uint8Array) => void;
+      const delayedB = new Promise<Uint8Array>(resolve => { finishB = resolve; });
+      const delayedC = new Promise<Uint8Array>(resolve => { finishC = resolve; });
+      native.readFile.mockResolvedValueOnce(new TextEncoder().encode(oversized))
+        .mockReturnValueOnce(delayedB)
+        .mockReturnValueOnce(delayedC);
+      await act(async () => native.events.get("tauri://drag-drop")!({
+        paths: ["/drawings/A.cdxml", "/drawings/B.cdxml", "/drawings/C.cdxml"]
+      }));
+      expectPageFit("A.cdxml");
+      await dismissPageFit("resize");
+      expect(native.readFile).toHaveBeenCalledWith("/drawings/B.cdxml");
+      await closeTab();
+      const closePrompt = pendingPrompt;
+      expect(closePrompt?.prompt.title).toContain("Save");
+      await act(async () => finishB(new TextEncoder().encode(oversized)));
+      expect(pendingPrompt).toBe(closePrompt);
+      expect(tabs()).toHaveLength(1);
+      await modalButton("Cancel");
+      // Complete C's delayed read after Cancel. If B was re-appended at the tail,
+      // C will prompt first; holding B's original slot keeps the prompt order intact.
+      await act(async () => finishC(new TextEncoder().encode(oversized)));
+      expectPageFit("B.cdxml");
+      await dismissPageFit("keep");
+      expectPageFit("C.cdxml");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      expect(tabs().map(tab => tab.textContent)).toEqual(["A.cdxml •", "B.cdxml", "C.cdxml"]);
+    });
+
     it("prompts for consecutive same-basename paths and releases the queue when the second tab closes", async () => {
       await osOpen("/first/drawing.cdxml");
       expectPageFit("drawing.cdxml");
