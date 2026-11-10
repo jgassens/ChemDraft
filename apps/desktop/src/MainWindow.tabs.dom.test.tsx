@@ -2152,7 +2152,7 @@ describe("documents in one window", () => {
       if (kind.includes("identity")) {
         await vi.waitFor(() => {
           expect(container.querySelector('[role="status"]')?.textContent)
-            .toBe("Paste cancelled while quitting");
+            .toBe("Paste canceled while quitting");
         }, { timeout: 15_000 });
       }
       expect(bridge().snapshot().document).toEqual(saved);
