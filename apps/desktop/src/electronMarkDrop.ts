@@ -4,7 +4,7 @@ import { atomDisplayLabel } from "@chemdraft/layout-engine";
 import { documentDrawingDefaults, nativeAtomChargeSupportsValence, nativeAtomExternalValence,
   nativeElementFromAtomLabel, phase4Timestamp, type PagePoint } from "@chemdraft/document-workflow-core";
 import { electronMarkAtomContribution, electronMarkChemistryChanges, findDocumentObject,
-  isEditableNativeMoleculeGraph, moveDocumentObject, normalizeCommittedDocument,
+  isEditableNativeMoleculeGraph, moveDocumentObject, nativeChargePlacementPointForAtom, normalizeCommittedDocument,
   type NativeMoleculeDeleteTarget } from "./documentWorkflow";
 
 /** Document-space radius, independent of zoom and of the direct-editing preference. */
@@ -90,7 +90,7 @@ export function dropElectronMark(
     moved = applyPatch(moved, { op: "updateObject", objectId: markId,
       changes: { anchor, atomAssociation: "explicit" } }, { now: phase4Timestamp });
   }
-  const after = normalizeCommittedDocument(moved, {
+  let after = normalizeCommittedDocument(moved, {
     floatingElectronMarkIds: !target && !source ? new Set([markId]) : undefined
   });
   const finalMark = findDocumentObject(after, markId) as ElectronMarkObject;
@@ -110,6 +110,16 @@ export function dropElectronMark(
         return refusal(`${final.atom.element} has unsupported valence after moving this mark`);
       }
     }
+  }
+
+  // Only an actual atom drop snaps beside its label. Empty-space drops retain the user's
+  // position and existing association. Use reconciled chemistry so OH/NH2 includes the new H.
+  if (target && finalDestination) {
+    const page = after.pages.find(page => page.id === pageId)!;
+    const point = nativeChargePlacementPointForAtom(finalDestination.molecule, finalDestination.atom.id,
+      page.objects.filter(object => object.id !== markId), page.width, page.height, finalMark);
+    if (point) after = applyPatch(after, { op: "updateObject", objectId: markId,
+      changes: { x: point.x - finalMark.width / 2, y: point.y - finalMark.height / 2 } }, { now: phase4Timestamp });
   }
 
   const anchors = [mark.anchor, finalMark.anchor];

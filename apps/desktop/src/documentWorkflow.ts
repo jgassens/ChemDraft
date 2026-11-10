@@ -1,3 +1,4 @@
+import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
 import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
@@ -7630,66 +7631,19 @@ export function nativeChargePlacementPointForAtom(
   atomId: string,
   objects: readonly DocumentObject[],
   pageWidth: number,
-  pageHeight: number
+  pageHeight: number,
+  mark?: ElectronMarkObject
 ): PagePoint | undefined {
-  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  if (!atom) {
-    return undefined;
-  }
-
-  // The natural home for a charge is where the next atom would land if the chain kept growing
-  // from here — the same slot the bond tool would use. Only a saturated atom (no growth slot)
-  // falls back to the open-angle scoring below.
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
   const growth = previewNativeMoleculeBondGrowth(molecule, atom, pageWidth, pageHeight);
-  if (growth && growth.atomId === atomId && !growth.targetAtomId) {
-    return growth.newAtomPoint;
-  }
-
-  const placementRadius = Math.max(nativeChargeMarkSizePx * 1.35, nativeBondLength * 0.55);
-  const neighborAngles = molecule.bonds
-    .filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId)
-    .map((bond) => molecule.atoms.find((candidate) =>
-      candidate.id === (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)
-    ))
-    .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
-    .map((neighbor) => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
-  const preferredOpenAngle = largestOpenAngle(neighborAngles) ?? -Math.PI / 4;
-  const otherAtoms = molecule.atoms.filter((candidate) => candidate.id !== atomId);
-  const chargeCenters = objects
-    .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
-    .map(nativeChargeMarkCenter);
-  const halfSize = nativeChargeMarkSizePx / 2;
-  const candidates = Array.from({ length: 16 }, (_, index) => {
-    const angle = -Math.PI + index * Math.PI / 8;
-    const point = {
-      x: atom.x + Math.cos(angle) * placementRadius,
-      y: atom.y + Math.sin(angle) * placementRadius
-    };
-    const clampedPoint = {
-      x: clamp(point.x, halfSize, Math.max(halfSize, pageWidth - halfSize)),
-      y: clamp(point.y, halfSize, Math.max(halfSize, pageHeight - halfSize))
-    };
-    const boundaryPenalty = distance(point, clampedPoint);
-    const bondSeparation = neighborAngles.length === 0
-      ? Math.PI
-      : Math.min(...neighborAngles.map((neighborAngle) => angularDistance(angle, neighborAngle)));
-    const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) =>
-      sum + Math.min(1, distance(clampedPoint, otherAtom) / (nativeBondLength * 1.5)), 0
-    );
-    const chargeDistanceScore = chargeCenters.reduce((sum, center) =>
-      sum + Math.min(1, distance(clampedPoint, center) / (nativeBondLength * 1.5)), 0
-    );
-    const preferredScore = 1 - angularDistance(angle, preferredOpenAngle) / Math.PI;
-
-    return {
-      point: clampedPoint,
-      score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10
-    };
+  // Direct drops supply their mark and have an explicit association. New tool marks must keep
+  // the legacy point: label clearance can push them outside distance-based association.
+  return electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
+    growthPoint: growth && growth.atomId === atomId && !growth.targetAtomId ? growth.newAtomPoint : undefined,
+    mark,
+    avoidLabelOverlap: mark !== undefined
   });
-
-  return candidates
-    .sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]
-    ?.point;
 }
 
 /** The growth the on-canvas arrow is showing: where the new atom lands, or which existing atom

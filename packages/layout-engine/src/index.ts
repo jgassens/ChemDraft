@@ -21,6 +21,7 @@ export {
 } from "./textMetrics";
 
 import {
+  ChemDraftSyntheticStylePreset,
   DefaultNativeDrawingStyle,
   DocumentStylePreset,
   Acs1996StylePreset,
@@ -4066,6 +4067,111 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   }
 
   return [{ text: object.text, script: "normal", style: {} }];
+}
+
+/**
+ * Shared charge-tool/drop placement. The caller supplies its chain-growth slot, if any;
+ * Drops clear the mark's whole rotated frame from the current atom-label ink; the charge tool
+ * keeps its original placement and association radius by disabling label clearance.
+ * Call after chemistry reconciliation when transferring a mark: charge changes implicit H.
+ */
+export function electronMarkPlacementPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  options: {
+    growthPoint?: LayoutPoint;
+    mark?: Pick<ElectronMarkObject, "width" | "height" | "rotation">;
+    avoidLabelOverlap?: boolean;
+  } = {}
+): LayoutPoint | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
+  const avoidLabelOverlap = options.avoidLabelOverlap !== false;
+  // Tool placements must use the growth slot verbatim, even at a page edge.
+  if (!avoidLabelOverlap && options.growthPoint) return options.growthPoint;
+  const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
+  const radians = degreesToRadians(mark.rotation);
+  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
+  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atomId) : undefined;
+  const glyph = plan && atomLabelGlyphBounds(plan);
+  const clearance = 2;
+  const exclusion = plan && glyph ? {
+    left: plan.anchor.x + glyph.x - halfWidth - clearance,
+    right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
+    top: plan.anchor.y + glyph.y - halfHeight - clearance,
+    bottom: plan.anchor.y + glyph.y + glyph.height + halfHeight + clearance
+  } : undefined;
+  const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
+    point.y > exclusion.top && point.y < exclusion.bottom;
+  const clearPoint = (point: LayoutPoint): LayoutPoint | undefined => {
+    if (exclusion && insideLabel(point)) {
+      const length = distance(atom, point);
+      const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
+      const dy = length > 0.0001 ? (point.y - atom.y) / length : -Math.SQRT1_2;
+      const exitX = Math.abs(dx) < 0.0001 ? Infinity : ((dx > 0 ? exclusion.right : exclusion.left) - atom.x) / dx;
+      const exitY = Math.abs(dy) < 0.0001 ? Infinity : ((dy > 0 ? exclusion.bottom : exclusion.top) - atom.y) / dy;
+      const radius = Math.min(exitX, exitY) + 0.001;
+      point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
+    }
+    const bounded = {
+      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+    };
+    return insideLabel(bounded) ? undefined : bounded;
+  };
+  // The natural home is the same open slot the bond tool would use.
+  if (options.growthPoint) {
+    const point = clearPoint(options.growthPoint);
+    if (point) return point;
+  }
+  const bondLength = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+  const placementRadius = Math.max(18 * 1.35, bondLength * 0.55);
+  const neighborAngles = molecule.bonds
+    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map(bond => molecule.atoms.find(candidate => candidate.id === (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
+    .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  // Preserve the tool's exact angle arithmetic and tie-breaking. The growth planner's
+  // largestGapBisectors treats nearly equal gaps as tied and uses different rounding.
+  const normalizePlacementAngle = (angle: number) => {
+    let normalized = angle % (Math.PI * 2);
+    if (normalized < 0) normalized += Math.PI * 2;
+    return normalized;
+  };
+  const placementAngularDistance = (left: number, right: number) => {
+    const delta = Math.abs(normalizePlacementAngle(left) - normalizePlacementAngle(right));
+    return Math.min(delta, Math.PI * 2 - delta);
+  };
+  const normalizedAngles = neighborAngles.map(normalizePlacementAngle).sort((left, right) => left - right);
+  const preferredOpenAngle = normalizedAngles.map((angle, index) => {
+    const nextAngle = normalizedAngles[(index + 1) % normalizedAngles.length] ?? angle;
+    const wrappedNext = index === normalizedAngles.length - 1 ? nextAngle + Math.PI * 2 : nextAngle;
+    const gap = wrappedNext - angle;
+    return { gap, midpoint: normalizePlacementAngle(angle + gap / 2) };
+  }).sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint)[0]?.midpoint ?? -Math.PI / 4;
+  const otherAtoms = molecule.atoms.filter(candidate => candidate.id !== atomId);
+  const chargeCenters = objects
+    .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
+    .map(mark => ({ x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
+  const candidates = Array.from({ length: 16 }, (_, index) => {
+    const angle = -Math.PI + index * Math.PI / 8;
+    const point = { x: atom.x + Math.cos(angle) * placementRadius, y: atom.y + Math.sin(angle) * placementRadius };
+    const placed = clearPoint(point);
+    if (!placed) return [];
+    const boundaryPenalty = distance(point, placed);
+    const bondSeparation = neighborAngles.length === 0 ? Math.PI
+      : Math.min(...neighborAngles.map(neighborAngle => placementAngularDistance(angle, neighborAngle)));
+    const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) => sum + Math.min(1, distance(placed, otherAtom) / (bondLength * 1.5)), 0);
+    const chargeDistanceScore = chargeCenters.reduce((sum, center) => sum + Math.min(1, distance(placed, center) / (bondLength * 1.5)), 0);
+    const preferredScore = 1 - placementAngularDistance(angle, preferredOpenAngle) / Math.PI;
+    return [{ point: placed,
+      score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10 }];
+  }).flat();
+  return candidates.sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]?.point;
 }
 
 /** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */

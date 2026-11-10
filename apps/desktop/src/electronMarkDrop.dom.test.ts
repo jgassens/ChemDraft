@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { atomDisplayLabel } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, moleculeLayoutLabelBoxes } from "@chemdraft/layout-engine";
 import { nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import * as workflow from "./documentWorkflow";
@@ -15,6 +15,7 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 
+describe.each(["macos", "windows"] as const)("electron-mark drops on %s", platform => {
 describe.each([false, true])("electron-mark drop interaction with direct editing %s", enabled => {
   let container: HTMLDivElement, root: Root;
   let frames: Map<number, FrameRequestCallback>, frameId: number;
@@ -48,7 +49,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
   async function mount(document: ChemDraftDocument) {
     await act(async () => root.render(createElement(MainWindow, { initialDocument: document,
       initialActiveToolCommandId: "tool.select", initialPaletteMode: "hidden", nativePalette: false,
-      initialRulersVisible: false, initialCrosshairsVisible: false })));
+      initialRulersVisible: false, initialCrosshairsVisible: false, shortcutPlatform: platform })));
     container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0,
       right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
   }
@@ -85,6 +86,43 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     return molecule.atoms.map(atom => atomDisplayLabel(atom, molecule.bonds, undefined, molecule.atoms));
   }
 
+  it("keeps repeated charge-tool clicks on isolated carbon stacked on the same mark through +4", async () => {
+    const ethane = workflow.insertNativeSingleBondMolecule(workflow.createPhase4Document("Carbon charge stacking"), { x: 300, y: 300 });
+    const molecule = dropMolecule(ethane);
+    const methane = workflow.applyNativeMoleculeDeleteTarget(ethane, {
+      objectId: molecule.id, kind: "bond", bondId: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002",
+      terminalAtomId: "atom_002", distanceToPointer: 0
+    });
+    await mount(methane);
+    const atom = dropMolecule(snapshot()).atoms[0];
+    await command("tool.plus");
+    await act(async () => pointer(page(), "pointermove", atom));
+    expect(highlighted()).toBe(atom.id);
+    const atomTarget = () => container.querySelector(`[data-hit-target="atom"][data-atom-id="${atom.id}"]`)!;
+    const clickAtom = async () => {
+      expect(atomTarget()).not.toBeNull();
+      await act(async () => pointer(atomTarget(), "pointerdown", atom));
+      await act(async () => pointer(atomTarget(), "pointerup", atom));
+    };
+    let markId: string | undefined;
+    for (let charge = 1; charge <= 4; charge++) {
+      await clickAtom();
+      const after = snapshot(), mark = dropMark(after);
+      markId ??= mark.id;
+      expect(after.pages[0].objects.filter(object => object.type === "electron-mark"), `press ${charge}`).toHaveLength(1);
+      expect(mark).toMatchObject({ id: markId, charge,
+        anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id } });
+      expect(dropMolecule(after).atoms[0]).toMatchObject({ formalCharge: charge, markCharge: charge });
+    }
+    const charged = snapshot();
+    await clickAtom();
+    expect(snapshot()).toBe(charged);
+    await command("edit.undo");
+    expect(dropMolecule(snapshot()).atoms[0]).toMatchObject({ formalCharge: 3, markCharge: 3 });
+    await command("edit.redo");
+    expect(snapshot()).toEqual(charged);
+  });
+
   it.each(["object", "page"])("moves charge through the full Boc-glycine sequence with one exact undo/redo step per %s drop", async route => {
     const { document, nitrogen, carbonylOxygen, hydroxylOxygen } = electronMarkDropFixture();
     await mount(document);
@@ -106,6 +144,11 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       expect(status()).toBe(message);
       expect(reporter).toHaveBeenCalledTimes(calls + 1);
       expect([labels()[7], labels()[10], labels()[11]]).toEqual(expectedLabels);
+      // Real DOM pointer events commit geometry as well as chemistry, for both release routes.
+      const mark = dropMark(snapshot()), molecule = dropMolecule(snapshot());
+      const targetLabel = moleculeLayoutLabelBoxes(molecule).find(label => molecule.atoms[label.atom].id === point.id)!;
+      expect(mark.x < targetLabel.x + targetLabel.width && mark.x + mark.width > targetLabel.x &&
+        mark.y < targetLabel.y + targetLabel.height && mark.y + mark.height > targetLabel.y).toBe(false);
       const after = snapshot(); states.push(after);
       await command("edit.undo");
       expect(status()).toBe("Undid Move Charge");
@@ -229,4 +272,5 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     expect(dropMolecule(snapshot()).atoms[11].markRadicals ?? 0).toBe(kind === "radical-dot" ? 1 : 0);
     await command("edit.undo"); expect(snapshot()).toEqual(before);
   });
+});
 });
