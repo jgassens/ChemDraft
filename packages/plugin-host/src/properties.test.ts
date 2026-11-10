@@ -12,7 +12,9 @@ describe("chemistry.properties host boundary", () => {
     const properties = host.createCommandContext(manifest.id).chemistry!.properties!;
     await expect(properties({ format: "smiles", structure: "C" })).resolves.toMatchObject({ available: false, reason: "test decline" });
     expect(computeProperties).toHaveBeenCalledWith({ format: "smiles", structure: "C" });
-    await expect(properties({ format: "smiles", structure: "C".repeat(5001) })).resolves.toMatchObject({ available: false });
+    await expect(properties({ format: "smiles", structure: "C".repeat(5001) })).resolves.toEqual({
+      available: false, reason: "The structure is too long: 5001 characters; the limit is 5000."
+    });
     expect(computeProperties).toHaveBeenCalledTimes(1);
     host.unregisterPlugin(manifest.id);
     await expect(properties({ format: "smiles", structure: "C" })).rejects.toThrow("not registered");
