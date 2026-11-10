@@ -1769,7 +1769,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.13.36-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -12416,6 +12416,7 @@ export function MainWindow({
         const before = documentRef.current;
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
+          avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
         });

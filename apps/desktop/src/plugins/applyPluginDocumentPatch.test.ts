@@ -12,6 +12,7 @@ import {
 import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
+import { objectRect, overlaps } from "../assistant/placement";
 
 import {
   applyAcceptedPluginProposal,
@@ -40,6 +41,53 @@ function moleculeObject(): MoleculeObject {
 }
 
 describe("desktop direct plugin patch application", () => {
+  it("moves an overlapping name result as one translated group, preserving existing content", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = moleculeObject();
+    page.objects = [existing];
+    const first = { ...existing, id: "named_first" };
+    const second = { ...existing, id: "named_second", x: existing.x + existing.width + 12 };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "batch", patches: [first, second].map(object => ({ op: "addObject", pageId: page.id, object })) }
+    }), { avoidInsertionOverlap: true });
+    const objects = result.document.pages[0].objects;
+    expect(objects[0]).toEqual(existing);
+    const dx = objects[1].x - first.x, dy = objects[1].y - first.y;
+    expect(objects.slice(1)).toEqual([first, second].map(object => ({ ...object, x: object.x + dx, y: object.y + dy })));
+    expect(objects.slice(1).every(object => !overlaps(objectRect(object), objectRect(existing)))).toBe(true);
+    expect(result.document.selection.objectIds).toEqual([first.id, second.id]);
+    expect(result.receipt.objectIds).toEqual([first.id, second.id]);
+  });
+
+  it("preserves a name result already in free space", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = moleculeObject();
+    page.objects = [existing];
+    const object = { ...existing, id: "named", x: 400 };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "addObject", pageId: page.id, object }
+    }), { avoidInsertionOverlap: true });
+    expect(result.document.pages[0].objects).toEqual([existing, object]);
+  });
+
+  it("uses insertion placement's growth fallback when the page has no free space", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = { ...moleculeObject(), x: 0, y: 0, width: page.width, height: page.height };
+    page.objects = [existing];
+    const object = { ...moleculeObject(), id: "named" };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "addObject", pageId: page.id, object }
+    }), { avoidInsertionOverlap: true });
+    const inserted = result.document.pages[0].objects[1];
+    expect(overlaps(objectRect(inserted), objectRect(existing))).toBe(false);
+    expect(inserted.y).toBeGreaterThan(page.height);
+    // The shared pre-commit page-fit flow owns consent and enlargement, not this patch helper.
+    expect(result.document.pages[0].height).toBe(page.height);
+  });
+
   it.each([undefined, { x: 300, y: 400, width: 200, height: 200 }])("preserves authored on-page geometry with viewport %j", bounds => {
     const document = createEmptyDocument();
     const page = document.pages[0];
