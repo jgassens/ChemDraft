@@ -683,8 +683,9 @@ function exportMoleculeObject(
     }
     if (isotope !== undefined) {
       const label = (labels?.get(atom.id) ?? []).map((run) => {
-        const face = run.script === "superscript" ? ' face="32"'
-          : run.script === "subscript" ? ' face="64"' : "";
+        // CDXML font-face bits: 0x40 superscript, 0x20 subscript, as for table text.
+        const face = run.script === "superscript" ? ' face="64"'
+          : run.script === "subscript" ? ' face="32"' : "";
         return `<s${face}>${escapeXmlText(run.text)}</s>`;
       }).join("");
       return `<n ${attributes.join(" ")}><t>${label}</t></n>`;

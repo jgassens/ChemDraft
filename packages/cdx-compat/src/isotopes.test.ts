@@ -43,13 +43,22 @@ describe("CDXML isotope compatibility", () => {
     }));
     const canvasLabels = planMoleculeAtomLabels(molecule);
     expect(canvasLabels.map((plan) => plan.label)).toContain(expectedLabel);
-    const visibleLabels = [...exported.contents.matchAll(/<n\b[^>]*Isotope="\d+"[^>]*><t>(.*?)<\/t>/g)]
-      .map((match) => match[1]!.replace(/<[^>]*>/g, ""));
+    const isotopeLabels = [...exported.contents.matchAll(/<n\b[^>]*Isotope="(\d+)"[^>]*><t>(.*?)<\/t>/g)];
+    const visibleLabels = isotopeLabels.map((match) => match[2]!.replace(/<[^>]*>/g, ""));
     expect(visibleLabels).toEqual(canvasLabels
       .filter(({ atom }) => atom.isotope !== undefined || atom.element === "D" || atom.element === "T")
       .map(({ label }) => label));
-    if (expectedLabel.includes("H3")) expect(exported.contents).toContain('<s face="64">3</s>');
-    if (expectedLabel.endsWith("-")) expect(exported.contents).toContain('<s face="32">-</s>');
+    // CDXML face 64 is superscript, face 32 is subscript (as in the table text writer).
+    for (const [, mass, label] of isotopeLabels) {
+      if (label === "<s>D</s>" || label === "<s>T</s>") continue;
+      expect(label).toMatch(new RegExp(`^<s face="64">${mass}</s><s>[A-Z]`));
+    }
+    if (expectedLabel.includes("H3")) expect(exported.contents).toContain('<s face="32">3</s>');
+    if (expectedLabel.includes("H4")) expect(exported.contents).toContain('<s face="32">4</s>');
+    if (expectedLabel.endsWith("-")) expect(exported.contents).toContain('<s face="64">-</s>');
+    if (expectedLabel.endsWith("+") && visibleLabels.includes(expectedLabel)) {
+      expect(exported.contents).toContain('<s face="64">+</s>');
+    }
     const plain = exported.contents.replace(/<objecttag\b[^>]*\/>/g, "");
     for (const contents of [exported.contents, plain]) {
       const restored = importedMolecule(contents);
@@ -123,7 +132,7 @@ describe("CDXML isotope compatibility", () => {
     }));
     expect(exported.contents).toMatch(/Element="1" Isotope="2"[^>]*><t><s>D<\/s>/);
     expect(exported.contents).toMatch(/Element="1" Isotope="3"[^>]*><t><s>T<\/s>/);
-    expect(exported.contents).toContain('<s face="32">13</s><s>CH</s><s face="64">4</s>');
+    expect(exported.contents).toContain('<s face="64">13</s><s>CH</s><s face="32">4</s>');
     const codes = exported.warnings.map(({ code }) => code);
     expect(codes).not.toContain("cdxml.atom_element_symbol_exported");
     expect(codes).not.toContain("cdxml.molecule_metadata_payload_only");
