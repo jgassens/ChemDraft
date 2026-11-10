@@ -1,17 +1,19 @@
 (() => {
   const targets = [
     {
-      link: document.querySelector("#download-mac"),
-      meta: document.querySelector("#release-meta-mac"),
-      find: (assets) => assets.find(({ name }) => typeof name === "string" && name.endsWith(".dmg")),
+      link: document.querySelector("#download-mac-apple"),
+      meta: document.querySelector("#release-meta-mac-apple"),
+      find: (assets) => assets.find(({ name }) => typeof name === "string" && /^ChemDraft_.+_aarch64\.dmg$/.test(name)),
+    },
+    {
+      link: document.querySelector("#download-mac-intel"),
+      meta: document.querySelector("#release-meta-mac-intel"),
+      find: (assets) => assets.find(({ name }) => typeof name === "string" && /^ChemDraft_.+_x86_64\.dmg$/.test(name)),
     },
     {
       link: document.querySelector("#download-windows"),
       meta: document.querySelector("#release-meta-windows"),
-      find: (assets) => {
-        const setups = assets.filter(({ name }) => typeof name === "string" && name.endsWith("-setup.exe"));
-        return setups.find(({ name }) => name.includes("x64")) || setups[0];
-      },
+      find: (assets) => assets.find(({ name }) => typeof name === "string" && /^ChemDraft_.+_x64-setup\.exe$/.test(name)),
     },
   ].filter(({ link, meta }) => link instanceof HTMLAnchorElement && meta instanceof HTMLElement);
 
@@ -58,6 +60,7 @@
       for (const { link, meta, find } of targets) {
         const asset = find(assets);
         if (!asset?.browser_download_url) {
+          link.closest(".download-option").hidden = true;
           continue;
         }
 
