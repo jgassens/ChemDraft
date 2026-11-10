@@ -28,10 +28,11 @@ pub const OPENCV_VERSION: &str = "4.11.0.86";
 /// that differs, and a test fails until this is updated after a re-lock.
 pub const REQUIREMENTS_LOCK_SHA256: &str =
     "6c71c47f1bf1ee6c419948121ab3923b50dff75488445e4dbd3c0a84b08d7383";
-/// Placeholder for the LF-normalized Intel Mac lock digest. The lock-hash test fails until
-/// requirements-macos-x86_64.txt is generated and this value is set to its reviewed SHA-256.
+/// SHA-256 of the bundled, hash-locked `resources/ocsr/requirements-macos-x86_64.txt`, taken with
+/// line endings normalized to LF (a Windows checkout may write CRLF). The installer refuses a
+/// requirements file that differs, and a test fails until this is updated after a re-lock.
 pub const REQUIREMENTS_LOCK_SHA256_MACOS_X86_64: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+    "28413a92463e53747917d84d7c469fb59b44ddcd637bb382b82f70d15e643b20";
 pub const MODEL_REVISION: &str = "a0189776b7415b82795c7ee81eed311bf5c8724b";
 pub const MODEL_URL: &str = "https://huggingface.co/yujieq/MolScribe/resolve/a0189776b7415b82795c7ee81eed311bf5c8724b/swin_base_char_aux_1m.pth";
 pub const MODEL_FILENAME: &str = "swin_base_char_aux_1m.pth";
