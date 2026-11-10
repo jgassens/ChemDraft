@@ -78,8 +78,13 @@ file and an existing draft release tag in `upload_to_release`. The final `window
 contains the installer, `.exe.build.json`, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
 publishes a release or commits the feed. Collect all three artifacts and their `.build.json` records
-and run the [joint release body check](three-builds.md) against the release tag or explicit `--commit`,
-publish the joint release, then commit the generated feed to `main` only after its installer URL works.
+and run the [joint release body check](three-builds.md) against the release tag, declaring gaps or
+`--no-gaps`. As the last step before un-drafting, require
+`node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` to report PASS
+over the attached GitHub assets. The workflow's final job runs it automatically when complete;
+a Windows-only upload reports missing platforms without failing, and is not a publishing pass.
+Publish the joint release only after the strict gate passes, then commit the generated feed to
+`main` only after its installer URL works. Build records bind SHA-256 and size to the final signed bytes.
 
 ### Windows VM path (retired)
 

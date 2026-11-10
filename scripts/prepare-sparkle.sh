@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Fail before cache checks or downloads. Dev and unsigned smoke builds explicitly leave this unset.
+if [ "${CHEMDRAFT_RELEASE_BUILD:-0}" = "1" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  echo "error: APPLE_SIGNING_IDENTITY is required when CHEMDRAFT_RELEASE_BUILD=1." >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAURI_DIR="$ROOT_DIR/apps/desktop/src-tauri"
 FRAMEWORK_DIR="$TAURI_DIR/Sparkle.framework"

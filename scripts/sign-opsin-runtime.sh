@@ -34,8 +34,11 @@ JRE_DIR="$TAURI_DIR/resources/opsin/jre"
 ENTITLEMENTS="$TAURI_DIR/chemdraft.entitlements"
 
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  if [ "${CHEMDRAFT_RELEASE_BUILD:-0}" = "1" ]; then
+    echo "error: APPLE_SIGNING_IDENTITY is required when CHEMDRAFT_RELEASE_BUILD=1." >&2
+    exit 1
+  fi
   echo "APPLE_SIGNING_IDENTITY is not set; skipping OPSIN runtime signing." >&2
-  echo "That is correct for a local/dev build and WRONG for a release build." >&2
   exit 0
 fi
 

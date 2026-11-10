@@ -45,7 +45,9 @@ When `APPLE_SIGNING_IDENTITY` is set (any signed release build), `prepare-sparkl
 the framework-root Sparkle helpers — `Versions/B/Updater.app` (and its `MacOS/Updater` binary) and
 `Versions/B/Autoupdate` — with that Developer ID identity, the hardened runtime, and a secure
 timestamp. Those helpers sit outside every standard nested-code location, so no other signing step
-reaches them, and Apple notarization rejects the app without this. Unsigned dev builds skip it.
+reaches them, and Apple notarization rejects the app without this. Set `CHEMDRAFT_RELEASE_BUILD=1`
+for production builds: missing `APPLE_SIGNING_IDENTITY` then fails before preparation or downloads.
+Unsigned dev and Intel smoke builds leave this flag unset and keep skipping signing.
 
 ## The bundled OPSIN Java runtime
 
@@ -59,7 +61,9 @@ not a standard nested-code location. The outer `codesign` does not reach them (a
 which signs all 31 innermost-first with the hardened runtime, a secure timestamp, and
 `src-tauri/chemdraft.entitlements`. Ordering matters: a signature covers what it encloses, so the
 JRE must be signed **before** the `.app` is sealed around it. With no `APPLE_SIGNING_IDENTITY` set
-the script prints a notice and exits 0, which is right for dev and wrong for a release.
+the script prints a notice and exits 0 for dev/smoke builds. With the explicit production flag
+`CHEMDRAFT_RELEASE_BUILD=1`, a missing identity is an error. The desktop wrapper passes this
+environment through; stable identity alone does not select production signing enforcement.
 
 Two entitlements ride along, and they are for the JVM specifically:
 `com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-unsigned-executable-memory`. A
@@ -83,7 +87,8 @@ Do not reuse a published version.
    `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`.
 3. Generate and verify both feeds as described below. Create GitHub release `vX.Y.Z` with both
    final DMGs and the Windows installer, each with its `.build.json` record. Run the
-   [joint release body check](three-builds.md) to require the same commit and version before publishing.
+   [joint release body check](three-builds.md) with explicit gaps or `--no-gaps`, then run the
+   strict attached-asset gate in that guide as the last step before un-drafting. It must report PASS.
 4. After the release assets are reachable, land both feeds and their notes on `main` through the
    normal PR flow. Do not change the generated signature, length, or DMG URL.
 
@@ -97,7 +102,7 @@ Name each gap and its reason in the release notes. Use this release body templat
 
 ## Windows
 
-Platform differences: None. (Otherwise list each feature gap and its reason.)
+Platform differences: <list each feature gap and reason, or explicitly confirm none>
 ```
 
 Back up the Sparkle private key before the first public release. Use
@@ -195,7 +200,7 @@ native binaries rather than relying on the JDK version or runner architecture.
 production packaging, the final signed app MUST pass `tools/release/verify-macos-app.mjs` before publication:
 
 ```bash
-node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
+node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin --release --dmg apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_x86_64.dmg
 ```
 
 It requires the bundled launcher and JVM at
@@ -250,20 +255,26 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    rustup target add aarch64-apple-darwin x86_64-apple-darwin
    ```
 
-3. With `APPLE_SIGNING_IDENTITY` and the existing local notarization setup
-   configured, build the arm64 runtime and app first:
+3. Configure `APPLE_SIGNING_IDENTITY` (Developer ID Application) and the existing local
+   notarization setup. Export `APPLE_TEAM_ID` as the expected 10-character team ID, or supply
+   `--team-id <team-id>` to each verifier invocation. Build the arm64 runtime and app first:
 
    ```bash
    JAVA_HOME=/absolute/path/to/arm64-jdk/Contents/Home node scripts/build-opsin-runtime.mjs --arch arm64
    ./run-app
-   CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target aarch64-apple-darwin --bundles app,dmg
-   node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ChemDraft.app --target aarch64-apple-darwin
-   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_aarch64.dmg --target aarch64-apple-darwin
+   CHEMDRAFT_RELEASE_BUILD=1 CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target aarch64-apple-darwin --bundles app,dmg
    ```
 
    Sign with Developer ID, submit for notarization, staple and validate the app and DMG
-   using `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app
-   verification command above again on the final app. Save the final arm64 DMG in its own clean staging folder,
+   using `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Only after both staples are
+   final, run production verification and record the exact DMG bytes:
+
+   ```bash
+   node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ChemDraft.app --target aarch64-apple-darwin --release --dmg apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_aarch64.dmg
+   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_aarch64.dmg --target aarch64-apple-darwin
+   ```
+
+   Save the final arm64 DMG in its own clean staging folder,
    e.g. `/absolute/path/release-arm64`, retaining its architecture-specific name and adjacent
    `.dmg.build.json`. Do not change the source checkout between building and recording.
 
@@ -272,19 +283,22 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    ```bash
    # Leave JAVA_HOME unset to use the pinned, checksum-verified Intel JDK download.
    ./run-app -t x86_64-apple-darwin
-   CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app,dmg
-   node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
-   # If Tauri emitted an _x64.dmg, rename it to _x86_64.dmg before recording.
-   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_x86_64.dmg --target x86_64-apple-darwin
+   CHEMDRAFT_RELEASE_BUILD=1 CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app,dmg
    ```
 
    `run-app` creates and verifies the staged Intel JRE before building its worktree
    app. The subsequent production package build above signs that staged JRE through
    `scripts/sign-opsin-runtime.sh` before sealing the app. Finish the same local
    Developer ID signing, notarization, stapling and validation independently for Intel using
-   `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app verification
-   command above again on the final app. Save its final
-   DMG in `/absolute/path/release-intel` with a distinct
+   `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. After the final staples, rename
+   an `_x64.dmg` to `_x86_64.dmg` if needed, then verify and record:
+
+   ```bash
+   node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin --release --dmg apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_x86_64.dmg
+   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_x86_64.dmg --target x86_64-apple-darwin
+   ```
+
+   Save its final DMG in `/absolute/path/release-intel` with a distinct
    architecture-specific name and its `.dmg.build.json`. If Tauri names the Intel DMG with `_x64`,
    rename it to `_x86_64` before recording and preparing the same-basename release notes.
    Neither architecture may overwrite the other's
@@ -309,7 +323,12 @@ the target architecture. Universal frameworks/helpers are allowed, with every
 slice's minimum OS checked; app, sidecar and JRE must be thin. Parsing handles
 `LC_BUILD_VERSION`, legacy `LC_VERSION_MIN_MACOSX`, and fat headers. Upstream
 architecture-specific libraries inside the OPSIN JAR remain packaged as-is.
-Run this gate on the final signed app too; it performs no signing or mutation.
+Production verification uses `--release --dmg <final.dmg>` and `--team-id <team-id>` or
+`APPLE_TEAM_ID`. It requires `codesign --verify --deep --strict`, a Developer ID Application
+authority and the expected team ID, `xcrun stapler validate` on **both** app and DMG,
+`spctl --assess --type execute` on the app, and `spctl --assess --type open --context
+context:primary-signature` on the DMG. It fails on any rejected check and performs no signing
+or mutation. A pre-notarization check without `--release` is not production acceptance.
 Stable DMG builds use Tauri's existing `bundle.macOS.infoPlist` mechanism to embed the full
 `ChemDraftSourceCommit` before signing. The verifier compares an embedded commit with the current
 checkout's HEAD, or `--commit <full-sha>` when supplied. App-only smoke builds retain their existing
@@ -353,7 +372,9 @@ Acceptance on a **real Intel Mac**, including the declared minimum OS, remains
 mandatory; Rosetta and unsigned hosted CI do not establish it:
 
 - [ ] Collect all three `.build.json` records beside their artifacts and pass the
-      [joint release body check](three-builds.md), including the release tag or explicit `--commit` check.
+      [joint release body check](three-builds.md), including the release tag and any explicit `--commit` assertion.
+- [ ] As the last step before un-drafting, pass `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>`
+      against GitHub assets. An INCOMPLETE workflow result does not satisfy this gate.
 - [ ] On a real Intel Mac, launch, draw, save and reopen, export, run Name to Structure via OPSIN,
       use Spin 3D, install a plugin and check for updates. Complete the existing Apple-silicon and
       Windows hands-on checks as well.

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { dmgArchitecture, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
 import { targetArchitecture } from "./macos-mach-o.mjs";
-import { verifyApp } from "./verify-macos-app.mjs";
+import { readAppPlist, verifyApp, verifySourceCommit } from "./verify-macos-app.mjs";
 
 export function verifyDmg(dmg, target, {
   run = spawnSync, checkApp = verifyApp, makeTemp = () => mkdtempSync(join(tmpdir(), "chemdraft-dmg-")),
@@ -34,6 +34,14 @@ export function verifyDmg(dmg, target, {
     }
     cleanup(mount);
   }
+}
+
+// Release provenance must come from the payload, never an adjacent build record.
+export function verifyDmgCommit(dmg, target, commit, { run = spawnSync, ...options } = {}) {
+  verifyDmg(dmg, target, {
+    ...options, run,
+    checkApp: (app) => verifySourceCommit(readAppPlist(app, run), commit)
+  });
 }
 
 export function verifyFeedArtifacts({ xml, target, dmgs = [], apps = [] }, { checkDmg = verifyDmg, checkApp = verifyApp } = {}) {

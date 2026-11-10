@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { BUILD_TARGETS, recordBuild } from "./record-build.mjs";
+import { artifactDigest, BUILD_TARGETS, recordBuild } from "./record-build.mjs";
 import { macosReleasePlist } from "./macos-build-plist.mjs";
 
 function fixture(t) {
@@ -35,7 +35,7 @@ test("all three release artifacts record the checked-out full commit, version, t
     const artifact = join(rootDir, "assets", `ChemDraft_1.2.3_${suffix}`);
     writeFileSync(artifact, "fixture");
     recordBuild({ artifact, target, rootDir });
-    assert.deepEqual(JSON.parse(readFileSync(`${artifact}.build.json`, "utf8")), { commit, version: "1.2.3", target, clean: true });
+    assert.deepEqual(JSON.parse(readFileSync(`${artifact}.build.json`, "utf8")), { commit, version: "1.2.3", target, clean: true, ...artifactDigest(artifact) });
   }
 });
 
@@ -81,4 +81,9 @@ test("Windows records before staging and carries the record through installer up
   assert.match(workflow, /name: windows-nsis-unsigned\n\s+path: \|\n\s+release-assets\/\*\.exe\n\s+release-assets\/\*\.exe\.build\.json/);
   assert.match(workflow, /name: windows-release\n\s+path: release-assets\/\*/);
   assert.match(workflow, /Get-ChildItem release-assets -File[\s\S]+gh release upload \$env:RELEASE_TAG @assets/);
+  const finalRecord = workflow.indexOf("name: Bind build record to final signed installer bytes");
+  assert.ok(finalRecord > workflow.indexOf("name: Verify Authenticode and replace unsigned installer"));
+  assert.ok(finalRecord < workflow.indexOf("name: Print SHA-256 and sizes and write checksums"));
+  assert.match(workflow, /\$record\.sha256 = \(Get-FileHash -LiteralPath \$installer -Algorithm SHA256\)/);
+  assert.match(workflow, /\$record\.size = \(Get-Item -LiteralPath \$installer\)\.Length/);
 });

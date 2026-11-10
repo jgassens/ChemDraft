@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isMachO, machOSlices, packedVersion, versionString } from "./macos-mach-o.mjs";
 import { fatMachO, thinMachO } from "./macos-test-fixtures.mjs";
-import { feedForTarget, inventoryApp, verifyApp, verifyInventory } from "./verify-macos-app.mjs";
+import { feedForTarget, inventoryApp, verifyApp, verifyInventory, verifyReleaseTrust } from "./verify-macos-app.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
 
 test("parses modern and legacy minimum commands and all fat table formats", () => {
@@ -63,6 +63,57 @@ test("embedded release commit is a full SHA and matches the expected source", ()
   bundle.plist.ChemDraftSourceCommit = commit;
   assert.equal(verifyInventory({ ...bundle, commit }), 4);
   assert.throws(() => verifyInventory({ ...bundle, commit: "b".repeat(40) }), /ChemDraftSourceCommit.*expected/);
+});
+
+function trustRunner(calls, { failure, signature = "Authority=Developer ID Application: ChemDraft (ABCDEFGHIJ)\nTeamIdentifier=ABCDEFGHIJ" } = {}) {
+  return (command, args) => {
+    calls.push({ command, args });
+    if (failure?.(command, args)) return { status: 1, stderr: "rejected by fake native gate" };
+    return { status: 0, stderr: command === "codesign" && args[0] === "--display" ? signature : "" };
+  };
+}
+
+test("production gate requires Developer ID, correct team, both staples and both Gatekeeper assessments", () => {
+  const calls = [];
+  verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "ABCDEFGHIJ", run: trustRunner(calls) });
+  assert.deepEqual(calls, [
+    { command: "codesign", args: ["--verify", "--deep", "--strict", "ChemDraft.app"] },
+    { command: "codesign", args: ["--display", "--verbose=4", "ChemDraft.app"] },
+    { command: "xcrun", args: ["stapler", "validate", "ChemDraft.app"] },
+    { command: "xcrun", args: ["stapler", "validate", "ChemDraft.dmg"] },
+    { command: "spctl", args: ["--assess", "--type", "execute", "ChemDraft.app"] },
+    { command: "spctl", args: ["--assess", "--type", "open", "--context", "context:primary-signature", "ChemDraft.dmg"] }
+  ]);
+});
+
+test("production rejects missing signatures, app/DMG staples, Gatekeeper failures and wrong team", () => {
+  for (let failed = 0; failed < 6; failed++) {
+    const calls = [];
+    const run = trustRunner(calls, { failure: () => calls.length === failed + 1 });
+    assert.throws(() => verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "ABCDEFGHIJ", run }), /rejected by fake native gate/);
+  }
+  for (const signature of ["Signature=adhoc", "Authority=Apple Development: ChemDraft\nTeamIdentifier=ABCDEFGHIJ", "Authority=Developer ID Application: ChemDraft\nTeamIdentifier=WRONGTEAM1"]) {
+    assert.throws(() => verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "ABCDEFGHIJ", run: trustRunner([], { signature }) }), /Developer ID Application signature|team ID/);
+  }
+  assert.throws(() => verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "" }), /--team-id or APPLE_TEAM_ID/);
+  assert.throws(() => verifyReleaseTrust("ChemDraft.app", undefined, { teamId: "ABCDEFGHIJ" }), /--dmg/);
+});
+
+test("release app verification requires embedded commit and cannot exempt sidecars; unsigned smoke still works", () => {
+  const bundle = validBundle();
+  const run = () => ({ status: 0, stdout: JSON.stringify(bundle.plist) });
+  assert.throws(() => verifyApp("ChemDraft.app", bundle.target, { run, release: true, inventory: () => bundle.records }), /ChemDraftSourceCommit.*missing/);
+  assert.throws(() => verifyApp("ChemDraft.app", bundle.target, { run, release: true, allowSidecarPlaceholder: true }), /cannot allow/);
+  assert.equal(verifyApp("ChemDraft.app", bundle.target, { run, inventory: () => bundle.records }), 4);
+  const commit = "a".repeat(40);
+  bundle.plist.ChemDraftSourceCommit = commit;
+  const calls = [];
+  const trust = trustRunner(calls);
+  assert.equal(verifyApp("ChemDraft.app", bundle.target, {
+    run: (command, args) => command === "/usr/bin/plutil" ? run() : trust(command, args),
+    release: true, dmg: "ChemDraft.dmg", teamId: "ABCDEFGHIJ", commit, inventory: () => bundle.records
+  }), 4);
+  assert.equal(calls.length, 6);
 });
 
 test("wrong feed, missing runtime, wrong JVM, wrong helpers and high minos fail closed", () => {

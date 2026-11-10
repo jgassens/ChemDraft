@@ -17,6 +17,8 @@ There are two independent signatures, in this order:
 4. Verify the updater signature against `plugins.updater.pubkey` in
    `apps/desktop/src-tauri/tauri.windows.conf.json`, then generate `latest.json` with
    `pnpm -s release:windows-manifest` and the optional Windows notes.
+5. Update the adjacent build record's `sha256` and `size` to cover the final signed installer,
+   preserving the clean-checkout source commit, version and target, then write checksums.
 
 Authenticode changes the installer's bytes. Never Authenticode-sign, rebuild, or otherwise modify the
 installer after creating its updater `.sig`; recreate and verify the `.sig` and manifest if it changes.
@@ -114,7 +116,8 @@ are none. This workflow supplies the Windows artifacts only.
    identity and complete the update/session-preservation checks in [windows-updates.md](windows-updates.md#verification).
 5. Download **`windows-release`**, which contains the final installer, its `.exe.build.json`,
    `.exe.sig`, `latest.json`, and `SHA256SUMS.txt`. The build record uses `git rev-parse HEAD`
-   from the checked-out source and refuses a dirty tree; keep it beside the installer.
+   from the checked-out source and refuses a dirty tree; its SHA-256 and byte size cover the
+   final Authenticode-signed installer. Keep it beside the installer.
    **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
    For a local updater signature check, from the repository root run:
 
@@ -122,18 +125,25 @@ are none. This workflow supplies the Windows artifacts only.
    pnpm exec tsx tools/release/verify-windows-updater.ts path/to/ChemDraft_X.Y.Z_x64-setup.exe
    ```
 
-6. If `upload_to_release` was supplied, a separate job downloads only the final artifact and uses
+6. If `upload_to_release` was supplied, a separate job downloads the final artifact and uses
    `gh release upload --clobber`. It refuses a missing or already published release, and requires
-   `v<app version>` because the generated feed points to that URL. It also requires both
+   `v<app version>` because the generated feed points to that URL. Before uploading it fetches
+   and peels the destination tag and requires it to resolve to the built commit. It also requires both
    `authenticode_signed` and `updater_signed` build outputs to be true; these are set only after
    successful verification. The boolean input `allow_unsigned_upload` defaults to false. Setting it
    to true explicitly permits an upload with missing signatures and prints a loud workflow warning;
    use it only for draft dry runs. Only this job has
-   `contents: write`; the build/signing job has read access. Leave the release draft while testing.
+   `contents: write`; the build/signing and final asset-check jobs have read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
-7. Collect both DMGs and the installer with all three `.build.json` files, then pass the
-   [joint release body check](three-builds.md) against the release tag or explicit `--commit`.
-   After all three artifacts pass review, publish the joint release. Only **after** the installer
+7. The final workflow job downloads all attached release assets and runs the
+   [asset checker](three-builds.md#last-step-before-un-drafting). If all three builds and their
+   records are present, hashes, sizes and tag/commit identity must pass. Otherwise it lists the
+   missing files and leaves the Windows-only upload successful; INCOMPLETE is not a publishing pass.
+8. Collect both DMGs and the installer with all three `.build.json` files, then pass the
+   [joint release body check](three-builds.md) with the tag and explicit gaps or `--no-gaps`.
+   After all three artifacts pass review, **as the last step before un-drafting** run
+   `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` against GitHub.
+   It must report PASS without `--allow-incomplete`; then publish the joint release. Only **after** the installer
    URL is publicly downloadable, commit the generated `latest.json` to `main` through the normal PR
    path. This workflow neither publishes the release nor updates the feed on `main`.
 
