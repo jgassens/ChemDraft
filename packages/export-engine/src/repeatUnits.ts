@@ -46,8 +46,8 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
   const membershipUnchanged = pair.every(object =>
     object.compatibility?.unknown.cdxmlBracketMembership === JSON.stringify(object.containedObjectIds));
   if (!membershipUnchanged) {
-    // A native edit replaces whole-molecule imports. Never revive the old membership or
-    // supplement the edit with geometry; atom-scoped imports cannot be replaced unambiguously.
+    // Merge/delete remaps live object references, not the imported graph. A replacement
+    // cannot prove the original membership; never silently absorb the surviving molecule.
     const requested = [...new Set(pair.flatMap(object => object.containedObjectIds))];
     let reason = pair.some(object => typeof object.compatibility?.unknown.cdxmlBracketMembership !== "string")
       ? "its edited native membership cannot be compared with a missing import-time membership snapshot"
@@ -65,7 +65,8 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
         if (!molecule.atoms.length) reason ??= `its edited native member "${id}" has no atoms`;
       }
     }
-    return { members, reason: reason ?? connectivityReason, referencedObjectIds, connectivity };
+    reason ??= "its imported whole-molecule membership changed after an edit and no longer resolves to the original member molecules";
+    return { members, reason, referencedObjectIds, connectivity };
   }
   let reason = sourceIds.length ? undefined : "its imported BracketedObjectIDs membership is empty or invalid";
   for (const sourceId of sourceIds) {
@@ -120,61 +121,75 @@ function importedBoundaryReason(pair: BracketObject[], members: Map<string, Set<
 function importedIdentityReason(pair: BracketObject[], records: Record<string, unknown>[], members: Map<string, Set<string>>,
   objects: readonly DocumentObject[]): string | undefined {
   for (const member of new Map(records.map(entry => [JSON.stringify(entry), entry])).values()) {
-    if (typeof member.atomId !== "string" || typeof member.objectId !== "string") continue;
-    // A whole-molecule member already includes every current atom; no atom can be silently
-    // excluded by a stale atom-level reference, including in a pre-snapshot native document.
-    if (records.some(entry => entry.objectId === member.objectId && entry.atomId === undefined)) continue;
+    if (typeof member.objectId !== "string") continue;
+    const wholeMolecule = member.atomId === undefined;
+    const description = `its imported ${wholeMolecule ? "whole-molecule" : "atom-level"} membership`;
+    const memberId = wholeMolecule ? member.objectId : member.atomId;
     const molecule = objects.find(object => object.id === member.objectId);
     if (molecule?.type !== "molecule") continue;
     const snapshots = pair.map(object => object.compatibility?.unknown.cdxmlBracketAtomSnapshots
       ?.filter(snapshot => snapshot.sourceId === member.sourceId));
-    if (snapshots.some(entries => entries?.length !== 1)) {
-      return `its imported atom-level membership cannot rule out edits to member "${member.atomId}" without an import-time atom and incident-bond snapshot`;
+    // Legacy whole-molecule records have no snapshots (or an empty array). Source maps
+    // alone cannot distinguish deleted/redrawn ids, so they cannot certify membership.
+    if (snapshots.some(entries => !entries?.length || !wholeMolecule && entries.length !== 1)) {
+      return `${description} cannot rule out edits to member "${memberId}" without an import-time atom and incident-bond snapshot`;
     }
-    const parsed = CdxmlBracketAtomSnapshotSchema.safeParse(snapshots[0]![0]);
-    if (!parsed.success || parsed.data.atomId !== member.atomId ||
-      snapshots.some(entries => JSON.stringify(entries![0]) !== JSON.stringify(snapshots[0]![0]))) {
-      return `its imported atom-level membership has an invalid or inconsistent identity snapshot for member "${member.atomId}"`;
+    const parsed = CdxmlBracketAtomSnapshotSchema.array().safeParse(snapshots[0]);
+    if (!parsed.success || !wholeMolecule && parsed.data[0].atomId !== member.atomId ||
+      snapshots.some(entries => JSON.stringify(entries) !== JSON.stringify(snapshots[0])) ||
+      new Set(parsed.data.map(snapshot => snapshot.atomId)).size !== parsed.data.length) {
+      return `${description} has an invalid or inconsistent identity snapshot for member "${memberId}"`;
     }
-    const snapshot = parsed.data;
+    const originals = parsed.data;
+    if (wholeMolecule) {
+      const originalIds = new Set(originals.map(snapshot => snapshot.atomId));
+      const added = molecule.atoms.find(atom => !originalIds.has(atom.id));
+      if (added) return `${description} has new atom "${added.id}" after an edit to member "${memberId}"`;
+      const missing = originals.find(snapshot => !molecule.atoms.some(atom => atom.id === snapshot.atomId));
+      if (missing) return `${description} no longer resolves imported atom "${missing.atomId}" after an edit to member "${memberId}"`;
+    }
     const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
     const sourceAtoms = molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId;
     const sourceBonds = molecule.compatibility?.unknown.cdxmlBondIdsByBondId;
-    if (atoms.get(member.atomId)?.element !== snapshot.element) {
-      return `its imported atom-level membership has edited atom "${member.atomId}" with a different element`;
-    }
-    if (atoms.get(member.atomId)?.cdxmlSourceId !== member.sourceId) {
-      return `its imported atom-level membership cannot prove atom "${member.atomId}" is the imported original after an edit`;
-    }
-    const incident = molecule.bonds.filter(bond => bond.fromAtomId === member.atomId || bond.toAtomId === member.atomId);
-    for (const bond of incident) {
-      const original = snapshot.incidentBonds.find(entry => entry.id === bond.id);
-      if (!original) {
-        const atomIds = members.get(member.objectId)!;
-        return atomIds.has(bond.fromAtomId) !== atomIds.has(bond.toAtomId)
-          ? `its imported atom-level membership has a new boundary bond "${bond.id}" between member and non-member atoms`
-          : `its imported atom-level membership has a new bond "${bond.id}" touching a member atom`;
+    for (const snapshot of originals) {
+      const atomId = snapshot.atomId;
+      if (atoms.get(atomId)?.element !== snapshot.element) {
+        return `${description} has edited atom "${atomId}" with a different element`;
       }
-      // Reversing a bond does not change its membership. The crossing-bond check below still
-      // enforces the source's directional InnerAtomID association where one was supplied.
-      if (!(bond.fromAtomId === original.fromAtomId && bond.toAtomId === original.toAtomId ||
-        bond.fromAtomId === original.toAtomId && bond.toAtomId === original.fromAtomId)) {
-        return `its imported atom-level membership has edited bond "${bond.id}" with different endpoints`;
+      const sourceId = wholeMolecule ? (record(sourceAtoms) ? sourceAtoms[atomId] : undefined) : member.sourceId;
+      if (typeof sourceId !== "string" || atoms.get(atomId)?.cdxmlSourceId !== sourceId) {
+        return `${description} cannot prove atom "${atomId}" is the imported original after an edit`;
       }
-      for (const [id, element] of [[original.fromAtomId, original.fromElement], [original.toAtomId, original.toElement]]) {
-        if (atoms.get(id)?.element !== element) {
-          return `its imported atom-level membership has edited atom "${id}" with a different element`;
+      const incident = molecule.bonds.filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId);
+      for (const bond of incident) {
+        const original = snapshot.incidentBonds.find(entry => entry.id === bond.id);
+        if (!original) {
+          const atomIds = members.get(member.objectId)!;
+          return atomIds.has(bond.fromAtomId) !== atomIds.has(bond.toAtomId)
+            ? `${description} has a new boundary bond "${bond.id}" between member and non-member atoms`
+            : `${description} has a new bond "${bond.id}" touching a member atom`;
         }
-        if (!record(sourceAtoms) || typeof sourceAtoms[id] !== "string" || atoms.get(id)?.cdxmlSourceId !== sourceAtoms[id]) {
-          return `its imported atom-level membership cannot prove atom "${id}" is the imported original after an edit`;
+        // Reversing a bond does not change its membership. The crossing-bond check below still
+        // enforces the source's directional InnerAtomID association where one was supplied.
+        if (!(bond.fromAtomId === original.fromAtomId && bond.toAtomId === original.toAtomId ||
+          bond.fromAtomId === original.toAtomId && bond.toAtomId === original.fromAtomId)) {
+          return `${description} has edited bond "${bond.id}" with different endpoints`;
+        }
+        for (const [id, element] of [[original.fromAtomId, original.fromElement], [original.toAtomId, original.toElement]]) {
+          if (atoms.get(id)?.element !== element) {
+            return `${description} has edited atom "${id}" with a different element`;
+          }
+          if (!record(sourceAtoms) || typeof sourceAtoms[id] !== "string" || atoms.get(id)?.cdxmlSourceId !== sourceAtoms[id]) {
+            return `${description} cannot prove atom "${id}" is the imported original after an edit`;
+          }
+        }
+        if (!record(sourceBonds) || typeof sourceBonds[bond.id] !== "string" || bond.cdxmlSourceId !== sourceBonds[bond.id]) {
+          return `${description} cannot prove bond "${bond.id}" is the imported original after an edit`;
         }
       }
-      if (!record(sourceBonds) || typeof sourceBonds[bond.id] !== "string" || bond.cdxmlSourceId !== sourceBonds[bond.id]) {
-        return `its imported atom-level membership cannot prove bond "${bond.id}" is the imported original after an edit`;
-      }
+      const missing = snapshot.incidentBonds.find(original => !incident.some(bond => bond.id === original.id));
+      if (missing) return `${description} no longer has incident bond "${missing.id}" on member "${atomId}"`;
     }
-    const missing = snapshot.incidentBonds.find(original => !incident.some(bond => bond.id === original.id));
-    if (missing) return `its imported atom-level membership no longer has incident bond "${missing.id}" on member "${member.atomId}"`;
   }
   return undefined;
 }
@@ -243,8 +258,11 @@ export function repeatUnits(document: ChemDraftDocument, molecules?: readonly Mo
         ? [{ molecule: object, atomIds, context }] : [];
     });
     const members = allMembers.filter(member => !exported || exported.has(member.molecule.id));
-    if (!members.length && !(imported?.reason && page.objects.some(object => object.type === "molecule" &&
-      imported.referencedObjectIds.has(object.id) && (!exported || exported.has(object.id))))) return [];
+    // Removing the last member also prunes containedObjectIds. Keep the diagnostic when
+    // exporting the remaining page (even an empty page), but not an unrelated subset.
+    const exportsPage = !exported || page.objects.every(object => object.type !== "molecule" || exported.has(object.id));
+    if (!members.length && !(imported?.reason && (exportsPage || page.objects.some(object => object.type === "molecule" &&
+      imported.referencedObjectIds.has(object.id) && (!exported || exported.has(object.id)))))) return [];
     const missing = [...explicit].some(id => !page.objects.some(object => object.id === id && object.type === "molecule"));
     const excluded = allMembers.some(member => exported && !exported.has(member.molecule.id));
     const reason = usage !== "sru" ? `its ${usage === "multiple" ? "multiple-group" : "unknown group"} semantics cannot be represented as an SRU`

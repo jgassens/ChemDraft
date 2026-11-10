@@ -41,6 +41,25 @@ describe("native bracket group interchange", () => {
     }
   });
 
+  it.each(["CDXML", "CDX"])("snapshots every atom and bond of a whole-molecule member in %s", format => {
+    const source = fixture("brackets-native-sru").replace(/<crossingbond[^>]*\/>/, "")
+      .replace("</fragment>", '<n id="14" Element="7" p="170 110"/></fragment>');
+    const document = (format === "CDX" ? importCdx(binary(source)) : openChemDraftPayload(source)).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const [carbon, oxygen, isolated] = molecule.atoms;
+    const [bond] = molecule.bonds;
+    expect(molecule.atoms.map(atom => atom.cdxmlSourceId)).toEqual(["11", "12", "14"]);
+    expect(bond.cdxmlSourceId).toBe("13");
+    const incidentBonds = [{ id: bond.id, fromAtomId: carbon.id, toAtomId: oxygen.id, fromElement: "C", toElement: "O" }];
+    for (const bracket of document.pages[0].objects.filter(object => object.type === "bracket")) {
+      expect(bracket.compatibility!.unknown.cdxmlBracketAtomSnapshots).toEqual([
+        { sourceId: "10", atomId: carbon.id, element: "C", incidentBonds },
+        { sourceId: "10", atomId: oxygen.id, element: "O", incidentBonds },
+        { sourceId: "10", atomId: isolated.id, element: "N", incidentBonds: [] }
+      ]);
+    }
+  });
+
   it("keeps surviving atom members after membership edits and names each dropped source id", () => {
     const document = openChemDraftPayload(fixture("brackets-native-sru")
       .replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="11 12 missing"')).document!;

@@ -3372,22 +3372,24 @@ function importPageObjects(
     const uniqueMembers = [...new Map(memberRecords.map(member => [JSON.stringify(member), member])).values()];
     const atomSnapshots: CdxmlBracketAtomSnapshot[] = uniqueMembers.flatMap(member => {
       const molecule = objects.find(object => object.id === member.objectId);
-      if (molecule?.type !== "molecule" || !member.atomId) return [];
-      const atom = molecule.atoms.find(atom => atom.id === member.atomId);
-      if (!atom) return [];
+      if (molecule?.type !== "molecule") return [];
       const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
       const sourceAtoms = preservedCurveAttributes(molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId);
       const sourceBonds = preservedCurveAttributes(molecule.compatibility?.unknown.cdxmlBondIdsByBondId);
-      atom.cdxmlSourceId = sourceAtoms[atom.id];
-      const incidentBonds = molecule.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
-      for (const bond of incidentBonds) {
-        bond.cdxmlSourceId = sourceBonds[bond.id];
-        atoms.get(bond.fromAtomId)!.cdxmlSourceId = sourceAtoms[bond.fromAtomId];
-        atoms.get(bond.toAtomId)!.cdxmlSourceId = sourceAtoms[bond.toAtomId];
-      }
-      return [{ sourceId: member.sourceId, atomId: atom.id, element: atom.element,
-        incidentBonds: incidentBonds.map(bond => ({ id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
-          fromElement: atoms.get(bond.fromAtomId)!.element, toElement: atoms.get(bond.toAtomId)!.element })) }];
+      // A fragment member means its import-time graph, not every atom a later merge adds.
+      // Bind all its atom snapshots to the fragment's source id; copies retain local ids.
+      return molecule.atoms.filter(atom => !member.atomId || atom.id === member.atomId).map(atom => {
+        atom.cdxmlSourceId = sourceAtoms[atom.id];
+        const incidentBonds = molecule.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id);
+        for (const bond of incidentBonds) {
+          bond.cdxmlSourceId = sourceBonds[bond.id];
+          atoms.get(bond.fromAtomId)!.cdxmlSourceId = sourceAtoms[bond.fromAtomId];
+          atoms.get(bond.toAtomId)!.cdxmlSourceId = sourceAtoms[bond.toAtomId];
+        }
+        return { sourceId: member.sourceId, atomId: atom.id, element: atom.element,
+          incidentBonds: incidentBonds.map(bond => ({ id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+            fromElement: atoms.get(bond.fromAtomId)!.element, toElement: atoms.get(bond.toAtomId)!.element })) };
+      });
     });
     if (containedObjects.some(object => !object)) warnings.push({ code: "cdxml.bracket_atom_membership_preserved",
       message: `${sourceFormat} bracket group ${group.attributes.id} has atom-level or unresolved BracketedObjectIDs; source membership is preserved in compatibility data, not asserted as whole-molecule membership.` });

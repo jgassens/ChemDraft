@@ -645,7 +645,8 @@ function refineTable(table: z.infer<typeof TableObjectShapeSchema>, ctx: z.Refin
 
 export const TableObjectSchema = TableObjectShapeSchema.superRefine(refineTable);
 
-/** Import provenance, not live membership. Coordinates deliberately do not participate. */
+/** Import provenance, not live membership. Coordinates deliberately do not participate.
+ * sourceId is the BracketedObjectIDs member: an atom, or a fragment for all its atoms. */
 export const CdxmlBracketAtomSnapshotSchema = z.object({
   sourceId: IdSchema,
   atomId: IdSchema,

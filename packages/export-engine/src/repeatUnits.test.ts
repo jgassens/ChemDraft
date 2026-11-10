@@ -1,11 +1,17 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
-import { applyPatch, createEmptyDocument, deserializeDocument, moleculeToMolfileV2000, moleculeToMolfileV3000, serializeDocument, type BracketObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, applyPatches, createEmptyDocument, deserializeDocument, moleculeToMolfileV2000, moleculeToMolfileV3000, serializeDocument, type BracketObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "./repeatUnits";
 import type { ExportWarning } from "./results";
 
 const source = readFileSync(new URL("../../fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8");
+const wholeMoleculeSource = source.replace(/<crossingbond[^>]*\/>/, "");
+const sourceWithAcid = wholeMoleculeSource.replace("</page>", `<fragment id="40">
+  <n id="41" Element="6" p="300 100"/><n id="42" Element="6" p="330 100"/>
+  <n id="43" Element="8" p="330 130"/><n id="44" Element="8" p="360 100"/>
+  <b id="45" B="41" E="42" Order="1"/><b id="46" B="42" E="43" Order="2"/>
+  <b id="47" B="42" E="44" Order="1"/></fragment></page>`);
 
 function imported(ids = "11", cdxml = source) {
   const document = openChemDraftPayload(cdxml.replace('BracketedObjectIDs="10"', `BracketedObjectIDs="${ids}"`)).document!;
@@ -175,7 +181,115 @@ describe("repeat-unit export membership", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("replaces imported whole-molecule membership with the current native edit, without geometric additions", () => {
+  it.each([false, true])("keeps whole-molecule membership through native save (brackets moved: %s)", move => {
+    const { document, molecule, brackets, close } = imported("10", wholeMoleculeSource);
+    const edited = move ? applyPatches(document, brackets.map(bracket => ({ op: "updateObject" as const,
+      objectId: bracket.id, changes: { x: bracket.x + 1000, y: bracket.y + 1000 } }))) : document;
+    const reopened = deserializeDocument(serializeDocument(edited));
+    const current = reopened.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const warnings: ExportWarning[] = [];
+    const groups = repeatUnitMolfileGroups(reopened, [current], warnings);
+    expect(groups).toEqual([{ objectId: close.id, label: "x-y", atomIds: molecule.atoms.map(atom => atom.id), connectivity: "ht" }]);
+    expect(moleculeToMolfileV3000(current, { kekuleBondOrders: new Map(), repeatUnitGroups: groups }).contents)
+      .toContain("SRU 0 ATOMS=(2 1 2) LABEL=x-y CONNECT=HT");
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([false, true])("declines a bond-tool merge with acetic acid (member survives: %s)", memberSurvives => {
+    const { document, molecule, brackets, close } = imported("10", sourceWithAcid);
+    const acid = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule" && object.id !== molecule.id)!;
+    const host = memberSurvives ? molecule : acid;
+    const absorbed = memberSurvives ? acid : molecule;
+    const remapAtom = (id: string) => `merged_${id}`;
+    // Mirror documentWorkflow's merge: retain the host metadata, re-mint absorbed local
+    // ids, connect the graphs, remap containedObjectIds, then remove the absorbed object.
+    const merged = applyPatches(document, [
+      { op: "updateObject", objectId: host.id, changes: {
+        atoms: [...host.atoms, ...absorbed.atoms.map(atom => ({ ...atom, id: remapAtom(atom.id) }))],
+        bonds: [...host.bonds, ...absorbed.bonds.map(bond => ({ ...bond, id: `merged_${bond.id}`,
+          fromAtomId: remapAtom(bond.fromAtomId), toAtomId: remapAtom(bond.toAtomId) })),
+          { id: "join", fromAtomId: host.atoms[0].id, toAtomId: remapAtom(absorbed.atoms[0].id), order: "single" }]
+      } },
+      ...brackets.map(bracket => ({ op: "updateObject" as const, objectId: bracket.id,
+        changes: { containedObjectIds: [host.id] } })),
+      { op: "removeObject", objectId: absorbed.id }
+    ]);
+    const reopened = deserializeDocument(serializeDocument(merged));
+    const current = reopened.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(current.atoms).toHaveLength(6);
+    expect(current.bonds).toHaveLength(5);
+    const before = structuredClone(reopened);
+    const warnings: ExportWarning[] = [];
+    const groups = repeatUnitMolfileGroups(reopened, [current], warnings);
+    expect(groups).toEqual([]);
+    expect(warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented", objectId: close.id,
+      message: expect.stringContaining(memberSurvives
+        ? `imported whole-molecule membership has new atom "${remapAtom(acid.atoms[0].id)}" after an edit`
+        : "imported whole-molecule membership changed after an edit and no longer resolves to the original member molecules") })]);
+    expect(moleculeToMolfileV3000(current, { kekuleBondOrders: new Map(), repeatUnitGroups: groups }).contents).not.toMatch(/SRU/);
+    expect(reopened).toEqual(before);
+  });
+
+  it.each([false, true])("warns after deleting the whole member molecule (other molecule remains: %s)", keepAcid => {
+    const { document, molecule, close } = imported("10", keepAcid ? sourceWithAcid : wholeMoleculeSource);
+    const removed = deserializeDocument(serializeDocument(applyPatch(document, { op: "removeObject", objectId: molecule.id })));
+    expect(removed.pages[0].objects.filter(object => object.type === "bracket").map(bracket => bracket.containedObjectIds))
+      .toEqual([[], []]);
+    const remaining = removed.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    const warnings: ExportWarning[] = [];
+    const groups = repeatUnitMolfileGroups(removed, remaining, warnings);
+    expect(groups).toEqual([]);
+    expect(warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented", objectId: close.id,
+      message: expect.stringContaining("its edited native membership is empty") })]);
+    if (remaining.length) {
+      expect(moleculeToMolfileV3000(remaining[0], { kekuleBondOrders: new Map(), repeatUnitGroups: groups }).contents).not.toMatch(/SRU/);
+    }
+  });
+
+  it.each(["add bond", "delete bond", "redraw bond", "delete atom", "redraw atom"])("declines whole-molecule graph edits: %s", edit => {
+    const { document, molecule, close } = imported("10", wholeMoleculeSource);
+    const [atom] = molecule.atoms;
+    const [bond] = molecule.bonds;
+    if (edit === "add bond") molecule.bonds.push({ ...bond, id: "new" });
+    if (edit === "delete bond") molecule.bonds = [];
+    if (edit === "redraw bond") delete bond.cdxmlSourceId;
+    if (edit === "delete atom") { molecule.atoms = molecule.atoms.slice(1); molecule.bonds = []; }
+    if (edit === "redraw atom") delete atom.cdxmlSourceId;
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
+    const detail = edit === "add bond" ? 'has a new bond "new"' : edit === "delete bond" ? `no longer has incident bond "${bond.id}"`
+      : edit === "delete atom" ? `no longer resolves imported atom "${atom.id}"`
+      : `cannot prove ${edit === "redraw atom" ? `atom "${atom.id}"` : `bond "${bond.id}"`} is the imported original after an edit`;
+    expect(warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented", objectId: close.id,
+      message: expect.stringContaining(`imported whole-molecule membership ${detail}`) })]);
+  });
+
+  it.each(["10", "11", "10 11"])("keeps copied membership %s when all object references are remapped together", ids => {
+    const { document, molecule, brackets, close } = imported(ids, wholeMoleculeSource);
+    const copy = structuredClone(document);
+    const copiedId = `copy_${molecule.id}`;
+    // Copy/Paste/Duplicate remap object references together and retain local atom/bond ids.
+    for (const object of copy.pages[0].objects) {
+      object.id = `copy_${object.id}`;
+      if (object.type !== "bracket") continue;
+      object.pairId = `copy_${object.pairId}`;
+      object.containedObjectIds = object.containedObjectIds.map(() => copiedId);
+      const unknown = object.compatibility!.unknown;
+      unknown.cdxmlBracketMembership = JSON.stringify(object.containedObjectIds);
+      unknown.cdxmlBracketMemberObjectIds = ids === "10" ? [] : [copiedId];
+      unknown.cdxmlBracketMembers = (unknown.cdxmlBracketMembers as { objectId: string }[])
+        .map(member => ({ ...member, objectId: copiedId }));
+    }
+    const reopened = deserializeDocument(serializeDocument(copy));
+    const current = reopened.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(reopened, [current], warnings)).toEqual([{ objectId: `copy_${close.id}`, label: "x-y",
+      atomIds: (ids === "11" ? molecule.atoms.slice(0, 1) : molecule.atoms).map(atom => atom.id), connectivity: "ht" }]);
+    expect(warnings).toEqual([]);
+    expect(brackets.every(bracket => bracket.containedObjectIds.every(id => id === molecule.id))).toBe(true);
+  });
+
+  it("declines replacement of imported whole-molecule membership instead of adopting the native edit", () => {
     const cdxml = source.replace(/<crossingbond[^>]*\/>/, "")
       .replace("</fragment>", '</fragment><fragment id="40"><n id="41" Element="7" p="500 500"/></fragment>');
     const { document, molecule, brackets, close } = imported("10", cdxml);
@@ -183,15 +297,12 @@ describe("repeat-unit export membership", () => {
       object.type === "molecule" && object.id !== molecule.id)!;
     for (const bracket of brackets) bracket.containedObjectIds = [replacement.id];
     const before = structuredClone(document);
-    const warnings: ExportWarning[] = [];
-    expect(repeatUnitMolfileGroups(document, [molecule, replacement], warnings, { merged: true })).toEqual([
-      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => `m1_${atom.id}`), connectivity: "ht" }
-    ]);
-    expect(repeatUnitMolfileGroups(document, [replacement], warnings)).toEqual([
-      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => atom.id), connectivity: "ht" }
-    ]);
-    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
-    expect(warnings).toEqual([]);
+    for (const scope of [[molecule, replacement], [replacement], [molecule]]) {
+      const warnings: ExportWarning[] = [];
+      expect(repeatUnitMolfileGroups(document, scope, warnings, { merged: true })).toEqual([]);
+      expect(warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented", objectId: close.id,
+        message: expect.stringContaining("imported whole-molecule membership changed after an edit") })]);
+    }
     expect(document).toEqual(before);
   });
 
@@ -236,12 +347,18 @@ describe("repeat-unit export membership", () => {
   it("declines imported atom membership after a member atom is deleted", () => {
     const { document, molecule, close } = imported();
     const deletedId = molecule.atoms[0].id;
-    molecule.atoms = molecule.atoms.filter(atom => atom.id !== deletedId);
-    molecule.bonds = molecule.bonds.filter(bond => bond.fromAtomId !== deletedId && bond.toAtomId !== deletedId);
+    const removed = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.filter(atom => atom.id !== deletedId),
+      bonds: molecule.bonds.filter(bond => bond.fromAtomId !== deletedId && bond.toAtomId !== deletedId)
+    } });
+    const reopened = deserializeDocument(serializeDocument(removed));
+    const current = reopened.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
     const warnings: ExportWarning[] = [];
-    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
+    const groups = repeatUnitMolfileGroups(reopened, [current], warnings);
+    expect(groups).toEqual([]);
     expect(warnings).toEqual([expect.objectContaining({ objectId: close.id,
       message: expect.stringContaining('its imported BracketedObjectIDs member "11" does not resolve unambiguously') })]);
+    expect(moleculeToMolfileV3000(current, { kekuleBondOrders: new Map(), repeatUnitGroups: groups }).contents).not.toMatch(/SRU/);
   });
 
   it("preserves unchanged atom-level membership with no imported crossing bonds", () => {
@@ -350,10 +467,12 @@ describe("repeat-unit export membership", () => {
     expect(warnings[0].message).toContain(`no longer has incident bond "${bond.id}"`);
   });
 
-  it("preserves moved imported membership and its identity snapshots through a native save", () => {
-    const { document, molecule, close } = imported("11", source.replace(/<crossingbond[^>]*\/>/, ""));
-    const moved = applyPatch(document, { op: "updateObject", objectId: molecule.id,
-      changes: { atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 1000, y: atom.y + 1000 })) } });
+  it.each(["molecule", "brackets"])("preserves atom-level membership through a native save after moving %s", target => {
+    const { document, molecule, brackets, close } = imported("11", source.replace(/<crossingbond[^>]*\/>/, ""));
+    const moved = target === "molecule" ? applyPatch(document, { op: "updateObject", objectId: molecule.id,
+      changes: { atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 1000, y: atom.y + 1000 })) } })
+      : applyPatches(document, brackets.map(bracket => ({ op: "updateObject" as const, objectId: bracket.id,
+        changes: { x: bracket.x + 1000, y: bracket.y + 1000 } })));
     const reopened = deserializeDocument(serializeDocument(moved));
     const current = reopened.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
     const warnings: ExportWarning[] = [];
@@ -382,14 +501,18 @@ describe("repeat-unit export membership", () => {
       message: expect.stringContaining("without an import-time atom and incident-bond snapshot") })]);
   });
 
-  it("keeps legacy whole-molecule membership without the new identity data", () => {
-    const { document, molecule, brackets, close } = imported("10", source.replace(/<crossingbond[^>]*\/>/, ""));
-    for (const bracket of brackets) delete bracket.compatibility!.unknown.cdxmlBracketAtomSnapshots;
+  it.each(["missing", "empty"])("declines legacy whole-molecule membership with %s identity data", mode => {
+    const { document, molecule, brackets, close } = imported("10", wholeMoleculeSource);
+    for (const bracket of brackets) {
+      if (mode === "missing") delete bracket.compatibility!.unknown.cdxmlBracketAtomSnapshots;
+      else bracket.compatibility!.unknown.cdxmlBracketAtomSnapshots = [];
+    }
+    for (const atom of molecule.atoms) delete atom.cdxmlSourceId;
+    for (const bond of molecule.bonds) delete bond.cdxmlSourceId;
     const warnings: ExportWarning[] = [];
-    expect(repeatUnitMolfileGroups(deserializeDocument(serializeDocument(document)), [molecule], warnings)).toEqual([
-      { objectId: close.id, label: "x-y", atomIds: molecule.atoms.map(atom => atom.id), connectivity: "ht" }
-    ]);
-    expect(warnings).toEqual([]);
+    expect(repeatUnitMolfileGroups(deserializeDocument(serializeDocument(document)), [molecule], warnings)).toEqual([]);
+    expect(warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented", objectId: close.id,
+      message: expect.stringContaining(`imported whole-molecule membership cannot rule out edits to member "${molecule.id}" without an import-time atom and incident-bond snapshot`) })]);
   });
 
   it.each(["inside", "outside"])("declines a new boundary bond to an atom inserted %s a repeat with no imported crossings", location => {
