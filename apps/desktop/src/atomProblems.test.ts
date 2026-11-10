@@ -130,11 +130,15 @@ describe("atom problem native host policy", () => {
       expect(h.owner.fixAtomProblem).toHaveBeenCalledExactlyOnceWith("tab", "charge", 2);
       await h.deliver(h.message("action", { action: "ignore", targetVersion: 2 }));
       expect(h.owner.fixAtomProblem).toHaveBeenCalledTimes(2);
-      await h.coordinator.updateAtomProblem("tab", { ...data, targetVersion: 3, explanation: "No problem.", fixes: [] });
-      expect(h.transport.publish).toHaveBeenLastCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ fixes: [] }) }));
+      await h.coordinator.updateAtomProblem("tab", { ...data, targetVersion: 3, explanation: "Another problem remains.", fixes: [{ action: "charge", label: "Set formal charge to +1" }] });
+      expect(h.transport.publish).toHaveBeenLastCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ explanation: "Another problem remains." }) }));
       expect(h.transport.close).not.toHaveBeenCalled();
+      // the Atom problem window closes when nothing is left, requested 2026-11-09
+      await h.coordinator.updateAtomProblem("tab", { ...data, targetVersion: 4, explanation: "No problem.", fixes: [] });
+      expect(h.transport.publish).toHaveBeenLastCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ fixes: [] }) }));
+      expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("opaque", "close");
       await h.coordinator.closeTab("tab");
-      expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("opaque", "ownerTabClose");
+      expect(h.transport.close).toHaveBeenCalledExactlyOnceWith("opaque", "close");
     } finally { await h.coordinator.dispose(); }
   });
   it("uses the restricted dialog host and fails closed on unsupported payloads", () => {
