@@ -75,9 +75,10 @@ repository secrets/variables, workflow inputs and release checks.
 
 Dispatch on the release tag with the same tag in `ref`; optionally provide a tracked Windows notes
 file and an existing draft release tag in `upload_to_release`. The final `windows-release` artifact
-contains the installer, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
+contains the installer, `.exe.build.json`, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
-publishes a release or commits the feed. Review all three artifacts from the same commit/version,
+publishes a release or commits the feed. Collect all three artifacts and their `.build.json` records
+and run the [joint release body check](three-builds.md) against the release tag or explicit `--commit`,
 publish the joint release, then commit the generated feed to `main` only after its installer URL works.
 
 ### Windows VM path (retired)

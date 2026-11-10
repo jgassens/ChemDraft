@@ -21,8 +21,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEV_PRODUCT_NAME, isStableBuild, prependToPath, worktreeIdentity, worktreeLabelFor } from "./worktree-identity.mjs";
-import { macosBuildArgs } from "./macos-build-target.mjs";
+import { macosBuildArgs, macosBuildTarget } from "./macos-build-target.mjs";
 import { preflightReleaseOpsinRuntime } from "./check-release-opsin-runtime.mjs";
+import { macosReleasePlist } from "../tools/release/macos-build-plist.mjs";
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = join(ROOT_DIR, "apps", "desktop");
@@ -40,12 +41,20 @@ env.CHEMDRAFT_WORKTREE_LABEL = worktreeLabelFor({ command: args[0], identity, en
 if (process.platform === "darwin") {
   // Fail before signing or Tauri packaging; dev/debug/non-bundle builds keep OPSIN optional.
   preflightReleaseOpsinRuntime(args);
-  const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
-  const result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...args], {
-    cwd: APP_DIR,
-    env,
-    stdio: "inherit"
+  const releasePlist = macosReleasePlist(args, {
+    rootDir: ROOT_DIR,
+    target: args[0] === "build" ? macosBuildTarget(args) : undefined,
+    stable: isStableBuild({ command: args[0], branch: identity.branch, env })
   });
+  const prep = isPackageBuild ? "pnpm prepare:sparkle && pnpm sign:opsin-runtime && " : "";
+  let result;
+  try {
+    result = spawnSync("bash", ["-c", `${prep}PATH="$HOME/.cargo/bin:$PATH" tauri "$@"`, "tauri", ...(releasePlist?.args ?? args)], {
+      cwd: APP_DIR,
+      env,
+      stdio: "inherit"
+    });
+  } finally { releasePlist?.cleanup(); }
   process.exit(result.status ?? 1);
 }
 
