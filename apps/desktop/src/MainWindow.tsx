@@ -1717,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.12.45-codex";
+const CURRENT_BUILD_STAMP = "11.10.07.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7809,7 +7809,7 @@ export function MainWindow({
     event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
   }, [activeToolState.activeCommandId, startTableCellEdit]);
 
-  const applyTextStyleCommand = useCallback((commandId: string): boolean => {
+  const applyTextStyleCommand = useCallback((commandId: string, undoLabel?: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
     // Formatting belongs to the open session, like typing. Outside an editor it is its own entry.
@@ -7924,7 +7924,7 @@ export function MainWindow({
       const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
       if (colorResult.targetedSelection) {
-        const changed = changeText(colorResult.document);
+        const changed = activeTextEditObjectIdRef.current ? replacePresentDocument(colorResult.document) : commitDocumentChange(colorResult.document, undoLabel);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected color" : "Selected color unchanged");
@@ -11495,7 +11495,7 @@ export function MainWindow({
       if (parsed.action === "clear") {
         if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
       } else if (parsed.action === "apply") {
-        if (color) applyTextStyleCommand(textCustomColorCommandId(color));
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Colour ${color.toUpperCase()}`);
       } else {
         const coordinator = dialogCoordinatorRef.current;
         if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }

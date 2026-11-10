@@ -63,7 +63,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Custom Color",
-            size: (460.0, 480.0),
+            size: (460.0, 320.0),
             min_size: (360.0, 320.0),
             fit_content: false,
         }),
