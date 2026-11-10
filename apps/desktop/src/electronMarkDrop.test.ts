@@ -49,11 +49,13 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     };
     const expectedCanonical = (smiles: string) => {
       const mol = module.get_mol(smiles);
-      if (!mol?.get_smiles) {
-        mol?.delete();
-        throw new Error(`Cannot canonicalize expected SMILES: ${smiles}`);
+      if (!mol) throw new Error(`Cannot canonicalize expected SMILES: ${smiles}`);
+      try {
+        if (!mol.get_smiles) throw new Error(`Cannot canonicalize expected SMILES: ${smiles}`);
+        return mol.get_smiles();
+      } finally {
+        mol.delete();
       }
-      try { return mol.get_smiles(); } finally { mol.delete(); }
     };
     const startCanonical = canonical(document);
     expect(startCanonical).toBe(expectedCanonical("CC(C)(C)OC(=O)[NH2+]CC(=O)O"));
