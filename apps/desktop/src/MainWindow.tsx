@@ -837,7 +837,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -909,6 +909,8 @@ import {
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useStructureSearchEnabled } from "./structureSearchSettings";
+import { createStructureSearchController, structureSearchCommands, structureSearchDocument, structureSearchSite } from "./structureSearch";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
@@ -2594,6 +2596,13 @@ export function MainWindow({
 
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const structureSearchEnabled = useStructureSearchEnabled();
+  const structureSearchEnabledRef = useRef(structureSearchEnabled);
+  structureSearchEnabledRef.current = structureSearchEnabled;
+  const structureSearchController = useRef<ReturnType<typeof createStructureSearchController> | undefined>(undefined);
+  if (!structureSearchController.current) {
+    structureSearchController.current = createStructureSearchController({ enabled: () => structureSearchEnabledRef.current });
+  }
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
   const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
     [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
@@ -3329,6 +3338,9 @@ export function MainWindow({
     ),
     [keybindingScheme, toolsetRegistry]
   );
+  const hasSearchableStructure = useMemo(() => structureSearchDocument(
+    document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
+  ) !== undefined, [document, selectedNativeMoleculeParts]);
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       [...allShellCommands(document, selectedMolecule, {
@@ -3336,11 +3348,13 @@ export function MainWindow({
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined,
           hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0 },
         registry: toolsetRegistry,
-        compoundLayoutsEnabled
+        compoundLayoutsEnabled,
+        structureSearchEnabled,
+        hasSearchableStructure
       }), vibeCodeStarterCommand],
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -11749,6 +11763,20 @@ export function MainWindow({
       });
     });
 
+    structureSearchCommands(structureSearchEnabled, hasSearchableStructure).forEach(action => {
+      register(action, async () => {
+        const site = structureSearchSite(action.id);
+        if (!site) return;
+        try {
+          await structureSearchController.current!(site, structureSearchDocument(
+            documentRef.current, nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
+          ));
+        } catch (error) {
+          setStatus(`Structure search failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      });
+    });
+
     objectStyleActions.forEach((action) => {
       register(action, () => {
         if (!applyObjectStyleCommand(action.id)) {
@@ -11894,6 +11922,8 @@ export function MainWindow({
     applyTextStyleCommand,
     currentMoleculeInspector,
     performCopyAs,
+    structureSearchEnabled,
+    hasSearchableStructure,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
     clearDocumentInteractionState,
@@ -12114,9 +12144,10 @@ export function MainWindow({
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
-  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems(
-    pluginRuntime.pluginMenuItems, availablePluginUpdateCount
-  ), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
+    ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
+    ...pluginRuntime.pluginMenuItems
+  ], availablePluginUpdateCount), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -21197,6 +21228,8 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
+        structureSearchEnabled,
+        hasSearchableStructure,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
@@ -21215,7 +21248,9 @@ export function MainWindow({
       visibleToolsetIds,
       toolsetRegistry,
       pluginRuntime.pluginMenuItems,
-      availablePluginUpdateCount
+      availablePluginUpdateCount,
+      structureSearchEnabled,
+      hasSearchableStructure
     ]
   );
 

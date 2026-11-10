@@ -32,6 +32,18 @@ Repeat at mixed DPI; switch tabs while it is open, apply a fix to its originatin
 verify selection/Undo there. Closing/replacing that drawing closes its window. Check badge focus,
 clicks with a drawing tool active, Space scrolling prevention, and absence of badges in exports.
 
+Online structure search (macOS and Windows): with nothing selected, both Tools searches are disabled;
+select text only and confirm they stay disabled. Select a molecule, a group containing molecules,
+and an atom/bond fragment in turn. Search PubChem and Search Reaxys opens the system browser with
+only the selected chemistry. Each site first asks Continue/Cancel with the browser-history notice;
+Cancel opens nothing and asks again, while Continue is remembered across app restarts per site.
+Repeat commands rapidly: at most one browser tab opens per second across both sites. Disable
+Preferences > Online structure search: both menu entries disappear immediately and direct command
+invocation refuses, including while a consent box is open. Re-enable, restart, and verify persistence.
+Oversized links show “This structure is too large for a search link. Select a smaller part.”
+Check charged, isotopic and stereochemical queries in both destinations; Reaxys needs the user's
+own access and its browser session may retain an earlier query, so verify the loaded structure.
+
 Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example

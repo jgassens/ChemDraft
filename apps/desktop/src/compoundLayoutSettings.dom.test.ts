@@ -18,7 +18,7 @@ describe("compound layout preference synchronization", () => {
     const container=document.createElement("div");document.body.append(container);const root=createRoot(container);
     try {
       await act(async()=>root.render(createElement(StrictMode,null,createElement(PreferencesWindow))));
-      const checkbox=container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;expect(checkbox.checked).toBe(false);
+      const checkbox=container.querySelector<HTMLInputElement>('section[aria-labelledby="compound-layout-tools"] input[type="checkbox"]')!;expect(checkbox.checked).toBe(false);
       await act(async()=>checkbox.click());expect(loadCompoundLayoutSettings().enabled).toBe(true);
       expect(handler).toHaveBeenCalledTimes(1);expect(handler).toHaveBeenCalledWith({enabled:true});
       await act(async()=>checkbox.click());expect(loadCompoundLayoutSettings().enabled).toBe(false);

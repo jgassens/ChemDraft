@@ -255,6 +255,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"
@@ -324,6 +325,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"

@@ -30,6 +30,7 @@ mod plugin_panel_acl_tests;
 mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
+mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
@@ -1357,6 +1358,8 @@ pub fn run() {
             dialog_windows::dialog_publish,
             dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,
+            structure_search::open_structure_search,
+            structure_search::set_structure_search_enabled,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
             close_toolset_window,
@@ -7421,6 +7424,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             )?)?;
         }
     }
+    let tools_menu = Submenu::with_items(app, "Tools", true, &[])?;
+    for item in plugin_menu_items_in(plugin_items, "tools") {
+        tools_menu.append(&MenuItem::with_id(
+            app,
+            item.id.as_str(),
+            item.label.as_str(),
+            item.enabled,
+            None::<&str>,
+        )?)?;
+    }
     let analyze_menu = build_analyze_submenu(app, plugin_items)?;
     let plugins_menu = Submenu::with_items(
         app,
@@ -7626,6 +7639,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             &insert_menu,
             &view_menu,
             &structure_menu,
+            &tools_menu,
             &analyze_menu,
             &plugins_menu,
             &Submenu::with_items(
