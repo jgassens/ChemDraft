@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-file-warnings-dismiss"
+description = "Enables the file_warnings_dismiss command without any pre-configured scope."
+commands.allow = ["file_warnings_dismiss"]
+
+[[permission]]
+identifier = "deny-file-warnings-dismiss"
+description = "Denies the file_warnings_dismiss command without any pre-configured scope."
+commands.deny = ["file_warnings_dismiss"]

@@ -8,6 +8,7 @@ mod document_session;
 mod download_diagnosis;
 mod export;
 mod external_tools;
+mod file_warnings_window;
 mod fonts;
 mod installed_plugins;
 mod local_engine;
@@ -1058,6 +1059,7 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            file_warnings_window::on_window_event(window, event);
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
                     // macOS: closing the document window hides it and the app lives on in the
@@ -1331,6 +1333,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             canvas_context_menu::popup_canvas_context_menu,
+            file_warnings_window::file_warnings_open,
+            file_warnings_window::file_warnings_request,
+            file_warnings_window::file_warnings_publish,
+            file_warnings_window::file_warnings_ready,
+            file_warnings_window::file_warnings_action,
+            file_warnings_window::file_warnings_close,
+            file_warnings_window::file_warnings_dismiss,
             assistant_mcp::assistant_mcp_session_open,
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,

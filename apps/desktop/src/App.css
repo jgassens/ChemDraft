@@ -5986,6 +5986,26 @@ textarea:focus-visible,
   font-size: 12px;
 }
 
+body.file-warnings-window {
+  margin: 0;
+  overflow: hidden;
+  background: var(--cd-bg-panel-raised);
+}
+
+.file-warnings-window .open-warnings-list {
+  position: static;
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.file-warnings-window button:focus-visible {
+  outline: 2px solid var(--cd-accent);
+  outline-offset: 2px;
+}
+
 .open-warnings-header {
   display: flex;
   align-items: flex-start;

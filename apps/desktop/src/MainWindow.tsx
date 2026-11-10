@@ -55,6 +55,7 @@ import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tau
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
 import { ImportedPageFitGate } from "./importedPageFitGate";
 import {
@@ -1766,7 +1767,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.14.48-codex";
+const CURRENT_BUILD_STAMP = "11.10.15.20-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2807,7 +2808,7 @@ export function MainWindow({
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
-  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const warningReports = useMemo(() => fileWarningReports(openWarningsReport, saveWarningsReport), [openWarningsReport, saveWarningsReport]);
   const openWarnings: OpenWarningsReport | undefined = warningReports[0];
   const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
@@ -6668,6 +6669,9 @@ export function MainWindow({
     setActiveToolState(selectToolState);
     setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
+
+  useNativeFileWarnings(openWarningsListShown, activeDocumentTabId, warningReports, document,
+    showOpenWarningTarget, () => setOpenWarningsListOpen(false), setStatus);
 
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
@@ -22886,7 +22890,7 @@ export function MainWindow({
                 data-open-warnings-button
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
-                aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                aria-controls={!isDesktopRuntime() && openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
@@ -22905,7 +22909,7 @@ export function MainWindow({
             Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
           </div>
         </div>
-        {openWarningsListShown && openWarnings ? (
+        {!isDesktopRuntime() && openWarningsListShown && openWarnings ? (
           <FileWarningsList
             reports={warningReports}
             document={document}

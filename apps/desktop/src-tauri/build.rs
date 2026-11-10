@@ -14,6 +14,13 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "popup_canvas_context_menu",
+            "file_warnings_open",
+            "file_warnings_request",
+            "file_warnings_publish",
+            "file_warnings_ready",
+            "file_warnings_action",
+            "file_warnings_close",
+            "file_warnings_dismiss",
             "assistant_mcp_session_open",
             "assistant_mcp_session_close",
             "assistant_mcp_respond",

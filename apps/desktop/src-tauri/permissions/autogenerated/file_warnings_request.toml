@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-file-warnings-request"
+description = "Enables the file_warnings_request command without any pre-configured scope."
+commands.allow = ["file_warnings_request"]
+
+[[permission]]
+identifier = "deny-file-warnings-request"
+description = "Denies the file_warnings_request command without any pre-configured scope."
+commands.deny = ["file_warnings_request"]
