@@ -1750,7 +1750,7 @@ pub(crate) async fn dialog_send(
         }
     } else if refit {
         let target = window.clone();
-        super::run_on_main_thread_blocking(&window, move || {
+        if let Err(error) = super::run_on_main_thread_blocking(&window, move || {
             let (kind, content_fit) = REGISTRY
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -1762,7 +1762,14 @@ pub(crate) async fn dialog_send(
             // No reveal/focus: a status update must not activate a hidden/suspended dialog.
             place_content_window(&target, &kind, content_fit, true)
         })
-        .and_then(|result| result)?;
+        .and_then(|result| result)
+        {
+            if message.dialog_kind != "customColor" {
+                return Err(error);
+            }
+            // A mode/error change already reached the form; placement must not mask validation.
+            eprintln!("Could not refit custom color dialog: {error}");
+        }
     }
     Ok(())
 }
