@@ -7,6 +7,7 @@ import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -84,6 +85,69 @@ describe.each(["macos", "windows"] as const)("hover label chemistry and history 
     await key("Enter");
     expect(editor()).toBeNull();
   }
+
+  async function navigateHistory(direction: "undo" | "redo", via: "menu" | "shortcut") {
+    if (via === "menu") {
+      // This is the command event delivered by the native Edit menu, without bridge input.
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, {
+        detail: { commandId: `edit.${direction}` }
+      })));
+    } else {
+      await key("z", { ...historyModifiers, shiftKey: direction === "redo" });
+    }
+  }
+
+  it.each((["menu", "shortcut"] as const).flatMap(via =>
+    (["pointerleave", "pointercancel", "blur", "outside move", "canvas moved"] as const).map(exit => ({ via, exit }))
+  ))("does not revive an outside hover after $via undo/redo ($exit)", async ({ via, exit }) => {
+    await mount();
+    const before = molecule();
+    await hover(before.atoms[0]!);
+    await type("OMe");
+    const committed = molecule();
+    await hover(before.atoms[0]!);
+    expect(wrapper().dataset.deleteHoverAtomId).toBe(before.atoms[0]!.id);
+
+    await act(async () => {
+      if (exit === "canvas moved") {
+        // No pointer event: layout can also leave the saved client point outside the canvas.
+        vi.mocked(canvas.getBoundingClientRect).mockReturnValue({
+          x: 900, y: 0, left: 900, top: 0, right: 1692, bottom: 612,
+          width: 792, height: 612, toJSON: () => ({})
+        });
+      } else if (exit === "outside move") {
+        document.body.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 850, clientY: 300 }));
+      } else if (exit === "blur") {
+        window.dispatchEvent(new Event("blur"));
+        window.dispatchEvent(new Event("focus"));
+      } else {
+        // pointerleave does not bubble; pointercancel can arrive from a captured pointer.
+        canvas.dispatchEvent(new MouseEvent(exit, { bubbles: exit === "pointercancel", clientX: 850, clientY: 300 }));
+      }
+    });
+
+    for (const [direction, expected] of [["undo", before], ["redo", committed]] as const) {
+      await navigateHistory(direction, via);
+      expect(molecule()).toEqual(expected);
+      expect(wrapper().dataset.deleteHoverAtomId).toBeUndefined();
+      await key("N");
+      expect(editor()).toBeNull();
+      expect(molecule()).toEqual(expected);
+    }
+  });
+
+  it.each(["menu", "shortcut"] as const)("keeps an on-canvas hover usable after %s undo", async via => {
+    await mount();
+    const before = molecule();
+    await hover(before.atoms[0]!);
+    await type("OMe");
+    await navigateHistory("undo", via);
+    expect(molecule()).toEqual(before);
+    expect(wrapper().dataset.deleteHoverAtomId).toBe(before.atoms[0]!.id);
+    await key("N");
+    expect(molecule().atoms[0]).toMatchObject({ id: before.atoms[0]!.id, element: "N" });
+    expect(molecule().bonds).toEqual(before.bonds);
+  });
 
   it.each(["benzene", "cyclohexane"] as const)("attaches monovalent labels to a %s carbon, preserving the ring", async template => {
     // Separate mounts keep every label's source chemistry identical.

@@ -14990,7 +14990,14 @@ export function MainWindow({
   // re-derives the hover from the last canvas pointer position through the SAME path pointermove
   // uses — never a duplicate derivation, and a press over empty canvas still clears the hover.
   const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
-    const clientPoint = lastCanvasPointerClientPointRef.current;
+    let clientPoint = lastCanvasPointerClientPointRef.current;
+    const canvas = canvasRegionRef.current;
+    // Layout can move the canvas without a pointer event. History and charge keys must never
+    // resurrect a hover from a saved client point that is now outside the workspace.
+    if (clientPoint && (!canvas || !clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()))) {
+      lastCanvasPointerClientPointRef.current = undefined;
+      clientPoint = undefined;
+    }
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
     // resolve the element at the pointer the way a real pointer event's target would report it.
     // (Guarded like agentBridge.ts: hosts without layout, such as jsdom, have no elementFromPoint.)
@@ -15002,17 +15009,30 @@ export function MainWindow({
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
+    const canvas = canvasRegionRef.current;
+    const clearLastCanvasPointer = () => {
+      lastCanvasPointerClientPointRef.current = undefined;
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
       if (canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect())) {
         lastCanvasPointerClientPointRef.current = clientPoint;
+      } else {
+        clearLastCanvasPointer();
       }
     };
 
+    // Leaving for a menu or another window may deliver no further move to this webview.
+    canvas?.addEventListener("pointerleave", clearLastCanvasPointer);
+    window.addEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+    window.addEventListener("blur", clearLastCanvasPointer);
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
     return () => {
+      canvas?.removeEventListener("pointerleave", clearLastCanvasPointer);
+      window.removeEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+      window.removeEventListener("blur", clearLastCanvasPointer);
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
     };
