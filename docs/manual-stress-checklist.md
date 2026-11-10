@@ -1,21 +1,5 @@
 # Manual stress checklist
 
-- Wavy bond: choose it from the bond flyout and Customize gallery; draw, convert a single bond,
-  click again to reverse its unknown stereo end, and convert back to wedge/plain. Each edit is one
-  Undo/Redo step. Check label clearance and canvas/SVG/PDF/PNG parity, no R/S at the wave's `from`
-  atom, SMILES without `@` there, MOL V2000 stereo 4 and V3000 CFG=2, on macOS and Windows.
-
-Clean Up Structure 2D (macOS and Windows): draw a ring with a distorted side chain, select only
-the chain atoms (then repeat by selecting its bonds), and clean up. The chain should have standard
-bond lengths/angles and join the ring at the document bond length; every unselected atom must stay
-where it was placed. Repeat with one ligand on a metal complex, including a metal with more than
-four bonds, and with selected parts in two molecules. The metal and other ligands stay fixed unless
-explicitly selected. Selection remains highlighted; one Undo labelled “Clean Up Selection” restores
-the exact drawing and one Redo restores the result. A lone selected atom is deliberately a no-op.
-Repeat beside wedges/hashes and E/Z double bonds: stereo must remain identical, or cleanup must
-refuse with a stereochemistry message and leave the drawing unchanged. Compare no-selection and
-whole-molecule cleanup with the existing behaviour, and check save/reopen and export.
-
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -1390,3 +1374,100 @@ upload and drop, acknowledging the shared prompt fallback.
 - Move the modeless dialog outside the document window and to a monitor with different scaling.
   Toolbars remain usable; reopening remembers its position. On Windows it has no taskbar entry
   and stays owned by the document window. Check Escape, Cmd/Ctrl+W and title-bar close.
+
+## 1.2 hands-on pass (macOS and Windows)
+
+Run each section on both systems. Use the macOS app menu or the Windows document-window menu;
+Windows utility windows have no menu. Native prompts and file choosers use the operating system's
+controls. For Undo use Cmd+Z on macOS or Ctrl+Z on Windows; for Redo use Cmd+Shift+Z on macOS
+or Ctrl+Shift+Z or Ctrl+Y on Windows.
+
+### Clean Up Structure 2D on a selection
+
+Draw a ring with a distorted side chain, select only
+the chain atoms (then repeat by selecting its bonds), and clean up. The chain should have standard
+bond lengths/angles and join the ring at the document bond length; every unselected atom must stay
+where it was placed. Repeat with one ligand on a metal complex, including a metal with more than
+four bonds, and with selected parts in two molecules. The metal and other ligands stay fixed unless
+explicitly selected. Selection remains highlighted; one Undo labelled “Clean Up Selection” restores
+the exact drawing and one Redo restores the result. A lone selected atom is deliberately a no-op.
+Repeat beside wedges/hashes and E/Z double bonds: stereo must remain identical, or cleanup must
+refuse with a stereochemistry message and leave the drawing unchanged. Compare no-selection and
+whole-molecule cleanup with the existing behaviour, and check save/reopen and export.
+
+### Wavy single bond
+
+- Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.
+  It displays a wave. Undo and Redo restore each edit; export MOL and check the unknown stereo survives.
+- Choose it from the Customize gallery too; click a wavy bond again to reverse its unknown stereo
+  end, then convert back to wedge/plain. Each edit is one Undo/Redo step. Check label clearance and
+  canvas/SVG/PDF/PNG parity, no R/S at the wave's `from` atom, SMILES without `@` there, MOL V2000
+  stereo 4 and V3000 CFG=2.
+
+### Round brackets and repeat units
+
+- Draw round brackets around a molecule. Right-click a bracket and mark a repeat unit; double-click
+  its n and enter m. The label changes. Copy as MOL and check for an SRU SGroup; copy as SMILES
+  with the molecule selected and check the warning about the omitted repeat label.
+
+### Electron-mark editing
+
+- With Direct electron-mark editing off (the default), drag a charge mark onto an atom: it lands
+  beside the atom label. Undo and Redo the drop. Enable Direct electron-mark editing in Preferences,
+  then move, resize and rotate the mark; Undo and Redo restore each edit.
+
+### Reaction conditions
+
+- In Preferences turn off Compound layout tools: Formatted Reaction Conditions is disabled. Turn
+  on both options, right-click an ordinary arrow and choose Reaction conditions…. The native editor
+  opens on the first click. Enter text, Save, and double-click the label: the saved text reopens.
+
+### Custom colour swatches
+
+- In Customize Main Toolbar add a Custom Color Swatch from Object Style. Click an empty slot, enter
+  a colour and choose OK. Select a bond and click the slot: the colour applies. Undo and Redo it;
+  restart and check that the swatch retains its colour.
+- Export a drawing with coloured objects and formatted, differently coloured text runs as CDXML.
+  Reopen it and check that the text, style runs and colours survive.
+
+### Double and triple bond tools
+
+- On the default Main toolbar choose Double Bond and draw, then choose Triple Bond and draw. Each
+  has the selected order. In Preferences change Default double bond between Offset and Centred;
+  new double bonds follow the setting and existing bonds stay unchanged.
+
+### Drawing style presets
+
+- Select a molecule and apply the ACS 1996-style preset from Structure's drawing style items, then apply
+  Drawing style: Sketch. Sketch shows uneven strokes and Patrick Hand labels. Undo and Redo, then
+  save and reopen: the applied style remains without changing the chemistry.
+
+### Page-enlarge question
+
+- Paste a list of SMILES large enough to overflow the page. In the native question choose Enlarge:
+  the page grows to fit. Repeat and choose Keep Page Size: the page keeps its size. Undo each insertion.
+
+### Newer files
+
+- Open a `.chemdraft` file made with a greater minimum app version through File > Open. A native
+  message gives the minimum version. Acknowledge it, edit unrelated content, save and reopen; the
+  future data and minimum version remain in the file.
+
+### Structure search
+
+- Select a molecule and choose Search PubChem (opens browser) from Tools. On first use only, cancel
+  the consent prompt: no browser opens. Run it again and choose Continue: the browser opens with the
+  selected structure. Consent is remembered per site across restarts, and dev builds share app data.
+  With nothing selected the search is disabled.
+
+### Name dictionary
+
+- With the name-to-structure plugin and its local engine installed, choose Structure > Convert Name
+  to Structure… and enter `64-17-5`. The inserted structure is ethanol and the status identifies
+  the Wikidata dictionary match. Try an unrecognised name: it reports failure instead of inserting.
+
+### Binary CDX import
+
+- Use File > Open to open a binary `.cdx` with known structures. Check bonds, labels and any import
+  warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
+  the file chooser or Open With; the installer does not register `.cdx` as an association.

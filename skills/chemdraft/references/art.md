@@ -9,8 +9,8 @@ substructures, colour-coded atoms, bold and hashed fusion bonds, explicit
 H and Me labels, a hand-sketched look, curved and fishhook arrows,
 brackets and captions are all native document objects. A request "in the
 style of" a named chemist or journal is a set of visual conventions to
-reproduce with them, not a request to refuse. Every pattern below was
-rendered and inspected with the commands shown.
+reproduce with them, not a request to refuse. Render and inspect the result
+after applying a pattern below.
 
 **"Nicolaou style" means vivid coloured rings, on any molecule.** It is
 a style, not a particular structure. Loud, saturated, clearly different
@@ -27,8 +27,9 @@ with ring letters is not the style, and pale pastel tints undersell it.
 | Look | Where it lives in the document JSON |
 |---|---|
 | Shaded, coloured or gradient ring interiors | `molecule.style.ringStyles[ringKey]`: `fillColor`, `fillOpacity`, `fillPaint`, `visualEffects`; drawn under the bonds |
-| Bold, wedge, hashed, dashed bonds | `bond.display.bondStyle`; a wedge's narrow end is at `fromAtomId`; `bond.display.doubleBondSide`: `left` \| `right` \| `center`; unset is automatic: a double bond that is not in a ring draws centred when it joins C to an atom other than C or H (C=O, C=N, C=S) or ends on a terminal heteroatom (S=O, P=O); other double bonds, such as ring bonds and C=C, sit to one side |
-| E/Z-unspecified double bond | `bond.stereo: "either"`, allowed only when `bond.order` is `"double"`; MOL V2000 exports bond stereo 3 and V3000 exports `CFG=2`. Visible CDXML has a plain double bond with a warning; ChemDraft’s own embedded payload preserves the field. |
+| Bold, wedge, hashed, dashed bonds | `bond.display.bondStyle`; a wedge's narrow end is at `fromAtomId`; `bond.display.doubleBondSide`: `left` \| `right` \| `center` \| `automatic`; unset is automatic: a double bond that is not in a ring draws centred when it joins C to an atom other than C or H (C=O, C=N, C=S) or ends on a terminal heteroatom (S=O, P=O); other double bonds, such as ring bonds and C=C, sit to one side |
+| Wavy single bond (unknown stereo) | `bond.order: "single"`, `bond.display.bondStyle: "wavy"`; the unknown stereocentre is at `fromAtomId`, not `toAtomId` |
+| E/Z-unspecified double bond | `bond.stereo: "either"`, allowed only when `bond.order` is `"double"`; MOL V2000 exports bond stereo 3 and V3000 exports `CFG=2`. CDXML writes `Display="Wavy"` for this double bond; native JSON keeps `stereo: "either"`. |
 | Per-bond colour and weight | `molecule.style.bondColors`, `bondStrokeWidths`, `bondBoldWidths`, `bondHashSpacings`, `bondLineCaps` (maps keyed by bond id) |
 | Per-atom label look | `atomLabelColors`, `atomLabelFontSizes`, `atomLabelFontWeights`, `atomLabelFontStyles`, `atomLabelBackgroundColors`, `atomLabelPlacements`, `atomLabelShowTerminalCarbonsByAtomId`, `atomLabelHideImplicitHydrogensByAtomId` (maps keyed by atom id) |
 | Whole-molecule look | `molecule.style` keys such as `bondColor`, `bondStrokeWidthPx`, `atomLabelColor`, `atomLabelFontFamily`, `atomLabelFontSizePx`, `atomLabelBackgroundColor`, `visualEffects` |
@@ -37,7 +38,8 @@ with ring letters is not the style, and pale pastel tints undersell it.
 | Lines, boxes, circles, curves | `graphic` objects: `graphicKind` `line`, `rect`, `ellipse`, `path`, `image`; `data.artPathKind` `line`, `wavy`, `arc`, `quadratic`, `polyline`, `bezier`, `freehand` |
 | Arrowheads | `data.markerStart` / `data.markerEnd`: `open-arrow`, `filled-arrow`, `half-arrow`, `bar`, `dot`, `diamond`, `chevron` |
 | Electron-pushing arrows | `mechanism-arrow` objects (`full-headed` or `half-headed` fishhook) anchored to atoms, points or objects |
-| Brackets | `bracket` objects: `square`, `round`, `curly`, `polymer` |
+| Brackets and repeat units | `bracket` objects: `square`, `round`, `curly`, `polymer`; paired `side`/`pairId`, `bracketUsage`, closing `label` and `containedObjectIds` (pattern 6) |
+| Electron marks | `electron-mark` objects: `lone-pair`, `radical-dot`, `charge`; stored frame, rotation and `style.strokeWidth` control their rendered geometry |
 | Shadow, glow, hand-sketched strokes | `visualEffects: [{kind: "shadow" | "glow" | "sketch", ...}]` on graphics, molecules and single rings |
 | Stacking order | the order of `page.objects`: earlier objects are drawn underneath |
 
@@ -46,6 +48,21 @@ with matching native flags and stored MOL markers. `CC=CC` stays `CC=CC` through
 `render-document` / `render_document` and SMILES export; `C/C=C/C` stays E. In a mixed
 structure, only the input's unspecified stereogenic double bonds get `stereo: "either"`.
 The `E/Z unspecified for N double bond(s)` warning reports those open bonds.
+
+### Wavy single bonds
+
+Edit the existing bond in native JSON, then use `render-document` / `render_document`.
+This bond fragment is valid only for a single bond:
+
+```json
+{"id":"b0","fromAtomId":"a0","toAtomId":"a1","order":"single","display":{"bondStyle":"wavy"}}
+```
+
+Keep the intended unknown centre at `fromAtomId`. Wavy is a stereo declaration,
+not a hand-drawn effect; do not replace specified stereo without authorization.
+The native renderer draws the wave in SVG/PNG/PDF and native saves preserve it.
+MOL serialization uses V2000 stereo 4 or V3000 `CFG=2`; CDXML writes a single bond
+with `Display="Wavy"`. The CLI's SMILES-only `export` cannot take this edited bond.
 
 Gradients are `fillPaint` objects: `{kind: "solid", color, opacity}`,
 `{kind: "linear-gradient", units: "object", x1, y1, x2, y2, stops}` or
@@ -104,9 +121,9 @@ Document-style PNG uses `--dpi` instead; `--background transparent` is
 available in either style.
 Use absolute paths: the launcher runs the command inside the checkout,
 so a relative path resolves there, not in your working directory.
-For a document figure, `--style document` changes only the fixed physical
-sizes; it preserves the colours, fills, and atom-label backgrounds set by
-these art recipes.
+For a document figure, `--style document` sets fixed physical sizes and Arial
+labels. It preserves colours, fills, atom-label backgrounds and visual effects.
+Use the default `fit` mode to retain a saved preset's sizes and handwriting font.
 Through MCP, `build_document` takes `smiles`; its first text block is the
 JSON summary and its second text block is the document JSON. Style that
 second block, or read the file named by the summary's `document` field.
@@ -115,8 +132,40 @@ second block, or read the file named by the summary's `document` field.
 `background` and `padding`.
 
 The `.chemdraft` file opens in the desktop app with File > Open. Tell the
-user to save the current drawing first, because File > Open replaces the
-open document without asking.
+user to save the current drawing first.
+
+## Native style presets
+
+The app's Structure menu offers these presets. It applies them to selected
+molecules/text, or to the document and new-object defaults with no selection.
+CLI/MCP expose only `fit` and `document` style options; they have no preset-apply tool.
+
+| Preset | Stored id |
+|---|---|
+| ChemDraft Synthetic | `chemdraft.synthetic` |
+| Document style | `chemdraft.document` |
+| ACS 1996-style | `chemdraft.acs1996` |
+| RSC journal-style | `chemdraft.rscjournal` |
+| Sketch | `chemdraft.sketch` |
+
+To reproduce a preset headlessly, copy its `drawing` fields from
+`packages/chem-core/src/styles.ts` into each `molecule.style`. Setting only
+`stylePresetId` does not apply its values. Match atom coordinates to its
+`bondLengthPx`; changing that field alone does not move atoms. Text objects and
+spans use `fontFamily`, `fontSizePx` and `fontWeight` from the preset's atom-label
+fields. Sketch also sets text `fontStyle: "normal"`.
+
+ACS uses 14.4 pt bonds, 0.6 pt lines, 2 pt bold bonds, 18% double-bond spacing
+and 10 pt Arial labels. RSC uses 12.2 pt bonds, 0.5 pt lines, 1.6 pt bold bonds,
+20% spacing and 7 pt Arial labels. Their stored dimensions use native units
+(points × 22 / 14.4), not literal point values. These are drawing conventions,
+not a publication compliance guarantee. Render in `fit` mode to retain them;
+`document` replaces their size fields and label font with Document style values.
+
+Custom swatch storage, toolbar bond defaults, the default double-bond preference
+and page-enlarge questions are app-only; set supported native fields for headless output.
+Native saves add used hex colours to the visible CDXML colour table, including
+atom labels, bonds, text, arrows and shapes. Inspect warnings for other styling losses.
 
 ## Find the ids
 
@@ -283,22 +332,16 @@ Verified on paracetamol: red bold O and OH, blue bold NH.
 
 ### 5. Hand-sketched look
 
-The Structure menu's native presets are **ChemDraft Synthetic**, **Document style**,
-**ACS 1996-style**, **RSC journal-style** and **Sketch**. Sketch (`chemdraft.sketch`)
-copies Synthetic geometry, adds the existing pen effect at roughness **1.25**, bowing
-**1**, seed **7**, and uses bundled Patrick Hand Regular handwriting. It styles selected
-molecules/text, or the whole document and insertion defaults when nothing is selected.
-Each apply is one undo entry; reapplying is a no-op. ChemDraft Synthetic
-(`chemdraft.synthetic`, its unchanged stored id) removes Sketch and restores its font.
-SVG/PDF include Patrick Hand locally, so it need not be installed on the recipient's
-computer. The CLI's existing `fit`/`document` options are unchanged; for an authored
-headless document use the style fields below.
+Sketch (`chemdraft.sketch`) keeps Synthetic geometry, adds roughness **1.25**,
+bowing **1**, seed **7**, and uses bundled Patrick Hand Regular handwriting.
+Headless rendering loads the font when needed. SVG embeds it and PDF subsets it;
+it need not be installed on the recipient's computer. For native JSON, use:
 
 ```js
 mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: "#1f2a44" }];
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
-mol.style.atomLabelFontFamily = "'Patrick Hand', cursive";
+mol.style.atomLabelFontFamily = "'Patrick Hand', Arial, Helvetica, sans-serif";
 page.objects.push({ id: "ring-circle", type: "graphic", graphicKind: "ellipse", x: 341, y: 509, width: 50, height: 50, rotation: 0,
   style: { fillColor: "none", visualEffects: [{ kind: "sketch", roughness: 2.2, bowing: 2, seed: 3, color: "#c0392b", strokeWidth: 2 }] },
   data: {} });
@@ -307,14 +350,10 @@ page.objects.push({ id: "ring-circle", type: "graphic", graphicKind: "ellipse", 
 Sketch parameters: `roughness` (default 1.25), `bowing` (0.8),
 `strokeWidth` (1.5), `seed` (fixes the wobble so re-renders match),
 `color` (default near-black; a graphic's `strokeColor` does not colour
-its sketch), `opacity`. On a graphic the sketch replaces the clean
-stroke; on a molecule rough strokes are drawn over the normal bonds and
-labels stay clean, so a handwriting `atomLabelFontFamily` completes the
-look. On a molecule the sketch stroke is never thinner than the bond stroke
-width, so only values above it change anything. Fonts come from the machine:
-Bradley Hand is on macOS, Segoe Print on Windows; list both with a generic
-fallback. Verified on penicillin G
-(recipe 12).
+its sketch), `opacity`. On a graphic the sketch replaces the clean stroke.
+On a molecule it uses the shared bond geometry, including tapered wedge/hash
+strokes; labels use `atomLabelFontFamily`. Patrick Hand is bundled. Other
+handwriting fonts depend on the machine and need fallback families.
 
 **Check sketched stereochemistry.** Uneven, tapering stroke weight is the
 intended hand-drawn look. After every sketched render, look at each wedge
@@ -323,6 +362,11 @@ answer keys, papers), also render the document with
 `visualEffects` removed and offer that clean version.
 
 ### 6. Arrows, brackets and annotations
+
+For a wavy graphic, set `data.artPathKind: "wavy"`. Its optional
+`waveSmoothness` is 0–100, `waveHeight` is 0–48 (peak-to-trough), and
+`waveWidth` is 4–120 (one wavelength), in document pixels for height/width.
+These graphic settings do not change the wavy single bond's geometry or stereo.
 
 ```js
 // Straight arrow with an open head.
@@ -342,18 +386,50 @@ page.objects.push({ id: "hook", type: "graphic", graphicKind: "path", x: 380, y:
 page.objects.push({ id: "push", type: "mechanism-arrow", arrowKind: "full-headed", x: 356, y: 484, width: 44, height: 44, rotation: 0, style: {},
   source: { kind: "point", point: { x: 380, y: 525 } }, target: { kind: "atom", objectId: mol.id, atomId: "a0" },
   controlPoints: [{ x: 384, y: 488 }], warnings: [] });
-// A bracket object is one side; the closing side is the same bracket rotated 180 degrees.
-page.objects.push({ id: "open", type: "bracket", bracketKind: "square", x: 352, y: 486, width: 8, height: 84, rotation: 0, style: {}, containedObjectIds: [mol.id] });
-page.objects.push({ id: "close", type: "bracket", bracketKind: "square", x: 490, y: 486, width: 8, height: 84, rotation: 180, style: {}, containedObjectIds: [mol.id] });
+// A paired bracket uses explicit open/close sides; neither glyph needs rotation.
+page.objects.push({ id: "open", type: "bracket", bracketKind: "round", side: "open", pairId: "pair-1", x: 352, y: 486, width: 8, height: 84, rotation: 0, style: {}, containedObjectIds: [mol.id] });
+page.objects.push({ id: "close", type: "bracket", bracketKind: "round", side: "close", pairId: "pair-1", x: 490, y: 486, width: 8, height: 84, rotation: 0, style: {}, containedObjectIds: [mol.id] });
 ```
 
-Verified on cyclohexanone: open and filled arrowheads, a curved attack
-arrow, a half-headed arc, a mechanism arrow onto O, a fishhook, and a
-bracket pair; separately, a molecule `shadow` effect
-(`{kind: "shadow", color: "#000000", opacity: 0.4, offsetX: 3, offsetY: 3, blurPx: 2}`).
+For a molecule shadow, use `visualEffects` with
+`{kind: "shadow", color: "#000000", opacity: 0.4, offsetX: 3, offsetY: 3, blurPx: 2}`.
 Mechanism-arrow anchors that render are `atom`, `point` and `object`.
 A `bond` anchor is not resolved by the exporter: the arrow is silently
 left out with no warning, so anchor at a `point` on the bond instead.
+
+#### Round brackets and repeat labels
+
+Use exactly one opening and one closing glyph with the same page-local `pairId`.
+Each keeps `rotation: 0`; `side: "close"` supplies the closing shape. To mark
+the whole molecule as a repeat unit, add `bracketUsage: "sru"` and
+`repeatUnit: true` to both, and `label: "n"` to the closing glyph. The
+`repeatUnit` flag enables the visible label. For a fixed molecule id `m`, the pair is:
+
+```json
+[
+  {"id":"open","type":"bracket","bracketKind":"round","side":"open","pairId":"repeat-1","bracketUsage":"sru","repeatUnit":true,"x":90,"y":90,"width":12,"height":100,"rotation":0,"style":{},"containedObjectIds":["m"]},
+  {"id":"close","type":"bracket","bracketKind":"round","side":"close","pairId":"repeat-1","bracketUsage":"sru","repeatUnit":true,"label":"n","x":250,"y":90,"width":12,"height":100,"rotation":0,"style":{},"containedObjectIds":["m"]}
+]
+```
+
+Replace `m` and the frames with the actual molecule id and bounds. Explicit
+`containedObjectIds` include the whole molecule; empty lists let the MOL exporter
+derive atom membership from the bracket frame. Keep both glyphs when saving;
+an incomplete pair loses its repeat metadata with a warning. `label` can be `m`
+or other text; it never multiplies atoms. Native JSON rendering and saves retain
+the pair and label. MOL SRU and SMILES-loss behavior is described in [files](files.md).
+The double-click editor for the painted `n` is app-only.
+
+#### Electron marks
+
+Native JSON can render `electron-mark` objects with `markKind: "lone-pair"`,
+`"radical-dot"` or `"charge"`, plus their frame, `rotation` and `anchor`.
+Charge marks accept an integer `charge`, `chargeStyle: "plain" | "circled"`
+and `radical: true` for a radical ion. Stored custom frame sizes and
+`style.strokeWidth` affect headless output. The direct-edit preference and
+drag/drop association behavior are app-only. Do not assume that editing a
+mark in JSON runs the app's atom charge/radical synchronization; keep the
+molecular graph consistent and check the returned identity.
 
 ### 7. Nicolaou-style rings on any molecule: `scripts/ring-style.mjs`
 
@@ -460,6 +536,4 @@ style step cannot repair).
 - `image` graphics fall back to a placeholder in exports
   (`export.svg.graphic_fallback`); the reflection effect is approximated
   or omitted with a warning. SVG, PNG and PDF render only the first page.
-- A `.chemdraft` save warns that colours outside the standard CDXML
-  colour table are kept exactly only in the embedded native payload.
 - OpenChemLib stereo perception can report 0 specified/0 unspecified for ring-symmetric fused centres (for example `C[C@@]12CCCC[C@H]1CCCC2`) while canonical SMILES retains `@`; compare canonical SMILES or InChIKey to confirm chemistry, not stereo counts alone.
