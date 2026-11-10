@@ -1763,7 +1763,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.09.05-codex";
+const CURRENT_BUILD_STAMP = "11.10.09.48-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -8173,11 +8173,11 @@ export function MainWindow({
         const changed = activeTextEditObjectIdRef.current ? replacePresentDocument(colorResult.document) : commitDocumentChange(colorResult.document, undoLabel);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
-        setStatus(changed ? "Updated selected color" : "Selected color unchanged");
+        setStatus(undoLabel && changed ? `Applied ${selectedColor.toUpperCase()} to selection` : changed ? "Updated selected color" : "Selected color unchanged");
         return true;
       }
 
-      setStatus("Updated text defaults");
+      setStatus(undoLabel ? `Text default color set to ${selectedColor.toUpperCase()}` : "Updated text defaults");
       return true;
     }
 
@@ -8633,7 +8633,7 @@ export function MainWindow({
       objectWaveForCommand(commandId) || electronMarkStyleCommands.some(command => command.id === commandId)
         ? result.message : undefined);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
     return true;
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
 
@@ -8716,7 +8716,7 @@ export function MainWindow({
     if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
     else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
   }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelObjectStylePreview = useCallback(() => {
@@ -11341,7 +11341,21 @@ export function MainWindow({
         replacePresentDocument(prepareDocumentCommit(moved, "Move"));
       } else commitDocumentChange(moved, "Move");
       arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
-      setStatus("Move selection");
+      const axis = delta.x ? "x" : "y";
+      const distances = current.pages.flatMap(page => page.objects.flatMap(object => {
+        const next = moved.pages.flatMap(item => item.objects).find(item => item.id === object.id);
+        if (!next) return [];
+        if (object.type === "molecule" && next.type === "molecule") {
+          return object.atoms.flatMap(atom => {
+            const after = next.atoms.find(item => item.id === atom.id);
+            return after && after[axis] !== atom[axis] ? [Math.abs(after[axis] - atom[axis])] : [];
+          });
+        }
+        return next[axis] !== object[axis] ? [Math.abs(next[axis] - object[axis])] : [];
+      }));
+      const distance = Math.round(Math.max(...distances) * 1000) / 1000;
+      const direction = delta.x < 0 ? "left" : delta.x > 0 ? "right" : delta.y < 0 ? "up" : "down";
+      setStatus(`Moved selection ${direction} by ${distance} px`);
     }));
 
     atomProblemCommands(document).forEach(({ spec, target, action }) => register(spec, async () => {
@@ -12014,7 +12028,10 @@ export function MainWindow({
       const state = loadCustomSwatches();
       const color = state[parsed.swatch][`slot${parsed.slot}`];
       if (parsed.action === "clear") {
-        if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+        if (color) {
+          persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+          setStatus(`Cleared Custom Color ${parsed.swatch}, Slot ${parsed.slot} (${color.toUpperCase()})`);
+        }
       } else if (parsed.action === "apply") {
         if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Colour ${color.toUpperCase()}`);
       } else {
@@ -12045,9 +12062,10 @@ export function MainWindow({
         const site = structureSearchSite(action.id);
         if (!site) return;
         try {
-          await structureSearchController.current!(site, structureSearchDocument(
+          const opened = await structureSearchController.current!(site, structureSearchDocument(
             documentRef.current, nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
           ));
+          if (opened) setStatus(`Opened ${site === "pubchem" ? "PubChem" : "Reaxys"} search`);
         } catch (error) {
           setStatus(`Structure search failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -12253,7 +12271,10 @@ export function MainWindow({
 
   coreCommandBindingsRef.current = coreCommandBindings;
 
-  customColorSaveRef.current = (swatch, slot, hex) => persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+  customColorSaveRef.current = (swatch, slot, hex) => {
+    persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+    setStatus(`Custom Color ${swatch}, Slot ${slot} set to ${hex.toUpperCase()}`);
+  };
 
   // The registry and its core-command registrar are created exactly once. Handlers delegate
   // to the live bindings ref, so plugin commands registered into the same stable instance in
@@ -34075,6 +34096,14 @@ function chargeValueForToolCommand(commandId: string): NativeElectronMarkSpec | 
     default:
       return undefined;
   }
+}
+
+function objectStyleResultStatus(commandId: string, fallback: string): string {
+  const wave = objectWaveForCommand(commandId);
+  if (wave) return `Wave ${wave.setting} set to ${wave.value}${wave.setting === "smoothness" ? "%" : " px"}`;
+  const electron = electronMarkStyleCommands.find(command => command.id === commandId);
+  if (electron) return `Electron mark ${electron.property} set to ${electron.property === "size" ? electron.value : electron.value.toFixed(2)} px`;
+  return fallback;
 }
 
 export function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec, placedCharge?: number): string {

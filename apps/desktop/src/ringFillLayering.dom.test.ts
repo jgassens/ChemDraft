@@ -736,7 +736,9 @@ describe("canvas ring-fill layers", () => {
       const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
       const originalRadius = Number(objectVisual(mark.id)!.querySelector("circle")!.getAttribute("r"));
       await command("object.electronMark.size:28"); // 36 px
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Electron mark size set to 36 px");
       await command("object.electronMark.thickness:50"); // 3 px
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Electron mark thickness set to 3.00 px");
       expect(snapshot().pages[0].objects[0]).toMatchObject({ width: 36, height: 36, x: 282, y: 282,
         style: { strokeWidth: 3 } });
       const exported = new DOMParser().parseFromString(exportDocumentToSvg(snapshot()).contents, "image/svg+xml");

@@ -68,7 +68,7 @@ export function createStructureSearchController(deps: SearchDependencies) {
   let nextAllowed = -Infinity;
   const now = deps.now ?? (() => performance.now());
   const storage = () => deps.storage ?? globalThis.localStorage;
-  return async (site: StructureSearchSite, document: ChemDraftDocument | undefined): Promise<void> => {
+  return async (site: StructureSearchSite, document: ChemDraftDocument | undefined): Promise<boolean | undefined> => {
     if (!deps.enabled()) throw new Error("Online structure search is off in Preferences.");
     if (!document) throw new Error(STRUCTURE_SEARCH_SELECTION_REASON);
     if (busy || now() < nextAllowed) return;
@@ -102,6 +102,7 @@ export function createStructureSearchController(deps: SearchDependencies) {
       nextAllowed = now() + 1000;
       await (deps.open ?? ((searchSite, searchSmiles) =>
         invoke<void>("open_structure_search", { site: searchSite, smiles: searchSmiles })))(site, smiles);
+      return true;
     } finally { busy = false; }
   };
 }

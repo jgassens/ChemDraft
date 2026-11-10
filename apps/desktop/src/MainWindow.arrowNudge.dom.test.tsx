@@ -14,6 +14,13 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
+const search = vi.hoisted(() => vi.fn(async (): Promise<boolean | undefined> => true));
+vi.mock("./structureSearch", async original => ({ ...await original<typeof import("./structureSearch")>(),
+  createStructureSearchController: () => search,
+  structureSearchCommands: () => ["pubchem", "reaxys"].map(site => ({
+    id: `search.${site}`, title: site, icon: "export", source: "core", category: "tools", enabled: true
+  }))
+}));
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 
 describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform => {
@@ -96,8 +103,21 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
   it("Shift+Down moves ten document units toward positive y", async () => {
     await mount(); const before = current();
     expect((await key("ArrowDown", { shiftKey: true })).defaultPrevented).toBe(true);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection down by 10 px");
     expectTranslation(before, 0, 10);
     await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  it("reports a search only after the browser opens", async () => {
+    await mount();
+    search.mockResolvedValueOnce(true);
+    await command("search.pubchem");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened PubChem search");
+    search.mockResolvedValueOnce(undefined);
+    await command("search.reaxys");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened PubChem search");
+    search.mockResolvedValueOnce(true);
+    await command("search.reaxys");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened Reaxys search");
   });
   it.each(["idle", "other key", "pointer", "pointer motion", "command", "selection"])("ends the burst on %s", async boundary => {
     await mount(); const before = current();

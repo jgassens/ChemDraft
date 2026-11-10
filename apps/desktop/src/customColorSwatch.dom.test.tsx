@@ -98,6 +98,7 @@ describe.each(["macos", "windows"] as const)("custom swatch application (%s comm
     const presetArrow = element.querySelector(`[data-page-svg-object-visual="${source.arrow.id}"]`)!.innerHTML;
     await command("edit.undo"); expect(snapshot()).toEqual(before);
     await command(customSwatchCommandId(1, 1, "apply"));
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Applied #1F5FBF to selection");
     expect(snapshot()).toEqual(preset);
     const colored = snapshot().pages[0].objects.find(object => object.id === source.molecule.id)!;
     expect(colored.type).toBe("molecule");
@@ -213,7 +214,7 @@ describe("custom swatch toolbar and native dialog requests", () => {
 
   it("opens the native customColor request, saves without applying, and clears through the registered command", async () => {
     const initial = drawing().document;
-    await mountDrawing(initial, "windows");
+    const { element } = await mountDrawing(initial, "windows");
     const palette = host();
     await act(async () => palette.root.render(<ToolbarWidgetStateContext.Provider value={{ onInvoke: id => { void command(id); } }}><CustomColorSwatchWidget swatch={1} /></ToolbarWidgetStateContext.Provider>));
     const before = structuredClone(snapshot());
@@ -225,10 +226,12 @@ describe("custom swatch toolbar and native dialog requests", () => {
       await act(async () => native.receive!({ senderWindowId: "dialog-main-customColor-1", windowLabel: "dialog-main-customColor-1", message: { ...opened, type, data, requestId: crypto.randomUUID() } }));
     };
     await send("ready", {}); await send("action", { action: "apply", hex: "#abcdef" });
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Custom Color 1, Slot 1 set to #ABCDEF");
     expect(loadCustomSwatches()[1].slot1).toBe("#abcdef"); expect(snapshot()).toEqual(before);
     await act(async () => palette.element.querySelector<HTMLButtonElement>("button")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(native.open.mock.calls.at(-1)![0]).toMatchObject({ data: { color: "#abcdef" } });
     await send("ready", {}); await send("action", { action: "clear" });
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Cleared Custom Color 1, Slot 1 (#ABCDEF)");
     expect(loadCustomSwatches()[1].slot1).toBeUndefined(); expect(snapshot()).toEqual(before);
     expect(palette.element.querySelector("button")!.textContent).toBe("?");
   });
