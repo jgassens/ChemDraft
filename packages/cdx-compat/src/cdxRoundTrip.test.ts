@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
-import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
+import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, readSerializedDocument, serializeDocument, type ChemDraftDocument, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, CDX_POINT3D_ORDER_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
@@ -11,6 +11,9 @@ const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, att
 const tree = (xml: string) => cdxElementFromOrderedTree(parser.parse(xml));
 const bytesFromCdxml = (xml: string) => writeCdx(tree(xml));
 const wrap = (content: string) => `<CDXML CreationProgram="ChemDraft"><page id="1" BoundingBox="0 0 612 792">${content}</page></CDXML>`;
+// Save As shares native serialization's feature-versioned header; compare every saved field,
+// including that header, while retaining exact document and conflict-restoration assertions.
+const savedDocument = (document: ChemDraftDocument) => readSerializedDocument(serializeDocument(document)).document;
 
 describe("interchange graphics and page extent", () => {
   const elements = (node: CdxElement, name: string): CdxElement[] =>
@@ -151,7 +154,7 @@ describe("interchange graphics and page extent", () => {
     expect(graphic.compatibility?.unknown.cdxmlGraphicAttributes).toEqual(attributes(source, "graphic")[0]);
     expect(attributes(exportDocumentToCdxml(document, { embedNativePayload: false }).contents, "graphic"))
       .toEqual(attributes(source, "graphic"));
-    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(document);
+    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(savedDocument(document));
   });
 
   it("retains a Symbol and all its attributes in visible CDXML", () => {
@@ -186,16 +189,14 @@ describe("interchange graphics and page extent", () => {
     expect(requireDocument(importCdx(binary.bytes)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
   });
 
-  it.each([false, true])("warns when a native graphic's custom color is actually approximated (embedded=%s)", embedNativePayload => {
+  it.each([false, true])("preserves a native graphic's custom color without an approximation warning (embedded=%s)", embedNativePayload => {
     const document = requireDocument(openChemDraftPayload(wrap('<graphic id="10" GraphicType="Rectangle" BoundingBox="20 30 80 90"/>')));
     document.pages[0].objects[0].style.strokeColor = "#336699";
     for (const result of [exportDocumentToCdxml(document, { embedNativePayload }), exportDocumentToCdx(document, { embedNativePayload })]) {
-      const warning = result.warnings.find(warning => warning.code === "cdxml.graphic_color_approximation");
-      expect(warning).toMatchObject({ sourceObjectId: document.pages[0].objects[0].id });
-      expect(warning?.message).toContain("#336699");
+      expect(result.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.graphic_color_approximation" }));
       const visible = "bytes" in result ? cdxElementToCdxml(readCdx(result.bytes)) : result.contents;
-      expect(attributes(visible, "graphic")[0].color).toBeUndefined();
-      if (!embedNativePayload) expect(requireDocument(openChemDraftPayload(visible)).pages[0].objects[0].style.strokeColor).not.toBe("#336699");
+      expect(attributes(visible, "graphic")[0].color).toBeDefined();
+      expect(requireDocument(openChemDraftPayload(visible)).pages[0].objects[0].style.strokeColor).toBe("#336699");
     }
   });
 
@@ -220,7 +221,7 @@ describe("interchange graphics and page extent", () => {
     const exported = exportDocumentToCdx(document);
     expect(exported.warnings.filter(warning => warning.code === "cdx.unencodable_data")).toEqual([]);
     expect(elements(readCdx(exported.bytes), "graphic")).toEqual(elements(original, "graphic"));
-    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(document);
+    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(savedDocument(document));
   });
 
   it.each([false, true])("changes only orbital geometry after a move and resize (binary=%s)", binary => {
@@ -360,7 +361,7 @@ describe("interchange graphics and page extent", () => {
       if (!embedNativePayload) expect(limitations[0].message).toContain("NOT written");
       const opened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
       expect(opened.conflict).toBeUndefined();
-      if (embedNativePayload) expect(opened.document).toEqual(document);
+      if (embedNativePayload) expect(opened.document).toEqual(savedDocument(document));
       else {
         const visible = requireDocument(opened).pages[0].objects[0];
         expect(visible.style.fillMode).not.toBe("gloss");
@@ -450,8 +451,8 @@ describe("interchange graphics and page extent", () => {
       if (object.type === "graphic" && before.type === "graphic" && before.data.artPathKind === "bezier") expect(object.data.pathNodes).toEqual(before.data.pathNodes);
       if (object.type === "text" && before.type === "text") expect(object.text).toBe(before.text);
     });
-    expect(openChemDraftPayload(exportDocumentToCdxml(original).contents).document).toEqual(original);
-    expect(importCdx(exportDocumentToCdx(original, { embedNativePayload: true }).bytes).document).toEqual(original);
+    expect(openChemDraftPayload(exportDocumentToCdxml(original).contents).document).toEqual(savedDocument(original));
+    expect(importCdx(exportDocumentToCdx(original, { embedNativePayload: true }).bytes).document).toEqual(savedDocument(original));
     // A second interchange cycle must not accumulate the offset.
     const again = requireDocument(binary ? importCdx(exportDocumentToCdx(reopened).bytes)
       : openChemDraftPayload(exportDocumentToCdxml(reopened, { embedNativePayload: false }).contents));
@@ -679,8 +680,8 @@ describe("interchange graphics and page extent", () => {
     const reimported = requireDocument(binary ? importCdx(writeCdx(exported)) : openChemDraftPayload(cdxElementToCdxml(exported)));
     expect(reimported.pages[0].objects[0].x).toBeCloseTo(page.objects[0].x, 4);
     expect(reimported.pages[0].objects[0].y).toBeCloseTo(page.objects[0].y, 4);
-    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(document);
-    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(document);
+    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(savedDocument(document));
+    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(savedDocument(document));
 
     page.objects[0].width = 1500 / 0.75;
     page.objects[0].height = 1900 / 0.75;
@@ -829,6 +830,12 @@ describe("chemical and drawing round trips", () => {
       code: "cdxml.bracket_group_preserved", sourceObjectId: "bg_crossing",
       message: expect.stringMatching(/Bracket group bg_crossing:.*bracket members and crossing bonds are NOT written to visible export/)
     }));
+    expect(exported.warnings).toContainEqual({
+      code: "cdxml.unknown_objects_not_saved",
+      message: "1 unrecognised object from the original file was not saved (ids bg_crossing)."
+    });
+    expect(exported.warnings.find(item => item.code === "cdxml.bracket_group_preserved")?.message)
+      .toContain("this file has no embedded ChemDraft data");
     const supported = structuredClone(original);
     supported.pages[0].objects = supported.pages[0].objects.filter(object => object.id !== unknown[0].id);
     const reopened = requireDocument("bytes" in exported
@@ -861,6 +868,39 @@ describe("chemical and drawing round trips", () => {
 describe("native payload Save As and interchange Export", () => {
   const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
 
+  it.each([false, true])("retains native bracket export and reports omitted electron marks (embedded=%s)", embedNativePayload => {
+    const original = createEmptyDocument();
+    original.pages[0].objects.push(
+      { id: "bracket", type: "bracket", x: -30, y: 20, width: 15, height: 40, rotation: 0,
+        style: {}, bracketKind: "square", containedObjectIds: [] },
+      { id: "electron", type: "electron-mark", x: 20, y: 20, width: 15, height: 10, rotation: 25,
+        style: { strokeWidth: 3 }, markKind: "lone-pair", anchor: { kind: "point", point: { x: 20, y: 20 } } }
+    );
+    for (const format of ["CDX", "CDXML"] as const) {
+      const exported = format === "CDX" ? exportDocumentToCdx(original, { embedNativePayload })
+        : exportDocumentToCdxml(original, { embedNativePayload });
+      const visible = "bytes" in exported ? readCdx(exported.bytes) : tree(exported.contents);
+      expect(visible.kids.find(child => child.name === "page")?.kids)
+        .toContainEqual(expect.objectContaining({ name: "graphic", attrs: expect.objectContaining({ GraphicType: "Bracket" }) }));
+      expect(exported.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.bracket_payload_only" }));
+      expect(exported.warnings).toContainEqual(expect.objectContaining({
+        code: "cdxml.electron_mark_appearance_payload_only", sourceObjectId: "electron",
+        message: expect.stringContaining(`${format} export: electron mark electron`)
+      }));
+      const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
+      if (embedNativePayload) {
+        expect(exported.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.unknown_objects_not_saved" }));
+        expect(reopened.document).toEqual(savedDocument(original));
+      } else {
+        expect(exported.warnings).toContainEqual({ code: "cdxml.unknown_objects_not_saved",
+          message: "1 object was not saved (ids electron)." });
+        expect(reopened.document?.pages[0].objects.map(object => object.type)).toEqual(["bracket"]);
+        expect(exported.warnings.find(item => item.code === "cdxml.electron_mark_appearance_payload_only")?.message)
+          .toContain("this file has no embedded ChemDraft data");
+      }
+    }
+  });
+
   it.each(["ChemDraft", "Custom producer"])("opens old swapped Point3D saves from %s with both integrity checks intact", creationProgram => {
     const source = wrap('<arrow id="2" Head3D="120 100 0" Tail3D="40 100 0"/><graphic id="3" GraphicType="Orbital" Center3D="240 50 17" MajorAxisEnd3D="280 50 -23" MinorAxisEnd3D="240 80 39"/>')
       .replace('CreationProgram="ChemDraft"', `CreationProgram="${creationProgram}"`);
@@ -888,14 +928,14 @@ describe("native payload Save As and interchange Export", () => {
     expect(opened.source).toBe("native-payload");
     expect(opened.conflict).toBeUndefined();
     expect(opened.warnings).toEqual([]);
-    expect(opened.document).toEqual(original);
+    expect(opened.document).toEqual(savedDocument(original));
     const visible = structuredClone(readCdx(bytes));
     delete visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
     expect(legacyVisibleCdxmlHash(cdxElementToCdxml(visible))).toBe(legacyVisibleCdxmlHash(source));
     compareDocuments(requireDocument(openChemDraftPayload(cdxElementToCdxml(visible))), original);
     const resaved = exportDocumentToCdx(requireDocument(opened), { embedNativePayload: true });
     expect(readCdx(resaved.bytes).attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
-    expect(importCdx(resaved.bytes).document).toEqual(original);
+    expect(importCdx(resaved.bytes).document).toEqual(savedDocument(original));
   });
 
   it("omits the v2 marker only for interchange and rejects embedded visible edits even after marker removal in CDXML and CDX", () => {
@@ -914,7 +954,7 @@ describe("native payload Save As and interchange Export", () => {
       const root = "bytes" in saved ? readCdx(saved.bytes) : tree(saved.contents);
       expect(root.attrs.attrib4345).toBe("|x|32");
       const unchanged = "bytes" in saved ? importCdx(saved.bytes) : openChemDraftPayload(saved.contents);
-      expect(unchanged.document).toEqual(original);
+      expect(unchanged.document).toEqual(savedDocument(original));
       expect(unchanged.conflict).toBeUndefined();
 
       for (const removeMarker of [false, true]) for (const editText of [false, true]) {
@@ -938,7 +978,7 @@ describe("native payload Save As and interchange Export", () => {
         }
         expect(opened.document).toBeUndefined();
         expect(opened.conflict?.kind).toBe("visible-layer-modified");
-        expect(opened.conflict?.embeddedDocument).toEqual(original);
+        expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
         if (editText) expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "A\nB" });
       }
     }
@@ -968,7 +1008,7 @@ describe("native payload Save As and interchange Export", () => {
     const { original, visible, envelope } = textEnvelope(version === "legacy" ? "A\nB" : "A&#10;B", version === "legacy");
     const unchanged = structuredClone(visible);
     unchanged.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
-    expect(importCdx(writeCdx(unchanged)).document).toEqual(original);
+    expect(importCdx(writeCdx(unchanged)).document).toEqual(savedDocument(original));
     expect(importCdx(writeCdx(unchanged)).conflict).toBeUndefined();
     findText(visible)!.text = version === "legacy" ? "A&#10;B" : "A\nB";
     const alternateHash = version === "legacy" ? visibleHashForCdxml : legacyVisibleCdxmlHash;
@@ -981,13 +1021,13 @@ describe("native payload Save As and interchange Export", () => {
     const opened = importCdx(writeCdx(visible));
     if (version === "legacy") {
       expect(opened.source).toBe("native-payload");
-      expect(opened.document).toEqual(original);
+      expect(opened.document).toEqual(savedDocument(original));
       expect(opened.conflict).toBeUndefined();
       expect(opened.warnings).toEqual([]);
       return;
     }
     expect(opened.document).toBeUndefined();
-    expect(opened.conflict?.embeddedDocument).toEqual(original);
+    expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
     expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "A\nB" });
     expect(opened.warnings.some(({ code }) => code === "cdx.native_payload_modified")).toBe(false);
     expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
@@ -1000,7 +1040,7 @@ describe("native payload Save As and interchange Export", () => {
     visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
     const opened = importCdx(writeCdx(visible));
     expect(opened.source).toBe("native-payload");
-    expect(opened.document).toEqual(original);
+    expect(opened.document).toEqual(savedDocument(original));
     expect(opened.conflict).toBeUndefined();
     expect(opened.warnings).toEqual([]);
 
@@ -1012,7 +1052,7 @@ describe("native payload Save As and interchange Export", () => {
     delete upgraded.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
     expect(upgradedEnvelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1]).toBe(visibleHashForCdxml(cdxElementToCdxml(upgraded)));
     const reopened = importCdx(resaved.bytes);
-    expect(reopened.document).toEqual(original);
+    expect(reopened.document).toEqual(savedDocument(original));
     expect(reopened.conflict).toBeUndefined();
     expect(reopened.warnings).toEqual([]);
   });
@@ -1036,7 +1076,7 @@ describe("native payload Save As and interchange Export", () => {
         visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
         const opened = importCdx(writeCdx(visible));
         expect(opened.document).toBeUndefined();
-        expect(opened.conflict?.embeddedDocument).toEqual(original);
+        expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
         expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
       }
     }
@@ -1049,7 +1089,7 @@ describe("native payload Save As and interchange Export", () => {
     envelope.visibleHashVersion = "2";
     envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
     visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
-    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(original);
+    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(savedDocument(original));
   });
 
   it("never accepts an unknown CDX version even if both visible hashes are recomputed", () => {
@@ -1059,7 +1099,7 @@ describe("native payload Save As and interchange Export", () => {
     envelope.visibleBinaryHash = sha256Hex(writeCdx(visible));
     envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = visibleHashForCdxml(cdxElementToCdxml(visible));
     visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
-    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(original);
+    expect(importCdx(writeCdx(visible)).conflict?.embeddedDocument).toEqual(savedDocument(original));
   });
 
   it.each(["\n", "\r", "\t", "\n\r\t"])("restores unchanged legacy CDX with %j in text and attributes and still detects visible edits", (character) => {
@@ -1086,7 +1126,7 @@ describe("native payload Save As and interchange Export", () => {
     expect(opened.source).toBe("native-payload");
     expect(opened.conflict).toBeUndefined();
     expect(opened.warnings).toEqual([]);
-    expect(opened.document).toEqual(original);
+    expect(opened.document).toEqual(savedDocument(original));
 
     const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
     findText(saved)!.text = `Before${character}after`;
@@ -1094,7 +1134,7 @@ describe("native payload Save As and interchange Export", () => {
     expect(visibleHashForCdxml(cdxElementToCdxml(saved))).not.toBe(legacyHash);
     const edited = importCdx(writeCdx(saved));
     expect(edited.document).toBeUndefined();
-    expect(edited.conflict?.embeddedDocument).toEqual(original);
+    expect(edited.conflict?.embeddedDocument).toEqual(savedDocument(original));
     expect(edited.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: `Before${decodedCharacter}after` });
     expect(edited.warnings.some(warning => warning.code === "cdx.native_payload_modified")).toBe(true);
     expect(edited.warnings.some(warning => warning.code === "cdxml.visible_layer_modified")).toBe(true);
@@ -1135,7 +1175,7 @@ describe("native payload Save As and interchange Export", () => {
       const opened = importCdx(bytes);
       expect(opened.source).toBe("external-cdxml");
       expect(opened.document).toBeUndefined();
-      expect(opened.conflict?.embeddedDocument).toEqual(original);
+      expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
       if (target === "text") expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "Before\n\n\tafter" });
       expect(opened.warnings.some(({ code }) => code === "cdx.native_payload_modified")).toBe(false);
       expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
@@ -1167,7 +1207,7 @@ describe("native payload Save As and interchange Export", () => {
     const opened = importCdx(bytes);
     expect(opened.source).toBe("external-cdxml");
     expect(opened.document).toBeUndefined();
-    expect(opened.conflict?.embeddedDocument).toEqual(original);
+    expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
     expect(opened.warnings.some((w) => w.code === "cdx.native_payload_modified")).toBe(true);
     expect(opened.warnings.some((w) => w.code === "cdxml.visible_layer_modified")).toBe(true);
     if (tag === 0x0709) expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "new" });
@@ -1181,7 +1221,7 @@ describe("native payload Save As and interchange Export", () => {
     expect(opened.source).toBe("native-payload");
     expect(opened.conflict).toBeUndefined();
     expect(opened.warnings).toEqual([]);
-    expect(opened.document).toEqual(original);
+    expect(opened.document).toEqual(savedDocument(original));
   });
 
   it("handles a native payload longer than 65535 bytes", () => {
@@ -1189,7 +1229,7 @@ describe("native payload Save As and interchange Export", () => {
     original.title = "x".repeat(90_000);
     const opened = importCdx(exportDocumentToCdx(original, { embedNativePayload: true }).bytes);
     expect(opened.source).toBe("native-payload");
-    expect(opened.document).toEqual(original);
+    expect(opened.document).toEqual(savedDocument(original));
   });
 
   it("Export omits all native metadata and the user-defined property", () => {
@@ -1207,7 +1247,7 @@ describe("native payload Save As and interchange Export", () => {
     find(saved)!.attrs.Charge = "1";
     const opened = importCdx(writeCdx(saved));
     expect(opened.document).toBeUndefined();
-    expect(opened.conflict?.embeddedDocument).toEqual(original);
+    expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
     expect(opened.warnings.some((w) => w.code === "cdxml.visible_layer_modified")).toBe(true);
   });
 
@@ -1228,7 +1268,7 @@ describe("native payload Save As and interchange Export", () => {
     const opened = importCdx(writeCdx(saved));
     expect(opened.source).toBe("external-cdxml");
     expect(opened.document).toBeUndefined();
-    expect(opened.conflict?.embeddedDocument).toEqual(original);
+    expect(opened.conflict?.embeddedDocument).toEqual(savedDocument(original));
     expect(opened.warnings.some((w) => w.code === "cdx.native_payload_modified")).toBe(true);
   });
 });
