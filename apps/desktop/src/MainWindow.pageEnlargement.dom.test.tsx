@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -40,7 +41,7 @@ afterEach(async () => {
 async function command(commandId: string) {
   await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
 }
-const current = () => getAssistantHistoryPort().read("initial")!;
+const current = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
 function initial(size: number) {
   return setDocumentCustomPageSize(createEmptyDocument(), { width: size, height: size, unit: "css-px" });
 }
@@ -60,7 +61,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const pluginId = "org.chemdraft.pageShift";
     const transactions = getAssistantTransactions(getAssistantHistoryPort());
     const txId = path === "assistant patch" ? transactions.beginAssistantTransaction({ pluginId, runId: "shift-test",
-      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } }) : undefined;
+      label: "Insert large content", tabId: initialDocumentTabId(), sendSelection: { objectIds: [] } }) : undefined;
     await act(async () => {
       runtime.registerPlugin({ id: pluginId, name: "Page shift", version: "0.1.0", apiVersion: "^0.1.20", entry: "test.js",
         permissions: [path === "reviewed proposal" ? "document.proposePatch" : "document.write"],
@@ -244,7 +245,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     expect(current()).toEqual(before);
     await command("document.new");
     await act(async () => { answer("enlarge"); });
-    expect(getAssistantHistoryPort().read("initial")!.pages[0]!.objects).toHaveLength(1);
+    expect(getAssistantHistoryPort().read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(1);
     await command("document.previousTab");
     await command("edit.undo");
     expect(current()).toEqual(before);
@@ -267,7 +268,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     expect(current()).toEqual(before);
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
     const external = setDocumentCustomPageSize(before, { width: 80, height: 80, unit: "css-px" });
-    await act(async () => { getAssistantHistoryPort().push("initial", before, external, "External edit"); });
+    await act(async () => { getAssistantHistoryPort().push(initialDocumentTabId(), before, external, "External edit"); });
     await act(async () => { answer("enlarge"); });
     expect(current()).toEqual(external);
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
@@ -308,7 +309,7 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const pluginId = "org.chemdraft.pageUnanswered";
     const transactions = getAssistantTransactions(getAssistantHistoryPort());
     const txId = transactions.beginAssistantTransaction({ pluginId, runId: "unanswered-test",
-      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } });
+      label: "Insert large content", tabId: initialDocumentTabId(), sendSelection: { objectIds: [] } });
     const deadline = new AbortController();
     const pending = transactions.pageEnlargementConsent(txId, platform).confirm(deadline.signal);
     deadline.abort();

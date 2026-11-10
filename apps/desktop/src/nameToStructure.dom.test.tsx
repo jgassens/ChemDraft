@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -111,7 +112,7 @@ describe("Name to Structure insertion placement", () => {
     const edited = { ...createSmilesMolecule(drawing, centre, ethanol, "CCO"), id: "edited-molecule" };
     page.objects = [existing, edited];
     const port = await mount(drawing, "unused");
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     await act(async () => {
       harness.runtime!.registerPlugin({ id: "org.chemdraft.test.proposal", name: "Mock Proposal", version: "0.1.0",
         apiVersion: "^0.1.25", entry: "test.js", permissions: ["document.proposePatch"],
@@ -123,12 +124,12 @@ describe("Name to Structure insertion placement", () => {
     });
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
-    expect(port.read("initial")!.pages[0]!.objects).toEqual([
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toEqual([
       before.pages[0]!.objects[0], { ...before.pages[0]!.objects[1], rotation: 15 }
     ]);
-    expect(port.read("initial")!.selection.objectIds).toEqual([edited.id]);
+    expect(port.read(initialDocumentTabId())!.selection.objectIds).toEqual([edited.id]);
     await command("edit.undo");
-    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(before.pages);
     expect(container.querySelector("[role=status]")?.textContent).toBe("Undid Mock Proposal: Apply Proposal");
   });
 
@@ -139,10 +140,10 @@ describe("Name to Structure insertion placement", () => {
     const existing = createSmilesMolecule(drawing, { x: page.width / 2, y: page.height / 2 }, benzene, "c1ccccc1");
     page.objects = [existing];
     const port = await mount(drawing, source === "opsin" ? "ethanol" : "ethyl alcohol");
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     await act(async () => { await harness.runtime!.invokeCommand(commandId); });
     expect(harness.resolution).toMatchObject({ parsed: true, source });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(after.pages[0]!.objects).toHaveLength(2);
     const inserted = after.pages[0]!.objects[1]! as MoleculeObject;
     expect(overlaps(inserted, existing)).toBe(false);
@@ -156,13 +157,13 @@ describe("Name to Structure insertion placement", () => {
       atoms: built.atoms.map(atom => ({ ...atom, x: atom.x + dx, y: atom.y + dy })) });
     expect(container.querySelector("[role=status]")?.textContent).toContain(source === "opsin" ? "OPSIN" : "Wikidata dictionary");
     await command("edit.undo");
-    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(before.pages);
     expect(container.querySelector("[role=status]")?.textContent).toBe("Undid Name to Structure: Insert Named Structure");
     await command("edit.undo");
     expect(container.querySelector("[role=status]")?.textContent).toBe("Nothing to undo");
     await command("edit.redo");
-    expect(port.read("initial")!.pages).toEqual(after.pages);
-    expect(port.read("initial")!.selection.objectIds).toEqual([inserted.id]);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(after.pages);
+    expect(port.read(initialDocumentTabId())!.selection.objectIds).toEqual([inserted.id]);
     expect(harness.opsin).toHaveBeenCalledTimes(1);
   });
 
@@ -171,7 +172,7 @@ describe("Name to Structure insertion placement", () => {
     const drawing = createEmptyDocument();
     const port = await mount(drawing, source === "opsin" ? "ethanol" : "ethyl alcohol");
     await act(async () => { await harness.runtime!.invokeCommand(commandId); });
-    const page = port.read("initial")!.pages[0]!;
+    const page = port.read(initialDocumentTabId())!.pages[0]!;
     const inserted = page.objects[0]!;
     expect(page.objects).toEqual([harness.built]);
     expect(inserted.x + inserted.width / 2).toBeCloseTo(page.width / 2);
@@ -191,9 +192,9 @@ describe("Name to Structure insertion placement", () => {
     const restorePrompt = setNativePromptProvider(prompt);
     try {
       const port = await mount(drawing, "ethanol");
-      const before = port.read("initial")!;
+      const before = port.read(initialDocumentTabId())!;
       await act(async () => { await harness.runtime!.invokeCommand(commandId); });
-      const after = port.read("initial")!;
+      const after = port.read(initialDocumentTabId())!;
       expect(after.pages[0]!.objects).toEqual([...before.pages[0]!.objects, harness.built]);
       expect(after.pages[0]!.width).toBe(page.width);
       expect(after.pages[0]!.height).toBe(page.height);

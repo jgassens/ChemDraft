@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -49,7 +50,7 @@ describe("template insertion during an atom-label edit", () => {
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const template = resolveStructureTemplateName("18-crown-6")!;
     await command(`template.insert.${template.id}`);
-    const current = getAssistantHistoryPort().read("initial")!;
+    const current = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const inserted = current.pages[0]!.objects[1] as MoleculeObject;
     expectDrawingDefaults(inserted, style);
     const { source, ...templateStyle } = inserted.style;
@@ -68,7 +69,7 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.atom"
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const port = getAssistantHistoryPort();
-    const current = () => port.read("initial")!;
+    const current = () => port.read(initialDocumentTabId())!;
     const editedMolecule = () => current().pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
     const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
     const status = () => container.querySelector("[role=status]")?.textContent;
@@ -143,7 +144,7 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.text"
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const port = getAssistantHistoryPort();
-    const current = () => port.read("initial")!;
+    const current = () => port.read(initialDocumentTabId())!;
     const editedMolecule = () => current().pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
     const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
     const status = () => container.querySelector("[role=status]")?.textContent;
@@ -221,7 +222,7 @@ describe("template insertion during an atom-label edit", () => {
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const template = resolveStructureTemplateName("18-crown-6")!;
     await command(`template.insert.${template.id}`);
-    const current = getAssistantHistoryPort().read("initial")!;
+    const current = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const inserted = current.pages[0]!.objects[0]!;
     expect(current.selection.objectIds).toEqual([inserted.id]);
     const frame = container.querySelector("[data-molecule-transform-frame]");

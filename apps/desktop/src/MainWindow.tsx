@@ -1,3 +1,4 @@
+import { createDocumentTabId, documentWindowId, DocumentIdentities } from "./documentIdentity";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
@@ -1504,7 +1505,7 @@ type AtomLabelEditState = AtomLabelDraftState & {
    * into that same document and history line — never into a file opened since, or the state an
    * undo or redo landed on.
    */
-  documentIdentity: number;
+  documentIdentity: string;
   historyNavigation: number;
   draft: string;
   /**
@@ -1772,7 +1773,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.16.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.17.32-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2468,8 +2469,9 @@ export function MainWindow({
   const [moveArrowPreviewObjects, setMoveArrowPreviewObjects] = useState<ObjectTransformPreviewState["arrowPreviewObjects"]>();
   const [pathArtPreview, setPathArtPreview] = useState<PathArtPreviewState | undefined>();
   const [fileState, setFileState] = useState<NativeFileState>({ dirty: false });
-  const [documentTabs, setDocumentTabs] = useState([{ id: "initial", title: initialDocument?.title ?? "Untitled" }]);
-  const [activeDocumentTabId, setActiveDocumentTabId] = useState("initial");
+  const [initialDocumentTabId] = useState(createDocumentTabId);
+  const [documentTabs, setDocumentTabs] = useState([{ id: initialDocumentTabId, title: initialDocument?.title ?? "Untitled" }]);
+  const [activeDocumentTabId, setActiveDocumentTabId] = useState(initialDocumentTabId);
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
@@ -2487,7 +2489,7 @@ export function MainWindow({
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
   const templateCommandTargetRef = useRef<string | undefined>(undefined);
   const dispatchTemplateRef = useRef<(tabId: string, id: string) => Promise<void>>(async () => {});
-  const activeDocumentTabIdRef = useRef("initial");
+  const activeDocumentTabIdRef = useRef(initialDocumentTabId);
   const smilesListPasteAbortRef = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => smilesListPasteAbortRef.current?.abort(), []);
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
@@ -2529,7 +2531,7 @@ export function MainWindow({
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
   const textEditHistorySnapshotRef = useRef<{
-    objectId: string; document: ChemDraftDocument; documentIdentity: number;
+    objectId: string; document: ChemDraftDocument; documentIdentity: string;
   } | undefined>(undefined);
   const checkpointTextEditBeforeCommitRef = useRef<(beforePreview?: ChemDraftDocument) => (() => void) | undefined>(() => undefined);
   const textEditHistoryWritingRef = useRef(false);
@@ -2863,11 +2865,12 @@ export function MainWindow({
   const invokeCommandRef = useRef<(commandId: string, options?: { input?: PluginCommandInput }) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   // Identifies the working document for a plugin's `documents.applyPatch` (see
-  // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
-  // single place the document is REPLACED (File > New, every Open path including session restore) —
+  // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Revisions advance when the document is
+  // REPLACED or a tab is activated (including session restore),
   // never on an ordinary edit, so a plugin write started before a replace and landing after it is
   // refused rather than silently inserted into the new document.
-  const documentIdentityRef = useRef(0);
+  const [documentIdentities] = useState(() => new DocumentIdentities(documentWindowId()));
+  const getDocumentIdentity = useCallback(() => documentIdentities.key(activeDocumentTabIdRef.current), [documentIdentities]);
   // Counts undo and redo steps. A label-edit session closed by one must not write into the history
   // state it landed on (see the atom-label close effect).
   const historyNavigationCountRef = useRef(0);
@@ -3614,7 +3617,7 @@ export function MainWindow({
     }
     // The document is being REPLACED, not edited — bump before installing the new history so a plugin
     // write already in flight against the old document key is refused rather than landing here.
-    documentIdentityRef.current += 1;
+    documentIdentities.advance(activeDocumentTabIdRef.current);
     installDocumentHistory(createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(nextDocument))));
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
@@ -3649,7 +3652,7 @@ export function MainWindow({
   // Strip the live draft before normalization, then carry the name across both object changes.
   const atomLabelHistorySnapshot = useCallback((current: ChemDraftDocument): ChemDraftDocument => {
     const edit = activeAtomLabelEditRef.current;
-    const stripped = edit && edit.documentIdentity === documentIdentityRef.current &&
+    const stripped = edit && edit.documentIdentity === getDocumentIdentity() &&
       edit.historyNavigation === historyNavigationCountRef.current && documentHasAtomLabelDraft(current, edit)
       ? restoreAtomLabelDraft(current, edit) : current;
     // An unchanged snapshot already passed commit normalization. Record it exactly, including
@@ -6739,7 +6742,7 @@ export function MainWindow({
       ...(continuing
         ? (continuing.initialLabelBondSide ? { initialLabelBondSide: continuing.initialLabelBondSide } : {})
         : (atom.labelBondSide ? { initialLabelBondSide: atom.labelBondSide } : {})),
-      documentIdentity: continuing?.documentIdentity ?? documentIdentityRef.current,
+      documentIdentity: continuing?.documentIdentity ?? getDocumentIdentity(),
       historyNavigation: continuing?.historyNavigation ?? historyNavigationCountRef.current,
       draft: options.draft ?? (options.clearDraft ? "" : atom.element),
       selectionBefore
@@ -6838,7 +6841,7 @@ export function MainWindow({
 
   const finalizeAtomLabelDraft = useCallback((state: AtomLabelEditState) => {
     // History navigation and document replacement own the state they installed.
-    if (state.documentIdentity !== documentIdentityRef.current ||
+    if (state.documentIdentity !== getDocumentIdentity() ||
       state.historyNavigation !== historyNavigationCountRef.current ||
       (!atomLabelEditKeepsStartingText(state) && !documentHasAtomLabelDraft(documentRef.current, state))) return undefined;
     const result = finishedAtomLabelDraft(documentRef.current, state);
@@ -7638,7 +7641,7 @@ export function MainWindow({
     const edit = activeAtomLabelEditRef.current;
     if (
       !edit ||
-      edit.documentIdentity !== documentIdentityRef.current ||
+      edit.documentIdentity !== getDocumentIdentity() ||
       edit.historyNavigation !== historyNavigationCountRef.current
     ) {
       return current;
@@ -7856,7 +7859,7 @@ export function MainWindow({
     if (!snapshot || snapshot.objectId !== objectId) return;
     // Disarm before installing history: late blur, effects and tab cleanup are idempotent.
     textEditHistorySnapshotRef.current = undefined;
-    if (snapshot.documentIdentity !== documentIdentityRef.current) return;
+    if (snapshot.documentIdentity !== getDocumentIdentity()) return;
     if (!assistantDocumentContentUnchanged(snapshot.document, current)) {
       textEditHistoryWritingRef.current = true;
       try { commitDocumentHistoryFrom(snapshot.document, current, "Edit Text"); }
@@ -7897,7 +7900,7 @@ export function MainWindow({
     if (!objectId) return;
     if (textAutoConversionInProgressRef.current && !textEditHistorySnapshotRef.current) return;
     const hadSnapshot = !!textEditHistorySnapshotRef.current;
-    const documentIdentity = documentIdentityRef.current;
+    const documentIdentity = getDocumentIdentity();
     finalizeTextEditHistory(objectId, beforePreview);
     const checkpointHistory = documentHistoryRef.current;
     // No close or conversion here: callers that ended editing on main still do so, and
@@ -7905,7 +7908,7 @@ export function MainWindow({
     return () => {
       const current = documentRef.current;
       if (!hadSnapshot && documentHistoryRef.current === checkpointHistory) return;
-      if (documentIdentity !== documentIdentityRef.current ||
+      if (documentIdentity !== getDocumentIdentity() ||
         activeTextEditObjectIdRef.current !== objectId || findDocumentObject(current, objectId)?.type !== "text") return;
       textEditHistorySnapshotRef.current = {
         objectId, document: atomLabelHistorySnapshot(current), documentIdentity
@@ -7954,7 +7957,7 @@ export function MainWindow({
     if (!textObjectIdsAwaitingAutoConversionRef.current.has(objectId) &&
       textEditHistorySnapshotRef.current?.objectId !== objectId) {
       textEditHistorySnapshotRef.current = {
-        objectId, document: atomLabelHistorySnapshot(currentDocument), documentIdentity: documentIdentityRef.current
+        objectId, document: atomLabelHistorySnapshot(currentDocument), documentIdentity: getDocumentIdentity()
       };
     }
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
@@ -9644,7 +9647,7 @@ export function MainWindow({
     if (!snapshot) return;
     cancelDocumentTabSessions();
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    documentIdentityRef.current += 1;
+    documentIdentities.advance(id);
     activeDocumentTabIdRef.current = id;
     setActiveDocumentTabId(id);
     toolbarStyleTargetRef.current = undefined;
@@ -9683,7 +9686,7 @@ export function MainWindow({
 
   const addDocumentTab = useCallback((title: string) => {
     if (!snapshotDocumentTab()) return false;
-    const id = crypto.randomUUID();
+    const id = createDocumentTabId();
     const tabs = [...documentTabsRef.current, { id, title }];
     documentTabsRef.current = tabs;
     setDocumentTabs(tabs);
@@ -9727,6 +9730,7 @@ export function MainWindow({
     }
     importedPageFitGateRef.current.dismiss(id);
     documentTabSnapshotsRef.current.delete(id);
+    documentIdentities.remove(id);
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
     browserFileKeysRef.current.delete(id);
@@ -10354,7 +10358,7 @@ export function MainWindow({
               }
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
               const reports = restoreSessionWarningReports(session);
-              restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
+              restored.push({ session, opened, resolved, history, reports, candidateIndex, id: createDocumentTabId() });
             } catch {
               skipped.push(rawTab);
             }
@@ -12436,7 +12440,7 @@ export function MainWindow({
       if (text) setStatus(text);
     },
     getActiveDocument: () => documentRef.current,
-    getActiveDocumentKey: () => String(documentIdentityRef.current),
+    getActiveDocumentKey: () => getDocumentIdentity(),
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
     getDialogCoordinator: () => dialogCoordinatorRef.current,
     getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
@@ -12452,14 +12456,14 @@ export function MainWindow({
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
       // The host checked the document key before calling; a write that waits for a gesture checks again
       // when it runs, so it can never land in a document opened meanwhile.
-      const documentIdentity = documentIdentityRef.current;
+      const documentIdentity = getDocumentIdentity();
       if (isSnapshotSessionActive()) {
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
       return gate.run(async () => {
         signal?.throwIfAborted();
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
-        if (documentIdentityRef.current !== documentIdentity) {
+        if (getDocumentIdentity() !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
         const before = documentRef.current;
@@ -12485,7 +12489,7 @@ export function MainWindow({
           else commitDocumentChange(document, undoLabel);
         }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
             : consent, signal,
-          isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          isCurrent: () => mountedRef.current && !quitInteractionRef.current && getDocumentIdentity() === documentIdentity &&
           assistantDocumentContentUnchanged(before, documentRef.current) });
         if (pending) {
           pageFitPendingRef.current += 1;
@@ -12784,7 +12788,7 @@ export function MainWindow({
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
         const before = documentRef.current;
-        const documentIdentity = documentIdentityRef.current;
+        const documentIdentity = getDocumentIdentity();
         let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
         if (recognized) {
           const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
@@ -12799,7 +12803,7 @@ export function MainWindow({
           const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
           commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
         }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
-          mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          mountedRef.current && !quitInteractionRef.current && getDocumentIdentity() === documentIdentity &&
           assistantDocumentContentUnchanged(before, documentRef.current)
         });
         if (pending) {
@@ -22299,7 +22303,7 @@ export function MainWindow({
               const file = active ? fileState : documentTabSnapshotsRef.current.get(tab.id)?.file;
               const title = file?.path ? nativePathBasename(file.path) : tab.title;
               return (
-                <div className="document-tab" key={tab.id} data-active={active}>
+                <div className="document-tab" key={tab.id} data-tab-id={tab.id} data-active={active}>
                   <button type="button" role="tab" aria-selected={active}
                     title={title} onClick={() => void invoke(activateDocumentTabCommandId(tab.id))}>
                     <span>{title}</span>{file?.dirty ? <span aria-label="Unsaved changes"> •</span> : null}

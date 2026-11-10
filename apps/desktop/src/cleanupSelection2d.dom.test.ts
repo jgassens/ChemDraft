@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -38,7 +39,7 @@ describe("Clean Up Selection command", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
-  const current = () => getAssistantHistoryPort().read("initial")!;
+  const current = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
   const objects = () => current().pages[0]!.objects as MoleculeObject[];
   const status = () => container.querySelector("[role=status]")?.textContent;
   async function command(commandId: string) {

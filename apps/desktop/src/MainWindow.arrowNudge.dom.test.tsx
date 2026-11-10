@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,7 +26,7 @@ class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 
 describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform => {
   let root: Root, container: HTMLDivElement, canvas: HTMLElement;
-  const current = () => getAssistantHistoryPort().read("initial")!;
+  const current = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
   const molecule = (document = current()) => document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
   const canonical = (document = current()) => OCL.Molecule.fromMolfile(moleculeToMolfileV2000(molecule(document), {
     unknownBondOrders: "refuse", fromDocFrame: true, kekuleBondOrders: new Map()

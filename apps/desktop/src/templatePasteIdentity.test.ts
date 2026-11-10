@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 
 import { act, createElement } from "react";
@@ -77,7 +78,7 @@ describe("template SMILES paste with chemical identity verification", () => {
         /Pasted SMILES structure|SMILES paste refused:/);
     }, { timeout: 30_000, interval: 50 });
     const status = container.querySelector('[role="status"]')!.textContent!;
-    const drawing = getAssistantHistoryPort().read("initial")!;
+    const drawing = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const molecule = drawing.pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule");
     // The real #245 inspector must see the input, including stereo-free input at output verification.
     expect(inspectStructureOffThread).toHaveBeenCalledWith("smiles", smiles, undefined, undefined);

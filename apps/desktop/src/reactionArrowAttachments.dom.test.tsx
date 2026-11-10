@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -126,8 +127,8 @@ it("keeps existing conditions painted and attached with browser authoring remove
   } finally { calls.mockRestore(); }
   const port = getAssistantHistoryPort();
   const { moveDocumentObjects, normalizeCommittedDocument } = await import("./documentWorkflow");
-  await act(async () => port.push("initial", port.read("initial")!, normalizeCommittedDocument(
-    moveDocumentObjects(port.read("initial")!, [id], 20, 30)), "Move arrow"));
+  await act(async () => port.push(initialDocumentTabId(), port.read(initialDocumentTabId())!, normalizeCommittedDocument(
+    moveDocumentObjects(port.read(initialDocumentTabId())!, [id], 20, 30)), "Move arrow"));
   const after = snapshot().pages[0].objects.find(object => object.id === label.id)!;
   expect(after.x).toBeCloseTo(label.x + 20);
   expect(after.y).toBeCloseTo(label.y + 30);

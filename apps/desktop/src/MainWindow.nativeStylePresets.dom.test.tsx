@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -36,7 +37,7 @@ describe.each(["macos", "windows"] as const)("MainWindow native style presets (%
   async function command(commandId: string) {
     await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
   }
-  const read = () => getAssistantHistoryPort().read("initial")!;
+  const read = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
 
   it("keeps a legacy charge mark through desktop commit normalization", () => {
     const initial = createEmptyDocument();

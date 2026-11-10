@@ -4,6 +4,7 @@ mod clipboard_images;
 mod clipboard_limits;
 mod dialog_windows;
 mod document_session;
+pub mod document_windows;
 mod download_diagnosis;
 mod export;
 mod external_tools;
@@ -958,6 +959,7 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(document_windows::DocumentWindowRegistry::with_main())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
@@ -1106,6 +1108,9 @@ pub fn run() {
                         }
                     }
                     WindowEvent::Focused(true) => {
+                        window
+                            .state::<document_windows::DocumentWindowRegistry>()
+                            .mark_activated(window.label());
                         schedule_suspended_utility_restore(window.app_handle());
                     }
                     _ => {}
@@ -1599,6 +1604,9 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         Some(window) => window,
         None => create_main_window(app)?,
     };
+
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .set_ready(MAIN_WINDOW_LABEL);
 
     let target = window.clone();
     if let Err(error) = run_on_main_thread_blocking(&window, move || {

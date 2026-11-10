@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -358,7 +359,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await act(async () => {
       const current = snapshot().document;
       const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "text-edit",
-        tabId: "initial", label: "Insert caption", sendSelection: current.selection });
+        tabId: initialDocumentTabId(), label: "Insert caption", sendSelection: current.selection });
       try { writeAssistantTransaction(tx, insertNativeTextObject(current, { x: 500, y: 350 }, "Gamma")); }
       finally { endAssistantTransaction(tx, { touchedIds: [] }); }
     });
@@ -531,7 +532,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await open(alpha); await type("Alpha123");
     await act(async () => {
       const current = snapshot().document;
-      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "noop", tabId: "initial", label: "No change",
+      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "noop", tabId: initialDocumentTabId(), label: "No change",
         sendSelection: current.selection });
       try { writeAssistantTransaction(tx, current); } finally { endAssistantTransaction(tx, { touchedIds: [] }); }
     });

@@ -1,3 +1,4 @@
+import { createDocumentTabId } from "../documentIdentity";
 import type { ToolInstallAction, ToolInstallSnapshot } from "../dialogs/dialogProtocol";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import { ExternalToolsController, type ExternalToolsPresenter } from "./ExternalToolsController";
@@ -12,8 +13,9 @@ export function presentExternalToolInstall(controller: ExternalToolsController, 
   // A result may settle before its window closes (e.g. installation succeeded). Keep the
   // tab reserved until native closure, including a still-pending open IPC, has completed.
   const queues = new Map<string, Promise<void>>();
+  const fallbackTabId = createDocumentTabId();
   function enqueue<T>(signal: AbortSignal, show: (coordinator: DialogCoordinator, id: string, closed: () => void) => Promise<T>): Promise<T> {
-    const id = context.documentTabId() ?? "main";
+    const id = context.documentTabId() ?? fallbackTabId;
     const previous = queues.get(id) ?? Promise.resolve();
     let release!: () => void;
     const closed = new Promise<void>(resolve => { release = resolve; });

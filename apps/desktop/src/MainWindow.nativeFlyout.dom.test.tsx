@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -55,7 +56,7 @@ vi.mock("./window-manager", async importOriginal => {
 
 describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s)", platform => {
   let root: Root, host: HTMLDivElement, canvas: HTMLElement;
-  const current = () => getAssistantHistoryPort().read("initial")!;
+  const current = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
   beforeEach(async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();

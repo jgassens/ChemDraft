@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -165,7 +166,7 @@ it("applies to the originating inactive tab with its atom selection and one Undo
   expect(current().document.pages[0]!.objects).toHaveLength(0);
   await deliver("action", { action: "charge", targetVersion: version });
   expect(current().document.pages[0]!.objects).toHaveLength(0);
-  await command("document.activateTab.initial");
+  await command(`document.activateTab.${initialDocumentTabId()}`);
   expect(container.querySelector('[role="status"]')!.textContent).toContain('Formal charge set to +1 for "N"');
   expect(molecule().atoms[0]!.formalCharge).toBe(1);
   expect(current().selectedNativeMoleculePart).toMatchObject({ kind: "atom", ...target });

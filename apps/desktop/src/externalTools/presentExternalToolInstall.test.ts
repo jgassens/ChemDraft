@@ -18,7 +18,7 @@ const status = (consented = false): ExternalToolStatus => ({ tool: "claude", pub
 const coordinators: DialogCoordinator[] = [];
 afterEach(async () => { for (const coordinator of coordinators.splice(0)) await coordinator.dispose(); });
 
-function host(consented = false) {
+function host(consented = false, documentTabId: () => string | undefined = () => "tab") {
   const engine = new UnsupportedExternalToolsEngine();
   vi.spyOn(engine, "status").mockImplementation(async () => status(consented));
   vi.spyOn(engine, "consentSet").mockResolvedValue();
@@ -37,7 +37,7 @@ function host(consented = false) {
   const coordinator = new DialogCoordinator(transport, { applyPageSize: vi.fn(), onError: vi.fn() });
   coordinators.push(coordinator);
   const controller = new ExternalToolsController(engine);
-  presentExternalToolInstall(controller, { coordinator: () => coordinator, documentTabId: () => "tab" });
+  presentExternalToolInstall(controller, { coordinator: () => coordinator, documentTabId });
   const send = (type: "ready" | "action", data: object) => coordinator.receive({
     senderWindowId: registration.windowLabel, windowLabel: registration.windowLabel,
     message: { ...dialogEnvelope(snapshots.at(-1)!), requestId: crypto.randomUUID(), type, data }
@@ -50,6 +50,25 @@ function host(consented = false) {
 }
 
 describe("external tool native dialog flow", () => {
+  it("uses a stable UUID fallback per presenter when there is no document tab", async () => {
+    const a = host(false, () => undefined), b = host(false, () => undefined);
+    const pendingA = a.install(), pendingB = b.install();
+    const rejectedA = expect(pendingA).rejects.toThrow("declined");
+    const rejectedB = expect(pendingB).rejects.toThrow("declined");
+    await a.opened(); await b.opened();
+    const id = a.snapshots[0]!.documentTabId;
+    expect(id).toMatch(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i);
+    expect(b.snapshots[0]!.documentTabId).not.toBe(id);
+    await a.ready(); await b.ready();
+    await a.action("close"); await b.action("close");
+    await rejectedA; await rejectedB;
+    const next = a.install();
+    const rejectedNext = expect(next).rejects.toThrow("declined");
+    await a.opened(2);
+    expect(a.snapshots.at(-1)!.documentTabId).toBe(id);
+    await a.ready(); await a.action("close"); await rejectedNext;
+  });
+
   it.each([false, true])("rejects tools.install with the original open error (consented=%s)", async consented => {
     const h = host(consented); const error = new Error("Native dialog open rejected");
     vi.mocked(h.transport.open).mockRejectedValueOnce(error);

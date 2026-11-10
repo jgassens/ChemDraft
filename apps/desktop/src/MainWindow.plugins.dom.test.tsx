@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
 // @vitest-environment jsdom
 import { act } from "react";
@@ -83,7 +84,7 @@ describe("assistant writes through mounted desktop normalization", () => {
         } finally { molecule.delete(); }
       },
       structureFromSmiles: async ({ smiles }) => ({ available: true, built: true,
-        object: createSmilesMolecule(getAssistantHistoryPort().read("initial")!, { x: 200, y: 200 },
+        object: createSmilesMolecule(getAssistantHistoryPort().read(initialDocumentTabId())!, { x: 200, y: 200 },
           pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles)), smiles) })
     };
     captured.assistantContext = () => ({ chemistry, now: () => new Date(), render: testContext().context.render });
@@ -126,13 +127,13 @@ describe("assistant writes through mounted desktop normalization", () => {
     await act(async () => {
       window.dispatchEvent(event);
       // Pasting now includes RDKit identity verification.
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 5000 });
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(1), { timeout: 5000 });
     });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(after.selection.objectIds).toEqual([after.pages[0]!.objects[0]!.id]);
     expect(container.querySelector("[role=status]")?.textContent).toContain("Used the β-Cyclodextrin template layout");
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(0);
     expect(container.querySelector("[role=status]")?.textContent).toContain("Undid Paste SMILES");
   }, 60_000);
 
@@ -144,14 +145,14 @@ describe("assistant writes through mounted desktop normalization", () => {
       getData: (type: string) => type === "text/plain" ? `${template.smiles}\n${template.smiles}` : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2), { timeout: 5000 });
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(2), { timeout: 5000 });
     });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(new Set(after.selection.objectIds).size).toBe(2);
     expect(after.pages[0]!.objects.every(object => object.style.source === `structure-template:${template.id}`)).toBe(true);
     expect(container.querySelector("[role=status]")?.textContent).toContain("Used the β-Cyclodextrin template layout");
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(0);
   }, 60_000);
 
   it.each(["insert_structures", "edit_structure"])("%s uses beta-CD layout at default size in one selected undo entry with status", async name => {
@@ -159,13 +160,13 @@ describe("assistant writes through mounted desktop normalization", () => {
     const old = drawing.pages[0]!.objects.find(object => object.type === "molecule");
     if (old) drawing.selection.objectIds = [old.id];
     const { port, push, amend } = await mount(drawing);
-    chemistry.structureFromSmiles = request => structureFromSmilesForPlugin(request, () => port.read("initial"));
+    chemistry.structureFromSmiles = request => structureFromSmilesForPlugin(request, () => port.read(initialDocumentTabId()));
     const template = resolveStructureTemplateName("beta-cyclodextrin")!;
     const result = await call(name, name === "insert_structures"
       ? { items: [{ kind: "molecule", smiles: template.smiles }] }
       : { objectId: old!.id, smiles: template.smiles });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     const ids = result.structuredContent!.objectIds as string[];
     const selectedIds = ids.filter(id => after.pages[0]!.objects.some(object => object.id === id));
     expect(after.selection.objectIds).toEqual(selectedIds);
@@ -202,7 +203,7 @@ describe("assistant writes through mounted desktop normalization", () => {
     const mark = withMark.pages[0]!.objects.find(object => object.type === "electron-mark")!;
     const { port, push, amend, select } = await mount(applyPatch(withMark, { op: "setSelection",
       objectIds: [fixture.molecule.id, ...(selectedMark ? [mark.id] : [])] }));
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     expect(before.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({ anchor: { kind: "point" } });
     // Replan with the mark present, as the live tool does, and prove the unsafe
     // normalized result would attach it before asserting that the host refuses it.
@@ -219,7 +220,7 @@ describe("assistant writes through mounted desktop normalization", () => {
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining(selectedMark
       ? kind === "charge" ? "change its atom count or charges" : "canonical isomeric SMILES"
       : `attach the unselected ${kind} mark ${mark.id}`) });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(after).toBe(before);
     expect(push).not.toHaveBeenCalled(); expect(amend).not.toHaveBeenCalled(); expect(select).not.toHaveBeenCalled();
   });
@@ -233,12 +234,12 @@ describe("assistant writes through mounted desktop normalization", () => {
     const withMark = applyChargeToolAtPoint(drawing, 1, terminal);
     const mark = withMark.pages[0]!.objects.find(object => object.type === "electron-mark")!;
     const { port, push, amend, select } = await mount(applyPatch(withMark, { op: "setSelection", objectIds: [fixture.molecule.id] }));
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     expect(before.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({ anchor: { kind: "point" } });
     const result = await call("edit_structure", { objectId: fixture.molecule.id, smiles: "CCCCCCCC", keepPosition: true });
     expect(result.isError, JSON.stringify(result)).toBe(true);
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining(`unselected charge mark ${mark.id}`) });
-    expect(port.read("initial")).toBe(before);
+    expect(port.read(initialDocumentTabId())).toBe(before);
     expect(push).not.toHaveBeenCalled(); expect(amend).not.toHaveBeenCalled(); expect(select).not.toHaveBeenCalled();
   });
 
@@ -247,11 +248,11 @@ describe("assistant writes through mounted desktop normalization", () => {
     captured.assistantContext = () => ({ chemistry, now: () => new Date(), render: testContext().context.render,
       getViewportRect: () => ({ x: 100, y: 100, width: 400, height: 400 }) });
     const { port, push } = await mount(applyPatch(drawing, { op: "setSelection", objectIds: [] }));
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     const mark = before.pages[0]!.objects[0]!;
     const result = await call("insert_structures", { items: [{ kind: "molecule", smiles: "CC" }] });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(after.pages[0]!.objects.find(object => object.id === mark.id)).toEqual(mark);
     const molecule = after.pages[0]!.objects.find(object => object.type === "molecule")! as MoleculeObject;
     expect((await inspectMolecule({ ...testContext().context, chemistry }, molecule)).canonicalSmiles).toBe("CC");
@@ -267,7 +268,7 @@ describe("assistant writes through mounted desktop normalization", () => {
         : { objectId: fixture.molecule.id, smiles: "CO", keepPosition: true };
     const result = await call(name, input);
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     const molecule = after.pages[0]!.objects.find(object => after.selection.objectIds.includes(object.id))! as MoleculeObject;
     expect((await inspectMolecule({ ...fixture.context, chemistry }, molecule)).canonicalSmiles).toBe(name === "move_objects" ? "CC" : "CO");
     expect(push).toHaveBeenCalledOnce();
@@ -703,22 +704,22 @@ describe("MainWindow canvas overlays", () => {
       { method: "shortcut", draft: "Next draft" }, { method: "menu", draft: "Next draft" }
     ])("routes $method Undo to the document after a page press (draft: '$draft')", async ({ method, draft }) => {
       const port = getAssistantHistoryPort();
-      const before = port.read("initial")!;
+      const before = port.read(initialDocumentTabId())!;
       submit.mockImplementationOnce(async () => {
-        port.push("initial", before, applyPatch(before, { op: "addObject", pageId: before.pages[0]!.id,
+        port.push(initialDocumentTabId(), before, applyPatch(before, { op: "addObject", pageId: before.pages[0]!.id,
           object: { id: "assistant_caption", type: "text", x: 50, y: 50, width: 100, height: 20,
             rotation: 0, style: {}, text: "Assistant result", spans: [] } }), "Assistant result");
       });
       await typeAtFocus("Draw");
       await send();
-      const after = port.read("initial")!;
+      const after = port.read(initialDocumentTabId())!;
       expect(after.pages[0]!.objects.some(object => object.id === "assistant_caption")).toBe(true);
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       expect(document.activeElement).toBe(textarea);
       expect(textarea.value).toBe("");
       // An empty composer still owns text undo until the user deliberately leaves it.
       await undoAtFocus(platform);
-      expect(port.read("initial")).toBe(after);
+      expect(port.read(initialDocumentTabId())).toBe(after);
       await typeAtFocus(draft);
       const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
       const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
@@ -730,7 +731,7 @@ describe("MainWindow canvas overlays", () => {
       expect(document.activeElement).toBe(canvas);
       if (method === "shortcut") await undoAtFocus(platform);
       else await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })));
-      expect(port.read("initial")!.pages).toEqual(before.pages);
+      expect(port.read(initialDocumentTabId())!.pages).toEqual(before.pages);
       expect(textarea.value).toBe(draft);
       expect(document.activeElement).toBe(canvas);
     });

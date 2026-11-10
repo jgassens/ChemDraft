@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "../testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 
 import { act, createElement } from "react";
@@ -218,12 +219,12 @@ describe("accepting a recognition proposal from the review window", () => {
     const drawing = insertNativeTemplateMolecule(blank, { x: page.width / 2, y: page.height / 2 }, "benzene");
     const bridge = await renderMainWindow({ initialDocument: drawing, shortcutPlatform: platform });
     const port = getAssistantHistoryPort();
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     const proposal = await recognizeIntoProposal(bridge);
     expect(proposal.proposal.recognition).toBeDefined();
-    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(before.pages);
     await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(after.pages[0]!.objects).toHaveLength(2);
     const existing = after.pages[0]!.objects[0]!;
     const inserted = after.pages[0]!.objects[1]! as MoleculeObject;
@@ -235,13 +236,13 @@ describe("accepting a recognition proposal from the review window", () => {
     expect(after.selection.objectIds).toEqual([inserted.id]);
     expect(harness.runtime!.host.listProposedPatches("pending")).toHaveLength(0);
     await act(async () => { await bridge.command("edit.undo"); });
-    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(before.pages);
     expect(statusText()).toBe("Undid Recognition Fixture: Insert Recognized Structure");
     await act(async () => { await bridge.command("edit.undo"); });
     expect(statusText()).toBe("Nothing to undo");
     await act(async () => { await bridge.command("edit.redo"); });
-    expect(port.read("initial")!.pages).toEqual(after.pages);
-    expect(port.read("initial")!.selection.objectIds).toEqual([inserted.id]);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(after.pages);
+    expect(port.read(initialDocumentTabId())!.selection.objectIds).toEqual([inserted.id]);
   });
 
   it("inserts the recognized structure as one undoable, selected edit and says so", async () => {

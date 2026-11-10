@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 import { saveStartWithFreshDocument } from "./startupSettings";
 // @vitest-environment jsdom
 import * as smilesListPaste from "./smilesListPaste";
@@ -13,7 +14,7 @@ import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
-import { exportPhase4Svg, applyNativeChainTool, createNativeSingleBondMolecule, arrangeSelectedDocumentObjects, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
+import { exportPhase4Svg, createNativeTextObject, applyNativeChainTool, createNativeSingleBondMolecule, arrangeSelectedDocumentObjects, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { saveCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { saveKeybindingSettings } from "./keybindingSettings";
@@ -403,6 +404,63 @@ describe("documents in one window", () => {
     .filter((object) => object.type === "text").map((object) => object.text).join("\n");
   const tabs = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
   const active = () => tabs().findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+  const pluginDocumentKey = () => vi.mocked(createPluginRuntime).mock.calls[0]![0].getActiveDocumentKey!();
+
+  it("uses stable UUID tab ids and composite plugin keys through switches and replacement", async () => {
+    const uuid = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+    const first = initialDocumentTabId();
+    expect(first).toMatch(uuid);
+    const initialKey = pluginDocumentKey();
+    expect(initialKey).toBe(`main:${first}:0`);
+    await command("document.new");
+    const second = container.querySelector<HTMLElement>('[data-active="true"][data-tab-id]')!.dataset.tabId!;
+    expect(second).toMatch(uuid);
+    expect(second).not.toBe(first);
+    const secondKey = pluginDocumentKey();
+    expect(secondKey).toBe(`main:${second}:1`);
+    await command(`document.activateTab.${first}`);
+    expect(initialDocumentTabId()).toBe(first);
+    expect(pluginDocumentKey()).toBe(`main:${first}:1`);
+    await command(`document.activateTab.${second}`);
+    expect(pluginDocumentKey()).toBe(`main:${second}:2`);
+    await command("document.closeTab");
+    expect(pluginDocumentKey()).toBe(`main:${first}:2`);
+    // Opening into a pristine tab replaces its document, retaining the tab id.
+    await open("Replacement");
+    expect(pluginDocumentKey()).toBe(`main:${first}:3`);
+    expect(vi.mocked(createPluginRuntime)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("refuses a plugin write captured before a tab switch (switch back: %s)", async switchBack => {
+    const first = initialDocumentTabId();
+    const before = structuredClone(bridge().snapshot().document);
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const captured = new Promise<void>(resolve => { started = resolve; });
+    runtime().registerPlugin({
+      id: "org.test.tab-write", name: "Tab Write", version: "0.0.1", apiVersion: "^0.1.8",
+      entry: "test.js", permissions: ["document.write"],
+      contributes: { commands: [{ id: "plugin.tabWrite.insert", title: "Insert" }] }
+    }, { commandHandlers: { "plugin.tabWrite.insert": async context => {
+      started();
+      await waiting;
+      return context.documents.applyPatch!({ reason: "Delayed insert", patch: {
+        op: "addObject", pageId: before.pages[0]!.id, object: createNativeTextObject(before, { x: 100, y: 100 }, "Delayed")
+      } });
+    } } });
+    const pending = runtime().invokeCommand("plugin.tabWrite.insert");
+    const rejected = expect(pending).rejects.toThrow(/document changed/);
+    await captured;
+    await command("document.new");
+    if (switchBack) await command(`document.activateTab.${first}`);
+    const destination = structuredClone(bridge().snapshot().document);
+    await act(async () => { release(); await rejected; });
+    expect(bridge().snapshot().document).toEqual(destination);
+    await command(`document.activateTab.${first}`);
+    expect(bridge().snapshot().document).toEqual(before);
+  });
+
   it("refuses a timed-out SMILES check without inserting a molecule or fallback text", async () => {
     const before = structuredClone(bridge().snapshot().document);
     vi.spyOn(smilesListPaste, "depictSmilesForPaste").mockResolvedValueOnce({
@@ -444,7 +502,7 @@ describe("documents in one window", () => {
   }
   it("native spacing previews without an overlay and saves to the original inactive tab with one undo", async () => {
     const before = await spacingDrawing(); await command("layout.adjustArrangementSpacing");
-    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "arrangementSpacing", documentTabId: "initial" });
+    expect(native.dialogSnapshot).toMatchObject({ dialogKind: "arrangementSpacing", documentTabId: initialDocumentTabId() });
     expect(container.querySelector('.arrangement-spacing-dialog')).toBeNull(); await readySpacing();
     await spacingMessage({ action: "preview", percent: 80 });
     await vi.waitFor(() => expect(native.dialogPublish).toHaveBeenCalled());
@@ -481,7 +539,7 @@ describe("documents in one window", () => {
   it("native Page Size stays modeless and applies to its originating inactive tab with one undo entry", async () => {
     const originalLayout = bridge().snapshot().document.pages[0]!.layout;
     await command("page.setSizeCustom");
-    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", documentTabId: "initial", data: { title: "Untitled" } });
+    expect(native.dialogSnapshot).toMatchObject({ type: "snapshot", documentTabId: initialDocumentTabId(), data: { title: "Untitled" } });
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     await command("document.new"); expect(active()).toBe(1);
     const otherLayout = bridge().snapshot().document.pages[0]!.layout;
