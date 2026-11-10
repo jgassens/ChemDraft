@@ -14,7 +14,6 @@ function fixture(t) {
   const args = releaseFixture(t);
   mkdirSync(join(args.rootDir, "release-notes", "macos"), { recursive: true });
   mkdirSync(join(args.rootDir, "release-notes", "macos-intel"), { recursive: true });
-  for (const name of [`${installer}.sig`, "latest.json", `${allUsersInstaller}.sig`, "latest-allusers.json"]) writeFileSync(join(args.assets, name), "fixture");
   writeFileSync(join(args.assets, "appcast.xml"), feed(arm));
   writeFileSync(join(args.assets, "appcast-intel.xml"), feed(intel));
   writeFileSync(join(args.rootDir, "release-notes", "macos", arm.replace(".dmg", ".md")), "Apple notes");

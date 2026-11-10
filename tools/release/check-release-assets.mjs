@@ -37,7 +37,10 @@ export function checkReleaseAssets({ tag, version = tag?.replace(/^v/, ""), comm
         ? (dmg, _target, expected, recordCommit) => verifyDmgSourceCommit(dmg, expected, { run, recordCommit })
         : undefined
     });
-    if (missing.length) return { complete: false, missing };
+    if (missing.length) {
+      if (!allowIncomplete) throw new Error(missing.map((name) => `${name}: missing release file`).join("\n"));
+      return { complete: false, missing };
+    }
     return { complete: true, commit: expectedCommit, builds };
   } finally { if (temporary) cleanup(folder); }
 }

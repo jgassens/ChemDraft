@@ -84,9 +84,9 @@ record can substitute for an expected commit. Complete the production signature 
    The two release verifiers mount the downloaded DMGs read-only, verify the apps inside, and check
    each DMG's staple and Gatekeeper assessment. The process staples only the DMG, never requiring
    an app staple. The final asset command downloads all assets again to a temporary directory and cleans it up.
-   It requires exactly the four expected builds and their records, refuses extra builds or records,
-   including unexpected `.sig`, `.msi`, `.zip`, `.pkg` and `.tar.gz` files (only the expected Windows
-   `.exe.sig` files, `latest.json` and `latest-allusers.json` are allowed updater assets). It recomputes hashes and sizes, mounts
+   It requires exactly the four expected builds and their records, both Windows `.exe.sig` files,
+   `latest.json` and `latest-allusers.json`. It refuses extra builds or records, including unexpected
+   `.sig`, `.msi`, `.zip`, `.pkg` and `.tar.gz` files. It recomputes hashes and sizes, mounts
    every DMG to compare its embedded commit with its record and the expected commit, and checks common
    source identity against the freshly fetched origin tag. It needs macOS, `hdiutil` and `plutil`, but
    no npm dependencies. For an already-downloaded complete folder, add `--assets path/to/downloaded`; without
@@ -97,7 +97,8 @@ record can substitute for an expected commit. Complete the production signature 
 
 The Windows workflow runs this checker **inside the upload job after uploading**, with its existing
 `contents: write` token so draft assets are visible. Other jobs retain read access. Its
-`--allow-incomplete` mode permits wholly missing artifact/record pairs and lists the missing filenames,
+`--allow-incomplete` mode permits wholly missing artifact/record pairs and missing Windows updater
+signatures or feeds, and lists the missing filenames,
 while fully checking every supplied build. Partial pairs, invalid records, hashes, sizes, extra builds
 and tag mismatches fail even in incomplete mode. INCOMPLETE is **not permission to un-draft**.
 

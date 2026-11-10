@@ -29,8 +29,16 @@ export function releaseBuildFiles(version) {
   ];
 }
 
+export function requiredWindowsUpdaterFiles(version) {
+  return [
+    ...releaseBuildFiles(version).filter(({ target }) => target === "x86_64-pc-windows-msvc").map(({ name }) => `${name}.sig`),
+    "latest.json",
+    "latest-allusers.json"
+  ];
+}
+
 export function missingBuildFiles(assets, version) {
-  return releaseBuildFiles(version).flatMap(({ name }) => [name, `${name}.build.json`]).filter((name) => {
+  return [...releaseBuildFiles(version).flatMap(({ name }) => [name, `${name}.build.json`]), ...requiredWindowsUpdaterFiles(version)].filter((name) => {
     try { return !statSync(join(assets, name)).isFile(); } catch { return true; }
   });
 }
@@ -38,11 +46,7 @@ export function missingBuildFiles(assets, version) {
 export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomplete = false }, { checkDmgCommit } = {}) {
   if (!COMMIT_PATTERN.test(expectedCommit ?? "")) throw new Error("An expected full source commit is mandatory");
   const builds = releaseBuildFiles(version);
-  const allowed = new Set(builds.flatMap(({ name }) => [name, `${name}.build.json`]));
-  allowed.add(`ChemDraft_${version}_x64-setup.exe.sig`);
-  allowed.add(`ChemDraft_${version}_x64-allusers-setup.exe.sig`);
-  allowed.add("latest.json");
-  allowed.add("latest-allusers.json");
+  const allowed = new Set([...builds.flatMap(({ name }) => [name, `${name}.build.json`]), ...requiredWindowsUpdaterFiles(version)]);
   const errors = [];
   // Feeds, checksums and notes are allowed; unexpected packages/signatures/records are not.
   const present = new Set(readdirSync(assets));

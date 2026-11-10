@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { dmgArchitecture, parseAppcast } from "./macos-appcast.mjs";
-import { expectedReleaseCommit, verifyBuildAssets } from "./release-assets.mjs";
+import { expectedReleaseCommit, releaseBuildFiles, requiredWindowsUpdaterFiles, verifyBuildAssets } from "./release-assets.mjs";
 import { verifyDmgCommit } from "./verify-macos-feed.mjs";
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -30,11 +30,9 @@ export function draftReleaseBody({ version, commit, tag = `v${version}`, assets 
     if (!match || !match[2].trim()) throw new Error(`Invalid gap ${JSON.stringify(gap)}; expected macos, macos-intel, or windows followed by :text`);
     gapMap.get(match[1]).push(match[2].trim());
   }
-  const installer = `ChemDraft_${version}_x64-setup.exe`;
-  const allUsersInstaller = `ChemDraft_${version}_x64-allusers-setup.exe`;
   try { verifyBuildAssets({ assets, version, expectedCommit }, { checkDmgCommit }); }
   catch (error) { errors.push(error.message); }
-  for (const name of [platforms[0].dmg, platforms[1].dmg, installer, `${installer}.sig`, "latest.json", allUsersInstaller, `${allUsersInstaller}.sig`, "latest-allusers.json"]) {
+  for (const name of [...releaseBuildFiles(version).map(({ name }) => name), ...requiredWindowsUpdaterFiles(version)]) {
     try { if (!statSync(join(assets, name)).isFile()) throw new Error(); }
     catch { errors.push(`Missing release file: ${name}`); }
   }

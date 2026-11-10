@@ -45,10 +45,29 @@ for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "
   });
 }
 
-test("both expected Windows signatures and feeds are allowed", (t) => {
+test("all four required Windows updater files pass the strict gate", (t) => {
   const args = releaseFixture(t);
-  for (const name of [`${installer}.sig`, `${allUsersInstaller}.sig`, "latest.json", "latest-allusers.json"]) writeFileSync(join(args.assets, name), "fixture");
   assert.equal(check(args).complete, true);
+});
+
+for (const name of [`${installer}.sig`, `${allUsersInstaller}.sig`, "latest.json", "latest-allusers.json"]) {
+  test(`missing updater file ${name} fails strict mode and is reported in incomplete mode`, (t) => {
+    const args = releaseFixture(t);
+    unlinkSync(join(args.assets, name));
+    assert.throws(() => check(args), (error) => error.message.includes(`${name}: missing release file`));
+    for (const platform of ["darwin", "win32"]) {
+      assert.deepEqual(check({ ...args, allowIncomplete: true, skipDmgProvenance: platform !== "darwin" }, { platform, log: () => {} }), { complete: false, missing: [name] });
+    }
+  });
+}
+
+test("Windows upload job flags accept both installers and updater files before Mac builds arrive", (t) => {
+  const args = releaseFixture(t);
+  const missing = [arm, intel].flatMap((name) => [name, `${name}.build.json`]);
+  for (const name of missing) unlinkSync(join(args.assets, name));
+  assert.deepEqual(check({ version, rootDir: args.rootDir, commit, allowIncomplete: true, skipDmgProvenance: true }, {
+    platform: "win32", log: () => {}, run: fakeReleaseRunner({ downloadFrom: args.assets })
+  }), { complete: false, missing });
 });
 
 for (const windowsOnly of [false, true]) {

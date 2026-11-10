@@ -21,6 +21,7 @@ export function releaseFixture(t) {
     writeFileSync(file, `synthetic ${target}`);
     writeFileSync(`${file}.build.json`, JSON.stringify({ commit, version, target, clean: true, ...artifactDigest(file) }));
   }
+  for (const name of [`${installer}.sig`, `${allUsersInstaller}.sig`, "latest.json", "latest-allusers.json"]) writeFileSync(join(assets, name), "fixture");
   return { rootDir, assets, version };
 }
 
