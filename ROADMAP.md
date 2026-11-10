@@ -45,6 +45,10 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Structures inserted from pickers are placed outside open pickers.
 - Repeated pastes no longer stack on top of each other.
 
+## 1.3
+- Several document windows at once.
+- Optional resizable floating toolbars.
+
 ## 1.4
 - Linux is on the roadmap for the 1.x series, aimed at 1.4, which will most likely land early 2027. It needs its own builds, testing and update system first, because every release must work the same on every supported platform.
 
@@ -52,10 +56,8 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Your own keyboard shortcuts.
 - A biology clip-art plugin (antibodies, proteins, membranes).
 - Avogadro integration.
-- Several document windows at once.
 - Industry-standard keyboard shortcuts as the default.
 - Short typed shortcuts for common groups (for example c1 methyl, ph phenyl, cn nitrile), shared with Avogadro.
-- Optional resizable floating toolbars.
 - A Windows offline installer.
 - Windows code signing, as soon as the signing service approves the project.
 
