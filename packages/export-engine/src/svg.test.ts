@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createEmptyDocument,
+  DocumentObjectSchema,
   type GraphicObject,
   type MoleculeObject,
   type TextObject,
@@ -345,9 +346,35 @@ describe("SVG export serialization", () => {
       }
     ]);
     expect(result.contents).toContain('data-object-id="unknown_svg_001"');
+    expect(result.contents).toContain(">Unsupported object</text>");
     expect(result.contents).toContain('data-chemdraft-warnings="');
     expect(result.contents).toContain("export.svg.object_fallback");
     expect(result.contents).toContain("&quot;objectId&quot;:&quot;unknown_svg_001&quot;");
+  });
+
+  it("renders human labels instead of native type names for fallbacks", () => {
+    const cases = [
+      { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "graphic", warning: "Test" },
+      { type: "electron-mark", markKind: "unknown", anchor: { kind: "point", point: { x: 20, y: 20 } } },
+      { type: "graphic", graphicKind: "unknown", data: {} },
+      { type: "annotation", message: "Note" },
+      { type: "superatom", label: "Me", metadata: { label: "Me" } },
+      { type: "r-group-label", label: "R", display: { label: "R" } },
+      { type: "generic-atom-label", label: "X" }
+    ];
+    let document = createEmptyDocument({ title: "Fallback labels", now: timestamp });
+    for (const [index, fields] of cases.entries()) {
+      const object = DocumentObjectSchema.parse({
+        id: `fallback_${index}`, x: 10, y: 10, width: 100, height: 40, ...fields
+      });
+      document = applyPatch(document, { op: "addObject", pageId: "page_001", object }, { now: timestamp });
+    }
+    const result = exportDocumentToSvg(document);
+    const text = [...result.contents.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map(match => match[1]);
+    expect(text).toEqual(cases.map(() => "Unsupported object"));
+    for (const { type } of cases) expect(text.join(" ")).not.toContain(type);
+    expect(result.warnings.filter(warning => warning.code === "export.svg.object_fallback")).toHaveLength(6);
+    expect(result.warnings.filter(warning => warning.code === "export.svg.graphic_fallback")).toHaveLength(1);
   });
 
   it("exports supported native graphic gloss, tilt, and shadow while warning for unsupported effects", () => {
