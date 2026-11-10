@@ -1351,6 +1351,12 @@ pub(crate) async fn dialog_open(
     .maximizable(spec.maximizable)
     .resizable(spec.resizable)
     .minimizable(false);
+    // Let the activation click reach dialog controls on macOS. Other platforms retain
+    // their existing click behavior; first-mouse acceptance is an AppKit policy.
+    #[cfg(target_os = "macos")]
+    let builder = builder.accept_first_mouse(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder;
     // On Windows .parent is a top-level OWNER, never a child control. macOS stays unparented.
     #[cfg(windows)]
     let builder = builder.parent(&window).map_err(|e| e.to_string())?;
