@@ -237,6 +237,13 @@ function compareSemver(a: Semver, b: Semver): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 
+/** Compare the lower bound of an exact, caret or tilde range. */
+export function pluginApiRangeStartsAtOrAfter(range: string, version: string): boolean {
+  const minimum = parseSemver(range.trim().replace(/^[~^]/, ""));
+  const target = parseSemver(version);
+  return minimum !== undefined && target !== undefined && compareSemver(minimum, target) >= 0;
+}
+
 /** Whether the declared API range starts at or after the introduction of documents.insertTable.
  * Exact, caret and tilde ranges have the same lower bound as in the compatibility check below. */
 export function supportsPluginTableInsertion(declaredRange: string): boolean {

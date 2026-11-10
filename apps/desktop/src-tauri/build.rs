@@ -39,6 +39,8 @@ fn main() {
             "dialog_publish",
             "dialog_close",
             "open_toolset_window",
+            "report_toolset_content_size",
+            "get_toolset_window_size",
             "close_toolset_window",
             "suspend_toolset_windows",
             "focus_toolset_window",

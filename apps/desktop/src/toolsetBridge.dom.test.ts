@@ -97,6 +97,22 @@ describe("toolset bridge interactions", () => {
     });
   }
 
+  function expectRingControlsOnlyInRingsToolbar() {
+    const controls = Array.from(container.querySelectorAll<HTMLElement>('[data-toolbar-style-controls="ring-inspector"]'));
+    // Floating palettes now also render an inert natural-size copy for native sizing. Keep the
+    // uniqueness check on interactive controls, and require every copy to belong to Rings.
+    const interactive = controls.filter(control => !control.closest(".toolbar-natural-size"));
+    expect(interactive).toHaveLength(1);
+    for (const control of controls) {
+      expect(control.closest(".tool-palette")?.getAttribute("aria-label")).toBe("Rings");
+      const probe = control.closest(".toolbar-natural-size");
+      if (probe) {
+        expect(probe.hasAttribute("inert")).toBe(true);
+        expect(probe.getAttribute("aria-hidden")).toBe("true");
+      }
+    }
+  }
+
   // The whole-molecule double-press detector reads Date.now() against a 400 ms window. Between the
   // two presses these tests await a full React re-render, which a loaded full-suite run can stretch
   // past 400 ms — the second press then reads as a new single click. A clock that steps 1 ms per read
@@ -420,7 +436,7 @@ describe("toolset bridge interactions", () => {
     });
 
     expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).toBeNull();
-    expect(container.querySelectorAll('[data-toolbar-style-controls="ring-inspector"]')).toHaveLength(1);
+    expectRingControlsOnlyInRingsToolbar();
 
     const redSwatch = container.querySelector<HTMLButtonElement>(
       '[data-toolbar-style-controls="ring-inspector"] [aria-label="Ring Color: Red"]'
@@ -1207,7 +1223,7 @@ describe("toolset bridge interactions", () => {
     });
 
     expect(container.querySelector('[data-toolbar-style-controls="art"][data-art-appearance-target="molecule-rings"]')).toBeNull();
-    expect(container.querySelectorAll('[data-toolbar-style-controls="ring-inspector"]')).toHaveLength(1);
+    expectRingControlsOnlyInRingsToolbar();
 
     routeCommand("object.color.red");
     routeCommand("object.paint.type.none");

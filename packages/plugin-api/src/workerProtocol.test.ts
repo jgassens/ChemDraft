@@ -136,7 +136,7 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.20");
+    expect(PluginApiVersion).toBe("0.1.23");
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.17", PluginApiVersion)).toBe(true);
@@ -147,6 +147,11 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.20", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.20", "0.1.19")).toBe(false);
+    for (const patch of [21, 22, 23]) {
+      expect(isPluginApiVersionCompatible(`^0.1.${patch}`, PluginApiVersion)).toBe(true);
+      expect(isPluginApiVersionCompatible(`^0.1.${patch}`, `0.1.${patch - 1}`)).toBe(false);
+    }
+    expect(isPluginApiVersionCompatible("^0.1.24", PluginApiVersion)).toBe(false);
   });
 });
 

@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
+
+describe("toolbar group schema", () => {
+  it("accepts each public group and omission, and rejects internal or unknown groups", () => {
+    const button = { id: "toolbar.demo.run", commandId: "plugin.demo.run" };
+    expect(PluginToolbarContributionSchema.parse(button).toolbarGroup).toBeUndefined();
+    for (const toolbarGroup of PLUGIN_TOOLBAR_GROUP_IDS) {
+      expect(PluginToolbarContributionSchema.parse({ ...button, toolbarGroup }).toolbarGroup).toBe(toolbarGroup);
+    }
+    for (const toolbarGroup of ["undeclared", "unknown"]) {
+      expect(PluginToolbarContributionSchema.safeParse({ ...button, toolbarGroup }).success).toBe(false);
+    }
+  });
+});
 import pluginApiPackage from "../package.json";
 import type { ChemDraftDocument, DocumentPatch, RecognizedStructureResult } from "./index";
 import {
+  PLUGIN_TOOLBAR_GROUP_IDS, PluginToolbarContributionSchema,
   AppliedPatchReceiptSchema,
   PluginImageRequestResultSchema,
   PluginImageRequestSchema,
@@ -240,6 +254,7 @@ describe("validatePluginManifest", () => {
             id: "toolbar.demo.recognize",
             commandId: "plugin.demo.recognize",
             title: "Recognize",
+            toolbarGroup: "select-text",
             requiredPermissions: ["ui.toolbar"]
           }
         ],

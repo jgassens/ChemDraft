@@ -18,6 +18,19 @@ const groups: ToolbarPaletteGroupModel[] = [
 ];
 
 describe("customizeDragEndEdit", () => {
+  it("rejects cross-home gallery drops and spacing tiles for grouped Main", () => {
+    const mainGroups = [
+      { id: "select-text", items: [item("tool.select")] },
+      { id: "arrange", items: [item("layout.alignLeft")] }
+    ];
+    expect(customizeDragEndEdit("gallery:command:layout.alignRight", {
+      gallery: true, galleryKind: "command", commandId: "layout.alignRight"
+    }, "tool.select", mainGroups, true)).toBeUndefined();
+    expect(customizeDragEndEdit("gallery:spacer", { gallery: true, galleryKind: "spacer" }, "tool.select", mainGroups, true)).toBeUndefined();
+    expect(customizeDragEndEdit("gallery:command:layout.alignRight", {
+      gallery: true, galleryKind: "command", commandId: "layout.alignRight"
+    }, "layout.alignLeft", mainGroups, true)).toEqual({ kind: "addCommand", groupId: "arrange", index: 0, commandId: "layout.alignRight" });
+  });
   it("reorders within the same group", () => {
     expect(customizeDragEndEdit("a", { groupId: "g1" }, "b", groups)).toEqual({
       kind: "reorderItems",

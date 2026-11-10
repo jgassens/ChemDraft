@@ -31,7 +31,6 @@ import {
   createDesktopToolsetRegistry,
   desktopToolsetRegistry,
   compoundLayoutRegistry,
-  computePaletteGridSize,
   getToolsetCommandSpecs,
   getToolsetPaletteGroups,
   paletteCommandGroupsFromItemGroups,
@@ -46,7 +45,8 @@ import {
   closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
   currentWindowLogicalWorkArea,
-  fitCurrentPaletteWindow,
+  getToolsetWindowSize,
+  listenForToolsetWindowSize,
   dismissToolsetPopovers,
   toolsetPopoverTimestamp,
   hidePaletteFloatingTooltip,
@@ -85,8 +85,11 @@ import {
   type ToolsetArtStylePayload,
   type ToolsetMoleculeInspectorPayload,
   type ToolsetPopoverAnchor,
-  type ToolsetPopoverContent
+  type ToolsetPopoverContent,
+  type ToolsetToolbarPopoverHandle
 } from "./window-manager";
+
+import { observePaletteContentSize } from "./window-manager/paletteContentSize";
 
 type PaletteWindowDrag = {
   pointerId: number | undefined;
@@ -138,8 +141,6 @@ export function PaletteWindow({
   const shellRef = useRef<HTMLElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const settlingBeforeForwardRef = useRef(false);
-  const lastLoggedSizeRef = useRef<string>("");
-  const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const compoundLayoutsEnabled = useCompoundLayoutTools();
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
   const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
@@ -174,7 +175,7 @@ export function PaletteWindow({
   const pluginToolsetsRef = useRef<readonly DesktopToolsetDefinition[]>([]);
   commandSpecsRef.current = commandSpecs;
   const [activeTool, setActiveTool] = useState("tool.select");
-  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [, setColorPickerOpen] = useState(false);
   const [currentTextStyle, setCurrentTextStyle] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
@@ -206,8 +207,6 @@ export function PaletteWindow({
     () => (knownToolset ? getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides, compoundLayoutsEnabled) : []),
     [knownToolset, commandOverrides, toolset.id, toolsetRegistry, compoundLayoutsEnabled]
   );
-  const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
-  const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
   // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
@@ -253,9 +252,6 @@ export function PaletteWindow({
     return () => {
       document.documentElement.classList.remove("palette-window-html");
       document.body.classList.remove("palette-window-body");
-      if (sizeAnimationFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
-      }
     };
   }, []);
 
@@ -435,92 +431,33 @@ export function PaletteWindow({
   }, [platform]);
 
   useEffect(() => {
-    const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
-    if (!preferredSize) {
-      return;
-    }
-
     const shell = shellRef.current;
+    if (!shell) return;
+    const orientation = toolset.gridLayout?.orientation ?? "vertical";
+    const stop = observePaletteContentSize(shell, orientation);
     let disposed = false;
-    let sizing = false;
-    let pending = false;
-    let lastSize = "";
-    const applySize = async () => {
-      if (disposed) return;
-      if (sizing) {
-        pending = true;
-        return;
-      }
-      sizing = true;
-      try {
-        const area = await currentWindowLogicalWorkArea();
-        if (disposed) return;
-        // Cap the shared body, not individual inspector sections. Keep the title outside the scroll
-        // area and measure only after applying the monitor-based cap (never a vh feedback loop).
-        const availableHeight = Math.floor(area.bottom - area.top);
-        if (bodyRef.current) bodyRef.current.style.maxHeight = `${Math.max(0, availableHeight - 22)}px`;
-        // Fit the window to the palette's own content in BOTH dimensions. The shell is
-        // width/height:max-content (see CSS), so its measured box is the natural content size:
-        // the window shrinks when the manifest size is too big (blank gaps) and grows when
-        // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
-        const rect = shell?.getBoundingClientRect();
-        const contentWidth = rect ? Math.ceil(rect.width) : 0;
-        const contentHeight = rect ? Math.ceil(rect.height) : 0;
-        const width = contentWidth > 0 ? contentWidth : preferredSize.width;
-        const height = Math.min(availableHeight,
-          Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height));
-        // Dev-only size probe: open the palette window's devtools console to read exact
-        // content-vs-window numbers for any palette that still looks wrong.
-        if (import.meta.env.DEV) {
-          const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
-          if (lastLoggedSizeRef.current !== key) {
-            lastLoggedSizeRef.current = key;
-            console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
-          }
-        }
-        const sizeKey = `${width}x${height}`;
-        if (sizeKey !== lastSize) {
-          lastSize = sizeKey;
-          await fitCurrentPaletteWindow({ width, height }, area);
-        }
-      } finally {
-        sizing = false;
-        if (pending && !disposed) {
-          pending = false;
-          void applySize().catch(() => undefined);
-        }
-      }
-    };
-
-    const scheduleSize = () => {
-      if (sizeAnimationFrameRef.current !== undefined) {
-        return;
-      }
-
-      sizeAnimationFrameRef.current = window.requestAnimationFrame(() => {
-        sizeAnimationFrameRef.current = undefined;
-        void applySize().catch(() => undefined);
-      });
-    };
-    void applySize().catch(() => undefined);
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleSize);
-    if (shell) observer?.observe(shell);
     let unlisten: (() => void) | undefined;
-    void listenForCurrentWindowWorkAreaChanges(scheduleSize).then((cleanup) => {
-      if (disposed) cleanup();
-      else unlisten = cleanup;
-    });
-
-    return () => {
-      disposed = true;
-      observer?.disconnect();
-      unlisten?.();
-      if (sizeAnimationFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(sizeAnimationFrameRef.current);
-        sizeAnimationFrameRef.current = undefined;
-      }
+    let unlistenArea: (() => void) | undefined;
+    const reflow = () => window.dispatchEvent(new Event("chemdraft:toolbar-viewport"));
+    const viewportObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(reflow);
+    if (bodyRef.current) viewportObserver?.observe(bodyRef.current);
+    const refreshWorkArea = () => {
+      void currentWindowLogicalWorkArea().then(area => {
+        if (disposed) return;
+        if (bodyRef.current) bodyRef.current.style.maxHeight = `${Math.max(0, Math.floor(area.bottom - area.top) - 22)}px`;
+        window.dispatchEvent(new Event("chemdraft:toolbar-dpi"));
+      }).catch(() => undefined);
     };
-  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
+    refreshWorkArea();
+    void listenForCurrentWindowWorkAreaChanges(refreshWorkArea).then(cleanup => {
+      if (disposed) cleanup(); else unlistenArea = cleanup;
+    }).catch(() => undefined);
+    void listenForToolsetWindowSize(size => {
+      if (size.toolsetId === toolset.id) reflow();
+    }).then(cleanup => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    void getToolsetWindowSize().then(() => { if (!disposed) reflow(); }).catch(() => undefined);
+    return () => { disposed = true; stop(); viewportObserver?.disconnect(); unlisten?.(); unlistenArea?.(); };
+  }, [toolset.id, toolset.gridLayout?.orientation, customizeThisPalette]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -811,11 +748,14 @@ export function PaletteWindow({
   // Content AND anchor: the replay below must be able to answer with everything the direct push
   // carries, or a popover that learns its content from the replay (the create-vs-emit race this ref
   // exists for) never learns where it belongs and lands displaced after its content-fit resize.
+  const toolbarPopoverRef = useRef<ToolsetToolbarPopoverHandle | undefined>(undefined);
   const lastPopoverPayloadRef = useRef<{ content: ToolsetPopoverContent; anchor: ToolsetPopoverAnchor } | undefined>(
     undefined
   );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
+    toolbarPopoverRef.current?.dispose();
+    toolbarPopoverRef.current = undefined;
     content = { ...content, openedAt: toolsetPopoverTimestamp() };
     void (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
@@ -914,7 +854,7 @@ export function PaletteWindow({
         return;
       }
       const target = event.target;
-      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
+      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button, [data-toolbar-fold], [data-toolbar-overflow]")) {
         return;
       }
       void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);
@@ -1039,6 +979,10 @@ export function PaletteWindow({
     const renderItemGroups = renderGroups.map((group) => group.items);
     return (
       <ToolPalette
+        toolsetId={toolset.id}
+        groupMetadata={renderGroups}
+        toolbarPopoverRef={toolbarPopoverRef}
+        onOpeningToolbarItems={() => { lastPopoverPayloadRef.current = undefined; }}
         groups={paletteCommandGroupsFromItemGroups(renderItemGroups)}
         itemGroups={renderItemGroups}
         gridLayout={toolset.gridLayout}

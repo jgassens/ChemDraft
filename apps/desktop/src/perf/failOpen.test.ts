@@ -56,3 +56,19 @@ it("recognises aliased and destructured imports, optional and non-null calls ins
 it("requires a class field initializer to isolate its own probe call", () => {
   expect(scanPerfHooks("surface.ts", "perfHook(() => class { value = perfHook(() => perfProbe?.signal('frame')) })").errors).toEqual([]);
 });
+
+it("resolves transitive probe and result aliases before checking earlier calls", () => {
+  const result = scanPerfHooks("surface.ts", `
+    p.signal('frame');
+    await second;
+    const second = first;
+    const first = perfHook(() => p.signal('frame'));
+    const p = runtimeProbe;
+    import { perfProbe as runtimeProbe } from './perf/runtime';
+  `);
+  expect(result.hooks).toHaveLength(2);
+  expect(result.errors).toEqual([
+    "surface.ts:2: unisolated probe call p.signal",
+    "surface.ts:3: action awaits probe result"
+  ]);
+});

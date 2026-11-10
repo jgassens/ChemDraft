@@ -1,0 +1,18 @@
+.toolbar-popover-strip.tool-palette {
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  margin: 0;
+}
+
+.toolbar-popover-strip > .toolbar-item-grid-slot {
+  min-width: 0;
+}
+
+.toolbar-popover-strip .toolbar-item-tooltip {
+  display: none;
+}
+
+.toolbar-popover-submenu .toolbar-popover-back {
+  grid-column: 1 / -1;
+}

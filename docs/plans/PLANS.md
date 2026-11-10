@@ -8,6 +8,29 @@ in progress rather than a changelog.
 
 # In flight
 
+# Toolbar groups and one-direction resize (1.3)
+
+## Goal
+
+Organize Main into stable groups and make floating toolbars resize along their length.
+
+## Owned files
+
+`packages/toolset-registry/`, `packages/plugin-api/`, `packages/plugin-host/`,
+`apps/desktop/src/toolbars/`, `apps/desktop/src/window-manager/`, desktop toolbar, plugin and
+palette integration, `apps/desktop/src-tauri/src/palette*`, and related architecture,
+authoring and manual stress documentation.
+
+## Behaviours
+
+- Group folding, overflow, keyboard popovers, grouped customization and one-time layout migration.
+- Plugin home groups and API 0.1.23 validation; native one-axis sizing and persisted length.
+- Matching macOS and Windows behavior, including focus and mixed-scale monitor handling.
+
+**Status:** implemented, awaiting review and hands-on pass.
+
+---
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

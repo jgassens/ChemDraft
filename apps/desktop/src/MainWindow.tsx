@@ -190,6 +190,7 @@ import {
   describePatchFailure,
   type PluginWriteGate
 } from "./plugins/applyPluginDocumentPatch";
+import { MainToolbarMigrationNotice } from "./toolbars/MainToolbarMigrationNotice";
 import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNotice";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
@@ -1714,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.08.18.36-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2836,6 +2837,7 @@ export function MainWindow({
   // effect until the initial load has run, so the first render's default set can't overwrite the
   // saved file before we've read it.
   const layoutStateRef = useRef<ToolsetLayoutState | undefined>(undefined);
+  const [toolbarLayoutState, setToolbarLayoutState] = useState<ToolsetLayoutState | undefined>(undefined);
   // Live registry, read by the customize-edit listener so it never holds a stale snapshot.
   const toolsetRegistryRef = useRef(toolsetRegistry);
   const layoutHydratedRef = useRef(false);
@@ -3805,8 +3807,7 @@ export function MainWindow({
         }
 
         if (layoutState !== undefined) {
-          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
-          // consumes it; the next save persists the migrated shape.
+          // Migrate historical Main layouts into home groups before the registry consumes them.
           const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
           toolbarCatalog.setLayoutState(migrated);
           const nextRegistry = toolbarCatalog.registry();
@@ -3816,8 +3817,10 @@ export function MainWindow({
           setVisibleToolsetIds(createDefaultVisibleToolsetIds(nextRegistry));
           try {
             layoutStateRef.current = parseToolsetLayoutState(migrated);
+            setToolbarLayoutState(layoutStateRef.current);
           } catch {
             layoutStateRef.current = undefined;
+            setToolbarLayoutState(undefined);
           }
         }
 
@@ -3865,6 +3868,7 @@ export function MainWindow({
       .filter((id) => resolvedToolsetIdsRef.current.has(id));
     const nextState = mergeVisibilityIntoLayoutState(layoutStateRef.current, resolvedToolsetIds, visibleToolsetIds);
     layoutStateRef.current = nextState;
+    setToolbarLayoutState(nextState);
     // Chain the writes so their completion order matches the order the states were produced. Surface a
     // save failure on the status line (it used to be swallowed, so a lost write looked successful) and
     // still resolve so the chain stays alive for the next write.
@@ -4179,6 +4183,14 @@ export function MainWindow({
       return undefined;
     }
     const size = toolset.preferredWindowSize;
+    const orientation = toolset.gridLayout?.orientation ?? "vertical";
+    const first = getToolsetPaletteGroups(toolsetId, toolsetRegistry).flatMap(group => group.items)[0];
+    const span = (orientation === "horizontal" ? first?.layout.colSpan : first?.layout.rowSpan) ?? 1;
+    const cell = (orientation === "horizontal" ? toolset.gridLayout?.cellWidth : toolset.gridLayout?.cellHeight) ?? 24;
+    const gap = toolset.gridLayout?.gap ?? 4;
+    // Seed the native minimum with the overflow cell and one item. The webview replaces this
+    // estimate with measured padding, grip and item footprints at first paint.
+    const minLength = 24 + cell * span + gap * span + 12 + (orientation === "vertical" ? 22 : 0);
     // Stagger a first-ever placement by the toolset's position in the registry (Rust used to derive
     // this from the manifest order); a persisted position overrides it in Rust.
     const offset = toolsetStaggerIndex(toolsetId, toolsetRegistry) * TOOLSET_STAGGER_STEP_PX;
@@ -4186,6 +4198,8 @@ export function MainWindow({
       title: toolset.title,
       width: size?.width ?? 96,
       height: size?.height ?? 420,
+      orientation,
+      minLength,
       x: 88 + offset,
       y: 154 + offset
     };
@@ -12672,8 +12686,10 @@ export function MainWindow({
     setVisibleToolsetIds(nextVisible);
     try {
       layoutStateRef.current = parseToolsetLayoutState(next);
+      setToolbarLayoutState(layoutStateRef.current);
     } catch {
       layoutStateRef.current = undefined;
+      setToolbarLayoutState(undefined);
     }
     resolvedToolsetIdsRef.current = new Set(nextRegistry.listToolsets().map((toolset) => toolset.id));
     layoutSaveEnabledRef.current = true;
@@ -21221,6 +21237,8 @@ export function MainWindow({
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
               <ToolPalette
+                toolsetId={toolset.id}
+                groupMetadata={renderGroups}
                 itemGroups={renderGroups.map((group) => group.items)}
                 gridLayout={toolset.gridLayout}
                 activeTool={activeTool}
@@ -21994,6 +22012,8 @@ export function MainWindow({
           />
         )}
         <AnalyzerNoticeBanner notice={analyzerNotice} onDismiss={dismissAnalyzerNotice} />
+        <MainToolbarMigrationNotice state={toolbarLayoutState ?? emptyLayoutState()}
+          onChange={next => commitToolbarLayoutRef.current(next, false)} />
         {customizeToolbarsOpen ? (
           <CustomizeToolbarsDialog
             baseToolsets={toolbarCatalog.baseToolsets()}

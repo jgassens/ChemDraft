@@ -5,6 +5,7 @@ import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
 import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
+import { ToolbarItemsPopover } from "./PalettePopoverWindow.toolbar";
 import {
   listenForToolsetPopoverContent,
   listenForToolsetPopoverDismiss,
@@ -20,7 +21,10 @@ import {
   sendBondStereoPopoverAction,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
+  currentWindowLogicalSize,
   showCurrentToolsetPopoverWindow,
+  placeToolbarPopover,
+  sendToolbarPopoverClosed,
   toolsetPopoverTimestamp,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
@@ -41,7 +45,7 @@ import {
  * (it commits per RGB/hex keystroke); a flyout closes the moment you pick a command.
  */
 function hideNativePopoverWindow() {
-  void import("@tauri-apps/api/window")
+  return import("@tauri-apps/api/window")
     .then(({ getCurrentWindow }) => getCurrentWindow().hide())
     .catch(() => undefined);
 }
@@ -68,9 +72,17 @@ export function PalettePopoverWindow({
   // in-flight reveal chain cannot show it again after the user has closed it.
   const dismissedRef = useRef(false);
   const keepWindowFocusRef = useRef(false);
-  const hidePopoverWindow = () => {
+  const closedToolbarOpens = useRef(new Set<number>());
+  const hidePopoverWindow = (restoreFocus = false) => {
     keepWindowFocusRef.current = false;
-    hideNativePopoverWindow();
+    const current = contentRef.current;
+    if (current.kind === "toolbarItems" && current.openedAt !== undefined) {
+      closedToolbarOpens.current.add(current.openedAt);
+      if (closedToolbarOpens.current.size > 128) closedToolbarOpens.current.delete(closedToolbarOpens.current.values().next().value!);
+      void hideNativePopoverWindow().then(() => sendToolbarPopoverClosed({
+        toolsetId, openedAt: current.openedAt!, restoreFocus
+      })).catch(() => undefined);
+    } else void hideNativePopoverWindow();
   };
   const closedBondStereoSessions = useRef(new Set<string>());
   // Where this open's top-left belongs (global logical). Re-asserted after every content-fit
@@ -78,7 +90,7 @@ export function PalettePopoverWindow({
   // would otherwise shove the window down by the delta — the first-open misposition.
   const anchorRef = useRef<ToolsetPopoverAnchor | undefined>(undefined);
   const [content, setContent] = useState<ToolsetPopoverContent>(() =>
-    kind === "flyout"
+    kind === "toolbarItems" ? { kind: "toolbarItems", toolbar: { items: [] } } : kind === "flyout"
       ? { kind: "flyout", flyout: { flyoutId: "", title: "", commands: [] } }
       : { kind: "artColor" }
   );
@@ -89,7 +101,8 @@ export function PalettePopoverWindow({
     const reset = () => {
       // A reused WKWebView can retain scrolling from layout at its previous, smaller size.
       for (const element of [document.scrollingElement, document.documentElement, document.body,
-        document.getElementById("root"), shellRef.current, shellRef.current?.firstElementChild]) {
+        document.getElementById("root"), shellRef.current,
+        contentRef.current.kind === "toolbarItems" ? undefined : shellRef.current?.firstElementChild]) {
         if (element) { element.scrollTop = 0; element.scrollLeft = 0; }
       }
       if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
@@ -176,6 +189,7 @@ export function PalettePopoverWindow({
         notifyBondStereoClose(payload);
         return;
       }
+      if (payload.kind === "toolbarItems" && closedToolbarOpens.current.has(openedAt)) return;
       if (payload.kind === "flyout" && payload.flyout.variant === "bondStereo" && payload.flyout.id) {
         if (closedBondStereoSessions.current.has(payload.flyout.id)) return;
         const current = contentRef.current;
@@ -188,12 +202,19 @@ export function PalettePopoverWindow({
       // A fresh push is a fresh open — it may follow a dismissal.
       contentOpenedAt.current = openedAt;
       dismissedRef.current = false;
+      if (payload.kind === "toolbarItems") keepWindowFocusRef.current = true;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
       }
-      const next: ToolsetPopoverContent = payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" };
+      const next: ToolsetPopoverContent = payload.kind === "toolbarItems"
+        ? { kind: "toolbarItems", toolbar: payload.toolbar, openedAt }
+        : payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" };
       contentRef.current = next;
       setContent(next);
+      if (next.kind === "toolbarItems" && !next.toolbar.items.length) {
+        dismissedRef.current = true;
+        hidePopoverWindow();
+      }
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -226,6 +247,21 @@ export function PalettePopoverWindow({
     setDraft(undefined);
   }, [currentColor, colorContextKey]);
 
+  const fitContent = async (rect: DOMRect, cancelled: () => boolean = () => false) => {
+    const anchor = anchorRef.current;
+    const area = contentRef.current.kind === "toolbarItems" ? anchor?.workArea : undefined;
+    const size = { width: Math.min(Math.ceil(rect.width), area ? area.right - area.left : Infinity),
+      height: Math.min(Math.ceil(rect.height), area ? area.bottom - area.top : Infinity) };
+    await setCurrentWindowLogicalSize(size);
+    const actualSize = area ? await currentWindowLogicalSize().catch(() => undefined) : undefined;
+    if (cancelled() || dismissedRef.current) return;
+    if (anchor) {
+      const position = area && anchor.opener
+        ? placeToolbarPopover(anchor.opener, actualSize ?? size, area, anchor.orientation) : anchor;
+      await setCurrentWindowLogicalPosition(position);
+    }
+  };
+
   // Fit the window to whatever content it's showing, in both dimensions. Every resize
   // re-asserts the anchored position: a bottom-anchored macOS resize moves the top-left,
   // so size and position travel as a pair.
@@ -236,13 +272,8 @@ export function PalettePopoverWindow({
       if (!rect || rect.width === 0 || rect.height === 0) {
         return;
       }
-      void (async () => {
-        await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) });
-        const anchor = anchorRef.current;
-        if (anchor) {
-          await setCurrentWindowLogicalPosition(anchor);
-        }
-      })().catch(() => undefined).finally(resetScroll);
+      const current = contentRef.current;
+      void fitContent(rect, () => contentRef.current !== current).catch(() => undefined).finally(resetScroll);
     };
 
     applySize();
@@ -266,7 +297,8 @@ export function PalettePopoverWindow({
   // runs while hidden, so measuring synchronously after the React commit is safe; the ResizeObserver
   // effect above keeps the size pixel-perfect once painting resumes.
   useEffect(() => {
-    const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0);
+    const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0)
+      || (content.kind === "toolbarItems" && content.toolbar.items.length > 0);
     if (!ready && perfShownRef.current) {
       perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
       perfShownRef.current = undefined;
@@ -294,16 +326,10 @@ export function PalettePopoverWindow({
     const perfShown = perfShownRef.current;
     void (async () => {
       if (rect && rect.width > 0 && rect.height > 0) {
-        await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
-          () => undefined
-        );
+        await fitContent(rect, () => cancelled).catch(() => undefined);
       }
       if (cancelled) {
         return;
-      }
-      const anchor = anchorRef.current;
-      if (anchor) {
-        await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
       }
       if (cancelled || dismissedRef.current) {
         perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
@@ -311,11 +337,11 @@ export function PalettePopoverWindow({
       }
       resetScroll();
       try {
-        // Rust maps other popovers to Preserve; their fields lease the keyboard.
-        // Only a deliberate E/Z keyboard reveal owns focus without a field lease.
+        // Toolbar button navigation needs window focus too. The native policy must honour this
+        // live kind on warm/prewarmed windows (see window-manager/toolbar-popovers.md).
         const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
-        keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
-          content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
+        keepWindowFocusRef.current = content.kind === "toolbarItems" || (toolsetId === "core.bondStereo" && content.kind === "flyout" &&
+          content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen);
         await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus", content.kind);
         resetScroll("reveal");
         if (cancelled || dismissedRef.current) {
@@ -324,7 +350,7 @@ export function PalettePopoverWindow({
           if (contentRef.current === content) hidePopoverWindow();
           return;
         }
-        if (content.kind === "flyout" && content.flyout.variant === "bondStereo" && content.flyout.keyboardOpen && !cancelled && !dismissedRef.current) {
+        if ((content.kind === "toolbarItems" || (content.kind === "flyout" && content.flyout.variant === "bondStereo" && content.flyout.keyboardOpen)) && !cancelled && !dismissedRef.current) {
           const [{ getCurrentWindow }, { getCurrentWebview }] = await Promise.all([
             import("@tauri-apps/api/window"), import("@tauri-apps/api/webview")
           ]);
@@ -333,7 +359,10 @@ export function PalettePopoverWindow({
             if (cancelled || dismissedRef.current) return;
             await getCurrentWebview().setFocus();
             if (cancelled || dismissedRef.current) return;
-            shellRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+            const selector = "button:not(:disabled), input:not(:disabled), select:not(:disabled)";
+            if (!shellRef.current?.contains(document.activeElement) || content.kind !== "toolbarItems") {
+              shellRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+            }
           }
         }
         perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
@@ -364,7 +393,7 @@ export function PalettePopoverWindow({
   // away mid-open), show anyway so the window can't get stuck invisible. Prewarmed windows are the
   // opposite case — hidden is their correct resting state, so they get no net.
   useEffect(() => {
-    if (prewarm || toolsetId === "core.bondStereo") {
+    if (prewarm || toolsetId === "core.bondStereo" || kind === "toolbarItems") {
       return undefined;
     }
     const fallback = window.setTimeout(() => {
@@ -375,7 +404,7 @@ export function PalettePopoverWindow({
       void showCurrentToolsetPopoverWindow("focus", contentRef.current.kind).then(() => resetScroll("reveal")).catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
-  }, [prewarm, toolsetId]);
+  }, [kind, prewarm, toolsetId]);
 
   // Escape dismisses (and cancels any in-flight colour preview).
   useEffect(() => {
@@ -387,7 +416,7 @@ export function PalettePopoverWindow({
       dismissedRef.current = true;
       notifyBondStereoClose();
       void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
-      hidePopoverWindow();
+      hidePopoverWindow(true);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -470,7 +499,19 @@ export function PalettePopoverWindow({
 
 	return (
 	  <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
-      {content.kind === "flyout" && content.flyout.variant === "bondStereo" ? (
+      {content.kind === "toolbarItems" ? (
+        <ToolbarItemsPopover key={content.openedAt} toolbar={content.toolbar}
+          maxWidth={anchorRef.current?.workArea ? anchorRef.current.workArea.right - anchorRef.current.workArea.left : 1024}
+          maxHeight={anchorRef.current?.workArea ? anchorRef.current.workArea.bottom - anchorRef.current.workArea.top : 768}
+          onInvoke={(commandId, keepOpen) => {
+            if (dismissedRef.current) return;
+            void sendPaletteCommand(commandId, keepOpen ? { preserveInputFocus: true } : undefined).catch(() => undefined);
+            if (!keepOpen) { dismissedRef.current = true; hidePopoverWindow(); }
+          }}
+          onPreview={commandId => { if (!dismissedRef.current) void sendPaletteCommandPreview(commandId).catch(() => undefined); }}
+          onCommit={commandId => { if (!dismissedRef.current) void sendPaletteCommandCommit(commandId).catch(() => undefined); }}
+          onCancel={() => { if (!dismissedRef.current) void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined); }} />
+      ) : content.kind === "flyout" && content.flyout.variant === "bondStereo" ? (
         <div className="bond-stereo-popover" role="dialog" aria-label="E/Z not specified"
           onKeyDown={event => {
             if (event.key !== "Tab") return;

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "palette-size",
+  "description": "Natural content measurement and saved length for toolbar palettes only. Native caller validation also requires a registered palette.",
+  "windows": ["toolset-core-*", "toolset-plugin-*", "toolset-user-*"],
+  "permissions": ["allow-report-toolset-content-size", "allow-get-toolset-window-size"]
+}

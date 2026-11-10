@@ -1088,6 +1088,38 @@ Text editing (macOS and Windows): edit an existing text box next to another labe
 one copy of its text is visible while typing, rich formatting remains intact, the other label stays
 visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
 
+## Toolbar groups and one-direction resize (macOS and Windows)
+
+- Shrink Main through every boundary: Orbitals and Undeclared fold together, then Arrange,
+  Style & 3D, Symbols & Shapes, Arrows, and Bonds & Rings. Select & Text never folds. Expand it
+  and check the reverse order. A folded icon opens its buttons with mouse, Enter and Space.
+- Navigate each popover with arrows and Home/End; Escape closes it and returns focus to its opener.
+  Each enabled button invokes once; disabled buttons never invoke. Open a submenu and return with Back.
+- On a horizontal floating toolbar, hover/drag each left and right edge centre: only width changes
+  and the native cursor is horizontal. Top/bottom edges and all four corner squares show no resize
+  cursor and cannot resize. Repeat vertically: only top/bottom edge centres resize, with a vertical
+  cursor; left/right edges and all four corners do not resize. The title strip outside the allowed
+  edge band still moves the toolbar, and close/buttons/fields still receive clicks.
+- On Windows 10 and 11, repeat at 100%, 150% and 200%, including a monitor left of the primary.
+  Switch orientation while open, move between monitors of different scale and reopen: the allowed
+  hit targets and cursors must update. On macOS, check the native 2 pt inner edge band, including
+  first-click resizing of an unfocused palette without activating it. On both, confirm no taskbar
+  entry or focus theft, the opposite edge stays anchored, and the cross-axis size stays fixed.
+- Drag to the minimum and full-content maximum. More tools and the first item must remain fully
+  visible at minimum; a folded Main icon must not clip at a shrink boundary. Open hidden buttons
+  and check reflow and focus when an item becomes hidden. If all content fits exactly at minimum,
+  the toolbar has no resize cursor. Repeated title moves must not overwrite the saved length.
+- Check the chosen length after quit/relaunch, minimize/restore, moving to a monitor with a different
+  scale, and unplugging that monitor. Check placement and access after each transition.
+- In Customize, show, hide and reorder buttons within a group and reorder or hide whole groups.
+  Verify buttons cannot move across groups. Load an old saved layout: its notice appears once;
+  dismiss and relaunch, then test Reset to default with another migrated layout.
+- Install a plugin with `toolbarGroup` and check its group. An older plugin without it lands in
+  Undeclared. Uninstall it and verify its button disappears and an empty Undeclared disappears.
+  A plugin targeting 0.1.23 without `toolbarGroup` must be refused with the specific error.
+- On Windows, palettes and popovers have no taskbar entry and do not steal focus, except that a
+  popover opened by the user takes focus for keyboard navigation.
+
 ## Toolbar popovers and dropdowns (macOS and Windows)
 
 - Hover a palette button until its tooltip appears, then mouse-open a toolbar flyout, the Art

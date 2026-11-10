@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandSpec } from "../../commands";
-import { buildGalleryModel, buildGallerySections, type GalleryWidgetDescriptor } from "./galleryModel";
+import { buildGalleryModel, buildGallerySections, buildMainToolbarGallerySections, type GalleryWidgetDescriptor } from "./galleryModel";
 
 const cmd = (id: string, title: string): CommandSpec =>
   ({ id, title, icon: "palette", source: "core" }) as CommandSpec;
@@ -13,13 +13,26 @@ const commands: CommandSpec[] = [
 
 const widgets: GalleryWidgetDescriptor[] = [{ id: "widget.core.mainStyleControls", title: "Style Controls" }];
 
+describe("Main gallery home groups", () => {
+  it("uses fixed homes for buttons, flyout choices and widgets, and Undeclared for unknown buttons", () => {
+    const sections = buildMainToolbarGallerySections([
+      ...commands, cmd("layout.alignRight", "Align Right"), cmd("tool.chainFlexible", "Flexible Chain"), cmd("plugin.test.run", "Plugin")
+    ], widgets, new Set(["tool.bond"]), "");
+    expect(sections.map(section => section.id)).toEqual(["select-text", "bonds-rings", "arrange", "style-3d", "undeclared"]);
+    expect(sections.find(section => section.id === "arrange")?.entries[0].homeGroupId).toBe("arrange");
+    expect(sections.find(section => section.id === "bonds-rings")?.entries.map(entry => entry.homeGroupId)).toEqual(["bonds-rings", "bonds-rings"]);
+    expect(sections.flatMap(section => section.entries).some(entry => entry.kind === "spacer" || entry.kind === "separator")).toBe(false);
+    expect(sections.find(section => section.id === "bonds-rings")?.entries[0].present).toBe(true);
+    expect(buildMainToolbarGallerySections(commands, [], new Set(), "").some(section => section.id === "undeclared")).toBe(false);
+  });
+});
+
 describe("buildGalleryModel", () => {
-  it("lists structural tiles, then widgets, then commands", () => {
+  it("lists widgets and commands without free spacing tiles", () => {
     const entries = buildGalleryModel(commands, widgets, new Set(), "");
-    expect(entries.slice(0, 2).map((entry) => entry.kind)).toEqual(["spacer", "separator"]);
-    expect(entries.slice(0, 2).map((entry) => entry.title)).toEqual(["Space", "Divider"]);
-    expect(entries[2]).toMatchObject({ kind: "widget", widgetId: "widget.core.mainStyleControls", title: "Style Controls" });
-    expect(entries.slice(3).map((entry) => entry.commandId)).toEqual(["tool.select", "tool.text", "tool.bond"]);
+    expect(entries[0]).toMatchObject({ kind: "widget", widgetId: "widget.core.mainStyleControls", title: "Style Controls" });
+    expect(entries.slice(1).map((entry) => entry.commandId)).toEqual(["tool.select", "tool.text", "tool.bond"]);
+    expect(entries.some(entry => entry.kind === "spacer" || entry.kind === "separator")).toBe(false);
   });
 
   it("grays commands already present in the toolbar", () => {
@@ -54,11 +67,11 @@ describe("buildGalleryModel", () => {
     expect(buildGalleryModel(commands, widgets, new Set(), "nomatch")).toHaveLength(0);
   });
 
-  it("keeps a structural tile only when the search matches it", () => {
+  it("never offers spacing tiles, including when searching their former names", () => {
     const spaceOnly = buildGalleryModel(commands, [], new Set(), "space");
-    expect(spaceOnly.map((entry) => entry.kind)).toEqual(["spacer"]);
+    expect(spaceOnly).toEqual([]);
     const dividerOnly = buildGalleryModel(commands, [], new Set(), "divid");
-    expect(dividerOnly.map((entry) => entry.kind)).toEqual(["separator"]);
+    expect(dividerOnly).toEqual([]);
   });
 
   it("lists every command — no cap (the toolbar must host every tool; the tray scrolls)", () => {
@@ -113,7 +126,6 @@ describe("buildGallerySections", () => {
   it("groups entries into themed sections in the declared order", () => {
     const sections = buildGallerySections(themed, widgets, new Set(), "");
     expect(sections.map((section) => section.id)).toEqual([
-      "layout",
       "widgets",
       "toolbars",
       "selection",
@@ -134,7 +146,7 @@ describe("buildGallerySections", () => {
       "other"
     ]);
     const byId = new Map(sections.map((section) => [section.id, section]));
-    expect(byId.get("layout")?.entries.map((entry) => entry.title)).toEqual(["Space", "Divider"]);
+    expect(byId.has("layout")).toBe(false);
     expect(byId.get("widgets")?.entries.map((entry) => entry.widgetId)).toEqual(["widget.core.mainStyleControls"]);
     expect(byId.get("bonds")?.entries.map((entry) => entry.commandId)).toEqual(["tool.bond"]);
     expect(byId.get("other")?.entries.map((entry) => entry.commandId)).toEqual(["mystery.command"]);

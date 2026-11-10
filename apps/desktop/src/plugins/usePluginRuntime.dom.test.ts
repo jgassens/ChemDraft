@@ -7,6 +7,7 @@ import { CommandRegistry, type PluginPatchApplicationRequest } from "@chemdraft/
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createToolbarCatalog } from "../toolbars/toolbarCatalog";
 
 import type {
   StructureRecognitionEngine,
@@ -105,6 +106,48 @@ function moleculeObject(id = "mol_001"): MoleculeObject {
 }
 
 describe("usePluginRuntime on the shared command registry", () => {
+  it("keeps one runtime across rerenders and publishes toolbar registration and removal through it", async () => {
+    const registry = new CommandRegistry();
+    let view: PluginRuntimeView | undefined;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const render = () => root!.render(createElement(Probe, { registry, capture: captured => { view = captured; } }));
+    await act(async () => { render(); await Promise.resolve(); });
+    const runtime = view!.runtime;
+    const register = vi.spyOn(runtime, "registerPlugin");
+    const unregister = vi.spyOn(runtime, "unregisterPlugin");
+    const catalog = createToolbarCatalog();
+    const stop = runtime.onDidChange(() => catalog.setPluginToolsets(runtime.listPluginToolsets()));
+    const commandId = "plugin.hookToolbar.run";
+    const candidate = {
+      id: "org.chemdraft.hookToolbar", name: "Hook Toolbar", version: "1.0.0", apiVersion: "^0.1.20", entry: "test",
+      permissions: ["ui.toolbar"], contributes: {
+        commands: [{ id: commandId, title: "Hook tool" }],
+        toolbarButtons: [{ id: "toolbar.hook.run", commandId, toolbarGroup: "arrows" }]
+      }
+    };
+    await act(async () => { view!.runtime.registerPlugin(candidate); });
+    expect(register).toHaveBeenCalledWith(candidate);
+    expect(catalog.registry().require("core.main").groups.find(group => group.id === "arrows")?.items
+      .some(item => item.commandId === commandId)).toBe(true);
+    await act(async () => { render(); });
+    expect(view!.runtime).toBe(runtime);
+    expect(view!.isPluginCommand(commandId)).toBe(true);
+    await act(async () => { view!.runtime.unregisterPlugin(candidate.id); });
+    expect(unregister).toHaveBeenCalledWith(candidate.id);
+    expect(registry.has(commandId)).toBe(false);
+    expect(catalog.registry().require("core.main").groups.flatMap(group => group.items)
+      .some(item => item.commandId === commandId)).toBe(false);
+    await act(async () => {
+      expect(() => view!.runtime.registerPlugin({ ...candidate, permissions: [] })).toThrow(/ui\.toolbar/);
+    });
+    expect(registry.has(commandId)).toBe(false);
+    expect(runtime.listPluginToolsets().some(toolset => toolset.groups.some(group => group.items.some(item => item.commandId === commandId)))).toBe(false);
+    stop();
+    createToolbarCatalog();
+  });
+
   it("isPluginCommand is a pluginId-ownership check, not registry membership (study R3)", async () => {
     const registry = new CommandRegistry();
     let coreRan = 0;

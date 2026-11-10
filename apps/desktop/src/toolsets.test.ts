@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ToolsetRegistry, type ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
 import {
-  computePaletteGridSize,
   createDesktopToolsetRegistry,
   desktopToolsets,
   getToolsetCommandGroups,
   getToolsetItemGroups,
+  getToolsetPaletteGroups,
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
   type DesktopToolsetRegistry,
@@ -297,25 +297,6 @@ describe("desktop toolset mapping", () => {
     }
   });
 
-  it("computes grid size from cell metrics and item spans when no preferred size is present", () => {
-    const size = computePaletteGridSize(
-      { columns: 4, cellWidth: 24, cellHeight: 24, gap: 2, padding: 4 },
-      [[
-        {
-          id: "control.width",
-          kind: "control",
-          label: "Width",
-          primary: { type: "control", controlId: "width" },
-          submenu: null,
-          tooltip: { title: "Width" },
-          layout: { colSpan: 4, rowSpan: 1 }
-        }
-      ]]
-    );
-
-    expect(size).toEqual({ width: 110, height: 32 });
-  });
-
   it("maps a spacer item to a spacer palette model (primary none, no button)", () => {
     const spacerToolset: ToolsetDefinition = {
       id: "core.spaced",
@@ -338,164 +319,47 @@ describe("desktop toolset mapping", () => {
     expect(items[1].id).toBe("user.spacer.1");
     expect(items[1].primary.type).toBe("none");
   });
-
-  it("counts a spacer's cells in the auto-flow grid size (spacers are not excluded like widgets)", () => {
-    const size = computePaletteGridSize(
-      { rows: 2, cellWidth: 24, cellHeight: 24, gap: 2, padding: 4 },
-      [[
-        {
-          id: "user.spacer.1",
-          kind: "spacer",
-          label: "Spacer",
-          primary: { type: "none" },
-          submenu: null,
-          tooltip: { title: "Spacer" },
-          layout: { colSpan: 1, rowSpan: 2 }
-        }
-      ]]
-    );
-
-    expect(size).toEqual({ width: 32, height: 58 });
-  });
 });
 
-describe("flattened Main toolbar manifest", () => {
-  it("has a single group whose section boundaries are explicit removable dividers", () => {
-    const main = desktopToolsets.find((toolset) => toolset.id === "core.main");
-    expect(main?.groups).toHaveLength(1);
-    expect(main?.groups[0]?.id).toBe("core.main.items");
-    const dividerIds = main?.groups[0]?.items
-      .filter((item) => item.kind === "separator")
-      .map((item) => item.id);
-    expect(dividerIds).toEqual([
-      "core.main.divider.1",
-      "core.main.divider.2",
-      "core.main.divider.3",
-      "core.main.divider.4",
-      "core.main.divider.5",
-      "core.main.divider.6",
-      // divider.7 caps the trailing end of the bar (after the style-controls widget).
-      "core.main.divider.7"
+describe("grouped Main toolbar manifest and load path", () => {
+  it("has seven fixed home groups and no spacing items", () => {
+    const main = desktopToolsets.find((toolset) => toolset.id === "core.main")!;
+    expect(main.groups.map(group => group.id)).toEqual(["select-text", "bonds-rings", "arrows", "symbols-shapes", "orbitals", "arrange", "style-3d"]);
+    expect(main.groups.flatMap(group => group.items).some(item => item.kind === "separator" || item.kind === "spacer")).toBe(false);
+    expect(getToolsetPaletteGroups("core.main")[0]).toMatchObject({ label: "Select & Text", foldRank: null });
+  });
+  it("drops saved divider hides and spacer additions while loading all home groups", () => {
+    const registry = createDesktopToolsetRegistry({ version: 1, toolsetOverrides: [{ toolsetId: "core.main",
+      hiddenCommandIds: ["core.main.divider.1"], itemAdditions: [{ groupId: "core.main.arrows", index: 1,
+        item: { id: "user.spacer.9", kind: "spacer", primary: { type: "none" } } }]
+    }] });
+    expect(getToolsetItemGroups("core.main", registry).flat().some(item => item.kind === "spacer" || item.kind === "separator")).toBe(false);
+    expect(registry.require("core.main").groups).toHaveLength(7);
+  });
+  it("keeps historical partial orders inside their home groups", () => {
+    const registry = createDesktopToolsetRegistry({ version: 1, toolsetOverrides: [{ toolsetId: "core.main",
+      itemOrder: { "core.main.structure": ["tool.chain", "tool.bond"] }
+    }] });
+    const groups = getToolsetPaletteGroups("core.main", registry);
+    expect(groups[0].items.map(item => item.id)).toEqual(["tool.select", "tool.lasso", "tool.eraser", "tool.text"]);
+    expect(groups[1].items.slice(0, 3).map(item => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
+  });
+  it("uses the existing loader entry point for one-time group migration", () => {
+    const state = { version: 1, toolsetOverrides: [{ toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.text"] } }] };
+    const migrated = migrateLegacyMainToolbarLayoutState(state) as { mainToolbarGroupsMigration: { version: number; noticePending: boolean } };
+    expect(migrated.mainToolbarGroupsMigration).toEqual({ version: 1, noticePending: true });
+    expect(migrateLegacyMainToolbarLayoutState(migrated)).toBe(migrated);
+  });
+  it("resolves historical arrow aliases before assigning home groups in the loader", () => {
+    const migrated = migrateLegacyMainToolbarLayoutState({ version: 1, toolsetOverrides: [{
+      toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.retroArrow", "tool.reactionArrow"] },
+      hiddenCommandIds: ["tool.equilibriumArrow"]
+    }] }) as { toolsetOverrides: { itemOrder: Record<string, string[]>; hiddenCommandIds: string[] }[] };
+    expect(migrated.toolsetOverrides[0].itemOrder.arrows).toEqual([
+      "tool.art.retroArrow", "tool.art.reactionArrow", "tool.art.resonanceArrow", "tool.art.equilibriumArrow"
     ]);
-  });
-
-  it("hides a manifest divider via a persisted override (the drag-out remove path)", () => {
-    const registry = createDesktopToolsetRegistry({
-      version: 1,
-      toolsetOverrides: [{ toolsetId: "core.main", hiddenCommandIds: ["core.main.divider.1"] }]
-    });
-    const [items] = getToolsetItemGroups("core.main", registry);
-    expect(items.some((item) => item.id === "core.main.divider.1")).toBe(false);
-    expect(items.some((item) => item.id === "core.main.divider.2")).toBe(true);
-  });
-});
-
-describe("migrateLegacyMainToolbarLayoutState", () => {
-  it("preserves legacy group/order semantics and maps additions to absolute flattened positions", () => {
-    const migrated = migrateLegacyMainToolbarLayoutState({
-      version: 1,
-      toolsetOverrides: [
-        {
-          toolsetId: "core.main",
-          groupOrder: ["core.main.layout", "core.main.selection"],
-          hiddenCommandIds: ["tool.lasso"],
-          itemAdditions: [
-            {
-              groupId: "core.main.arrows",
-              index: 3,
-              item: {
-                id: "art.boolean.union",
-                kind: "button",
-                label: "Union",
-                primary: { type: "command", commandId: "art.boolean.union" },
-                submenu: null
-              }
-            }
-          ],
-          itemOrder: {
-            "core.main.selection": ["tool.text", "tool.select"],
-            "core.main.layout": ["layout.group"]
-          }
-        }
-      ]
-    }) as { toolsetOverrides: Array<Record<string, unknown>> };
-    const override = migrated.toolsetOverrides[0];
-    const addition = (override.itemAdditions as Array<{ groupId: string; index: number }>)[0];
-    const order = (override.itemOrder as Record<string, string[]>)["core.main.items"];
-    expect(addition.groupId).toBe("core.main.items");
-    expect(addition.index).toBe(order.indexOf("art.boolean.union"));
-    // Saved groupOrder puts Layout first, and its partial item order is padded with every omitted item.
-    expect(order.slice(0, 4)).toEqual([
-      "layout.group",
-      "layout.alignLeft",
-      "layout.alignCenter",
-      "layout.alignRight"
-    ]);
-    expect(order.indexOf("core.main.divider.6")).toBeLessThan(order.indexOf("tool.text"));
-    expect(order.slice(order.indexOf("tool.text"), order.indexOf("tool.text") + 4)).toEqual([
-      "tool.text",
-      "tool.select",
-      "tool.lasso",
-      "tool.eraser"
-    ]);
-    expect(order.indexOf("core.main.divider.1")).toBeLessThan(order.indexOf("tool.bond"));
-    expect(order.indexOf("art.boolean.union")).toBeGreaterThan(order.indexOf("tool.equilibriumArrow"));
-    expect(order.indexOf("art.boolean.union")).toBeLessThan(order.indexOf("tool.art.retroArrow"));
-    expect(override.groupOrder).toBeUndefined();
-    expect(override.hiddenCommandIds).toEqual(["tool.lasso"]);
-  });
-
-  it("passes through non-main overrides and already-migrated state unchanged", () => {
-    const state = {
-      version: 1,
-      toolsetOverrides: [
-        { toolsetId: "core.art", itemOrder: { "core.art.tools": ["tool.art.pen"] } },
-        { toolsetId: "core.main", itemOrder: { "core.main.items": ["tool.select"] } }
-      ]
-    };
-    expect(migrateLegacyMainToolbarLayoutState(state)).toBe(state);
-    expect(migrateLegacyMainToolbarLayoutState(undefined)).toBeUndefined();
-    expect(migrateLegacyMainToolbarLayoutState("garbage")).toBe("garbage");
-  });
-
-  it("applies a partial legacy order inside its original section instead of hoisting it globally", () => {
-    const registry = createDesktopToolsetRegistry({
-      version: 1,
-      toolsetOverrides: [
-        { toolsetId: "core.main", itemOrder: { "core.main.structure": ["tool.chain", "tool.bond"] } }
-      ]
-    });
-    const [items] = getToolsetItemGroups("core.main", registry);
-    expect(items.slice(0, 5).map((item) => item.id)).toEqual([
-      "tool.select",
-      "tool.lasso",
-      "tool.eraser",
-      "tool.text",
-      "core.main.divider.1"
-    ]);
-    expect(items.slice(5, 8).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
-  });
-
-  it("applies a legacy addition at its section-relative position after flattening", () => {
-    const registry = createDesktopToolsetRegistry({
-      version: 1,
-      toolsetOverrides: [
-        {
-          toolsetId: "core.main",
-          itemAdditions: [
-            {
-              groupId: "core.main.arrows",
-              index: 1,
-              item: { id: "user.spacer.9", kind: "spacer", label: "Space", primary: { type: "none" } }
-            }
-          ]
-        }
-      ]
-    });
-    const [items] = getToolsetItemGroups("core.main", registry);
-    const ids = items.map((item) => item.id);
-    expect(ids.indexOf("user.spacer.9")).toBe(ids.indexOf("tool.art.reactionArrow") + 1);
-    expect(ids.indexOf("user.spacer.9")).toBeLessThan(ids.indexOf("tool.art.resonanceArrow"));
+    expect(migrated.toolsetOverrides[0].itemOrder.undeclared).toBeUndefined();
+    expect(migrated.toolsetOverrides[0].hiddenCommandIds).toEqual(["tool.art.equilibriumArrow"]);
   });
 });
 

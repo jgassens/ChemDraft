@@ -1,5 +1,6 @@
 import { ToolsetRegistry, applyToolsetLayoutState } from "@chemdraft/toolset-registry";
-import { desktopToolsets, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
+import { composeDesktopToolsets, migrateLegacyMainToolbarLayoutState, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
+import { reconcileMainToolbarPluginHomes } from "./toolbarLayoutState";
 import { SHELL_COMMAND_IDS } from "../shellCommandIds";
 import type { IconName } from "../icons";
 import type { ToolbarAssetName } from "../toolbarAssets";
@@ -32,13 +33,16 @@ export function createToolbarCatalog(): ToolbarCatalog {
   const listeners = new Set<() => void>();
 
   const build = (): DesktopToolsetRegistry => {
-    const combined = [...desktopToolsets, ...pluginToolsets];
+    const combined = composeDesktopToolsets(pluginToolsets);
     if (layoutState === undefined || layoutState === null) {
       warningList = [];
-      return new ToolsetRegistry<IconName, ToolbarAssetName>(combined);
+      return new ToolsetRegistry<IconName, ToolbarAssetName>(applyToolsetLayoutState(combined, {
+        version: 1, toolsetOverrides: [], userToolsets: []
+      }));
     }
 
     const warnings: string[] = [];
+    layoutState = reconcileMainToolbarPluginHomes(layoutState, combined.find(toolset => toolset.id === "core.main")!);
     const applied = applyToolsetLayoutState<IconName, ToolbarAssetName>(combined, layoutState, {
       // In-place customize can add any shell command, not just manifest ones — treat the whole
       // catalog as valid so those additions aren't pruned as "unknown" on render.
@@ -59,13 +63,13 @@ export function createToolbarCatalog(): ToolbarCatalog {
 
   return {
     registry: () => snapshot,
-    baseToolsets: () => [...desktopToolsets, ...pluginToolsets],
+    baseToolsets: () => composeDesktopToolsets(pluginToolsets),
     setPluginToolsets(toolsets) {
       pluginToolsets = [...toolsets];
       rebuild();
     },
     setLayoutState(state) {
-      layoutState = state;
+      layoutState = migrateLegacyMainToolbarLayoutState(state);
       rebuild();
     },
     warnings: () => warningList,

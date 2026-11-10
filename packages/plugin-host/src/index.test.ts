@@ -1720,6 +1720,14 @@ describe("PluginHost runtime enumeration, panels, and subscriptions", () => {
 });
 
 describe("validateTrustedPluginManifest", () => {
+  it("enforces the toolbar group rule on bundled manifests and preserves the group", () => {
+    const candidate = { ...minimalManifest("org.test.groups"), apiVersion: "^0.1.23",
+      contributes: { toolbarButtons: [{ id: "toolbar.groups.run", commandId: "plugin.groups.run" }] } };
+    expect(() => validateTrustedPluginManifest(candidate)).toThrow('button "plugin.groups.run" has none');
+    const grouped = { ...candidate, contributes: { toolbarButtons: [{ ...candidate.contributes.toolbarButtons[0], toolbarGroup: "arrows" }] } };
+    expect(validateTrustedPluginManifest(grouped).contributes.toolbarButtons[0].toolbarGroup).toBe("arrows");
+    expect(validateTrustedPluginManifest({ ...candidate, apiVersion: "^0.1.20" }).contributes.toolbarButtons[0].toolbarGroup).toBeUndefined();
+  });
   it("refuses assistant.run without native.execute before registration", () => {
     const candidate = {
       id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",

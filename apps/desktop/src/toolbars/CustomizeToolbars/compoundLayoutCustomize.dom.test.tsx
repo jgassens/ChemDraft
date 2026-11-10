@@ -103,7 +103,7 @@ describe("compound layouts in Customize Toolbars", () => {
   });
 
   it.each([false, true])("preserves hidden commands through live apply and Apply (saved override: %s)", (hasOverride) => {
-    const group = main.groups[0]!;
+    const group = main.groups.find(entry => entry.id === "arrange")!;
     const originalOrder = group.items.map((item) => toolsetItemCustomizationId(item)!);
     const state: ToolsetLayoutState = hasOverride ? {
       ...emptyState,
@@ -132,6 +132,7 @@ describe("compound layouts in Customize Toolbars", () => {
     expect(onLiveApply.mock.calls[0]![0]).toEqual(applied);
     expect(applied).toEqual({
       ...state,
+      mainToolbarGroupsMigration: { version: 1, noticePending: false },
       toolsetOverrides: [{
         ...state.toolsetOverrides[0],
         toolsetId: main.id,
@@ -146,7 +147,9 @@ describe("compound layouts in Customize Toolbars", () => {
     render(applied);
     const ids = itemIds();
     expect(ids).toContain(arrangeId);
-    expect(ids.indexOf(arrangeId)).toBe(hasOverride ? [...originalOrder].reverse().indexOf(arrangeId) : originalOrder.indexOf(arrangeId));
+    // Arrange now owns its own group, so compare order within that home rather than the flat bar.
+    const arrangeIds = [...container.querySelectorAll<HTMLElement>('[data-group-id="arrange"] [data-item-id]')].map(row => row.dataset.itemId);
+    expect(arrangeIds.indexOf(arrangeId)).toBe(hasOverride ? [...originalOrder].reverse().indexOf(arrangeId) : originalOrder.indexOf(arrangeId));
     expect(container.querySelector<HTMLInputElement>(`[data-item-id="${arrangeId}"] .customize-item-visible`)?.checked).toBe(true);
   });
 

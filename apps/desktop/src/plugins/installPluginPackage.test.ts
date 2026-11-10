@@ -291,6 +291,23 @@ function bundledCopy(): { manifest: PluginManifest; options: { commandHandlers: 
 }
 
 describe("inspectPluginPackage", () => {
+  it("requires toolbar groups for API 0.1.23 and preserves legacy buttons", async () => {
+    const base = manifestDocument();
+    const contributes = base.contributes as PluginManifest["contributes"];
+    const button = { id: "toolbar.installable.run", commandId: COMMAND_ID, requiredPermissions: [] };
+    const inspect = async (apiVersion: string, toolbarGroup?: "arrows") => {
+      const zip = await createPackage({ manifest: { ...base, apiVersion, contributes: {
+        ...contributes, toolbarButtons: [{ ...button, ...(toolbarGroup ? { toolbarGroup } : {}) }]
+      } } });
+      return inspectPluginPackage({ zipBytes: zip, hostApiVersion: apiVersion === "0.1.20" ? "0.1.20" : undefined });
+    };
+    const message = `Plugin "${PLUGIN_ID}" targets plugin API 0.1.23, which requires toolbarGroup on every toolbar button; button "${COMMAND_ID}" has none. Add one of: select-text, bonds-rings, arrows, symbols-shapes, orbitals, arrange, style-3d.`;
+    await expect(inspect("0.1.23")).rejects.toThrow(message);
+    await expect(inspect("^0.1.23")).rejects.toThrow(message);
+    expect((await inspect("0.1.20")).manifest.contributes.toolbarButtons[0].toolbarGroup).toBeUndefined();
+    expect((await inspect("^0.1.20")).manifest.contributes.toolbarButtons[0].toolbarGroup).toBeUndefined();
+    expect((await inspect("0.1.23", "arrows")).manifest.contributes.toolbarButtons[0].toolbarGroup).toBe("arrows");
+  });
   it("describes what the package declares, so the UI can display it before anything is staged", async () => {
     const zip = await createPackage();
 

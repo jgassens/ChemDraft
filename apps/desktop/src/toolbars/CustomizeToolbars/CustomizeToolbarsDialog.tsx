@@ -41,6 +41,9 @@ import {
   setUserToolsetGroups
 } from "./layoutStateEdits";
 import { CustomizeToolsetDetail, type CommandOption, type CustomizeGroupModel } from "./CustomizeToolsetDetail";
+import { CustomizeMainToolbarGroups } from "../CustomizeMainToolbar/CustomizeMainToolbarGroups";
+import { buildMainToolbarCustomizeGroups } from "../CustomizeMainToolbar/groupModel";
+import { applyToolsetLayoutEdit } from "../CustomizeMainToolbar/applyLayoutEdit";
 import "./CustomizeToolbars.css";
 
 // Delegate to the registry's customization-id logic so the dialog and applyUserToolsetOverride key
@@ -440,7 +443,25 @@ export function CustomizeToolbarsDialog({
           </div>
           <div className="customize-detail-pane">
             {selectedBase ? (
-              <CustomizeToolsetDetail
+              selectedToolsetId === "core.main" && selectedBase?.groups.some(group => group.foldRank !== undefined) ?
+              <CustomizeMainToolbarGroups
+                groups={buildMainToolbarCustomizeGroups(draft).map(group => ({ ...group,
+                  items: group.items.filter(item => !isCommandHidden?.(item.id)) }))}
+                onEdit={edit => setDraft(current => {
+                  let nextEdit = edit;
+                  if (edit.kind === "reorderItems" && isCommandHidden) {
+                    const { groupId, orderedItemIds } = edit;
+                    const group = buildMainToolbarCustomizeGroups(current).find(entry => entry.id === groupId);
+                    let index = 0;
+                    nextEdit = { ...edit, orderedItemIds: group?.items.map(item =>
+                      isCommandHidden(item.id) ? item.id : orderedItemIds[index++]!
+                    ) ?? orderedItemIds };
+                  }
+                  return applyToolsetLayoutEdit(current, { toolsetId: "core.main", edit: nextEdit }, {
+                    presentItemIds: new Set(), commandTitle: () => undefined
+                  });
+                })}
+              /> : <CustomizeToolsetDetail
                 toolsetTitle={selectedTitle}
                 isUser={selectedIsUser}
                 groups={displayedGroups}

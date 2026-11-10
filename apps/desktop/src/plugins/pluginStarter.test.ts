@@ -42,6 +42,8 @@ describe("plugin starter Markdown", () => {
     expect(markdown).toContain(`ChemDraft ${appVersion}`);
     expect(markdown).toContain(`git checkout v${appVersion}`);
     expect(markdown).toContain(`apiVersion to "^${PluginApiVersion}"`);
+    expect(markdown).toContain('apiVersion: "^0.1.23"');
+    expect(markdown).toContain('toolbarGroup: "style-3d"');
     for (const permission of dangerousPluginPermissions) expect(markdown).toContain(`\`${permission}\``);
   });
 

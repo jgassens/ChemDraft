@@ -1,4 +1,6 @@
 import { toolsetItemCustomizationId } from "@chemdraft/toolset-registry";
+import { isAbsentPluginToolbarItem, isMainToolbarGroupId, isToolbarSpacingItem, mainToolbarHomeGroupId, mainToolbarItems } from "../mainToolbarGroups";
+import { reconcileMainToolbarPluginHomes, resetMainToolbarGroups } from "../toolbarLayoutState";
 import type {
   ToolsetDefinition,
   ToolsetGroupDefinition,
@@ -41,6 +43,7 @@ function isEmptyOverride(override: UserToolsetOverride): boolean {
     override.preferredWindowSize === undefined &&
     override.gridLayout === undefined &&
     (override.groupOrder?.length ?? 0) === 0 &&
+    (override.hiddenGroupIds?.length ?? 0) === 0 &&
     (override.hiddenCommandIds?.length ?? 0) === 0 &&
     (override.itemOverrides?.length ?? 0) === 0 &&
     (override.itemAdditions?.length ?? 0) === 0 &&
@@ -55,12 +58,15 @@ function withOverride<I extends string, A extends string>(
   toolsetId: string,
   mutate: (draft: UserToolsetOverride) => void
 ): ToolsetLayoutState<I, A> {
+  state = reconcileMainToolbarPluginHomes(state) as ToolsetLayoutState<I, A>;
   const current = state.toolsetOverrides.find((override) => override.toolsetId === toolsetId);
   const draft: UserToolsetOverride = current ? { ...current } : { toolsetId };
   mutate(draft);
   const others = state.toolsetOverrides.filter((override) => override.toolsetId !== toolsetId);
   return {
     ...state,
+    ...(toolsetId === "core.main" && !state.mainToolbarGroupsMigration
+      ? { mainToolbarGroupsMigration: { version: 1 as const, noticePending: false } } : {}),
     toolsetOverrides: isEmptyOverride(draft) ? others : [...others, draft]
   };
 }
@@ -109,6 +115,7 @@ export function reorderGroups<I extends string, A extends string>(
   toolsetId: string,
   orderedGroupIds: readonly string[]
 ): ToolsetLayoutState<I, A> {
+  if (toolsetId === "core.main" && orderedGroupIds.some(id => !isMainToolbarGroupId(id))) return state;
   return withOverride(state, toolsetId, (draft) => {
     draft.groupOrder = orderedGroupIds.length > 0 ? [...orderedGroupIds] : undefined;
   });
@@ -126,12 +133,22 @@ export function reorderItems<I extends string, A extends string>(
   if (groupId.length === 0) {
     return state;
   }
+  if (toolsetId === "core.main" && (!isMainToolbarGroupId(groupId) ||
+    orderedItemIds.some(id => mainToolbarHomeGroupId(id) !== groupId))) return state;
   return withOverride(state, toolsetId, (draft) => {
     const itemOrder = { ...(draft.itemOrder ?? {}) };
     if (orderedItemIds.length > 0) {
-      itemOrder[groupId] = [...orderedItemIds];
+      const absent = toolsetId === "core.main"
+        ? (itemOrder[groupId] ?? []).filter(id => isAbsentPluginToolbarItem(id) && !orderedItemIds.includes(id)) : [];
+      // Reordering the visible buttons must not erase an unloaded plugin's saved slot.
+      const pending = [...orderedItemIds];
+      itemOrder[groupId] = absent.length
+        ? [...(itemOrder[groupId] ?? []).flatMap(id => absent.includes(id) ? [id] : pending.length ? [pending.shift()!] : []), ...pending]
+        : [...orderedItemIds];
     } else {
-      delete itemOrder[groupId];
+      const absent = toolsetId === "core.main" ? itemOrder[groupId]?.filter(isAbsentPluginToolbarItem) : undefined;
+      if (absent?.length) itemOrder[groupId] = absent;
+      else delete itemOrder[groupId];
     }
     draft.itemOrder = Object.keys(itemOrder).length > 0 ? itemOrder : undefined;
   });
@@ -152,6 +169,13 @@ export function setItemHidden<I extends string, A extends string>(
       current.delete(itemId);
     }
     draft.hiddenCommandIds = current.size > 0 ? [...current] : undefined;
+    // Hidden-by-default entries require an explicit show override; clearing a hide is insufficient.
+    const defaultHidden = toolsetId === "core.main" && mainToolbarItems.get(itemId)?.defaultHidden;
+    const previousItemOverride = draft.itemOverrides?.find(item => item.commandId === itemId);
+    if (defaultHidden || previousItemOverride?.hidden !== undefined) {
+      const others = (draft.itemOverrides ?? []).filter(item => item.commandId !== itemId);
+      draft.itemOverrides = [...others, { ...previousItemOverride, commandId: itemId, hidden }];
+    }
   });
 }
 
@@ -169,6 +193,8 @@ export function addToolsetItemAddition<I extends string, A extends string>(
   options: { presentItemIds?: ReadonlySet<string> } = {}
 ): ToolsetLayoutState<I, A> {
   const id = toolsetItemCustomizationId(addition.item);
+  if (toolsetId === "core.main" && (isToolbarSpacingItem(addition.item) ||
+    !isMainToolbarGroupId(addition.groupId) || (id !== undefined && mainToolbarHomeGroupId(id) !== addition.groupId))) return state;
   if (id === undefined || options.presentItemIds?.has(id)) {
     return state;
   }
@@ -277,6 +303,7 @@ export function resetToolsetLayout<I extends string, A extends string>(
   state: ToolsetLayoutState<I, A>,
   toolsetId: string
 ): ToolsetLayoutState<I, A> {
+  if (toolsetId === "core.main") return resetMainToolbarGroups(state);
   return {
     ...state,
     toolsetOverrides: state.toolsetOverrides.filter((override) => override.toolsetId !== toolsetId)
@@ -339,7 +366,8 @@ export function cloneToolset<I extends string, A extends string>(
   const clonedGroups: ToolsetGroupDefinition<I, A>[] = source.groups.map((group, index) => ({
     ...group,
     id: group.id ?? `${id}.group.${index}`,
-    items: group.items.map((item) => ({ ...item }))
+    // The source is the effective toolbar. A shown default-hidden button stays shown in its copy.
+    items: group.items.map((item) => ({ ...item, defaultHidden: undefined }))
   }));
   // A user toolset must have >=1 group (UserToolsetDefinitionSchema). Cloning a fully-emptied toolset
   // (e.g. all items hidden) would otherwise yield groups:[] and fail to parse; seed an empty group.

@@ -1,14 +1,25 @@
 import type { ToolsetItemDefinition, ToolsetLayoutState } from "@chemdraft/toolset-registry";
 import type { ToolsetLayoutEditPayload } from "../../window-manager";
+import type { ToolbarGroupId } from "@chemdraft/toolset-registry";
+import { isMainToolbarGroupId, mainToolbarHomeGroupId, mainToolbarItems } from "../mainToolbarGroups";
+import { reconcileMainToolbarPluginHomes, resetMainToolbarGroups, setMainToolbarGroupHidden } from "../toolbarLayoutState";
 import {
   addToolsetItemAddition,
   nextSeparatorItemId,
   nextSpacerItemId,
   removeToolsetItem,
   reorderItems,
+  reorderGroups,
   resetToolsetLayout,
   setItemHidden
 } from "../CustomizeToolbars/layoutStateEdits";
+
+/** Group edits share the existing customize transport; its public union is extended by integration. */
+export type MainToolbarLayoutEdit = ToolsetLayoutEditPayload["edit"]
+  | { kind: "reorderGroups"; orderedGroupIds: ToolbarGroupId[] }
+  | { kind: "setGroupHidden"; groupId: ToolbarGroupId; hidden: boolean }
+  | { kind: "setItemHidden"; itemId: string; hidden: boolean };
+export interface MainToolbarLayoutEditPayload { toolsetId: string; edit: MainToolbarLayoutEdit }
 
 /** True when the toolset's override currently hides this id (so re-adding it should un-hide rather
  *  than create a duplicate addition — a removed base command/widget was only hidden, not deleted). */
@@ -18,7 +29,7 @@ function isHiddenByOverride<I extends string, A extends string>(
   id: string
 ): boolean {
   const override = state.toolsetOverrides.find((entry) => entry.toolsetId === toolsetId);
-  return (override?.hiddenCommandIds ?? []).includes(id);
+  return override?.itemOverrides?.find(item => item.commandId === id)?.hidden ?? (override?.hiddenCommandIds ?? []).includes(id);
 }
 
 /** Persist the drop position as a complete order over the authoritative, currently rendered group.
@@ -71,11 +82,30 @@ export interface ApplyToolsetLayoutEditContext {
  */
 export function applyToolsetLayoutEdit<I extends string = string, A extends string = string>(
   state: ToolsetLayoutState<I, A>,
-  payload: ToolsetLayoutEditPayload,
+  payload: MainToolbarLayoutEditPayload,
   context: ApplyToolsetLayoutEditContext
 ): ToolsetLayoutState<I, A> {
   const { toolsetId, edit } = payload;
+  state = reconcileMainToolbarPluginHomes(state) as ToolsetLayoutState<I, A>;
+  if (toolsetId === "core.main") {
+    if (edit.kind === "addSpacer" || edit.kind === "addSeparator") return state;
+    if (edit.kind === "addCommand" || edit.kind === "addWidget") {
+      const id = edit.kind === "addCommand" ? edit.commandId : edit.widgetId;
+      if (!isMainToolbarGroupId(edit.groupId) || mainToolbarHomeGroupId(id) !== edit.groupId) return state;
+      if (mainToolbarItems.has(id)) {
+        if (context.presentItemIds.has(id)) return state;
+        const unhidden = setItemHidden(state, toolsetId, id, false);
+        return placeItemAtIndex(unhidden, toolsetId, edit.groupId, id, edit.index, context.orderedItemIdsByGroup);
+      }
+    }
+  }
   switch (edit.kind) {
+    case "reorderGroups":
+      return toolsetId === "core.main" ? reorderGroups(state, toolsetId, edit.orderedGroupIds) : state;
+    case "setGroupHidden":
+      return toolsetId === "core.main" && isMainToolbarGroupId(edit.groupId) ? setMainToolbarGroupHidden(state, edit.groupId, edit.hidden) : state;
+    case "setItemHidden":
+      return setItemHidden(state, toolsetId, edit.itemId, edit.hidden);
     case "reorderItems":
       return reorderItems(state, toolsetId, edit.groupId, edit.orderedItemIds);
     case "addCommand": {
@@ -216,9 +246,9 @@ export function applyToolsetLayoutEdit<I extends string = string, A extends stri
           );
     }
     case "removeItem":
-      return removeToolsetItem(state, toolsetId, edit.itemId);
+      return toolsetId === "core.main" ? setItemHidden(state, toolsetId, edit.itemId, true) : removeToolsetItem(state, toolsetId, edit.itemId);
     case "resetToolset":
-      return resetToolsetLayout(state, toolsetId);
+      return toolsetId === "core.main" ? resetMainToolbarGroups(state) : resetToolsetLayout(state, toolsetId);
     case "exitCustomize":
     default:
       return state;

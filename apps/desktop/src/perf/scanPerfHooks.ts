@@ -38,11 +38,20 @@ export function scanPerfHooks(file: string, text: string) {
       && node.arguments.some(diagnosticResult);
   };
   const walk = (node: ts.Node, visit: (node: ts.Node) => void) => { visit(node); ts.forEachChild(node, child => walk(child, visit)); };
+  // Parse and traverse each file once. Only declarations/assignments can propagate aliases;
+  // repeatedly walking every JSX and expression node made the whole-source guard time out
+  // when it competed with the full test suite.
+  const aliases: (ts.ImportSpecifier | ts.BinaryExpression | ts.VariableDeclaration)[] = [];
+  const checks: (ts.AwaitExpression | ts.CallExpression)[] = [];
+  walk(source, node => {
+    if (ts.isImportSpecifier(node) || ts.isBinaryExpression(node) || ts.isVariableDeclaration(node)) aliases.push(node);
+    if (ts.isAwaitExpression(node) || ts.isCallExpression(node)) checks.push(node);
+  });
   // Resolve aliases before checking calls, including destructured members of the probe object.
   let previousSize = -1;
   while (previousSize !== probes.size + wrappers.size + functions.size + tainted.size) {
     previousSize = probes.size + wrappers.size + functions.size + tainted.size;
-    walk(source, node => {
+    for (const node of aliases) {
       if (ts.isImportSpecifier(node)) {
         const original = node.propertyName?.text ?? node.name.text;
         if (probes.has(original)) probes.add(node.name.text);
@@ -51,7 +60,7 @@ export function scanPerfHooks(file: string, text: string) {
       }
       if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         && ts.isIdentifier(node.left) && diagnosticResult(node.right)) tainted.add(node.left.text);
-      if (!ts.isVariableDeclaration(node) || !node.initializer) return;
+      if (!ts.isVariableDeclaration(node) || !node.initializer) continue;
       if (ts.isIdentifier(node.name)) {
         if (isProbe(node.initializer)) probes.add(node.name.text);
         if (isFunction(node.initializer, functions)) functions.add(node.name.text);
@@ -68,14 +77,14 @@ export function scanPerfHooks(file: string, text: string) {
       if (ts.isIdentifier(node.name)) {
         if (diagnosticResult(node.initializer)) tainted.add(node.name.text);
       }
-    });
+    }
   }
   const location = (node: ts.Node) => `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
-  walk(source, node => {
+  for (const node of checks) {
     if (ts.isAwaitExpression(node)) {
       if (diagnosticResult(node.expression)) errors.push(`${location(node)}: action awaits probe result`);
     }
-    if (!ts.isCallExpression(node) || !isHook(node)) return;
+    if (!ts.isCallExpression(node) || !isHook(node)) continue;
     hooks.push(`${location(node)}: ${node.expression.getText(source)}`);
     // Initialization has an explicit try/catch. Teardown must run after perfHook disables itself.
     if (file.replaceAll("\\", "/").endsWith("/perf/runtime.ts")) {
@@ -87,8 +96,8 @@ export function scanPerfHooks(file: string, text: string) {
       }
       const name = owner && ts.isFunctionDeclaration(owner) ? owner.name?.text : undefined;
       const call = node.expression.getText(source);
-      if (name === "initializePerfProbe" && call === "perfProbeRequestedFromWindow") return;
-      if (name === "reportPerfFailure" && caught && ["perfProbe?.stop", "perfProbeRequestedFromWindow"].includes(call)) return;
+      if (name === "initializePerfProbe" && call === "perfProbeRequestedFromWindow") continue;
+      if (name === "reportPerfFailure" && caught && ["perfProbe?.stop", "perfProbeRequestedFromWindow"].includes(call)) continue;
     }
     let parent: ts.Node | undefined = node.parent;
     let isolated = false;
@@ -105,6 +114,6 @@ export function scanPerfHooks(file: string, text: string) {
       parent = parent.parent;
     }
     if (!isolated) errors.push(`${location(node)}: unisolated probe call ${node.expression.getText(source)}`);
-  });
+  }
   return { hooks, errors };
 }

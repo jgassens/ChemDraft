@@ -3,8 +3,10 @@ import type { CommandSpec } from "../../commands";
 import { isRenamedCommandId } from "../../renamedCommands";
 import type { IconName } from "../../icons";
 import type { ToolbarAssetName } from "../../toolbarAssets";
+import { MAIN_TOOLBAR_GROUPS, type ToolbarGroupId } from "@chemdraft/toolset-registry";
+import { mainToolbarHomeGroupId } from "../mainToolbarGroups";
 
-/** The structural tiles the gallery always offers (Safari's "Space" plus a thin divider). */
+/** Legacy drag kinds retained for non-main toolsets. Main never offers structural tiles. */
 export type GalleryStructuralKind = "spacer" | "separator";
 export type GalleryEntryKind = "command" | "widget" | GalleryStructuralKind;
 
@@ -29,6 +31,7 @@ export interface GalleryWidgetDescriptor {
 }
 
 export interface GalleryEntry {
+  homeGroupId?: ToolbarGroupId;
   /** dnd-kit draggable id (see `galleryDragId`). */
   dragId: string;
   kind: GalleryEntryKind;
@@ -46,11 +49,6 @@ export interface GalleryEntry {
   present: boolean;
 }
 
-const STRUCTURAL_ENTRIES: ReadonlyArray<{ kind: GalleryStructuralKind; title: string; icon: IconName }> = [
-  { kind: "spacer", title: "Space", icon: "palette" },
-  { kind: "separator", title: "Divider", icon: "palette" }
-];
-
 function matchesSearch(query: string, ...fields: (string | undefined)[]): boolean {
   if (query.length === 0) {
     return true;
@@ -59,8 +57,8 @@ function matchesSearch(query: string, ...fields: (string | undefined)[]): boolea
 }
 
 /**
- * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then any
- * section widgets (style controls) offered, then the FULL command catalog deduped by id (first spec
+ * Build the gallery entries for the tray: section widgets (style controls), then the FULL command
+ * catalog deduped by id (first spec
  * wins, matching the Customize dialog) and filtered by the search box. Not capped — the toolbar must
  * be able to host every tool, and the tray scrolls. `presentItemIds` are the customization ids already
  * in the toolbar — present command/widget tiles render grayed and inert so an item can't be added twice.
@@ -73,22 +71,13 @@ export function buildGalleryModel(
 ): GalleryEntry[] {
   const query = search.trim().toLowerCase();
 
-  const structural: GalleryEntry[] = STRUCTURAL_ENTRIES.filter((entry) =>
-    matchesSearch(query, entry.title, entry.kind)
-  ).map((entry) => ({
-    dragId: galleryDragId(entry.kind),
-    kind: entry.kind,
-    title: entry.title,
-    icon: entry.icon,
-    present: false
-  }));
-
   const widgetEntries: GalleryEntry[] = widgets
     .filter((widget) => matchesSearch(query, widget.title, widget.id))
     .map((widget) => ({
       dragId: galleryDragId("widget", widget.id),
       kind: "widget" as const,
       widgetId: widget.id,
+      homeGroupId: mainToolbarHomeGroupId(widget.id),
       title: widget.title,
       icon: widget.icon,
       present: presentItemIds.has(widget.id)
@@ -114,6 +103,7 @@ export function buildGalleryModel(
       dragId: galleryDragId("command", command.id),
       kind: "command",
       commandId: command.id,
+      homeGroupId: mainToolbarHomeGroupId(command.id),
       title: command.title,
       icon: command.icon,
       assetName: command.assetName,
@@ -122,7 +112,19 @@ export function buildGalleryModel(
     });
   }
 
-  return [...structural, ...widgetEntries, ...commandEntries];
+  return [...widgetEntries, ...commandEntries];
+}
+
+/** Main's gallery uses the same fixed home groups as the bar. No spacing tiles or cross-group drops. */
+export function buildMainToolbarGallerySections(
+  commands: readonly CommandSpec[], widgets: readonly GalleryWidgetDescriptor[],
+  presentItemIds: ReadonlySet<string>, search: string
+): GallerySection[] {
+  const entries = buildGalleryModel(commands, widgets, presentItemIds, search);
+  return MAIN_TOOLBAR_GROUPS.flatMap(group => {
+    const items = entries.filter(entry => entry.homeGroupId === group.id);
+    return items.length ? [{ id: group.id, title: group.label, entries: items }] : [];
+  });
 }
 
 // ————————————————————————————————————————————————————————————————————————————————————————————————
@@ -138,8 +140,7 @@ export interface GallerySection {
   entries: GalleryEntry[];
 }
 
-/** Display order + titles. "layout" (Space/Divider), "widgets", and "toolbars" lead because they're
- *  the gallery-only items a user can't find anywhere else; command themes follow chemistry-first. */
+/** Legacy themed section order for callers that do not use Main's fixed home-group sections. */
 const GALLERY_SECTIONS: ReadonlyArray<{ id: string; title: string }> = [
   { id: "layout", title: "Layout" },
   { id: "widgets", title: "Widgets" },
