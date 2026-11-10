@@ -7,6 +7,7 @@ import type { ExportWarning } from "@chemdraft/export-engine";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
@@ -38,7 +39,6 @@ describe("Copy As SMILES messages", () => {
     const warnings: string[] = [];
     expect(await copyAsSmiles(doc, warnings)).toBe("*C");
     expect(warnings).toEqual([
-      'Atom label "Phe" cannot be spelled as a single SMILES atom; written as a dummy atom [*].',
       'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in SMILES.'
     ]);
     assertSmilesMessages(warnings);
@@ -48,6 +48,18 @@ describe("Copy As SMILES messages", () => {
       expect(molWarnings).toEqual(['Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in the molfile.']);
     }
     expect(doc).toEqual(before);
+  });
+
+  it("reports the placeholder once in structure lists and retains distinct losses", async () => {
+    const mol = molecule(["C", "Phe", "Zn"]);
+    mol.bonds[1].display = { bondStyle: "dashed" };
+    for (const exportList of [exportStructureListSmi, exportStructureListSdf]) {
+      const result = await exportList(documentWith(mol));
+      expect(result.warnings.filter(w => w.message.includes('Atom label "Phe"'))).toEqual([
+        expect.objectContaining({ code: "export.smiles_atom_label" })
+      ]);
+      expect(result.warnings.some(w => /dative|coordination/i.test(w.message))).toBe(true);
+    }
   });
 
   it.each(["Ar"])("discloses the engine's %s placeholder loss", async (label) => {
@@ -165,7 +177,6 @@ describe("Copy As SMILES messages", () => {
     const warnings: string[] = [];
     await expect(copyAsSmiles(doc, warnings)).rejects.toThrow("Cannot write SMILES:");
     expect(warnings).toEqual([
-      'Atom label "Phe" cannot be spelled as a single SMILES atom; written as a dummy atom [*].',
       'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in SMILES.'
     ]);
   });

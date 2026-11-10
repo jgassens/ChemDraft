@@ -122,6 +122,7 @@ export class DialogCoordinator {
   async updateAtomProblem(tabId: string, data: AtomProblemSnapshot): Promise<void> {
     const session = this.sessions.get(`${tabId}:atomProblem`);
     if (!session || session.settled || session.snapshot.dialogKind !== "atomProblem") return;
+    if (data.fixes.length === 0) { await this.settle(session, "close"); return; }
     const snapshot = { ...session.snapshot, data };
     if (!parseDialogMessage(snapshot)) throw new Error("Invalid atom problem snapshot");
     session.snapshot = snapshot;
