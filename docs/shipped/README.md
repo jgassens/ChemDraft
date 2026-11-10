@@ -1,5 +1,15 @@
 # Shipped slices
 
+## Adjustable wavy art lines (2026-11-09)
+
+PR #209 adds smoothness, peak-to-trough height and wavelength sliders in Object Settings.
+Edits use registered value-specific commands, live preview and one Undo entry per drag;
+Escape/cancel restores the starting document. Settings persist in native documents and share
+canvas/export geometry. Only selected wavy art paths change; molecular bonds and other graphics
+are untouched. Lines without wave metadata retain main's legacy geometry until explicitly adjusted.
+See [the implementation notes](../wavy-lines-handoff.md) and the
+[macOS/Windows manual checklist](../manual-stress-checklist.md).
+
 ## Agent skill: one document style for structures, and structure naming (2026-10-22)
 
 Fixed-scale `--style document` on `render`, `grid`, `reaction`, `render-document`, and

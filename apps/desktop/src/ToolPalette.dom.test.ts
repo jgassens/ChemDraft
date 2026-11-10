@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import { applyGraphicWaveSettingToSelection, createPhase4Document, insertNativeArtGraphicObject, selectDocumentObjects } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { toolbarAsset } from "./toolbarAssets";
@@ -156,19 +156,21 @@ describe("ToolPalette art color popover", () => {
     commandId = "tool.art.rect",
     currentArtStyle = artInspectorModelFor(commandId),
     onCancel = vi.fn(),
-    onRequestColorPopover
+    onRequestColorPopover,
+    includeCommands = false
   }: {
     commandId?: string;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
     onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
+    includeCommands?: boolean;
   } = {}) {
     const onInvoke = vi.fn();
     const onPreview = vi.fn();
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.art"),
+        itemGroups: includeCommands ? getToolsetItemGroups("core.art") : widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -184,7 +186,7 @@ describe("ToolPalette art color popover", () => {
         }
       }));
     });
-    return { onCommit, onInvoke, onPreview };
+    return { onCommit, onInvoke, onPreview, onCancel };
   }
 
   function colorTrigger(): HTMLButtonElement {
@@ -229,6 +231,118 @@ describe("ToolPalette art color popover", () => {
       })
     });
   }
+
+  it("previews wave sliders, commits once on release, and supports keyboard bounds", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    for (const [setting, max] of [["smoothness", "100"], ["height", "48"], ["width", "120"]]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Wave ${setting}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.type).toBe("range");
+      expect(slider.max).toBe(max);
+      act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      expect(onCommit).toHaveBeenLastCalledWith(`object.wave.${setting}:${max}`);
+    }
+    onCommit.mockClear();
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(height);
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5");
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => { height.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5");
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+    });
+    expect(onCancel).toHaveBeenCalled();
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.rect") });
+    expect(container.querySelector('[aria-label="Wave height"]')).toBeNull();
+  });
+
+  it("shows mixed wave values with pixel units and counts only wavy art", () => {
+    let drawing = insertNativeArtGraphicObject(createPhase4Document(), { x: 220, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 12);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 320, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 24);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 420, y: 180 }, "tool.art.rect");
+    drawing = selectDocumentObjects(drawing, drawing.pages[0].id, drawing.pages[0].objects.map(object => object.id));
+    const currentArtStyle = createArtInspectorModel({ document: drawing,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(drawing), requestedPaintTarget: "stroke" });
+    expect(currentArtStyle.wavy).toMatchObject({ count: 2, height: { value: null, mixed: true } });
+    renderPalette({ currentArtStyle });
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    expect(height.closest("label")?.textContent).toContain("Mixed");
+    expect(height.title).toContain("Mixed");
+    expect(height.step).toBe("0.5");
+    const width = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    expect(width.title).toContain(" px");
+    expect(width.closest("label")?.title).toBe(width.title);
+    expect(width.title).not.toContain("%");
+  });
+
+  it.each(["Escape", "blur"])("cancels an active wave drag on %s and ignores the later release", ending => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.focus(); slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    act(() => {
+      if (ending === "Escape") slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else slider.blur();
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 }));
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("closes an inline menu on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({
+      currentArtStyle: artInspectorModelFor("tool.art.lineWavy"), includeCommands: true
+    });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const menu = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    act(() => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(onCancel).not.toHaveBeenCalled();
+    const previews = onPreview.mock.calls.length;
+    act(() => { slider.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalledTimes(previews + 1);
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("lets a modal close on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    container.append(modal);
+    const close = vi.fn((event: KeyboardEvent) => { event.preventDefault(); modal.hidden = true; });
+    modal.addEventListener("keydown", close);
+    act(() => { modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(close).toHaveBeenCalledOnce();
+    expect(modal.hidden).toBe(true);
+    expect(onCancel).not.toHaveBeenCalled();
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
 
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
     const onCancel = vi.fn();

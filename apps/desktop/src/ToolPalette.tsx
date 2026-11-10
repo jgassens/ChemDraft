@@ -1,4 +1,6 @@
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
+import { waveSettingRanges, type WaveSetting } from "@chemdraft/art-engine";
+import { isBlockedByModalDialog } from "@chemdraft/shortcut-engine";
 import {
   Fragment,
   useCallback,
@@ -78,6 +80,7 @@ import {
   objectStrokeLineCapCommands,
   objectStrokeLineJoinCommands,
   objectStrokeOpacityCommandId,
+  objectWaveCommandId,
   objectStrokeWidthCommands,
   moleculeRingEffectColorCommandId,
   moleculeRingEffectCommandId,
@@ -147,7 +150,7 @@ import {
 } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
+import { listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -2027,7 +2030,27 @@ function ArtToolbarStyleControls() {
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
-  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number } | null>(null);
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number; wave: boolean } | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForPaletteCommandCancels(() => {
+      if (sliderDragRef.current?.wave) sliderDragRef.current = null;
+    }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    const cancelWaveDrag = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !sliderDragRef.current?.wave) return;
+      // This capture listener runs before modal/menu handlers in the detached palette too.
+      // Let the owning surface close without disarming the slider or swallowing its key.
+      if (event.defaultPrevented || isBlockedByModalDialog(event.target) ||
+          document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) return;
+      sliderDragRef.current = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onCancel?.();
+    };
+    window.addEventListener("keydown", cancelWaveDrag, true);
+    return () => { disposed = true; unlisten?.(); window.removeEventListener("keydown", cancelWaveDrag, true); };
+  }, [onCancel]);
   const [colorOpen, setColorOpen] = useState(false);
   const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -2357,13 +2380,17 @@ function ArtToolbarStyleControls() {
     shortLabel: string,
     value: number,
     commandId: (opacity: number) => string,
-    supportedCount = selectedCount
+    supportedCount = selectedCount,
+    numeric?: { min: number; max: number; step: number; unit: string; mixed: boolean }
   ) => {
-    const percent = Math.round(value * 100);
+    const min = numeric?.min ?? 0, max = numeric?.max ?? 100, step = numeric?.step ?? 1;
+    const percent = numeric ? value : Math.round(value * 100);
+    const snap = (next: number) => Math.max(min, Math.min(max, Math.round((next - min) / step) * step + min));
+    const commandForValue = (next: number) => commandId(numeric ? snap(next) : snap(next) / 100);
+    const displayValue = numeric?.mixed ? "Mixed" : `${percent}${numeric?.unit ?? "%"}`;
     const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
     const applySliderPercent = (nextPercent: number, commit: boolean) => {
-      const normalizedPercent = Math.max(0, Math.min(100, Math.round(nextPercent)));
-      const command = commandId(normalizedPercent / 100);
+      const command = commandForValue(nextPercent);
       if (commit) {
         invokeOrCommit(command);
       } else {
@@ -2374,8 +2401,8 @@ function ArtToolbarStyleControls() {
       sliderDragRef.current?.sliderKey === sliderKey && sliderDragRef.current.pointerId === event.pointerId;
     const applySliderPointer = (event: ReactPointerEvent<HTMLInputElement>, commit: boolean) => {
       const rect = event.currentTarget.getBoundingClientRect();
-      const nextPercent = rect.width > 0 ? (event.clientX - rect.left) / rect.width * 100 : percent;
-      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      const nextPercent = rect.width > 0 ? min + (event.clientX - rect.left) / rect.width * (max - min) : percent;
+      event.currentTarget.value = `${snap(nextPercent)}`;
       applySliderPercent(nextPercent, commit);
     };
     const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -2383,39 +2410,40 @@ function ArtToolbarStyleControls() {
       const basePercent = Number.isFinite(currentPercent) ? currentPercent : percent;
       let nextPercent = basePercent;
       if (event.key === "Home") {
-        nextPercent = 0;
+        nextPercent = min;
       } else if (event.key === "End") {
-        nextPercent = 100;
+        nextPercent = max;
       } else if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
-        nextPercent = basePercent - (event.shiftKey ? 10 : 1);
+        nextPercent = basePercent - (event.shiftKey ? 10 : 1) * step;
       } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
-        nextPercent = basePercent + (event.shiftKey ? 10 : 1);
+        nextPercent = basePercent + (event.shiftKey ? 10 : 1) * step;
       } else {
         return;
       }
       event.preventDefault();
-      event.currentTarget.value = `${Math.max(0, Math.min(100, Math.round(nextPercent)))}`;
+      event.currentTarget.value = `${snap(nextPercent)}`;
       applySliderPercent(nextPercent, true);
     };
     return (
       <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}
-        title={`${supportTitle(label, supportedCount)}: ${percent}%`}>
+        title={`${supportTitle(label, supportedCount)}: ${displayValue}`}>
         <span className="art-inspector-slider-header">
           <span className="art-inspector-slider-label">{shortLabel}</span>
-          <span className="art-inspector-slider-value">{percent}%</span>
+          <span className="art-inspector-slider-value">{displayValue}</span>
         </span>
         <input
           type="range"
-          min={0}
-          max={100}
+          min={min}
+          max={max}
+          step={step}
           value={percent}
           disabled={!selected || supportedCount === 0}
           aria-label={label}
-          title={`${supportTitle(label, supportedCount)}: ${percent}%`}
+          title={`${supportTitle(label, supportedCount)}: ${displayValue}`}
           data-palette-control="true"
           onPointerDown={(event) => {
             event.stopPropagation();
-            sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+            sliderDragRef.current = { sliderKey, pointerId: event.pointerId, wave: Boolean(numeric) };
             if (typeof event.currentTarget.setPointerCapture === "function") {
               event.currentTarget.setPointerCapture(event.pointerId);
             }
@@ -2451,17 +2479,19 @@ function ArtToolbarStyleControls() {
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }
               sliderDragRef.current = null;
+              if (numeric) onCancel?.();
             }
           }}
           onChange={(event) => {
             if (sliderDragRef.current?.sliderKey === sliderKey) {
-              previewCommand(commandId(Number(event.currentTarget.value) / 100));
+              previewCommand(commandForValue(Number(event.currentTarget.value)));
             }
           }}
           onKeyDown={applySliderKey}
           onBlur={() => {
             if (sliderDragRef.current?.sliderKey === sliderKey) {
               sliderDragRef.current = null;
+              if (numeric) onCancel?.();
             }
           }}
         />
@@ -2486,7 +2516,9 @@ function ArtToolbarStyleControls() {
       data-art-line-ends-support-all={currentArtStyle?.supportsLineEndsAll ?? false}
       data-art-corners-support-all={currentArtStyle?.supportsCornersAll ?? false}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (event.key === "Escape" && !event.defaultPrevented &&
+            !isBlockedByModalDialog(event.target) &&
+            !document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
           onCancel?.();
           setColorOpen(false);
         }
@@ -2685,6 +2717,19 @@ function ArtToolbarStyleControls() {
         {supportsFill ? opacitySlider("Fill opacity", "Fill", fillOpacity, objectFillOpacityCommandId, fillSupportedCount) : null}
         {supportsStroke ? opacitySlider("Stroke opacity", "Stroke", strokeOpacity, objectStrokeOpacityCommandId, strokeSupportedCount) : null}
       </div>
+      {currentArtStyle?.wavy ? (
+        <div className="art-inspector-row art-inspector-opacity-row" aria-label="Wave settings">
+          {(["smoothness", "height", "width"] as WaveSetting[]).map((setting) => {
+            const wave = currentArtStyle.wavy!;
+            const label = setting[0].toUpperCase() + setting.slice(1);
+            return <Fragment key={setting}>{opacitySlider(
+              `Wave ${setting}`, setting === "smoothness" ? "Smooth" : label, wave[setting].value ?? waveSettingRanges[setting].min,
+              (value) => objectWaveCommandId(setting, value), wave.count,
+              { ...waveSettingRanges[setting], unit: setting === "smoothness" ? "%" : " px", mixed: wave[setting].mixed }
+            )}</Fragment>;
+          })}
+        </div>
+      ) : null}
       {showEffectControls && visibleEffectKind ? (
         <div
           className="art-inspector-row art-effect-row"

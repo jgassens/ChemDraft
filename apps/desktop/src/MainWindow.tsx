@@ -323,6 +323,7 @@ import {
   objectPaintTypeForCommand,
   objectStyleActions,
   objectMarkerKindForCommand,
+  objectWaveForCommand,
   objectMarkerSizeForCommand,
   objectShaftMarkSizeAutoCommandId,
   objectShaftMarkSizeForCommand,
@@ -518,6 +519,7 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
+  applyGraphicWaveSettingToSelection,
   applyGraphicObjectMarkerSizeToSelection,
   applyGraphicShaftMarkSizeToSelection,
   graphicObjectHasShaftMark,
@@ -760,6 +762,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  sendPaletteCommandCancel,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -1714,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.10.01.16-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -8198,6 +8201,20 @@ export function MainWindow({
       };
     }
 
+    const wave = objectWaveForCommand(commandId);
+    if (wave) {
+      const ids = graphicObjectIds.filter((id) => {
+        const object = findDocumentObject(currentDocument, id);
+        return object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy";
+      });
+      return {
+        document: applyGraphicWaveSettingToSelection(currentDocument, wave.setting, wave.value, ids),
+        handled: true,
+        targeted: ids.length > 0,
+        message: `Updated wave ${wave.setting}`
+      };
+    }
+
     const markerSize = objectMarkerSizeForCommand(commandId);
     if (markerSize) {
       const markerObjectIds = graphicObjectIds.filter((objectId) =>
@@ -8348,7 +8365,7 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, objectWaveForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
@@ -8446,6 +8463,16 @@ export function MainWindow({
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
+
+  // Both native palettes and the web fallback commit wave edits through their registered command.
+  // The registered handler retains the preview's start document for one Undo entry per gesture.
+  const commitArtStyleCommand = useCallback((commandId: string) => {
+    if (objectWaveForCommand(commandId)) {
+      void invokeCommandRef.current(commandId);
+    } else {
+      commitObjectStylePreview(commandId);
+    }
+  }, [commitObjectStylePreview]);
 
   const applyPendingMoleculeStyleOverrideChoice = useCallback((choice: "keep" | "clear" | "cancel") => {
     const prompt = moleculeStyleOverridePrompt;
@@ -9078,7 +9105,7 @@ export function MainWindow({
         previewMoleculeInspectorCommand(commandId);
       }),
       commit: (commandId) => diagnose("commit", commandId, () => {
-        commitObjectStylePreview(commandId);
+        commitArtStyleCommand(commandId);
         commitMoleculeInspectorPreview(commandId);
       }),
       cancel: () => diagnose("cancel", undefined, () => {
@@ -9090,7 +9117,7 @@ export function MainWindow({
     cancelMoleculeInspectorPreview,
     cancelObjectStylePreview,
     commitMoleculeInspectorPreview,
-    commitObjectStylePreview,
+    commitArtStyleCommand,
     previewMoleculeInspectorCommand,
     previewObjectStyleCommand
   ]);
@@ -11492,6 +11519,10 @@ export function MainWindow({
 
     objectStyleActions.forEach((action) => {
       register(action, () => {
+        if (objectWaveForCommand(action.id)) {
+          commitObjectStylePreview(action.id);
+          return;
+        }
         if (!applyObjectStyleCommand(action.id)) {
           setStatus(`${action.title} unavailable`);
         }
@@ -11630,6 +11661,7 @@ export function MainWindow({
     fuseDieneAtHoveredNativeBond,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
+    commitObjectStylePreview,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
     currentMoleculeInspector,
@@ -12385,7 +12417,7 @@ export function MainWindow({
       return;
     }
 
-    if (applyObjectStyleCommand(commandId)) {
+    if (!objectWaveForCommand(commandId) && applyObjectStyleCommand(commandId)) {
       return;
     }
 
@@ -13537,6 +13569,18 @@ export function MainWindow({
       if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
         return;
       }
+      // The detached palette can leave keyboard focus in this document window during a drag.
+      // Modal dialogs and expanded menus keep ownership of Escape, including when their
+      // handler has already closed the surface and marked this event handled.
+      if (event.key === "Escape" && artStylePreviewRef.current &&
+          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
+          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+          !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+        event.preventDefault();
+        cancelObjectStylePreview();
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -13846,6 +13890,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelObjectStylePreview,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
@@ -21243,7 +21288,7 @@ export function MainWindow({
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
-                  onArtStyleCommit: commitObjectStylePreview,
+                  onArtStyleCommit: commitArtStyleCommand,
                   onArtStyleCancel: cancelObjectStylePreview,
                   onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
                   onMoleculeInspectorCommit: commitMoleculeInspectorPreview,

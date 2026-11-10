@@ -19,6 +19,9 @@ import {
   rotatedGraphicLocalBounds as rotatedGraphicFrameBounds
 } from "./graphicHandleGeometry";
 import {
+  graphicWaveSettings,
+  waveSettingRanges,
+  type WaveSetting,
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
   clampGraphicShaftMarkSizePx,
@@ -10709,6 +10712,23 @@ export function applyGraphicObjectMarkerKindToSelection(
       }
     };
   }, graphicObjectSupportsMarkers);
+}
+
+/** Opt selected wavy art paths into adjustable geometry; never touches molecular bonds. */
+export function applyGraphicWaveSettingToSelection(
+  document: ChemDraftDocument,
+  setting: WaveSetting,
+  value: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const range = waveSettingRanges[setting];
+  if (!Number.isFinite(value) || value < range.min || value > range.max ||
+    !Number.isInteger((value - range.min) / range.step)) return document;
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    const settings = { ...graphicWaveSettings(object), [setting]: value };
+    if (object.data.waveSmoothness === settings.smoothness && object.data.waveHeight === settings.height && object.data.waveWidth === settings.width) return object.data;
+    return { ...object.data, waveSmoothness: settings.smoothness, waveHeight: settings.height, waveWidth: settings.width };
+  }, (object) => object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy");
 }
 
 /** Set every non-none head's size on the selection's marker-capable graphics, snapped to the same
