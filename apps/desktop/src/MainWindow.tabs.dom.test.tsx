@@ -733,11 +733,13 @@ describe("documents in one window", () => {
     expect(hoverMolecule().atoms[1]!.element).toBe("N");
   });
 
-  it("Escape discards the first letter even when rollback constructs document keys in a different order", async () => {
+  it("Escape keeps the first letter and its undo entry even when rollback constructs document keys in a different order", async () => {
     await mountHoverChain();
     const before = bridge().snapshot().document;
     await hoverChainAtom(1);
-    for (const key of "NMe") await labelKey(key);
+    await labelKey("N");
+    const afterFirstLetter = bridge().snapshot().document;
+    for (const key of "Me") await labelKey(key);
     const restore = atomLabelDraft.restoreAtomLabelDraft;
     vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
       const restored = restore(document, state);
@@ -745,8 +747,10 @@ describe("documents in one window", () => {
     });
     await labelKey("Escape");
     expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
+    await command("edit.undo");
     expect(bridge().snapshot().document).toEqual(before);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
   });
 
   it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
@@ -756,7 +760,9 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().file).toEqual({ path: "/tmp/chain.chemdraft", dirty: false });
     const before = bridge().snapshot().document;
     await hoverChainAtom(1);
-    for (const key of "NMe") await labelKey(key);
+    await labelKey("N");
+    const afterFirstLetter = bridge().snapshot().document;
+    for (const key of "Me") await labelKey(key);
     expect(labelEditor()?.value).toBe("NMe");
     const savedPath = saveCommand === "document.saveAs" ? "/tmp/renamed-chain.chemdraft" : "/tmp/chain.chemdraft";
     if (saveCommand === "document.saveAs") native.savePicker.mockResolvedValueOnce(savedPath);
@@ -769,10 +775,12 @@ describe("documents in one window", () => {
     expect(savedMolecule.atoms[1]!.element).toBe("NMe");
     expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: false });
     await labelKey("Escape");
-    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
     expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: true });
     expect(document.title).toContain(`${savedPath.split("/").at(-1)} •`);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(before);
   });
 
   it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {

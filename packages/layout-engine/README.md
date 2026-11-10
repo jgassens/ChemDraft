@@ -11,6 +11,12 @@ valence tables the reading needs. It is pure text in, reading out, so the drawn 
 group by the same reading the chemistry uses. `@chemdraft/document-workflow-core` re-exports it and
 keeps what is built on it (valence verdicts, validation, expansion); it must not carry a copy.
 
+Hover typing uses `nativeHoverAtomLabelCompletion` and `nativeHoverAtomLabelCanContinue` against
+the same grammar and abbreviation table. Lowercase keys can finish known labels such as NO2,
+OMe and OBn. An implicit first capital never makes `n,o` the element No: that pending text is
+invalid until completed. The ordinary label grammar still accepts explicitly entered element
+symbols, and the hover helpers do not change imported labels.
+
 A group label is drawn the way round its bond reads, with the atom it bonds to on the atom
 (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`): "OMe" with its O on the atom, drawn "MeO"
 with its bond on the right, but only when the turned text reads as the same group. `AtomLabelPlan`
