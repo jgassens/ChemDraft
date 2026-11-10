@@ -3655,7 +3655,8 @@ export function MainWindow({
   // Only insertion and automatic re-layout callers opt into the pre-commit page question.
   // Hand gestures, typing, styling and arrange commands use the synchronous commit above.
   const commitDocumentChangeWithPageFit = useCallback((
-    update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string
+    update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string,
+    onCommit?: NonNullable<Parameters<typeof commitWithPageFit>[3]>["onCommit"]
   ): boolean => {
     if (pageFitPendingRef.current) { setStatus("Finish the page size question before editing."); return false; }
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
@@ -3667,6 +3668,7 @@ export function MainWindow({
       const proposed = prepareDocumentCommit(next, label);
       const tabId = activeDocumentTabIdRef.current;
       const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true), {
+        onCommit,
         consent: new PageEnlargementConsent(shortcutPlatform),
         isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
           assistantDocumentContentUnchanged(before, documentRef.current)
@@ -7297,19 +7299,22 @@ export function MainWindow({
         })
         : parsed.failures;
       const failures = smilesListFailureStatus(displayedFailures);
-      const placementStatus = result.objectIds.length
-        ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
-      const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
       const failureCount = displayedFailures.length;
-      const status = failures
-        ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
-          (engineUnavailable ? "; pasted as text" : "")
-        : baseStatus;
+      const makeStatus = (placementStatus: string) => {
+        const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+        return failures ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
+          (engineUnavailable ? "; pasted as text" : "") : baseStatus;
+      };
+      const status = makeStatus("No SMILES structures were pasted");
       if (result.objectIds.length > 0) {
-        commitDocumentChangeWithPageFit(result.document, "Paste SMILES list");
+        commitDocumentChangeWithPageFit(result.document, "Paste SMILES list", (document, outcome) => {
+          setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems, {
+            document, decision: outcome.decision,
+            overflowObjectIds: outcome.plan.growth.flatMap(growth => growth.objectIds ?? [])
+          })));
+        });
         resetPasteUiState();
         setPageFitPrompt(undefined);
-        setStatus(status);
       }
       return { outcome: result.objectIds.length > 0 ? "success" as const : "no-structure" as const, pasteAsText: engineUnavailable, status };
     }).catch((error: unknown) => {

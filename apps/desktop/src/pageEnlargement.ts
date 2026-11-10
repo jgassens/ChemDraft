@@ -119,15 +119,18 @@ export function applyPageFitDecision(plan: PageFitPlan, enlarge: boolean): ChemD
  */
 export function commitWithPageFit(before: ChemDraftDocument, proposed: ChemDraftDocument,
   commit: (document: ChemDraftDocument) => void,
-  options: { consent?: PageEnlargementConsent; signal?: AbortSignal; isCurrent?: () => boolean } = {}
+  options: { consent?: PageEnlargementConsent; signal?: AbortSignal; isCurrent?: () => boolean;
+    onCommit?: (document: ChemDraftDocument, outcome: { decision: "fits" | "enlarge" | "keep"; plan: PageFitPlan }) => void } = {}
 ): Promise<void> | undefined {
   options.signal?.throwIfAborted();
   const plan = planDocumentPageFit(before, proposed);
-  if (!plan.growth.length) { commit(proposed); return undefined; }
+  if (!plan.growth.length) { commit(proposed); options.onCommit?.(proposed, { decision: "fits", plan }); return undefined; }
   return (options.consent ?? new PageEnlargementConsent()).confirm(options.signal).then(decision => {
     options.signal?.throwIfAborted();
     if (decision === "unanswered") throw new Error("No answer to the enlarge-page question; nothing was inserted.");
     if (options.isCurrent && !options.isCurrent()) throw new Error("The drawing changed while the page question was open; try the action again.");
-    commit(applyPageFitDecision(plan, decision === "enlarge"));
+    const document = applyPageFitDecision(plan, decision === "enlarge");
+    commit(document);
+    options.onCommit?.(document, { decision, plan });
   });
 }
