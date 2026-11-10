@@ -27,7 +27,8 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
   const value = group.attributes.BracketedObjectIDs;
   const sourceIds = typeof value === "string" ? [...new Set(value.trim().split(/\s+/).filter(Boolean))] : [];
   const pattern = group.attributes.PolymerRepeatPattern;
-  const connectivity: RepeatUnit["connectivity"] = pattern === "HeadToTail" ? "ht"
+  // CDX/CDXML defaults to HeadToTail; native brackets still use the MOL writer's default.
+  const connectivity: RepeatUnit["connectivity"] = pattern === undefined || pattern === "HeadToTail" ? "ht"
     : pattern === "HeadToHead" ? "hh" : pattern === "EitherUnknown" ? "eu" : undefined;
   const connectivityReason = pattern !== undefined && connectivity === undefined
     ? `its imported PolymerRepeatPattern "${String(pattern)}" has no supported MOL SRU connectivity` : undefined;
@@ -81,7 +82,37 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
     atoms.forEach(atom => ids.add(atom.id));
     members.set(molecule!.id, ids);
   }
+  reason ??= importedBoundaryReason(pair, members, objects);
   return { members, reason: reason ?? connectivityReason, referencedObjectIds, connectivity };
+}
+
+/** Import snapshots distinguish later additions from intentionally excluded source atoms. */
+function importedBoundaryReason(pair: BracketObject[], members: Map<string, Set<string>>, objects: readonly DocumentObject[]): string | undefined {
+  const left = Math.min(...pair.map(object => object.x));
+  const top = Math.min(...pair.map(object => object.y));
+  const right = Math.max(...pair.map(object => object.x + object.width));
+  const bottom = Math.max(...pair.map(object => object.y + object.height));
+  for (const [objectId, atomIds] of members) {
+    const molecule = objects.find(object => object.id === objectId);
+    if (molecule?.type !== "molecule") continue;
+    const importedBonds = molecule.compatibility?.unknown.cdxmlBondIdsByBondId;
+    const importedAtoms = molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId;
+    for (const bond of molecule.bonds) {
+      if (atomIds.has(bond.fromAtomId) === atomIds.has(bond.toAtomId)) continue;
+      if (!record(importedBonds) || typeof importedBonds[bond.id] !== "string") {
+        return `its imported atom-level membership has a new boundary bond "${bond.id}" between member and non-member atoms`;
+      }
+      const outsideId = atomIds.has(bond.fromAtomId) ? bond.toAtomId : bond.fromAtomId;
+      const outside = molecule.atoms.find(atom => atom.id === outsideId);
+      if (outside && (!record(importedAtoms) || typeof importedAtoms[outsideId] !== "string")) {
+        const point = transformPointForObject(molecule, outside);
+        if (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom) {
+          return `its imported atom-level membership omits new atom "${outsideId}" inside the bracket adjacent to a member atom`;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 /** The MOL writer derives boundary bonds; decline any imported references it cannot preserve. */

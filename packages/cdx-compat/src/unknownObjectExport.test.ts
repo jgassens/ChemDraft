@@ -89,7 +89,9 @@ describe("unknown compatibility object export warnings", () => {
     });
     if (embedded) {
       expect(reopened.source).toBe("native-payload");
-      expect(reopened.document).toEqual(document);
+      expect(reopened.document).toEqual({
+        ...JSON.parse(JSON.stringify(document)), formatVersion: "1.2.0", minAppVersion: "1.2.0"
+      });
     } else {
       expect(reopened.source).toBe("external-cdxml");
       expect(reopened.document!.pages[0].objects).toHaveLength(1);
@@ -99,13 +101,13 @@ describe("unknown compatibility object export warnings", () => {
 
 describe("native object export warnings", () => {
   const base = { x: 60, y: 20, width: 30, height: 40, rotation: 0, style: {} };
-  const cases: { object: DocumentObject; code: string; embedded: string; omitted: string; placeholder?: boolean }[] = [
+  const cases: { object: DocumentObject; code: string; embedded: string; omitted: string; visibleBracket?: boolean }[] = [
     {
       object: { ...base, id: "bracket_1", type: "bracket", bracketKind: "curly", containedObjectIds: [] },
-      code: "cdxml.bracket_payload_only",
-      embedded: "Native curly bracket object ID has no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.",
-      omitted: "Native curly bracket object ID was not saved in this CDX file; this file has no embedded ChemDraft data.",
-      placeholder: true
+      code: "cdxml.bracket_geometry_approximated",
+      embedded: "Bracket ID has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
+      omitted: "Bracket ID has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
+      visibleBracket: true
     },
     {
       object: { ...base, id: "mechanism_1", type: "mechanism-arrow", arrowKind: "full-headed",
@@ -118,9 +120,9 @@ describe("native object export warnings", () => {
     {
       object: { ...base, id: "electron_1", type: "electron-mark", markKind: "lone-pair",
         anchor: { kind: "point", point: { x: 60, y: 20 } } },
-      code: "cdxml.mechanism_payload_only",
-      embedded: "Editable electron-mark object ID remains in the embedded ChemDraft payload until CDXML mapping is implemented.",
-      omitted: "Editable electron-mark object ID was not saved: this file has no embedded ChemDraft data."
+      code: "cdxml.electron_mark_appearance_payload_only",
+      embedded: "CDXML export: electron mark ID, including its position, size (30 × 40), thickness (1.5) and rotation (0°), is preserved only in the embedded ChemDraft payload; no visible CDXML symbol is written.",
+      omitted: "CDXML export: electron mark ID, including its position, size (30 × 40), thickness (1.5) and rotation (0°), was not saved: this file has no embedded ChemDraft data."
     },
     {
       object: { ...base, id: "annotation_1", type: "annotation", targetObjectIds: [], message: "Synthetic note" },
@@ -144,34 +146,41 @@ describe("native object export warnings", () => {
         const exported = binary
           ? exportDocumentToCdx(document, { embedNativePayload: embedded })
           : exportDocumentToCdxml(document);
-        let message = (embedded ? testCase.embedded : testCase.omitted).replace("ID", id);
-        if (binary && testCase.placeholder && embedded) {
-          message = `Native curly bracket object ${id} was not saved in this CDX file; it is kept in the embedded ChemDraft data.`;
-        } else if (binary) {
-          message = message.replace("CDXML", "CDX");
+        let message = (embedded ? testCase.embedded : testCase.omitted).replace("ID", testCase.visibleBracket ? object.id : id);
+        if (binary) {
+          message = message.replaceAll("CDXML", "CDX");
         }
         expect(exported.warnings).toEqual([
           { code: testCase.code, sourceObjectId: object.id,
             message },
-          ...(!embedded ? [{ code: "cdxml.unknown_objects_not_saved",
+          ...(!embedded && !testCase.visibleBracket ? [{ code: "cdxml.unknown_objects_not_saved",
             message: `1 object was not saved (ids ${id}).` }] : [])
         ]);
         if ("bytes" in exported) {
           const visible = readCdx(exported.bytes);
           expect(Boolean(visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE])).toBe(embedded);
           const graphics = visible.kids.find(child => child.name === "page")!.kids.filter(child => child.name === "graphic");
-          expect(graphics).toEqual([]);
-        } else if (testCase.placeholder) {
-          expect(exported.contents).toContain('GraphicType="Unknown"');
+          expect(graphics).toEqual(testCase.visibleBracket ? [expect.objectContaining({
+            attrs: expect.objectContaining({ GraphicType: "Bracket", BracketType: "Square" })
+          })] : []);
+        } else if (testCase.visibleBracket) {
+          expect(exported.contents).toContain('GraphicType="Bracket"');
+          expect(exported.contents).toContain('BracketType="Square"');
         }
         const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
         expect(reopened.document, JSON.stringify(reopened.warnings)).toBeDefined();
         const molecule = reopened.document!.pages[0].objects.find(object => object.type === "molecule")!;
         expect(molecule.atoms.map(atom => atom.element)).toEqual(["C", "C"]);
         expect(molecule.bonds).toHaveLength(1);
-        if (embedded) expect(reopened.document).toEqual(document);
+        if (embedded) expect(reopened.document).toEqual({
+          ...JSON.parse(JSON.stringify(document)), formatVersion: "1.2.0", minAppVersion: "1.2.0"
+        });
         else {
-          expect(reopened.document!.pages[0].objects.map(candidate => candidate.type)).toEqual(["molecule"]);
+          expect(reopened.document!.pages[0].objects.map(candidate => candidate.type))
+            .toEqual(testCase.visibleBracket ? ["molecule", "bracket"] : ["molecule"]);
+          if (testCase.visibleBracket) expect(reopened.document!.pages[0].objects[1]).toMatchObject({
+            type: "bracket", bracketKind: "square", x: 60, y: 20, width: 30, height: 40, rotation: 0
+          });
           expect(molecule.bonds[0]).toMatchObject({
             fromAtomId: molecule.atoms[0].id, toAtomId: molecule.atoms[1].id, order: "single"
           });
@@ -180,15 +189,14 @@ describe("native object export warnings", () => {
     });
   }
 
-  it("reopens payload-less CDX with the molecule intact and no graphic standing in for a bracket", () => {
+  it("reopens payload-less CDX with the molecule intact and a visible square approximation of a curly bracket", () => {
     const document = openChemDraftPayload(source).document!;
     document.pages[0].objects = document.pages[0].objects.filter(object => object.type === "molecule");
     document.pages[0].objects.push(structuredClone(cases[0].object));
     const exported = exportDocumentToCdx(document, { embedNativePayload: false });
     expect(exported.warnings).toEqual([
-      { code: "cdxml.bracket_payload_only", sourceObjectId: "bracket_1",
-        message: "Native curly bracket object bracket_1 was not saved in this CDX file; this file has no embedded ChemDraft data." },
-      { code: "cdxml.unknown_objects_not_saved", message: "1 object was not saved (ids bracket_1)." }
+      { code: "cdxml.bracket_geometry_approximated", sourceObjectId: "bracket_1",
+        message: "Bracket bracket_1 has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box." }
     ]);
     const reopened = importCdx(exported.bytes);
     expect(reopened.source).toBe("external-cdxml");
@@ -196,7 +204,10 @@ describe("native object export warnings", () => {
       "cdxml.external_subset_imported",
       "cdxml.structure_string_not_derived"
     ]);
-    expect(reopened.document!.pages[0].objects.map(object => object.type)).toEqual(["molecule"]);
+    expect(reopened.document!.pages[0].objects.map(object => object.type)).toEqual(["molecule", "bracket"]);
+    expect(reopened.document!.pages[0].objects[1]).toMatchObject({
+      type: "bracket", bracketKind: "square", x: 60, y: 20, width: 30, height: 40, rotation: 0
+    });
     const molecule = reopened.document!.pages[0].objects[0];
     if (molecule.type !== "molecule") throw new Error("Expected surviving molecule");
     expect(molecule.atoms.map(atom => atom.element)).toEqual(["C", "C"]);

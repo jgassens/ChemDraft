@@ -23,24 +23,25 @@ describe("repeat-unit export membership", () => {
     const before = structuredClone(document);
     const warnings: ExportWarning[] = [];
     const groups = repeatUnitMolfileGroups(document, [molecule], warnings);
-    expect(groups).toEqual([{ objectId: close.id, label: "x-y", atomIds: [molecule.atoms[0].id] }]);
+    expect(groups).toEqual([{ objectId: close.id, label: "x-y", atomIds: [molecule.atoms[0].id], connectivity: "ht" }]);
     expect(warnings).toEqual([]);
     const result = write(molecule, { kekuleBondOrders: new Map(), repeatUnitGroups: groups });
     if (format === "V3000") {
-      expect(result.contents.replace(/ -\nM  V30 /g, " ")).toContain("SRU 0 ATOMS=(1 1) XBONDS=(1 1) LABEL=x-y CONNECT=EU");
+      expect(result.contents.replace(/ -\nM  V30 /g, " ")).toContain("SRU 0 ATOMS=(1 1) XBONDS=(1 1) LABEL=x-y CONNECT=HT");
     } else {
       expect(result.contents).toContain("M  SAL   1  1   1");
       expect(result.contents).toContain("M  SBL   1  1   1");
+      expect(result.contents).toContain("M  SCN  1   1 HT");
     }
     expect(repeatUnitExportWarnings(document, "SMILES")[0].message).toContain("around 1 atoms");
     expect(document).toEqual(before);
   });
 
   it.each([
-    ["HeadToTail", "ht"], ["HeadToHead", "hh"], ["EitherUnknown", "eu"]
+    [undefined, "ht"], ["HeadToTail", "ht"], ["HeadToHead", "hh"], ["EitherUnknown", "eu"]
   ] as const)("preserves imported PolymerRepeatPattern %s in MOL connectivity", (pattern, connectivity) => {
     const { document, molecule, close } = imported("11",
-      source.replace('SRULabel="x-y"', `SRULabel="x-y" PolymerRepeatPattern="${pattern}"`));
+      pattern === undefined ? source : source.replace('SRULabel="x-y"', `SRULabel="x-y" PolymerRepeatPattern="${pattern}"`));
     const before = structuredClone(document);
     const warnings: ExportWarning[] = [];
     const groups = repeatUnitMolfileGroups(document, [molecule], warnings);
@@ -184,10 +185,10 @@ describe("repeat-unit export membership", () => {
     const before = structuredClone(document);
     const warnings: ExportWarning[] = [];
     expect(repeatUnitMolfileGroups(document, [molecule, replacement], warnings, { merged: true })).toEqual([
-      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => `m1_${atom.id}`) }
+      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => `m1_${atom.id}`), connectivity: "ht" }
     ]);
     expect(repeatUnitMolfileGroups(document, [replacement], warnings)).toEqual([
-      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => atom.id) }
+      { objectId: close.id, label: "x-y", atomIds: replacement.atoms.map(atom => atom.id), connectivity: "ht" }
     ]);
     expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
     expect(warnings).toEqual([]);
@@ -243,6 +244,48 @@ describe("repeat-unit export membership", () => {
       message: expect.stringContaining('its imported BracketedObjectIDs member "11" does not resolve unambiguously') })]);
   });
 
+  it("preserves unchanged atom-level membership with no imported crossing bonds", () => {
+    const { document, molecule, close } = imported("11", source.replace(/<crossingbond[^>]*\/>/, ""));
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([
+      { objectId: close.id, label: "x-y", atomIds: [molecule.atoms[0].id], connectivity: "ht" }
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each(["inside", "outside"])("declines a new boundary bond to an atom inserted %s a repeat with no imported crossings", location => {
+    const { document, molecule, close } = imported("11", source.replace(/<crossingbond[^>]*\/>/, ""));
+    const member = molecule.atoms[0];
+    molecule.atoms.push({ ...member, id: "inserted", x: location === "inside" ? member.x + 10 : 1000 });
+    molecule.bonds.push({ id: "inserted-bond", fromAtomId: member.id, toAtomId: "inserted", order: "single" });
+    const before = structuredClone(document);
+    const warnings: ExportWarning[] = [];
+    const groups = repeatUnitMolfileGroups(document, [molecule], warnings);
+    expect(groups).toEqual([]);
+    expect(warnings).toEqual([{
+      code: "export.repeat_unit_not_represented", severity: "warning", objectId: close.id,
+      message: `MOL cannot represent repeat unit x-y (bracket ${close.id}): its imported atom-level membership has a new boundary bond "inserted-bond" between member and non-member atoms; only the bare structure is written.`
+    }]);
+    for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+      expect(write(molecule, { kekuleBondOrders: new Map(), repeatUnitGroups: groups }).contents).not.toMatch(/SRU/);
+    }
+    expect(document).toEqual(before);
+  });
+
+  it("declines a new member-adjacent atom inside a repeat even when the bond retains its imported id", () => {
+    const { document, molecule, close } = imported("11", source.replace(/<crossingbond[^>]*\/>/, ""));
+    molecule.atoms.push({ ...molecule.atoms[0], id: "inserted", x: molecule.atoms[0].x + 10 });
+    molecule.bonds[0].toAtomId = "inserted";
+    const before = structuredClone(document);
+    const warnings: ExportWarning[] = [];
+    expect(repeatUnitMolfileGroups(document, [molecule], warnings)).toEqual([]);
+    expect(warnings).toEqual([{
+      code: "export.repeat_unit_not_represented", severity: "warning", objectId: close.id,
+      message: `MOL cannot represent repeat unit x-y (bracket ${close.id}): its imported atom-level membership omits new atom "inserted" inside the bracket adjacent to a member atom; only the bare structure is written.`
+    }]);
+    expect(document).toEqual(before);
+  });
+
   it("preserves imported atom membership spanning two merged molecules", () => {
     const cdxml = source.replace("</fragment>", '</fragment><fragment id="40"><n id="41" Element="7" p="500 500"/></fragment>');
     const { document, molecule, close } = imported("11 41", cdxml);
@@ -252,13 +295,13 @@ describe("repeat-unit export membership", () => {
     const warnings: ExportWarning[] = [];
     const groups = repeatUnitMolfileGroups(document, molecules, warnings, { merged: true });
     expect(groups).toEqual([{ objectId: close.id, label: "x-y",
-      atomIds: [`m1_${molecule.atoms[0].id}`, `m0_${second.atoms[0].id}`] }]);
+      atomIds: [`m1_${molecule.atoms[0].id}`, `m0_${second.atoms[0].id}`], connectivity: "ht" }]);
     const merged: MoleculeObject = { ...molecule, id: "merged",
       atoms: molecules.flatMap((member, index) => member.atoms.map(atom => ({ ...atom, id: `m${index}_${atom.id}` }))),
       bonds: molecules.flatMap((member, index) => member.bonds.map(bond => ({ ...bond,
         id: `m${index}_${bond.id}`, fromAtomId: `m${index}_${bond.fromAtomId}`, toAtomId: `m${index}_${bond.toAtomId}` }))) };
     const result = moleculeToMolfileV3000(merged, { kekuleBondOrders: new Map(), repeatUnitGroups: groups });
-    expect(result.contents.replace(/ -\nM  V30 /g, " ")).toContain("SRU 0 ATOMS=(2 1 2) XBONDS=(1 1) LABEL=x-y CONNECT=EU");
+    expect(result.contents.replace(/ -\nM  V30 /g, " ")).toContain("SRU 0 ATOMS=(2 1 2) XBONDS=(1 1) LABEL=x-y CONNECT=HT");
     expect(warnings).toEqual([]);
   });
 
