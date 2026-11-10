@@ -9,6 +9,7 @@ import {
   getToolsetItemGroups,
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
+  migrateBracketToolbarOrder,
   type DesktopToolsetRegistry,
   commandShortcutDisplay,
   compactMacShortcutLabel,
@@ -85,6 +86,20 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
+  it("keeps Round Bracket beside Square Bracket in defaults and older saved orders", () => {
+    const defaults = getToolsetItemGroups("core.main").flat().map(item => item.id);
+    expect(defaults[defaults.indexOf("tool.squareBracket") + 1]).toBe("tool.roundBracket");
+    const state = { version: 1, userToolsets: [], toolsetOverrides: [{ toolsetId: "core.main",
+      itemOrder: { "core.main.items": defaults.filter(id => id !== "tool.roundBracket") } }] };
+    const migrated = migrateBracketToolbarOrder(state);
+    const items = getToolsetItemGroups("core.main", createDesktopToolsetRegistry(state)).flat().map(item => item.id);
+    expect(items).toEqual(defaults);
+    expect(migrateBracketToolbarOrder(migrated)).toBe(migrated);
+    // An explicit custom placement is the user's choice and is retained.
+    const custom = { ...state, toolsetOverrides: [{ toolsetId: "core.main",
+      itemOrder: { "core.main.items": [...defaults.filter(id => id !== "tool.roundBracket"), "tool.roundBracket"] } }] };
+    expect(migrateBracketToolbarOrder(custom)).toBe(custom);
+  });
   it("keeps Double Bond and Triple Bond off the default Main toolbar", () => {
     const ids = getToolsetItemGroups("core.main").flat().map(item => item.id);
     expect(ids).toContain("tool.bond");

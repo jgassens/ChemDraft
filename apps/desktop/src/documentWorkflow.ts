@@ -1,6 +1,6 @@
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
-import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
+import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -19810,7 +19810,6 @@ export function copyAsMolfile(
   warningsOut?: string[]
 ): string | undefined {
   const molecules = copyAsScopeMolecules(document);
-  reportRepeatUnitExportWarnings(document, "MOL", molecules, warningsOut);
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
@@ -19818,11 +19817,15 @@ export function copyAsMolfile(
   // Valid group labels are written as their atoms, each wrapped in a superatom S-group carrying
   // the label, so a reader that contracts abbreviations still shows "OMe".
   const { molecule: merged, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(scoped);
+  const repeatWarnings: ExportWarning[] = [];
+  const repeatUnitGroups = repeatUnitMolfileGroups(document, molecules, repeatWarnings, { merged: true, expansions });
+  warningsOut?.push(...repeatWarnings.map(warning => warning.message));
   const options = {
     fromDocFrame: true,
     warnings: warningsOut,
     kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
     superatomGroups: expansions,
+    repeatUnitGroups,
     placeholderAtoms
   };
   return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
