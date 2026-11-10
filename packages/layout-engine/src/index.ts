@@ -5607,7 +5607,7 @@ function fallbackObjectFragment(object: DocumentObject, layerIndex: number): Pag
       "font-family": "Arial, sans-serif",
       "font-size": 11,
       fill: "#52616b"
-    }, [textFragment(`fallback-label-text-${object.id}`, object.type)])
+    }, [textFragment(`fallback-label-text-${object.id}`, "Unsupported object")])
   ]);
 }
 

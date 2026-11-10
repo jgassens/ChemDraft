@@ -40,10 +40,10 @@ function warningSink(warnings: CdxWarning[]): (warning: CdxWarning) => void {
   };
 }
 
-type Prop = { tag: number; name: string; kind: string; names?: Map<number, string>; values?: Map<string, number> };
+type Prop = { tag: number; name: string; kind: string; idReference?: boolean; names?: Map<number, string>; values?: Map<string, number> };
 const byTag = new Map<number, Prop>(), byName = new Map<string, Prop>(), objectTag = new Map<string, number>();
-for (const [tag, name, kind, list] of PROPS) {
-  const p: Prop = { tag, name, kind };
+for (const [tag, name, kind, list, idReference] of PROPS) {
+  const p: Prop = { tag, name, kind, idReference };
   if (list) {
     p.names = new Map();
     p.values = new Map();
@@ -141,11 +141,13 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
       ids.set(id, String(next)); used.add(next++);
     }
   });
-  const references = new Set(["B", "E", "object", "SupersededBy", "BondCircularOrdering", "ConnectionOrder"]);
   const copy = (x: CdxElement): CdxElement => {
     const attrs = Object.fromEntries(Object.entries(x.attrs).map(([key, value]) => {
-      const kind = byName.get(key)?.kind;
-      const isReference = references.has(key) || kind === "ids" || kind === "attachments";
+      const property = byName.get(key);
+      // Reference semantics live beside the binary tags; <represent object> is a CDXML child
+      // encoded by the composite RepresentsProperty property rather than its own scalar tag.
+      const isReference = property?.idReference || property?.kind === "ids" || property?.kind === "attachments"
+        || x.name === "represent" && key === "object";
       return [key, key === "id" && objectTag.has(x.name) ? ids.get(value) ?? value
         : isReference ? value.split(/\s+/).map((id) => ids.get(id) ?? id).join(" ") : value];
     }));
@@ -684,7 +686,10 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
       case "deg10": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "spacing": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "alpha": return r === undefined ? undefined : le(2, Math.round(Math.min(1, Math.max(0, r)) * 65535));
-      case "f64": return r === undefined ? undefined : f64(r);
+      case "f64":
+        // Repeat counts use the native safe-integer range, beyond the geometry parser's 1e9 cap.
+        if (p.name === "RepeatCount" && isInteger && Number.isSafeInteger(Number(v)) && Number(v) > 0) return f64(Number(v));
+        return r === undefined ? undefined : f64(r);
       case "lh": return v === "auto" ? le(2, 1) : v === "variable" ? le(2, 0) : r === undefined ? undefined : le(2, Math.round(r * 20));
       case "wrap": return r === undefined ? undefined : le(2, Math.round(r));
       case "str": return plainString(v.replace(/\n/g, "\r"), el, p.tag === 0x1500 || p.tag === 0x1501);
