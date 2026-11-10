@@ -7038,7 +7038,7 @@ export function MainWindow({
       // the same page-resize prompt the external-CDXML import path uses, when the pasted
       // content overflows and a larger preset (up to A0) would fit it.
       const fit = recommendImportedPageFit(nextDocument);
-      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
+      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure", requestId: crypto.randomUUID() } : undefined);
       const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
       const pasteStatus = fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
