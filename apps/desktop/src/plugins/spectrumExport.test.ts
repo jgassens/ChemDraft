@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
-import type { PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
+import { PluginPanelReportSchema, type PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
 import { invoke } from "@tauri-apps/api/core";
 import { Blob as NodeBlob } from "node:buffer";
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { lastExportDirectory } from "../exportDirectory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -104,6 +105,80 @@ const spectrum: PluginLinkedFigureSpectrum = {
 };
 
 describe("spectrumToJcampDx", () => {
+  it.each([undefined, false])("preserves the original JCAMP bytes when estimated is %s", (estimated) => {
+    const jdx = spectrumToJcampDx({
+      ...spectrum,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment" },
+      peaks: spectrum.peaks.map((peak) => ({ ...peak, estimated }))
+    });
+    expect(jdx).toBe(`##TITLE=Predicted NMR spectrum
+##JCAMP-DX=5.01
+##DATA TYPE=NMR PEAK TABLE
+##DATA CLASS=PEAK TABLE
+##ORIGIN=ChemDraft NMR predictor
+##OWNER=UNKNOWN
+##.OBSERVE FREQUENCY=400
+##.OBSERVE NUCLEUS=^1H
+##$CHEMDRAFT PROTON FREQUENCY=400
+##$CHEMDRAFT COMPARISON MODE=HOSE
+##$CHEMDRAFT PRIMARY METHOD=HOSE
+##$CHEMDRAFT ALTERNATIVE METHOD=increment
+##$CHEMDRAFT INTENSITY SEMANTICS=Predicted equivalent-nuclei count; not experimental integration
+##XUNITS=PPM
+##YUNITS=ARBITRARY UNITS
+##NPOINTS=2
+##PEAK TABLE=(XY..XY)
+7.2600, 5.000
+1.2000, 3.000
+##END=
+`);
+  });
+
+  it("keeps the existing estimate flag through report validation and discloses an all-estimate spectrum", () => {
+    const report = PluginPanelReportSchema.parse({ title: "Prediction", sections: [{
+      kind: "linkedFigure",
+      spectrum: {
+        ...spectrum,
+        comparison: { primaryLabel: "HOSE", alternativeLabel: "increment" },
+        peaks: spectrum.peaks.map((peak) => ({ ...peak, estimated: true }))
+      }
+    }] });
+    const section = report.sections[0]!;
+    if (section.kind !== "linkedFigure") throw new Error("Expected linked figure");
+    expect(section.spectrum.peaks.every((peak) => peak.estimated)).toBe(true);
+    const jdx = spectrumToJcampDx(section.spectrum);
+    expect(jdx).toContain("##$CHEMDRAFT RULE ESTIMATES=Rule-based shift estimates are present\n");
+    expect(jdx).toContain("$$ Rule-estimated peak: 7.2600 ppm; atom indices (0-based): 0; variant: primary\n");
+    expect(jdx).toContain("$$ Rule-estimated peak: 1.2000 ppm; atom indices (0-based): 1; variant: primary\n");
+    expect(jdx).toContain("##$CHEMDRAFT PRIMARY METHOD=Rule-based estimates\n");
+    expect(jdx).not.toContain("HOSE");
+    expect(jdx.split("##PEAK TABLE=(XY..XY)\n")[1]).toBe("7.2600, 5.000\n1.2000, 3.000\n##END=\n");
+  });
+
+  it.each(["primary", "both"] as const)("scopes lookup attribution and lists only estimated peaks in %s mode", (comparisonMode) => {
+    const jdx = spectrumToJcampDx({
+      ...spectrum,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment" },
+      peaks: [
+        spectrum.peaks[0]!,
+        { ...spectrum.peaks[1]!, estimated: true, alternativePpm: 7.5, atomIndices: [0, 2] }
+      ]
+    }, { comparisonMode });
+    expect(jdx).toContain("##$CHEMDRAFT RULE ESTIMATES=Rule-based shift estimates are present\n");
+    expect(jdx).toContain("##$CHEMDRAFT PRIMARY METHOD=HOSE (non-estimated primary peaks only); rule-based estimates\n");
+    expect(jdx).not.toContain("##$CHEMDRAFT COMPARISON MODE=HOSE\n");
+    expect(jdx).toContain("$$ Rule-estimated peak: 7.2600 ppm; atom indices (0-based): 0, 2; variant: primary\n");
+    expect(jdx).not.toContain("$$ Rule-estimated peak: 1.2000");
+    expect(jdx.includes("$$ Rule-estimated peak: 7.5000 ppm; atom indices (0-based): 0, 2; variant: alternative\n"))
+      .toBe(comparisonMode === "both");
+  });
+
+  it("discloses estimates without comparison labels or atom assignments", () => {
+    const jdx = spectrumToJcampDx({ ...spectrum, peaks: [{ ...spectrum.peaks[0]!, estimated: true, atomIndices: [] }] });
+    expect(jdx).toContain("Rule-based shift estimates are present");
+    expect(jdx).toContain("1.2000 ppm; atom indices (0-based): not provided");
+  });
+
   it("omits absent method labels, supplies ownership status, and keeps every header ASCII", () => {
     const jdx = spectrumToJcampDx(spectrum, { title: "Predicted ¹³C NMR\n##OWNER=Injected" });
     expect(jdx).toMatch(/^##TITLE=Predicted 13C NMR ##OWNER=Injected\n/);
@@ -173,6 +248,19 @@ describe("spectrumToJcampDx", () => {
 });
 
 describe("standaloneSpectrumSvg", () => {
+  // SHA-256 values captured from the exporter at HEAD before the estimate-disclosure change.
+  it.each([
+    ["primary", "3da0ac9b75856fd3e82177993ae67758cfd9ab2960c9e6f73a3cec203aee2720"],
+    ["both", "d2091634b9bf7eae5f2f0e93b7a5d4cd28d7ae5ab3b8f8839217b5c25cad4534"]
+  ])("preserves the original %s SVG bytes without estimates", (mode, expectedHash) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 680 240");
+    svg.innerHTML = '<path class="lf-curve" d="M0 0 L10 10"/>' +
+      (mode === "both" ? '<path class="lf-curve is-alternative" d="M0 10 L10 0"/>' : "");
+    const out = standaloneSpectrumSvg(svg, "increment", "HOSE", spectrum.peaks);
+    expect(createHash("sha256").update(out).digest("hex")).toBe(expectedHash);
+  });
+
   it.each(["¹H", "¹³C"])("replaces %s interaction hints with a static export description", (nucleus) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     const description = `Predicted ${nucleus} spectrum`;
@@ -216,9 +304,9 @@ describe("standaloneSpectrumSvg", () => {
     expect(out).toContain("Height = predicted equivalent nuclei (not experimental integration)");
     expect(out).toContain("grey dashed = rule-estimated");
     expect(out).toContain("dashed orange = increment");
-    expect(out).toContain("methods = HOSE + increment");
+    expect(out).not.toContain("HOSE"); // all primary peaks are rule estimates
     expect(out).toContain('data-comparison-mode="both"');
-    expect(out).toContain('data-primary-method="HOSE"');
+    expect(out).toContain('data-primary-method="Rule-based estimates"');
     expect(out).toContain("stroke-dasharray:5 3");
   });
 
@@ -238,6 +326,18 @@ describe("standaloneSpectrumSvg", () => {
     expect(out).not.toContain("orange = increment");
     expect(out).toContain("method = HOSE only");
     expect(out).toContain('data-comparison-mode="primary"');
+  });
+
+  it.each(["all", "mixed"])("retains %s estimate disclosure even when the estimated trace is hidden", (mode) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.innerHTML = '<path class="lf-curve is-active" d="M0 0 L10 10"/>';
+    const peaks = spectrum.peaks.map((peak, index) => ({ ...peak, estimated: mode === "all" || index === 0 }));
+    const out = standaloneSpectrumSvg(svg, "increment", "HOSE", peaks);
+    const exported = new DOMParser().parseFromString(out, "image/svg+xml").documentElement;
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("grey dashed = rule-estimated");
+    expect(out).not.toContain("method = HOSE only");
+    if (mode === "all") expect(out).not.toContain("HOSE");
+    else expect(out).toContain("HOSE = non-estimated primary peaks only");
   });
 });
 
@@ -360,6 +460,21 @@ const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z
 const tinyPng = Uint8Array.from(atob(pngBase64), (c) => c.charCodeAt(0));
 
 describe("spectrum picture exports", () => {
+  it.each(["svg", "png", "pdf"] as const)("passes estimate captions to the %s writer", async (format) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const markup = standaloneSpectrumSvg(svg, "increment", "HOSE", [{ ...spectrum.peaks[0]!, estimated: true }]);
+    const dependencies = {
+      rasterize: vi.fn(async (_markup: string) => new Blob([tinyPng], { type: "image/png" })),
+      pdf: vi.fn(async (_markup: string) => new TextEncoder().encode("%PDF-1.4")),
+      saveText: vi.fn().mockResolvedValue("saved"), saveBinary: vi.fn().mockResolvedValue("saved")
+    };
+    await expect(exportSpectrumFigure(format, markup, "1H", dependencies)).resolves.toBe("saved");
+    const forwarded = format === "svg" ? dependencies.saveText.mock.calls[0]![1]
+      : (format === "png" ? dependencies.rasterize : dependencies.pdf).mock.calls[0]![0];
+    const exported = new DOMParser().parseFromString(forwarded, "image/svg+xml").documentElement;
+    expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("rule-estimated");
+    expect(forwarded).not.toContain("HOSE");
+  });
   it("loads the export-engine main entry without the PDF pipeline", async () => {
     await import("@chemdraft/export-engine");
     expect(loadPdf).not.toHaveBeenCalled();

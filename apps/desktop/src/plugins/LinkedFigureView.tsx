@@ -281,7 +281,8 @@ export function LinkedFigureView({
       standaloneSpectrumSvg(
         svg,
         comparison.alternativeLabel,
-        supportsComparison ? comparison.primaryLabel : undefined
+        supportsComparison ? comparison.primaryLabel : undefined,
+        spectrum.peaks
       )
     ).then((result) => {
       if (result !== "none") {
@@ -309,7 +310,7 @@ export function LinkedFigureView({
             mimeType: "chemical/x-jcamp-dx"
           })
         : svg ? await exportSpectrumFigure(format, standaloneSpectrumSvg(
-            svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined
+            svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined, spectrum.peaks
           ), spectrum.nucleus) : "failed";
       setExportStatus(result);
     } catch {
