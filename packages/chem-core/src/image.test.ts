@@ -252,7 +252,7 @@ describe("embedded picture graphics", () => {
       ...object.data.image, mimeType: "image/svg+xml", dataBase64: oversizedDataBase64
     } } })).toThrow("Image object g12 is 31.2 MB; the limit is 25 MB.");
     expect(() => createImageGraphicObject({ ...options, dataBase64: "!" })).toThrow("invalid base64");
-  });
+  }, 30_000); // Real 25–31 MiB payloads are synchronously decoded/validated; there is no async event to await.
 
   it("preserves PNG and SVG bytes, metadata and frame exactly through native save/load", () => {
     const document = createEmptyDocument();
