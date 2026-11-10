@@ -2,6 +2,12 @@
 
 Coordinates export formats and warning reporting.
 
+SVG export is synchronous. Before calling `exportDocumentToSvg(document, options)`, await
+`ensureSvgFontsLoaded(document, options)`. It loads Patrick Hand dynamically only if the exported
+page renders that font; otherwise it loads no payload. Unprepared Sketch exports throw
+`HandwritingFontNotLoadedError`. `ensureHandwritingFontLoaded()` is also available for explicit
+preparation. PDF prepares its own fonts through the same lazy loader.
+
 Format-specific work should go through the correct adapters and compatibility packages.
 
 ## Table clipboard payloads

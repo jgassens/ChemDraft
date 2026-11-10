@@ -8,9 +8,10 @@ import { jsPDF } from "jspdf";
 import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult, ExportWarning } from "./results";
-import { exportDocumentToSvg } from "./svg";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "./svg";
 import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
+import { ensureHandwritingFontLoaded, handwritingFontFaceCss } from "./handwritingFont";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -51,6 +52,7 @@ export async function exportDocumentToPdf(
   }
 
   const descriptor = getExportFormatDescriptor("pdf");
+  await ensureSvgFontsLoaded(document, { pageIndex });
   const svgResult = exportDocumentToSvg(document, {
     pageIndex,
     includePageGuides: options.includePageGuides
@@ -97,6 +99,8 @@ export async function exportSvgToPdf(
   if (pictures.size > 0 && (!page || ![page.width, page.height].every((value) => Number.isFinite(value) && value > 0))) {
     throw new Error("Cannot export PDF: pictures require finite positive source page dimensions.");
   }
+  // Incoming SVG may embed the reviewed face; validate against its exact bytes.
+  if (svgMarkup.includes("@font-face") && svgMarkup.includes("Patrick Hand")) await ensureHandwritingFontLoaded();
   const svgElement = parseSvgElement(svgMarkup, options.domParser, pictures);
   const warnings: ExportWarning[] = [];
 
@@ -228,7 +232,17 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
           assertLocalSvgCss(attribute.value);
         }
       }
-      if (element.localName === "style") assertLocalSvgCss(element.textContent ?? "");
+      if (element.localName === "style") {
+        const css = element.textContent ?? "";
+        assertLocalSvgCss(css);
+        // preparePdfFonts registers this face in jsPDF and browser measurement APIs.
+        // svg2pdf need not parse its @font-face (nor access CSSStyleSheet in headless DOMs).
+        const bundledCss = handwritingFontFaceCss();
+        if (bundledCss && css.includes(bundledCss)) {
+          element.textContent = css.split(bundledCss).join("");
+          if (!element.textContent.trim()) element.remove();
+        }
+      }
     }
     for (let child = node.lastChild; child; child = child.previousSibling) pending.push({ node: child, depth: depth + 1 });
   }
@@ -251,7 +265,10 @@ function isMappedSvgPicture(element: Element, href: string, svgRoot: Element, pi
 }
 
 function assertLocalSvgCss(value: string): void {
-  const decoded = value.replace(/\\(?:\r\n|[\n\r\f])|\\([0-9a-f]{1,6})[ \t\r\n\f]?|\\([\s\S])/gi,
+  // Recognize only the exact bundled face, never arbitrary data URLs or external fonts.
+  const bundledCss = handwritingFontFaceCss();
+  const localCss = bundledCss ? value.split(bundledCss).join("") : value;
+  const decoded = localCss.replace(/\\(?:\r\n|[\n\r\f])|\\([0-9a-f]{1,6})[ \t\r\n\f]?|\\([\s\S])/gi,
     (_match, hex: string | undefined, character: string | undefined) => {
       if (!hex) return character ?? "";
       const code = Number.parseInt(hex, 16);

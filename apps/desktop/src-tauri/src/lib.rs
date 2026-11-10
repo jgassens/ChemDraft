@@ -642,6 +642,8 @@ struct PluginMenuItemInput {
     id: String,
     #[serde(default)]
     core_routed: bool,
+    #[serde(default)]
+    separator_before: bool,
     label: String,
     #[serde(default = "default_plugin_menu_location")]
     location: String,
@@ -7389,6 +7391,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in structure_plugin_items {
+            if item.separator_before {
+                structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
+            }
             structure_menu.append(&MenuItem::with_id(
                 app,
                 item.id.as_str(),
@@ -10481,6 +10486,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.first".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "First".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: true,
@@ -10488,6 +10494,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.analyze".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Analyze".to_owned(),
                 location: "analyze".to_owned(),
                 enabled: true,
@@ -10495,6 +10502,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.second".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Second".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: false,
@@ -10546,6 +10554,7 @@ mod tests {
         let mut item = PluginMenuItemInput {
             id: "plugins.showUpdates".to_owned(),
             core_routed: false,
+            separator_before: false,
             label: "Plugin Updates Available (1)…".to_owned(),
             location: "plugins".to_owned(),
             enabled: true,

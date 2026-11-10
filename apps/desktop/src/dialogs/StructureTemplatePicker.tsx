@@ -19,7 +19,9 @@ function TemplateThumbnail({ template }: { template: StructureTemplate }) {
           if (cancelled) return;
           // Even when several tiles await the same module, give each SVG its own task.
           timer = setTimeout(() => {
-            if (!cancelled) setSrc(structureTemplateThumbnail(template));
+            void structureTemplateThumbnail(template).then(src => {
+              if (!cancelled) setSrc(src);
+            }).catch(error => console.warn(`Could not render thumbnail for template ${template.id}`, error));
           }, 0);
         }).catch(error => {
           console.warn(`Could not load thumbnail for template ${template.id}`, error);

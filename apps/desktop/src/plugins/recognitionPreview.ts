@@ -1,5 +1,5 @@
 import { MoleculeObjectSchema, createEmptyDocument } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import type { NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
 
 const PREVIEW_PADDING_PX = 12;
@@ -11,16 +11,16 @@ const previewCache = new WeakMap<NormalizedProposedDocumentPatch, string | null>
  * `image/svg+xml` data URI so the review shows it through `<img>`, where an SVG cannot run script.
  * Anything that is not a single molecule insertion gets no picture rather than a guessed one.
  */
-export function recognitionStructurePreview(proposal: NormalizedProposedDocumentPatch): string | undefined {
+export async function recognitionStructurePreview(proposal: NormalizedProposedDocumentPatch): Promise<string | undefined> {
   if (!proposal.recognition) return undefined;
   const cached = previewCache.get(proposal);
   if (cached !== undefined) return cached ?? undefined;
-  const preview = renderPreview(proposal);
+  const preview = await renderPreview(proposal);
   previewCache.set(proposal, preview ?? null);
   return preview;
 }
 
-function renderPreview(proposal: NormalizedProposedDocumentPatch): string | undefined {
+async function renderPreview(proposal: NormalizedProposedDocumentPatch): Promise<string | undefined> {
   const patch = proposal.patch as { op?: unknown; object?: unknown };
   if (patch.op !== "addObject") return undefined;
   const parsed = MoleculeObjectSchema.safeParse(patch.object);
@@ -29,6 +29,7 @@ function renderPreview(proposal: NormalizedProposedDocumentPatch): string | unde
   try {
     const document = createEmptyDocument({ title: "Recognized structure" });
     document.pages[0]!.objects = [molecule];
+    await ensureSvgFontsLoaded(document);
     const svg = exportDocumentToSvg(document, { background: "#ffffff" }).contents;
     const x = molecule.x - PREVIEW_PADDING_PX;
     const y = molecule.y - PREVIEW_PADDING_PX;

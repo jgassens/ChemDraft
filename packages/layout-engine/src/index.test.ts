@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { nativeTextSubscriptBottomEm } from "./textMetrics";
 import {
   ChemDraftSyntheticStylePreset,
+  SketchStylePreset,
   DocumentPageSchema,
   createEmptyDocument,
   nativeDrawingStyleFromObjectStyle,
@@ -18,6 +19,8 @@ import {
   atomDegrees,
   atomLabelAnchorOffset,
   atomLabelLayout,
+  atomLabelGlyphBounds,
+  moleculeSelectionBounds,
   atomLabelRunAdvance,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
@@ -56,6 +59,8 @@ import {
   type PageSvgFragment
 } from "./index";
 import { elementFragments } from "./testing";
+import { patrickHandAdvances, patrickHandInkBounds } from "./patrickHandMetrics.generated";
+import { presetRenderingCases, presetRenderingMolecule } from "./presetRendering.fixture";
 
 const baseInput = {
   atoms: [
@@ -68,6 +73,117 @@ const baseInput = {
   pageBounds: { x: 0, y: 0, width: 816, height: 1056 },
   objectBounds: { x: 152, y: 204, width: 96, height: 32 }
 } satisfies Omit<BondExtensionPlanningInput, "clickPoint">;
+
+describe("preset colour and handwriting regression coverage", () => {
+  it.each(presetRenderingCases)("$name resolves sparse bond and atom colours for every ink layer", ({ style }) => {
+    const variants = [undefined, "double", "triple", "wedge", "hashed", "dashed", "bold"] as const;
+    for (const variant of variants) {
+      const molecule = presetRenderingMolecule(style,
+        variant && variant !== "double" && variant !== "triple" ? { bondStyle: variant } : undefined,
+        variant === "double" || variant === "triple" ? variant : "single");
+      const ink = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+      const bonds = ink.filter(f => f.tag !== "g" && (String(f.attrs.class).includes("native-bond-line") || f.attrs.class === "native-bond-hash"));
+      const rough = ink.filter(f => f.attrs.class === "native-molecule-sketch");
+      expect(bonds.length + rough.length).toBeGreaterThan(0);
+      for (const fragment of bonds) {
+        const color = fragment.attrs[fragment.tag === "polygon" ? "fill" : "stroke"];
+        expect(color).toBe(fragment.key.includes("-b0-") ? "#c03080" : "#126082");
+      }
+      for (const fragment of rough) {
+        const numbers = String(fragment.attrs.d).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)!.map(Number);
+        const xs = numbers.filter((_, index) => index % 2 === 0);
+        const targetBond = Math.min(...xs) < 200;
+        if (targetBond) expect(Math.max(...xs)).toBeLessThan(200);
+        const color = fragment.attrs.stroke === "none" ? fragment.attrs.fill : fragment.attrs.stroke;
+        expect(color).toBe(targetBond ? "#c03080" : "#126082");
+      }
+      expect(ink.find(f => f.key === `label-${molecule.id}-o`)?.attrs.fill).toBe("#267a38");
+      expect(ink.find(f => f.key === `label-${molecule.id}-n`)?.attrs.fill).toBe("#126082");
+    }
+  });
+
+  it.each(["C", "HC", "CH3", "H3C", "13CH2+", "CH2-", "Mg", "gyp", "j", "Cl", "OMe"])(
+    "encloses Patrick Hand's actual ink for %s in every label alignment", label => {
+      for (const alignment of ["automatic", "left", "center", "right"] as const) {
+        for (const anchor of [undefined, { side: "start", length: 1 }, { side: "end", length: 1 }] as const) {
+          const drawing = { ...SketchStylePreset.drawing, atomLabelPaddingPx: 0, atomLabelAlignment: alignment };
+          const layout = atomLabelLayout(label, drawing, anchor);
+          for (const run of layout.runs) {
+            const size = drawing.atomLabelFontSizePx * (run.script === "normal" ? 1 : run.script === "superscript" ? 0.88 : 0.72);
+            const advance = [...run.text].reduce((sum, ch) => sum + patrickHandAdvances[ch.codePointAt(0)!]!, 0) * size;
+            let cursor = run.x - (run.textAnchor === "middle" ? advance / 2 : run.textAnchor === "end" ? advance : 0);
+            for (const ch of run.text) {
+              const [xmin, ymin, xmax, ymax] = patrickHandInkBounds[ch.codePointAt(0)!]!;
+              expect(layout.bounds.x).toBeLessThanOrEqual(cursor + xmin * size + 1e-9);
+              expect(layout.bounds.x + layout.bounds.width + 1e-9).toBeGreaterThanOrEqual(cursor + xmax * size);
+              expect(layout.bounds.y).toBeLessThanOrEqual(run.y + (0.35 - ymax) * size + 1e-9);
+              expect(layout.bounds.y + layout.bounds.height + 1e-9).toBeGreaterThanOrEqual(run.y + (0.35 - ymin) * size);
+              cursor += patrickHandAdvances[ch.codePointAt(0)!]! * size;
+            }
+          }
+        }
+      }
+    }
+  );
+
+  it("uses handwriting outline metrics for glyph bounds instead of returning the padded label box", () => {
+    const molecule = presetRenderingMolecule(stylePresetToObjectStyle(SketchStylePreset));
+    const plan = planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === "o")!;
+    const ink = atomLabelGlyphBounds(plan);
+    expect(ink.width).toBeLessThan(plan.layout.bounds.width);
+    expect(ink.height).toBeLessThan(plan.layout.bounds.height);
+    expect(ink.y).toBeCloseTo((0.35 - 0.665) * plan.fontSizePx, 8);
+  });
+
+  it("recolours an existing Sketch's mixed hash, ordinary and wedge ink without changing seeded geometry", () => {
+    let molecule = presetRenderingMolecule(stylePresetToObjectStyle(SketchStylePreset));
+    molecule.style.bondColors = {};
+    molecule.bonds[0]!.display = { bondStyle: "hashed" };
+    molecule.bonds[2]!.display = { bondStyle: "wedge" };
+    const rough = () => planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments)
+      .filter(f => f.attrs.class === "native-molecule-sketch");
+    const before = rough();
+    molecule = { ...molecule, style: { ...molecule.style, bondColors: { b1: "#c03080" } } };
+    const after = rough();
+    const subpaths = (paths: PageSvgElementFragment[]) => paths.flatMap(path => String(path.attrs.d)
+      .split(/(?=M)/).map(part => part.trim()).filter(Boolean)).sort();
+    expect(subpaths(after)).toEqual(subpaths(before));
+    for (const path of after) {
+      const numbers = String(path.attrs.d).match(/-?\d*\.?\d+/g)!.map(Number);
+      const xs = numbers.filter((_, index) => index % 2 === 0);
+      const target = Math.min(...xs) > 200 && Math.max(...xs) < 300;
+      expect(path.attrs.stroke === "none" ? path.attrs.fill : path.attrs.stroke).toBe(target ? "#c03080" : "#126082");
+    }
+    expect(after.some(path => path.attrs.stroke === "#c03080")).toBe(true);
+  });
+
+  it.each(presetRenderingCases)("$name keeps selection frames around handwriting ink and leaves other presets unchanged", ({ name, style }) => {
+    const molecule = presetRenderingMolecule(style);
+    molecule.atoms = [
+      { id: "c", element: "C", labelLiteral: true, x: 140, y: 160, formalCharge: 0 },
+      { id: "hc", element: "HC", labelLiteral: true, x: 184, y: 160, formalCharge: 0 }
+    ];
+    molecule.bonds = [];
+    molecule.x = 140; molecule.y = 160; molecule.width = 44; molecule.height = 0;
+    const frame = moleculeSelectionBounds(molecule);
+    const partFrame = moleculeSelectionBounds(molecule, { x: 184, y: 160, width: 0, height: 0 }, new Set(["hc"]));
+    if (name !== "Sketch") {
+      expect(frame).toBe(molecule);
+      expect(partFrame).toEqual({ x: 184, y: 160, width: 0, height: 0 });
+    } else {
+      for (const plan of planMoleculeAtomLabels(molecule)) {
+        const ink = atomLabelGlyphBounds(plan);
+        for (const bounds of plan.atom.id === "hc" ? [frame, partFrame] : [frame]) {
+          expect(bounds.x).toBeLessThan(plan.anchor.x + ink.x);
+          expect(bounds.x + bounds.width).toBeGreaterThan(plan.anchor.x + ink.x + ink.width);
+          expect(bounds.y).toBeLessThan(plan.anchor.y + ink.y);
+          expect(bounds.y + bounds.height).toBeGreaterThan(plan.anchor.y + ink.y + ink.height);
+        }
+      }
+      expect(partFrame.x).toBeGreaterThan(160);
+    }
+  });
+});
 
 describe("native subscript ink", () => {
   it("ends digit and non-descender subscripts at their shifted baseline", () => {

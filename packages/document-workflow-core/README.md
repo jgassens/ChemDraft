@@ -15,6 +15,8 @@ desktop importers did not change.
 | File | Holds |
 |---|---|
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
+| `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope, warnings?)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
+| `electronMarks.ts` | Shared electron-mark association, anchor and charge helpers used by layout edits and commit reconciliation |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
@@ -64,6 +66,21 @@ desktop importers did not change.
 `src/boundary.test.ts` fails if any file here imports from `apps/`, React, Tauri, or the plugin and
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server
 imports from `apps/` again.
+
+`applyNativeStylePreset` returns `{ op: "batch", patches }`; an empty `patches` array signals no
+change. Native callers use `applyPatches(document, batch.patches)` to apply the leaves atomically,
+including edits larger than the external batch envelope's 256-operation limit. Selection scope
+visits selected groups' molecule/text descendants on the selected page. Document scope visits
+every page, updates insertion defaults, and selects changed objects on the active page (selection
+is page-local). Other object kinds, including reactions and mechanism arrows, retain their data.
+Rich-text spans keep their text and scripts while receiving the preset font family, size and weight.
+
+The presets are ChemDraft Synthetic (`chemdraft.synthetic`, unchanged), Document style,
+ACS 1996-style, RSC journal-style and Sketch (`chemdraft.sketch`). Sketch retains Synthetic's
+dimensions, adds the existing art sketch effect at roughness 1.25, bowing 1 and seed 7,
+and uses locally bundled Patrick Hand Regular for labels and text. Applying a plain preset
+removes the sketch effect and restores that preset's font, preserving other authored effects.
+Sketch uses existing style metadata; no document-schema field or migration was added.
 
 `applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per

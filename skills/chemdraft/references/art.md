@@ -283,11 +283,22 @@ Verified on paracetamol: red bold O and OH, blue bold NH.
 
 ### 5. Hand-sketched look
 
+The Structure menu's native presets are **ChemDraft Synthetic**, **Document style**,
+**ACS 1996-style**, **RSC journal-style** and **Sketch**. Sketch (`chemdraft.sketch`)
+copies Synthetic geometry, adds the existing pen effect at roughness **1.25**, bowing
+**1**, seed **7**, and uses bundled Patrick Hand Regular handwriting. It styles selected
+molecules/text, or the whole document and insertion defaults when nothing is selected.
+Each apply is one undo entry; reapplying is a no-op. ChemDraft Synthetic
+(`chemdraft.synthetic`, its unchanged stored id) removes Sketch and restores its font.
+SVG/PDF include Patrick Hand locally, so it need not be installed on the recipient's
+computer. The CLI's existing `fit`/`document` options are unchanged; for an authored
+headless document use the style fields below.
+
 ```js
 mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: "#1f2a44" }];
 mol.style.bondColor = "#1f2a44";
 mol.style.atomLabelColor = "#1f2a44";
-mol.style.atomLabelFontFamily = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
+mol.style.atomLabelFontFamily = "'Patrick Hand', cursive";
 page.objects.push({ id: "ring-circle", type: "graphic", graphicKind: "ellipse", x: 341, y: 509, width: 50, height: 50, rotation: 0,
   style: { fillColor: "none", visualEffects: [{ kind: "sketch", roughness: 2.2, bowing: 2, seed: 3, color: "#c0392b", strokeWidth: 2 }] },
   data: {} });

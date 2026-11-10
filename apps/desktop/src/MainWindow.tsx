@@ -1,4 +1,7 @@
+import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -110,6 +113,7 @@ import {
   type ArrowObject,
   type BracketObject,
   type ChemDraftDocument,
+  type CompatibilityWarning,
   type DocumentHistory,
   type DocumentObject,
   type DocumentPage,
@@ -250,6 +254,7 @@ import {
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
+  moleculeSelectionBounds,
   recordedLabelBondSide,
   planPageSvgRender,
   planTableLayout,
@@ -350,6 +355,8 @@ import {
   toggleRingInspectorCommandId,
   drawnStructureSettingsTemplateExportCommandId,
   drawnStructureSettingsTemplateImportCommandId,
+  nativeStylePresetActions,
+  nativeStylePresetIdForCommand,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -817,7 +824,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -839,7 +846,7 @@ import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
-import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
+import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
@@ -1714,7 +1721,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.10.11.49-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2526,6 +2533,12 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  useEffect(() => {
+    // Persisted insertion defaults follow preset application, file reopen and undo/redo.
+    setTextStyleDefaults({ ...DefaultNativeTextStyle,
+      ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+        ? documentDrawingDefaults(document).textStyle : {}) });
+  }, [document.styles.drawing, document.styles.text]);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
   const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
   const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
@@ -3157,8 +3170,8 @@ export function MainWindow({
   }, [activePage, atomLabelPreview, tableResizePreview]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
-  const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
-    [labelDisplayPage, nativeDoubleBondSidePreview]);
+  const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
+    [labelDisplayPage, nativeDoubleBondSidePreview]));
   // One full-page plan supplies both the native overlays and the ordered SVG runs.
   // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
   // their start geometry until the real document is rendered once on release.
@@ -7439,7 +7452,7 @@ export function MainWindow({
         await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
         return;
       case "clipboard.copyAs.svg": {
-        const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
+        const svgContents = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false })).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
         // picture from public.svg-image, while text editors still get the source via text/plain.
         // A bare text/plain write pasted into Illustrator as literal markup.
@@ -7482,7 +7495,7 @@ export function MainWindow({
       case "clipboard.copyAs.png": {
         setStatus("Rendering PNG…");
         try {
-          const svgResult = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false });
+          const svgResult = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }));
           // Oversample 4x for sharpness; the exported SVG's units are CSS px (96/inch, not the
           // 72/inch PDF-point convention), so declaring the true density needs CSS_PX_PER_INCH,
           // not a hardcoded "288". Both raster paths derive the stamped density from the scale
@@ -9667,7 +9680,7 @@ export function MainWindow({
     if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
     return source;
   };
-  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
+  const previewSpacingRef = useRef<(tabId: string, percent: number) => Promise<string>>(async () => "");
   previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
   const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
   applySpacingRef.current = (tabId, percent) => {
@@ -10900,6 +10913,27 @@ export function MainWindow({
       }
     }));
 
+    nativeStylePresetActions.forEach(action => register(action, () => {
+      const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const warnings: CompatibilityWarning[] = [];
+      let appliedStructures = 0;
+      const changed = commitDocumentChange(current => {
+        const patch = nativeStylePresetPatchForSelection(current, presetId,
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId), warnings);
+        const moleculeIds = new Set(current.pages.flatMap(page => page.objects.filter(object => object.type === "molecule").map(object => object.id)));
+        appliedStructures = patch.patches.filter(leaf => leaf.op === "updateObject" && moleculeIds.has(leaf.objectId)).length;
+        // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
+        // while a native document-wide edit may contain more objects. Both paths are atomic.
+        return applyPatches(current, patch.patches);
+      }, action.title);
+      if (changed) setSelectedNativeMoleculeParts([]);
+      setActiveEditorObjectId(undefined);
+      const kinds = [...new Set(warnings.map(warning => warning.message.includes("radical") ? "radical" : "charge"))];
+      const reason = kinds.join(" or ");
+      setStatus(warnings.length ? `${changed ? `Applied ${action.title}${appliedStructures ? ` to ${appliedStructures} structure${appliedStructures === 1 ? "" : "s"}` : ""}; skipped` : "Skipped"} ${warnings.length} structure${warnings.length === 1 ? "" : "s"} because ${warnings.length === 1 ? "it" : "they"} would change a ${reason}.`
+        : changed ? `Applied ${action.title}` : `${action.title} already matches`);
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
@@ -11861,10 +11895,9 @@ export function MainWindow({
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
-  const nativePluginMenuItems = useMemo(() => [
-    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
-    ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems(
+    pluginRuntime.pluginMenuItems, availablePluginUpdateCount
+  ), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -12191,15 +12224,15 @@ export function MainWindow({
     return documentTabs.length < 2 ? undefined : tab.title;
   }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
-    (open: boolean, focus: boolean): Promise<boolean> => {
+    async (open: boolean, focus: boolean): Promise<boolean> => {
       const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
       return publishAnalysisWindow(
         PATCH_REVIEW_WINDOW_ID,
         "Plugin Proposals",
         {
           kind: "patchReview",
-          proposals: pending.map((proposal) =>
-            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal)))
+          proposals: await Promise.all(pending.map((proposal) =>
+            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal))))
         },
         { open, focus, width: 420, height: 420 }
       );
@@ -24665,6 +24698,11 @@ function SpinOverlay({
   onPointerUp: (event: PointerEvent<SVGSVGElement>) => void;
   onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
 }) {
+  const fonts = useCanvasHandwritingFont(useMemo(() => ({
+    drawingStyle, atomLabelStyles: state.atomLabelStyles, sourceMolecule: state.sourceMolecule
+  }), [drawingStyle, state.atomLabelStyles, state.sourceMolecule]));
+  drawingStyle = fonts.drawingStyle;
+  state = { ...state, atomLabelStyles: fonts.atomLabelStyles, sourceMolecule: fonts.sourceMolecule };
   const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
   // Depth-cue weights computed with the EXACT recipe flattenSpunMolecule commits, so the
   // live overlay's stroke weighting is identical to the flattened result (no snap on
@@ -26328,21 +26366,17 @@ export function nativeMoleculeObjectAtPoint(
 
 function moleculeTransformFrameForSelection(
   object: MoleculeObject,
-  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined
+  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined,
+  selectedAtomIds?: ReadonlySet<string>
 ): MoleculeTransformFrame {
-  const rawFrame = selectedPartBounds
-    ? {
-        x: selectedPartBounds.x - object.x,
-        y: selectedPartBounds.y - object.y,
-        width: selectedPartBounds.width,
-        height: selectedPartBounds.height
-      }
-    : {
-        x: 0,
-        y: 0,
-        width: object.width,
-        height: object.height
-      };
+  const bounds = moleculeSelectionBounds(object, selectedPartBounds ?? object,
+    selectedPartBounds ? selectedAtomIds : undefined);
+  const rawFrame = {
+    x: bounds.x - object.x,
+    y: bounds.y - object.y,
+    width: bounds.width,
+    height: bounds.height
+  };
   const minSize = 28;
   const width = Math.max(rawFrame.width, minSize);
   const height = Math.max(rawFrame.height, minSize);
@@ -28388,7 +28422,7 @@ function DocumentObjectViewContent({
         ? nativeMoleculePartBounds(object, transformableSelectedPart)
         : undefined;
       const transformFrame = transformHandlesEnabled && !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
-        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
+        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds, selectedAtomIds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
       const canProjectedPlaneTilt = transformFrame !== undefined;
@@ -32628,14 +32662,14 @@ export async function createDialogExportResult(
   const dpi = preview ? 96 : sanitizedDialogNumber(presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
-    const result = exportPhase4Svg(document, {
+    const result = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
       outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
       outputUnit: preview ? undefined : "mm" as const } : {}),
       ...(sized ? { background: presentation.background === "transparent" ? "transparent" as const : "#ffffff" } : {}),
       includeWarnings: state.svg.includeWarnings,
       includePageGuides: state.svg.includePageGuides
-    });
+    }));
     return {
       format: descriptor.id,
       kind: "text",
@@ -32676,11 +32710,11 @@ export async function createDialogExportResult(
     const transparent = rasterFormat === "png" && state.raster.background === "transparent";
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
     // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
-    const svgResult = exportPhase4Svg(document, {
+    const svgResult = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: width, outputHeight: height } : {}),
       includeWarnings: true,
       background: transparent ? "transparent" : "#ffffff"
-    });
+    }));
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
       // Legacy scale-based exports use the source SVG's 96 CSS px/inch. Rust multiplies

@@ -39,14 +39,19 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/avogadro3d-sidecar"],
-    "resources": [
-      "resources/opsin/*.jar",
-      "resources/opsin/*.txt",
-      "resources/opsin/jre",
-      "resources/ocsr/*.py",
-      "resources/ocsr/*.txt",
-      "resources/naming/**/*"
-    ],
+    "resources": {
+      "resources/opsin/*.jar": "resources/opsin",
+      "resources/opsin/*.txt": "resources/opsin",
+      "resources/opsin/jre": "resources/opsin/jre",
+      "resources/ocsr/*.py": "resources/ocsr",
+      "resources/ocsr/*.txt": "resources/ocsr",
+      "resources/naming": "resources/naming",
+      "../../../NOTICE": "licenses/NOTICE",
+      "../../../LICENSE": "licenses/LICENSE",
+      "../../../packages/export-engine/src/fonts/LICENSE_NOTO.txt": "licenses/LICENSE_NOTO.txt",
+      "../../../packages/export-engine/src/fonts/LICENSE_DEJAVU.txt": "licenses/LICENSE_DEJAVU.txt",
+      "../../../packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt": "licenses/LICENSE_PATRICK_HAND.txt"
+    },
     "fileAssociations": [
       {
         "ext": ["chemdraft"],

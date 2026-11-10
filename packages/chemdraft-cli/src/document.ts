@@ -13,7 +13,7 @@ import {
   type MoleculeBond,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import type { DepictionEngineAvailability } from "@chemdraft/rdkit-adapter/depiction";
 import {
@@ -979,6 +979,7 @@ export async function renderSmilesToAssets(
   });
   const { document, molecule } = built;
 
+  await ensureSvgFontsLoaded(document);
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
   });

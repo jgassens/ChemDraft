@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
 import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
@@ -717,6 +717,7 @@ export async function renderReactionScheme(
     pagePadding: renderDefaults.padding
   });
 
+  await ensureSvgFontsLoaded(document);
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
   });

@@ -6,7 +6,7 @@ export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type Figure
 export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
 } from "./table";
-export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
+export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, isPatrickHandFont } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
@@ -20,6 +20,8 @@ export {
 import {
   DefaultNativeDrawingStyle,
   DocumentStylePreset,
+  Acs1996StylePreset,
+  RscJournalStylePreset,
   drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
@@ -85,7 +87,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { planTableObjectSvg } from "./table";
-import { textAdvanceEm } from "./textMetrics";
+import { textAdvanceEm, isPatrickHandFont, patrickHandTextAdvanceEm, patrickHandTextInkBoundsEm } from "./textMetrics";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -1992,6 +1994,13 @@ function planNativeMoleculeGraphSvg(
     sketchLineOverrides: sketchGeometry?.lineOverrides,
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
+  // Rough ink honours explicit bond colours before the Sketch effect's colour.
+  // Repaint after generation to preserve roughjs's seeded geometry across colour edits.
+  for (const effect of effects) {
+    if (effect.kind === "sketch" && sketchGeometry) {
+      effect.paths = sketchGeometry.paintPaths(effect.paths);
+    }
+  }
   const effectFilterId = `molecule-effects-${object.id}`;
   const bondLayerFragments = bondSegmentGroups.map(({ bond, drawingStyle: bondDrawingStyle, segments }) =>
     elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
@@ -2976,7 +2985,11 @@ function moleculeEffectSketchBasePathD(
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
   resolution: NativeBondOrderResolution
-): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides } | undefined {
+): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides;
+  paintPaths: (paths: NativeArtSketchPathPlan[]) => NativeArtSketchPathPlan[] } | undefined {
+  const effectColor = visualEffectsForStyle(object.style).find(effect => effect.kind === "sketch")?.color;
+  const sketchColor = typeof effectColor === "string" && effectColor.trim() ? effectColor.trim() : undefined;
+  const fallbackColor = sketchColor ?? nativeDrawingStyleFromObjectStyle(object.style).bondColor;
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
       moleculeBondSketchPathParts(
@@ -2985,13 +2998,31 @@ function moleculeEffectSketchBasePathD(
         drawingStyle,
         gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
         resolution
-      )
+      ).map(part => ({ ...part, color: depthCuedBondColor(
+        styleColorMapValue(object.style.bondColors, bond.id) ?? sketchColor ?? drawingStyle.bondColor,
+        bond.display?.depthWeight
+      ) }))
     )
   );
   const basePathD = bondPathParts.map((part) => part.d).join(" ");
   if (!basePathD) return undefined;
   return {
     basePathD,
+    paintPaths: (paths) => {
+      // The first path contains the ordinary rough edges (two M/Bezier strokes per edge).
+      // Tick overrides follow it, already coloured below. Keep uniform paths intact.
+      const colors = bondPathParts.filter(part => !part.tick)
+        .flatMap(part => Array<string>(part.d.match(/[LZ]/g)?.length ?? 0).fill(part.color));
+      if (!colors.length || !paths.length) return paths;
+      const [path, ...ticks] = paths;
+      if (colors.every(color => color === colors[0])) return [{ ...path!, stroke: colors[0]! }, ...ticks];
+      const strokes = path!.d.match(/M[^M]*/g) ?? [];
+      if (strokes.length !== colors.length * 2) {
+        return [{ ...path!, stroke: fallbackColor }, ...ticks];
+      }
+      return [...colors.map((color, index) => ({ ...path!,
+        d: strokes.slice(index * 2, index * 2 + 2).join("").trim(), stroke: color })), ...ticks];
+    },
     lineOverrides: (parameters) => {
       const overrides = new Map<number, NativeArtSketchPathPlan | null>();
       let lineIndex = 0;
@@ -2999,8 +3030,8 @@ function moleculeEffectSketchBasePathD(
         const edges = part.d.match(/[LZ]/g)?.length ?? 0;
         if (part.tick) {
           overrides.set(lineIndex, parameters.roughness === 0
-            ? { d: part.d, stroke: parameters.color, strokeWidth: parameters.strokeWidth }
-            : moleculeSketchTickPath(part.tick, parameters));
+            ? { d: part.d, stroke: part.color, strokeWidth: parameters.strokeWidth }
+            : moleculeSketchTickPath(part.tick, { ...parameters, color: part.color }));
           // A joined terminal hash was a polygon outline; replace it with ONE ink mark too.
           for (let edge = 1; edge < edges; edge++) overrides.set(lineIndex + edge, null);
         }
@@ -5803,6 +5834,7 @@ function atomLabelCharacterExtent(character: string): { ascent: number; descent:
  * family, or a label with a character this module has no metrics for, gets the padded renderer
  * bounds, whose extents are unknown to this module. */
 export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
+  if (isPatrickHandFont(plan.fontFamily)) return handwritingLabelGlyphBounds(plan.layout.runs, plan.drawingStyle);
   const fontClass = atomLabelFontClass(plan.fontFamily);
   if (fontClass === "unknown") return { ...plan.layout.bounds };
   if (plan.layout.runs.some(run => [...run.text].some(character => !atomLabelCharacterIsCovered(character)))) {
@@ -5845,6 +5877,26 @@ export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox
     return { atom: indices.get(plan.atom.id)!, x: plan.anchor.x + bounds.x,
       y: plan.anchor.y + bounds.y, width: bounds.width, height: bounds.height };
   });
+}
+
+/** Selection frames are unrotated page coordinates, like the atoms. Handwriting labels
+ * can overhang the stored atom frame; reserve their measured boxes before drawing chrome.
+ * Other fonts retain their established selection geometry. */
+export function moleculeSelectionBounds(
+  object: MoleculeObject,
+  frame: LayoutBounds = object,
+  atomIds?: ReadonlySet<string>
+): LayoutBounds {
+  const labels = planMoleculeAtomLabels(object).filter(plan => isPatrickHandFont(plan.fontFamily) &&
+    (!atomIds || atomIds.has(plan.atom.id)));
+  if (!labels.length) return frame;
+  const bounds = [frame, ...labels.map(plan => ({
+    x: plan.anchor.x + plan.layout.bounds.x, y: plan.anchor.y + plan.layout.bounds.y,
+    width: plan.layout.bounds.width, height: plan.layout.bounds.height
+  }))];
+  const x = Math.min(...bounds.map(box => box.x)), y = Math.min(...bounds.map(box => box.y));
+  return { x, y, width: Math.max(...bounds.map(box => box.x + box.width)) - x,
+    height: Math.max(...bounds.map(box => box.y + box.height)) - y };
 }
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */
@@ -5939,6 +5991,39 @@ export function planAtomLabel(
  * of "MeO2C". Without one, the first normal-script run is centred, as labels always have been.
  */
 export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle, anchor?: AtomLabelAnchor): AtomLabelLayout {
+  const layout = atomLabelLayoutForRuns(label, drawingStyle, anchor);
+  if (!isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return layout;
+  // Selection, hit testing, bond clipping and halo clipping all consume these bounds.
+  // Keep placement intact, but enclose real handwriting ink as well as the old padding.
+  const ink = handwritingLabelGlyphBounds(layout.runs, drawingStyle);
+  const padding = drawingStyle.atomLabelPaddingPx;
+  const x = Math.min(layout.bounds.x, ink.x - padding);
+  const y = Math.min(layout.bounds.y, ink.y - padding);
+  return { ...layout, bounds: { x, y,
+    width: Math.max(layout.bounds.x + layout.bounds.width, ink.x + ink.width + padding) - x,
+    height: Math.max(layout.bounds.y + layout.bounds.height, ink.y + ink.height + padding) - y } };
+}
+
+function handwritingLabelGlyphBounds(runs: readonly AtomLabelLayoutRun[], drawingStyle: NativeDrawingStyle): LayoutBounds {
+  const boxes = runs.map(run => {
+    const size = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+    const ink = patrickHandTextInkBoundsEm(run.text);
+    const advance = atomLabelRunAdvance(run, drawingStyle);
+    const origin = run.x - (run.textAnchor === "middle" ? advance / 2 : run.textAnchor === "end" ? advance : 0);
+    // The face is regular; reserve for browser-synthesized bold and italic when requested.
+    const bold = drawingStyle.atomLabelFontWeight >= 600 ? 0.04 : 0;
+    const lean = drawingStyle.atomLabelFontStyle === "italic" ? italicShear : 0;
+    const left = ink.x - bold - Math.max(0, ink.y + ink.height) * lean;
+    const right = ink.x + ink.width + bold + Math.max(0, -ink.y) * lean;
+    return { x: origin + left * size, y: run.y + (0.35 + ink.y - bold) * size,
+      width: (right - left) * size, height: (ink.height + bold * 2) * size };
+  });
+  const x = Math.min(...boxes.map(box => box.x)), y = Math.min(...boxes.map(box => box.y));
+  return { x, y, width: Math.max(...boxes.map(box => box.x + box.width)) - x,
+    height: Math.max(...boxes.map(box => box.y + box.height)) - y };
+}
+
+function atomLabelLayoutForRuns(label: string, drawingStyle: NativeDrawingStyle, anchor?: AtomLabelAnchor): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
   const anchored = anchor ? anchoredAtomLabelLayout(bodyRuns, chargeRun, anchor, drawingStyle) : undefined;
   if (anchored) {
@@ -6265,6 +6350,7 @@ function splitAtomLabelCharge(label: string): { body: string; charge?: string } 
 }
 
 function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return atomLabelRunAdvance(run, drawingStyle);
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
   const widthFactor = run.script === "normal" ? 0.62 : 0.5;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
@@ -6287,6 +6373,7 @@ export const sansSerifAdvanceEm: Readonly<Record<string, number>> = Object.fromE
 /** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
 export function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return patrickHandTextAdvanceEm(run.text) * fontSize;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
   const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
   const em = [...run.text].reduce((sum, character) => sum + (sansSerifAdvanceEm[character] ?? 0.62), 0);
@@ -6714,7 +6801,8 @@ function nativeDashedBondDashes(
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
   // The physical preset specifies its broad wedge end explicitly, like its bold bonds.
-  if (drawingStyle.stylePresetId === DocumentStylePreset.id) return drawingStyle.bondBoldWidthPx;
+  if ([DocumentStylePreset.id, Acs1996StylePreset.id, RscJournalStylePreset.id]
+    .some(id => drawingStyle.stylePresetId === id)) return drawingStyle.bondBoldWidthPx;
   // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
   // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
   // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining

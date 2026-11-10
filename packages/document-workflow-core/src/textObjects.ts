@@ -12,6 +12,7 @@ import {
 } from "@chemdraft/chem-core";
 import { measureNativeTextSpanLineWidth, textObjectSpanLines } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
+import { documentDrawingDefaults } from "./drawingDefaults";
 
 export const nativeTextObjectDimensions = {
   width: 240,
@@ -81,7 +82,11 @@ export function createNativeTextObject(
 ): TextObject {
   const page = firstPage(document);
   const resolvedText = text.length > 0 ? text : "Text";
-  const objectStyle = textStyleToObjectStyle(style);
+  const objectStyle = textStyleToObjectStyle({
+    ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+      ? documentDrawingDefaults(document).textStyle : {}),
+    ...style
+  });
   const size = nativeTextObjectSizeForText(resolvedText, objectStyle, {
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - point.x)
   });
