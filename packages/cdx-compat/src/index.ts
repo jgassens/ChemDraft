@@ -1714,7 +1714,7 @@ function exportMoleculeObject(
     return contents;
   }
   const root = cdxElementFromOrderedTree(parseCdxml(`<CDXML>${contents}</CDXML>`));
-  const restored = restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings);
+  const restored = restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings, positionRetainedAtomLabel);
   // These diagnostics describe the discarded generated node, not the merged source node.
   for (let index = warnings.length - 1; index >= 0; index--) {
     const warning = warnings[index];
@@ -4041,6 +4041,28 @@ function centroidOfImportedAtoms(atoms: readonly MoleculeAtom[]): Point {
     (sum, atom) => ({ x: sum.x + atom.x / atoms.length, y: sum.y + atom.y / atoms.length }),
     { x: 0, y: 0 }
   );
+}
+
+/** Keep source runs and the baseline-to-bounds relationship, while following the live label anchor. */
+function positionRetainedAtomLabel(source: CdxElement, atom: MoleculeAtom): void {
+  const text = source.kids.find(child => child.name === "t");
+  if (!text) return;
+  const target = { x: atom.x + (atom.labelOffset?.x ?? 0), y: atom.y + (atom.labelOffset?.y ?? 0) };
+  const box = text.attrs.BoundingBox ? parseBoundingBox(text.attrs.BoundingBox) : undefined;
+  // Match cdxmlAtomLabelPoint: bounds centre takes precedence over the text baseline p.
+  const anchor = box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+    : text.attrs.p ? parseCdxmlPoint(text.attrs.p) : undefined;
+  if (!anchor) {
+    if (atom.labelOffset) text.attrs.p = formatPoint(target);
+    return;
+  }
+  const dx = cssPxToCdxml(target.x - anchor.x), dy = cssPxToCdxml(target.y - anchor.y);
+  if (Math.abs(dx) < 0.00005 && Math.abs(dy) < 0.00005) return;
+  for (const key of ["p", "BoundingBox"]) {
+    const values = text.attrs[key]?.trim().split(/\s+/).map(Number);
+    if (!values || values.length !== (key === "p" ? 2 : 4) || values.some(value => !Number.isFinite(value))) continue;
+    text.attrs[key] = values.map((value, index) => formatNumber(value + (index % 2 === 0 ? dx : dy))).join(" ");
+  }
 }
 
 function cdxmlAtomLabelPoint(atomElement: XmlElementView): Point | undefined {

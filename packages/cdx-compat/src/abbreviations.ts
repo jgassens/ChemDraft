@@ -176,7 +176,8 @@ export function restoreCdxmlAbbreviations(
   molecule: MoleculeObject,
   atomIds: ReadonlyMap<string, string>,
   nextId: () => string,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  positionLabel: (source: CdxElement, atom: MoleculeAtom) => void
 ): Set<string> {
   const restoredAtoms = new Set<string>();
   const stored = molecule.compatibility?.unknown.cdxmlAbbreviations;
@@ -220,6 +221,24 @@ export function restoreCdxmlAbbreviations(
     if (!nativeAtom) continue;
     const copy = cloneSource(record.source, id!);
     mergeSourceAtom(copy, fragment.kids[index], nativeAtom, record, molecule, warnings);
+    positionLabel(copy, nativeAtom);
+    const nested = copy.kids.filter(child => child.name === "fragment");
+    if (nested.length && abbreviationExpansionIssue(copy.attrs,
+      nested.map(body => ({ atoms: body.kids.filter(child => child.name === "n").map(child => child.attrs),
+        bonds: body.kids.filter(child => child.name === "b").map(child => child.attrs) })),
+      fragment.kids.filter(child => child.name === "b").map(child => child.attrs), record.depth ?? 0) === undefined) {
+      // This source was not expanded on import. An edit may remove its blocking charge,
+      // isotope, radical or attachment constraint; restoring its now-expandable body would
+      // replace the authoritative live atom with stale chemistry on the next open.
+      copy.kids = copy.kids.filter(child => child.name !== "fragment");
+      for (const key of ["NodeType", "GenericNickname"]) {
+        const value = fragment.kids[index].attrs[key];
+        if (value === undefined) delete copy.attrs[key]; else copy.attrs[key] = value;
+      }
+      warnings.push({ code: "cdxml.abbreviation_expansion_not_written",
+        sourceObjectId: record.source.attrs.id, atomIds: [nativeAtom.id],
+        message: `Source atom node ${record.source.attrs.id ?? nativeAtom.id}: the retained nested fragment is NOT written because it would replace the live atom after edits. The source expansion remains in the native document.` });
+    }
     fragment.kids[index] = copy;
     restoredAtoms.add(nativeAtom.id);
   }
