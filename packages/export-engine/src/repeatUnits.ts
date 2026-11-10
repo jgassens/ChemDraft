@@ -122,7 +122,7 @@ function crossingReason(pair: BracketObject[], members: RepeatUnit["members"], m
 }
 
 /** Scope follows exported molecules, even when the user selected no bracket glyphs. */
-function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
+export function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
   const exported = molecules && new Set(molecules.map(molecule => molecule.id));
   return document.pages.flatMap(page => [...bracketPairs(page.objects).values()].flatMap(pair => {
     const usage = pair.find(object => object.bracketUsage && object.bracketUsage !== "generic")?.bracketUsage ??

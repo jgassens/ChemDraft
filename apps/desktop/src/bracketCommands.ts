@@ -1,5 +1,6 @@
 import { applyPatches, bracketPairs, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
+import { repeatUnits } from "@chemdraft/export-engine";
 
 export function selectedBracketPair(document: ChemDraftDocument): BracketObject[] {
   const page = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
@@ -35,6 +36,19 @@ export function toggleBracketRepeatUnit(document: ChemDraftDocument): ChemDraftD
     } })),
     { op: "setSelection", pageId: document.selection.pageId, objectIds: pair.map(object => object.id) }
   ]);
+}
+
+/** Describe the result using the same explicit-or-enclosed atom membership as graph exports. */
+export function bracketRepeatUnitStatus(document: ChemDraftDocument): string {
+  const pair = selectedBracketPair(document);
+  const close = pair.find(object => object.side === "close");
+  if (!close) return "No bracket pair selected";
+  const label = close.label ?? "n";
+  if (!pair.some(object => object.repeatUnit || object.bracketKind === "polymer")) return `Removed repeat unit "${label}"`;
+  const unit = repeatUnits(document).find(unit => pair.some(object => object.id === unit.objectId));
+  if (unit?.reason) return `Marked repeat unit "${label}"; membership is ambiguous: ${unit.reason}`;
+  const count = unit?.members.reduce((total, member) => total + member.atomIds.length, 0) ?? 0;
+  return `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "${label}"`;
 }
 
 export function setBracketRepeatLabel(document: ChemDraftDocument, objectId: string, label: string): ChemDraftDocument {

@@ -5394,6 +5394,20 @@ export function bracketLabelPlan(object: BracketObject) {
       height: fontSize * (1 + nativeTextMetrics.descentEm) } };
 }
 
+/** Hit the painted repeat label in page coordinates, independent of pointer-capture targets. */
+export function bracketLabelContainsPoint(object: BracketObject, point: LayoutPoint): boolean {
+  const label = bracketLabelPlan(object);
+  if (!label) return false;
+  const { x, y, width, height } = label.bounds;
+  const projection = projectedPlaneMatrixForObject(object);
+  const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }]
+    .map(local => {
+      const page = { x: object.x + local.x, y: object.y + local.y };
+      return projection ? projectPointInObjectPlane(object, page, projection) : transformPointForObject(object, page);
+    });
+  return pointInPolygon(point, corners);
+}
+
 export function bracketVisualBounds(object: BracketObject): LayoutBounds {
   const label = bracketLabelPlan(object);
   const right = label ? Math.max(object.width, label.bounds.x + label.bounds.width) : object.width;
