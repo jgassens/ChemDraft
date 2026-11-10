@@ -38,7 +38,8 @@ describe("compound layout preference synchronization", () => {
   });
 });
 
-it("requires Compound layout tools, keeps conditions off by default, and persists the child across parent toggles",async()=>{
+it.each(["MacIntel", "Win32"])("requires Compound layout tools and preserves the child across parent toggles on %s",async platform=>{
+  vi.stubGlobal("navigator", {platform});
   const container=document.createElement("div");document.body.append(container);const root=createRoot(container);
   try {
     await act(async()=>root.render(createElement(PreferencesWindow)));
@@ -47,11 +48,17 @@ it("requires Compound layout tools, keeps conditions off by default, and persist
     const [parent,conditions]=boxes;
     expect(parent.checked).toBe(false);expect(conditions.checked).toBe(false);
     expect(container.querySelector("fieldset")?.disabled).toBe(true);
+    expect(conditions.disabled).toBe(true);
+    expect(container.querySelector(`#${conditions.getAttribute("aria-describedby")}`)?.textContent).toBe("Turn on Compound layout tools first.");
     await act(async()=>conditions.click());expect(loadCompoundLayoutSettings()).toEqual({enabled:false});
-    await act(async()=>parent.click());await act(async()=>conditions.click());
+    await act(async()=>parent.click());
+    expect(conditions.disabled).toBe(false);expect(conditions.hasAttribute("aria-describedby")).toBe(false);
+    await act(async()=>conditions.click());
     expect(loadCompoundLayoutSettings()).toEqual({enabled:true,formattedReactionConditions:true});
-    await act(async()=>parent.click());expect(conditions.checked).toBe(true);
+    await act(async()=>parent.click());expect(conditions.checked).toBe(true);expect(conditions.disabled).toBe(true);
+    expect(loadCompoundLayoutSettings()).toEqual({enabled:false,formattedReactionConditions:true});
     await act(async()=>root.render(createElement(PreferencesWindow,{key:"reopen"})));
-    expect(container.querySelectorAll<HTMLInputElement>('[aria-labelledby="compound-layout-tools"] input')[1].checked).toBe(true);
+    const reopened=container.querySelectorAll<HTMLInputElement>('[aria-labelledby="compound-layout-tools"] input')[1];
+    expect(reopened.checked).toBe(true);expect(reopened.disabled).toBe(true);
   } finally {await act(async()=>root.unmount());container.remove();}
 });
