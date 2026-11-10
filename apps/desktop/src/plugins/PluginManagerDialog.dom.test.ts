@@ -78,6 +78,22 @@ const descriptors: readonly BundledPluginDescriptor[] = [
 ];
 
 describe("naming engine catalog ownership", () => {
+  it("shows the fallback release selection reason before a catalog install is confirmed", async () => {
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
+    const official = { ...manifest, id: "org.chemdraft.nmr.predictor", version: "0.2.0" };
+    const selectionMessage = "Selected version 0.2.0, the newest release compatible with this ChemDraft. The latest release needs a newer ChemDraft.";
+    const prepared: PreparedOfficialPluginInstall = {
+      ...pickedPackage(official), pluginId: official.id, checksumVerified: true, selectionMessage
+    };
+    const install = vi.fn(async () => undefined);
+    mount(createElement(OfficialCatalogHarness, { runtime, prepare: async () => prepared, onInstall: install }));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${official.id}"]`)!.click();
+    });
+    expect(document.querySelector('[data-testid="plugin-release-selection"]')?.textContent).toBe(selectionMessage);
+    expect(install).not.toHaveBeenCalled();
+  });
+
   it("discloses and starts the naming engine after the catalog plugin install", async () => {
     const engine = fakeNamingEngine({ state: "notInstalled", requiredDiskBytes: 1e9, freeDiskBytes: 8e9 });
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, structureNamingEngine: engine });
