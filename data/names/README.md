@@ -4,8 +4,8 @@
 
 The committed dictionary (`dictionary.tsv.gz`) is the Wikidata snapshot from the 9 November 2026 response
 cache: 28,933 compounds, 108,023 column-2 names, 23,217 column-5 names,
-and 27,073 CAS registry numbers. Its gzip size is 1,881,198 bytes and its SHA-256 is
-`1afd4b4cf7b828a3e4cf9669e5328838d9d840f6392fb1681761b018c1ae1c11`.
+and 27,073 CAS registry numbers. Its gzip size is 1,881,146 bytes and its SHA-256 is
+`6e0ee3419630799d3597e1198fe3b895365eb577908f86067421775236d979e7`.
 Wikidata data is CC0 1.0; its upstream `NOTICE.txt` is copied verbatim beside the data.
 
 The source selected compounds with SMILES and an article in one of ten Wikipedias.
@@ -37,8 +37,8 @@ also matching an existing double prime. Thus `N'-Methylnicotinamide` and
 `N’-Methylnicotinamide` match, while `N-methylnicotinamide` stays distinct;
 `1'-` and `1-` also stay distinct. Dot variants `.`, `•`, `∙` and `⋅` fold to `·`.
 Other characters remain unchanged, including Greek letters. Compared with the
-original normalizer that deleted apostrophes, this candidate changes keys for 2,231
-distinct source spellings (2,411 column occurrences, covering 2,098 resulting keys).
+original normalizer that deleted apostrophes, this candidate changes keys for 2,241
+distinct source spellings (2,421 column occurrences, covering 2,098 resulting keys).
 Twenty spellings gain a previously ambiguous lookup; no unique assignment changes
 when comparing the two normalizers on this candidate. The reader refuses any key
 shared by different full InChIKeys.
@@ -188,14 +188,13 @@ commit `44791b5e`, OPSIN 2.9.0 and repository RDKit. The build gained 53 compoun
 restored 182 legacy rows. No baseline compounds or CAS assignments were lost. All
 66,343 previously unambiguous column-2 name keys remain searchable, with the two
 allowlisted identity corrections above and no unreviewed remaps or disappearances.
-It contains 102,950 searchable name keys. Under the corrected normalization, 36,615
-are absent from baseline column 2: 18,893 were present only in column 5 and 17,722
+It contains 102,953 searchable name keys. Under the corrected normalization, 36,618
+are absent from baseline column 2: 18,893 were present only in column 5 and 17,725
 were absent from the entire old file. This compares file coverage under the corrected
 normalization, separately from the old-application regression guarantee above.
-The accuracy gate approved 884 name/identity pairs by label, 17,200 by OPSIN and 461
-by PubChem; it excluded 1,739 as unverifiable and 5,009 as contradicted. PubChem evidence
-was uncached for 61 names; no requests were made for them. These gate
+The accuracy gate approved 884 name/identity pairs by label, 17,186 by OPSIN and 473 by PubChem; it excluded 1,724 as unverifiable and 5,026 as contradicted. All PubChem evidence the gate needed was available. These gate
 counts are not an accuracy percentage or an external validation benchmark.
+The builder requires the complete InChIKey, including its protonation block, for PubChem confirmation and name-collision resolution, and attaches a CAS number only when the full source key matches. Compared with the previous build, 14 names were removed from 11 compounds whose full key shows another charge or salt form (for example "Perfluorooctanoic acid potassium salt" on the free acid), 14 names were newly confirmed, CAS 70288-86-7 was removed from one avermectin-type component, and 131-48-6 was added to N-acetylneuraminic acid.
 
 Applying the new normalization to the previous whitespace-only candidate creates
 nine cross-identity collision keys. The rebuilt candidate refuses one entirely
@@ -280,7 +279,7 @@ are cached on first fallback, with parsing yielded in slices. No new dependency 
 
 ## Distribution size
 
-The **rebuilt candidate** compressed file is **1,881,198 bytes** (1.88 MB / 1.79 MiB). The dictionary is referenced by a
+The **rebuilt candidate** compressed file is **1,881,146 bytes** (1.88 MB / 1.79 MiB). The dictionary is referenced by a
 literal `new URL` from the shared package so Vite emits one hashed
 `apps/desktop/dist/assets/dictionary-<hash>.tsv.gz` asset. Tauri embeds it with the
 frontend assets in the desktop application on both platforms; no extra native resource
