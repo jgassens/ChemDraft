@@ -232,6 +232,14 @@ missing targets produce `cdxml.reaction_reference_unresolved`; the original list
 `compatibility.unknown.cdxmlStepAttributes`. Newly imported native reactions now populate
 `arrowObjectIds` for these references, where older imports left the list empty; no schema change or
 migration of previously saved native documents is performed.
+Headed `Line` graphics become native editable arrows independently of `LineType`, including
+`Solid`, absent and unknown values. Mapped dash, bold and wave styles remain native; explicit
+solid and unmapped line-type text survive visible export in `cdxmlLineType` compatibility data.
+Unknown binary line-type bits retain their complete numeric value. Unmapped styles produce
+`cdxml.arrow_line_type_approximation` while keeping the arrowhead and reaction link.
+Unresolved-link warnings name the source step id, attribute, target id and link role (arrow,
+reactants, products or conditions). A step outside a supported scheme remains an unknown object
+with `cdxml.reaction_step_preserved` naming every affected link, rather than a generic warning.
 Legacy `<graphic>` arrow twins carrying `SupersededBy` are intentionally not imported or written
 back. The modern `<arrow>` they point to is kept, and reaction steps reference that arrow.
 

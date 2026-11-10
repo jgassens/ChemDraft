@@ -76,21 +76,85 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     }));
   });
 
-  it.each(["Dashed", "Bold"])("keeps a step's %s line arrow linked through visible export", lineType => {
-    let document = open(page(molecule + `<graphic id="10" GraphicType="Line" ArrowType="FullHead" LineType="${lineType}" HeadSize="1000" Z="2" BoundingBox="120 60 180 60"/>
-      <scheme id="20"><step id="21" ReactionStepReactants="2" ReactionStepProducts="2" ReactionStepArrows="10"/></scheme>`)).document!;
-    for (let cycle = 0; cycle < 3; cycle++) {
+  it.each(["Dashed", "Bold", "Wavy", "Solid", undefined, "8", "9", ...(format === "CDXML" ? ['Synthetic "line"', ""] : [])])("keeps a step's %s line arrow linked through three visible round trips", lineType => {
+    // Numeric values exercise unknown binary bits (alone and alongside Dashed); CDXML also
+    // accepts arbitrary source text, including quotes that must be escaped again on export.
+    const lineAttribute = lineType === undefined ? "" : `LineType="${lineType.replace(/"/g, "&quot;")}"`;
+    let imported = open(page(molecule + `<graphic id="10" GraphicType="Line" ArrowType="FullHead" ${lineAttribute} HeadSize="1000" Z="2" BoundingBox="120 60 180 60"/>
+      <scheme id="20"><step id="21" ReactionStepReactants="2" ReactionStepProducts="2" ReactionStepArrows="10"/></scheme>`));
+    for (let cycle = 0; cycle <= 3; cycle++) {
+      expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+      const document = imported.document!;
       const objects = document.pages[0].objects;
       const reaction = objects.find(o => o.type === "reaction")!;
+      expect(reaction).toBeDefined();
       expect(reaction.arrowObjectIds).toHaveLength(1);
+      expect(reaction.components.map(component => component.role)).toEqual(["reactant", "product"]);
       const arrow = objects.find(o => o.id === reaction.arrowObjectIds![0]);
       expect(arrow).toMatchObject({ type: "graphic", data: { artToolId: "reactionArrow", markerEnd: { kind: "filled-arrow" } } });
+      if (lineType !== undefined) expect(arrow?.compatibility?.unknown.cdxmlLineType).toBe(lineType);
+      if (lineType === "Dashed") expect(arrow?.style.strokeDasharray).toBeTruthy();
+      if (lineType === "Bold") expect(arrow?.style.strokeWidth).toBeGreaterThan(1);
+      if (lineType === "Wavy") expect(arrow).toMatchObject({ data: { artPathKind: "wavy" } });
+      if (lineType !== undefined && !["Dashed", "Bold", "Wavy", "Solid"].includes(lineType)) {
+        expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.arrow_line_type_approximation",
+          message: expect.stringContaining(`LineType="${lineType}"`) }));
+      }
+      expect(imported.warnings.filter(warning => ["cdxml.object_import_unsupported", "cdxml.reaction_reference_unresolved"].includes(warning.code))).toEqual([]);
+      if (cycle === 3) break;
       const exported = output(document);
       const step = all(exported, "step")[0];
       const target = all(exported, "graphic").find(o => o.attrs.id === step.attrs.ReactionStepArrows)!;
-      expect(target?.attrs).toMatchObject({ GraphicType: "Line", ArrowType: "FullHead", LineType: lineType });
-      document = roundTrip(document).document!;
+      expect(target?.attrs).toMatchObject({ GraphicType: "Line", ArrowType: "FullHead" });
+      expect(target?.attrs.LineType).toBe(lineType);
+      imported = roundTrip(document);
     }
+  });
+
+  it.each([
+    ["HalfHead", "fishhookArrow"], ["Resonance", "resonanceArrow"],
+    ["Equilibrium", "equilibriumArrow"], ["Retrosynthetic", "retroArrow"]
+  ])("imports %s heads independently of line style", (head, tool) => {
+    for (const lineType of ["Solid", undefined, "8"]) {
+      const lineAttribute = lineType === undefined ? "" : `LineType="${lineType}"`;
+      const imported = open(page(molecule + `<graphic id="10" GraphicType="Line" ArrowType="${head}" ${lineAttribute} BoundingBox="120 60 180 60"/>
+        <scheme id="20"><step id="21" ReactionStepReactants="2" ReactionStepProducts="2" ReactionStepArrows="10"/></scheme>`));
+      expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+      const objects = imported.document!.pages[0].objects;
+      const reaction = objects.find(object => object.type === "reaction")!;
+      expect(reaction.arrowObjectIds).toHaveLength(1);
+      expect(objects.find(object => object.id === reaction.arrowObjectIds![0])).toMatchObject({
+        type: "graphic", data: { artToolId: tool }
+      });
+    }
+  });
+
+  it.each([
+    ["ReactionStepArrows", "arrow"], ["ReactionStepReactants", "reactants"],
+    ["ReactionStepProducts", "products"], ["ReactionStepObjectsAboveArrow", "conditions"],
+    ["ReactionStepObjectsBelowArrow", "conditions"]
+  ])("names the step and its unresolved %s link", (attribute, link) => {
+    const imported = open(page(molecule + `<scheme id="20"><step id="21" ${attribute}="999"/></scheme>`));
+    expect(imported.document).toBeDefined();
+    expect(imported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.reaction_reference_unresolved",
+      message: expect.stringMatching(new RegExp(`step 21:.*${attribute} id "999".*${link} link`, "i"))
+    }));
+  });
+
+  it("names every link on a step preserved outside a scheme", () => {
+    const imported = open(page(molecule + `<step id="21" ReactionStepArrows="999" ReactionStepReactants="2"
+      ReactionStepProducts="2" ReactionStepObjectsAboveArrow="998" ReactionStepObjectsBelowArrow="997"/>`));
+    expect(imported.document!.pages[0].objects).toContainEqual(expect.objectContaining({
+      type: "unknown-compatibility-object", sourceObjectType: "step"
+    }));
+    for (const link of ["arrow", "reactants", "products", "conditions"]) {
+      expect(imported.warnings).toContainEqual(expect.objectContaining({
+        code: "cdxml.reaction_step_preserved", sourceObjectId: "21",
+        message: expect.stringMatching(new RegExp(`step 21:.*${link} link.*not imported`, "i"))
+      }));
+    }
+    expect(imported.warnings.filter(warning => warning.code === "cdxml.object_import_unsupported")).toEqual([]);
   });
 
   it("warns specifically about alternative-group semantics and keeps its label and source expansion", () => {

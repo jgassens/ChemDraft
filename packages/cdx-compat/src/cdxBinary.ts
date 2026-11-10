@@ -390,6 +390,12 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "b8": case "b16": {
         const v = int(d, false);
         if (v === undefined) return;
+        // LineType is an open bit field in source files. Keep every bit when its value has no
+        // complete named mapping, rather than silently turning an unknown style into Solid.
+        if (name === "LineType" && (v & ~[...p.names!.keys()].reduce((mask, bit) => mask | bit, 0))) {
+          a[name] = String(v);
+          return;
+        }
         const set = [...p.names!].filter(([bit]) => bit && (v & bit) === bit).map(([, nm]) => nm);
         a[name] = set.length ? set.join(" ") : p.names!.get(0) ?? "0";
         return;

@@ -952,6 +952,10 @@ const reactionListAttributes = [
   "ReactionStepObjectsAboveArrow", "ReactionStepObjectsBelowArrow", "ReactionStepPlusses"
 ] as const;
 type ReactionListAttribute = typeof reactionListAttributes[number];
+const reactionLinkNames: Record<ReactionListAttribute, string> = {
+  ReactionStepReactants: "reactants", ReactionStepProducts: "products", ReactionStepArrows: "arrow",
+  ReactionStepObjectsAboveArrow: "conditions", ReactionStepObjectsBelowArrow: "conditions", ReactionStepPlusses: "plus"
+};
 const idListAttributes = new Set(PROPS.filter(([, , kind]) => kind === "ids" || kind === "attachments")
   .map(([, name]) => name));
 
@@ -1025,7 +1029,7 @@ function importReactionStep(
         const reason = visited.has(targetId) ? ` (SupersededBy cycle at "${targetId}")`
           : visited.size ? ` (SupersededBy missing target or unimported object "${targetId}")` : "";
         warnings.push({ code: "cdxml.reaction_reference_unresolved", sourceObjectId: id,
-          message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object${reason}; source text is preserved in compatibility metadata.` });
+          message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object${reason}; the ${reactionLinkNames[attribute]} link could not be resolved. Source text is preserved in compatibility metadata.` });
         continue;
       }
       roots.push(...resolved);
@@ -2565,8 +2569,13 @@ function cdxmlRectangleTypeForGraphic(graphic: GraphicObject): string | undefine
 }
 
 function cdxmlLineTypeAttributes(graphic: GraphicObject): string[] {
-  const lineType = cdxmlLineTypeForGraphic(graphic);
-  return lineType ? [`LineType="${lineType}"`] : [];
+  // Semantic line arrows retain explicit Solid and unmapped source spellings. Mapped native
+  // styles still take precedence, and clearing a mapped dash/wave/bold must not restore it.
+  const source = isSemanticReactionArrowGraphic(graphic) ? graphic.compatibility?.unknown.cdxmlLineType : undefined;
+  const preserved = typeof source === "string" && !["dashed", "bold", "wavy"].includes(normalizedCdxmlToken(source))
+    ? source : undefined;
+  const lineType = cdxmlLineTypeForGraphic(graphic) ?? preserved;
+  return lineType !== undefined ? [`LineType="${escapeXmlAttribute(lineType)}"`] : [];
 }
 
 function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
@@ -3015,6 +3024,16 @@ function importPageObjects(
       }
       schemes.push(element);
       return { objects: [], rootIds: [] };
+    }
+    if (element.name === "step") {
+      const links = reactionListAttributes.filter(attribute => splitCdxmlIdList(element.attributes[attribute]).length > 0);
+      for (const attribute of links) {
+        warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: element.attributes.id,
+          message: `${sourceFormat} step ${element.attributes.id ?? "(unknown)"}: ${reactionLinkNames[attribute]} link ${attribute}="${element.attributes[attribute]}" was not imported natively because the step is outside a supported scheme; source data is preserved as an unknown compatibility object.` });
+      }
+      if (!links.length) warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: element.attributes.id,
+        message: `${sourceFormat} step ${element.attributes.id ?? "(unknown)"} has no arrow, reactants, products or conditions links and is outside a supported scheme; it was not imported natively and remains an unknown compatibility object.` });
+      return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex, sourceFormat));
     }
     if (element.name === "objecttag") {
       return { objects: [], rootIds: [] };
@@ -4230,6 +4249,13 @@ function importGraphic(
           cdxmlBracketGeometry: JSON.stringify([box.x, box.y, box.width, box.height, 0, element.attributes.BracketType === "Round" ? "round" : "square", "open"]) } } };
   }
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
+    // Arrow identity depends on ArrowType alone: Solid, absent and unknown LineType values
+    // must take the same headed-arrow path as Dashed and Bold.
+    const lineType = element.attributes.LineType;
+    if (lineType !== undefined && !["solid", "dashed", "bold", "wavy"].includes(normalizedCdxmlToken(lineType))) {
+      context.warnings.push({ code: "cdxml.arrow_line_type_approximation", sourceObjectId: element.attributes.id,
+        message: `${context.sourceFormat} arrow ${element.attributes.id ?? "(unknown)"} has unmapped LineType="${lineType}"; the arrowhead and reaction links are imported, while its line style is approximated and the source LineType is retained in compatibility data and visible export.` });
+    }
     // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
     // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
     // ArrowType="FullHead" with nothing said. Native fishhooks are one-sided but not
@@ -4239,8 +4265,8 @@ function importGraphic(
     }
     const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
-    // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
-    // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
+    // size), tagged so a later export re-emits them as reaction arrows. Only unknown kinds keep
+    // the legacy `reaction-arrow` representation.
     if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium" || arrowKind === "retrosynthesis") {
       return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
     }
@@ -4606,7 +4632,7 @@ function importShapeGraphic(
           ...(graphicKind === "ellipse" ? { cdxmlGraphicStyle: { ...style } } : {}) } : {}),
         ...(element.attributes.OvalType ? { cdxmlOvalType: element.attributes.OvalType } : {}),
         ...(element.attributes.RectangleType ? { cdxmlRectangleType: element.attributes.RectangleType } : {}),
-        ...(element.attributes.LineType ? { cdxmlLineType: element.attributes.LineType } : {}),
+        ...(element.attributes.LineType !== undefined ? { cdxmlLineType: element.attributes.LineType } : {}),
         ...(element.attributes.AngularSize ? { cdxmlAngularSize: element.attributes.AngularSize } : {}),
         ...(element.attributes.CornerRadius ? { cdxmlCornerRadius: element.attributes.CornerRadius } : {}),
         ...(element.attributes.ShadowSize ? { cdxmlShadowSize: element.attributes.ShadowSize } : {}),
