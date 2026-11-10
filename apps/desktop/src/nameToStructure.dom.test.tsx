@@ -103,6 +103,19 @@ describe("Name to Structure insertion placement", () => {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: id } })); });
   }
 
+  it("replaces a successful status with the reason for a failed name, then with a later success", async () => {
+    harness.opsin.mockResolvedValueOnce({ smiles: "CCO" })
+      .mockResolvedValueOnce({ smiles: null, failureReason: "Unknown chemical name" })
+      .mockResolvedValueOnce({ smiles: "CCO" });
+    await mount(createEmptyDocument(), "unrecognized example name");
+    await act(async () => { await harness.runtime!.invokeCommand(commandId); });
+    expect(container.querySelector("[role=status]")?.textContent).toContain("OPSIN");
+    await act(async () => { await expect(harness.runtime!.invokeCommand(commandId)).rejects.toThrow(); });
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Unknown chemical name");
+    await act(async () => { await harness.runtime!.invokeCommand(commandId); });
+    expect(container.querySelector("[role=status]")?.textContent).toContain("OPSIN");
+  });
+
   it("applies a reviewed edit without moving overlapping existing objects", async () => {
     const drawing = createEmptyDocument();
     const page = drawing.pages[0]!;
