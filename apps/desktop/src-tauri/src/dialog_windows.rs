@@ -4459,7 +4459,7 @@ mod tests {
                     // Includes the old Custom Page Size 420x300 frame, a narrower but
                     // taller frame, and a wider but shorter frame. Each axis fits independently.
                     for (extra_width, user_height) in [
-                        (0.0, 180.0_f64),
+                        (0.0_f64, 180.0_f64),
                         (0.0, 300.0),
                         (-40.0, 800.0),
                         (80.0, 300.0),
@@ -4483,7 +4483,7 @@ mod tests {
                             offset_y: 0.0,
                         };
                         // Initial full form, extra cancellation line, removed line, huge report.
-                        for height in [if macos { 334.0 } else { 286.0 }, 358.0, 334.0, 4096.0] {
+                        for height in [if macos { 334.0_f64 } else { 286.0_f64 }, 358.0, 334.0, 4096.0] {
                             let width = if height == 4096.0 {
                                 4096.0
                             } else {
