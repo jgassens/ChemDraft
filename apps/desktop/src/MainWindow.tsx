@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.22.10-codex";
+const CURRENT_BUILD_STAMP = "11.10.10.05-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -4501,7 +4501,7 @@ export function MainWindow({
     setStatus(`Set hovered bond to ${order}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
-  const setHoveredNativeBondDisplayStyle = useCallback((bondStyle: NativeBondDisplayStyle) => {
+  const setHoveredNativeBondDisplayStyle = useCallback(async (bondStyle: NativeBondDisplayStyle) => {
     const currentDocument = documentRef.current;
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(currentDocument, selectedNativeMoleculePart);
@@ -4518,9 +4518,19 @@ export function MainWindow({
       return;
     }
 
-    const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
-    const nextDocument = applyNativeBondDisplayStyleTarget(selectedDocument, target, bondStyle);
+    if (bondStyle === "wavy" && !reverses && !cachedOclAdapter) {
+      try {
+        cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+      } catch {
+        setStatus("Cannot set wavy bond: stereocentre perception is unavailable");
+        return;
+      }
+      if (documentRef.current !== currentDocument) return;
+    }
+    const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
+    const nextDocument = applyNativeBondDisplayStyleTarget(selectedDocument, target, bondStyle,
+      cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument === selectedDocument) {
       setStatus(`Cannot set hovered bond to ${bondStyle}`);
       return;
@@ -14749,7 +14759,7 @@ export function MainWindow({
     }
   }, [commitDocumentChange, startNativePlacementDrag]);
 
-  const applyNativeBondDisplayStyleDocumentTarget = useCallback((
+  const applyNativeBondDisplayStyleDocumentTarget = useCallback(async (
     target: NativeBondOrderTarget,
     bondStyle: NativeBondDisplayStyle
   ) => {
@@ -14769,7 +14779,17 @@ export function MainWindow({
       return;
     }
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
-    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle);
+    if (bondStyle === "wavy" && !reverses && !cachedOclAdapter) {
+      try {
+        cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+      } catch {
+        setStatus("Cannot set wavy bond: stereocentre perception is unavailable");
+        return;
+      }
+      if (documentRef.current !== currentDocument) return;
+    }
+    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle,
+      cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument !== currentDocument) {
       commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : undefined);
     }

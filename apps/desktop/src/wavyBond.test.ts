@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CommandRegistry } from "@chemdraft/plugin-host";
-import { moleculeToMolfileV2000, moleculeToMolfileV3000 } from "@chemdraft/chem-core";
-import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
+import { applyPatches, moleculeToMolfileV2000, moleculeToMolfileV3000 } from "@chemdraft/chem-core";
+import { depictSmiles2D, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import { allPaletteCommands } from "./commands";
 import { activateDrawingToolCommand, createActiveToolState } from "./drawingTools";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
@@ -10,11 +10,90 @@ import { buildGallerySections } from "./toolbars/CustomizeMainToolbar/galleryMod
 import {
   applyNativeBondDisplayStyleTarget, applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeEngineRelayout, applySingleBondToolAtPoint, createPhase4Document,
-  getSelectedMolecule, nativeBondStyleForToolCommand, stereoPerceptionMolfile,
+  getSelectedMolecule, insertNativeMolfileMolecule, nativeBondStyleForToolCommand, stereoPerceptionMolfile,
   type NativeBondOrderTarget
 } from "./documentWorkflow";
 
+function existingBond(smiles: string, fromIndex: number, toIndex: number) {
+  const inserted = insertNativeMolfileMolecule(createPhase4Document(), { x: 220, y: 220 },
+    depictSmiles2D(smiles).molfile, "molfile-v2000");
+  const mol = getSelectedMolecule(inserted)!;
+  const fromAtomId = mol.atoms[fromIndex]!.id;
+  const toAtomId = mol.atoms[toIndex]!.id;
+  const bond = mol.bonds.find(candidate =>
+    (candidate.fromAtomId === fromAtomId && candidate.toAtomId === toAtomId) ||
+    (candidate.fromAtomId === toAtomId && candidate.toAtomId === fromAtomId))!;
+  const document = applyPatches(inserted, [{ op: "updateObject", objectId: mol.id, changes: {
+    bonds: mol.bonds.map(candidate => candidate.id === bond.id ? { ...candidate, fromAtomId, toAtomId } : candidate)
+  } }]);
+  const target: NativeBondOrderTarget = {
+    kind: "bond", objectId: mol.id, bondId: bond.id, fromAtomId, toAtomId, distanceToPointer: 0
+  };
+  return { document, target, fromAtomId, toAtomId };
+}
+
 describe("wavy bond tool", () => {
+  it.each([[0, 1], [1, 0]])("puts the narrow end on C2 of butan-2-ol for stored atom indices %i→%i", (from, to) => {
+    const { document, target } = existingBond("CC(O)CC", from, to);
+    const original = getSelectedMolecule(document)!;
+    const c1 = original.atoms[0]!.id;
+    const c2 = original.atoms[1]!.id;
+    const stereo = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(original));
+    expect(stereo.map(atom => atom.isStereoCenter)).toEqual([false, true, false, false, false]);
+    expect(stereo[1]!.descriptor).toBe("unspecified");
+    const perceive = vi.fn(perceiveStereoCentersFromMolfile);
+    const wave = applyNativeBondDisplayStyleTarget(document, target, "wavy", perceive);
+    const mol = getSelectedMolecule(wave)!;
+    const bondIndex = mol.bonds.findIndex(bond => bond.id === target.bondId);
+    const bond = mol.bonds[bondIndex]!;
+    expect(bond).toMatchObject({ fromAtomId: c2, toAtomId: c1, order: "single", display: { bondStyle: "wavy" } });
+    expect(perceive).toHaveBeenCalledOnce();
+    expect(perceive).toHaveBeenCalledWith(stereoPerceptionMolfile(original));
+    expect(mol.atoms).toEqual(original.atoms);
+    expect(mol.bonds.filter(candidate => candidate.id !== target.bondId))
+      .toEqual(original.bonds.filter(candidate => candidate.id !== target.bondId));
+    expect(mol.chemistry?.formula).toBe(original.chemistry?.formula);
+    expect(wave.selection).toEqual(document.selection);
+
+    const options = { kekuleBondOrders: new Map<string, number>() };
+    const v2000 = moleculeToMolfileV2000(mol, options).contents.split("\n");
+    expect(v2000[4 + mol.atoms.length + bondIndex]!.slice(0, 12)).toBe("  2  1  1  4");
+    expect(moleculeToMolfileV3000(mol, options).contents)
+      .toContain(`M  V30 ${bondIndex + 1} 1 2 1 CFG=2`);
+
+    // A later click uses the live bond direction, even with the original hit target.
+    const reversed = applyNativeBondDisplayStyleTarget(wave, target, "wavy", perceive);
+    expect(getSelectedMolecule(reversed)!.bonds[bondIndex])
+      .toMatchObject({ fromAtomId: c1, toAtomId: c2, display: { bondStyle: "wavy" } });
+    expect(perceive).toHaveBeenCalledOnce();
+    expect(getSelectedMolecule(applyNativeBondDisplayStyleTarget(reversed, target, "wavy", perceive))!.bonds[bondIndex])
+      .toEqual(bond);
+    expect(perceive).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { smiles: "CCO", from: 0, to: 1, centres: false },
+    { smiles: "CCO", from: 1, to: 0, centres: false },
+    { smiles: "CC(O)C(O)C", from: 1, to: 3, centres: true },
+    { smiles: "CC(O)C(O)C", from: 3, to: 1, centres: true }
+  ])("keeps direction for $smiles ($from→$to), with both endpoints stereo=$centres", ({ smiles, from, to, centres }) => {
+    const { document, target, fromAtomId, toAtomId } = existingBond(smiles, from, to);
+    const stereo = perceiveStereoCentersFromMolfile(stereoPerceptionMolfile(getSelectedMolecule(document)!));
+    expect([stereo[from]!.isStereoCenter, stereo[to]!.isStereoCenter]).toEqual([centres, centres]);
+    const wave = applyNativeBondDisplayStyleTarget(document, target, "wavy", perceiveStereoCentersFromMolfile);
+    expect(getSelectedMolecule(wave)!.bonds.find(bond => bond.id === target.bondId))
+      .toMatchObject({ fromAtomId, toAtomId, display: { bondStyle: "wavy" } });
+  });
+
+  it.each(["wedge", "hashed"] as const)("keeps %s conversion independent of potential stereocentres", style => {
+    const { document, target, fromAtomId, toAtomId } = existingBond("CC(O)CC", 0, 1);
+    const perceive = vi.fn(perceiveStereoCentersFromMolfile);
+    const styled = applyNativeBondDisplayStyleTarget(document, target, style, perceive);
+    expect(getSelectedMolecule(styled)!.bonds.find(bond => bond.id === target.bondId))
+      .toMatchObject({ fromAtomId, toAtomId, display: { bondStyle: style } });
+    expect(perceive).not.toHaveBeenCalled();
+  });
+
   it.each(["wedge", "hashed", "wavy", "bold"] as const)("converts %s to double with the correct document style and no MOL stereo", bondStyle => {
     const doc = applySingleBondToolAtPoint(createPhase4Document(), { x: 220, y: 220 }, { bondStyle });
     const mol = getSelectedMolecule(doc)!;
