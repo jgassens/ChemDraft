@@ -2022,7 +2022,7 @@ function planNativeMoleculeGraphSvg(
       ),
       ...segments.flatMap((segment) =>
         // Only ink is replaced. Hit targets and hover/selection decorators above are unchanged.
-        sketchGeometry && (nativeBondDisplayStyle(bond) === "dashed" ||
+        sketchGeometry && bond.order !== "unknown" && (nativeBondDisplayStyle(bond) === "dashed" ||
           (nativeBondDisplayStyle(bond) === "hashed" && segment.segment === "primary"))
           ? [] :
         nativeBondSegmentFragments(
@@ -2918,7 +2918,7 @@ function moleculeBondEffectSourceFragments(
   resolution: NativeBondOrderResolution
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
-  if (bondStyle === "wavy") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wavy") {
     return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
       elementFragment("path", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
         d, fill: "none", stroke: "#000000", "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
@@ -2926,7 +2926,7 @@ function moleculeBondEffectSourceFragments(
       })
     );
   }
-  if (bondStyle === "wedge" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
@@ -2937,7 +2937,7 @@ function moleculeBondEffectSourceFragments(
     );
   }
 
-  if (bondStyle === "hashed" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "hashed" && segment.segment === "primary") {
     const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     const hashes = hashedWedge.hashes.flatMap((hash, index) =>
       splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
@@ -2972,8 +2972,7 @@ function moleculeBondEffectSourceFragments(
       y2: visibleSegment.y2,
       stroke: "#000000",
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
-      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
-      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+      ...nativeBondStrokePattern(segment.bond, drawingStyle)
     })
   );
 }
@@ -3037,6 +3036,8 @@ function moleculeBondSketchPathParts(
   crossingGaps: readonly BondCrossingGap[],
   resolution: NativeBondOrderResolution
 ): MoleculeSketchPathPart[] {
+  // Keep the unknown-order dots explicit: a sketch centreline would hide their meaning.
+  if (segment.bond.order === "unknown") return [];
   const bondStyle = nativeBondDisplayStyle(segment.bond);
   if (bondStyle === "wavy") {
     return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d) => ({ d }));
@@ -3244,7 +3245,7 @@ function nativeBondSegmentFragments(
   };
   const stroke = nativeMoleculeBondColor(object, segment.bond, drawingStyle);
 
-  if (bondStyle === "wavy") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wavy") {
     return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
       elementFragment("path", `bond-${object.id}-${segment.key}-${index}`, {
         ...commonAttrs, d, fill: "none", stroke,
@@ -3255,7 +3256,7 @@ function nativeBondSegmentFragments(
     );
   }
 
-  if (bondStyle === "wedge" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `bond-${object.id}-${segment.key}-${index}`, {
@@ -3268,7 +3269,7 @@ function nativeBondSegmentFragments(
     );
   }
 
-  if (bondStyle === "hashed" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "hashed" && segment.segment === "primary") {
     const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     return [
       elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, [
@@ -3314,8 +3315,7 @@ function nativeBondSegmentFragments(
       stroke,
       "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
-      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
-      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+      ...nativeBondStrokePattern(segment.bond, drawingStyle)
     })
   );
 }
@@ -7090,6 +7090,26 @@ function nativeBondStrokeWidth(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
     ? drawingStyle.bondBoldWidthPx
     : drawingStyle.bondStrokeWidthPx;
   return depthCuedBondStrokeWidth(base, bond.display?.depthWeight);
+}
+
+/** Unknown chemical order always uses separated round dots, even with a retained display style.
+ * Unlike dashed coordination bonds or hashed wedges, it cannot be mistaken for a known order.
+ * Zero-length round-capped dashes are shared SVG/PDF geometry, independent of optional indicators. */
+function nativeBondStrokePattern(
+  bond: CoreMoleculeBond,
+  drawingStyle: NativeDrawingStyle
+): Record<string, PageSvgAttributeValue> {
+  if (bond.order === "unknown") {
+    return {
+      "stroke-linecap": "round",
+      "stroke-dasharray": `0 ${formatNumber(Math.max(3, nativeBondStrokeWidth(bond, drawingStyle) * 2.5))}`
+    };
+  }
+  const dashed = nativeBondDisplayStyle(bond) === "dashed";
+  return {
+    "stroke-linecap": dashed ? "butt" : drawingStyle.bondLineCap,
+    "stroke-dasharray": dashed ? nativeDashedBondDashArray(drawingStyle) : undefined
+  };
 }
 
 /**

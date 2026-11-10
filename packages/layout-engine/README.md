@@ -105,6 +105,11 @@ Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavele
 stroke width and bond length. The shared SVG plan owns label trimming and crossing gaps, including
 effect/sketch paths; canvas, SVG, PDF and resvg PNG all consume that geometry.
 
+Unknown-order bonds render as separated round dots in the shared canvas/SVG plan (also used by
+PDF), using only the bond's stroke colour. This mandatory display takes precedence over retained
+bond display styles and remains visible with query indicators off or sketch effects on. It does
+not resolve the order or change the stored chemistry.
+
 `DocumentStylePreset` and `DocumentTextStyle` are native style data in `@chemdraft/chem-core`.
 `DocumentStyleScale` and point conversion stay here in `src/documentStyle.ts`. Native coordinates
 use 22 units per bond; the physical scale is 14.4/22 pt per unit. Canvas plans and exporters use those same dimensions,

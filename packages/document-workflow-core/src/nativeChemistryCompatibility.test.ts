@@ -4,6 +4,7 @@ import {
   readDocument, serializeDocument, UnknownBondOrderError, type MoleculeObject
 } from "@chemdraft/chem-core";
 import { planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 import { nativeSingleBondGraphMetadata } from "./atoms";
 import { moleculeSmiles } from "./moleculeSmiles";
 
@@ -28,6 +29,12 @@ describe("forward-read unknown chemistry at shared calculation boundaries", () =
     const plan = JSON.stringify(planPageSvgRender(page));
     expect(plan).toContain('"data-bond-order":"unknown"');
     expect(plan).toContain('"data-mechanism-arrow-kind":"unknown"');
+    const unknownInk = planPageSvgRender(page).fragments.flatMap(elementFragments).filter(fragment =>
+      fragment.attrs["data-bond-order"] === "unknown" &&
+      String(fragment.attrs.class).split(" ").includes("native-bond-line"));
+    expect(unknownInk).toHaveLength(1);
+    expect(unknownInk[0]!.attrs).toMatchObject({ "stroke-linecap": "round" });
+    expect(String(unknownInk[0]!.attrs["stroke-dasharray"])).toMatch(/^0 /);
     // Compare to the existing renderer's explicit unknown states, with no preserved future values.
     const baseline = structuredClone(raw);
     baseline.pages[0].objects[0].bonds[0].order = "unknown";
