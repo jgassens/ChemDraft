@@ -146,3 +146,9 @@ bond length. The requested atom-bounds centre is retained,
 including near page edges. The function returns a molecule without mutating the document or template;
 callers insert it through their normal patch/undo path. Provenance uses existing style/source and
 compatibility metadata.
+
+Reaction conditions use the pure reactionArrowAttachments module: reactionConditionsDraft reads
+the existing label, setReactionArrowConditions creates/updates/removes formatted native text on an
+ordinary arrow, and reconcileReactionArrowAttachments follows geometry changes. Callers own the
+authoring preference and history transaction. nativeFormattedTextObjectSize measures the explicit
+formatted lines using layout-engine metrics; no chemistry is changed.

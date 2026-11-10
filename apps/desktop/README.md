@@ -124,3 +124,17 @@ Turning the option off cannot recover an older session after new work has replac
 The preference uses the same localStorage mechanism as other boolean preferences. It is captured
 synchronously once by the document window before its asynchronous session read; no live document
 broadcast is needed for a next-launch-only option. No native command or session migration is added.
+
+## Formatted reaction conditions
+
+Enable **Compound layout tools**, then **Formatted Reaction Conditions** in Settings/Preferences;
+both start off. Right-click an ordinary arrow and choose **Reaction conditions…**. The registered
+command can also be added through toolbar customization. Double-click an existing conditions label
+to reopen its editor; a bare arrow does not open the editor on double-click.
+
+The movable native editor supports symbol insertion, normal/subscript/superscript text, a formatted
+preview, and Top / inside or Bottom / outside placement. Straight-arrow Top follows page top
+(left for an exactly vertical shaft). Save creates one Undo entry; Cancel leaves the drawing alone,
+and blank Save removes the label. Labels are editable native text, follow their arrow through
+transforms and clipboard operations, and can be dragged to adjust their placement. Disabling
+authoring keeps existing labels visible and attached. SVG and PDF use the canvas rendering plan.

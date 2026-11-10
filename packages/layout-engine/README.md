@@ -206,3 +206,11 @@ Fixed-width/fixed-size boxes retain their authored editor width. Growing chrome 
 left/centre/right alignment anchor: move its left edge by 0/half/all of the growth and move the
 rotation origin inside the frame by the same amount. The original rotation pivot therefore stays
 fixed in page space, including on rotated old boxes. The document frame is untouched.
+
+Reaction conditions attach to ordinary arrow shafts through arrowAttachmentFrame and
+reactionConditionsFrame. Top follows the inside of curves and page top for straight arrows
+(left for vertical arrows). reactionConditionsPlacement searches for clear space using actual
+arrow ink and molecule outlines. resolveArrowAttachments keeps labels attached and retains manual
+offsets after drags. withArrowAttachmentIds includes a parent arrow's conditions in lifecycle
+operations. Canvas and exports share the resolved render plan; measured script baselines apply
+only to attached conditions text, preserving the ordinary-text and table rendering path.

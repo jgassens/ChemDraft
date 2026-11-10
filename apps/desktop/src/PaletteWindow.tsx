@@ -19,8 +19,8 @@ import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShort
 import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
-import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
-import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
+import { isCompoundLayoutCommandHidden } from "./compoundLayoutSettings";
+import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
 import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/ToolbarCustomizeController";
@@ -140,10 +140,11 @@ export function PaletteWindow({
   const settlingBeforeForwardRef = useRef(false);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
-  const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const compoundLayoutSettings = useCompoundLayoutSettings();
+  const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
-  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
-    [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings),
+    [unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]);
   const [commandSpecs, setCommandSpecs] = useState<CommandSpec[]>(() =>
     allShellCommands(createPhase4Document(), undefined, {
       registry: initialRegistry ?? desktopToolsetRegistry
@@ -203,8 +204,8 @@ export function PaletteWindow({
   // as-yet-unknown toolset (placeholder) isn't in the registry, so render no groups until its
   // definition lands rather than throwing on registry.require().
   const paletteGroups = useMemo(
-    () => (knownToolset ? getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides, compoundLayoutsEnabled) : []),
-    [knownToolset, commandOverrides, toolset.id, toolsetRegistry, compoundLayoutsEnabled]
+    () => (knownToolset ? getToolsetPaletteGroups(toolset.id, toolsetRegistry, commandOverrides, compoundLayoutsEnabled, compoundLayoutSettings) : []),
+    [knownToolset, commandOverrides, toolset.id, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]
   );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
@@ -224,11 +225,11 @@ export function PaletteWindow({
     // back with.
     const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return allCommands.filter((command) =>
-      (compoundLayoutsEnabled || !isCompoundLayoutCommand(command.id)) &&
+      !isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings) &&
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [allCommands, compoundLayoutsEnabled]);
+  }, [allCommands, compoundLayoutSettings]);
   const shortcutRegistry = useMemo(
     () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true, platform }),
     [allCommands, platform]

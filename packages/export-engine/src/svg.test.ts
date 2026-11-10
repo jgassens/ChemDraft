@@ -1,3 +1,4 @@
+import { attachedConditionsDocument } from "./attachedConditions.fixture";
 import {
   applyPatch,
   createEmptyDocument,
@@ -6,7 +7,7 @@ import {
   type TextObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
-import { planNativeArtVisual } from "@chemdraft/layout-engine";
+import { nativeTextObjectLineMetrics, planNativeArtVisual } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from "./svg";
 
@@ -627,4 +628,24 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('fill="#1d7f68"');
     expect(result.contents).toContain('stroke="none"');
   });
+});
+
+it("keeps formatted text runs contiguous without adding pretty-print spaces", () => {
+  const document=attachedConditionsDocument();
+  const svg=exportDocumentToSvg(document).contents;
+  const text=svg.match(/<text[^>]*>[\s\S]*?<\/text>/)?.[0];
+  expect(text).toBeDefined();
+  expect(text!.replace(/<[^>]*>/g,"")).toBe("H2OZn2+");
+  expect(text).not.toContain('baseline-shift=');expect(text).toContain('y="');
+  expect([...text!.matchAll(/<tspan x="[^"]+" y="([^"]+)">/g)]).toHaveLength(2);
+  expect(text).toMatch(/dy="[0-9.]+"/);expect(text).toMatch(/dy="-[0-9.]+"/);
+});
+
+it("uses the attached canvas label baselines in SVG",()=>{
+  const document=attachedConditionsDocument();
+  const object=document.pages[0].objects.find((o):o is TextObject=>o.type==="text")!;
+  const metrics=nativeTextObjectLineMetrics(object),svg=exportDocumentToSvg(document).contents;
+  const baselines=[...svg.matchAll(/<tspan x="[^"]+" y="([^"]+)"/g)].map(match=>Number(match[1]));
+  expect(baselines).toHaveLength(metrics.lines.length);
+  metrics.lines.forEach((line,i)=>expect(baselines[i]).toBeCloseTo(object.y+line.baseline,3));
 });

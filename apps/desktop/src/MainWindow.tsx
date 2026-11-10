@@ -32,6 +32,8 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
+import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
+import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import {
   projectGraphicVisualPagePoint,
@@ -885,8 +887,8 @@ import {
   writeLastAutoCheck
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
-import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
-import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
+import { isCompoundLayoutCommandHidden, compoundLayoutCommandDisabledReason, isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
@@ -1714,7 +1716,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.20.57-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2413,6 +2415,10 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const openReactionConditionsRef = useRef<(arrowId: string) => void>(() => {});
+  const arrowCommandTargetRef = useRef<string | undefined>(undefined);
+  const conditionsSourcesRef = useRef(new Map<string, { arrowId: string; source: ChemDraftDocument }>());
+  const applyConditionsRef = useRef<(tabId: string, arrowId: string, draft: ReactionConditionsDraft) => void>(() => {});
   const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
   const vibeGuideActionRef = useRef<(action: "saveStarter" | "openPluginManager") => Promise<void>>(async () => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
@@ -2557,10 +2563,11 @@ export function MainWindow({
   const insertTableCommandRef = useRef<(dimensions: TableInsertDimensions, tabId?: string, preset?: "three-line" | "grid") => void>(() => {});
 
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
-  const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const compoundLayoutSettings = useCompoundLayoutSettings();
+  const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
-  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
-    [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, isDesktopRuntime()),
+    [unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]);
 
   // The toolbar catalog is the single data brain: it composes the core manifest with live
   // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
@@ -3193,10 +3200,25 @@ export function MainWindow({
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
+  const compoundLayoutSettingsRef = useRef(compoundLayoutSettings);
+  compoundLayoutSettingsRef.current = compoundLayoutSettings;
   const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
   const openArrangementSpacingRef = useRef<() => void>(() => {});
-  const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
+  const layerActions = useMemo(() => {
+    // Conditions authoring requires the shared native dialog host (§12).
+    const actions = createLayerActions(document, compoundLayoutsEnabled, compoundLayoutSettings)
+      .filter(action => action.id !== "arrow.conditions" || isDesktopRuntime());
+    const object = objectContextMenu && activePage.objects.find(object => object.id === objectContextMenu.objectId);
+    return object && arrowAttachmentFrame(activePage, object) && !compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)
+      ? actions.map(action => action.id === "arrow.conditions" ? { ...action, enabled: true, disabledReason: undefined } : action) : actions;
+  }, [document, compoundLayoutsEnabled, compoundLayoutSettings, objectContextMenu, activePage]);
+  useEffect(() => {
+    if (compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)) {
+      conditionsSourcesRef.current.clear();
+      void dialogCoordinatorRef.current?.closeReactionConditions();
+    }
+  }, [compoundLayoutSettings]);
   const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
   useEffect(() => {
     if (!compoundLayoutsEnabled) {
@@ -3273,11 +3295,11 @@ export function MainWindow({
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
-        compoundLayoutsEnabled
-      }), vibeCodeStarterCommand],
+        compoundLayoutsEnabled, compoundLayoutSettings
+      }), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -7678,6 +7700,11 @@ export function MainWindow({
       return;
     }
 
+    if (object.arrowAttachment?.kind === "conditions") {
+      arrowCommandTargetRef.current = object.arrowAttachment.parentObjectId;
+      void invokeCommandRef.current("arrow.conditions"); return;
+    }
+
     // Opened/restored clean files may not have an explicit save in this session yet.
     const tabId = activeDocumentTabIdRef.current;
     if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
@@ -7712,6 +7739,12 @@ export function MainWindow({
     // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
+    const object = findDocumentObject(documentRef.current, objectId);
+    const attachment = object?.type === "text" ? object.arrowAttachment : undefined;
+    if (attachment?.kind === "conditions") {
+      arrowCommandTargetRef.current = attachment.parentObjectId;
+      void invokeCommandRef.current("arrow.conditions"); return;
+    }
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
@@ -9701,6 +9734,45 @@ export function MainWindow({
     void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
+  applyConditionsRef.current = (tabId, arrowId, draft) => {
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) throw new Error(reason);
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    const current = tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    const source = conditionsSourcesRef.current.get(tabId);
+    if (!current || source?.arrowId !== arrowId || source.source.id !== current.id ||
+        source.source.pages.length !== current.pages.length || source.source.pages.some((page, index) => page !== current.pages[index]))
+      throw new Error("Drawing changed. Close and reopen Reaction conditions before saving.");
+    if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the drawing gesture before saving conditions.");
+    const next = setReactionArrowConditions(current, arrowId, draft);
+    if (tabId === activeDocumentTabIdRef.current) {
+      commitDocumentChange(next, "Edit reaction conditions"); setStatus("Reaction conditions saved"); return;
+    }
+    if (next === current) return;
+    const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+    const present = normalizeCommittedDocument(next);
+    documentUndoLabelsRef.current.set(present, "Edit reaction conditions");
+    for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+    documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+      history: { past: boundedHistoryPast([...snapshot.history.past, current], present), present, future: [] },
+      file: { ...snapshot.file, dirty: true }, status: "Reaction conditions saved" });
+    nonPristineTabsRef.current.add(tabId); setDocumentTabs([...documentTabsRef.current]);
+  };
+  openReactionConditionsRef.current = arrowId => {
+    if (!isDesktopRuntime()) return;
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) { setStatus(reason); return; }
+    const tabId = activeDocumentTabIdRef.current, source = documentHistoryRef.current.present;
+    const page = source.pages.find(page => page.objects.some(object => object.id === arrowId));
+    const arrow = page?.objects.find(object => object.id === arrowId);
+    if (!page || !arrow || !arrowAttachmentFrame(page, arrow)) { setStatus("Select one arrow"); return; }
+    const title = Array.from(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 80).join("");
+    const draft = reactionConditionsDraft(source, arrowId);
+    const coordinator = dialogCoordinatorRef.current;
+    if (!coordinator) { setStatus("Reaction conditions could not open: the dialog host is unavailable."); return; }
+    if (!coordinator.reactionConditionsArrowId(tabId)) conditionsSourcesRef.current.set(tabId, { arrowId, source });
+    void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
+  };
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
@@ -9708,6 +9780,8 @@ export function MainWindow({
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
+      applyReactionConditions: (tabId, arrowId, draft) => applyConditionsRef.current(tabId, arrowId, draft),
+      onConditionsSettled: tabId => { conditionsSourcesRef.current.delete(tabId); },
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
@@ -11229,6 +11303,16 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "arrow.conditions") {
+          const reason = compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettingsRef.current);
+          if (reason) { setStatus(reason); return; }
+          const current = documentRef.current;
+          const arrowId = arrowCommandTargetRef.current ?? (current.selection.objectIds.length === 1 ? current.selection.objectIds[0] : undefined);
+          arrowCommandTargetRef.current = undefined;
+          if (!arrowId) { setStatus("Select one arrow"); return; }
+          const object = findDocumentObject(current, arrowId);
+          openReactionConditionsRef.current(object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? object.arrowAttachment.parentObjectId : arrowId); return;
+        }
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
           if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
@@ -12343,9 +12427,9 @@ export function MainWindow({
   );
 
   const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
-    if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
-      setStatus("Enable Compound layout tools in Settings"); return;
-    }
+    if (commandId === "arrow.conditions" && !isDesktopRuntime()) { arrowCommandTargetRef.current = undefined; return; }
+    const featureDisabled = compoundLayoutCommandDisabledReason(commandId, compoundLayoutSettingsRef.current);
+    if (featureDisabled) { arrowCommandTargetRef.current = undefined; setStatus(featureDisabled); return; }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     const tableDimensions = parseTableInsertCommandId(commandId);
@@ -12709,13 +12793,13 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
-      if (!compoundLayoutsEnabled && isCompoundLayoutCommand(command.id)) continue;
+      if (isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
       }
     }
     return [...byId].map(([id, title]) => ({ id, title }));
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Full live specs (including current enabled state) for the in-place customize gallery — minus
   // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
@@ -12728,11 +12812,11 @@ export function MainWindow({
     // ships is a fixed fact; what the user has arranged is not.
     const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return shellCommandSpecs.filter((command) =>
-      (compoundLayoutsEnabled || !isCompoundLayoutCommand(command.id)) &&
+      !isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings) &&
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -14347,7 +14431,7 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current);
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current, compoundLayoutSettingsRef.current);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -15300,6 +15384,10 @@ export function MainWindow({
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
+      if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
+        clearObjectTransformPreview(drag.pointerId);
+        replacePresentDocument(objectDragDocument(drag, point)); return;
+      }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
         : objectDragDelta(drag, point);
@@ -15347,7 +15435,7 @@ export function MainWindow({
         arrowPreviewObjects
       });
     });
-  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
+  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview, clearObjectTransformPreview, replacePresentDocument]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -15612,7 +15700,8 @@ export function MainWindow({
         objectRotateReadoutTimeoutRef.current = undefined;
         setObjectRotateReadout(undefined);
       }, 1200);
-      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
+      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic" &&
+          !drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         scheduleObjectTransformPreview({
           pointerId: drag.pointerId,
           objectIds: [drag.objectId],
@@ -21216,7 +21305,7 @@ export function MainWindow({
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
-            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled);
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled, compoundLayoutSettings);
             // Render from a given set of groups — the controller passes an optimistic overlay while a
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
@@ -21999,7 +22088,7 @@ export function MainWindow({
             baseToolsets={toolbarCatalog.baseToolsets()}
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
             availableCommands={customizeCommandOptions}
-            isCommandHidden={compoundLayoutsEnabled ? undefined : isCompoundLayoutCommand}
+            isCommandHidden={id => isCompoundLayoutCommandHidden(id, compoundLayoutSettings)}
             onApply={applyCustomizeToolbars}
             onLiveApply={liveApplyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
@@ -22074,6 +22163,12 @@ export function MainWindow({
       {objectContextMenu ? (
         <ObjectLayerContextMenu
           tableActions={selectedTable(document) ? tableActions : []}
+          arrowActions={(() => {
+            const object = activePage.objects.find(object => object.id === objectContextMenu.objectId);
+            return object && arrowAttachmentFrame(activePage, object) &&
+              !compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)
+              ? layerActions.filter(action => action.id === "arrow.conditions") : [];
+          })()}
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           bondStereoActions={(() => {
             const targets = currentMoleculeInspector.targets.bondTargets;
@@ -22101,6 +22196,7 @@ export function MainWindow({
             canvasRegionRef.current?.focus({ preventScroll: true });
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (menu && commandId.startsWith("arrow.")) arrowCommandTargetRef.current = menu.objectId;
             if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
               const { scope, suppressed, count } = menu.atomWarning;
               const changed = commitDocumentChange((current) =>
@@ -22124,6 +22220,7 @@ export function MainWindow({
               return;
             }
             invoke(commandId);
+            if (commandId.startsWith("arrow.")) queueMicrotask(() => { arrowCommandTargetRef.current = undefined; });
           }}
         />
       ) : null}
@@ -25253,6 +25350,7 @@ function ArtStyleQaLayer({
 }
 
 export function ObjectLayerContextMenu({
+  arrowActions = [],
   layoutActions = [],
   tableActions = [],
   bondStereoActions = [],
@@ -25268,6 +25366,7 @@ export function ObjectLayerContextMenu({
   onFocusReturn,
   onDismiss = () => {}
 }: {
+  arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
@@ -25404,6 +25503,9 @@ export function ObjectLayerContextMenu({
         </div>
         <div className="object-context-menu-separator" role="separator" />
       </> : null}
+      {arrowActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+        data-command-id={action.id} disabled={action.enabled === false} onClick={() => onInvoke(action.id)}>{action.title}</button>)}
+      {arrowActions.length > 0 ? <div className="object-context-menu-separator" role="separator" /> : null}
       {layoutActions.length > 0 ? (
         <div className="object-context-menu-submenu" ref={arrangeParentRef}
           onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
