@@ -5,6 +5,7 @@ import {
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
   layoutAtomAnnotationLabels,
+  routeAtomAnnotationLeaders,
   type AnnotationLabelBox
 } from "@chemdraft/layout-engine";
 
@@ -472,8 +473,8 @@ export function LinkedFigureView({
   const zoomed = view.max - view.min < domainSpan - 1e-6;
 
   const layout = useMemo(
-    () => (structure ? layoutStructure(structure, atomShift) : undefined),
-    [structure, atomShift]
+    () => (structure ? layoutStructure(structure, atomShift, spectrum.nucleus === "13C") : undefined),
+    [structure, atomShift, spectrum.nucleus]
   );
 
   // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
@@ -840,7 +841,12 @@ export function LinkedFigureView({
         </svg>
 
         {layout ? (
-          <svg className="lf-structure" viewBox={`0 0 ${STRUCT_W} ${STRUCT_H}`} role="img" aria-label="Predicted structure with shifts">
+          <svg className="lf-structure" viewBox={layout.viewBox} role="img" aria-label="Predicted structure with shifts">
+            {layout.leaders.map((leader) => (
+              <polyline key={leader.index} className="lf-label-leader"
+                points={leader.points.map(point => `${point.x},${point.y}`).join(" ")}
+                fill="none" stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />
+            ))}
             {layout.bonds.map((bond, index) => (
               <g className="lf-bond" key={`b${index}`}>
                 {bond.lines.map((line, lineIndex) => (
@@ -848,12 +854,6 @@ export function LinkedFigureView({
                 ))}
               </g>
             ))}
-            {layout.labels.map((annotation) => {
-              const atom = layout.byIndex.get(annotation.index)!;
-              return <line key={annotation.index} className="lf-label-leader"
-                x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
-                stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
-            })}
             {layout.atoms.map((atom) => {
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
@@ -884,7 +884,9 @@ export function LinkedFigureView({
                         className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
                         x={annotation.x}
                         y={annotation.y + layout.labelFontSize}
-                        style={{ fontSize: layout.labelFontSize }}
+                        style={{ fontSize: layout.labelFontSize, fontFamily: "Arial, Helvetica, sans-serif" }}
+                        textLength={annotation.width}
+                        lengthAdjust="spacingAndGlyphs"
                         textAnchor="start"
                       >
                         {shift.map((part, index) => (
@@ -947,7 +949,8 @@ interface LaidOutBond {
 /** Fit declarative structure geometry with the shared annotation layout. */
 function layoutStructure(
   structure: PluginLinkedFigureStructure,
-  shifts: ReadonlyMap<number, AtomShiftLabelPart[]>
+  shifts: ReadonlyMap<number, AtomShiftLabelPart[]>,
+  routeLeaders: boolean
 ) {
   const placement = layoutAtomAnnotationLabels({
     atoms: structure.atoms.map((atom) => ({
@@ -969,7 +972,29 @@ function layoutStructure(
     return [{ lines: annotationBondLines({ x: a.sx, y: a.sy }, { x: b.sx, y: b.sy }, bond.order, placement.fitScale) }];
   });
   const labelByIndex = new Map(placement.labels.map((label) => [label.index, label]));
-  return { ...placement, atoms, bonds, byIndex, labelByIndex };
+  const routedLeaders = routeLeaders ? routeAtomAnnotationLeaders({
+    ...placement, bonds: structure.bonds, bondLines: bonds.flatMap(bond => bond.lines)
+  }) : undefined;
+  for (const leader of routedLeaders ?? []) Object.assign(labelByIndex.get(leader.index)!, leader.label);
+  const leaders = routedLeaders ?? placement.labels.map(label => ({
+    index: label.index,
+    points: [
+      { x: byIndex.get(label.index)!.sx, y: byIndex.get(label.index)!.sy },
+      { x: label.leaderX, y: label.leaderY }
+    ]
+  }));
+  // Relocated slots may extend past the original fit. Include them and all detours in the
+  // SVG frame so a valid route never becomes invisible through viewport clipping.
+  const extents = [
+    { x: 0, y: 0 }, { x: STRUCT_W, y: STRUCT_H },
+    ...leaders.flatMap(leader => leader.points),
+    ...placement.labels.flatMap(label => [
+      { x: label.x - 4, y: label.y - 4 }, { x: label.x + label.width + 4, y: label.y + label.height + 4 }
+    ])
+  ];
+  const left = Math.min(...extents.map(p => p.x)), top = Math.min(...extents.map(p => p.y));
+  const right = Math.max(...extents.map(p => p.x)), bottom = Math.max(...extents.map(p => p.y));
+  return { ...placement, atoms, bonds, byIndex, labelByIndex, leaders, viewBox: `${left} ${top} ${right - left} ${bottom - top}` };
 }
 
 /** Keep labels near their ppm and stagger vertically, reserving the honesty note and axis. */

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginLinkedFigureSpectrum, PluginLinkedFigureStructure } from "@chemdraft/plugin-api";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import {
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
@@ -1315,17 +1316,75 @@ describe("LinkedFigureView", () => {
     checkBackgrounds(container!.querySelector(".lf-spectrum")!, ".lf-peak-label");
     const structureSvg = container!.querySelector(".lf-structure")!;
     checkBackgrounds(structureSvg, ".lf-shift-label");
-    // Overwide annotations force the fallback shelf; the last leader crosses a nearer label's box.
-    const firstBox = textBox(structureSvg.querySelector<SVGTextElement>(".lf-shift-label")!);
-    const lastLeader = [...structureSvg.querySelectorAll(".lf-label-leader")].at(-1)!;
-    expect(Number(lastLeader.getAttribute("x1"))).toBeGreaterThan(firstBox.x);
-    expect(Number(lastLeader.getAttribute("x1"))).toBeLessThan(firstBox.x + firstBox.width);
-    expect(Number(lastLeader.getAttribute("y1"))).toBeLessThan(firstBox.y);
-    expect(Number(lastLeader.getAttribute("y2"))).toBeGreaterThan(firstBox.y + firstBox.height);
+    // Degenerate coincident vertices still retain every label and opaque background; carbon
+    // leaders use routed polylines rather than relying on a white box to hide text crossings.
+    const structureLeaders = [...structureSvg.querySelectorAll("polyline.lf-label-leader")];
+    expect(structureLeaders).toHaveLength(count);
+    for (const leader of structureLeaders) {
+      const points = leader.getAttribute("points")!.trim().split(/\s+/).map(pair => pair.split(",").map(Number));
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      expect(points.every(point => point.length === 2 && point.every(Number.isFinite))).toBe(true);
+      expect(new Set(points.map(point => point.join(","))).size).toBeGreaterThanOrEqual(2);
+    }
     const svg = standaloneSpectrumSvg(container!.querySelector<SVGSVGElement>(".lf-spectrum")!);
     const exported = new DOMParser().parseFromString(svg, "text/html");
     checkBackgrounds(exported.querySelector("svg")!, ".lf-peak-label");
   });
+
+  it("paints routed carbon leaders beneath the molecule and preserves shift assignments", () => {
+    const depiction = depictSmiles2D("Cc1ccccc1");
+    mount(createElement(LinkedFigureView, {
+      spectrum: {
+        nucleus: "13C", domain: { min: 0, max: 200 },
+        peaks: depiction.atoms.map((_, index) => ({ id: `c${index}`, ppm: 120 + index, intensity: 1, atomIndices: [index] }))
+      },
+      structure: {
+        atoms: depiction.atoms.map((atom, index) => ({ ...atom, index })),
+        bonds: depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 }))
+      }
+    }));
+    const svg = container!.querySelector(".lf-structure")!;
+    const bond = svg.querySelector(".lf-bond")!;
+    const leaders = [...svg.querySelectorAll("polyline.lf-label-leader")];
+    expect(leaders).toHaveLength(depiction.atoms.length);
+    for (const leader of leaders) {
+      expect(leader.getAttribute("points")!.split(" ").length).toBeGreaterThanOrEqual(3);
+      expect(leader.getAttribute("fill")).toBe("none");
+      expect(leader.compareDocumentPosition(bond) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    for (let index = 0; index < depiction.atoms.length; index++) {
+      expect(svg.querySelector(`[data-atom-index="${index}"] .lf-shift-label`)!.textContent).toBe(`${120 + index}.00`);
+    }
+  });
+
+  it.each(["Cc1ccccc1", "c1ccc2ccccc2c1"].flatMap(smiles => [false, true].map(large => ({ smiles, large }))))(
+    "connects every rendered carbon label edge ($smiles, large: $large)", ({ smiles, large }) => {
+      const depiction = depictSmiles2D(smiles);
+      mount(createElement(LinkedFigureView, {
+        spectrum: { nucleus: "13C", domain: { min: 0, max: 200 },
+          peaks: depiction.atoms.map((_, index) => ({ id: `c${index}`, ppm: 120 + index, intensity: 1, atomIndices: [index] })) },
+        structure: { atoms: depiction.atoms.map((atom, index) => ({ ...atom, index })),
+          bonds: depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 })) }
+      }));
+      if (large) click([...container!.querySelectorAll("button")].find(button => button.textContent === "Full size")!);
+      const svg = document.querySelector(".lf-structure")!;
+      const leaders = [...svg.querySelectorAll("polyline.lf-label-leader")];
+      for (const [index, leader] of leaders.entries()) {
+        const text = svg.querySelector<SVGTextElement>(`[data-atom-index="${index}"] .lf-shift-label`)!;
+        const box = textBox(text);
+        // The SVG advance must be explicit: system UI font fallback must not leave a large
+        // invisible tail between the last glyph and the edge used by the geometry router.
+        expect(Number(text.getAttribute("textLength"))).toBeCloseTo(box.width);
+        const [x, y] = leader.getAttribute("points")!.trim().split(/\s+/).at(-1)!.split(",").map(Number);
+        expect(x).toBeGreaterThanOrEqual(box.x - 1e-6);
+        expect(x).toBeLessThanOrEqual(box.x + box.width + 1e-6);
+        expect(y).toBeGreaterThanOrEqual(box.y - 1e-6);
+        expect(y).toBeLessThanOrEqual(box.y + box.height + 1e-6);
+        expect(Math.min(Math.abs(x - box.x), Math.abs(x - box.x - box.width), Math.abs(y - box.y), Math.abs(y - box.y - box.height)))
+          .toBeLessThan(1e-6);
+      }
+    }
+  );
 
   it.each([380, 508, 1200])("keeps the exit control in wrapping toolbar flow at %spx", (width) => {
     mount(createElement(LinkedFigureView, { spectrum, structure }));
