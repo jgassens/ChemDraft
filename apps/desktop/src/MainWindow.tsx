@@ -209,6 +209,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
   applyPluginDocumentPatch,
+  placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
   type PluginWriteGate
@@ -1770,7 +1771,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.13.36-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -12424,6 +12425,7 @@ export function MainWindow({
         const before = documentRef.current;
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
+          avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
         });
@@ -12742,7 +12744,15 @@ export function MainWindow({
       try {
         const before = documentRef.current;
         const documentIdentity = documentIdentityRef.current;
-        const prepared = normalizeCommittedDocument(applyAcceptedPluginProposal(before, proposal.proposal).document);
+        let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
+        if (recognized) {
+          const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+          for (const page of prepared.pages) {
+            const insertedIds = page.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds);
+          }
+        }
+        prepared = normalizeCommittedDocument(prepared);
         // Keep the proposal pending until the page question and stale-document check succeed.
         const pending = commitWithPageFit(before, prepared, document => {
           const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });

@@ -13731,6 +13731,8 @@ function translateDocumentObjectByPatches(
     translateAnchoredGeometry?: boolean;
     /** Preserve a charge's sticky atom identity only when that atom moves by the same delta. */
     preserveChargeAnchor?: boolean;
+    /** Whole insert/page translations also carry stored attachment points and text frames. */
+    translateAbsoluteCoordinates?: boolean;
   } = {}
 ): DocumentPatch[] {
   const page = pageContainingObject(document, objectId);
@@ -13741,6 +13743,12 @@ function translateDocumentObjectByPatches(
 
   const nextX = object.x + dx;
   const nextY = object.y + dy;
+  // Stored anchor points are absolute, including fallback points on atom/object anchors.
+  const anchorPoint = (anchor: Anchor): Anchor => options.translateAbsoluteCoordinates && anchor.point
+    ? { ...anchor, point: { x: anchor.point.x + dx, y: anchor.point.y + dy } }
+    : offsetAnchorPoint(anchor, dx, dy);
+  const attachments = <T extends { attachmentPoints: Anchor[] }>(value: T): T => ({ ...value,
+    attachmentPoints: value.attachmentPoints.map(anchorPoint) });
 
   if (object.type === "molecule") {
     return [{
@@ -13749,7 +13757,10 @@ function translateDocumentObjectByPatches(
         changes: {
           x: nextX,
           y: nextY,
-          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
+          atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy })),
+          ...(options.translateAbsoluteCoordinates ? {
+            superatoms: object.superatoms.map(attachments), rGroups: object.rGroups.map(attachments)
+          } : {})
         }
       }];
   }
@@ -13763,7 +13774,8 @@ function translateDocumentObjectByPatches(
           y: nextY,
           ...electronMarkMoveAssociation(document, object, nativeChargeMarkCenter(object), {
             x: nextX + object.width / 2, y: nextY + object.height / 2
-          }, { operation: options.preserveChargeAnchor ? "carry" : "move" })
+          }, { operation: options.preserveChargeAnchor ? "carry" : "move" }),
+          ...(options.translateAbsoluteCoordinates ? { anchor: anchorPoint(object.anchor) } : {})
         }
       }];
   }
@@ -13787,8 +13799,8 @@ function translateDocumentObjectByPatches(
         changes: {
           x: nextX,
           y: nextY,
-          start: offsetAnchorPoint(object.start, dx, dy),
-          end: offsetAnchorPoint(object.end, dx, dy)
+          start: anchorPoint(object.start),
+          end: anchorPoint(object.end)
         }
       }];
   }
@@ -13808,13 +13820,27 @@ function translateDocumentObjectByPatches(
         changes: {
           x: nextX,
           y: nextY,
-          source: offsetAnchorPoint(object.source, dx, dy),
-          target: offsetAnchorPoint(object.target, dx, dy),
+          source: anchorPoint(object.source),
+          target: anchorPoint(object.target),
           controlPoints: object.controlPoints.map((point) => ({ ...point, x: point.x + dx, y: point.y + dy }))
         }
       }];
   }
 
+  if (options.translateAbsoluteCoordinates) {
+    if (object.type === "superatom") return [{ op: "updateObject", objectId,
+      changes: { x: nextX, y: nextY, metadata: attachments(object.metadata) } }];
+    if (object.type === "r-group-label") return [{ op: "updateObject", objectId,
+      changes: { x: nextX, y: nextY, display: attachments(object.display) } }];
+    if (object.type === "text" && object.arrowAttachment) return [{ op: "updateObject", objectId,
+      changes: { x: nextX, y: nextY, arrowAttachment: { ...object.arrowAttachment,
+        frame: { ...object.arrowAttachment.frame, origin: {
+          x: object.arrowAttachment.frame.origin.x + dx, y: object.arrowAttachment.frame.origin.y + dy
+        } }
+      } } }];
+  }
+  // Brackets and remaining types have only base-frame geometry. Atom labelOffset, text
+  // attachment offsets/axes, paint coordinates and effect offsets are relative and stay intact.
   return [{ op: "moveObject", objectId, x: nextX, y: nextY }];
 }
 
@@ -14084,6 +14110,7 @@ export function translateInsertedDocumentObjects(
   const patches = document.pages.flatMap(page => page.objects.flatMap(object => inserted.has(object.id)
     ? translateDocumentObjectByPatches(document, object.id, dx, dy, {
       translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, inserted),
+      translateAbsoluteCoordinates: true,
       preserveChargeAnchor: object.type === "electron-mark" && object.anchor.kind === "atom" &&
         object.anchor.objectId !== undefined && inserted.has(object.anchor.objectId)
     }) : []));
@@ -14098,24 +14125,9 @@ export function translateDocumentPage(
 ): ChemDraftDocument {
   const page = document.pages.find(candidate => candidate.id === pageId);
   if (!page || (dx === 0 && dy === 0)) return document;
-  const attachmentPoints = <T extends { attachmentPoints: Anchor[] }>(value: T): T => ({ ...value,
-    attachmentPoints: value.attachmentPoints.map(anchor => offsetAnchorPoint(anchor, dx, dy)) });
-  const patches = page.objects.flatMap(object => {
-    const moves = translateDocumentObjectByPatches(document, object.id, dx, dy, {
-      translateAnchoredGeometry: true, preserveChargeAnchor: true
-    });
-    // These absolute attachment coordinates are not part of ordinary selection movement.
-    // Point-anchored electron marks also need their stored point to follow their frame.
-    if (object.type === "electron-mark") moves.push({ op: "updateObject", objectId: object.id,
-      changes: { anchor: offsetAnchorPoint(object.anchor, dx, dy) } });
-    if (object.type === "molecule") moves.push({ op: "updateObject", objectId: object.id,
-      changes: { superatoms: object.superatoms.map(attachmentPoints), rGroups: object.rGroups.map(attachmentPoints) } });
-    if (object.type === "superatom") moves.push({ op: "updateObject", objectId: object.id,
-      changes: { metadata: attachmentPoints(object.metadata) } });
-    if (object.type === "r-group-label") moves.push({ op: "updateObject", objectId: object.id,
-      changes: { display: attachmentPoints(object.display) } });
-    return moves;
-  });
+  const patches = page.objects.flatMap(object => translateDocumentObjectByPatches(document, object.id, dx, dy, {
+    translateAnchoredGeometry: true, preserveChargeAnchor: true, translateAbsoluteCoordinates: true
+  }));
   return applyPatches(document, patches, { now: phase4Timestamp });
 }
 

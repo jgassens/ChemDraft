@@ -14,10 +14,13 @@ import {
 } from "@chemdraft/plugin-api";
 import { writePatchOps } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
+import { choosePagePlacements, objectRect, overlaps as boundsOverlap, RELATIVE_GAP, unionRects } from "../assistant/placement";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
   /** Page-space visible rectangle, read when the write actually commits (after gesture gating). */
   insertionTarget?: { pageId: string; bounds?: { x: number; y: number; width: number; height: number } };
+  /** Host policy for name results, whose default page-centre position is not user-authored. */
+  avoidInsertionOverlap?: boolean;
 }
 
 export interface AppliedPluginDocumentPatch {
@@ -44,6 +47,10 @@ export function applyPluginDocumentPatch(
   // Placement, insertion and selection are all prepared before the ONE history commit.
   // Measure the surviving inserted group after all batch edits, and preserve its relative layout.
   for (const page of patched.pages) {
+    if (options.avoidInsertionOverlap) {
+      patched = placeInsertedObjectsInFreeSpace(patched, page.id, [...inserted]);
+      continue;
+    }
     const objects = page.objects.filter(object => inserted.has(object.id));
     // Moving even one member away from an existing anchor can detach a charge or warp an
     // arrow. Preserve the entire authored group, including off-page and oversized groups.
@@ -111,6 +118,35 @@ export function applyPluginDocumentPatch(
     document: selected,
     receipt: AppliedPatchReceiptSchema.parse({ applied: true, objectIds })
   };
+}
+
+/** Move an overlapping inserted group together, only when free space fits on this page. */
+export function placeInsertedObjectsInFreeSpace(
+  document: ChemDraftDocument,
+  pageId: string,
+  insertedIds: readonly string[]
+): ChemDraftDocument {
+  const page = document.pages.find(candidate => candidate.id === pageId);
+  if (!page) return document;
+  const inserted = new Set(insertedIds);
+  const objects = page.objects.filter(object => inserted.has(object.id));
+  const existingIds = new Set(document.pages.flatMap(candidate =>
+    candidate.objects.filter(object => !inserted.has(object.id)).map(object => object.id)));
+  // Keep anchored groups intact rather than detach them from existing content.
+  if (objects.some(object => referencesExistingObject(object, existingIds))) return document;
+  const bounds = pluginInsertionBounds(objects);
+  if (!bounds) return document;
+  const occupied = page.objects.filter(object => !inserted.has(object.id)).map(objectRect);
+  const visibleBounds = unionRects([bounds, ...objects.map(objectRect)]);
+  if (!occupied.some(other => boundsOverlap(visibleBounds, other))) return document;
+  const placements = choosePagePlacements({ page, sizes: [visibleBounds], occupied,
+    preferred: visibleBounds, gap: RELATIVE_GAP });
+  const placement = placements.rects[0]!;
+  // The search can propose page growth; these inserts keep their position when the page is full.
+  if (placements.nonFitting.length || placement.x < 0 || placement.y < 0 ||
+    placement.x + placement.width > page.width || placement.y + placement.height > page.height) return document;
+  return translateInsertedDocumentObjects(document, objects.map(object => object.id),
+    placement.x - visibleBounds.x, placement.y - visibleBounds.y);
 }
 
 /** Keep existing object bounds, but never trust a molecule frame to enclose its atoms. */

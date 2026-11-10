@@ -12,6 +12,9 @@ import {
 import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
+import { objectRect, overlaps } from "../assistant/placement";
+import { resolveStructureTemplateName, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
+import { translateDocumentPage, translateInsertedDocumentObjects } from "../documentWorkflow";
 
 import {
   applyAcceptedPluginProposal,
@@ -40,6 +43,106 @@ function moleculeObject(): MoleculeObject {
 }
 
 describe("desktop direct plugin patch application", () => {
+  it.each(["insert", "page"] as const)("translates every stored absolute coordinate in a template group (%s)", mode => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const template = structureTemplateMolecule(resolveStructureTemplateName("18-crown-6")!, {
+      document, centre: { x: 200, y: 200 }
+    });
+    const point = { x: 200, y: 200 };
+    const anchors = [
+      { kind: "point" as const, point },
+      { kind: "atom" as const, objectId: template.id, atomId: template.atoms[0].id, point }
+    ];
+    const molecule = { ...template,
+      atoms: template.atoms.map(atom => ({ ...atom, z: 3, labelOffset: { x: 8, y: -6 } })),
+      superatoms: [{ label: "crown", atomIds: template.atoms.map(atom => atom.id), attachmentPoints: anchors, warnings: [] }],
+      rGroups: [{ label: "R1", querySemantics: "display-only" as const, attachmentPoints: anchors, warnings: [] }]
+    };
+    const base = { x: 180, y: 180, width: 40, height: 40 };
+    const companions = [
+      { ...base, id: "super", type: "superatom", label: "crown", metadata: molecule.superatoms[0] },
+      { ...base, id: "rgroup", type: "r-group-label", label: "R1", display: molecule.rGroups[0] },
+      { ...base, id: "bracket", type: "bracket", bracketKind: "square", containedObjectIds: [molecule.id] },
+      { ...base, id: "label", type: "text", text: "conditions", arrowAttachment: {
+        kind: "conditions", parentObjectId: "arrow", side: "above", offset: { x: 4, y: -8 },
+        frame: { origin: point, tangent: { x: 1, y: 0 }, normal: { x: 0, y: 1 }, length: 40 }
+      } },
+      { ...base, id: "arrow", type: "reaction-arrow", arrowKind: "forward", start: anchors[0], end: anchors[1] },
+      { ...base, id: "mechanism", type: "mechanism-arrow", arrowKind: "full-headed",
+        source: anchors[0], target: anchors[1], controlPoints: [point] },
+      { ...base, id: "mark", type: "electron-mark", markKind: "lone-pair", anchor: anchors[0] },
+      { ...base, id: "graphic", type: "graphic", graphicKind: "line", data: {
+        lineStart: point, lineEnd: point, pathControlPoint: point, arcCenter: point,
+        pathNodes: [{ point, inControl: point, outControl: point }], freehandPoints: [point]
+      } }
+    ].map(object => DocumentObjectSchema.parse(object));
+    const objects = [molecule, ...companions];
+    page.objects = objects;
+    const dx = 73, dy = -41;
+    // All x/y pairs in these fixtures are absolute except these explicitly relative fields.
+    // Comparing entire objects also checks bonds, charge, stereo, structure, references and styles.
+    const shifted = (value: unknown, key = ""): unknown => {
+      if (["labelOffset", "offset", "tangent", "normal"].includes(key)) return value;
+      if (Array.isArray(value)) return value.map(item => shifted(item));
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value).map(([field, item]) => [field,
+        field === "x" && typeof item === "number" ? item + dx :
+        field === "y" && typeof item === "number" ? item + dy : shifted(item, field)]));
+    };
+    const moved = mode === "insert"
+      ? translateInsertedDocumentObjects(document, objects.map(object => object.id), dx, dy)
+      : translateDocumentPage(document, page.id, dx, dy);
+    expect(moved.pages[0].objects).toEqual(objects.map(object => shifted(object)));
+    expect(document.pages[0].objects).toEqual(objects);
+  });
+
+  it("moves an overlapping name result as one translated group, preserving existing content", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = moleculeObject();
+    page.objects = [existing];
+    const first = { ...existing, id: "named_first" };
+    const second = { ...existing, id: "named_second", x: existing.x + existing.width + 12 };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "batch", patches: [first, second].map(object => ({ op: "addObject", pageId: page.id, object })) }
+    }), { avoidInsertionOverlap: true });
+    const objects = result.document.pages[0].objects;
+    expect(objects[0]).toEqual(existing);
+    const dx = objects[1].x - first.x, dy = objects[1].y - first.y;
+    expect(objects.slice(1)).toEqual([first, second].map(object => ({ ...object, x: object.x + dx, y: object.y + dy })));
+    expect(objects.slice(1).every(object => !overlaps(objectRect(object), objectRect(existing)))).toBe(true);
+    expect(result.document.selection.objectIds).toEqual([first.id, second.id]);
+    expect(result.receipt.objectIds).toEqual([first.id, second.id]);
+  });
+
+  it("preserves a name result already in free space", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = moleculeObject();
+    page.objects = [existing];
+    const object = { ...existing, id: "named", x: 400 };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "addObject", pageId: page.id, object }
+    }), { avoidInsertionOverlap: true });
+    expect(result.document.pages[0].objects).toEqual([existing, object]);
+  });
+
+  it("keeps the original name position when the page has no free space", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const existing = { ...moleculeObject(), x: 0, y: 0, width: page.width, height: page.height };
+    page.objects = [existing];
+    const object = { ...moleculeObject(), id: "named" };
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Insert Named Structure",
+      patch: { op: "addObject", pageId: page.id, object }
+    }), { avoidInsertionOverlap: true });
+    const inserted = result.document.pages[0].objects[1];
+    expect(inserted).toEqual(object);
+    expect(overlaps(objectRect(inserted), objectRect(existing))).toBe(true);
+    expect(result.document.pages[0].height).toBe(page.height);
+  });
+
   it.each([undefined, { x: 300, y: 400, width: 200, height: 200 }])("preserves authored on-page geometry with viewport %j", bounds => {
     const document = createEmptyDocument();
     const page = document.pages[0];
