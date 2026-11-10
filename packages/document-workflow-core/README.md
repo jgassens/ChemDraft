@@ -15,6 +15,7 @@ desktop importers did not change.
 | File | Holds |
 |---|---|
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
+| `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
@@ -64,6 +65,14 @@ desktop importers did not change.
 `src/boundary.test.ts` fails if any file here imports from `apps/`, React, Tauri, or the plugin and
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server
 imports from `apps/` again.
+
+`applyNativeStylePreset` returns `{ op: "batch", patches }`; an empty `patches` array signals no
+change. Native callers use `applyPatches(document, batch.patches)` to apply the leaves atomically,
+including edits larger than the external batch envelope's 256-operation limit. Selection scope
+visits selected groups' molecule/text descendants on the selected page. Document scope visits
+every page, updates insertion defaults, and selects changed objects on the active page (selection
+is page-local). Other object kinds, including reactions and mechanism arrows, retain their data.
+Rich-text spans keep their text and scripts while receiving the preset font family, size and weight.
 
 `applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per

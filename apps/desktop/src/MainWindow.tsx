@@ -1,5 +1,7 @@
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -359,6 +361,8 @@ import {
   toggleRingInspectorCommandId,
   drawnStructureSettingsTemplateExportCommandId,
   drawnStructureSettingsTemplateImportCommandId,
+  nativeStylePresetActions,
+  nativeStylePresetIdForCommand,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -828,7 +832,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -850,7 +854,7 @@ import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
-import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
+import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
   arrowNudgeOffset,
   arrowNudgeContinuesBurst,
@@ -2543,6 +2547,12 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  useEffect(() => {
+    // Persisted insertion defaults follow preset application, file reopen and undo/redo.
+    setTextStyleDefaults({ ...DefaultNativeTextStyle,
+      ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+        ? documentDrawingDefaults(document).textStyle : {}) });
+  }, [document.styles.drawing, document.styles.text]);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
   const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
   const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
@@ -11022,6 +11032,20 @@ export function MainWindow({
       }
     }));
 
+    nativeStylePresetActions.forEach(action => register(action, () => {
+      const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const changed = commitDocumentChange(current => {
+        const patch = nativeStylePresetPatchForSelection(current, presetId,
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId));
+        // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
+        // while a native document-wide edit may contain more objects. Both paths are atomic.
+        return applyPatches(current, patch.patches);
+      }, action.title);
+      if (changed) setSelectedNativeMoleculeParts([]);
+      setActiveEditorObjectId(undefined);
+      setStatus(changed ? `Applied ${action.title}` : `${action.title} already matches`);
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
@@ -11959,10 +11983,9 @@ export function MainWindow({
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
-  const nativePluginMenuItems = useMemo(() => [
-    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
-    ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems(
+    pluginRuntime.pluginMenuItems, availablePluginUpdateCount
+  ), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);

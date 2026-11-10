@@ -30,6 +30,7 @@ export * from "./textObjects";
 export * from "./documentStyle";
 export * from "./sourceBondSemantics";
 export * from "./drawingDefaults";
+export * from "./nativeStylePresets";
 export * from "./tables";
 
 export * from "./nameDictionary";

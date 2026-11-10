@@ -1,4 +1,4 @@
-import type { PluginAppMenuItem } from "../appMenu";
+import { nativeStylePresetMenuItems, pluginUpdatesAvailableMenuItem, type PluginAppMenuItem } from "../appMenu";
 import { isDesktopRuntime } from "../window-manager";
 
 /** One plugin menu item shaped for the Rust native-menu bridge (ADR-0016). */
@@ -6,6 +6,8 @@ export interface NativePluginMenuItem {
   /** Plugin command id, or an explicitly core-routed dynamic command id. */
   id: string;
   coreRouted?: boolean;
+  /** Start a new block within the dynamic Structure menu items. */
+  separatorBefore?: boolean;
   label: string;
   enabled: boolean;
   location: PluginAppMenuItem["location"];
@@ -33,18 +35,34 @@ export function pluginAnalyzeItemsForNativeMenu(items: readonly PluginAppMenuIte
   return pluginItemsForNativeMenu(items).filter((item) => item.location === "analyze");
 }
 
+/** MainWindow's complete native payload, shared by macOS and Windows. */
+export function buildMainWindowNativeMenuItems(
+  pluginMenuItems: readonly PluginAppMenuItem[],
+  availablePluginUpdateCount = 0
+): NativePluginMenuItem[] {
+  const contributed = pluginItemsForNativeMenu([
+    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
+    ...pluginMenuItems
+  ]);
+  // Match the web menu's separate preset and contribution blocks. Put the boundary on the
+  // first Structure contribution, even when items for other locations come before it.
+  const firstStructureItem = contributed.find(item => item.location === "structure");
+  if (firstStructureItem) firstStructureItem.separatorBefore = true;
+  return [...pluginItemsForNativeMenu(nativeStylePresetMenuItems()), ...contributed];
+}
+
 /**
- * Push plugin items into their native macOS menu locations (desktop only). A no-op on the web build,
+ * Push the built payload into native macOS/Windows menus (desktop only). A no-op on the web build,
  * where the in-window menu bar already renders them. Failures are swallowed — the native menu is a
  * convenience and must never break the app if the bridge command is unavailable.
  */
-export async function syncPluginNativeMenuItems(items: readonly PluginAppMenuItem[]): Promise<void> {
+export async function syncPluginNativeMenuItems(items: readonly NativePluginMenuItem[]): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("sync_plugin_menu_items", { items: pluginItemsForNativeMenu(items) });
+    await invoke("sync_plugin_menu_items", { items });
   } catch (error) {
     console.warn("Could not sync plugin menu items into the native menu:", error);
   }

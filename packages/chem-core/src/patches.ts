@@ -17,6 +17,8 @@ import { cloneDocument, toIsoTimestamp } from "./document";
 import { engineDocuments } from "./engineDocuments";
 import { pageMarginFromLayout } from "./page-layout";
 import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
+import { nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle,
+  type NativeDrawingStyle, type NativeTextStyle } from "./styles";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -32,6 +34,7 @@ export type DocumentPatch =
   | { op: "setCrossingOverride"; pageId: string; crossing: CrossingOverride }
   | { op: "clearCrossingOverride"; pageId: string; bonds: [BondRef, BondRef] }
   | { op: "setSelection"; pageId?: string; objectIds: string[] }
+  | { op: "setDrawingDefaults"; drawing: NativeDrawingStyle; text: NativeTextStyle }
   | { op: "addAnnotation"; pageId: string; annotation: AnnotationObject }
   | { op: "removeAnnotation"; annotationId: string };
 
@@ -190,7 +193,7 @@ export function admitParsedDocument(document: ChemDraftDocument): ChemDraftDocum
  *
  * Objects `next` shares with `base` were validated when `base` was produced; only the others are
  * parsed, and the document and page shells are validated as a patch result's are — including any
- * compatibility, styles, or plugin data `next` replaced, which a patch never writes. Throws, like a
+ * compatibility, styles, or plugin data `next` replaced. Throws, like a
  * patch, when a replaced object is invalid. A `base` the engine did not produce gains nothing, and
  * `next` comes back unchanged.
  */
@@ -245,8 +248,9 @@ function validateDraft(
   draft: ChemDraftDocument,
   unvalidated: { compatibility?: boolean; styles?: boolean; plugins?: boolean } = {}
 ): ChemDraftDocument {
-  // No patch writes the compatibility warnings, styles, or plugin data, and the base had them
-  // validated, so they pass through by reference. Re-parsing them re-created every warning object
+  // Compatibility warnings and plugin data pass through by reference. Drawing-default patches
+  // replace styles with field-validated native values; other style metadata stays validated on the
+  // base. Re-parsing these fields re-created every warning object
   // on every edit — an imported page can carry thousands — and each undo step kept its own copy.
   // A derived document may have replaced them, though (`unvalidated`), and those are parsed like
   // any other shell field: a save no longer re-parses an engine document, so an invalid field
@@ -315,6 +319,13 @@ function applyPatchInPlace(next: ChemDraftDocument, patch: DocumentPatch): void 
       break;
     case "setSelection":
       setSelection(next, patch.pageId, patch.objectIds);
+      break;
+    case "setDrawingDefaults":
+      next.styles = {
+        ...next.styles,
+        drawing: { ...nativeDrawingStyleFromObjectStyle({ ...patch.drawing }) },
+        text: { ...nativeTextStyleFromObjectStyle({ ...patch.text }) }
+      };
       break;
     case "addAnnotation":
       addObject(next, patch.pageId, patch.annotation);

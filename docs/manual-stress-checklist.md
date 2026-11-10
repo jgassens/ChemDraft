@@ -7,6 +7,8 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Native drawing presets (macOS and Windows): apply each Structure ▸ Drawing style item to selected molecules/text and to an unselected multi-page document; check new-object defaults, retained chemistry, wedge/hash and double-bond spacing, changed-object selection, save/reopen, and exactly one named Undo/Redo entry. Reapplying a matching preset adds no entry.
+
 Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example

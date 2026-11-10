@@ -1,6 +1,6 @@
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
-import { convertTextToAtomLabelCommandId } from "./commands";
+import { convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 
@@ -88,6 +88,17 @@ export interface AppMenuToolbarToggle {
 export interface PluginAppMenuItem {
   location: string;
   command: AppMenuCommand;
+}
+
+/** Drawing styles use the existing dynamic native-menu bridge on both desktop platforms. */
+export function nativeStylePresetMenuItems(): PluginAppMenuItem[] {
+  return nativeStylePresetActions.map(action => ({
+    location: "structure",
+    command: {
+      kind: "command", id: `menu.${action.id}`, commandId: action.id,
+      label: `Drawing style: ${action.title}`, enabled: true, coreRouted: true
+    }
+  }));
 }
 
 export interface AppMenuContext {
@@ -372,6 +383,8 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
   for (const item of flattenAppMenuCommands(sections)) {
     item.shortcut = formatMenuShortcut(item.accelerator, platform);
   }
+  // Presets are core styles; keep the contributed block separated from them.
+  appendPluginMenuItems(sections, nativeStylePresetMenuItems());
   appendPluginMenuItems(sections, [
     ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
     ...(context.pluginMenuItems ?? [])
@@ -401,6 +414,7 @@ function sectionLabelFor(location: string): string {
  * section. No-op when there are no plugin items, keeping the pure core menu identical.
  */
 function appendPluginMenuItems(sections: AppMenuSection[], items: readonly PluginAppMenuItem[]): void {
+  const appendedLocations = new Set<string>();
   for (const { location, command: pluginCommand } of items) {
     let section = sections.find((candidate) => candidate.id === location);
     if (!section) {
@@ -408,12 +422,10 @@ function appendPluginMenuItems(sections: AppMenuSection[], items: readonly Plugi
       sections.push(section);
     }
 
-    const alreadyHasPluginItem = section.items.some(
-      (item) => item.kind === "command" && (item.pluginContributed || item.coreRouted)
-    );
-    if (section.items.length > 0 && !alreadyHasPluginItem) {
+    if (section.items.length > 0 && !appendedLocations.has(location)) {
       section.items.push(separator());
     }
+    appendedLocations.add(location);
     section.items.push(pluginCommand.coreRouted ? pluginCommand : { ...pluginCommand, pluginContributed: true });
   }
 }

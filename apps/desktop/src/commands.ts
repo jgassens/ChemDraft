@@ -1,5 +1,7 @@
 import {
   MinimalPageSizePresetIds,
+  NativeStylePresets,
+  type NativeStylePresetId,
   findPageSizePreset,
   type ChemDraftDocument,
   type GraphicEffect,
@@ -193,6 +195,20 @@ export const artToolsetId = "core.art";
 export const textToolsetId = "core.text";
 export const drawnStructureSettingsTemplateImportCommandId = "drawnStructureSettings.template.import";
 export const drawnStructureSettingsTemplateExportCommandId = "drawnStructureSettings.template.export";
+
+export function nativeStylePresetCommandId(presetId: NativeStylePresetId): string {
+  return `style.preset.apply.${presetId}`;
+}
+
+export const nativeStylePresetActions: CommandSpec[] = NativeStylePresets.map(preset => ({
+  id: nativeStylePresetCommandId(preset.id), title: preset.name,
+  icon: "style", source: "core", category: "object-style",
+  description: "Apply to selected molecules and text, or to the document and new-object defaults when nothing is selected"
+}));
+
+export function nativeStylePresetIdForCommand(commandId: string): NativeStylePresetId | undefined {
+  return NativeStylePresets.find(preset => nativeStylePresetCommandId(preset.id) === commandId)?.id;
+}
 export const artBooleanOperationCommandIds = {
   union: "art.boolean.union",
   subtract: "art.boolean.subtract",
@@ -2399,6 +2415,7 @@ export function allShellCommands(
     ...pageOrientationActions,
     ...textToolbarActions,
     ...objectStyleActions,
+    ...nativeStylePresetActions,
     ...toolbarCustomizationActions
   ]);
 }

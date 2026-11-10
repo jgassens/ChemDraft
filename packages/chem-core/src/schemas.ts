@@ -146,6 +146,11 @@ export const AnchorSchema = z
   })
   .strict();
 
+// Optional metadata keeps older documents loadable without adding a preset during parsing.
+const ObjectStyleMetadataSchema = z.object({
+  stylePresetId: z.string().optional()
+});
+
 const BaseObjectSchema = z
   .object({
     id: IdSchema,
@@ -154,13 +159,15 @@ const BaseObjectSchema = z
     width: z.number().finite().nonnegative(),
     height: z.number().finite().nonnegative(),
     rotation: z.number().finite().default(0),
-    style: MetadataSchema.default({}),
+    // Keep the record first: an object/catchall parser moves declared keys before metadata,
+    // changing legacy serialized bytes when stylePresetId is already present in the record.
+    style: MetadataSchema.and(ObjectStyleMetadataSchema).default({}),
     compatibility: CompatibilityMetadataSchema.optional()
   })
   .strict();
 
-export const GraphicObjectStyleSchema = z
-  .object({
+export const GraphicObjectStyleSchema = ObjectStyleMetadataSchema
+  .extend({
     source: z.string().optional(),
     color: z.string().optional(),
     strokeColor: z.string().optional(),
