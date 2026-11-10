@@ -22,8 +22,11 @@ struct DialogKindSpec {
     size: (f64, f64),
     min_size: (f64, f64),
     // Content-fit: `ready` carries the form's measured height; reveal sets the inner height to it
-    // (clamped to the work area); larger remembered user sizes are retained.
+    // (clamped to the work area); larger remembered user sizes are retained unless preserving
+    // the complete user frame takes precedence.
     fit_content: bool,
+    // Scrollable Preferences fits on first open, then keeps the user's whole viewport frame.
+    preserve_user_frame: bool,
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
@@ -34,6 +37,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (640.0, 600.0),
             min_size: (360.0, 180.0),
             fit_content: true,
+            preserve_user_frame: true,
         }),
         "atomProblem" => Ok(DialogKindSpec {
             maximizable: false,
@@ -42,6 +46,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (460.0, 360.0),
             min_size: (360.0, 260.0),
             fit_content: false,
+            preserve_user_frame: false,
         }),
         "vibeCodeGuide" => Ok(DialogKindSpec {
             maximizable: false,
@@ -50,6 +55,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (480.0, 400.0),
             min_size: (420.0, 240.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "structureTemplates" => Ok(DialogKindSpec {
             maximizable: false,
@@ -58,6 +64,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (620.0, 700.0),
             min_size: (420.0, 360.0),
             fit_content: false,
+            preserve_user_frame: false,
         }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
@@ -66,6 +73,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (420.0, 300.0),
             min_size: (360.0, 260.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "arrangementSpacing" => Ok(DialogKindSpec {
             maximizable: false,
@@ -74,6 +82,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (540.0, 600.0),
             min_size: (360.0, 260.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "customColor" => Ok(DialogKindSpec {
             maximizable: false,
@@ -82,6 +91,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (460.0, 320.0),
             min_size: (360.0, 240.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
@@ -92,6 +102,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (480.0, 240.0),
             min_size: (360.0, 120.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "reactionConditions" => Ok(DialogKindSpec {
             maximizable: false,
@@ -100,6 +111,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (560.0, 620.0),
             min_size: (380.0, 420.0),
             fit_content: false,
+            preserve_user_frame: false,
         }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
@@ -108,6 +120,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 620.0),
             min_size: (420.0, 360.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "engineInstall" => Ok(DialogKindSpec {
             maximizable: false,
@@ -116,6 +129,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 480.0),
             min_size: (420.0, 380.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         "toolInstall" => Ok(DialogKindSpec {
             maximizable: false,
@@ -124,6 +138,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 460.0),
             min_size: (420.0, 380.0),
             fit_content: true,
+            preserve_user_frame: false,
         }),
         _ => Err("Unknown dialog kind".into()),
     }
@@ -2271,8 +2286,14 @@ fn dialog_client_size(
     let content = content.filter(|_| spec.fit_content);
     let content_height = content.map(|fit| fit.logical_height(1.0));
     let content_width = content.and_then(|fit| fit.logical_width());
-    let (width, height) = remembered_client_size(saved, spec.resizable || current_frame)
-        .unwrap_or((spec.size.0, content_height.unwrap_or(spec.size.1)));
+    let remembered = remembered_client_size(saved, spec.resizable || current_frame);
+    if let Some(size) = remembered.filter(|_| spec.preserve_user_frame) {
+        // Preferences scrolls within the user's viewport. Raising its remembered/live
+        // height to the full content height would also clamp its top to the screen edge.
+        return size;
+    }
+    let (width, height) =
+        remembered.unwrap_or((spec.size.0, content_height.unwrap_or(spec.size.1)));
     // Keep a larger user size, but a remembered/live size cannot clip newly added content.
     // The shared placement path subsequently caps this to the destination work area.
     (
@@ -2594,15 +2615,15 @@ impl DialogPlacement<'_> {
         )?;
         if fits_work_area {
             let frame = measure()?;
-            let minimum = self.content.filter(|_| self.spec.fit_content).map_or(
-                self.spec.min_size,
-                |content| {
+            let minimum = self
+                .content
+                .filter(|_| self.spec.fit_content && !self.spec.preserve_user_frame)
+                .map_or(self.spec.min_size, |content| {
                     (
                         content.logical_width().unwrap_or(self.spec.size.0),
                         content.logical_height(1.0),
                     )
-                },
-            );
+                });
             // These are logical INNER constraints on both platforms. Refresh from the latest
             // content rather than the old minimum or a larger remembered/user client size.
             // The fitted client already subtracts the destination's measured decorations.
@@ -4943,6 +4964,123 @@ mod tests {
         }
     }
     #[test]
+    fn preferences_saved_and_live_frames_survive_tall_content_and_reopen() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(false, 16.0, 40.0), (true, 0.0, 28.0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "screen".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1200.0,
+                    height: 900.0,
+                    scale,
+                }
+                .inset(12.0);
+                let spec = kind_spec("preferences").unwrap();
+                let content = MeasuredContent::new(
+                    ContentFit::from_ready(&json!({
+                        "contentWidth": 1000.0,
+                        "contentHeight": 2400.0,
+                        "pixelRatio": scale
+                    })),
+                    Some(scale),
+                );
+                // First open still fits content, capped by placement to the work area.
+                assert_eq!(
+                    dialog_client_size(&spec, content, None, false),
+                    (1000.0, 2400.0)
+                );
+                let mut saved = SavedPosition {
+                    size: Some((560.0, 420.0)),
+                    monitor: work.id.clone(),
+                    x: 240.0,
+                    y: 180.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                };
+                let dialog = RefCell::new(SimulatedDialog {
+                    scale,
+                    client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                    minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                    position: tauri::LogicalPosition::new(0.0, 0.0),
+                    decoration: tauri::LogicalSize::new(border, title_bar),
+                    queue: Vec::new(),
+                    calls: Vec::new(),
+                });
+                // Initial ready restores the saved frame; reveal, observer refits, and a
+                // later close/reopen must not replace its height and clamp its top to y=12.
+                for current_frame in [false, true, true, false] {
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (saved.x * scale, saved.y * scale, scale),
+                            client_size: dialog_client_size(
+                                &spec,
+                                content,
+                                Some(&saved),
+                                current_frame,
+                            ),
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: (!current_frame).then_some(TemplatePlacement {
+                                saved: Some(&saved),
+                                owner_rect: (0.0, 0.0, 1200.0, 900.0),
+                            }),
+                        },
+                    );
+                    let native = dialog.borrow();
+                    assert_eq!((native.position.x, native.position.y), (240.0, 180.0));
+                    assert_eq!((native.client.width, native.client.height), (560.0, 420.0));
+                    assert_eq!((native.minimum.width, native.minimum.height), spec.min_size);
+                    let position = native.position.to_physical::<i32>(scale);
+                    let frame = native.frame();
+                    let captured = preferences_close_frame(
+                        &work,
+                        (position.x, position.y),
+                        frame.outer,
+                        frame.client,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    saved =
+                        serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
+                    assert_eq!(
+                        (saved.x, saved.y, saved.size),
+                        (240.0, 180.0, Some((560.0, 420.0)))
+                    );
+                }
+                // A remembered frame outside the visible work area is still resized and clamped.
+                saved.x = 1120.0;
+                saved.y = 850.0;
+                saved.size = Some((1600.0, 1200.0));
+                SimulatedDialog::place(
+                    &dialog,
+                    macos,
+                    DialogPlacement {
+                        position: (saved.x * scale, saved.y * scale, scale),
+                        client_size: dialog_client_size(&spec, content, Some(&saved), true),
+                        content,
+                        work: &work,
+                        spec: &spec,
+                        fit_content: true,
+                        template: None,
+                    },
+                );
+                let native = dialog.borrow();
+                assert_eq!((native.position.x, native.position.y), (work.x, work.y));
+                assert_eq!(
+                    (native.client.width, native.client.height),
+                    (work.width - border, work.height - title_bar)
+                );
+            }
+        }
+    }
+    #[test]
     fn live_content_minimum_updates_both_axes_on_refit_and_caps_to_work_area() {
         use std::cell::RefCell;
         for (macos, scale, border, title_bar) in [
@@ -4980,7 +5118,7 @@ mod tests {
                     calls: Vec::new(),
                 });
                 // Large user sizes stay large; the live minimum follows content, including
-                // removal of content, rather than freezing at the user size or previous fit.
+                // removal of content. Preferences instead keeps its scrollable viewport.
                 for (width, height) in [
                     (548.0_f64, 334.0_f64),
                     (600.0, 480.0),
@@ -5022,12 +5160,22 @@ mod tests {
                     let native = dialog.borrow();
                     assert_eq!(
                         native.minimum.width,
-                        width.min(work.width - border),
+                        (if kind == "preferences" {
+                            spec.min_size.0
+                        } else {
+                            width
+                        })
+                        .min(work.width - border),
                         "{kind}"
                     );
                     assert_eq!(
                         native.minimum.height,
-                        height.min(work.height - title_bar),
+                        (if kind == "preferences" {
+                            spec.min_size.1
+                        } else {
+                            height
+                        })
+                        .min(work.height - title_bar),
                         "{kind}"
                     );
                     assert!(native.client.width >= native.minimum.width);
@@ -5342,12 +5490,24 @@ mod tests {
                             );
                             assert_eq!(
                                 native.minimum.height,
-                                (f64::from(expected_client.1) / scale).min(height),
+                                (f64::from(expected_client.1) / scale).min(
+                                    if kind == "preferences" {
+                                        spec.min_size.1
+                                    } else {
+                                        height
+                                    }
+                                ),
                                 "minimum: {case}"
                             );
                             assert_eq!(
                                 native.minimum.width,
-                                (f64::from(expected_client.0) / scale).min(spec.size.0),
+                                (f64::from(expected_client.0) / scale).min(
+                                    if kind == "preferences" {
+                                        spec.min_size.0
+                                    } else {
+                                        spec.size.0
+                                    }
+                                ),
                                 "minimum width: {case}"
                             );
                             assert_eq!(native.scale, scale, "destination scale: {case}");
