@@ -33,10 +33,11 @@ export function labelOnBondedAtom(
   const reading = typed.kind;
   // An attached label is a new neutral atom; the source retains its own charge.
   // Element labels normally leave room for implicit hydrogens, so FreeValence is undefined.
-  // A normally monovalent element still takes only one attachment here, just like CF3 or OMe:
+  // On carbon, a normally monovalent element takes only one attachment, just like CF3 or OMe:
   // typing Cl on a ring carbon means a chloro substituent, even where Cl(III) could be valid.
+  // Existing heteroatoms keep the ordinary relabel decision, including retyping their element.
   const freeValence = nativeAtomLabelFreeValence(label, 0, context);
-  const monovalentElement = typed.kind === "element" && nativeAtomValence[typed.element] === 1;
+  const monovalentElementOnCarbon = atom.element === "C" && typed.kind === "element" && nativeAtomValence[typed.element] === 1;
   const base = { bondCount, external, reading, freeValence };
   if (bondCount < 2) return { ...base, kind: "unchanged" };
   const sourceContext = nativeAtomLabelContextInMolecule(atom, molecule, true);
@@ -52,7 +53,7 @@ export function labelOnBondedAtom(
   }
   if (freeValence !== undefined && freeValence === external) return { ...base, kind: "relabel" };
   const reason = reading === "generic" ? "generic" : reading === "heavy-hydrogen" ? "heavy-hydrogen"
-    : freeValence === 1 || monovalentElement ? "one-bond" : undefined;
+    : freeValence === 1 || monovalentElementOnCarbon ? "one-bond" : undefined;
   if (!reason) return { ...base, kind: "relabel" };
 
   // #83 distinguishes an imported element (Ac/Pr/Ts/Ar) from the typed group spelling,

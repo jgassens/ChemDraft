@@ -177,6 +177,39 @@ describe.each(["macos", "windows"] as const)("hover label chemistry and history 
     }
   });
 
+  it("retyping Cl on an existing Cl ring atom is a plain relabel with no new atom", async () => {
+    const initial = insertNativeTemplateMolecule(createPhase4Document("Retype chlorine"), { x: 300, y: 300 }, "cyclohexane");
+    const ring = initial.pages[0].objects[0] as MoleculeObject;
+    await mount(applyPatches(initial, [{ op: "updateObject", objectId: ring.id, changes: {
+      atoms: ring.atoms.map((atom, i) => i === 0 ? { ...atom, element: "Cl" } : atom)
+    } }]));
+    const before = molecule();
+    await hover(before.atoms[0]!);
+    await type("Cl");
+    const after = molecule();
+    expect(after.atoms).toEqual([{ ...before.atoms[0], labelLiteral: true }, ...before.atoms.slice(1)]);
+    expect(after.bonds).toEqual(before.bonds);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Cl has unsupported valence 2.");
+    await key("z", historyModifiers);
+    expect(molecule()).toEqual(before);
+    await key("z", { ...historyModifiers, shiftKey: true });
+    expect(molecule()).toEqual(after);
+  });
+
+  it.each(["N", "O"])("relabels a ring %s atom to Cl without attaching a substituent", async element => {
+    const initial = insertNativeTemplateMolecule(createPhase4Document("Relabel heteroatom"), { x: 300, y: 300 }, "cyclohexane");
+    const ring = initial.pages[0].objects[0] as MoleculeObject;
+    await mount(applyPatches(initial, [{ op: "updateObject", objectId: ring.id, changes: {
+      atoms: ring.atoms.map((atom, i) => i === 0 ? { ...atom, element } : atom)
+    } }]));
+    const before = molecule();
+    await hover(before.atoms[0]!);
+    await type("Cl");
+    expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: "Cl", labelLiteral: true }, ...before.atoms.slice(1)]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Cl has unsupported valence 2.");
+  });
+
   it("relabels a terminal carbon to Cl without inserting an atom or changing its bond", async () => {
     await mount(insertNativeSingleBondMolecule(createPhase4Document("Chloromethane"), { x: 300, y: 300 }));
     const before = molecule();
