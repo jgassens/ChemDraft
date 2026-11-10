@@ -4,7 +4,8 @@ import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as bracketCommands from "./bracketCommands";
 import { MainWindow } from "./MainWindow";
 import { applyNativeChainTool, applyNativeTemplateToolAtPoint, createPhase4Document } from "./documentWorkflow";
 
@@ -231,6 +232,27 @@ describe("placement drags that start on an object follow pointer capture", () =>
     expect(bridge().snapshot().document.pages[0].objects).toHaveLength(0);
     await act(async () => { await bridge().command("edit.redo"); });
     expect(bridge().snapshot().document.pages[0].objects).toEqual(snapshot.document.pages[0].objects);
+  });
+
+  it("reports when a repeat unit is marked and removed", async () => {
+    await renderMainWindow(createPhase4Document("Repeat unit status"), "tool.roundBracket");
+    await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 93);
+    const before = bridge().snapshot().document;
+    const statusBefore = container.querySelector('[role="status"]')?.textContent;
+    // A no-op update makes commitDocumentChange return false: it must not report success.
+    const toggle = vi.spyOn(bracketCommands, "toggleBracketRepeatUnit").mockImplementationOnce(document => document);
+    try {
+      await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+      expect(toggle).toHaveBeenCalledOnce();
+      expect(bridge().snapshot().document).toEqual(before);
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(statusBefore);
+    } finally {
+      toggle.mockRestore();
+    }
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Marked 0 atoms as repeat unit "n"');
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Removed repeat unit "n"');
   });
 
   it("marks a pair as a repeat unit and edits its annotation label in one undo step", async () => {

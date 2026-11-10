@@ -8183,11 +8183,11 @@ export function MainWindow({
         const changed = activeTextEditObjectIdRef.current ? replacePresentDocument(colorResult.document) : commitDocumentChange(colorResult.document, undoLabel);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
-        setStatus(changed ? "Updated selected color" : "Selected color unchanged");
+        setStatus(undoLabel && changed ? `Applied ${selectedColor.toUpperCase()} to selection` : changed ? "Updated selected color" : "Selected color unchanged");
         return true;
       }
 
-      setStatus("Updated text defaults");
+      setStatus(undoLabel ? `Text default color set to ${selectedColor.toUpperCase()}` : "Updated text defaults");
       return true;
     }
 
@@ -8643,7 +8643,7 @@ export function MainWindow({
       objectWaveForCommand(commandId) || electronMarkStyleCommands.some(command => command.id === commandId)
         ? result.message : undefined);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
     return true;
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
 
@@ -8726,7 +8726,7 @@ export function MainWindow({
     if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
     else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
   }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelObjectStylePreview = useCallback(() => {
@@ -11332,6 +11332,7 @@ export function MainWindow({
       if (moved === current) {
         // Repeats against a page edge are still presses, so they renew an existing burst.
         arrowNudgeBurstRef.current = continuesBurst ? { history: documentHistoryRef.current, lastPress: now } : undefined;
+        setStatus("Selection is already at the page edge");
         return;
       }
       // Like assistant-history amendments, retain the first before-snapshot and replace only
@@ -11341,7 +11342,34 @@ export function MainWindow({
         replacePresentDocument(prepareDocumentCommit(moved, "Move"));
       } else commitDocumentChange(moved, "Move");
       arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
-      setStatus("Move selection");
+      const nextObjects = new Map(moved.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
+      let dx = 0, dy = 0, finite = true;
+      const measure = (before: { x: number; y: number }, after: { x: number; y: number }) => {
+        const x = after.x - before.x, y = after.y - before.y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) { finite = false; return; }
+        if (Math.abs(x) > Math.abs(dx)) dx = x;
+        if (Math.abs(y) > Math.abs(dy)) dy = y;
+      };
+      current.pages.forEach(page => page.objects.forEach(object => {
+        const next = nextObjects.get(object.id);
+        if (!next) return;
+        if (object.type === "molecule" && next.type === "molecule") {
+          const nextAtoms = new Map(next.atoms.map(atom => [atom.id, atom] as const));
+          object.atoms.forEach(atom => {
+            const after = nextAtoms.get(atom.id);
+            if (after) measure(atom, after);
+          });
+        } else {
+          measure(object, next);
+        }
+      }));
+      const distance = (value: number) => Number(Math.abs(value).toFixed(3));
+      const horizontal = dx ? `${distance(dx)} px ${dx < 0 ? "left" : "right"}` : "";
+      const vertical = dy ? `${distance(dy)} px ${dy < 0 ? "up" : "down"}` : "";
+      if (!finite) setStatus("Moved selection");
+      else if (!dx && !dy) setStatus("Selection is already at the page edge");
+      else if (dx && dy) setStatus(`Moved selection by ${horizontal} and ${vertical}`);
+      else setStatus(`Moved selection ${dx ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down")} by ${distance(dx || dy)} px`);
     }));
 
     atomProblemCommands(document).forEach(({ spec, target, action }) => register(spec, async () => {
@@ -11407,9 +11435,10 @@ export function MainWindow({
 
     bracketActions.forEach(action => register(action, () => {
       if (action.id === "bracket.repeatUnit.toggle") {
-        const result = toggleBracketRepeatUnit(documentRef.current);
-        commitDocumentChange(result, action.title);
-        setStatus(bracketRepeatUnitStatus(result));
+        const nextDocument = toggleBracketRepeatUnit(documentRef.current);
+        if (commitDocumentChange(nextDocument, action.title)) {
+          setStatus(bracketRepeatUnitStatus(nextDocument));
+        }
       } else {
         const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
         if (closing) {
@@ -12015,7 +12044,10 @@ export function MainWindow({
       const state = loadCustomSwatches();
       const color = state[parsed.swatch][`slot${parsed.slot}`];
       if (parsed.action === "clear") {
-        if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+        if (color) {
+          persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+          setStatus(`Cleared Custom Color ${parsed.swatch}, Slot ${parsed.slot} (${color.toUpperCase()})`);
+        }
       } else if (parsed.action === "apply") {
         if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Colour ${color.toUpperCase()}`);
       } else {
@@ -12046,9 +12078,10 @@ export function MainWindow({
         const site = structureSearchSite(action.id);
         if (!site) return;
         try {
-          await structureSearchController.current!(site, structureSearchDocument(
+          const opened = await structureSearchController.current!(site, structureSearchDocument(
             documentRef.current, nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
           ));
+          if (opened) setStatus(`Opened ${site === "pubchem" ? "PubChem" : "Reaxys"} search`);
         } catch (error) {
           setStatus(`Structure search failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -12254,7 +12287,10 @@ export function MainWindow({
 
   coreCommandBindingsRef.current = coreCommandBindings;
 
-  customColorSaveRef.current = (swatch, slot, hex) => persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+  customColorSaveRef.current = (swatch, slot, hex) => {
+    persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+    setStatus(`Custom Color ${swatch}, Slot ${slot} set to ${hex.toUpperCase()}`);
+  };
 
   // The registry and its core-command registrar are created exactly once. Handlers delegate
   // to the live bindings ref, so plugin commands registered into the same stable instance in
@@ -34082,6 +34118,14 @@ function chargeValueForToolCommand(commandId: string): NativeElectronMarkSpec | 
     default:
       return undefined;
   }
+}
+
+function objectStyleResultStatus(commandId: string, fallback: string): string {
+  const wave = objectWaveForCommand(commandId);
+  if (wave) return `Wave ${wave.setting} set to ${wave.value}${wave.setting === "smoothness" ? "%" : " px"}`;
+  const electron = electronMarkStyleCommands.find(command => command.id === commandId);
+  if (electron) return `Electron mark ${electron.property} set to ${electron.property === "size" ? electron.value : electron.value.toFixed(2)} px`;
+  return fallback;
 }
 
 export function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec, placedCharge?: number): string {

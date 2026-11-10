@@ -157,7 +157,7 @@ describe("online structure search", () => {
   it("prompts once per site, remembers Continue across controllers, and invokes with site and SMILES only", async () => {
     const flow = setup();
     const source = drawing();
-    await flow.search("pubchem", source);
+    expect(await flow.search("pubchem", source)).toBe(true);
     flow.advance(1000);
     await flow.search("pubchem", source);
     flow.advance(1000);
@@ -178,7 +178,7 @@ describe("online structure search", () => {
 
   it("Cancel sends nothing and asks again next time", async () => {
     const flow = setup("cancel");
-    await flow.search("pubchem", drawing());
+    expect(await flow.search("pubchem", drawing())).toBeUndefined();
     await flow.search("pubchem", drawing());
     expect(flow.prompt).toHaveBeenCalledTimes(2);
     expect(invoke).not.toHaveBeenCalled();
@@ -189,7 +189,7 @@ describe("online structure search", () => {
     const flow = setup();
     await flow.search("pubchem", drawing());
     flow.advance(999);
-    await flow.search("reaxys", drawing());
+    expect(await flow.search("reaxys", drawing())).toBeUndefined();
     expect(invoke).toHaveBeenCalledTimes(1);
     flow.advance(1);
     await flow.search("reaxys", drawing());

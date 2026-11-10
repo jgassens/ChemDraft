@@ -14,6 +14,13 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
+const search = vi.hoisted(() => vi.fn(async (): Promise<boolean | undefined> => true));
+vi.mock("./structureSearch", async original => ({ ...await original<typeof import("./structureSearch")>(),
+  createStructureSearchController: () => search,
+  structureSearchCommands: () => ["pubchem", "reaxys"].map(site => ({
+    id: `search.${site}`, title: site, icon: "export", source: "core", category: "tools", enabled: true
+  }))
+}));
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 
 describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform => {
@@ -37,8 +44,14 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     await act(async () => root.unmount()); container.remove();
     vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
   });
-  async function mount(selected = true, text = false, tool = "tool.select", table = false) {
+  async function mount(selected = true, text = false, tool = "tool.select", table = false, offset?: { x: number; y: number }) {
     let initialDocument = insertNativeSingleBondMolecule(createPhase4Document("Arrow nudge"), { x: 200, y: 200 });
+    if (offset) {
+      initialDocument = structuredClone(initialDocument);
+      const item = molecule(initialDocument);
+      item.x += offset.x; item.y += offset.y;
+      item.atoms.forEach(atom => { atom.x += offset.x; atom.y += offset.y; });
+    }
     if (text) initialDocument = insertNativeTextObject(initialDocument, { x: 350, y: 250 }, "Conditions");
     if (table) initialDocument = insertTableIntoDocument(initialDocument, {
       rows: 2, columns: 2, headerRows: 0, preset: "grid", center: { x: 400, y: 350 },
@@ -96,8 +109,46 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
   it("Shift+Down moves ten document units toward positive y", async () => {
     await mount(); const before = current();
     expect((await key("ArrowDown", { shiftKey: true })).defaultPrevented).toBe(true);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection down by 10 px");
     expectTranslation(before, 0, 10);
     await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  it("reports the clamped distance and an unchanged selection at the page edge", async () => {
+    await mount();
+    for (let i = 0; i < 25; i++) await key("ArrowLeft", { shiftKey: true });
+    await key("ArrowRight");
+    const before = current();
+    await key("ArrowLeft", { shiftKey: true });
+    const dx = molecule().atoms[0].x - molecule(before).atoms[0].x;
+    expect(dx).toBeLessThan(0);
+    expect(dx).toBeGreaterThan(-10);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(`Moved selection left by ${Math.round(-dx * 1000) / 1000} px`);
+    const edge = current();
+    await key("ArrowLeft");
+    expect(current()).toBe(edge);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection is already at the page edge");
+  });
+  it("reports both actual directions when an off-page molecule is pulled back", async () => {
+    await mount(true, false, "tool.select", false, { x: -300, y: -300 });
+    const before = current();
+    await key("ArrowLeft");
+    const dx = molecule().atoms[0].x - molecule(before).atoms[0].x;
+    const dy = molecule().atoms[0].y - molecule(before).atoms[0].y;
+    expect(dx).toBeGreaterThan(0); expect(dy).toBeGreaterThan(0);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      `Moved selection by ${Math.round(dx * 1000) / 1000} px right and ${Math.round(dy * 1000) / 1000} px down`);
+  });
+  it("reports a search only after the browser opens", async () => {
+    await mount();
+    search.mockResolvedValueOnce(true);
+    await command("search.pubchem");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened PubChem search");
+    search.mockResolvedValueOnce(undefined);
+    await command("search.reaxys");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened PubChem search");
+    search.mockResolvedValueOnce(true);
+    await command("search.reaxys");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Opened Reaxys search");
   });
   it.each(["idle", "other key", "pointer", "pointer motion", "command", "selection"])("ends the burst on %s", async boundary => {
     await mount(); const before = current();
