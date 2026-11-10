@@ -37,6 +37,10 @@ certificate, or approval is supplied by the workflow.
    required code signing policy, attribution, named committers/reviewers/approvers and accurate
    privacy policy on the project/download pages. Enable MFA and nominate the people who will approve
    release signing requests.
+   Drafts for owner review are [code signing policy](../../site/code-signing.html) and
+   [privacy policy](../../site/privacy.html), supported by the
+   [source network audit](code-signing-network-audit.md). Confirm the role names, signing status and
+   unresolved privacy details before publishing; these drafts are not linked from the existing site.
 3. Add GitHub.com as a trusted build system, install/authorize the SignPath GitHub integration for
    this repository, and link that trusted build system to the SignPath project. Follow the
    [official GitHub integration guide](https://docs.signpath.io/trusted-build-systems/github).
