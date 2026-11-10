@@ -259,14 +259,14 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     }
   );
 
-  it("names a curly bracket whose glyph cannot be native", () => {
-    const imported = open(page(molecule + glyph(10, "Curly", 'Warning="synthetic warning"') + glyph(11, "Square") + glyph(12)));
+  it("names an unsupported curly-pair bracket whose glyph cannot be native", () => {
+    const imported = open(page(molecule + glyph(10, "CurlyPair", 'Warning="synthetic warning"') + glyph(11, "Square") + glyph(12)));
     expect(imported.document).toBeDefined();
     expect(imported.document!.pages[0].objects.filter(o => o.type === "bracket")).toHaveLength(2);
     expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_type_preserved", sourceObjectId: "10",
-      message: expect.stringMatching(/bracket 10.*Curly.*not imported as a native glyph/i) }));
+      message: expect.stringMatching(/bracket 10.*CurlyPair.*not imported as a native glyph/i) }));
     expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_type_preserved", sourceObjectId: "10",
-      message: expect.stringMatching(/bracket 10.*Curly.*NOT written/i) }));
+      message: expect.stringMatching(/bracket 10.*CurlyPair.*NOT written/i) }));
     expect(all(output(imported.document!), "graphic").filter(n => n.attrs.GraphicType === "Bracket")).toHaveLength(2);
   });
 
