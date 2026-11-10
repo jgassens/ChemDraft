@@ -84,3 +84,9 @@ plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, 
 
 API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
 Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.
+
+
+API 0.1.21 adds optional `chemistry.properties` (RDKit source composition and masses, gated by
+`chemistry.compute`) and `extraTools` on `assistant.createToolSession`. A worker registers
+`onAssistantToolCall(context, call, signal)` to handle its own session's tools. See
+`docs/plugin-architecture/AUTHORING.md` for validation, cancellation, and result limits.

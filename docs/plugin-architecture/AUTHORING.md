@@ -47,6 +47,78 @@ try {
 }
 ```
 
+## Chemistry properties and plugin assistant tools (0.1.21)
+
+Declare `apiVersion: "^0.1.21"` for these additions. Neither adds a permission.
+
+### Chemistry properties
+
+With `chemistry.compute`, `context.chemistry?.properties?.({ format, structure })` returns
+`PluginChemistryPropertiesResult`. Format is `"smiles" | "molfile"`; input is limited to
+5,000 characters and 500 heavy atoms. Molfile V2000/V3000 is detected
+without modifying its contents. Invalid, oversized, or unavailable-engine input returns
+`{ available: false, reason }`.
+
+A successful result contains `formula`, `averageMass` (g/mol), `monoisotopicMass` (Da),
+`formalCharge`, `isotopeLabelled`, and `method: { engine: "RDKit", version, conventions }`.
+These are the property panel's source-composition and RDKit mass results, using its existing lazy
+analysis worker. The whole drawn input is analyzed: sodium benzoate stays sodium benzoate.
+Charge and explicit isotopes are preserved. Carry the method and conventions with displayed numbers.
+
+```ts
+const properties = await context.chemistry?.properties?.({ format: "smiles", structure: "CC(=O)Oc1ccccc1C(=O)O" });
+if (properties?.available) {
+  // Formula C9H8O4; values and their units/conventions are supplied by the host.
+  console.log(properties.formula, properties.averageMass, properties.method);
+}
+```
+
+### Session-local assistant tools
+
+`assistant.createToolSession({ requestId, extraTools? })` accepts up to eight
+`{ name, description, inputSchema }` descriptors. Names match
+`/^[a-z][a-z0-9_]{0,47}$/` and are unique within the session, including the host's names.
+Descriptions have at most 1,000 characters. Each input schema must be a JSON Schema object whose
+UTF-8 JSON is at most 16 KiB. Invalid descriptors reject the entire request before opening a session,
+with an error naming the invalid field or colliding name. Definitions are snapshotted on creation.
+
+Register `onAssistantToolCall: PluginAssistantToolHandler` alongside `commandHandlers` and
+`onPanelClosed` in `runPluginWorker`. The callback receives
+`(context, { sessionId, name, input }, signal)` and returns `PluginAssistantToolResult` (or a promise).
+Validate the call's input against your tool's schema in this handler. It executes in your worker,
+using only your declared host capabilities; those calls work while the tool invocation is active.
+The host never evaluates the callback. The in-process registration has the same hook for hosts
+that embed trusted plugins directly.
+
+```ts
+import { runPluginWorker, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
+
+const onAssistantToolCall: PluginAssistantToolHandler = async (context, call, signal) => {
+  signal.throwIfAborted();
+  if (call.name !== "lookup_record") throw new Error("Unknown record tool");
+  // Validate call.input and perform the plugin's own lookup here.
+  return { content: [{ type: "text", text: "The requested record was found." }] };
+};
+runPluginWorker({ manifest, commandHandlers, onAssistantToolCall });
+
+// Inside one of this plugin's commands, after beginRequest:
+const session = await context.assistant!.createToolSession({
+  requestId,
+  extraTools: [{ name: "lookup_record", description: "Look up a plugin-owned record",
+    inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } }]
+});
+```
+
+MCP `tools/list` includes these descriptors alongside host tools for that session only.
+`assistant.listTools()` and `assistant.callTool()` retain their host-tool behavior.
+A different session, request, or plugin cannot see or call your extra tools. The host checks ownership
+again on every MCP message. Tool calls share the host's four-call concurrency limit and default
+120-second deadline; results are validated and capped at 8 MiB of UTF-8 JSON.
+A thrown error or timeout is returned to the model as a tool result with `isError: true`.
+Closing a session, ending a request, closing its tab, or unregistering its plugin cancels pending
+calls, aborts their signals, invalidates their capability invocation, and ignores late settlements.
+Check the signal during longer work and release your own resources on abort.
+
 ## The one rule
 
 Runtime source may import `@chemdraft/plugin-api` and ordinary npm packages (e.g. `openchemlib`,
@@ -69,7 +141,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.20`). API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
+`0.1.21`). API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
@@ -90,11 +162,12 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.20` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.21` packages remain compatible, each on a host at or above the version
 it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.21 | `chemistry.properties` and session-local extra assistant tools | Existing `chemistry.compute` / assistant permissions |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |

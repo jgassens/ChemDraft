@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.10.07.50-opus";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11809,7 +11809,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+    applyDocumentPatch: ({ plugin, command, patch, undoLabel, signal }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -11820,6 +11820,7 @@ export function MainWindow({
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
       return gate.run(() => {
+        signal?.throwIfAborted();
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");

@@ -27,6 +27,8 @@ import {
   checkWorkerHandshake,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginAssistantToolCall,
+  type PluginAssistantToolResult,
   type PluginWorkerCapabilityNamespace,
   type PluginWorkerErrorPayload,
   type PluginWorkerHandle,
@@ -66,6 +68,8 @@ export function configureChemistry3dReplyLogger(logger: PluginChemistry3dReplyLo
 
 interface PendingInvocation {
   context: PluginCommandContext;
+  tool: boolean;
+  aborted: boolean;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
 }
@@ -92,6 +96,7 @@ export class PluginWorkerBridge {
   private rejectStartup: ((error: unknown) => void) | undefined;
   private startupTimer: ReturnType<typeof setTimeout> | undefined;
   private terminated = false;
+  private assistantToolHandler = false;
 
   private nextCommandRequestId = 1;
   private readonly pending = new Map<number, PendingInvocation>();
@@ -110,6 +115,10 @@ export class PluginWorkerBridge {
     return this.ensureStarted();
   }
 
+  hasAssistantToolHandler(): boolean {
+    return this.assistantToolHandler;
+  }
+
   /**
    * Run a plugin command in the worker, servicing its capability calls against `context`. Resolves with
    * the command's return value (a `PluginCommandResult` for the proof plugins) or rejects if the worker
@@ -119,14 +128,23 @@ export class PluginWorkerBridge {
     return this.invokeCommandCancellable(commandId, context).promise;
   }
 
+  async invokeAssistantTool(context: PluginCommandContext, call: PluginAssistantToolCall, signal: AbortSignal): Promise<PluginAssistantToolResult> {
+    signal.throwIfAborted();
+    const invocation = this.invokeCommandCancellable(call.name, context, call);
+    const cancel = () => invocation.abort();
+    signal.addEventListener("abort", cancel, { once: true });
+    try { return await invocation.promise as PluginAssistantToolResult; }
+    finally { signal.removeEventListener("abort", cancel); }
+  }
+
   /** Invoke with a usable cancellation handle instead of exposing an internal request id. */
-  invokeCommandCancellable(commandId: string, context: PluginCommandContext): PluginWorkerInvocation {
+  invokeCommandCancellable(commandId: string, context: PluginCommandContext, tool?: PluginAssistantToolCall): PluginWorkerInvocation {
     const state: { aborted: boolean; commandRequestId?: number } = { aborted: false };
     let rejectBeforeDispatch!: (error: unknown) => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       rejectBeforeDispatch = reject;
     });
-    const execution = this.startInvocation(commandId, context, state);
+    const execution = this.startInvocation(commandId, context, state, tool);
     const promise = Promise.race([execution, cancelled]);
     return {
       promise,
@@ -145,7 +163,8 @@ export class PluginWorkerBridge {
   private async startInvocation(
     commandId: string,
     context: PluginCommandContext,
-    state: { aborted: boolean; commandRequestId?: number }
+    state: { aborted: boolean; commandRequestId?: number },
+    tool?: PluginAssistantToolCall
   ): Promise<unknown> {
     if (this.terminated) {
       throw this.terminatedError();
@@ -160,9 +179,10 @@ export class PluginWorkerBridge {
     const commandRequestId = this.nextCommandRequestId++;
     state.commandRequestId = commandRequestId;
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(commandRequestId, { context, resolve, reject });
+      this.pending.set(commandRequestId, { context, resolve, reject, tool: !!tool, aborted: false });
       try {
-        this.postToWorker({ kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
+        this.postToWorker(tool ? { kind: "invokeAssistantTool", commandRequestId, ...tool } :
+          { kind: "invokeCommand", commandRequestId, commandId, ...(context.input === undefined ? {} : { input: context.input }) });
       } catch (error) {
         this.pending.delete(commandRequestId);
         reject(this.wrapCrash(error));
@@ -179,20 +199,19 @@ export class PluginWorkerBridge {
     this.postToWorker({ kind: "panelClosed", panelId });
   }
 
-  /** Drop a specific in-flight command without tearing down the worker: settle it locally as cancelled
-   *  and tell the worker to suppress its late settlement. */
+  /** Cancel capabilities immediately. Assistant tool invocations stay pending until the worker
+   *  handler settles, so callers can account for work that ignores its abort signal. */
   abortCommand(commandRequestId: number): void {
     const invocation = this.pending.get(commandRequestId);
     if (!invocation) {
       return;
     }
-    this.pending.delete(commandRequestId);
+    invocation.aborted = true;
+    if (!invocation.tool) this.pending.delete(commandRequestId);
     if (!this.terminated && this.worker) {
       this.postToWorker({ kind: "abort", commandRequestId });
     }
-    invocation.reject(
-      this.abortedError(String(commandRequestId))
-    );
+    if (!invocation.tool) invocation.reject(this.abortedError(String(commandRequestId)));
   }
 
   /** Total teardown: terminate the worker thread and reject everything in flight. After this the bridge
@@ -202,6 +221,7 @@ export class PluginWorkerBridge {
       return;
     }
     this.terminated = true;
+    this.assistantToolHandler = false;
     const error = this.terminatedError();
     this.clearStartupTimer();
     const rejectStartup = this.rejectStartup;
@@ -259,6 +279,7 @@ export class PluginWorkerBridge {
       }
       this.clearStartupTimer();
       this.rejectStartup = undefined;
+      this.assistantToolHandler = message.hasAssistantToolHandler === true;
       resolveStartup();
     };
 
@@ -301,6 +322,7 @@ export class PluginWorkerBridge {
   /** A startup/crash failure after the worker was created: reject every in-flight command and drop the
    *  worker so a later invocation restarts cleanly. */
   private failStartup(error: unknown): void {
+    this.assistantToolHandler = false;
     const inFlight = [...this.pending.values()];
     this.pending.clear();
     this.clearStartupTimer();
@@ -340,7 +362,9 @@ export class PluginWorkerBridge {
           return;
         }
         this.pending.delete(message.commandRequestId);
-        if (message.ok) {
+        if (invocation.aborted) {
+          invocation.reject(this.abortedError(String(message.commandRequestId)));
+        } else if (message.ok) {
           invocation.resolve(message.value);
         } else {
           invocation.reject(new PluginWorkerBridgeError(message.error));
@@ -359,7 +383,7 @@ export class PluginWorkerBridge {
    */
   private serviceCapability(message: Extract<WorkerToHostMessage, { kind: "capabilityRequest" }>): void {
     const invocation = this.pending.get(message.commandRequestId);
-    if (!invocation) {
+    if (!invocation || invocation.aborted) {
       this.sendCapabilityError(message.requestId, {
         code: PluginWorkerErrorCodes.NoActiveCommand,
         message: `No active command ${message.commandRequestId} for a ${message.namespace}.${message.method} request.`
@@ -412,7 +436,7 @@ export class PluginWorkerBridge {
     // A restarted runtime begins capability ids at 1 again. A promise owned by
     // the old worker must never send its late result/error to the current worker.
     const worker = this.worker;
-    const isCurrent = () => this.worker === worker && this.pending.get(message.commandRequestId) === invocation;
+    const isCurrent = () => this.worker === worker && this.pending.get(message.commandRequestId) === invocation && !invocation.aborted;
     const chemistry3dMethod = this.chemistry3dReplyLogger && message.namespace === "chemistry" &&
       (message.method === "embed3d" || message.method === "minimize3d" || message.method === "flatten3d")
       ? message.method : undefined;
