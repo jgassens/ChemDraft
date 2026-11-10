@@ -920,6 +920,7 @@ import {
 import {
   APP_CHECK_FOR_UPDATES_COMMAND_ID,
   AUTO_CHECK_DELAY_MS,
+  appUpdateChannelNotice,
   appUpdateChecksAllowed,
   appUpdatesSupported,
   autoCheckDue,
@@ -1767,7 +1768,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.09.05-codex";
+const CURRENT_BUILD_STAMP = "11.10.11.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10582,8 +10583,9 @@ export function MainWindow({
     try {
       const info = await currentUpdateBuildInfo(isDesktopRuntime(), detectDesktopShortcutPlatform());
       if (!appUpdateChecksAllowed(info)) {
-        if (mode === "manual") {
-          setStatus("Updates go to the released ChemDraft only; this is a development build");
+        const notice = appUpdateChannelNotice(info);
+        if (mode === "manual" && notice) {
+          setStatus(notice);
         }
         return;
       }

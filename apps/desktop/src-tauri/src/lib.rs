@@ -69,6 +69,7 @@ use tauri::{
     webview::PageLoadEvent,
     Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 use webview_context_menus::disable_default_context_menus;
 
 #[cfg(target_os = "macos")]
@@ -110,7 +111,6 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-#[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 /// The two Close Window / Close Tab items (File and Window menus). Native window closes stay
 /// native; with multiple document tabs the main window routes document.closeTab to the webview.
@@ -1030,18 +1030,8 @@ pub fn run() {
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
             let command_id = event.id().as_ref();
-            #[cfg(target_os = "macos")]
             if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
                 check_for_updates(app);
-                return;
-            }
-            // Windows runs the check in the document webview: it owns the prompt, the download
-            // progress, and the session flush that must precede the installer (appUpdates.ts).
-            #[cfg(windows)]
-            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
-                if let Err(error) = emit_command_to_main(app, command_id) {
-                    eprintln!("Could not route the update check: {error}");
-                }
                 return;
             }
             if command_id == APP_QUIT_COMMAND_ID {
@@ -1507,17 +1497,66 @@ pub fn run() {
         });
 }
 
-#[cfg(target_os = "macos")]
-fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(updater) = app.sparkle_updater() else {
-        // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately does
-        // not start there. Packaged builds always have an updater unless their Info.plist is broken.
-        eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
-        return;
-    };
+const DEVELOPMENT_UPDATES_MESSAGE: &str =
+    "Updates are off in development builds. Install the released ChemDraft to get updates.";
 
-    if let Err(error) = updater.check_for_updates() {
-        eprintln!("Could not check for a ChemDraft update: {error}");
+fn update_channel_available(identifier: &str, feed_url: Option<&str>) -> bool {
+    identifier == "org.chemdraft.desktop" && feed_url.is_some_and(|url| !url.trim().is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn update_feed_url<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<String> {
+    objc2_foundation::NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("SUFeedURL"))?
+        .downcast_ref::<NSString>()
+        .map(|url| url.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn update_feed_url<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")?
+        .get("endpoints")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|url| !url.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let feed_url = update_feed_url(app);
+    if !update_channel_available(&app.config().identifier, feed_url.as_deref()) {
+        let mut message = app
+            .dialog()
+            .message(DEVELOPMENT_UPDATES_MESSAGE)
+            .title("ChemDraft Update");
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            message = message.parent(&window);
+        }
+        message.show(|_| {});
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let Some(updater) = app.sparkle_updater() else {
+            // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately
+            // does not start there.
+            eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
+            return;
+        };
+
+        if let Err(error) = updater.check_for_updates() {
+            eprintln!("Could not check for a ChemDraft update: {error}");
+        }
+    }
+    // Windows keeps the existing webview flow, including saving before the installer takes over.
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = emit_command_to_main(app, CHECK_FOR_UPDATES_COMMAND_ID) {
+        eprintln!("Could not route the update check: {error}");
     }
 }
 
@@ -9799,6 +9838,27 @@ mod tests {
                 Err(format!("Could not restore document for Preferences: {error}"))
             );
             assert!(!continued.get());
+        }
+    }
+
+    #[test]
+    fn update_channel_requires_release_identifier_and_feed_on_both_platforms() {
+        for feed in [
+            "https://chemdraft.ai/appcast.xml",
+            "https://chemdraft.ai/latest.json",
+        ] {
+            assert!(update_channel_available(
+                "org.chemdraft.desktop",
+                Some(feed)
+            ));
+            assert!(!update_channel_available(
+                "org.chemdraft.desktop.dev",
+                Some(feed)
+            ));
+            assert!(!update_channel_available("org.chemdraft.desktop.dev", None));
+        }
+        for feed in [None, Some(""), Some("  ")] {
+            assert!(!update_channel_available("org.chemdraft.desktop", feed));
         }
     }
 
