@@ -504,6 +504,10 @@ function exportCdxml(
   if (!embedNativePayload) {
     // Interchange has no recovery envelope. Never promise that omitted data was kept.
     for (const item of warnings) if (/payload/i.test(item.message)) {
+      if (item.code === "cdxml.text_format_native_only") {
+        item.message = `Some text formatting in a text box can't be saved in ${format.toUpperCase()} and was left out.`;
+        continue;
+      }
       const visibleDetail = item.message.split(/(?<=[.;])\s+/).filter(part => !/payload/i.test(part)).join(" ");
       const feature = item.code.replace(/^cdxml\./, "").replace(/_payload_only$/, "").replaceAll("_", " ");
       item.message = `${visibleDetail ? `${visibleDetail} ` : ""}Unsupported ${feature} data${item.sourceObjectId ? ` on ${item.sourceObjectId}` : ""} is NOT written; no native payload is embedded.`;

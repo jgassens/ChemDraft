@@ -36,10 +36,23 @@ it.each(["left", "right"] as const)("names the exported format in every visible-
       const cdxWarning = cdx.warnings.find(warning => warning.code === code);
       expect(xmlWarning, code).toBeDefined();
       expect(cdxWarning, code).toBeDefined();
-      expect(xmlWarning!.message).toContain("visible CDXML");
-      expect(cdxWarning!.message).toContain("visible CDX ");
-      expect(cdxWarning!.message).not.toContain("visible CDXML");
-      expect(cdxWarning).toEqual({ ...xmlWarning, message: xmlWarning!.message.replace("visible CDXML", "visible CDX") });
+      if (code === "cdxml.text_format_native_only") {
+        expect(xmlWarning!.sourceObjectId).toBe("styled_text");
+        expect(cdxWarning!.sourceObjectId).toBe("styled_text");
+        expect(xmlWarning!.message).not.toContain("styled_text");
+        expect(cdxWarning!.message).not.toContain("styled_text");
+        expect(xmlWarning!.message).toContain(embedNativePayload
+          ? "preserved only in the embedded ChemDraft payload"
+          : "can't be saved in CDXML and was left out.");
+        expect(cdxWarning!.message).toContain(embedNativePayload
+          ? "preserved only in the embedded ChemDraft payload"
+          : "can't be saved in CDX and was left out.");
+      } else {
+        expect(xmlWarning!.message).toContain("visible CDXML");
+        expect(cdxWarning!.message).toContain("visible CDX ");
+        expect(cdxWarning!.message).not.toContain("visible CDXML");
+        expect(cdxWarning).toEqual({ ...xmlWarning, message: xmlWarning!.message.replace("visible CDXML", "visible CDX") });
+      }
     }
     expect(cdx.warnings.find(warning => warning.code === "cdxml.text_format_native_only")!.message.includes("preserved only in the embedded")).toBe(embedNativePayload);
     const xmlLabelWarning = xml.warnings.find(warning => warning.code === "cdxml.label_bond_side_turned")!;
