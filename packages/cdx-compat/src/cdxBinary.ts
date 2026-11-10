@@ -141,7 +141,10 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
       ids.set(id, String(next)); used.add(next++);
     }
   });
-  const references = new Set(["B", "E", "object", "SupersededBy", "BondCircularOrdering", "ConnectionOrder"]);
+  // Scalar bracket references need the same numeric ID mapping as object headers and ID lists.
+  // Otherwise symbolic GraphicID/BondID/InnerAtomID values are omitted by the integer encoder.
+  const references = new Set(["B", "E", "object", "SupersededBy", "BondCircularOrdering", "ConnectionOrder",
+    "GraphicID", "BondID", "InnerAtomID"]);
   const copy = (x: CdxElement): CdxElement => {
     const attrs = Object.fromEntries(Object.entries(x.attrs).map(([key, value]) => {
       const kind = byName.get(key)?.kind;
@@ -684,7 +687,10 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
       case "deg10": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "spacing": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "alpha": return r === undefined ? undefined : le(2, Math.round(Math.min(1, Math.max(0, r)) * 65535));
-      case "f64": return r === undefined ? undefined : f64(r);
+      case "f64":
+        // Repeat counts use the native safe-integer range, beyond the geometry parser's 1e9 cap.
+        if (p.name === "RepeatCount" && isInteger && Number.isSafeInteger(Number(v)) && Number(v) > 0) return f64(Number(v));
+        return r === undefined ? undefined : f64(r);
       case "lh": return v === "auto" ? le(2, 1) : v === "variable" ? le(2, 0) : r === undefined ? undefined : le(2, Math.round(r * 20));
       case "wrap": return r === undefined ? undefined : le(2, Math.round(r));
       case "str": return plainString(v.replace(/\n/g, "\r"), el, p.tag === 0x1500 || p.tag === 0x1501);

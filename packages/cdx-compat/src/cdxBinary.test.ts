@@ -44,6 +44,40 @@ describe("binary CDX headers and reference codec cases", () => {
     expect([...bytes]).toEqual([...header, ...u16(0x8000), ...u32(0), 0, 0]);
   });
 
+  it("writes and reads bracket objects and remaps every symbolic attachment reference", () => {
+    const source = element("CDXML", {}, [element("page", { id: "page" }, [
+      element("fragment", { id: "fragment" }, [
+        element("n", { id: "atom" }), element("b", { id: "bond" })
+      ]),
+      element("graphic", { id: "graphic" }),
+      element("bracketedgroup", { id: "group", BracketUsage: "SRU", RepeatCount: "7", SRULabel: "n",
+        PolymerRepeatPattern: "HeadToTail", BracketedObjectIDs: "fragment" }, [
+        element("bracketattachment", { id: "attachment", GraphicID: "graphic" }, [
+          element("crossingbond", { id: "crossing", BondID: "bond", InnerAtomID: "atom" })
+        ])
+      ])
+    ])]);
+    // Build the records independently of the tag tables and writer: IDs allocate in tree order.
+    const bytes = file(object(0x8001, 1,
+      object(0x8003, 2, object(0x8004, 3), object(0x8005, 4)),
+      object(0x8007, 5),
+      object(0x8017, 6, property(0x0a24, u16(3)), property(0x0a28, float(7)),
+        property(0x0a2a, [0, 0, ...ascii("n")]), property(0x0a25, u16(0)), property(0x0a27, u32(2)),
+        object(0x8018, 7, property(0x0a2b, u32(5)),
+          object(0x8019, 8, property(0x0a2c, u32(4)), property(0x0a2d, u32(3)))))));
+    const warnings: CdxWarning[] = [];
+    expect(writeCdx(source, warnings)).toEqual(bytes);
+    expect(warnings).toEqual([]);
+    const group = readCdx(bytes).kids[0].kids[2];
+    expect(group).toEqual(element("bracketedgroup", { id: "6", BracketUsage: "SRU", RepeatCount: "7", SRULabel: "n",
+      PolymerRepeatPattern: "HeadToTail", BracketedObjectIDs: "2" }, [
+      element("bracketattachment", { id: "7", GraphicID: "5" }, [
+        element("crossingbond", { id: "8", BondID: "4", InnerAtomID: "3" })
+      ])
+    ]));
+    expect(source.kids[0].kids[2].kids[0].attrs.GraphicID).toBe("graphic");
+  });
+
   it("preserves independently built page setup bytes, including top/left/bottom/right print margins", () => {
     const marginProperty = property(0x0802, [24, 30, 48, 42].flatMap(coord));
     // Binary rectangles are top/left/bottom/right; visible BoundingBox text is left/top/right/bottom.
