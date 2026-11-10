@@ -33,6 +33,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { ImportedPageFitGate } from "./importedPageFitGate";
 import {
   projectGraphicVisualPagePoint,
   rotatePointAroundCenter,
@@ -1714,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.22.28-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2707,6 +2708,7 @@ export function MainWindow({
   const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
+  const importedPageFitGateRef = useRef(new ImportedPageFitGate());
   const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
@@ -9381,6 +9383,7 @@ export function MainWindow({
       if (!snapshotDocumentTab()) return;
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
+    importedPageFitGateRef.current.dismiss(id);
     documentTabSnapshotsRef.current.delete(id);
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
@@ -9478,6 +9481,7 @@ export function MainWindow({
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
+    const pageFitSettled = fitRecommendation ? importedPageFitGateRef.current.wait(id) : undefined;
     setPageFitPrompt(tabPageFitRef.current);
     const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
     const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
@@ -9489,6 +9493,7 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
     perfHook(() => reportOutcome?.("installed"));
+    await pageFitSettled;
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
@@ -9542,6 +9547,7 @@ export function MainWindow({
 
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(changed
       ? `Page changed to ${pageFitRecommendedLabel(pageFitPrompt)}`
       : "Page already fits imported content");
@@ -9553,6 +9559,7 @@ export function MainWindow({
     }
 
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
 
