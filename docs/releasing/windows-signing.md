@@ -17,6 +17,8 @@ There are two independent signatures, in this order:
 4. Verify the updater signature against `plugins.updater.pubkey` in
    `apps/desktop/src-tauri/tauri.windows.conf.json`, then generate `latest.json` with
    `pnpm -s release:windows-manifest` and the optional Windows notes.
+5. Update the adjacent build record's `sha256` and `size` to cover the final signed installer,
+   preserving the clean-checkout source commit, version and target, then write checksums.
 
 Authenticode changes the installer's bytes. Never Authenticode-sign, rebuild, or otherwise modify the
 installer after creating its updater `.sig`; recreate and verify the `.sig` and manifest if it changes.
@@ -84,8 +86,10 @@ Review action updates and trust policy changes as release infrastructure changes
 ## Run a release
 
 Use a reviewed commit that has landed on the public repository's `main` branch, with the workflow
-and signing tools present. Both platform artifacts must use the same commit and version. The release
-body must include `## macOS` and `## Windows`; this workflow supplies the Windows artifacts only.
+and signing tools present. The Apple-silicon DMG, Intel DMG and Windows installer must use the same
+commit and version. The release body must include `## macOS (Apple silicon)`, `## macOS (Intel)` and
+`## Windows`, plus a Platform differences note naming each feature gap and its reason, or saying there
+are none. This workflow supplies the Windows artifacts only.
 
 1. Set the app version before tagging, and prepare tracked Windows release notes if needed. Create
    the release tag and an **existing draft** GitHub release, for example `vX.Y.Z`.
@@ -110,24 +114,40 @@ body must include `## macOS` and `## Windows`; this workflow supplies the Window
    SHA-256 hashes and byte sizes. Build-time label checks inspect the native build output and built
    frontend assets. Install and launch the artifact on Windows to confirm its actual title and app
    identity and complete the update/session-preservation checks in [windows-updates.md](windows-updates.md#verification).
-5. Download **`windows-release`**, which contains the final installer, its `.exe.sig`, `latest.json`,
-   and `SHA256SUMS.txt`. **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
+5. Download **`windows-release`**, which contains the final installer, its `.exe.build.json`,
+   `.exe.sig`, `latest.json`, and `SHA256SUMS.txt`. The build record uses `git rev-parse HEAD`
+   from the checked-out source and refuses a dirty tree; its SHA-256 and byte size cover the
+   final Authenticode-signed installer. Keep it beside the installer.
+   **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
    For a local updater signature check, from the repository root run:
 
    ```text
    pnpm exec tsx tools/release/verify-windows-updater.ts path/to/ChemDraft_X.Y.Z_x64-setup.exe
    ```
 
-6. If `upload_to_release` was supplied, a separate job downloads only the final artifact and uses
+6. If `upload_to_release` was supplied, a separate job downloads the final artifact and uses
    `gh release upload --clobber`. It refuses a missing or already published release, and requires
-   `v<app version>` because the generated feed points to that URL. It also requires both
+   `v<app version>` because the generated feed points to that URL. Before uploading it fetches
+   and peels the destination tag and requires it to resolve to the built commit. It also requires both
    `authenticode_signed` and `updater_signed` build outputs to be true; these are set only after
    successful verification. The boolean input `allow_unsigned_upload` defaults to false. Setting it
    to true explicitly permits an upload with missing signatures and prints a loud workflow warning;
    use it only for draft dry runs. Only this job has
-   `contents: write`; the build/signing job has read access. Leave the release draft while testing.
+   `contents: write`; the build/signing job retains read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
-7. After both platform artifacts pass review, publish the joint release. Only **after** the installer
+7. After uploading, the same upload job uses its draft-visible token to download all attached release assets and run the
+   [asset checker](three-builds.md#last-step-before-un-drafting). If all three builds and their
+   records are present, hashes, sizes and tag/commit identity must pass. Wholly missing build pairs
+   are listed, while every supplied build is fully checked; partial pairs fail. The Windows-only
+   result is INCOMPLETE, not a publishing pass. Windows passes `--skip-dmg-provenance` explicitly
+   because it cannot mount DMGs; the final Mac gate must check their embedded commits.
+8. Collect both DMGs and the installer with all three `.build.json` files, then pass the
+   [joint release body check](three-builds.md) with the tag and explicit gaps or `--no-gaps`.
+   After all three artifacts pass review, **as the last step before un-drafting on a Mac** run both
+   `verify-macos-app.mjs --release --dmg` checks and
+   `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` against GitHub,
+   as listed in [the final checklist](three-builds.md#last-step-before-un-drafting).
+   It must report PASS without skip or incomplete flags; then publish the joint release. Only **after** the installer
    URL is publicly downloadable, commit the generated `latest.json` to `main` through the normal PR
    path. This workflow neither publishes the release nor updates the feed on `main`.
 

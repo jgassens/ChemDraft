@@ -7,9 +7,9 @@ agent and human contributor, on every branch. It is repo-wide: scope for one sli
 
 ## 1. Both platforms, every change
 
-**ChemDraft ships for macOS and Windows together, from the same commit, under one version number.**
-Every code change must work on both. A change that works on one platform is not finished, and "the
-other platform is a follow-up" is not an acceptable state to merge.
+**ChemDraft ships macOS Apple silicon, macOS Intel, and Windows x64 builds together, from the same commit, under one version number.**
+Every code change must work on all three. A change that works on only one build is not finished, and
+"the other builds are a follow-up" is not an acceptable state to merge.
 
 - **Shared code by default.** Branch on the platform only where the operating system forces it, and
   write both sides in the same change. Rust: every `#[cfg(target_os = "macos")]` gets its
@@ -45,9 +45,9 @@ other platform is a follow-up" is not an acceptable state to merge.
   serving, check it on both platforms. If you can run only one, the report must name the other as
   unverified and say exactly what needs checking there. Never report a platform as verified that you
   did not run.
-- **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
-  the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
-  version the other does not. See `docs/releasing/`. The Windows installer is
+- **Releases** are joint: the Apple-silicon DMG, Intel DMG, and Windows NSIS installer are built from the same commit and version.
+  The GitHub release body has `## macOS (Apple silicon)`, `## macOS (Intel)`, and `## Windows` sections.
+  See `docs/releasing/`. The Windows installer is
   built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
   2026-10-22), never on a local machine or VM; the Windows session tests the installer CI built.
 
@@ -388,7 +388,7 @@ surface, and never replace it with a slice-scoped one.
 
 ## 15. Builds, launching, and the stable app
 
-- **Launch from this worktree.** macOS: `./run-app` (packaged build) or `./run-app --dev` (Tauri plus
+- **Launch from this worktree.** macOS Apple silicon: `./run-app` (packaged build); macOS Intel: `./run-app -t x86_64-apple-darwin`; macOS development: `./run-app --dev` (Tauri plus
   Vite hot reload). Windows: `pnpm dev`, or `pnpm --filter @chemdraft/desktop build --bundles nsis`
   for an installer. An app that was already running, or `cargo run`, is not proof. Stop other
   instances from the same checkout first, and report the exact command and the success signal
