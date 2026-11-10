@@ -1,10 +1,9 @@
 import {
-  moleculeToMolfileV2000,
   type ChemDraftDocument,
   type MoleculeObject,
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
-import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
+import { documentDrawingDefaults, moleculeToInteropMolfile, expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
@@ -87,7 +86,8 @@ export async function exportStructureListSdf(
         radicalPlaceholders.set(atom.id, "it carries radical electrons, so its stated hydrogen count cannot be preserved");
       }
     }
-    const molfile = moleculeToMolfileV2000(expanded, {
+    const molfile = moleculeToInteropMolfile(expanded, "v2000",
+      typeof molecule.style.bondLengthPx === "number" ? molecule.style.bondLengthPx : documentDrawingDefaults(document).bondLengthPx, {
       ...options,
       fromDocFrame: true,
       warnings: writerWarnings,

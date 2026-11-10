@@ -407,6 +407,8 @@ and 2 for bad arguments.
 
 Export one SMILES string or a JSON batch to CDXML, PDF, SDF, MOL, or SMILES.
 
+Exported MOL/SDF use the MDL convention of a 1.5 Angstrom median bond length per CTAB/record; pasted MOL is scaled to the document's bond length.
+
 ~~~bash
 pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml
 pnpm -s chemdraft export --batch jobs.json --out-dir mols --format mol

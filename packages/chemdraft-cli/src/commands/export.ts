@@ -17,6 +17,7 @@ import {
   assertCanonicalIdentity,
   buildSmilesDocument,
   currentMoleculeIdentityMolfile,
+  externalIdentityMolfile,
   type BuiltSmilesDocument
 } from "../document";
 import { installNodeEngines } from "../engine";
@@ -303,6 +304,15 @@ async function assertCdxmlRoundTripIdentity(
   return warnings;
 }
 
+/** Rounding at MDL units must never silently change the exported chemistry. */
+async function assertFinalMolfileIdentity(sourceCanonicalSmiles: string, molfile: string): Promise<void> {
+  try {
+    await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+  } catch (error) {
+    throw new Error(`Final scaled MOL/SDF chemical identity verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
@@ -328,8 +338,9 @@ export async function exportPerJobFormat(
     );
     return { contents: result.bytes, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message)] };
   }
-  await assertCanonicalIdentity(sourceCanonicalSmiles, built.identityMolfile);
-  return { contents: built.identityMolfile, warnings: [...identityWarnings,
+  const molfile = externalIdentityMolfile(built);
+  await assertFinalMolfileIdentity(sourceCanonicalSmiles, molfile);
+  return { contents: molfile, warnings: [...identityWarnings,
     ...repeatUnitExportWarnings(built.document, "MOL").map(warning => warning.message)] };
 }
 
@@ -385,9 +396,10 @@ async function combinedRecord(
 ): Promise<CombinedRecord> {
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
   const warnings = [...built.warnings, ...repeatUnitExportWarnings(built.document, format === "sdf" ? "SDF" : "SMILES").map(warning => warning.message)];
-  const molfile = built.identityMolfile;
+  const molfile = format === "sdf" ? externalIdentityMolfile(built) : built.identityMolfile;
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built);
-  await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+  if (format === "sdf") await assertFinalMolfileIdentity(sourceCanonicalSmiles, molfile);
+  else await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
 
   const smilesWarnings: ExportWarning[] = [];
   const smiles = await moleculeSmiles(

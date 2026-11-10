@@ -1,5 +1,5 @@
 import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
-import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { moleculeToInteropMolfile, atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
 import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
@@ -19999,7 +19999,7 @@ export function copyAsMolfile(
     placeholderAtoms
   };
   try {
-    return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
+    return moleculeToInteropMolfile(merged, flavor, documentDrawingDefaults(document).bondLengthPx, options).contents;
   } finally {
     warningsOut?.push(...molecules.flatMap(molecule => {
       // Account only for labels the writer actually diagnosed, retaining drawn atom indices.

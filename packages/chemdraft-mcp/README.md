@@ -63,6 +63,8 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
 
+Exported MOL/SDF use the MDL convention of a 1.5 Angstrom median bond length per CTAB/record; pasted MOL is scaled to the document's bond length.
+
 Reaction labels allow at most 6 `above` and 6 `below` entries, a non-empty `caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `conditions`.
 
 Radicals are refused rather than silently changed. Isotope labels and their positions are preserved.

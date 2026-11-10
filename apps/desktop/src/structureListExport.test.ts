@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
+import { moleculeToInteropMolfile } from "@chemdraft/document-workflow-core";
+import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import {
   createPhase4Document,
@@ -222,7 +224,7 @@ function mockEthaneIdentifiers(smiles: string) {
 }
 
 describe("structure list export", () => {
-  it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ exportList }) => {
+  it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ format, exportList }) => {
     const molecule = moleculeAt("stereo", 20, 30);
     molecule.bonds[0].display = { bondStyle: "wedge" };
     const other = moleculeAt("other", 220, 30);
@@ -238,8 +240,12 @@ describe("structure list export", () => {
     expect(result.warnings).toEqual([]);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
     expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, (format === "SDF"
+      ? moleculeToInteropMolfile(molecule, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
+      : moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true });
+    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, (format === "SDF"
+      ? moleculeToInteropMolfile(other, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
+      : moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true });
     expect(document).toEqual(before);
   });
 
@@ -359,7 +365,7 @@ describe("structure list export", () => {
     expect(records[1]).not.toContain("> <Name>");
   });
 
-  it("preserves the V2000 writer's document-frame coordinates, charges and wedge flags", async () => {
+  it("normalizes V2000 document-frame coordinates while preserving charges and wedge flags", async () => {
     const molecule = moleculeAt("stereo", 20, 30);
     molecule.atoms[1].element = "N";
     molecule.atoms[1].formalCharge = 1;
@@ -367,7 +373,7 @@ describe("structure list export", () => {
     const sdf = (await exportStructureListSdf(documentWith([molecule]))).contents;
     const graph = parseMolfileGraph(sdf.slice(0, sdf.indexOf("> <SMILES>")));
     expect(graph.atoms.map((atom) => ({ x: atom.x, y: atom.y, charge: atom.formalCharge }))).toEqual([
-      { x: 20, y: -30, charge: 0 }, { x: 120, y: -130, charge: 1 }
+      { x: 0.2121, y: -0.3182, charge: 0 }, { x: 1.2728, y: -1.3789, charge: 1 }
     ]);
     expect(graph.bonds[0].bondStyle).toBe("wedge");
   });
@@ -589,4 +595,17 @@ describe("SMILES export review regressions", () => {
       resetRdkitForTesting();
     }
   });
+});
+
+
+it("normalizes differently sized SDF records independently without mutating the document", async () => {
+  const document = documentWith([moleculeAt("small", 0, 0, 22, 0), moleculeAt("large", 200, 0, 56, 0)]);
+  const before = structuredClone(document);
+  const records = (await exportStructureListSdf(document)).contents.split("$$$$").filter(record => record.trim());
+  expect(records).toHaveLength(2);
+  for (const record of records) {
+    const graph = parseMolfileGraph(record.trimStart());
+    expect(molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 22).medianBondLength).toBeCloseTo(1.5, 4);
+  }
+  expect(document).toEqual(before);
 });

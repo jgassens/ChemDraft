@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
+import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
 import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
@@ -652,6 +653,12 @@ describe("ChemDraft MCP server", () => {
       expect(result.isError).not.toBe(true);
       expect(jsonPayload(result.content).out).toMatch(new RegExp(`\\.${format}$`));
       expect(textBlocks(result.content).length).toBeGreaterThan(1);
+      if (format === "mol" || format === "sdf") {
+        const contents = textBlocks(result.content).find(text => /V(?:2000|3000)/.test(text))!;
+        expect(contents).toBeTruthy();
+        const graph = parseMolfileGraph(contents);
+        expect(molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 28).medianBondLength).toBeCloseTo(1.5, 3);
+      }
     },
     60_000
   );

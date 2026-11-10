@@ -35,6 +35,7 @@ import {
 } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import {
+  moleculeToInteropMolfile,
   markV2000UnspecifiedDoubleBonds, markV3000UnspecifiedDoubleBonds, sourceBondSemantics,
   type SourceBondSemantics,
   applyMoleculeTargetBondLength,
@@ -318,7 +319,8 @@ function replaceMolecule(
 function identityMolfile(
   drawn: MoleculeObject,
   semantics: SourceBondSemantics,
-  warnings?: string[]
+  warnings?: string[],
+  externalNominalBondLength?: number
 ): { contents: string; format: "molfile-v2000" | "molfile-v3000" } {
   const unsupportedRadical = drawn.atoms.find((atom) => (atom.markRadicals ?? 0) > 2);
   if (unsupportedRadical) {
@@ -328,13 +330,17 @@ function identityMolfile(
   // bonds, so the identity is the molecule the label means and every drawn bond index still holds.
   // A bonded "Ar" (aryl) is a warned placeholder, never argon.
   const { molecule, placeholderAtoms } = expandNativeMoleculeLabelGroups(drawn);
+  const write = (flavor: "v2000" | "v3000", options: Parameters<typeof moleculeToMolfileV2000>[1]) =>
+    externalNominalBondLength === undefined
+      ? (flavor === "v2000" ? moleculeToMolfileV2000 : moleculeToMolfileV3000)(molecule, options)
+      : moleculeToInteropMolfile(molecule, flavor, externalNominalBondLength, options);
   const unspecified = new Set(semantics.unspecifiedDoubleBondIndices);
   const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
   // V3000 is needed for dative bonds; adjacent three-digit V2000 counts are supported.
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
-        moleculeToMolfileV3000(molecule, {
+        write("v3000", {
           fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms,
           spellLabel: nativeSingleHeavyElementLabelValence
         }).contents,
@@ -345,7 +351,7 @@ function identityMolfile(
   }
   return {
     contents: markV2000UnspecifiedDoubleBonds(
-      moleculeToMolfileV2000(molecule, {
+      write("v2000", {
         fromDocFrame: true, warnings, kekuleBondOrders, placeholderAtoms,
         spellLabel: nativeSingleHeavyElementLabelValence
       }).contents,
@@ -353,6 +359,13 @@ function identityMolfile(
     ),
     format: "molfile-v2000"
   };
+}
+
+/** Preserve the verified raw CTAB's E/Z intent, then normalize only external output. */
+export function externalIdentityMolfile(built: BuiltSmilesDocument): string {
+  const nominal = typeof built.molecule.style.bondLengthPx === "number"
+    ? built.molecule.style.bondLengthPx : CLI_DEFAULT_BOND_LENGTH_PX;
+  return identityMolfile(built.molecule, sourceBondSemantics(built.identityMolfile), undefined, nominal).contents;
 }
 
 /** Regenerate the current graph, preserving legacy stored-only unknown E/Z flags only when the
@@ -914,7 +927,7 @@ export async function buildSmilesDocument(
   let molecule = moleculeFromDocument(document);
   molecule = withDativeBondStyles(molecule, depicted.dativeBondIndices);
   document = replaceMolecule(document, molecule);
-  // Retain the CLI's established mean-then-median scaling and rounding for identical output.
+  // Apply an explicitly requested size after the shared median-based insertion.
   if (Math.abs(bondLength - CLI_DEFAULT_BOND_LENGTH_PX) > 0.0001) {
     document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
     molecule = moleculeFromDocument(document);

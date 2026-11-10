@@ -15,7 +15,7 @@ import {
   type MoleculeTransformState
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
+import { molfileCoordinateScale, isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
   distance,
@@ -497,8 +497,7 @@ export function scaleParsedMolfileAtoms(
   targetBondLengthPx: number = nativeBondLengthPx,
   constrainToPage = true
 ): ParsedMolfileGraph["atoms"] {
-  const averageBondLength = averageParsedMolfileBondLength(graph);
-  const scale = averageBondLength > 0 ? targetBondLengthPx / averageBondLength : targetBondLengthPx / 1.5;
+  const { scale } = molfileCoordinateScale(graph.atoms, graph.bonds, targetBondLengthPx, 1.5);
   const scaledAtoms = graph.atoms.map((atom) => ({
     ...atom,
     x: atom.x * scale,
@@ -527,23 +526,6 @@ export function scaleParsedMolfileAtoms(
   }
 
   return atoms;
-}
-
-function averageParsedMolfileBondLength(graph: ParsedMolfileGraph): number {
-  const atomById = new Map(graph.atoms.map((atom) => [atom.id, atom]));
-  const lengths = graph.bonds
-    .map((bond) => {
-      const fromAtom = atomById.get(bond.fromAtomId);
-      const toAtom = atomById.get(bond.toAtomId);
-      return fromAtom && toAtom ? Math.hypot(fromAtom.x - toAtom.x, fromAtom.y - toAtom.y) : 0;
-    })
-    .filter((length) => length > 0.0001);
-
-  if (lengths.length === 0) {
-    return 0;
-  }
-
-  return lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
 }
 
 // Per-molecule cache of the ring-interior side map (molecule objects are immutable, so a new

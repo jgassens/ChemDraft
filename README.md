@@ -18,6 +18,8 @@ Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDr
 - Extend the app with plugins, including the optional official NMR predictor and MolScribe structure-recognition plugins.
 - Use the headless CLI, MCP server and [agent skill](skills/chemdraft/SKILL.md) from scripts or coding assistants.
 
+Exported MOL/SDF use the MDL convention of a 1.5 Angstrom median bond length per CTAB/record; pasted MOL is scaled to the document's bond length.
+
 Spin 3D may not start on macOS 15 or earlier in version 1.1.0; a fix is planned for 1.1.1.
 
 The Structure menu offers ChemDraft Synthetic, Document style, ACS 1996-style, RSC

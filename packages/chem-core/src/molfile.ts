@@ -55,6 +55,8 @@ export interface MolfileWriteOptions {
   unknownBondOrders?: "any" | "refuse";
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
   fromDocFrame?: boolean;
+  /** Uniform 2D multiplier before formatting. Default 1 preserves drawing units. */
+  coordinateScale?: number;
   /** Optional legacy collector. Warnings are also ALWAYS returned in MolfileWriteResult. */
   warnings?: string[];
   /** User-facing output format when this writer is an internal conversion step. */
@@ -480,6 +482,19 @@ function molfileAtomSymbols(
   return { symbols, rgroups, spelledHydrogens };
 }
 
+/** Scaled interchange must be finite and representable; raw internal mode retains its contract. */
+function scaledCoordinate(value: number, scale: number, options: MolfileWriteOptions, atomId: string, v2000 = false): number {
+  const result = value * scale;
+  if (options.coordinateScale !== undefined) {
+    if (!Number.isFinite(result)) throw new Error(`MOL export failed: atom ${atomId} has non-finite coordinates.`);
+    const formatted = result.toFixed(4);
+    if (v2000 && (formatted.length > 10 || /e/i.test(formatted))) {
+      throw new Error(`MOL V2000 export failed: atom ${atomId} coordinate exceeds the fixed-width range.`);
+    }
+  }
+  return result;
+}
+
 function f10_4(value: number): string {
   // Guard -0 and non-finite so the column never corrupts.
   const safe = Number.isFinite(value) ? value + 0 : 0;
@@ -545,6 +560,10 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
+  const coordinateScale = options.coordinateScale ?? 1;
+  if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) {
+    throw new Error("MOL coordinate scale must be finite and positive.");
+  }
   const atoms = mol.atoms;
   const bonds = mol.bonds;
 
@@ -586,8 +605,8 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms, options.messageFormat
   );
   atoms.forEach((atom, index) => {
-    const x = f10_4(atom.x);
-    const y = f10_4(ySign * atom.y);
+    const x = f10_4(scaledCoordinate(atom.x, coordinateScale, options, atom.id, true));
+    const y = f10_4(scaledCoordinate(ySign * atom.y, coordinateScale, options, atom.id, true));
     const z = f10_4(0);
     const valence = literalValences.get(atom.id);
     const valenceCode = valence === undefined ? 0 : valence === 0 ? 15 : valence;
@@ -675,6 +694,10 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
+  const coordinateScale = options.coordinateScale ?? 1;
+  if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) {
+    throw new Error("MOL coordinate scale must be finite and positive.");
+  }
   const atoms = mol.atoms;
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
@@ -711,7 +734,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const valence = literalValences.get(atom.id);
     const valence30 = valence !== undefined ? ` VAL=${valence === 0 ? -1 : valence}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 ${rGroupNumberFromLabel(atom.element) ?? 0}` +
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(scaledCoordinate(atom.x, coordinateScale, options, atom.id))} ${round4(ySign * scaledCoordinate(atom.y, coordinateScale, options, atom.id))} 0 ${rGroupNumberFromLabel(atom.element) ?? 0}` +
       `${charge}${isotope}${radical}${rgroups30}${valence30}`
     );
   });

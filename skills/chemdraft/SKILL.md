@@ -5,6 +5,8 @@ description: Use ChemDraft to draw or show molecules; make structure images for 
 
 # ChemDraft
 
+Exported MOL/SDF use the MDL convention of a 1.5 Angstrom median bond length per CTAB/record; pasted MOL is scaled to the document's bond length.
+
 ## Two non-negotiables
 
 1. Never hand-draw a molecule or invent or recall a structure-to-name result
