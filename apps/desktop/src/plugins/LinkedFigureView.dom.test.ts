@@ -948,13 +948,13 @@ describe("LinkedFigureView", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const resetStatus = vi.fn();
     const schedule = window.setTimeout.bind(window);
-    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, delay, ...args) => {
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: any[]) => {
       if (delay !== 1400 && delay !== 1800) return schedule(handler, delay, ...args);
       return schedule(() => {
         resetStatus();
         if (typeof handler === "function") handler(...args);
       }, delay);
-    });
+    }) as unknown as typeof window.setTimeout);
     try {
       mount(createElement(LinkedFigureView, { spectrum }));
       if (action === "copy") {
@@ -1016,7 +1016,7 @@ describe("LinkedFigureView", () => {
     const liveTimers = new Set<number>();
     const schedule = window.setTimeout.bind(window);
     const cancel = window.clearTimeout.bind(window);
-    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number, ...args: any[]) => {
       if (timeout !== delay) return schedule(handler, timeout, ...args);
       const timer = schedule(() => {
         liveTimers.delete(timer);
@@ -1024,11 +1024,11 @@ describe("LinkedFigureView", () => {
       }, timeout);
       liveTimers.add(timer);
       return timer;
-    });
-    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout").mockImplementation((timer) => {
+    }) as unknown as typeof window.setTimeout);
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout").mockImplementation(((timer?: number) => {
       if (timer !== undefined) liveTimers.delete(timer);
       cancel(timer);
-    });
+    }) as unknown as typeof window.clearTimeout);
     try {
       // Strict Mode replays effect setup/cleanup; the mounted guard must be restored on setup.
       mount(createElement(StrictMode, null, createElement(LinkedFigureView, { spectrum })));
@@ -1095,14 +1095,14 @@ describe("LinkedFigureView", () => {
     let statusTimer: number | undefined;
     const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
     const schedule = window.setTimeout.bind(window);
-    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number, ...args: any[]) => {
       if (timeout !== delay) return schedule(handler, timeout, ...args);
       statusTimer = schedule(() => {
         resetStatus();
         if (typeof handler === "function") handler(...args);
       }, timeout);
       return statusTimer;
-    });
+    }) as unknown as typeof window.setTimeout);
     try {
       mount(createElement(LinkedFigureView, { spectrum }));
       let button: HTMLButtonElement;
