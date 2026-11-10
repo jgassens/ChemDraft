@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+
+// These tests exercise update policy and injected flow dependencies without loading native UI.
+vi.mock("./nativePrompt", () => ({ nativePrompt: vi.fn() }));
+
 import {
   AUTO_CHECK_INTERVAL_MS,
   LAST_AUTO_CHECK_STORAGE_KEY,
   STABLE_APP_IDENTIFIER,
+  appUpdateChannelNotice,
   appUpdateChecksAllowed,
   appUpdatesSupported,
   autoCheckDue,
@@ -19,6 +24,15 @@ import {
 const released = { isDesktop: true, platform: "windows", identifier: STABLE_APP_IDENTIFIER, isDevServer: false };
 
 describe("which builds check for updates", () => {
+  it.each(["macos", "windows"])("shows the development notice and preserves release checks on %s", (platform) => {
+    const stable = { ...released, platform };
+    const notice = "Updates are off in development builds. Install the released ChemDraft to get updates.";
+    expect(appUpdateChannelNotice({ ...stable, identifier: "org.chemdraft.desktop.dev" })).toBe(notice);
+    expect(appUpdateChannelNotice({ ...stable, identifier: undefined })).toBe(notice);
+    expect(appUpdateChannelNotice({ ...stable, isDevServer: true })).toBe(notice);
+    expect(appUpdateChannelNotice(stable)).toBeUndefined();
+  });
+
   it("offers the channel on Windows desktop only", () => {
     expect(appUpdatesSupported({ isDesktop: true, platform: "windows" })).toBe(true);
     expect(appUpdatesSupported({ isDesktop: true, platform: "macos" })).toBe(false); // Sparkle's job

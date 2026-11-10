@@ -38,9 +38,19 @@ export function appUpdatesSupported(info: Pick<UpdateBuildInfo, "isDesktop" | "p
   return info.isDesktop && info.platform === "windows";
 }
 
+/** The native menu shows this notice before calling either platform's updater. macOS's feed check
+ *  lives in Rust; this pure identity check also gates the Windows webview's automatic checks. */
+export function appUpdateChannelNotice(info: UpdateBuildInfo): string | undefined {
+  if (info.isDesktop && (info.platform === "macos" || info.platform === "windows") &&
+      !info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER) {
+    return undefined;
+  }
+  return "Updates are off in development builds. Install the released ChemDraft to get updates.";
+}
+
 /** Whether this particular build may check: supported, released, and not a dev or branch build. */
 export function appUpdateChecksAllowed(info: UpdateBuildInfo): boolean {
-  return appUpdatesSupported(info) && !info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER;
+  return appUpdatesSupported(info) && appUpdateChannelNotice(info) === undefined;
 }
 
 /** An automatic check is due when none has succeeded within the interval. A timestamp from the future
