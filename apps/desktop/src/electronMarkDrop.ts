@@ -38,6 +38,22 @@ function label({ molecule, atom }: { molecule: MoleculeObject; atom: MoleculeAto
   return atomDisplayLabel(atom, molecule.bonds, nativeDrawingStyleFromObjectStyle(molecule.style), molecule.atoms) ?? atom.element;
 }
 
+/** Context from the existing graph and displayed label, before a same-element transfer. */
+function atomContextName(endpoint: { molecule: MoleculeObject; atom: MoleculeAtom }): string {
+  const { molecule, atom } = endpoint;
+  const neighbours = molecule.bonds.flatMap(bond => {
+    const neighbourId = bond.fromAtomId === atom.id ? bond.toAtomId : bond.toAtomId === atom.id ? bond.fromAtomId : undefined;
+    const neighbour = molecule.atoms.find(candidate => candidate.id === neighbourId);
+    return neighbour ? [{ atom: neighbour, order: bond.order }] : [];
+  });
+  const multiple = neighbours.find(neighbour => neighbour.order === "double" || neighbour.order === "triple");
+  if (multiple) return `${multiple.atom.element}${multiple.order === "double" ? "=" : "≡"}${atom.element}`;
+  const displayed = label(endpoint);
+  if (displayed !== atom.element) return displayed;
+  const heavy = neighbours.find(neighbour => neighbour.atom.element !== "H");
+  return heavy ? `${heavy.atom.element}–${atom.element}` : atom.element;
+}
+
 function markName(mark: ElectronMarkObject): string {
   return mark.markKind === "charge" ? (mark.radical ? "Radical ion" : "Charge")
     : mark.markKind === "radical-dot" ? "Radical electron"
@@ -126,16 +142,28 @@ export function dropElectronMark(
   const chemistryChanges = electronMarkChemistryChanges(document, after, { markIds: [markId], atoms: anchors.flatMap(anchor =>
     anchor.kind === "atom" && anchor.objectId && anchor.atomId ? [{ objectId: anchor.objectId, atomId: anchor.atomId }] : []) });
   const finalSource = source && associatedAtom(after, mark.anchor);
+  let sourceName = source?.atom.element;
+  let destinationName = finalDestination?.atom.element;
+  const contextNames = new Map<MoleculeAtom, string>();
+  if (source && destination && finalDestination && transferring && sourceName === destinationName) {
+    const sourceContext = atomContextName(source), destinationContext = atomContextName(destination);
+    if (sourceContext !== destinationContext) {
+      sourceName = `${sourceName} (${sourceContext})`;
+      destinationName = `${destinationName} (${destinationContext})`;
+      if (finalSource) contextNames.set(finalSource.atom, sourceContext);
+      contextNames.set(finalDestination.atom, destinationContext);
+    }
+  }
   const endpoints = [finalDestination, finalSource].flatMap(endpoint => endpoint ? [endpoint] : []);
   const changedAtoms = endpoints.filter((endpoint, index, endpoints) =>
     endpoints.findIndex(other => other?.molecule.id === endpoint.molecule.id && other?.atom.id === endpoint.atom.id) === index);
   const chemistry = chemistryChanges.length
-    ? ` (${changedAtoms.map(endpoint => `${endpoint.atom.element} now ${label(endpoint)}`).join(", ")})` : "";
+    ? ` (${changedAtoms.map(endpoint => `${contextNames.get(endpoint.atom) ?? endpoint.atom.element} now ${label(endpoint)}`).join(", ")})` : "";
   // Status describes the committed associations and chemistry, including any change made by
   // normalization, rather than relying on the intended geometric transfer alone.
   if (finalDestination && (!source || source.molecule.id !== finalDestination.molecule.id || source.atom.id !== finalDestination.atom.id)) {
     return { document: after, undoLabel, status: source
-      ? `${name} moved from ${source.atom.element} to ${finalDestination.atom.element}${chemistry}`
+      ? `${name} moved from ${sourceName} to ${destinationName}${chemistry}`
       : `${name} attached to ${finalDestination.atom.element}${chemistry}` };
   }
   if (source && !finalDestination && chemistryChanges.length) {
