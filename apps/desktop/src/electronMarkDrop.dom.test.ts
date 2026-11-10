@@ -86,6 +86,52 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     return molecule.atoms.map(atom => atomDisplayLabel(atom, molecule.bonds, undefined, molecule.atoms));
   }
 
+  it.each([
+    ["tool.plus", "Add Charge"], ["tool.minus", "Add Charge"],
+    ["tool.radical", "Add Radical"], ["tool.lonePair", "Add Lone Pair"],
+    ["tool.radicalCation", "Add Charge"], ["tool.radicalAnion", "Add Charge"]
+  ])("labels %s placement on both an atom and empty canvas", async (tool, label) => {
+    const initial = workflow.insertNativeSingleBondMolecule(workflow.createPhase4Document("Mark labels"), { x: 300, y: 300 });
+    await mount(initial);
+    const atom = dropMolecule(snapshot()).atoms[0];
+    for (const point of [atom, { x: 600, y: 500 }]) {
+      await command(tool);
+      await act(async () => pointer(page(), "pointermove", point));
+      const before = snapshot();
+      await act(async () => pointer(page(), "pointerdown", point));
+      await act(async () => pointer(page(), "pointerup", point));
+      const after = snapshot();
+      expect(after).not.toEqual(before);
+      await command("edit.undo");
+      expect(status()).toBe(`Undid ${label}`);
+      expect(snapshot()).toEqual(before);
+      await command("edit.redo");
+      expect(status()).toBe(`Redid ${label}`);
+      expect(snapshot()).toEqual(after);
+      await command("edit.undo");
+    }
+  });
+
+  it.each([1, -1] as const)("labels reducing and removing a %s charge", async sign => {
+    await mount(electronMarkDropFixture({ kind: "charge", charge: sign }).document);
+    const atom = dropMolecule(snapshot()).atoms[7];
+    for (const [tool, label] of [
+      [sign > 0 ? "tool.plus" : "tool.minus", "Add Charge"],
+      [sign > 0 ? "tool.minus" : "tool.plus", "Remove Charge"],
+      [sign > 0 ? "tool.minus" : "tool.plus", "Remove Charge"]
+    ]) {
+      await command(tool);
+      await act(async () => pointer(page(), "pointermove", atom));
+      const before = snapshot();
+      await act(async () => pointer(page(), "pointerdown", atom));
+      await act(async () => pointer(page(), "pointerup", atom));
+      const after = snapshot();
+      expect(after).not.toEqual(before);
+      await command("edit.undo"); expect(status()).toBe(`Undid ${label}`); expect(snapshot()).toEqual(before);
+      await command("edit.redo"); expect(status()).toBe(`Redid ${label}`); expect(snapshot()).toEqual(after);
+    }
+  });
+
   it("keeps repeated charge-tool clicks stacked through +9, warning beyond carbon's valence", async () => {
     const ethane = workflow.insertNativeSingleBondMolecule(workflow.createPhase4Document("Carbon charge stacking"), { x: 300, y: 300 });
     const molecule = dropMolecule(ethane);
@@ -127,8 +173,10 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     expect(snapshot()).toBe(charged);
     expect(status()).toBe("Charge is already at the ±9 limit");
     await command("edit.undo");
+    expect(status()).toBe("Undid Add Charge");
     expect(dropMolecule(snapshot()).atoms[0]).toMatchObject({ formalCharge: 8, markCharge: 8 });
     await command("edit.redo");
+    expect(status()).toBe("Redid Add Charge");
     expect(snapshot()).toEqual(charged);
   });
 
@@ -233,7 +281,9 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       nativeAtomBondOrderUsage(atom.id, molecule.bonds, molecule.atoms), atom.formalCharge, atom.markRadicals)).toBe(charge > 0 ? 0 : 2);
     expect(status()).toBe("Placed radical electron on hovered atom");
     await command("edit.undo"); expect(snapshot()).toEqual(distant);
+    expect(status()).toBe("Undid Remove Charge");
     await command("edit.redo"); expect(snapshot()).toEqual(neutral);
+    expect(status()).toBe("Redid Remove Charge");
   });
 
   it("highlights a refused target, reports why, and leaves no undo entry", async () => {
