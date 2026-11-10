@@ -2,7 +2,7 @@
 // native graph writer otherwise, with every approximation reported as an export warning.
 // Moved verbatim from apps/desktop/src/moleculeSmiles.ts; loading the engine stays in the desktop.
 
-import { isDativeBond, moleculeToMolfileV2000, moleculeBracketWarningMessages, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { isDativeBond, moleculeToMolfileV2000, moleculeBracketWarningMessages, rGroupNumberFromLabel, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import {
   nativeAtomChargeIsExpressible,
@@ -112,6 +112,7 @@ async function writeMoleculeSmiles(
     code: "export.smiles_bond_order", message, severity: "warning", objectId: molecule.id
   });
   for (const label of nativeMoleculeUnspellableLabels(molecule)) {
+    const rgroup = rGroupNumberFromLabel(label);
     evidence.unrecognizedLabels?.add(label);
     const existing = warnings.findIndex(warning => warning.objectId === molecule.id && warning.code === "export.sdf_v2000_loss" &&
       warning.message.startsWith(`Atom label "${label}" is not an element symbol`));
@@ -119,7 +120,9 @@ async function writeMoleculeSmiles(
     if (existing >= 0) warnings[existing] = { ...warnings[existing], code: "export.smiles_atom_label" };
     else warnings.push({
       code: "export.smiles_atom_label",
-      message: `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`,
+      message: rgroup === undefined
+        ? `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`
+        : `R-group label "${label}" written as a mapped dummy atom [*:${rgroup}].`,
       severity: "warning",
       objectId: molecule.id
     });

@@ -20,6 +20,7 @@
  * proven against RDKit in the Phase 1C/2 tests.
  *
  * Isotopes write as V2000 `M  ISO` / V3000 `MASS=`; D/T retain their element symbols.
+ * Numbered R-group labels write dummy atoms mapped with their drawn number (R1 → [*:1]).
  * Known limitations:
  *   - `unknown` bond order is written as type 8 (any) in both formats, with a warning. Readers
  *     treat it as a query bond with no chemical order; chemistry and 3D engine callers must use
@@ -45,6 +46,7 @@ import { bridgeBondIndices } from "./bondGraph";
 import { elementSymbols, isMetalSymbol } from "./elements";
 import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
 import { moleculeBracketWarningMessages } from "./brackets";
+import { rGroupNumberFromLabel } from "./rGroups";
 
 export interface MolfileWriteOptions {
   /** Live bracket context when available; cached chemistry warnings are used otherwise. */
@@ -65,8 +67,9 @@ export interface MolfileWriteOptions {
    *   wrong for anything that ranks substituents: a center bearing "Ph" and a methyl reads as
    *   two identical carbons and stops being a stereocenter.
    * - `"rgroup"`: an R-group pseudo-atom — `R#` with an `M  RGP` entry (V2000) or `RGROUPS=`
-   *   (V3000) — numbered per distinct label in first-seen order, so equal labels rank equal and
-   *   different labels rank apart from each other and from every element. Still a standard
+   *   (V3000) — drawn R1–R99 keep their numbers; other labels get unused numbers in first-seen
+   *   order, so equal labels rank equal and different labels rank apart from each other and
+   *   from every element. Still a standard
    *   molfile. OpenChemLib tells R1–R16 apart (a seventeenth label reads as "?", still no
    *   element) and honours only the V2000 form, so perception must use V2000.
    *
@@ -373,6 +376,10 @@ function molfileAtomSymbols(
   spelledHydrogens: Map<string, number>;
 } {
   const rgroupByLabel = new Map<string, number>();
+  const usedRgroups = new Set(atoms.flatMap((atom) => {
+    const number = rGroupNumberFromLabel(atom.element);
+    return number === undefined ? [] : [number];
+  }));
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
   const spelledHydrogens = new Map<string, number>();
   // Bond-order sums and unresolved bond contact, computed only when a label might be spelled: a
@@ -405,6 +412,10 @@ function molfileAtomSymbols(
     return bondValence.get(atomId) ?? { sum: 0, unresolvedAromatic: false, unknownOrder: false };
   };
   const symbols = atoms.map((atom, index) => {
+    const drawnRgroup = rGroupNumberFromLabel(atom.element);
+    // A numbered R-group is a dummy atom with its drawn number as the atom map. Never send a
+    // display label to an engine's atom-symbol parser, where it may acquire an internal number.
+    if (drawnRgroup !== undefined && options.abbreviations !== "rgroup") return "*";
     const placeholderReason = options.placeholderAtoms?.get(atom.id);
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
     // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
@@ -448,9 +459,11 @@ function molfileAtomSymbols(
       ? `Atom label "${atom.element}" is not an element symbol${reason}`
       : `Atom label "${atom.element}" stands for a group here (${placeholderReason})`;
     if (options.abbreviations === "rgroup") {
-      let rgroup = rgroupByLabel.get(atom.element);
+      let rgroup = drawnRgroup ?? rgroupByLabel.get(atom.element);
       if (rgroup === undefined) {
-        rgroup = rgroupByLabel.size + 1;
+        rgroup = 1;
+        while (usedRgroups.has(rgroup)) rgroup += 1;
+        usedRgroups.add(rgroup);
         rgroupByLabel.set(atom.element, rgroup);
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
@@ -579,7 +592,8 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     const valence = literalValences.get(atom.id);
     const valenceCode = valence === undefined ? 0 : valence === 0 ? 15 : valence;
     // vvv occupies columns 49–51, after mass, charge, parity, H count and stereo-care.
-    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0${i3(valenceCode)}  0  0  0  0  0  0`);
+    const atomMap = rGroupNumberFromLabel(atom.element) ?? 0;
+    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0${i3(valenceCode)}  0  0  0${i3(atomMap)}  0  0`);
   });
 
   for (const bond of writableBonds) {
@@ -697,7 +711,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const valence = literalValences.get(atom.id);
     const valence30 = valence !== undefined ? ` VAL=${valence === 0 ? -1 : valence}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0` +
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 ${rGroupNumberFromLabel(atom.element) ?? 0}` +
       `${charge}${isotope}${radical}${rgroups30}${valence30}`
     );
   });

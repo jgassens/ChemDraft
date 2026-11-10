@@ -28,7 +28,7 @@ import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
-import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
+import { cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
 import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
@@ -798,6 +798,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  sendPaletteCommandCancel,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -3659,7 +3660,8 @@ export function MainWindow({
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
     undoLabel?: string,
-    textCheckpointed = false
+    textCheckpointed = false,
+    assertFinalDocument?: (document: ChemDraftDocument) => void
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Record typing before the command, retaining main's editor lifetime in its callers.
@@ -3673,6 +3675,7 @@ export function MainWindow({
         if (nextDocument === currentHistory.present) return currentHistory;
 
         const present = prepareDocumentCommit(nextDocument, undoLabel);
+        assertFinalDocument?.(present);
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -3693,7 +3696,8 @@ export function MainWindow({
   // Hand gestures, typing, styling and arrange commands use the synchronous commit above.
   const commitDocumentChangeWithPageFit = useCallback((
     update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string,
-    onCommit?: NonNullable<Parameters<typeof commitWithPageFit>[3]>["onCommit"]
+    onCommit?: NonNullable<Parameters<typeof commitWithPageFit>[3]>["onCommit"],
+    assertFinalDocument?: (document: ChemDraftDocument) => void
   ): boolean => {
     if (pageFitPendingRef.current) { setStatus("Finish the page size question before editing."); return false; }
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
@@ -3704,7 +3708,7 @@ export function MainWindow({
       if (next === before) return false;
       const proposed = prepareDocumentCommit(next, label);
       const tabId = activeDocumentTabIdRef.current;
-      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true), {
+      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true, assertFinalDocument), {
         onCommit,
         consent: new PageEnlargementConsent(shortcutPlatform),
         isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
@@ -4987,10 +4991,12 @@ export function MainWindow({
 
   const cleanUpSelectedStructure = useCallback(() => {
     const currentDocument = documentRef.current;
+    const selectedParts = selectedNativeMoleculePartsRef.current;
+    const fragments = nativeMoleculeFragmentSelections(selectedParts);
     const targetObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...fragments.map(fragment => fragment.objectId)
       ])
     ];
     if (targetObjectIds.length === 0) {
@@ -5003,7 +5009,6 @@ export function MainWindow({
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
@@ -5012,6 +5017,15 @@ export function MainWindow({
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
     const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
       cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+    const partialSelections = fragments.filter(fragment => {
+      // The legacy store may include a part's host in objectIds. The part defines its scope;
+      // a true whole-molecule pick clears that molecule's part in the selection policy.
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && selected.size < target.atoms.length;
+    });
+    const partialIds = new Set(partialSelections.map(selection => selection.objectId));
 
     // The polygon+tree pass idealises single-ring components in place. Anything with more than
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
@@ -5022,11 +5036,12 @@ export function MainWindow({
     // halves land in ONE history
     // entry, and the engine's lazy load only happens when such a target exists.
     const engineTargetIds = targetObjectIds.filter((targetId) => {
+      if (partialIds.has(targetId)) return false;
       const target = findDocumentObject(currentDocument, targetId);
       return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
     });
-    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
-    if (engineTargetIds.length === 0) {
+    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId) && !partialIds.has(targetId));
+    if (engineTargetIds.length === 0 && partialSelections.length === 0) {
       const changed = commitDocumentChangeWithPageFit((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
       resetCleanupChrome();
       setStatus(cleanedStatus(changed));
@@ -5037,7 +5052,7 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile, assertConstrainedLayoutIdentity } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         let alternatePromise: Promise<readonly NativeMoleculeRelayoutEngine[]> | undefined;
         const loadAlternates = () => alternatePromise ??= (async () => {
@@ -5047,6 +5062,9 @@ export function MainWindow({
           return createRdkit2DRelayouts();
         })();
         let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds);
+        prepared = cleanUpMoleculeSelections2d(prepared, partialSelections, {
+          relayout: relayoutMolfile2D, assertIdentity: assertConstrainedLayoutIdentity
+        });
         for (const objectId of engineTargetIds) {
           // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
           // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
@@ -5064,17 +5082,40 @@ export function MainWindow({
         }
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
-        if (documentRef.current !== currentDocument) {
+        if (documentRef.current !== currentDocument || selectedNativeMoleculePartsRef.current !== selectedParts) {
           setStatus("Clean up cancelled because the document changed");
           return;
         }
-        const changed = commitDocumentChangeWithPageFit(() => prepared);
+        const changed = commitDocumentChangeWithPageFit(() => prepared, partialSelections.length ? "Clean Up Selection" : undefined, undefined,
+          partialSelections.length ? (finalDocument) => {
+            // Normalization can reassociate electron marks, including to a structure outside
+            // the selection. Validate every native molecule in the exact document that will
+            // enter history, after all normalization and before any document/history write.
+            const finalObjects = new Map(finalDocument.pages.flatMap(page => page.objects).map(object => [object.id, object]));
+            for (const before of currentDocument.pages.flatMap(page => page.objects)) {
+              if (before.type !== "molecule" || !isNativeMoleculeGraph(before)) continue;
+              const after = finalObjects.get(before.id);
+              if (after === before) continue;
+              try {
+                if (after?.type !== "molecule" || before.atoms.some((atom, i) => {
+                  const next = after.atoms[i];
+                  return !next || atom.id !== next.id || atom.element !== next.element ||
+                    atom.isotope !== next.isotope || atom.formalCharge !== next.formalCharge ||
+                    (atom.markRadicals ?? 0) !== (next.markRadicals ?? 0);
+                })) throw new Error("Native atom identity changed.");
+                assertConstrainedLayoutIdentity(stereoPerceptionMolfile(before), stereoPerceptionMolfile(after));
+              } catch {
+                throw new Error(`Clean Up Selection refused: final commit normalization would change chemistry in structure ${before.id}. The drawing was kept unchanged.`);
+              }
+            }
+          } : undefined);
         setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
-        setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(message.startsWith("Clean Up Selection:") ? message : `Clean up failed: ${message}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
@@ -8014,7 +8055,7 @@ export function MainWindow({
     event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
   }, [activeToolState.activeCommandId, startTableCellEdit]);
 
-  const applyTextStyleCommand = useCallback((commandId: string): boolean => {
+  const applyTextStyleCommand = useCallback((commandId: string, undoLabel?: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
     // Formatting belongs to the open session, like typing. Outside an editor it is its own entry.
@@ -8129,7 +8170,7 @@ export function MainWindow({
       const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
       if (colorResult.targetedSelection) {
-        const changed = changeText(colorResult.document);
+        const changed = activeTextEditObjectIdRef.current ? replacePresentDocument(colorResult.document) : commitDocumentChange(colorResult.document, undoLabel);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected color" : "Selected color unchanged");
@@ -8589,7 +8630,8 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange(result.document,
-      electronMarkStyleCommands.some(command => command.id === commandId) ? result.message : undefined);
+      objectWaveForCommand(commandId) || electronMarkStyleCommands.some(command => command.id === commandId)
+        ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
@@ -11974,7 +12016,7 @@ export function MainWindow({
       if (parsed.action === "clear") {
         if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
       } else if (parsed.action === "apply") {
-        if (color) applyTextStyleCommand(textCustomColorCommandId(color));
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Colour ${color.toUpperCase()}`);
       } else {
         const coordinator = dialogCoordinatorRef.current;
         if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }
@@ -14105,6 +14147,18 @@ export function MainWindow({
       if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
         return;
       }
+      // The detached palette can leave keyboard focus in this document window during a drag.
+      // Modal dialogs and expanded menus keep ownership of Escape, including when their
+      // handler has already closed the surface and marked this event handled.
+      if (event.key === "Escape" && artStylePreviewRef.current &&
+          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
+          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+          !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+        event.preventDefault();
+        cancelObjectStylePreview();
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -14427,6 +14481,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelObjectStylePreview,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,

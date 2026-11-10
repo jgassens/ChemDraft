@@ -6,11 +6,10 @@ import {
   createEmptyDocument,
   readSerializedDocument,
   drawnLabelBondSide,
-  elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
+  moleculeToMolfileV3000,
   nativeTextStyleFromObjectStyle,
-  normalizeAtomIsotope,
   parseDocument,
   prepareNativeDocumentForSerializationWithWarnings,
   withBracketChemistryWarnings,
@@ -38,9 +37,11 @@ import {
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
 import { measureTextRun, planTableLayout, textObjectSpansForRendering } from "@chemdraft/layout-engine";
-import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { bondedElementLabelMeaning, isGenericAtomLabel } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
+import { PROPS } from "./cdxTags";
+import { equalPrintMargins, fitPageSetup, importPageSetup, pagePrintMargins, type VisiblePageSetup } from "./pageSetup";
 import {
   CDX_NATIVE_ENVELOPE_ATTRIBUTE,
   cdxElementFromOrderedTree,
@@ -50,6 +51,7 @@ import {
   writeCdx,
   type CdxElement
 } from "./cdxBinary";
+import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -130,7 +132,7 @@ export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
         warnings.push(warning("cdx.native_payload_invalid", `CDX import: native envelope could not be decoded: ${errorMessage(error)}`));
       }
     }
-    const opened = openChemDraftPayload(cdxElementToCdxml(root));
+    const opened = openChemDraftPayload(cdxElementToCdxml(root), "CDX");
     return { ...opened, warnings: [...warnings, ...opened.warnings] };
   } catch (error) {
     return { source: "external-cdxml", warnings: [...warnings, warning("cdx.invalid_binary", errorMessage(error))] };
@@ -313,12 +315,15 @@ interface CdxmlColorTable {
   colorByIndex: Map<number, string>;
 }
 
+type CdxmlFont = Record<string, string>;
+
 interface CdxmlCrossingImportHint {
   sourceBondId: string;
   partnerBondIds: string[];
 }
 
 interface ImportPageContext {
+  sourceFormat: "CDXML" | "CDX";
   /** Import warnings for this page, so object importers can report an approximation in place. */
   warnings: CompatibilityConversionWarning[];
   bondRefsByCdxmlId: Map<string, BondRef>;
@@ -326,6 +331,7 @@ interface ImportPageContext {
   displayByRefKey: Map<string, string>;
   crossingHints: CdxmlCrossingImportHint[];
   colorTable: CdxmlColorTable;
+  fonts: readonly CdxmlFont[];
   curveLineDefaults: Record<string, string>;
   preserveReactionIds: boolean;
 }
@@ -371,19 +377,17 @@ export function exportDocumentToCdxml(
   }
   const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
-  const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
-    .filter((object): object is TableObject => object.type === "table")
-    .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
+  const fonts = exportCdxmlFonts(parsedDocument, warnings);
   // Source compatibility graphics retain their color indices as well as their other attributes.
   const colors: string[] = [...standardCdxmlColorTable];
   const sourceColors = new Map<number, string>();
   for (const page of parsedDocument.pages) for (const object of page.objects) {
-    const table = object.compatibility?.unknown.cdxmlGraphicColorTable;
+    const table = object.compatibility?.unknown.cdxmlGraphicColorTable ?? object.compatibility?.unknown.cdxmlTextColorTable;
     if (isRecord(table)) for (const [index, color] of Object.entries(table)) {
       if (/^\d+$/.test(index) && Number(index) >= 2 && Number(index) < 65536 && typeof color === "string" && normalizeHexColor(color)) {
         const previous = sourceColors.get(Number(index));
-        if (previous && previous !== color) warnings.push({ code: "cdxml.graphic_color_table_conflict", sourceObjectId: object.id,
-          message: `Source graphic color index ${index} refers to different colors in this document; its attribute is retained, but the shared CDXML color table uses ${color}.` });
+        if (previous && previous !== color) warnings.push({ code: object.type === "text" ? "cdxml.text_color_table_conflict" : "cdxml.graphic_color_table_conflict", sourceObjectId: object.id,
+          message: `Source ${object.type === "text" ? "text" : "graphic"} color index ${index} refers to different colors in this document; its attribute is retained, but the shared CDXML color table uses ${color}.` });
         sourceColors.set(Number(index), color);
         while (colors.length <= Number(index) - 2) colors.push("#000000");
         colors[Number(index) - 2] = color;
@@ -419,12 +423,35 @@ export function exportDocumentToCdxml(
   }
   const reactionAllocator = createIdAllocator(0, reactionIds);
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
-  const fittedPages = parsedDocument.pages.map((page, pageIndex) => fitVisiblePage(page,
-    buildVisiblePageChildren(page, warnings, fonts, colors,
-      preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)), warnings));
+  let sharedPrintMargins = pagePrintMargins(parsedDocument.pages[0]);
+  const fittedPages = parsedDocument.pages.map((page, pageIndex) => {
+    const fitted = fitVisiblePage(page,
+      buildVisiblePageChildren(page, warnings, fonts, colors,
+        preserveReferenceIds ? reactionAllocator : createIdAllocator(pageIndex)), warnings,
+      parsedDocument.pages.length === 1, sharedPrintMargins);
+    // Retain an equivalent source root spelling, and use its exact numbers for later grids.
+    if (pageIndex === 0 && equalPrintMargins(fitted.setup.rootAttributes.PrintMargins, sharedPrintMargins)) {
+      sharedPrintMargins = fitted.setup.rootAttributes.PrintMargins;
+    }
+    return fitted;
+  });
   const embedded = options.embedNativePayload !== false;
-  const visiblePages = fittedPages.map(({ page, children, offset }) => buildPageXml(page, children, offset));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, colors, embedded);
+  const rootPageSetup = { ...fittedPages[0]?.setup.rootAttributes };
+  if (fittedPages.some(({ setup }) => setup.attributes.WidthPages !== undefined || setup.attributes.HeightPages !== undefined
+      || setup.attributes.PrintMargins !== undefined
+      || setup.rootAttributes.WidthPages !== undefined || setup.rootAttributes.HeightPages !== undefined)
+      || rootPageSetup.PrintMargins !== undefined) {
+    rootPageSetup.PrintMargins = sharedPrintMargins;
+    for (const fitted of fittedPages) delete fitted.setup.attributes.PrintMargins;
+  }
+  for (const fitted of fittedPages.slice(1)) {
+    if (!equalPrintMargins(pagePrintMargins(fitted.page), sharedPrintMargins)) warnings.push({
+      code: "cdxml.page_margins_conflict", sourceObjectId: fitted.page.id,
+      message: `Page ${fitted.page.id} has different print margins from page ${parsedDocument.pages[0].id}; CDXML's shared root PrintMargins and every page grid use page ${parsedDocument.pages[0].id}'s margins.`
+    });
+  }
+  const visiblePages = fittedPages.map(({ page, children, setup }) => buildPageXml(page, children, setup));
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, colors, embedded, rootPageSetup);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -433,10 +460,10 @@ export function exportDocumentToCdxml(
     visibleCdxmlHash,
     nativeDocument: encodeBase64UrlUtf8(nativeJson)
   });
-  const envelopePages = fittedPages.map(({ page, children, offset }, pageIndex) =>
-    buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, offset)
+  const envelopePages = fittedPages.map(({ page, children, setup }, pageIndex) =>
+    buildPageXml(page, `${children}${pageIndex === 0 ? metadata : ""}`, setup)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, colors, embedded);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, colors, embedded, rootPageSetup);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -455,7 +482,7 @@ export function exportDocumentToCdxml(
   return { contents: options.embedNativePayload === false ? visibleEnvelope : contents, warnings, nativePayloadHash };
 }
 
-export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
+export function openChemDraftPayload(contents: string, sourceFormat: "CDXML" | "CDX" = "CDXML"): ChemDraftOpenResult {
   const normalized = stripByteOrderMark(contents).trimStart();
 
   if (normalized.length === 0) {
@@ -487,18 +514,18 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return {
       source: "external-cdxml",
       warnings: [
-        warning("cdxml.unrecognized_payload", "The file is neither a ChemDraft document nor CDXML: it is not JSON or XML.")
+        warning("cdxml.unrecognized_payload", `The file is neither a ChemDraft document nor ${sourceFormat}: it is not JSON or XML.`)
       ]
     };
   }
 
   let tree: OrderedXmlTree;
   try {
-    tree = parseCdxml(contents);
+    tree = parseCdxml(contents, xmlParser, sourceFormat);
   } catch (error) {
     return {
       source: "external-cdxml",
-      warnings: [warning("cdxml.malformed_xml", `CDXML parse failed: ${errorMessage(error)}`)]
+      warnings: [warning("cdxml.malformed_xml", `${sourceFormat} parse failed: ${errorMessage(error)}`)]
     };
   }
 
@@ -511,7 +538,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
       warnings: [
         warning(
           "cdxml.not_cdxml_xml",
-          `This XML file is not ChemDraw CDXML: its top-level element is <${rootName}>, not <CDXML>.`
+          `This XML file is not ${sourceFormat}: its top-level element is <${rootName}>, not the expected format root.`
         )
       ]
     };
@@ -520,7 +547,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   const tags = findChemDraftObjectTags(tree);
   const nativePayload = tags[ChemDraftObjectTags.nativeDocument];
   if (!nativePayload) {
-    const visibleImport = importVisibleCdxmlFromTree(tree);
+    const visibleImport = importVisibleCdxmlFromTree(tree, sourceFormat);
     return {
       document: visibleImport.document,
       source: "external-cdxml",
@@ -528,7 +555,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
         ? [
             warning(
               "cdxml.external_subset_imported",
-              "Opened an external CDXML subset; unsupported objects or chemistry may have been omitted."
+              `Opened an external ${sourceFormat} subset; unsupported objects or chemistry may have been omitted.`
             ),
             ...visibleImport.warnings
           ]
@@ -537,7 +564,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
         : visibleImport.warnings.some(({ code }) => code === "cdxml.values_out_of_range")
           ? visibleImport.warnings
           : [
-              warning("cdxml.external_import_not_implemented", "This CDXML file does not contain a ChemDraft payload and no supported visible objects were found."),
+              warning("cdxml.external_import_not_implemented", `This ${sourceFormat} file does not contain a ChemDraft payload and no supported visible objects were found.`),
               ...visibleImport.warnings
             ]
     };
@@ -554,7 +581,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
       warnings: [
         warning(
           "cdxml.codec_version_unsupported",
-          `This ChemDraft CDXML envelope uses unsupported codec version "${codecVersion ?? "<missing>"}".`
+          `This ChemDraft ${sourceFormat} envelope uses unsupported codec version "${codecVersion ?? "<missing>"}".`
         )
       ]
     };
@@ -628,14 +655,14 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     }
   }
   if (!visibleHashMatches) {
-    const visibleImport = importVisibleCdxmlFromTree(tree);
+    const visibleImport = importVisibleCdxmlFromTree(tree, sourceFormat);
     return {
       source: "external-cdxml",
       ...nativeVersions,
       warnings: [
         warning(
           "cdxml.visible_layer_modified",
-          "The visible CDXML layer was modified outside ChemDraft; choose whether to trust the embedded native payload or import the edited visible subset."
+          `The visible ${sourceFormat} layer was modified outside ChemDraft; choose whether to trust the embedded native payload or import the edited visible subset.`
         ),
         ...visibleImport.warnings,
         ...nativeRead.warnings
@@ -759,14 +786,42 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: ExportColorTable, embedded = true): string {
+function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[]): CdxmlFont[] {
+  const fonts = new Map<string, CdxmlFont>();
+  for (const page of document.pages) for (const object of page.objects) {
+    const source = object.compatibility?.unknown.cdxmlTextFontTable;
+    if (!Array.isArray(source)) continue;
+    for (const entry of source) {
+      const font = preservedCurveAttributes(entry);
+      if (!/^\d+$/.test(font.id ?? "") || Number(font.id) >= 65535) continue;
+      const previous = fonts.get(font.id);
+      if (previous && (previous.name !== font.name || previous.charset !== font.charset)) {
+        warnings.push({ code: "cdxml.text_font_table_conflict", sourceObjectId: object.id,
+          message: `Text ${object.id} has a conflicting source font ${font.id}; the shared CDXML font table uses ${font.name}.` });
+      }
+      fonts.set(font.id, font);
+    }
+  }
+  let nextId = 1;
+  for (const page of document.pages) for (const object of page.objects) {
+    if (object.type !== "table") continue;
+    const name = nativeTextStyleFromObjectStyle(object.style).fontFamily;
+    if ([...fonts.values()].some(font => font.name === name)) continue;
+    while (fonts.has(String(nextId))) nextId++;
+    const id = String(nextId++);
+    fonts.set(id, { id, charset: "iso-8859-1", name });
+  }
+  return [...fonts.values()];
+}
+
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: ExportColorTable, embedded = true, pageSetup: Record<string, string> = {}): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
-    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}>`,
+    `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(pageSetup).length ? ` ${xmlAttributes(pageSetup)}` : ""}>`,
     buildStandardColorTableXml(colors),
-    ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
-      `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
+    ...(fonts.length ? ["  <fonttable>", ...fonts.map(font =>
+      `    <font ${xmlAttributes(font)}/>`), "  </fonttable>"] : []),
     ...pages,
     "</CDXML>",
     ""
@@ -784,15 +839,14 @@ function buildStandardColorTableXml(colors: ExportColorTable): string {
   ].join("\n");
 }
 
-function buildPageXml(page: DocumentPage, children: string, offset?: Point): string {
-  const attributes = [
-    `id="${escapeXmlAttribute(page.id)}"`,
-    // "left top right bottom": a portrait page must export as width-then-height, or every
-    // spec-conforming reader sees it as landscape.
-    `BoundingBox="${formatNumber(0)} ${formatNumber(0)} ${formatNumber(cssPxToCdxml(page.width))} ${formatNumber(cssPxToCdxml(page.height))}"`
-  ];
-  if (offset) attributes.push(`${PageOffsetAttribute}="|x|${hex(utf8Bytes(JSON.stringify([offset.x, offset.y])))}"`);
-  return `  <page ${attributes.join(" ")}>${children}</page>`;
+function buildPageXml(page: DocumentPage, children: string, setup: VisiblePageSetup): string {
+  const attributes: Record<string, string> = { id: page.id, ...setup.attributes };
+  // Object ids remain native; the rest of an unchanged source page setup retains its spelling.
+  attributes.id = page.id;
+  if (setup.offset && !attributes[PageOffsetAttribute]) {
+    attributes[PageOffsetAttribute] = `|x|${hex(utf8Bytes(JSON.stringify([setup.offset.x, setup.offset.y])))}`;
+  }
+  return `  <page ${xmlAttributes(attributes)}>${children}</page>`;
 }
 
 /** Coordinate attributes, rather than native object kinds, are translated so nested labels,
@@ -808,6 +862,8 @@ function visitVisibleCoordinates(tree: OrderedXmlTree, visit: (x: number, y: num
       if (!values.length || values.length % stride || values.some(value => !Number.isFinite(value))) continue;
       let changed = false;
       for (let index = 0; index < values.length; index += stride) {
+        // Point3D text is x/y/z: page fitting and origin restoration translate only x/y.
+        // Depth also stays untouched when this visitor moves/resizes preserved source graphics.
         const next = visit(values[index], values[index + 1]);
         if (next) { values[index] = next.x; values[index + 1] = next.y; changed = true; }
       }
@@ -834,43 +890,29 @@ function serializeVisibleTree(tree: OrderedXmlTree): string {
   }).join("");
 }
 
-function fitVisiblePage(page: DocumentPage, children: string, warnings: CompatibilityConversionWarning[]): { page: DocumentPage; children: string; offset?: Point } {
+function fitVisiblePage(page: DocumentPage, children: string, warnings: CompatibilityConversionWarning[], allowPlain: boolean, printMargins: string): { page: DocumentPage; children: string; setup: VisiblePageSetup } {
   const tree = parseCdxml(`<CDXML><page>${children}</page></CDXML>`);
   const content = findElements(tree, "page")[0].children;
-  let left = 0, top = 0, right = 0, bottom = 0;
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
   visitVisibleCoordinates(content, (x, y) => {
     left = Math.min(left, x); top = Math.min(top, y);
     right = Math.max(right, x); bottom = Math.max(bottom, y);
   });
-  const margin = 18; // points; leaves room for strokes and ordinary arrowheads
-  const offset = { x: left < 0 ? Math.ceil(margin - left) : 0, y: top < 0 ? Math.ceil(margin - top) : 0 };
-  const width = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + offset.x + margin)));
-  const height = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + offset.y + margin)));
-  let finite = [offset.x, offset.y, width, height].every(Number.isFinite);
-  visitVisibleCoordinates(content, (x, y) => {
-    finite = finite && Number.isFinite(x + offset.x) && Number.isFinite(y + offset.y);
-  });
-  if (!finite) {
+  if (left === Infinity) left = top = right = bottom = 0;
+  const setup = fitPageSetup(page, { left, top, right, bottom }, allowPlain, printMargins);
+  if (setup.unrepresentable) {
     warnings.push({ code: "cdxml.page_fit_unrepresentable", sourceObjectId: page.id,
       message: `Page ${page.id} cannot be fitted within finite coordinate limits; original visible coordinates were retained and the finite page may not cover all content.` });
-    // Keep each representable unshifted extent, or the original letter-or-larger size.
-    const unshiftedWidth = cdxmlToCssPx(Math.max(612, cssPxToCdxml(page.width), Math.ceil(right + margin)));
-    const unshiftedHeight = cdxmlToCssPx(Math.max(792, cssPxToCdxml(page.height), Math.ceil(bottom + margin)));
-    return { page: { ...page,
-      width: Number.isFinite(unshiftedWidth) ? unshiftedWidth : Math.max(cdxmlToCssPx(612), page.width),
-      height: Number.isFinite(unshiftedHeight) ? unshiftedHeight : Math.max(cdxmlToCssPx(792), page.height)
-    }, children };
+    return { page, children, setup };
   }
-  const shifted = offset.x !== 0 || offset.y !== 0;
-  if (shifted) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
+  const offset = setup.offset;
+  if (offset) visitVisibleCoordinates(content, (x, y) => ({ x: x + offset.x, y: y + offset.y }));
   return {
-    page: { ...page, width, height },
-    children: shifted ? serializeVisibleTree(content) : children,
-    ...(shifted ? { offset } : {})
+    page, children: offset ? serializeVisibleTree(content) : children, setup
   };
 }
 
-function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversionWarning[]): void {
+function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversionWarning[], sourceFormat: "CDXML" | "CDX"): void {
   const encoded = page.attributes[PageOffsetAttribute];
   if (encoded === undefined) return;
   try {
@@ -880,11 +922,11 @@ function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversi
     if (!Array.isArray(offset) || offset.length !== 2 || !offset.every(value => typeof value === "number" && Number.isFinite(value))) throw new Error("invalid offset pair");
     visitVisibleCoordinates(page.children, (x, y) => ({ x: x - offset[0], y: y - offset[1] }));
   } catch {
-    warnings.push(warning("cdxml.page_offset_invalid", "CDXML page origin metadata is invalid; visible positions were retained without restoring the original origin."));
+    warnings.push(warning("cdxml.page_offset_invalid", `${sourceFormat} page origin metadata is invalid; visible positions were retained without restoring the original origin.`));
   }
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], colors: ExportColorTable, allocator: IdAllocator): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly CdxmlFont[], colors: ExportColorTable, allocator: IdAllocator): string {
   const context = createVisibleExportContext(page, colors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(needsSourceGraphicIds);
@@ -937,9 +979,16 @@ const reactionListAttributes = [
   "ReactionStepObjectsAboveArrow", "ReactionStepObjectsBelowArrow", "ReactionStepPlusses"
 ] as const;
 type ReactionListAttribute = typeof reactionListAttributes[number];
+const reactionLinkNames: Record<ReactionListAttribute, string> = {
+  ReactionStepReactants: "reactants", ReactionStepProducts: "products", ReactionStepArrows: "arrow",
+  ReactionStepObjectsAboveArrow: "conditions", ReactionStepObjectsBelowArrow: "conditions", ReactionStepPlusses: "plus"
+};
+const idListAttributes = new Set(PROPS.filter(([, , kind]) => kind === "ids" || kind === "attachments")
+  .map(([, name]) => name));
 
 function xmlAttributes(attributes: Record<string, string>): string {
-  return Object.entries(attributes).filter(([name]) => /^[A-Za-z_][\w.:-]*$/.test(name))
+  return Object.entries(attributes).filter(([name, value]) => /^[A-Za-z_][\w.:-]*$/.test(name)
+    && (!idListAttributes.has(name) || value.trim().length > 0))
     .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ");
 }
 
@@ -972,8 +1021,10 @@ function isReactionParticipant(object: DocumentObject): boolean {
 function importReactionStep(
   scheme: XmlElementView, step: XmlElementView, pageIndex: number, schemeIndex: number, stepIndex: number,
   rootsBySourceId: ReadonlyMap<string, string[]>, objects: ReadonlyMap<string, DocumentObject>,
-  warnings: CompatibilityConversionWarning[]
-): ReactionObject {
+  supersededBySourceId: ReadonlyMap<string, string>,
+  warnings: CompatibilityConversionWarning[],
+  sourceFormat: "CDXML" | "CDX"
+): ReactionObject | undefined {
   const id = `cdxml_reaction_${pageIndex + 1}_${schemeIndex + 1}_${stepIndex + 1}`;
   const components: ReactionObject["components"] = [];
   const componentKeys = new Set<string>();
@@ -991,10 +1042,21 @@ function importReactionStep(
   for (const attribute of reactionListAttributes) {
     const roots: string[] = [];
     for (const sourceId of splitCdxmlIdList(step.attributes[attribute])) {
-      const resolved = rootsBySourceId.get(sourceId);
+      let targetId = sourceId;
+      const visited = new Set<string>();
+      // Legacy arrow graphics may be omitted in favour of a modern <arrow>. Resolve their
+      // replacement chain to an imported object, retaining the original list in step metadata.
+      while (attribute === "ReactionStepArrows" && !rootsBySourceId.get(targetId)?.length
+        && supersededBySourceId.has(targetId) && !visited.has(targetId)) {
+        visited.add(targetId);
+        targetId = supersededBySourceId.get(targetId)!;
+      }
+      const resolved = rootsBySourceId.get(targetId);
       if (!resolved?.length) {
+        const reason = visited.has(targetId) ? ` (SupersededBy cycle at "${targetId}")`
+          : visited.size ? ` (SupersededBy missing target or unimported object "${targetId}")` : "";
         warnings.push({ code: "cdxml.reaction_reference_unresolved", sourceObjectId: id,
-          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object; ignored.` });
+          message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object${reason}; the ${reactionLinkNames[attribute]} link could not be resolved. Source text is preserved in compatibility metadata.` });
         continue;
       }
       roots.push(...resolved);
@@ -1006,7 +1068,7 @@ function importReactionStep(
         const role = attribute === "ReactionStepReactants" ? "reactant" : "product";
         if (isReactionParticipant(object)) addComponent(role, object.id);
         else warnings.push({ code: "cdxml.reaction_object_role_unsupported", sourceObjectId: id,
-          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its source reference is preserved in compatibility metadata without assigning a participant role.` });
+          message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its source reference is preserved in compatibility metadata without assigning a participant role.` });
       } else if (attribute === "ReactionStepArrows") {
         arrowObjectIds.push(object.id);
       } else if (attribute === "ReactionStepPlusses") {
@@ -1017,14 +1079,17 @@ function importReactionStep(
         conditionsTextObjectIds.push(object.id);
       } else {
         warnings.push({ code: "cdxml.reaction_object_role_unsupported", sourceObjectId: id,
-          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its placement is preserved in compatibility metadata without assigning an agent or condition role.` });
+          message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its placement is preserved in compatibility metadata without assigning an agent or condition role.` });
       }
     }
   }
+  // Conditions and plus signs alone do not establish a reaction. Keep an unlinked step
+  // opaque rather than inventing an empty reaction from its source container or children.
+  if (!arrowObjectIds.length && !components.some(component => component.role !== "agent")) return undefined;
   for (const attribute of Object.keys(step.attributes)) {
     if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
       warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: id,
-        message: `CDXML step ${step.attributes.id ?? id}: ${attribute} is preserved as source metadata; its semantics are not interpreted.` });
+        message: `${sourceFormat} step ${step.attributes.id ?? id}: ${attribute} is preserved as source metadata; its semantics are not interpreted.` });
     }
   }
   const { id: _schemeId, ...schemeAttributes } = scheme.attributes;
@@ -1033,7 +1098,7 @@ function importReactionStep(
   const extraStepChildren = canonicalizeXmlTree(step.children);
   if (extraStepChildren || (stepIndex === 0 && extraSchemeChildren)) {
     warnings.push({ code: "cdxml.reaction_children_payload_only", sourceObjectId: id,
-      message: `CDXML step ${step.attributes.id ?? id} or its scheme contains unrecognized child content, preserved only in the native payload.` });
+      message: `${sourceFormat} step ${step.attributes.id ?? id} or its scheme contains unrecognized child content, preserved only in the native payload.` });
   }
   return {
     id, type: "reaction", ...(unionObjectBounds([...linkedObjects.values()]) ?? { x: 0, y: 0, width: 0, height: 0 }),
@@ -1088,6 +1153,11 @@ function exportReactionSchemes(
       }
       if (reaction.mappingState === "absent") delete attributes.ReactionStepAtomMap;
       for (const attribute of Object.keys(attributes)) {
+        // Opaque atom-map lists follow the same nonempty-list rule as interpreted step lists.
+        if (attribute.startsWith("ReactionStep") && !attributes[attribute].trim()) {
+          delete attributes[attribute];
+          continue;
+        }
         if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
           warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: reaction.id,
             message: `Reaction ${reaction.id}: ${attribute} is exported opaquely from source metadata; it has not been interpreted or updated for native edits.` });
@@ -1148,11 +1218,11 @@ function exportReactionSchemes(
             message: `Native reaction ${reaction.id}: ${attribute} object "${id}" is missing; ignored on export.` });
         }
         const value = exported.join(" ");
-        if (value || attributes[attribute] !== undefined) {
+        if (value) {
           // Keep original list whitespace too when no semantic or id edit requires rewriting it.
           if (splitCdxmlIdList(attributes[attribute]).join(" ") !== value) attributes[attribute] = value;
           else attributes[attribute] ??= value;
-        }
+        } else delete attributes[attribute];
       }
       if (reaction.mappingState !== "absent" && !attributes.ReactionStepAtomMap) {
         warnings.push({ code: "cdxml.reaction_mapping_payload_only", sourceObjectId: reaction.id,
@@ -1170,7 +1240,7 @@ function exportVisibleObject(
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
   objectsById: ReadonlyMap<string, DocumentObject>,
-  fonts: readonly string[]
+  fonts: readonly CdxmlFont[]
 ): string {
   if (object.type === "unknown-compatibility-object" && object.sourceObjectType === "curve") {
     const sourceAttributes = object.compatibility?.unknown.cdxmlCurveAttributes;
@@ -1190,25 +1260,10 @@ function exportVisibleObject(
     return exportMoleculeObject(object, context, allocator, warnings);
   }
   if (object.type === "text") {
-    const unsupportedTextStyle = (style: Record<string, unknown>) =>
-      Object.keys(style).some(key => key !== "color") ||
-      typeof style.color === "string" && normalizeHexColor(style.color) === undefined;
-    const styledSpan = object.spans.some(span => unsupportedTextStyle(span.style));
-    const styledObject = [
-      "fontFamily", "fontSizePx", "fontWeight", "fontStyle", "textDecoration",
-      "textAlign", "letterSpacingPx", "lineHeight", "paragraphSpacingPx"
-    ].some(key => Object.hasOwn(object.style, key));
-    if (styledSpan || styledObject || typeof object.style.color === "string" && normalizeHexColor(object.style.color) === undefined) {
-      warnings.push({
-        code: "cdxml.text_format_native_only",
-        message: "Some text formatting is preserved only in the embedded ChemDraft data; the visible CDXML retains colors and subscript/superscript but may look different in other apps.",
-        sourceObjectId: object.id
-      });
-    }
-    return exportTextObject(object, context.ids, allocator, context.colors);
+    return exportTextObject(object, context.ids, allocator, context.colors, warnings);
   }
   if (object.type === "plus") {
-    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator, context.colors);
+    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator, context.colors, warnings);
   }
   if (object.type === "reaction-arrow") {
     return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings, context.colors);
@@ -1242,6 +1297,21 @@ function exportVisibleObject(
       sourceObjectId: object.id
     });
     return "";
+  }
+  if (object.type === "unknown-compatibility-object" && isRecord(object.raw) && isRecord(object.raw.attributes)) {
+    const attributes = preservedCurveAttributes(object.raw.attributes);
+    const sourceId = attributes.id ?? object.compatibility?.originalId ?? object.id;
+    if (object.sourceObjectType === "graphic" && attributes.GraphicType === "Bracket") {
+      warnings.push({ code: "cdxml.bracket_type_preserved", sourceObjectId: sourceId,
+        message: `Bracket ${sourceId} with bracket kind "${attributes.BracketType ?? "unspecified"}" is NOT written to visible export; its source is retained in the native document only.` });
+      return "";
+    }
+    if (object.sourceObjectType === "bracketedgroup") {
+      const groups = [object.raw as unknown as XmlElementView, ...findElements(Array.isArray(object.raw.children) ? object.raw.children : [], "bracketedgroup")];
+      for (const group of groups) warnings.push({ code: "cdxml.bracket_group_preserved", sourceObjectId: group.attributes.id ?? sourceId,
+        message: `Bracket group ${group.attributes.id ?? sourceId}: bracket usage, repeat count, bracket members and crossing bonds are NOT written to visible export; the source is retained in the native document only.` });
+      return "";
+    }
   }
   if (object.type === "mechanism-arrow") {
     warnings.push({
@@ -1444,6 +1514,12 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
       }
       return `<bracketattachment ${xmlAttributes(attachmentAttrs)}>${crossings.join("")}${isRecord(source) ? preservedBracketChildren(source.children, ["crossingbond"]) : ""}</bracketattachment>`;
     });
+    if (isRecord(raw) && Array.isArray(raw.children)) {
+      for (const nested of findElements(raw.children, "bracketedgroup")) {
+        warnings.push({ code: "cdxml.bracket_nested_group_preserved", sourceObjectId: nested.attributes.id,
+          message: `Nested bracket group ${nested.attributes.id ?? "(unknown)"} is not a native bracket group: bracket usage, repeat count, bracket members and crossing bonds remain source compatibility data only, written as raw children of the outer group.` });
+      }
+    }
     groups.push(`<bracketedgroup ${xmlAttributes(attrs)}>${attachments.join("")}${isRecord(raw) ? preservedBracketChildren(raw.children, ["bracketattachment"]) : ""}</bracketedgroup>`);
   }
   return groups;
@@ -1519,9 +1595,11 @@ function exportMoleculeObject(
       ? bondedElementLabelMeaning(atom.element)
       : undefined;
     const heavyHydrogen = atom.element === "D" || atom.element === "T";
+    const rGroupLabel = atom.element.startsWith("R") && isGenericAtomLabel(atom.element);
     const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
     const elementNumber = heavyHydrogen ? 1
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
+    const literalLabel = atom.labelLiteral === true;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`,
@@ -1533,18 +1611,20 @@ function exportMoleculeObject(
     if (isotope !== undefined) {
       attributes.push(`Isotope="${isotope}"`);
     }
-    if (elementNumber === undefined) {
+    if (rGroupLabel) {
+      attributes.push('NodeType="GenericNickname"', 'GenericNickname="R"');
+    } else if (elementNumber === undefined) {
       attributes.push(`Element="${escapeXmlAttribute(atom.element)}"`);
       warnings.push(bondedMeaning === undefined
         ? {
             code: "cdxml.atom_element_symbol_exported",
             message: `Atom element "${atom.element}" was exported as a CDXML element label because no atomic number mapping exists.`,
-            sourceObjectId: molecule.id
+            sourceObjectId: molecule.id, atomIds: [atom.id]
           }
         : {
             code: "cdxml.bonded_element_label_exported",
             message: `Atom "${atom.element}" on a bond is ${bondedMeaning}, not the element ${atom.element}; it was exported as the label "${atom.element}" rather than an atomic number.`,
-            sourceObjectId: molecule.id
+            sourceObjectId: molecule.id, atomIds: [atom.id]
           });
     }
     // A side-dependent label ("SCN") has its recorded reading from the side its bond came from
@@ -1577,6 +1657,12 @@ function exportMoleculeObject(
     if (atom.hydrogenCount !== undefined) {
       attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
     }
+    if (rGroupLabel || literalLabel) {
+      // A regenerated literal node must retain its label semantics too, including any explicit
+      // NumHydrogens. Element text alone does not identify a literal label to a CDXML reader.
+      if (literalLabel && !rGroupLabel) attributes.push('NodeType="GenericNickname"', `GenericNickname="${escapeXmlAttribute(atom.element)}"`);
+      return `<n ${attributes.join(" ")}><t><s>${escapeXmlText(atom.element)}</s></t></n>`;
+    }
     if (isotope !== undefined) {
       const label = (labels?.get(atom.id) ?? []).map((run) => {
         // CDXML font-face bits: 0x40 superscript, 0x20 subscript, as for table text.
@@ -1590,21 +1676,46 @@ function exportMoleculeObject(
   });
   const bondLines = molecule.bonds.map((bond) => exportBond(bond, molecule, atomIds, context, allocator, warnings));
 
-  if (molecule.chemistry?.radicalCount || molecule.chemistry?.stereochemistry.length) {
+  const warnMetadata = (nodes: CdxElement[] = []) => {
+    const visibleStereo = new Map<string, string>();
+    const visit = (node: CdxElement) => {
+      if (node.name === "n" && node.attrs.AS) visibleStereo.set(node.attrs.id, node.attrs.AS.trim().toUpperCase());
+      node.kids.forEach(visit);
+    };
+    nodes.forEach(visit);
+    const missingStereo = molecule.chemistry?.stereochemistry.some(value => {
+      const split = value.lastIndexOf(":");
+      return visibleStereo.get(atomIds.get(value.slice(0, split)) ?? "") !== value.slice(split + 1);
+    });
+    if (!molecule.chemistry?.radicalCount && !missingStereo) return;
     warnings.push({
       code: "cdxml.molecule_metadata_payload_only",
       message: "Molecule radical and stereochemistry aggregates remain in the native payload; " +
         "isotopes are preserved on CDXML atoms and supported bond stereo is written visibly.",
       sourceObjectId: molecule.id
     });
-  }
+  };
 
-  return [
+  const contents = [
     `<fragment id="${fragmentId}" BoundingBox="${formatBoundingBox(molecule)}">`,
     ...atomLines.map((line) => indent(line, 2)),
     ...bondLines.map((line) => indent(line, 2)),
     "</fragment>"
   ].join("\n");
+  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations) {
+    warnMetadata();
+    return contents;
+  }
+  const root = cdxElementFromOrderedTree(parseCdxml(`<CDXML>${contents}</CDXML>`));
+  const restored = restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings);
+  // These diagnostics describe the discarded generated node, not the merged source node.
+  for (let index = warnings.length - 1; index >= 0; index--) {
+    const warning = warnings[index];
+    if (warning.sourceObjectId === molecule.id && warning.atomIds?.some(id => restored.has(id)) &&
+        ["cdxml.atom_element_symbol_exported", "cdxml.bonded_element_label_exported"].includes(warning.code)) warnings.splice(index, 1);
+  }
+  warnMetadata(root.kids);
+  return cdxElementToCdxml(root.kids[0]);
 }
 
 function exportBond(
@@ -1628,6 +1739,13 @@ function exportBond(
     `Order="${escapeXmlAttribute(order)}"`,
     ...cdxmlColorAttribute(moleculePartColor(molecule.style.bondColors, bond.id) ?? molecule.style.bondColor, context.colors)
   ];
+  const attachmentRecords = molecule.compatibility?.unknown.cdxmlAbbreviationAttachmentsByBondId;
+  const attachment = isRecord(attachmentRecords) ? attachmentRecords[bond.id] : undefined;
+  if (isRecord(attachment) && attachment.fromAtomId === bond.fromAtomId && attachment.toAtomId === bond.toAtomId) {
+    for (const key of ["BeginAttach", "EndAttach"] as const) {
+      if (typeof attachment[key] === "string") attributes.push(`${key}="${escapeXmlAttribute(attachment[key])}"`);
+    }
+  }
   if (bond.order === "double" && bond.stereo === "either") {
     // Wavy on a double bond means crossed/E/Z-unspecified, regardless of its coordinates.
     attributes.push('Display="Wavy"');
@@ -1696,12 +1814,12 @@ function exportTableObject(
   ids: Map<string, string>,
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
-  fonts: readonly string[],
+  fonts: readonly CdxmlFont[],
   colors: ExportColorTable
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
-  const font = fonts.indexOf(style.fontFamily) + 1;
+  const font = fonts.find(font => font.name === style.fontFamily)?.id ?? "1";
   const texts: string[] = [];
   const writeLines = (lines: typeof layout.cells[number]["lines"], fontSizePx: number) => {
     for (const line of lines) {
@@ -1751,8 +1869,53 @@ function exportTableObject(
   return `<group id="${idFor(ids, table.id, allocator)}">${texts.join("")}${lines.join("")}</group>`;
 }
 
-function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator, colors: ExportColorTable): string {
+// Position is separate: moving text can translate the source coordinates without discarding runs.
+function textSourceState(text: TextObject): string {
+  return JSON.stringify([text.text, text.spans, text.style, text.width, text.height, text.rotation]);
+}
+
+function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator, colors: ExportColorTable, warnings: CompatibilityConversionWarning[]): string {
   const textId = idFor(ids, text.id, allocator);
+  const source = text.compatibility?.unknown.cdxmlTextElement;
+  if (typeof source === "string") {
+    if (text.compatibility?.unknown.cdxmlTextNativeState === textSourceState(text)) {
+      // Reparse our serialized source rather than injecting compatibility data as unchecked XML.
+      try {
+        const tree = parseCdxml(source);
+        const node = tree.find(node => elementView(node)?.name === "t");
+        const element = node && elementView(node);
+        if (node && element) {
+          node[":@"] = { ...element.attributes, id: textId };
+          const point = parseCdxmlPoint(element.attributes.p);
+          const dx = cssPxToCdxml(text.x - point.x), dy = cssPxToCdxml(text.y - point.y);
+          if (dx || dy) {
+            visitVisibleCoordinates([node], (x, y) => ({ x: x + dx, y: y + dy }));
+            if (!element.attributes.p) (node[":@"] as Record<string, string>).p = formatPoint(text);
+          }
+          return serializeVisibleTree([node]);
+        }
+      } catch {
+        // Invalid compatibility data must not prevent the current native text from being written.
+      }
+    }
+    warnings.push({ code: "cdxml.text_source_formatting_not_kept", sourceObjectId: text.id,
+      message: `Text ${text.id} (source ${text.compatibility?.originalId ?? "<unnamed>"}) was edited or its source text is unavailable; source formatting was not kept. The current native text is written.` });
+  }
+  const unsupportedTextStyle = (style: Record<string, unknown>) =>
+    Object.keys(style).some(key => key !== "color") ||
+    typeof style.color === "string" && normalizeHexColor(style.color) === undefined;
+  const styledSpan = text.spans.some(span => unsupportedTextStyle(span.style));
+  const styledObject = [
+    "fontFamily", "fontSizePx", "fontWeight", "fontStyle", "textDecoration",
+    "textAlign", "letterSpacingPx", "lineHeight", "paragraphSpacingPx"
+  ].some(key => Object.hasOwn(text.style, key));
+  if (styledSpan || styledObject || typeof text.style.color === "string" && normalizeHexColor(text.style.color) === undefined) {
+    warnings.push({
+      code: "cdxml.text_format_native_only",
+      message: "Some text formatting is preserved only in the embedded ChemDraft data; the visible CDXML retains colors and subscript/superscript but may look different in other apps.",
+      sourceObjectId: text.id
+    });
+  }
   const color = cdxmlColorAttribute(text.style.color, colors);
   const content = text.spans.length === 0 ? escapeXmlText(text.text)
     : textObjectSpansForRendering(text).map((span) => {
@@ -1806,8 +1969,8 @@ function exportGraphicObject(
   const graphicId = idFor(ids, graphic.id, allocator);
   const sourceElementName = graphic.compatibility?.unknown.cdxmlElementName;
   const curve = sourceElementName === "curve" ? graphic : sourceElementName === "arrow" ? undefined : nativeCurveGraphic(graphic);
-  warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve));
-  if (graphic.graphicKind === "unknown" && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
+  warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve), colors);
+  if ((graphic.graphicKind === "unknown" || graphic.graphicKind === "ellipse") && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
     const attributes = preservedCurveAttributes(graphic.compatibility.unknown.cdxmlGraphicAttributes);
     // Older imports retained only these individual compatibility keys.
     attributes.GraphicType ??= String(graphic.compatibility.unknown.cdxmlGraphicType ?? "Unknown");
@@ -1818,6 +1981,7 @@ function exportGraphicObject(
       if (typeof value === "string") attributes[attribute] ??= value;
     }
     if (attributes.GraphicType !== "Unknown") {
+      if (graphic.graphicKind === "ellipse") updatePreservedEllipseStyle(graphic, attributes, warnings, colors);
       const sourceElement = { name: "graphic", attributes, children: [] };
       // Use the importer's frame rule: axes may define a different frame than BoundingBox.
       const sourceBox = graphicBoundsForCdxmlShape(sourceElement, attributes.GraphicType, cdxmlLinePointsForShape(sourceElement));
@@ -1850,7 +2014,55 @@ function exportGraphicObject(
 
 function needsSourceGraphicIds(object: DocumentObject): boolean {
   return object.type === "reaction" || object.type === "bracket" ||
-    object.type === "graphic" && object.graphicKind === "unknown" && object.compatibility?.unknown.cdxmlElementName === "graphic";
+    object.type === "text" && typeof object.compatibility?.unknown.cdxmlTextElement === "string" ||
+    object.type === "graphic" && (object.graphicKind === "unknown" || object.graphicKind === "ellipse") && object.compatibility?.unknown.cdxmlElementName === "graphic";
+}
+
+/** Leave untouched source spelling alone; an edited ellipse must use its current native style. */
+function updatePreservedEllipseStyle(
+  graphic: GraphicObject,
+  attributes: Record<string, string>,
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
+): void {
+  const unknown = graphic.compatibility?.unknown;
+  const sourceColors = isRecord(unknown?.cdxmlGraphicColorTable) ? unknown.cdxmlGraphicColorTable : {};
+  const sourceStyle: Record<string, unknown> = isRecord(unknown?.cdxmlGraphicStyle) ? unknown.cdxmlGraphicStyle
+    : graphicStyleFromCdxmlCurve({ name: "graphic", attributes, children: [] }, {
+      warnings,
+      colorByIndex: new Map<number, string>([[0, "#000000"], [1, "#ffffff"],
+        ...colors.map((color, index) => [index + 2, color] as [number, string]),
+        ...Object.entries(sourceColors).flatMap(([index, color]) =>
+          typeof color === "string" ? [[Number(index), color] as [number, string]] : [])])
+    });
+  const currentStyle: Record<string, unknown> = graphic.style;
+  const changed = [...new Set([...Object.keys(sourceStyle), ...Object.keys(currentStyle)])]
+    .filter(key => JSON.stringify(currentStyle[key]) !== JSON.stringify(sourceStyle[key]));
+  if (changed.length === 0) return;
+
+  // These describe the native style, unlike opaque attributes, Z, and the source geometry.
+  for (const name of ["OvalType", "ShadowSize", "FillType", "color", "LineType", "LineWidth", "BoldWidth"]) delete attributes[name];
+  const ovalType = cdxmlOvalTypeForGraphic(graphic);
+  if (ovalType) attributes.OvalType = ovalType;
+  if (graphic.style.effect === "shadow") attributes.ShadowSize = "400";
+  const color = cdxmlGraphicColorIndex(graphic, warnings, colors);
+  if (color !== undefined) attributes.color = String(color);
+  const lineType = cdxmlLineTypeForGraphic(graphic);
+  if (lineType) attributes.LineType = lineType;
+  attributes.LineWidth = formatNumber(cssPxToCdxml(graphic.style.strokeWidth ?? defaultCdxmlLineWidthPx));
+  if (lineType === "Bold") attributes.BoldWidth = attributes.LineWidth;
+
+  const unsupported = changed.filter(key => ["strokePaint", "fillPaint", "opacity", "strokeOpacity", "fillOpacity",
+    "strokeLineCap", "strokeLineJoin", "strokeMiterLimit", "visualEffects", "inactiveVisualEffects", "effects", "inactiveEffects"].includes(key));
+  if (graphic.style.strokeDasharray && graphic.style.strokeDasharray !== "3 4") unsupported.push("strokeDasharray");
+  if (graphic.style.effect === "shadow" && graphic.style.fillMode === "gloss") unsupported.push("effect (shadow with gloss)");
+  if (ovalType === "Shadowed" && graphicHasVisibleFill(graphic)) unsupported.push("fillColor (fill with shadow)");
+  const usesFillColor = ovalType?.includes("Filled") || ovalType?.includes("Shaded");
+  const colorValue = usesFillColor ? graphic.style.fillColor ?? graphic.style.color ?? graphic.style.strokeColor
+    : graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
+  if (color === undefined && colorValue) unsupported.push(usesFillColor ? "fillColor" : "strokeColor");
+  if (unsupported.length) warnings.push({ code: "cdxml.graphic_style_approximation", sourceObjectId: graphic.id,
+    message: `Ellipse style ${unsupported.join(", ")} cannot be expressed exactly in standard CDXML; these edits are preserved exactly only in the embedded ChemDraft payload.` });
 }
 
 function transformPreservedGraphicGeometry(attributes: Record<string, string>, source: { x: number; y: number; width: number; height: number }, target: GraphicObject): void {
@@ -2024,6 +2236,10 @@ function exportSemanticReactionArrowGraphic(
     ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
+    // Start/End are CDXML-only aliases. Binary CDX needs standard endpoints too; otherwise
+    // reopening falls back to an inset bounding-box diagonal and shortens a standalone arrow.
+    `Tail3D="${formatPoint(line.start)} 0"`,
+    `Head3D="${formatPoint(line.end)} 0"`,
     `Start="${formatPoint(line.start)}"`,
     `End="${formatPoint(line.end)}"`
   ];
@@ -2090,7 +2306,8 @@ function warnForGenericGraphicMarkerLoss(
 function warnForGraphicCdxmlLimitations(
   graphic: GraphicObject,
   warnings: CompatibilityConversionWarning[],
-  exportsCurve = false
+  exportsCurve = false,
+  colors: readonly string[] = standardCdxmlColorTable
 ): void {
   const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
   // Curves encode custom colors and path controls themselves; these warnings apply only to graphics.
@@ -2170,6 +2387,10 @@ function exportGraphicAsCdxmlGraphic(
   }
   if (type === "Line" || type === "Arc") {
     attrs.push(...cdxmlGraphicLineAttributes(graphic));
+  }
+  const arrowType = graphic.compatibility?.unknown.cdxmlArrowType;
+  if (type === "Line" && typeof arrowType === "string" && isCdxmlNoHead(arrowType)) {
+    attrs.push(`ArrowType="${escapeXmlAttribute(arrowType)}"`);
   }
   return `<graphic ${attrs.join(" ")}/>`;
 }
@@ -2298,7 +2519,7 @@ function preservedCurveAttributes(value: unknown): Record<string, string> {
 }
 
 function curveXml(attributes: Record<string, string>): string {
-  return `<curve ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ")}/>`;
+  return `<curve ${xmlAttributes(attributes)}/>`;
 }
 
 /** The write side of {@link cdxmlArrowMarkers}: name which ends are headed and how, so an arrow
@@ -2446,8 +2667,13 @@ function cdxmlRectangleTypeForGraphic(graphic: GraphicObject): string | undefine
 }
 
 function cdxmlLineTypeAttributes(graphic: GraphicObject): string[] {
-  const lineType = cdxmlLineTypeForGraphic(graphic);
-  return lineType ? [`LineType="${lineType}"`] : [];
+  // Semantic line arrows retain explicit Solid and unmapped source spellings. Mapped native
+  // styles still take precedence, and clearing a mapped dash/wave/bold must not restore it.
+  const source = isSemanticReactionArrowGraphic(graphic) ? graphic.compatibility?.unknown.cdxmlLineType : undefined;
+  const preserved = typeof source === "string" && !["dashed", "bold", "wavy"].includes(normalizedCdxmlToken(source))
+    ? source : undefined;
+  const lineType = cdxmlLineTypeForGraphic(graphic) ?? preserved;
+  return lineType !== undefined ? [`LineType="${escapeXmlAttribute(lineType)}"`] : [];
 }
 
 function cdxmlLineTypeForGraphic(graphic: GraphicObject): string | undefined {
@@ -2466,6 +2692,15 @@ function cdxmlGraphicColorAttribute(
   warnings: CompatibilityConversionWarning[],
   colors: ExportColorTable
 ): string[] {
+  const index = cdxmlGraphicColorIndex(graphic, warnings, colors);
+  return index === undefined || colors[index - 2] === defaultCdxmlStrokeColor ? [] : [`color="${index}"`];
+}
+
+function cdxmlGraphicColorIndex(
+  graphic: GraphicObject,
+  warnings: CompatibilityConversionWarning[],
+  colors: ExportColorTable
+): number | undefined {
   // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
   // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
   // fill color (not stroke) to round-trip the visible fill; every other subtype keeps the stroke.
@@ -2488,7 +2723,7 @@ function cdxmlGraphicColorAttribute(
       sourceObjectId: graphic.id
     });
   }
-  return cdxmlColorAttribute(color, colors);
+  return color && color.toLowerCase() !== "none" ? cdxmlColorIndexForHex(color, colors) : undefined;
 }
 
 function cdxmlShapeSubtypeForColor(graphic: GraphicObject): string {
@@ -2709,27 +2944,28 @@ function buildMetadataObjectTags(values: {
   return `\n${tags.map(([name, value]) => indent(`<objecttag Name="${name}" Persistent="yes" TagType="String" Value="${escapeXmlAttribute(value)}"/>`, 4)).join("\n")}\n  `;
 }
 
-function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraftDocument; warnings: CompatibilityConversionWarning[] } {
+function importVisibleCdxmlFromTree(tree: OrderedXmlTree, sourceFormat: "CDXML" | "CDX"): { document?: ChemDraftDocument; warnings: CompatibilityConversionWarning[] } {
   const warnings: CompatibilityConversionWarning[] = [];
   const pageElements = findElements(tree, "page");
   if (pageElements.length === 0) {
     return {
-      warnings: [warning("cdxml.no_pages", "The CDXML file contains no page elements.")]
+      warnings: [warning("cdxml.no_pages", `The ${sourceFormat} file contains no page elements.`)]
     };
   }
 
   const importTransform = importTransformForTree(tree);
   const colorTable = importCdxmlColorTable(tree, warnings);
+  const fonts = findElements(tree, "fonttable").flatMap(table => childElements(table, "font").map(font => font.attributes));
   const root = tree.map(elementView).find(element => element?.name.toLowerCase() === "cdxml");
   const curveLineDefaults = cdxmlCurveLineDefaults(root?.attributes ?? {});
-  const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
+  const base = createEmptyDocument({ title: `Imported ${sourceFormat}.chemdraft`, now: nativeImportTimestamp });
   let importedPages: DocumentPage[];
   try {
     importedPages = pageElements.map((pageElement, pageIndex) => {
-      const pageTemplate = base.pages[0];
-      restorePageOffset(pageElement, warnings);
+      const pageTemplate = importPageSetup(base.pages[0], pageElement.attributes, root?.attributes ?? {});
+      restorePageOffset(pageElement, warnings, sourceFormat);
       const importedPage = applyImportTransformToPageObjects(
-        importPageObjects(pageElement, pageIndex, warnings, colorTable, curveLineDefaults),
+        importPageObjects(pageElement, pageIndex, warnings, colorTable, fonts, curveLineDefaults, sourceFormat),
         importTransform
       );
       return {
@@ -2741,13 +2977,13 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
     });
   } catch (error) {
     return {
-      warnings: [warning("cdxml.values_out_of_range", `CDXML import failed: ${errorMessage(error)}`)]
+      warnings: [warning("cdxml.values_out_of_range", `${sourceFormat} import failed: ${errorMessage(error)}`)]
     };
   }
   const objectCount = importedPages.reduce((count, page) => count + page.objects.length, 0);
   if (objectCount === 0) {
     return {
-      warnings: [warning("cdxml.no_supported_visible_objects", "No supported visible CDXML objects were found."), ...warnings]
+      warnings: [warning("cdxml.no_supported_visible_objects", `No supported visible ${sourceFormat} objects were found.`), ...warnings]
     };
   }
 
@@ -2773,7 +3009,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
       warnings: [
         warning(
           "cdxml.values_out_of_range",
-          `This CDXML file has values ChemDraft cannot represent${where}: ${issue?.message ?? "invalid document"}. Coordinates this large are usually a sign of a damaged file.`
+          `This ${sourceFormat} file has values ChemDraft cannot represent${where}: ${issue?.message ?? "invalid document"}. Coordinates this large are usually a sign of a damaged file.`
         )
       ]
     };
@@ -2786,22 +3022,38 @@ function importPageObjects(
   pageIndex: number,
   warnings: CompatibilityConversionWarning[],
   colorTable: CdxmlColorTable,
-  curveLineDefaults: Record<string, string>
+  fonts: readonly CdxmlFont[],
+  curveLineDefaults: Record<string, string>,
+  sourceFormat: "CDXML" | "CDX"
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
   const bracketGroups: XmlElementView[] = [];
   const context: ImportPageContext = {
+    sourceFormat,
     warnings,
     bondRefsByCdxmlId: new Map(),
     zByRefKey: new Map(),
     displayByRefKey: new Map(),
     crossingHints: [],
     colorTable,
+    fonts,
     curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) },
-    preserveReactionIds: findElements(pageElement.children, "scheme").length > 0
+    preserveReactionIds: findElements(pageElement.children, "scheme").length > 0 || findElements(pageElement.children, "step").length > 0
   };
   const schemes: XmlElementView[] = [];
+  // A step need not have a scheme wrapper. Collect these even inside containers whose
+  // ordinary content importer does not visit; resolve all links after the page is imported.
+  const standaloneSteps: XmlElementView[] = [];
+  const collectStandaloneSteps = (element: XmlElementView, inScheme = false) => {
+    if (element.name === "step" && !inScheme) standaloneSteps.push(element);
+    for (const child of element.children) {
+      const view = elementView(child);
+      if (view) collectStandaloneSteps(view, inScheme || element.name === "scheme");
+    }
+  };
+  collectStandaloneSteps(pageElement);
   const rootsBySourceId = new Map<string, string[]>();
+  const supersededBySourceId = new Map<string, string>();
   context.preserveReactionIds ||= findElements(pageElement.children, "bracketedgroup").length > 0;
   const stepReferencedIds = new Set(findElements(pageElement.children, "step").flatMap(step =>
     reactionListAttributes.flatMap(attribute => splitCdxmlIdList(step.attributes[attribute]))));
@@ -2812,6 +3064,9 @@ function importPageObjects(
   // page children and tied together by a native group. Importing the whole group as one opaque
   // unknown object dropped every molecule inside it — real ChemDraw files group routinely.
   const importElement = (element: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
+    if (element.attributes.id && element.attributes.SupersededBy) {
+      supersededBySourceId.set(element.attributes.id, element.attributes.SupersededBy.trim());
+    }
     const single = (object: DocumentObject | undefined) => {
       if (!object) {
         return { objects: [], rootIds: [] };
@@ -2821,7 +3076,31 @@ function importPageObjects(
       return { objects: [object], rootIds: [object.id] };
     };
     if (element.name === "fragment") {
-      return single(importFragment(element, pageIndex, objectIndex, warnings, context));
+      // Lift display objects before taking abbreviation snapshots. Unexpandable nodes restore
+      // their snapshots verbatim on export, so keeping a lifted caption there would duplicate it.
+      // Stop at imported containers so grouped graphics appear once; atom labels stay on atoms.
+      const displayChildren: XmlElementView[] = [];
+      const separateDisplayChildren = (container: XmlElementView): XmlElementView => ({
+        ...container,
+        children: container.children.flatMap(node => {
+          const child = elementView(node);
+          if (!child) return [node];
+          if (child.name === "t") {
+            if (container.name !== "fragment") return [node];
+          } else if (!["group", "graphic", "arrow", "curve"].includes(child.name)) {
+            return [{ ...node, [child.name]: separateDisplayChildren(child).children }];
+          }
+          displayChildren.push(child);
+          return [];
+        })
+      });
+      const molecule = single(importFragment(separateDisplayChildren(element), pageIndex, objectIndex, warnings, context));
+      for (const child of displayChildren) {
+        const imported = importElement(child);
+        molecule.objects.push(...imported.objects);
+        molecule.rootIds.push(...imported.rootIds);
+      }
+      return molecule;
     }
     if (element.name === "t") {
       return single(importText(element, pageIndex, objectIndex, context));
@@ -2831,6 +3110,12 @@ function importPageObjects(
     }
     if (element.name === "bracketedgroup") {
       bracketGroups.push(element);
+      // The native model describes a pair, not a hierarchy of bracket groups. The source
+      // children can be written back, but every unrepresented group needs its own diagnostic.
+      for (const nested of findElements(element.children, "bracketedgroup")) {
+        warnings.push({ code: "cdxml.bracket_nested_group_preserved", sourceObjectId: nested.attributes.id,
+          message: `${sourceFormat} nested bracket group ${nested.attributes.id ?? "(unknown)"} is not imported as a native bracket group: bracket usage, repeat count, bracket members and crossing bonds remain source compatibility data only.` });
+      }
       return { objects: [], rootIds: [] };
     }
     if (element.name === "arrow") {
@@ -2847,10 +3132,13 @@ function importPageObjects(
     if (element.name === "scheme") {
       if (childElements(element, "step").length === 0) {
         warnings.push({ code: "cdxml.reaction_scheme_without_steps_preserved",
-          message: `CDXML scheme${element.attributes.id ? ` ${element.attributes.id}` : ""} has no steps; preserved as an unknown compatibility object.` });
-        return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+          message: `${sourceFormat} scheme${element.attributes.id ? ` ${element.attributes.id}` : ""} has no steps; preserved as an unknown compatibility object.` });
+        return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex, sourceFormat));
       }
       schemes.push(element);
+      return { objects: [], rootIds: [] };
+    }
+    if (element.name === "step") {
       return { objects: [], rootIds: [] };
     }
     if (element.name === "objecttag") {
@@ -2858,9 +3146,9 @@ function importPageObjects(
     }
     warnings.push({
       code: "cdxml.object_import_unsupported",
-      message: `Imported unsupported CDXML object "${element.name}" as an unknown compatibility object.`
+      message: `Imported unsupported ${sourceFormat} object "${element.name}" as an unknown compatibility object.`
     });
-    return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+    return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex, sourceFormat));
   };
 
   const importGroup = (groupElement: XmlElementView): { objects: DocumentObject[]; rootIds: string[] } => {
@@ -2885,7 +3173,7 @@ function importPageObjects(
       if (memberRootIds.length > 0) {
         warnings.push({
           code: "cdxml.group_not_preserved",
-          message: `CDXML group${groupElement.attributes.id ? ` ${groupElement.attributes.id}` : ""} has fewer than two placeable members; its contents were imported ungrouped.`
+          message: `${sourceFormat} group${groupElement.attributes.id ? ` ${groupElement.attributes.id}` : ""} has fewer than two placeable members; its contents were imported ungrouped.`
         });
       }
       return { objects: members, rootIds: memberRootIds };
@@ -2919,11 +3207,23 @@ function importPageObjects(
     objects.push(...importElement(element).objects);
   }
   const objectsById = new Map(objects.map(object => [object.id, object]));
-  schemes.forEach((scheme, schemeIndex) => {
-    childElements(scheme, "step").forEach((step, stepIndex) => {
-      const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex, rootsBySourceId, objectsById, warnings);
-      objects.push(reaction);
-    });
+  // Visible export puts standalone steps in standard scheme containers. This supplies no
+  // invented links: the same resolver and source step metadata serve both source forms.
+  schemes.push(...standaloneSteps.map(step => ({ name: "scheme", attributes: {},
+    children: [{ step: step.children, ":@": step.attributes }] })));
+  const sourceStepOrder = new Map(findElements(pageElement.children, "step").map((step, index) => [step.children, index]));
+  const pendingSteps = schemes.flatMap((scheme, schemeIndex) => childElements(scheme, "step")
+    .map((step, stepIndex) => ({ scheme, schemeIndex, step, stepIndex })));
+  pendingSteps.sort((a, b) => sourceStepOrder.get(a.step.children)! - sourceStepOrder.get(b.step.children)!);
+  pendingSteps.forEach(({ scheme, schemeIndex, step, stepIndex }) => {
+    const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
+      rootsBySourceId, objectsById, supersededBySourceId, warnings, sourceFormat);
+    if (reaction) objects.push(reaction);
+    else {
+      warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: step.attributes.id,
+        message: `${sourceFormat} step ${step.attributes.id ?? "(unknown)"} has no resolvable arrow, reactant or product links; preserved as an unknown compatibility object instead of an empty native reaction.` });
+      objects.push(importUnknownCompatibilityObject(step, pageIndex, objectIndex++, sourceFormat));
+    }
   });
   for (const group of bracketGroups) {
     const attachments = childElements(group, "bracketattachment");
@@ -2933,7 +3233,8 @@ function importPageObjects(
       const data = [group.attributes.BracketedObjectIDs ? "atom or object membership" : undefined,
         attachments.some(attachment => childElements(attachment, "crossingbond").length > 0) ? "crossing-bond attachments" : undefined,
         group.attributes.BracketUsage && group.attributes.BracketUsage !== "SRU" ? `bracket usage "${group.attributes.BracketUsage}"` : undefined].filter(Boolean);
-      warnings.push({ code: "cdxml.bracket_group_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported attachment count or bracket references${data.length ? `; the following data is not interpreted: ${data.join(" and ")}` : ""}; the group is preserved as an unknown compatibility object.` });
+      warnings.push({ code: "cdxml.bracket_group_preserved", sourceObjectId: group.attributes.id,
+        message: `${sourceFormat} import: bracket group ${group.attributes.id ?? "(unknown)"} has ${attachments.length} attachments or unsupported bracket references; bracket usage, repeat count, bracket members and crossing bonds are not imported as native group semantics${data.length ? ` (${data.join(" and ")})` : ""}; the group is preserved as an unknown compatibility object and is not written to visible export.` });
       const remaining = [...new Set(pair.filter((object): object is BracketObject => object !== undefined))];
       const memberIds = splitCdxmlIdList(group.attributes.BracketedObjectIDs);
       const members = objects.filter(object => memberIds.includes(object.compatibility?.originalId ?? "") ||
@@ -2949,7 +3250,7 @@ function importPageObjects(
         warnings.push({ code: "document.bracket_partner_missing", sourceObjectId: bracket.id,
           message: `Bracket ${bracket.compatibility?.originalId ?? bracket.id} had no partner; repeat-unit mark removed.` });
       }
-      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
+      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++, sourceFormat));
       continue;
     }
     const brackets = pair as BracketObject[];
@@ -2959,7 +3260,7 @@ function importPageObjects(
     if (compareGeometry(brackets[0], brackets[1]) === 0) {
       warnings.push({ code: "cdxml.bracket_sides_ambiguous",
         message: `Bracket group ${group.attributes.id ?? "(unknown)"} has indistinguishable glyph geometry; imported sides are retained and the group, including its label, remains compatibility data.` });
-      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
+      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++, sourceFormat));
       continue;
     }
     brackets.sort(compareGeometry);
@@ -2969,7 +3270,7 @@ function importPageObjects(
       .flatMap(raw => isRecord(raw) ? [preservedCurveAttributes(raw.attributes).BracketUsage] : []).find(Boolean);
     let bracketUsage: BracketObject["bracketUsage"] = usageName === "SRU" ? "sru" : usageName === "MultipleGroup" ? "multiple" : usageName === undefined ? "generic" : "unknown";
     if (bracketUsage === "unknown") warnings.push({ code: "cdxml.bracket_usage_unknown",
-      message: `CDXML bracket group ${group.attributes.id ?? "(unknown)"} has unknown BracketUsage "${usageName}"; no multiplier is interpreted.` });
+      message: `${sourceFormat} bracket group ${group.attributes.id ?? "(unknown)"} has unknown BracketUsage "${usageName}"; no multiplier is interpreted.` });
     const additional = Object.keys(group.attributes).filter(key => !["id", "BracketUsage", "BracketedObjectIDs", "SRULabel", "RepeatCount"].includes(key));
     if (additional.length || group.children.some(child => { const element = elementView(child); return element && element.name !== "bracketattachment"; })) {
       warnings.push({ code: "cdxml.bracket_data_preserved",
@@ -2994,7 +3295,7 @@ function importPageObjects(
     });
     const atomMemberObjects = [...new Set(memberRecords.flatMap(record => record.atomId && record.objectId ? [record.objectId] : []))];
     if (containedObjects.some(object => !object)) warnings.push({ code: "cdxml.bracket_atom_membership_preserved",
-      message: `CDXML bracket group ${group.attributes.id} has atom-level or unresolved BracketedObjectIDs; source membership is preserved in compatibility data, not asserted as whole-molecule membership.` });
+      message: `${sourceFormat} bracket group ${group.attributes.id} has atom-level or unresolved BracketedObjectIDs; source membership is preserved in compatibility data, not asserted as whole-molecule membership.` });
     const pairId = `cdxml_bracket_pair_${pageIndex + 1}_${objectIndex++}`;
     for (const bracket of brackets) {
       bracket.pairId = pairId;
@@ -3024,7 +3325,7 @@ function importPageObjects(
         ...(invalidRepeatCount ? { cdxmlBracketInvalidRepeatCount: countText } : {}) });
     }
     if (bracketUsage === "sru" && group.attributes.SRULabel === undefined) warnings.push({ code: "cdxml.repeat_label_unassociated",
-      message: `CDXML import: repeat-unit label association for bracket group ${group.attributes.id ?? "(unknown)"} is not interpreted; separate label text is retained independently.` });
+      message: `${sourceFormat} import: repeat-unit label association for bracket group ${group.attributes.id ?? "(unknown)"} is not interpreted; separate label text is retained independently.` });
   }
 
   return {
@@ -3147,6 +3448,13 @@ interface ExpandedCdxmlNodes {
   attachmentByCdxmlId: Map<string, string>;
   /** Abbreviation node id -> the label to keep when the nested fragment could not be expanded. */
   literalLabelByCdxmlId: Map<string, string>;
+  abbreviations: {
+    source: XmlElementView;
+    atomCdxmlIds: string[];
+    attachmentCdxmlId?: string;
+    expanded: boolean;
+    depth: number;
+  }[];
 }
 
 function expandCdxmlAbbreviationNodes(
@@ -3159,6 +3467,7 @@ function expandCdxmlAbbreviationNodes(
   const expandedBonds: XmlElementView[] = [...bondElements];
   const attachmentByCdxmlId = new Map<string, string>();
   const literalLabelByCdxmlId = new Map<string, string>();
+  const abbreviations: ExpandedCdxmlNodes["abbreviations"] = [];
 
   for (const atomElement of atomElements) {
     const nested = childElements(atomElement, "fragment")[0];
@@ -3168,15 +3477,24 @@ function expandCdxmlAbbreviationNodes(
       // A standard nickname/formula node need not carry an expansion. Its text belongs to this
       // atom, not to another carbon or a standalone text object. Never infer an element from the
       // absent Element attribute (whose default would otherwise be carbon).
-      if (["Nickname", "Fragment", "Formula", "GenericNickname", "Monomer", "4", "5", "6", "7", "14"].includes(atomElement.attributes.NodeType)) {
+      const statedElement = atomElement.attributes.Element === undefined ? undefined : elementFromCdxmlAtom(atomElement.attributes.Element);
+      const unspecifiedLabel = ["Unspecified", "0"].includes(atomElement.attributes.NodeType) &&
+        (statedElement === undefined || atomicNumberForElementSymbol(statedElement) === undefined) && cdxmlAtomLabelText(atomElement);
+      if (["Nickname", "Fragment", "Formula", "GenericNickname", "Monomer", "4", "5", "6", "7", "14"].includes(atomElement.attributes.NodeType) || unspecifiedLabel) {
         const label = cdxmlAtomLabelText(atomElement);
         literalLabelByCdxmlId.set(nodeId, label ?? "*");
+        // Keep the source kind, charge, annotations and label runs for visible interchange.
+        abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
         warnings.push({
           code: "cdxml.abbreviation_not_expanded",
+          sourceObjectId: nodeId,
           message: label
-            ? `Kept the abbreviation "${label}" as a literal label with its bonds: it carries no expanded atom graph.`
+            ? `Kept abbreviation node ${nodeId} ("${label}") as a literal label with its bonds: it carries no expanded atom graph.`
             : `Kept abbreviation node ${nodeId} as an unknown atom (*): it carries neither label text nor an expanded atom graph.`
         });
+      } else if (depth > 0) {
+        // Live atoms inside rebuilt superatoms need the same attribute merge as literal nodes.
+        abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
       }
       continue;
     }
@@ -3185,10 +3503,10 @@ function expandCdxmlAbbreviationNodes(
     const nestedAtoms = childElements(nested, "n");
     const nestedBonds = childElements(nested, "b");
     const connectionPointIds = new Set(nestedAtoms
-      .filter((nestedAtom) => nestedAtom.attributes.NodeType === "ExternalConnectionPoint")
+      .filter((nestedAtom) => ["ExternalConnectionPoint", "12"].includes(nestedAtom.attributes.NodeType))
       .map((nestedAtom) => nestedAtom.attributes.id ?? ""));
     const bodyAtoms = nestedAtoms.filter((nestedAtom) =>
-      nestedAtom.attributes.NodeType !== "ExternalConnectionPoint");
+      !["ExternalConnectionPoint", "12"].includes(nestedAtom.attributes.NodeType));
     const touchesConnectionPoint = (bondElement: XmlElementView) =>
       connectionPointIds.has(bondElement.attributes.B ?? "") ||
       connectionPointIds.has(bondElement.attributes.E ?? "");
@@ -3199,32 +3517,20 @@ function expandCdxmlAbbreviationNodes(
         : bondElement.attributes.B)
       .find((id): id is string => id !== undefined);
 
-    const outerBondCount = bondElements.filter((bondElement) =>
-      bondElement.attributes.B === nodeId || bondElement.attributes.E === nodeId).length;
-    const charge = parseInteger(atomElement.attributes.Charge) ?? 0;
-    let notExpandableReason: string | undefined;
-    if (depth > 4) {
-      notExpandableReason = "its nesting exceeds the supported abbreviation depth.";
-    } else if (charge !== 0) {
-      notExpandableReason = `its charge ${charge} cannot be assigned to a nested atom without guessing.`;
-    } else if (bodyAtoms.length === 0) {
-      notExpandableReason = "it carries no atoms to expand.";
-    } else if (connectionPointIds.size > 1) {
-      notExpandableReason = `it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`;
-    } else if (attachment !== undefined && !bodyAtoms.some((atom) => atom.attributes.id === attachment)) {
-      notExpandableReason = "its attachment bond does not reach a body atom.";
-    } else if (outerBondCount > 0 && attachment === undefined) {
-      notExpandableReason = "it has no attachment bond connecting its body to the outer drawing.";
-    }
+    const notExpandableReason = abbreviationExpansionIssue(atomElement.attributes,
+      childElements(atomElement, "fragment").map(fragment => ({ atoms: childElements(fragment, "n").map(n => n.attributes), bonds: childElements(fragment, "b").map(b => b.attributes) })),
+      bondElements.map(bond => bond.attributes), depth);
     if (notExpandableReason) {
       // An Element naming nothing is warned about where the atom is imported, not here.
       const element = elementFromCdxmlAtom(atomElement.attributes.Element) ?? "*";
       const keptAs = label ? "a label" : element === "C" ? "a carbon atom" : `an atom (${element})`;
       warnings.push({
         code: "cdxml.abbreviation_not_expanded",
-        message: `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as ${keptAs}: ${notExpandableReason}`
+        sourceObjectId: nodeId,
+        message: `Kept abbreviation node ${nodeId}${label ? ` ("${label}")` : ""} as ${keptAs}: ${notExpandableReason}`
       });
       expandedAtoms.push(atomElement);
+      abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
       if (label) {
         literalLabelByCdxmlId.set(nodeId, label);
       }
@@ -3242,6 +3548,12 @@ function expandCdxmlAbbreviationNodes(
     expandedBonds.push(...inner.bondElements);
     inner.attachmentByCdxmlId.forEach((value, key) => attachmentByCdxmlId.set(key, value));
     inner.literalLabelByCdxmlId.forEach((value, key) => literalLabelByCdxmlId.set(key, value));
+    const attachmentCdxmlId = attachment === undefined ? undefined : inner.attachmentByCdxmlId.get(attachment) ?? attachment;
+    if (!label) warnings.push({ code: "cdxml.abbreviation_label_missing",
+      message: `Expanded abbreviation node ${nodeId} has no label text; its source node is retained as compatibility data.` });
+    abbreviations.push({ source: atomElement, expanded: true, depth,
+      atomCdxmlIds: inner.atomElements.map(atom => atom.attributes.id ?? ""), attachmentCdxmlId });
+    abbreviations.push(...inner.abbreviations);
     if (attachment !== undefined) {
       attachmentByCdxmlId.set(nodeId, inner.attachmentByCdxmlId.get(attachment) ?? attachment);
     }
@@ -3251,7 +3563,8 @@ function expandCdxmlAbbreviationNodes(
     atomElements: expandedAtoms,
     bondElements: expandedBonds,
     attachmentByCdxmlId,
-    literalLabelByCdxmlId
+    literalLabelByCdxmlId,
+    abbreviations
   };
 }
 
@@ -3278,13 +3591,13 @@ function importFragment(
   const bondElements = expansion.bondElements;
   const unsupportedRadical = atomElements.find((atom) => atom.attributes.Radical !== undefined && !["None", "0", "Doublet", "2", "Triplet", "3"].includes(atom.attributes.Radical));
   if (unsupportedRadical) {
-    warnings.push({ code: "cdxml.atom_radical_unsupported", message: `CDXML import failed: Radical="${unsupportedRadical.attributes.Radical}" on atom ${unsupportedRadical.attributes.id ?? "<unnamed>"} cannot be represented without changing its electron state; fragment skipped.` });
+    warnings.push({ code: "cdxml.atom_radical_unsupported", message: `${context.sourceFormat} import failed: Radical="${unsupportedRadical.attributes.Radical}" on atom ${unsupportedRadical.attributes.id ?? "<unnamed>"} cannot be represented without changing its electron state; fragment skipped.` });
     return undefined;
   }
   if (atomElements.length === 0) {
     warnings.push({
       code: "cdxml.empty_fragment_skipped",
-      message: "Skipped a CDXML fragment without atoms."
+      message: `Skipped a ${context.sourceFormat} fragment without atoms.`
     });
     return undefined;
   }
@@ -3319,7 +3632,7 @@ function importFragment(
       if (literalLabel === undefined) {
         warnings.push({
           code: "cdxml.atom_element_unknown",
-          message: `CDXML atom ${cdxmlId} has Element="${atomElement.attributes.Element}", which names no element; imported as an unknown atom (*).`,
+          message: `${context.sourceFormat} atom ${cdxmlId} has Element="${atomElement.attributes.Element}", which names no element; imported as an unknown atom (*).`,
           sourceObjectId: objectId,
           atomIds: [atomId]
         });
@@ -3334,27 +3647,13 @@ function importFragment(
         ...(geometry ? { geometry } : {})
       };
     }
-    // A label written as text in Element ("Ar", "Ts" — how a bonded aryl or tosyl label is exported)
-    // is a typed label, so it keeps the group meaning a bonded one carries. A numeric Element is an
-    // element of the structure and stays one: Element="89" bonded to Cl is actinium, never acetyl.
-    const rawElement = atomElement.attributes.Element?.trim();
-    const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
-      bondedElementLabelMeaning(element) !== undefined;
-    return normalizeAtomIsotope({
+    return {
       id: atomId,
-      element: literalLabel ?? element,
-      ...(atomElement.attributes.Isotope === undefined ? {}
-        : { isotope: Number(atomElement.attributes.Isotope) }),
+      ...cdxmlAtomChemistry(atomElement.attributes, literalLabel),
       x: point.x,
       y: point.y,
-      formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
-      ...(["Doublet", "2"].includes(atomElement.attributes.Radical) ? { markRadicals: 1 }
-        : ["Triplet", "3"].includes(atomElement.attributes.Radical) ? { markRadicals: 2 } : {}),
-      // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
-      // no implicit hydrogens are invented for a label like "SO3".
-      ...(literalLabel || textLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
-    });
+    };
   });
   // A bond drawn to an abbreviation now lands on the atom its connection point marked — the sulfur
   // of an expanded SO3, not the vanished node.
@@ -3374,7 +3673,7 @@ function importFragment(
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
     const color = colorForCdxmlIndex(bondElement.attributes.color ?? fragment.attributes.color, context.colorTable);
     if (color) bondColors[bondId] = color;
-    const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId);
+    const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId, context.sourceFormat);
     if (order === "unknown" && bondElement.attributes.Order !== undefined) {
       cdxmlUnknownBondOrdersByBondId[bondId] = bondElement.attributes.Order;
     }
@@ -3414,7 +3713,7 @@ function importFragment(
       if (bondDisplay && bondDisplay.bondStyle !== "dashed") {
         warnings.push({
           code: "cdxml.bond_display_unsupported",
-          message: `CDXML dative bond display "${bondElement.attributes.Display}" was replaced by the dashed style ChemDraft draws dative bonds with.`,
+          message: `${context.sourceFormat} dative bond display "${bondElement.attributes.Display}" was replaced by the dashed style ChemDraft draws dative bonds with.`,
           sourceObjectId: objectId,
           bondIds: [bondId]
         });
@@ -3439,7 +3738,7 @@ function importFragment(
     } else if (bondElement.attributes.Display) {
       warnings.push({
         code: "cdxml.bond_display_unsupported",
-        message: `CDXML bond display "${bondElement.attributes.Display}" is not represented in the current ChemDraft molecule schema.`,
+        message: `${context.sourceFormat} bond display "${bondElement.attributes.Display}" is not represented in the current ChemDraft molecule schema.`,
         sourceObjectId: objectId,
         bondIds: [bondId]
       });
@@ -3452,7 +3751,7 @@ function importFragment(
         if (value) {
           warnings.push({
             code: "cdxml.bond_stereo_attribute_unsupported",
-            message: `CDXML double bond ${cdxmlBondId} attribute ${attribute}="${value}" is not mapped to native stereo. Display="Wavy" marks E/Z-unspecified bonds; otherwise E/Z may be derived from coordinates.`,
+            message: `${context.sourceFormat} double bond ${cdxmlBondId} attribute ${attribute}="${value}" is not mapped to native stereo. Display="Wavy" marks E/Z-unspecified bonds; otherwise E/Z may be derived from coordinates.`,
             sourceObjectId: objectId,
             bondIds: [bondId]
           });
@@ -3505,18 +3804,23 @@ function importFragment(
     }
     warnings.push({
       code: "cdxml.bond_endpoints_invalid",
-      message: `Skipped ${bonds.length - joinedBonds.length} CDXML bond${bonds.length - joinedBonds.length === 1 ? "" : "s"} that did not join two different atoms of the fragment.`,
+      message: `Skipped ${bonds.length - joinedBonds.length} ${context.sourceFormat} bond${bonds.length - joinedBonds.length === 1 ? "" : "s"} that did not join two different atoms of the fragment.`,
       sourceObjectId: objectId
     });
   }
   const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds);
   // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
-  // can, so it is kept on exactly those atoms for the Kekulé resolution to honour.
+  // can, so it is kept for the Kekulé resolution to honour. Literal labels also retain an explicit
+  // count: their text supplies no implicit hydrogens and cannot replace the source constraint.
+  // Snapshot atoms use the same policy even when nonliteral: only a source-fixed count becomes
+  // a constraint. An absent attribute never freezes an ordinary atom's engine-derived H count.
   const aromaticAtomIds = new Set(normalizedBonds.flatMap((bond) =>
     bond.order === "aromatic" ? [bond.fromAtomId, bond.toAtomId] : []));
+  const snapshotAtomIds = new Set(expansion.abbreviations.filter(item => !item.expanded)
+    .flatMap(item => item.atomCdxmlIds.map(id => atomIdByCdxmlId.get(id))));
   for (const atom of atoms) {
     const stated = statedHydrogensByAtomId.get(atom.id);
-    if (stated !== undefined && aromaticAtomIds.has(atom.id)) {
+    if (stated !== undefined && (atom.labelLiteral || aromaticAtomIds.has(atom.id) || snapshotAtomIds.has(atom.id))) {
       atom.hydrogenCount = stated;
     }
   }
@@ -3536,13 +3840,50 @@ function importFragment(
   const bounds = boundsForAtoms(atoms);
   const compatibilityWarning: CompatibilityWarning = {
     code: "cdxml.structure_string_not_derived",
-    message: "Imported CDXML atom/bond graph without deriving a canonical structure string.",
+    message: `Imported ${context.sourceFormat} atom/bond graph without deriving a canonical structure string.`,
     objectId
   };
   warnings.push({
     code: compatibilityWarning.code,
     message: compatibilityWarning.message,
     sourceObjectId: objectId
+  });
+
+  // The expanded graph remains authoritative for every chemistry consumer, including those that
+  // take only atoms/bonds. Superatoms identify a labelled subset of that graph, never extra atoms.
+  let superatomIndex = 0;
+  const abbreviationRecords = expansion.abbreviations.map(item => ({
+    atomIds: item.atomCdxmlIds.flatMap(id => atomIdByCdxmlId.get(id) ?? []),
+    expanded: item.expanded,
+    depth: item.depth,
+    ...(!item.expanded ? { nativeState: cdxmlAtomNativeState(
+      atoms.find(atom => atom.id === atomIdByCdxmlId.get(item.atomCdxmlIds[0]))!, atomStereochemistry) } : {}),
+    // Superatom metadata has no ID. Retain its original array index as the source association,
+    // independently of membership (nested groups can contain exactly the same live atoms).
+    ...(item.expanded && cdxmlAtomLabelText(item.source) ? { superatomIndex: superatomIndex++ } : {}),
+    // The codec tree retains character-data segments between children in source order.
+    source: cdxElementFromOrderedTree([{ CDXML: [{ n: item.source.children, ":@": item.source.attributes }] }]).kids[0]
+  }));
+  const cdxmlAbbreviationAttachmentsByBondId = Object.fromEntries(bonds.flatMap((bond, index) => {
+    const attrs = bondElements[index].attributes;
+    return attrs.BeginAttach !== undefined || attrs.EndAttach !== undefined
+      ? [[bond.id, { fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+        ...(attrs.BeginAttach !== undefined ? { BeginAttach: attrs.BeginAttach } : {}),
+        ...(attrs.EndAttach !== undefined ? { EndAttach: attrs.EndAttach } : {}) }]] : [];
+  }));
+  const superatoms: MoleculeObject["superatoms"] = expansion.abbreviations.flatMap((item, index) => {
+    const label = cdxmlAtomLabelText(item.source);
+    if (!item.expanded || !label) return [];
+    const atomIds = abbreviationRecords[index].atomIds;
+    const members = new Set(atomIds);
+    const attachmentAtomId = item.attachmentCdxmlId && atomIdByCdxmlId.get(item.attachmentCdxmlId);
+    const body: MoleculeObject = { id: objectId, type: "molecule", ...bounds, rotation: 0, style: {},
+      structure: "", structureFormat: "unknown", superatoms: [], rGroups: [],
+      atoms: atoms.filter(atom => members.has(atom.id)),
+      bonds: normalizedBonds.filter(bond => members.has(bond.fromAtomId) && members.has(bond.toAtomId)) };
+    return [{ label, atomIds, expandedStructureFormat: "molfile-v3000" as const,
+      expandedStructure: moleculeToMolfileV3000(body, { kekuleBondOrders: new Map() }).contents,
+      attachmentPoints: attachmentAtomId ? [{ kind: "atom" as const, objectId, atomId: attachmentAtomId }] : [], warnings: [] }];
   });
 
   return {
@@ -3562,13 +3903,22 @@ function importFragment(
     ...(chemistry ? { chemistry } : {}),
     atoms,
     bonds: normalizedBonds,
-    superatoms: [],
-    rGroups: [],
+    superatoms,
+    rGroups: atoms.filter((atom) => atom.element.startsWith("R") && isGenericAtomLabel(atom.element))
+      .map((atom) => ({
+        label: atom.element,
+        // A visible nickname supplies a label, without asserting display-only or query semantics.
+        querySemantics: "unknown",
+        attachmentPoints: [{ kind: "atom", objectId, atomId: atom.id }],
+        warnings: []
+      })),
     compatibility: {
       sourceFormat: "cdxml",
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
       unknown: {
+        ...(abbreviationRecords.length ? { cdxmlAbbreviations: abbreviationRecords } : {}),
+        ...(Object.keys(cdxmlAbbreviationAttachmentsByBondId).length ? { cdxmlAbbreviationAttachmentsByBondId } : {}),
         ...(context.preserveReactionIds ? {
           cdxmlAtomIdsByAtomId: Object.fromEntries([...atomIdByCdxmlId].map(([sourceId, atomId]) => [atomId, sourceId])),
           cdxmlBondIdsByBondId: Object.fromEntries(cdxmlIdByBondId)
@@ -3903,7 +4253,7 @@ function resolveImportedCrossingOverrides(
     if (!sourceRef) {
       warnings.push(warning(
         "cdxml.crossing_bond_unresolved",
-        `CDXML CrossingBonds source "${hint.sourceBondId}" did not resolve to an imported native bond.`
+        `${context.sourceFormat} CrossingBonds source "${hint.sourceBondId}" did not resolve to an imported native bond.`
       ));
       return;
     }
@@ -3913,7 +4263,7 @@ function resolveImportedCrossingOverrides(
       if (!partnerRef) {
         warnings.push(warning(
           "cdxml.crossing_bond_unresolved",
-          `CDXML CrossingBonds target "${partnerBondId}" did not resolve to an imported native bond.`
+          `${context.sourceFormat} CrossingBonds target "${partnerBondId}" did not resolve to an imported native bond.`
         ));
         return;
       }
@@ -3978,7 +4328,7 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
       if (plain) spans.push({ text: plain, script: "normal", style: {} });
     }
   }
-  return {
+  const object: TextObject = {
     id: `cdxml_text_${pageIndex + 1}_${objectIndex}`,
     type: "text",
     x: point.x,
@@ -3993,9 +4343,15 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
       sourceFormat: "cdxml",
       originalId: textElement.attributes.id,
       warnings: [],
-      unknown: {}
+      unknown: {
+        cdxmlTextElement: serializeVisibleTree([{ t: textElement.children, ":@": textElement.attributes }]),
+        cdxmlTextFontTable: context.fonts,
+        cdxmlTextColorTable: Object.fromEntries(context.colorTable.colorByIndex)
+      }
     }
   };
+  object.compatibility!.unknown.cdxmlTextNativeState = textSourceState(object);
+  return object;
 }
 
 function importGraphic(
@@ -4004,15 +4360,20 @@ function importGraphic(
   objectIndex: number,
   context: ImportPageContext
 ): GraphicObject | ArrowObject | BracketObject | UnknownCompatibilityObject | undefined {
+  for (const caption of findElements(element.children, "t")) {
+    context.warnings.push({ code: "cdxml.graphic_text_not_imported", sourceObjectId: element.attributes.id,
+      message: `${context.sourceFormat} text ${caption.attributes.id ?? "<unnamed>"} inside graphic ${element.attributes.id ?? "<unnamed>"} cannot be represented as a native graphic caption; it was not imported as editable text.` });
+  }
   if (element.attributes.SupersededBy) {
+    context.warnings.push({ code: "cdxml.graphic_superseded", message: `${context.sourceFormat} graphic ${element.attributes.id ?? "<unnamed>"} (${element.attributes.GraphicType ?? "unspecified"}) was skipped because it is superseded by ${element.attributes.SupersededBy}.` });
     return undefined;
   }
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Bracket" && !["Square", "Round"].includes(element.attributes.BracketType)) {
-    context.warnings.push({ code: "cdxml.bracket_type_preserved",
-      message: `Unsupported CDXML bracket type "${element.attributes.BracketType ?? "unspecified"}" was preserved as an unknown compatibility object.` });
-    return importUnknownCompatibilityObject(element, pageIndex, objectIndex);
+    context.warnings.push({ code: "cdxml.bracket_type_preserved", sourceObjectId: element.attributes.id,
+      message: `${context.sourceFormat} bracket ${element.attributes.id ?? "(unknown)"} has unsupported bracket kind "${element.attributes.BracketType ?? "unspecified"}"; it is not imported as a native glyph and is not written to visible export. Its source remains an unknown compatibility object.` });
+    return importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat);
   }
   if (element.attributes.GraphicType === "Bracket" && ["Square", "Round"].includes(element.attributes.BracketType)) {
     if (hasUnmappedBracketStyle(element.attributes)) {
@@ -4029,7 +4390,20 @@ function importGraphic(
           ...(element.attributes.color !== undefined ? { cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) } : {}),
           cdxmlBracketGeometry: JSON.stringify([box.x, box.y, box.width, box.height, 0, element.attributes.BracketType === "Round" ? "round" : "square", "open"]) } } };
   }
-  if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
+  const separateHeads = cdxmlArrowMarkers(element);
+  const noHead = isCdxmlNoHead(element.attributes.ArrowType);
+  if (element.attributes.GraphicType === "Line" &&
+      (!noHead || separateHeads.markerStart || separateHeads.markerEnd)) {
+    // Both head encodings share the line-style warning before either import path returns.
+    const lineType = element.attributes.LineType;
+    if (lineType !== undefined && !["solid", "dashed", "bold", "wavy"].includes(normalizedCdxmlToken(lineType))) {
+      context.warnings.push({ code: "cdxml.arrow_line_type_approximation", sourceObjectId: element.attributes.id,
+        message: `${context.sourceFormat} arrow ${element.attributes.id ?? "(unknown)"} has unmapped LineType="${lineType}"; the arrowhead and reaction links are imported, while its line style is approximated and the source LineType is retained in compatibility data and visible export.` });
+    }
+    if (noHead) {
+      // Binary line graphics may use the same head/tail properties as standalone arrows.
+      return importArrowGraphic(element, pageIndex, objectIndex, context);
+    }
     // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
     // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
     // ArrowType="FullHead" with nothing said. Native fishhooks are one-sided but not
@@ -4037,10 +4411,10 @@ function importGraphic(
     if (normalizedCdxmlToken(element.attributes.ArrowType) === "halfhead") {
       return importHalfHeadArrowAsFishhook(element, pageIndex, objectIndex, context);
     }
-    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
+    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType!);
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
-    // size), tagged so a later export re-emits them as reaction arrows. Equilibrium, retrosynthesis,
-    // and unknown stay the legacy `reaction-arrow` object until they're migrated in a later pass.
+    // size), tagged so a later export re-emits them as reaction arrows. Only unknown kinds keep
+    // the legacy `reaction-arrow` representation.
     if (arrowKind === "forward" || arrowKind === "resonance" || arrowKind === "equilibrium" || arrowKind === "retrosynthesis") {
       return importReactionArrowAsArtArrow(element, pageIndex, objectIndex, context, arrowKind);
     }
@@ -4211,8 +4585,8 @@ function importCurveGraphic(
 ): DocumentObject {
   const nodes = curveNodesFromCdxml(element.attributes.CurvePoints);
   if (!nodes) {
-    const object = importUnknownCompatibilityObject(element, pageIndex, objectIndex);
-    const message = `CDXML curve "${element.attributes.id ?? object.id}" has invalid or unsupported CurvePoints; the original curve is preserved for CDXML export.`;
+    const object = importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat);
+    const message = `${context.sourceFormat} curve "${element.attributes.id ?? object.id}" has invalid or unsupported CurvePoints; the original curve is preserved for ${context.sourceFormat} export.`;
     context.warnings.push({ code: "cdxml.curve_points_preserved", message, sourceObjectId: object.id });
     return { ...object, compatibility: { ...object.compatibility!, unknown: {
       cdxmlCurveAttributes: element.attributes,
@@ -4231,28 +4605,28 @@ function importCurveGraphic(
     context.warnings.push({ code, message, sourceObjectId: id });
   };
   if (hasHead && ["HeadSize", "ArrowheadCenterSize", "ArrowheadWidth"].some(name => element.attributes[name] !== undefined)) {
-    note("cdxml.curve_head_size_approximation", `CDXML curve "${element.attributes.id ?? id}" uses native default arrowhead dimensions; the source HeadSize, ArrowheadCenterSize and ArrowheadWidth attributes are retained exactly for CDXML export.`);
+    note("cdxml.curve_head_size_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" uses native default arrowhead dimensions; the source HeadSize, ArrowheadCenterSize and ArrowheadWidth attributes are retained exactly for ${context.sourceFormat} export.`);
   }
   if ([element.attributes.ArrowheadHead, element.attributes.ArrowheadTail].some(head =>
     ["halfleft", "halfright"].includes(normalizedCdxmlToken(head)))) {
-    note("cdxml.curve_half_head_handedness_approximation", `CDXML curve "${element.attributes.id ?? id}" uses the native fishhook orientation; the source half-head handedness is retained exactly for CDXML export.`);
+    note("cdxml.curve_half_head_handedness_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" uses the native fishhook orientation; the source half-head handedness is retained exactly for ${context.sourceFormat} export.`);
   }
   if (normalizedCdxmlToken(element.attributes.ArrowheadType) === "hollow" && hasHead) {
-    note("cdxml.curve_hollow_head_approximation", `CDXML curve "${element.attributes.id ?? id}" uses an open native arrowhead for the hollow head; its original ArrowheadType is retained for CDXML export.`);
+    note("cdxml.curve_hollow_head_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" uses an open native arrowhead for the hollow head; its original ArrowheadType is retained for ${context.sourceFormat} export.`);
   }
   if ([element.attributes.ArrowheadHead, element.attributes.ArrowheadTail].some(head =>
     !["", "none", "unspecified", "full", "half", "halfleft", "halfright", "angle"].includes(normalizedCdxmlToken(head))) ||
     (hasHead && !["", "solid", "full", "half", "angle", "hollow"].includes(normalizedCdxmlToken(element.attributes.ArrowheadType)))) {
-    note("cdxml.curve_head_approximation", `CDXML curve "${element.attributes.id ?? id}" has unrecognized arrowhead attributes; its native head is approximate and the original attributes are retained for CDXML export.`);
+    note("cdxml.curve_head_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" has unrecognized arrowhead attributes; its native head is approximate and the original attributes are retained for ${context.sourceFormat} export.`);
   }
   const lineType = normalizedCdxmlToken(element.attributes.LineType);
   if (lineType && !["solid", "dashed", "bold"].includes(lineType)) {
-    note("cdxml.curve_line_type_approximation", `CDXML curve "${element.attributes.id ?? id}" has LineType="${element.attributes.LineType}"; the Bezier is drawn as a solid native stroke and the source LineType is retained for CDXML export.`);
+    note("cdxml.curve_line_type_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" has LineType="${element.attributes.LineType}"; the Bezier is drawn as a solid native stroke and the source LineType is retained for ${context.sourceFormat} export.`);
   }
   const effectiveElement = { ...element, attributes: { ...context.curveLineDefaults, ...element.attributes } };
   if (["LineWidth", "BoldWidth"].some(name => effectiveElement.attributes[name] !== undefined &&
     !((parseNumber(effectiveElement.attributes[name]) ?? 0) > 0))) {
-    note("cdxml.curve_line_width_approximation", `CDXML curve "${element.attributes.id ?? id}" has an invalid line width; a native default is used and the source width attributes are retained for CDXML export.`);
+    note("cdxml.curve_line_width_approximation", `${context.sourceFormat} curve "${element.attributes.id ?? id}" has an invalid line width; a native default is used and the source width attributes are retained for ${context.sourceFormat} export.`);
   }
   return {
     id, type: "graphic", ...box, rotation: 0,
@@ -4380,7 +4754,7 @@ function importShapeGraphic(
     : element.attributes.GraphicType;
   const linePoints = cdxmlLinePointsForShape(element);
   const box = graphicBoundsForCdxmlShape(element, type, linePoints);
-  const style = graphicStyleFromCdxmlShape(element, context.colorTable);
+  const style = graphicStyleFromCdxmlCurve(element, context.colorTable);
   const data = graphicDataFromCdxmlShape(element, type, linePoints, box);
   const graphicKind = graphicKindFromCdxmlShape(type, data);
 
@@ -4402,11 +4776,14 @@ function importShapeGraphic(
       unknown: {
         cdxmlElementName: elementName,
         cdxmlGraphicType: type,
-        ...(graphicKind === "unknown" ? { cdxmlGraphicAttributes: { ...element.attributes },
-          cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex) } : {}),
+        ...(elementName === "graphic" && type === "Line" && element.attributes.ArrowType !== undefined && isCdxmlNoHead(element.attributes.ArrowType)
+          ? { cdxmlArrowType: element.attributes.ArrowType } : {}),
+        ...((graphicKind === "unknown" || graphicKind === "ellipse") && elementName === "graphic" ? { cdxmlGraphicAttributes: { ...element.attributes },
+          cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex),
+          ...(graphicKind === "ellipse" ? { cdxmlGraphicStyle: { ...style } } : {}) } : {}),
         ...(element.attributes.OvalType ? { cdxmlOvalType: element.attributes.OvalType } : {}),
         ...(element.attributes.RectangleType ? { cdxmlRectangleType: element.attributes.RectangleType } : {}),
-        ...(element.attributes.LineType ? { cdxmlLineType: element.attributes.LineType } : {}),
+        ...(element.attributes.LineType !== undefined ? { cdxmlLineType: element.attributes.LineType } : {}),
         ...(element.attributes.AngularSize ? { cdxmlAngularSize: element.attributes.AngularSize } : {}),
         ...(element.attributes.CornerRadius ? { cdxmlCornerRadius: element.attributes.CornerRadius } : {}),
         ...(element.attributes.ShadowSize ? { cdxmlShadowSize: element.attributes.ShadowSize } : {}),
@@ -4585,6 +4962,10 @@ function normalizedCdxmlToken(value: string | undefined): string {
   return value?.replace(/\s+/g, "").toLowerCase() ?? "";
 }
 
+function isCdxmlNoHead(value: string | undefined): boolean {
+  return ["", "nohead", "none", "unspecified", "0"].includes(normalizedCdxmlToken(value));
+}
+
 function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
   const radius = parseNumber(value);
   if (radius === undefined) {
@@ -4618,7 +4999,7 @@ function unionObjectBounds(
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): UnknownCompatibilityObject {
+function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number, sourceFormat: "CDXML" | "CDX"): UnknownCompatibilityObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
     type: "unknown-compatibility-object",
@@ -4630,7 +5011,7 @@ function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: nu
     style: {},
     sourceFormat: "cdxml",
     sourceObjectType: element.name,
-    warning: `Unsupported CDXML object "${element.name}" was preserved as an unknown compatibility object.`,
+    warning: `Unsupported ${sourceFormat} object "${element.name}" was preserved as an unknown compatibility object.`,
     raw: element,
     compatibility: {
       sourceFormat: "cdxml",
@@ -4705,7 +5086,7 @@ function withLongAttributeValuesShortened(xml: string): string {
   return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
 }
 
-function parseCdxml(contents: string, parser = xmlParser): OrderedXmlTree {
+function parseCdxml(contents: string, parser = xmlParser, sourceFormat: "CDXML" | "CDX" = "CDXML"): OrderedXmlTree {
   const xml = stripByteOrderMark(contents);
   const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
   if (validation !== true) {
@@ -4713,7 +5094,7 @@ function parseCdxml(contents: string, parser = xmlParser): OrderedXmlTree {
   }
   const parsed = parser.parse(xml) as unknown;
   if (!Array.isArray(parsed)) {
-    throw new Error("CDXML parser returned an unexpected document shape.");
+    throw new Error(`${sourceFormat} parser returned an unexpected document shape.`);
   }
   return parsed as OrderedXmlTree;
 }
@@ -5080,20 +5461,21 @@ function moleculeBondOrderFromCdxml(
   order: string | undefined,
   warnings: CompatibilityConversionWarning[],
   sourceObjectId: string,
-  bondId: string
+  bondId: string,
+  sourceFormat: "CDXML" | "CDX"
 ): MoleculeBond["order"] {
   const nativeOrder = nativeBondOrderFromCdxml(order);
   if (nativeOrder === "aromatic") {
     warnings.push({
       code: "cdxml.aromatic_bond_import_approximation",
-      message: "CDXML aromatic/delocalised order was preserved as native aromatic, including outside rings; no ring aromaticity or Kekule structure was inferred.",
+      message: `${sourceFormat} aromatic/delocalised order was preserved as native aromatic, including outside rings; no ring aromaticity or Kekule structure was inferred.`,
       sourceObjectId,
       bondIds: [bondId]
     });
   } else if (nativeOrder === "unknown") {
     warnings.push({
       code: "cdxml.bond_order_import_unsupported",
-      message: `Unsupported CDXML bond order "${order}" was imported as unknown; the original order value is preserved for CDXML export.`,
+      message: `Unsupported ${sourceFormat} bond order "${order}" was imported as unknown; the original order value is preserved for ${sourceFormat} export.`,
       sourceObjectId,
       bondIds: [bondId]
     });
@@ -5173,30 +5555,6 @@ function cdxmlAtomStereoAssignment(value: string | undefined): "R" | "S" | undef
 
 function atomicNumberForElement(element: string): number | undefined {
   return atomicNumberForElementSymbol(element);
-}
-
-/**
- * The element or label a CDXML node's `Element` attribute names, or undefined when it names none.
- *
- * CDXML writes an atomic number: plain digits only, so "1e1", "0x1A" and "+6" are not 10, 26 and
- * 6. An absent attribute is carbon, the format's default. Text that is not a number is taken as
- * written, as it always was: an element symbol, D, T, "*", or a label such as "Ph" or "OMe", which
- * this package's exporter writes as text for any atom without an atomic number. What names nothing
- * is a number outside 1–118, anything else number-like (26.5, −6, "+6", "1e1", "0x1A"), or an empty
- * value: the caller imports an unknown atom and warns, never carbon (AGENTS.md §7).
- */
-function elementFromCdxmlAtom(element: string | undefined): string | undefined {
-  if (element === undefined) {
-    return "C";
-  }
-  const trimmed = element.trim();
-  if (/^\d+$/.test(trimmed)) {
-    return elementSymbolForAtomicNumber(Number(trimmed));
-  }
-  if (trimmed === "" || /^[+-]?\.?\d/.test(trimmed)) {
-    return undefined;
-  }
-  return trimmed;
 }
 
 /** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our

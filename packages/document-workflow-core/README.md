@@ -22,6 +22,7 @@ desktop importers did not change.
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
 | `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
+| `cleanupSelection.ts` | Constrained partial-molecule 2D cleanup using injected layout and identity engines; fixed native atom coordinates are retained exactly |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `nativeDocument.ts` | Shared app/agent native opening with an injected JSON/envelope decoder; preserves its warnings, version envelope and unknown-content bookkeeping while recording label bond sides |
@@ -55,6 +56,20 @@ a visual layout builder and does not synthesize reaction semantics from drawings
 - Dependencies limited to `chem-core`, `layout-engine`, `clipboard-adapter` (molfile parsing),
   `template-library` (the abbreviation table: data only), and type-only use of `export-engine`
   and `rdkit-adapter`.
+
+`cleanUpMoleculeSelection2d` expands selected bonds to both endpoints and lays out only selected
+connected parts. Unselected atoms (including metals and centres with more than four bonds) retain
+their exact coordinates and metadata. Bond lengths, including fixed-to-selected attachments, must
+match the molecule's drawing style within 1%, while selected bond angles stay within five degrees of
+the engine's ideal layout. Affected angles at ordinary fixed centres must match within one degree;
+selected fragments sharing a fixed centre use a common orientation. Incompatible fixed attachments
+are refused. Rotated partial edits retain the stored rotation frame so fixed atoms also retain their
+exact rendered positions. Atom-anchored electron marks move by their atom's offset. Isolated selected atoms are
+deliberately left unchanged. Empty/full selections retain the caller's existing command behaviour.
+The caller injects the marked-atom layout engine and final molfile
+identity check; wedges/hashes and bonds stay native, and a stereo change refuses the operation.
+The desktop additionally checks chemical identity after commit normalization, before writing history.
+`cleanUpMoleculeSelections2d` prepares all partial targets atomically for one caller-owned undo entry.
 
 ## What does not
 

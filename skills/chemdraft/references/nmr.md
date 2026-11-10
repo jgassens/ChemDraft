@@ -3,8 +3,9 @@
 NMR (nuclear magnetic resonance) spectra describe nuclei in their chemical
 environments. `nmr` / MCP `predict_nmr` predicts ¹H and ¹³C chemical shifts
 from the separate NMR Shift Predictor plugin. This is the OCL-native
-provider using HOSE-fragment statistics from NMRShiftDB2 experimental
-assignments. HOSE codes describe progressively larger atom neighborhoods.
+provider using HOSE-fragment statistics from NMRShiftDB2
+assignments (the database does not mark which are experimental). HOSE codes
+describe progressively larger atom neighborhoods.
 The shipped provider must not be described as synthetic or fixture-backed.
 
 ## Plugin and trust

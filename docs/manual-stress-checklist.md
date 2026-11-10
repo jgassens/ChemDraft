@@ -1382,6 +1382,19 @@ Windows utility windows have no menu. Native prompts and file choosers use the o
 controls. For Undo use Cmd+Z on macOS or Ctrl+Z on Windows; for Redo use Cmd+Shift+Z on macOS
 or Ctrl+Shift+Z or Ctrl+Y on Windows.
 
+### Clean Up Structure 2D on a selection
+
+Draw a ring with a distorted side chain, select only
+the chain atoms (then repeat by selecting its bonds), and clean up. The chain should have standard
+bond lengths/angles and join the ring at the document bond length; every unselected atom must stay
+where it was placed. Repeat with one ligand on a metal complex, including a metal with more than
+four bonds, and with selected parts in two molecules. The metal and other ligands stay fixed unless
+explicitly selected. Selection remains highlighted; one Undo labelled “Clean Up Selection” restores
+the exact drawing and one Redo restores the result. A lone selected atom is deliberately a no-op.
+Repeat beside wedges/hashes and E/Z double bonds: stereo must remain identical, or cleanup must
+refuse with a stereochemistry message and leave the drawing unchanged. Compare no-selection and
+whole-molecule cleanup with the existing behaviour, and check save/reopen and export.
+
 ### Wavy single bond
 
 - Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.

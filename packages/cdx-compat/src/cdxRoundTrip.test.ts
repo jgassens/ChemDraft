@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
-import { createEmptyDocument, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, type ChemDraftDocument, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { XMLParser } from "fast-xml-parser";
-import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
+import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, CDX_POINT3D_ORDER_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { ChemDraftObjectTags, exportDocumentToCdxml, exportDocumentToCdx, importCdx, legacyVisibleCdxmlHash, openChemDraftPayload, visibleHashForCdxml } from "./index";
 import { sha256Hex } from "./sha256";
 
@@ -18,6 +18,125 @@ describe("interchange graphics and page extent", () => {
   const attributes = (xml: string, name: string) => elements(tree(xml), name).map(element => element.attrs);
   const sourceGraphic = (id: number, subtype: string) => `<graphic id="${id}" GraphicType="Orbital" ${subtype}
     BoundingBox="20 30 80 90" color="4" Z="7" LineWidth="0.75" IgnoreWarnings="yes" attrib4a10="|x|010203"/>`;
+
+  it.each([false, true])("imports a fragment's aromatic ring circle and retains its source attributes (binary=%s)", binary => {
+    const circle = '<graphic id="30" GraphicType="Oval" OvalType="Circle" BoundingBox="35 35 65 65" color="4" LineWidth="1.5" Z="7" attrib4a10="|x|010203"/>';
+    const atoms = [[50,20],[76,35],[76,65],[50,80],[24,65],[24,35]]
+      .map(([x,y], i) => `<n id="${i + 10}" p="${x} ${y}"/>`).join("");
+    const bonds = Array.from({ length: 6 }, (_, i) => `<b id="${i + 20}" B="${i + 10}" E="${(i + 1) % 6 + 10}" Order="1.5"/>`).join("");
+    const source = wrap(`<fragment id="2">${atoms}${bonds}${circle}</fragment>`).replace('<page ',
+      '<colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="0.2" g="0.4" b="0.6"/></colortable><page ');
+    const input = binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source);
+    const document = requireDocument(input);
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule") as MoleculeObject;
+    const graphic = document.pages[0].objects.find(object => object.type === "graphic") as GraphicObject;
+    expect(molecule.bonds.map(bond => bond.order)).toEqual(Array(6).fill("aromatic"));
+    expect(graphic.graphicKind).toBe("ellipse");
+    expect(graphic.style.strokeColor).toBe("#336699");
+    expect(graphic.style.strokeWidth).toBeCloseTo(2);
+    expect(graphic.compatibility?.unknown.cdxmlGraphicAttributes).toMatchObject({ GraphicType: "Oval", OvalType: "Circle", color: "4", LineWidth: "1.5" });
+    expect(graphic.compatibility?.unknown.cdxmlGraphicAttributes).toEqual(attributes(source, "graphic")[0]);
+    const output = binary ? importCdx(exportDocumentToCdx(document).bytes) : openChemDraftPayload(exportDocumentToCdxml(document, { embedNativePayload: false }).contents);
+    const reopened = requireDocument(output).pages[0].objects.find(object => object.type === "graphic") as GraphicObject;
+    expect(reopened.graphicKind).toBe("ellipse");
+    expect(reopened.style.strokeColor).toBe("#336699");
+    expect(reopened.style.strokeWidth).toBeCloseTo(2);
+    expect(reopened.compatibility?.unknown.cdxmlGraphicAttributes).toMatchObject({ GraphicType: "Oval", OvalType: "Circle", color: "4", LineWidth: "1.5" });
+    expect(reopened.compatibility?.unknown.cdxmlGraphicAttributes).toEqual(attributes(source, "graphic")[0]);
+  });
+
+  it("names superseded display graphics when skipping them", () => {
+    const input = openChemDraftPayload(wrap('<graphic id="8" GraphicType="Oval" OvalType="Circle" SupersededBy="9"/><graphic id="9" GraphicType="Oval" BoundingBox="20 20 40 40"/>'));
+    expect(input.warnings.some(warning => warning.code === "cdxml.graphic_superseded" && warning.message.includes("8") && warning.message.includes("Oval"))).toBe(true);
+  });
+
+  describe.each([false, true])("imported ellipse style edits (binary=%s)", binary => {
+    const source = (subtype: string) => wrap(`<graphic id="30" GraphicType="Oval" OvalType="${subtype}"
+      BoundingBox="35 35 65 65" color="4" LineWidth="1.5000" Z="7" IgnoreWarnings="yes" attrib4a10="|x|010203"
+      ${subtype === "Shadowed" ? 'ShadowSize="600"' : ""}/>`);
+    const open = (xml: string) => requireDocument(binary ? importCdx(bytesFromCdxml(xml)) : openChemDraftPayload(xml));
+    const write = (document: ChemDraftDocument) => {
+      const result = binary ? exportDocumentToCdx(document, { embedNativePayload: false })
+        : exportDocumentToCdxml(document, { embedNativePayload: false });
+      const xml = "bytes" in result ? cdxElementToCdxml(readCdx(result.bytes)) : result.contents;
+      return { ...result, xml, attrs: attributes(xml, "graphic")[0], reopened: openChemDraftPayload(xml) };
+    };
+
+    it.each(["Circle", "Filled", "Circle Shaded", "Shadowed"])("keeps unedited %s attributes verbatim", subtype => {
+      const document = open(source(subtype));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      expect(write(document).attrs).toEqual(graphic.compatibility?.unknown.cdxmlGraphicAttributes);
+    });
+
+    it.each([false, true])("writes a circle's edited fill and names its distinct stroke loss (legacy=%s)", legacy => {
+      const document = open(source("Circle"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      if (legacy) delete graphic.compatibility!.unknown.cdxmlGraphicStyle;
+      expect(write(document).attrs).toEqual(graphic.compatibility?.unknown.cdxmlGraphicAttributes);
+      graphic.style.fillMode = "solid";
+      graphic.style.fillColor = "#336699";
+      const result = write(document);
+      expect(result.attrs.OvalType).toBe("Filled");
+      expect(result.attrs).toMatchObject({ Z: "7", IgnoreWarnings: "yes", attrib4a10: "|x|010203" });
+      const reopened = requireDocument(result.reopened).pages[0].objects[0] as GraphicObject;
+      expect(reopened.style).toMatchObject({ fillMode: "solid", fillColor: "#336699", strokeColor: "#336699" });
+      expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.graphic_single_color", sourceObjectId: graphic.id }));
+    });
+
+    it.each(["Filled", "Circle Shaded", "Shadowed"])("removes the source %s fill or effect", subtype => {
+      const document = open(source(subtype));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillColor = "none";
+      delete graphic.style.fillMode;
+      delete graphic.style.effect;
+      const result = write(document);
+      expect(result.attrs.OvalType).toBeUndefined();
+      expect(result.attrs.ShadowSize).toBeUndefined();
+      expect(result.attrs).toMatchObject({ Z: "7", IgnoreWarnings: "yes", attrib4a10: "|x|010203" });
+      const reopened = requireDocument(result.reopened).pages[0].objects[0] as GraphicObject;
+      expect(reopened.style.fillColor).toBe("none");
+      expect(reopened.style.fillMode).toBeUndefined();
+      expect(reopened.style.effect).toBeUndefined();
+    });
+
+    it("replaces shading with a solid fill when only fillMode changes", () => {
+      const document = open(source("Circle Shaded"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillMode = "solid";
+      const result = write(document);
+      expect(result.attrs.OvalType).toBe("Filled");
+      expect((requireDocument(result.reopened).pages[0].objects[0] as GraphicObject).style)
+        .toMatchObject({ fillMode: "solid", fillColor: graphic.style.fillColor });
+    });
+
+    it("updates and removes imported dash and bold width attributes", () => {
+      const document = open(source("Circle").replace('LineWidth="1.5000"', 'LineType="Bold" BoldWidth="4" LineWidth="1.5000"'));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.strokeDasharray = "3 4";
+      graphic.style.strokeWidth = 2;
+      const result = write(document);
+      expect(result.attrs.LineType).toBe("Dashed");
+      expect(result.attrs.BoldWidth).toBeUndefined();
+      expect((requireDocument(result.reopened).pages[0].objects[0] as GraphicObject).style)
+        .toMatchObject({ strokeDasharray: "3 4", strokeWidth: 2 });
+      delete graphic.style.strokeDasharray;
+      expect(write(document).attrs.LineType).toBeUndefined();
+    });
+
+    it("names edited styles that visible ellipse attributes cannot express", () => {
+      const document = open(source("Circle"));
+      const graphic = document.pages[0].objects[0] as GraphicObject;
+      graphic.style.fillColor = "#ff0000";
+      graphic.style.fillMode = "solid";
+      graphic.style.effect = "shadow";
+      graphic.style.fillOpacity = 0.5;
+      const result = write(document);
+      expect(result.warnings).toContainEqual(expect.objectContaining({ sourceObjectId: graphic.id,
+        message: expect.stringContaining("fillColor") }));
+      expect(result.warnings).toContainEqual(expect.objectContaining({ sourceObjectId: graphic.id,
+        message: expect.stringContaining("fillOpacity") }));
+    });
+  });
 
   it.each([
     'OvalType="Filled" OrbitalType="s"',
@@ -57,10 +176,27 @@ describe("interchange graphics and page extent", () => {
     const source = wrap(sourceGraphic(10, 'OvalType="Filled" OrbitalType="s"')).replace('<page ',
       '<colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="0.2" g="0.4" b="0.6"/></colortable><page ');
     const document = requireDocument(openChemDraftPayload(source));
-    const exported = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    const result = exportDocumentToCdxml(document, { embedNativePayload: false });
+    const exported = result.contents;
+    expect(result.warnings.filter(warning => warning.code === "cdxml.graphic_color_approximation")).toEqual([]);
     expect(attributes(exported, "graphic")).toEqual(attributes(source, "graphic"));
     expect(requireDocument(openChemDraftPayload(exported)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
-    expect(requireDocument(importCdx(exportDocumentToCdx(document).bytes)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
+    const binary = exportDocumentToCdx(document);
+    expect(binary.warnings.filter(warning => warning.code === "cdxml.graphic_color_approximation")).toEqual([]);
+    expect(requireDocument(importCdx(binary.bytes)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
+  });
+
+  it.each([false, true])("warns when a native graphic's custom color is actually approximated (embedded=%s)", embedNativePayload => {
+    const document = requireDocument(openChemDraftPayload(wrap('<graphic id="10" GraphicType="Rectangle" BoundingBox="20 30 80 90"/>')));
+    document.pages[0].objects[0].style.strokeColor = "#336699";
+    for (const result of [exportDocumentToCdxml(document, { embedNativePayload }), exportDocumentToCdx(document, { embedNativePayload })]) {
+      const warning = result.warnings.find(warning => warning.code === "cdxml.graphic_color_approximation");
+      expect(warning).toMatchObject({ sourceObjectId: document.pages[0].objects[0].id });
+      expect(warning?.message).toContain("#336699");
+      const visible = "bytes" in result ? cdxElementToCdxml(readCdx(result.bytes)) : result.contents;
+      expect(attributes(visible, "graphic")[0].color).toBeUndefined();
+      if (!embedNativePayload) expect(requireDocument(openChemDraftPayload(visible)).pages[0].objects[0].style.strokeColor).not.toBe("#336699");
+    }
   });
 
   it("recognizes an unedited source orbital even when its axis frame differs from BoundingBox", () => {
@@ -110,6 +246,41 @@ describe("interchange graphics and page extent", () => {
   const documentWithGraphic = (graphic: GraphicObject) => {
     const document = createEmptyDocument(); document.pages[0].objects = [graphic]; return document;
   };
+
+  it("reopens native arrows, arcs, orbitals and ovals with every graphic's original geometry", () => {
+    const document = requireDocument(openChemDraftPayload(wrap(`
+      <arrow id="2" BoundingBox="40 96 120 104" Head3D="120 100 7" Tail3D="40 100 -9" ArrowheadHead="Full"/>
+      <arrow id="3" BoundingBox="40 160 120 240" Head3D="80 240 5" Tail3D="120 200 -6" Center3D="80 200 11" MajorAxisEnd3D="120 200 12" MinorAxisEnd3D="80 240 13" AngularSize="90" ArrowheadHead="Full"/>
+      <graphic id="4" GraphicType="Orbital" OrbitalType="p" Center3D="240 50 17" MajorAxisEnd3D="280 50 -23" MinorAxisEnd3D="240 80 39"/>
+      <graphic id="5" GraphicType="Oval" Center3D="330 160 19" MajorAxisEnd3D="360 160 -29" MinorAxisEnd3D="330 180 43"/>
+    `)));
+    const objects = document.pages[0].objects as GraphicObject[];
+    expect(objects.map(object => object.type)).toEqual(["graphic", "graphic", "graphic", "graphic"]);
+    expect(objects[0].data).toMatchObject({ lineStart: { x: 40 * 4 / 3, y: 100 * 4 / 3 }, lineEnd: { x: 120 * 4 / 3, y: 100 * 4 / 3 } });
+    expect(objects[1].data).toMatchObject({ artPathKind: "arc", arcStartRadians: 0, arcSweepRadians: Math.PI / 2 });
+    expect(objects[2]).toMatchObject({ x: expect.closeTo(200 * 4 / 3, 8), y: expect.closeTo(20 * 4 / 3, 8),
+      width: expect.closeTo(80 * 4 / 3, 8), height: expect.closeTo(60 * 4 / 3, 8) });
+    expect(objects[3]).toMatchObject({ graphicKind: "ellipse", x: expect.closeTo(300 * 4 / 3, 8), y: expect.closeTo(140 * 4 / 3, 8),
+      width: expect.closeTo(60 * 4 / 3, 8), height: expect.closeTo(40 * 4 / 3, 8) });
+    const exported = exportDocumentToCdx(document);
+    expect(readCdx(exported.bytes).attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+    const reopened = requireDocument(importCdx(exported.bytes));
+    expect(reopened.pages[0].objects).toHaveLength(objects.length);
+    reopened.pages[0].objects.forEach((object, index) => {
+      const before = objects[index];
+      expect(object.type).toBe("graphic");
+      if (object.type !== "graphic") throw new Error("Expected graphic fixture");
+      for (const key of ["x", "y", "width", "height"] as const) expect(object[key]).toBeCloseTo(before[key], 3);
+      for (const key of ["lineStart", "lineEnd", "arcCenter"] as const) {
+        if (!before.data[key]) continue;
+        expect(object.data[key]?.x).toBeCloseTo(before.data[key].x, 3);
+        expect(object.data[key]?.y).toBeCloseTo(before.data[key].y, 3);
+      }
+      for (const key of ["arcStartRadians", "arcSweepRadians"] as const) {
+        if (before.data[key] !== undefined) expect(object.data[key]).toBeCloseTo(before.data[key], 4);
+      }
+    });
+  });
 
   it("never writes an Unknown graphic for any native graphic kind or art path kind", () => {
     const kinds = GraphicObjectSchema._def.schema.shape.graphicKind.options;
@@ -241,7 +412,7 @@ describe("interchange graphics and page extent", () => {
       <t id="25" p="40 -70"><s>  label  </s></t></group>
       <curve id="26" CurvePoints="10 -30 30 -80 60 -80 90 -30" ArrowheadHead="Full"/>
       <arrow id="27" Tail3D="100 -100 0" Head3D="160 -100 0" ArrowheadHead="Full"/>
-      ${sourceGraphic(28, 'OrbitalType="p" OvalType="Shaded"').replace('20 30 80 90', '180 -80 240 -20')}
+      ${sourceGraphic(28, 'OrbitalType="p" OvalType="Shaded" xyz="210 -50 41" Center3D="210 -50 17" MajorAxisEnd3D="240 -50 -23" MinorAxisEnd3D="210 -20 39"').replace('20 30 80 90', '180 -80 240 -20')}
       <graphic id="29" GraphicType="Bracket" BracketType="Square" BoundingBox="250 -120 260 0"/>`);
     const original = requireDocument(openChemDraftPayload(source));
     const xmlExport = exportDocumentToCdxml(original, { embedNativePayload: false }).contents;
@@ -253,11 +424,22 @@ describe("interchange graphics and page extent", () => {
     const atom = attributes(xml, "n")[0].p.split(" ").map(Number);
     expect(atom[0] + 40).toBeCloseTo(dx, 4); expect(atom[1] + 120).toBeCloseTo(dy, 4);
     expect(attributes(xml, "arrow")[0].Tail3D.split(" ").slice(0, 2).map(Number)).toEqual([100 + dx, -100 + dy]);
+    const orbital = attributes(xml, "graphic").find(graphic => graphic.GraphicType === "Orbital")!;
+    expect(orbital.xyz.split(" ").map(Number)).toEqual([210 + dx, -50 + dy, 41]);
+    expect(orbital.Center3D.split(" ").map(Number)).toEqual([210 + dx, -50 + dy, 17]);
+    expect(orbital.MajorAxisEnd3D.split(" ").map(Number)).toEqual([240 + dx, -50 + dy, -23]);
+    expect(orbital.MinorAxisEnd3D.split(" ").map(Number)).toEqual([210 + dx, -20 + dy, 39]);
     const reopened = requireDocument(binary ? importCdx(exportDocumentToCdx(original).bytes) : openChemDraftPayload(xml));
     expect(reopened.pages[0].objects.map(object => object.type)).toEqual(original.pages[0].objects.map(object => object.type));
     reopened.pages[0].objects.forEach((object, index) => {
       const before = original.pages[0].objects[index];
       expect(object.x).toBeCloseTo(before.x, 3); expect(object.y).toBeCloseTo(before.y, 3);
+      if (object.type === "graphic" && before.type === "graphic") {
+        expect(object.width).toBeCloseTo(before.width, 3); expect(object.height).toBeCloseTo(before.height, 3);
+        expect(object.data).toEqual(before.data);
+        if (before.graphicKind === "unknown") expect(object.compatibility?.unknown.cdxmlGraphicAttributes)
+          .toEqual(before.compatibility?.unknown.cdxmlGraphicAttributes);
+      }
       if (object.type === "molecule" && before.type === "molecule") {
         object.atoms.forEach((atom, index) => {
           expect(atom.x).toBeCloseTo(before.atoms[index].x, 3);
@@ -286,11 +468,239 @@ describe("interchange graphics and page extent", () => {
       const root = tree(xml), page = elements(root, "page")[0];
       expect(page.attrs.BoundingBox).toBe("0 0 612 792");
       expect(page.attrs.attrib4346).toBeUndefined();
+      expect(page.attrs.WidthPages).toBeUndefined();
+      expect(page.attrs.HeightPages).toBeUndefined();
+      expect(root.attrs.PrintMargins).toBeUndefined();
       expect(attributes(xml, "graphic")[0].BoundingBox).toBe("30 30 120 90");
       expect(root.attrs.attrib4345).toBe(embedded ? "|x|32" : undefined);
       const binaryRoot = readCdx(exportDocumentToCdx(document, { embedNativePayload: embedded }).bytes);
       expect(binaryRoot.attrs.attrib4345).toBe(embedded ? "|x|32" : undefined);
+      expect(binaryRoot.attrs.PrintMargins).toBeUndefined();
+      expect(elements(binaryRoot, "page")[0].attrs).toMatchObject({ BoundingBox: "0 0 612 792" });
+      expect(elements(binaryRoot, "page")[0].attrs.WidthPages).toBeUndefined();
     }
+  });
+
+  const halfInchMargins = { top: 48, left: 48, bottom: 48, right: 48 };
+  const setLayout = (document: ChemDraftDocument, layout: PageLayout) => {
+    Object.assign(document.pages[0], { layout, width: layout.widthPx, height: layout.heightPx, margin: pageMarginFromLayout(layout) });
+  };
+  const interchange = (document: ChemDraftDocument, binary: boolean) => binary
+    ? readCdx(exportDocumentToCdx(document).bytes)
+    : tree(exportDocumentToCdxml(document, { embedNativePayload: false }).contents);
+
+  it.each([false, true])("fits wholly negative content using its shifted extents (binary=%s)", binary => {
+    const document = documentWithGraphic({ ...nativeGraphic({}, "rect"),
+      x: -600 / 0.75, y: -600 / 0.75, width: 100 / 0.75, height: 100 / 0.75 });
+    const root = interchange(document, binary), page = elements(root, "page")[0];
+    expect(page.attrs.BoundingBox).toBe("0 0 612 792");
+    expect(page.attrs.WidthPages).toBeUndefined();
+    expect(page.attrs.HeightPages).toBeUndefined();
+    expect(root.attrs.PrintMargins).toBeUndefined();
+    expect(JSON.parse(Buffer.from(page.attrs.attrib4346.slice(3), "hex").toString("utf8"))).toEqual([618, 618]);
+    expect(elements(page, "graphic")[0].attrs.BoundingBox).toBe("18 18 118 118");
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[0].objects[0].x).toBeCloseTo(-600 / 0.75, 3);
+    expect(reopened.pages[0].objects[0].y).toBeCloseTo(-600 / 0.75, 3);
+  });
+
+  it.each([false, true])("writes shared margins when only a later plain source page grows (binary=%s)", binary => {
+    const source = `<CDXML><page id="1" BoundingBox="0 0 612 792"/>
+      <page id="2" BoundingBox="0 0 612 792"><graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    document.pages[1].objects[0].width = 900 / 0.75;
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings.filter(warning => warning.code === "cdxml.page_margins_conflict")).toEqual([]);
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1008 684", WidthPages: "2", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages.map(page => [page.width, page.height, page.margin])).toEqual(
+      document.pages.map(page => [page.width, page.height, page.margin]));
+  });
+
+  it.each([false, true].flatMap(binary => ["36.0 36.0 36.0 36.0", "36.00001 36.00001 36.00001 36.00001"]
+    .map(margins => ({ binary, margins }))))("compares preserved and regenerated margins numerically (binary=$binary, margins=$margins)", ({ binary, margins }) => {
+    const source = `<CDXML PrintMargins="${margins}">
+      <page id="1" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1"/>
+      <page id="2" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1">
+        <graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    document.pages[1].objects[0].width = 900 / 0.75;
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings.filter(warning => warning.code === "cdxml.page_margins_conflict")).toEqual([]);
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe(binary ? readCdx(bytesFromCdxml(source)).attrs.PrintMargins : margins);
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1080 720", WidthPages: "2", HeightPages: "1" });
+  });
+
+  it.each([false, true])("does not add a page when content ends exactly at a printable boundary (binary=%s)", binary => {
+    for (const preset of ["letter", "a4"] as const) {
+      const layout = createPageLayout(preset, "portrait", halfInchMargins);
+      const document = documentWithGraphic({ ...nativeGraphic({}, "rect"), x: 0, y: 0,
+        width: layout.widthPx - 96, height: layout.heightPx - 96 });
+      setLayout(document, layout);
+      const root = interchange(document, binary);
+      expect(root.attrs.PrintMargins).toBe("36 36 36 36");
+      expect(elements(root, "page")[0].attrs).toMatchObject({ WidthPages: "1", HeightPages: "1" });
+      const box = elements(root, "page")[0].attrs.BoundingBox.split(" ").map(Number);
+      expect(box[2]).toBeCloseTo((layout.widthPx - 96) * 0.75, 3);
+      expect(box[3]).toBeCloseTo((layout.heightPx - 96) * 0.75, 3);
+      document.pages[0].objects[0].width += 0.01 / 0.75;
+      expect(elements(interchange(document, binary), "page")[0].attrs.WidthPages).toBe("2");
+    }
+  });
+
+  it.each([false, true])("fits different native-page margins to the shared root print setup and warns (binary=%s)", binary => {
+    const document = documentWithGraphic(nativeGraphic({}, "rect"));
+    document.pages.push({ ...structuredClone(document.pages[0]), id: "page_002", objects: [
+      { ...nativeGraphic({}, "rect"), id: "graphic_002", x: 0, y: 0, width: 520 / 0.75 }
+    ] });
+    document.pages[1].margin = halfInchMargins;
+    document.pages[1].layout = createPageLayout("letter", "portrait", halfInchMargins);
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.page_margins_conflict", sourceObjectId: "page_002" }));
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[1].attrs).toMatchObject({ BoundingBox: "0 0 1008 684", WidthPages: "2", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[1]).toMatchObject({ width: 816, height: 1056, margin: document.pages[0].margin });
+  });
+
+  it.each([false, true])("regenerates a preserved grid whose page margins differ from the shared root (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36 36 36 36">
+      <page id="1" BoundingBox="0 0 540 720" WidthPages="1" HeightPages="1"/>
+      <page id="2" PrintMargins="54 54 54 54" BoundingBox="0 0 504 684" WidthPages="1" HeightPages="1">
+        <graphic id="3" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const exported = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.page_margins_conflict", sourceObjectId: document.pages[1].id }));
+    const root = interchange(document, binary), page = elements(root, "page")[1];
+    expect(root.attrs.PrintMargins).toBe("36 36 36 36");
+    expect(page.attrs.PrintMargins).toBeUndefined();
+    expect(page.attrs).toMatchObject({ BoundingBox: "0 0 540 720", WidthPages: "1", HeightPages: "1" });
+  });
+
+  it.each([false, true])("replaces a source root margin value that differs from the first page's effective margins (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36 36 36 36"><page id="1" PrintMargins="54 54 54 54"
+      BoundingBox="0 0 504 684" WidthPages="1" HeightPages="1">
+      <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+    const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")[0].attrs.PrintMargins).toBeUndefined();
+    expect(elements(root, "page")[0].attrs).toMatchObject({ BoundingBox: "0 0 504 684", WidthPages: "1", HeightPages: "1" });
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages[0]).toMatchObject({ width: 816, height: 1056, margin: document.pages[0].margin });
+  });
+
+  it.each([false, true])("exports each native page with explicit grid counts in a multi-page document (binary=%s)", binary => {
+    const document = documentWithGraphic(nativeGraphic({}, "rect"));
+    document.pages.push({ ...structuredClone(document.pages[0]), id: "page_002", objects: [] });
+    const root = interchange(document, binary);
+    expect(root.attrs.PrintMargins).toBe("54 54 54 54");
+    expect(elements(root, "page")).toHaveLength(2);
+    for (const page of elements(root, "page")) {
+      expect(page.attrs).toMatchObject({ BoundingBox: "0 0 504 684", WidthPages: "1", HeightPages: "1" });
+    }
+    const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+    expect(reopened.pages).toHaveLength(2);
+    expect(reopened.pages.map(page => [page.width, page.height])).toEqual([[816, 1056], [816, 1056]]);
+  });
+
+  it.each([false, true])("imports unambiguous uncounted paper and printable sizes with margins (binary=%s)", binary => {
+    for (const box of ["0 0 595.28 841.89", "0 0 523.28 769.89", "0 0 841.89 595.28", "0 0 769.89 523.28"]) {
+      const source = `<CDXML PrintMargins="36 36 36 36"><page id="1" BoundingBox="${box}">
+        <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`;
+      const document = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+      expect(document.pages[0].layout.presetId).toBe("a4");
+      expect(document.pages[0].layout.sourceUnit).toBe("mm");
+      expect(Math.min(document.pages[0].width, document.pages[0].height) * 0.75).toBeCloseTo(595.28, 3);
+      expect(Math.max(document.pages[0].width, document.pages[0].height) * 0.75).toBeCloseTo(841.89, 3);
+      expect(document.pages[0].margin).toEqual(halfInchMargins);
+      const original = binary ? readCdx(bytesFromCdxml(source)) : tree(source);
+      expect(elements(interchange(document, binary), "page")[0].attrs.BoundingBox).toBe(elements(original, "page")[0].attrs.BoundingBox);
+    }
+  });
+
+  it.each([false, true])("derives portrait, landscape and A4 grids from the actual paper and asymmetric margins (binary=%s)", binary => {
+    const cases = [
+      { layout: createPageLayout("letter", "portrait", halfInchMargins), printable: [540, 720], extent: [900, 1200], counts: [2, 2] },
+      { layout: createPageLayout("letter", "landscape", halfInchMargins), printable: [720, 540], extent: [1300, 900], counts: [2, 2] },
+      { layout: createCustomPageLayout(595.28 / 0.75, 841.89 / 0.75, "css-px", halfInchMargins), printable: [523.28, 769.89], extent: [900, 1200], counts: [2, 2] },
+      { layout: createPageLayout("a4", "portrait", { top: 24, left: 32, bottom: 40, right: 48 }),
+        printable: [210 / 25.4 * 72 - 60, 297 / 25.4 * 72 - 48], extent: [900, 400], counts: [2, 1] }
+    ];
+    for (const { layout, printable, extent, counts } of cases) {
+      const document = documentWithGraphic({ ...nativeGraphic({}, "rect"),
+        x: -40, y: -80, width: extent[0] / 0.75, height: extent[1] / 0.75 });
+      setLayout(document, layout);
+      const root = interchange(document, binary), page = elements(root, "page")[0];
+      expect(root.attrs.PrintMargins).toBe([layout.marginTopPx, layout.marginLeftPx, layout.marginBottomPx, layout.marginRightPx].map(value => value * 0.75).join(" "));
+      expect(page.attrs).toMatchObject({ WidthPages: String(counts[0]), HeightPages: String(counts[1]) });
+      const [left, top, width, height] = page.attrs.BoundingBox.split(/\s+/).map(Number);
+      expect([left, top]).toEqual([0, 0]);
+      expect(width).toBeCloseTo(printable[0] * counts[0], 3);
+      expect(height).toBeCloseTo(printable[1] * counts[1], 3);
+      expect(page.attrs.attrib4346).toMatch(/^\|x\|/);
+      const reopened = requireDocument(binary ? importCdx(writeCdx(root)) : openChemDraftPayload(cdxElementToCdxml(root)));
+      expect(reopened.pages[0].width).toBeCloseTo(layout.widthPx, 3);
+      expect(reopened.pages[0].height).toBeCloseTo(layout.heightPx, 3);
+      expect(reopened.pages[0].margin).toEqual(document.pages[0].margin);
+      expect(reopened.pages[0].layout.orientation).toBe(layout.orientation);
+      expect(reopened.pages[0].objects[0].x).toBeCloseTo(-40, 3);
+      expect(reopened.pages[0].objects[0].y).toBeCloseTo(-80, 3);
+      const repeated = interchange(reopened, binary);
+      expect(repeated.attrs.PrintMargins).toBe(root.attrs.PrintMargins);
+      expect(elements(repeated, "page")[0].attrs).toEqual(page.attrs);
+    }
+  });
+
+  it.each([false, true])("preserves all source page attributes and root margins verbatim while a 2 by 2 drawing fits (binary=%s)", binary => {
+    const source = `<CDXML PrintMargins="36.000 36.00 36.0 36">
+      <page id="1" BoundingBox="0.000 0.00 1080.0000 1440.00" WidthPages="2" HeightPages="2"
+        HeaderPosition="24.000" FooterPosition="28.00" Header="source header" Footer="source footer"
+        PrintTrimMarks="yes" PageOverlap="0" DrawingSpace="poster" attrib4a12="|x|010203"
+        ${binary ? "" : 'Orientation="portrait" ExtraPageSetting="opaque &amp; exact"'}>
+        <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 1000 1300"/>
+      </page></CDXML>`;
+    const original = binary ? readCdx(bytesFromCdxml(source)) : tree(source);
+    const pageAttributes = elements(original, "page")[0].attrs;
+    const document = requireDocument(binary ? importCdx(writeCdx(original)) : openChemDraftPayload(source));
+    const page = document.pages[0];
+    expect(page.width).toBe(816); expect(page.height).toBe(1056);
+    expect(page.margin).toEqual(halfInchMargins);
+    expect(page.layout).toMatchObject({ presetId: "letter", orientation: "portrait", sourceUnit: "inch" });
+    expect(page.compatibility?.unknown.cdxmlPageAttributes).toEqual(pageAttributes);
+    expect(page.compatibility?.unknown.cdxmlRootPageAttributes).toEqual({ PrintMargins: original.attrs.PrintMargins });
+    const exported = interchange(document, binary);
+    expect(exported.attrs.PrintMargins).toBe(original.attrs.PrintMargins);
+    expect(elements(exported, "page")[0].attrs).toEqual({ ...pageAttributes, id: elements(exported, "page")[0].attrs.id });
+    const reimported = requireDocument(binary ? importCdx(writeCdx(exported)) : openChemDraftPayload(cdxElementToCdxml(exported)));
+    expect(reimported.pages[0].objects[0].x).toBeCloseTo(page.objects[0].x, 4);
+    expect(reimported.pages[0].objects[0].y).toBeCloseTo(page.objects[0].y, 4);
+    expect(openChemDraftPayload(exportDocumentToCdxml(document).contents).document).toEqual(document);
+    expect(importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes).document).toEqual(document);
+
+    page.objects[0].width = 1500 / 0.75;
+    page.objects[0].height = 1900 / 0.75;
+    const grown = interchange(document, binary), grownPage = elements(grown, "page")[0].attrs;
+    expect(grown.attrs.PrintMargins).toBe("36 36 36 36");
+    expect(grownPage).toMatchObject({ BoundingBox: "0 0 1620 2160", WidthPages: "3", HeightPages: "3", HeaderPosition: pageAttributes.HeaderPosition,
+      FooterPosition: pageAttributes.FooterPosition, PrintTrimMarks: "yes", attrib4a12: "|x|010203" });
+  });
+
+  it.each([false, true])("uses a changed native paper setup instead of stale source counts and margins (binary=%s)", binary => {
+    const document = requireDocument(openChemDraftPayload(`<CDXML PrintMargins="36 36 36 36"><page id="1"
+      BoundingBox="0 0 1080 1440" WidthPages="2" HeightPages="2" Width="612" Height="792" Orientation="portrait">
+      <graphic id="2" GraphicType="Rectangle" BoundingBox="20 30 80 90"/></page></CDXML>`));
+    setLayout(document, createPageLayout("letter", "landscape", halfInchMargins));
+    const exported = interchange(document, binary), page = elements(exported, "page")[0].attrs;
+    expect(page).toMatchObject({ BoundingBox: "0 0 720 540", WidthPages: "1", HeightPages: "1" });
+    expect(page.Width).toBeUndefined(); expect(page.Height).toBeUndefined(); expect(page.Orientation).toBeUndefined();
+    const reopened = requireDocument(binary ? importCdx(writeCdx(exported)) : openChemDraftPayload(cdxElementToCdxml(exported)));
+    expect(reopened.pages[0].layout).toMatchObject({ presetId: "letter", orientation: "landscape" });
+    expect(reopened.pages[0].width).toBe(1056); expect(reopened.pages[0].height).toBe(816);
   });
 });
 type Node = [number, number, number, string?];
@@ -360,12 +770,12 @@ function compareDocuments(actual: ChemDraftDocument, expected: ChemDraftDocument
 }
 
 describe("chemical and drawing round trips", () => {
-  it("imports an independently constructed horizontal arrow with spec z/y/x coordinates", () => {
+  it("imports an independently constructed horizontal arrow with x/y/z coordinates", () => {
     const bytes = new Uint8Array(Buffer.from([
       "566A4344303130300403020100000000000000000000", // Header.
       "008000000000", "018001000000", "218003000000", // Document, page, arrow.
-      "07020C00000000000000640000007800", // Head: z=0, y=100, x=120.
-      "08020C00000000000000640000002800", // Tail: z=0, y=100, x=40.
+      "07020C00000078000000640000000000", // Head: x=120, y=100, z=0.
+      "08020C00000028000000640000000000", // Tail: x=40, y=100, z=0.
       "000000000000"
     ].join(""), "hex"));
     const document = requireDocument(importCdx(bytes));
@@ -400,13 +810,30 @@ describe("chemical and drawing round trips", () => {
     });
   }
 
-  it("preserves crossing bonds and warns about payload-only unknown objects", () => {
+  it.each(["CDX", "CDXML"] as const)("preserves bond crossings and names the omitted bracket group in %s export", format => {
     const original = requireDocument(openChemDraftPayload(cdxmlFixtures["crossing-bonds.cdxml"]));
-    const exported = exportDocumentToCdx(original);
-    expect(exported.warnings.some((w) => w.code === "cdxml.object_export_unsupported")).toBe(true);
+    const unknown = original.pages[0].objects.filter(object => object.type === "unknown-compatibility-object");
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]).toMatchObject({
+      sourceObjectType: "bracketedgroup",
+      raw: {
+        name: "bracketedgroup", attributes: { id: "bg_crossing", BracketedObjectIDs: "a1 a2" }
+      }
+    });
+    const exported = format === "CDX"
+      ? exportDocumentToCdx(original, { embedNativePayload: false })
+      : exportDocumentToCdxml(original, { embedNativePayload: false });
+    // A single attachment cannot form a native bracket pair. Its group is still omitted;
+    // the specific diagnostic replaces the former generic object_export_unsupported warning.
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.bracket_group_preserved", sourceObjectId: "bg_crossing",
+      message: expect.stringMatching(/Bracket group bg_crossing:.*bracket members and crossing bonds are NOT written to visible export/)
+    }));
     const supported = structuredClone(original);
-    supported.pages[0].objects = supported.pages[0].objects.filter((x) => x.type !== "unknown-compatibility-object");
-    const reopened = requireDocument(importCdx(exported.bytes));
+    supported.pages[0].objects = supported.pages[0].objects.filter(object => object.id !== unknown[0].id);
+    const reopened = requireDocument("bytes" in exported
+      ? importCdx(exported.bytes)
+      : openChemDraftPayload(exported.contents));
     compareDocuments(reopened, supported);
     expect(reopened.pages[0].crossings).toHaveLength(original.pages[0].crossings.length);
   });
@@ -433,6 +860,43 @@ describe("chemical and drawing round trips", () => {
 
 describe("native payload Save As and interchange Export", () => {
   const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
+
+  it.each(["ChemDraft", "Custom producer"])("opens old swapped Point3D saves from %s with both integrity checks intact", creationProgram => {
+    const source = wrap('<arrow id="2" Head3D="120 100 0" Tail3D="40 100 0"/><graphic id="3" GraphicType="Orbital" Center3D="240 50 17" MajorAxisEnd3D="280 50 -23" MinorAxisEnd3D="240 80 39"/>')
+      .replace('CreationProgram="ChemDraft"', `CreationProgram="${creationProgram}"`);
+    const original = requireDocument(openChemDraftPayload(source));
+    const current = readCdx(exportDocumentToCdx(original, { embedNativePayload: true, creationProgram }).bytes);
+    const envelope = JSON.parse(Buffer.from(current.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+    delete envelope.visibleHashVersion;
+    envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = legacyVisibleCdxmlHash(source);
+    // Build released-writer bytes independently, including z/y/x points and y/x rectangles.
+    const u16 = (n: number) => [n & 255, n >>> 8 & 255];
+    const u32 = (n: number) => [...u16(n), ...u16(n >>> 16)];
+    const property = (tag: number, data: number[]) => [...u16(tag), ...u16(data.length), ...data];
+    const object = (tag: number, id: number, ...children: number[][]) => [...u16(tag), ...u32(id), ...children.flat(), 0, 0];
+    const point = (tag: number, x: number, y: number, z: number) => property(tag, [z, y, x].flatMap(n => u32(n * 65536)));
+    const header = [...Buffer.from("VjCD0100"), 4, 3, 2, 1, ...Array(10).fill(0)];
+    const body = [property(0x0003, [0, 0, ...Buffer.from(creationProgram)]),
+      object(0x8001, 1, property(0x0204, [0, 0, 792, 612].flatMap(n => u32(n * 65536))),
+        object(0x8021, 2, point(0x0207, 120, 100, 0), point(0x0208, 40, 100, 0)),
+        object(0x8007, 3, property(0x0a00, u16(5)), point(0x020d, 240, 50, 17),
+          point(0x020e, 280, 50, -23), point(0x020f, 240, 80, 39)))];
+    envelope.visibleBinaryHash = sha256Hex(new Uint8Array([...header, ...object(0x8000, 0, ...body)]));
+    const bytes = new Uint8Array([...header, ...object(0x8000, 0, ...body,
+      property(0x4344, [...Buffer.from(JSON.stringify(envelope))]))]);
+    const opened = importCdx(bytes);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toEqual(original);
+    const visible = structuredClone(readCdx(bytes));
+    delete visible.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    expect(legacyVisibleCdxmlHash(cdxElementToCdxml(visible))).toBe(legacyVisibleCdxmlHash(source));
+    compareDocuments(requireDocument(openChemDraftPayload(cdxElementToCdxml(visible))), original);
+    const resaved = exportDocumentToCdx(requireDocument(opened), { embedNativePayload: true });
+    expect(readCdx(resaved.bytes).attrs[CDX_POINT3D_ORDER_ATTRIBUTE]).toBe("|x|78797A");
+    expect(importCdx(resaved.bytes).document).toEqual(original);
+  });
 
   it("omits the v2 marker only for interchange and rejects embedded visible edits even after marker removal in CDXML and CDX", () => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>A&amp;#10;B</s></t>')));

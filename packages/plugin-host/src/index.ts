@@ -13,6 +13,18 @@ import {
   AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI
 } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
+
+export function chemistryPropertiesInputError(
+  request: unknown,
+  error: Extract<ReturnType<typeof PluginChemistryPropertiesRequestSchema.safeParse>, { success: false }>['error']
+): string {
+  const issue = error.issues.find(item => item.code === "too_big" && item.path[0] === "structure");
+  if (issue?.code === "too_big" && typeof request === "object" && request !== null &&
+    "structure" in request && typeof request.structure === "string") {
+    return `The structure is too long: ${request.structure.length} characters; the limit is ${issue.maximum}.`;
+  }
+  return `Invalid chemistry properties input: ${error.issues.map(item => item.message).join("; ")}`;
+}
 import type {
   AppliedPatchReceipt,
   PluginChemistryPropertiesRequest, PluginChemistryPropertiesResult,
@@ -894,7 +906,7 @@ export class PluginHost {
           properties: async request => {
             this.requirePermission(pluginId, "chemistry.compute");
             const parsed = PluginChemistryPropertiesRequestSchema.safeParse(request);
-            if (!parsed.success) return { available: false, reason: `Invalid chemistry properties input: ${parsed.error.message}` };
+            if (!parsed.success) return { available: false, reason: chemistryPropertiesInputError(request, parsed.error) };
             if (!this.computeProperties) return { available: false, reason: "This host provides no RDKit properties engine." };
             return PluginChemistryPropertiesResultSchema.parse(await this.computeProperties(parsed.data));
           },

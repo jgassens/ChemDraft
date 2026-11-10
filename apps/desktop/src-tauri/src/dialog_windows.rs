@@ -22,7 +22,7 @@ struct DialogKindSpec {
     size: (f64, f64),
     min_size: (f64, f64),
     // Content-fit: `ready` carries the form's measured height; reveal sets the inner height to it
-    // (clamped to the work area); remembered user sizes take precedence.
+    // (clamped to the work area); larger remembered user sizes are retained.
     fit_content: bool,
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
@@ -79,9 +79,9 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Custom Color",
-            size: (460.0, 480.0),
-            min_size: (360.0, 320.0),
-            fit_content: false,
+            size: (460.0, 320.0),
+            min_size: (360.0, 240.0),
+            fit_content: true,
         }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
@@ -245,10 +245,13 @@ enum Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ContentFit {
     content_height: f64,
+    #[serde(default)]
+    content_width: Option<f64>,
     pixel_ratio: f64,
 }
 /// A dialog form is far shorter than this; anything taller is not a measurement.
 const CONTENT_FIT_MAX_HEIGHT: f64 = 4096.0;
+const CONTENT_FIT_MAX_WIDTH: f64 = 4096.0;
 /// Device pixel ratios and native scale factors outside this range are not a real display.
 const CONTENT_FIT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;
 impl ContentFit {
@@ -256,9 +259,13 @@ impl ContentFit {
         serde_json::from_value::<Self>(data.clone())
             .ok()
             .filter(|f| {
-                f.content_height.is_finite()
+                !data.get("contentWidth").is_some_and(Value::is_null)
+                    && f.content_height.is_finite()
                     && f.content_height > 0.0
                     && f.content_height <= CONTENT_FIT_MAX_HEIGHT
+                    && f.content_width.is_none_or(|width| {
+                        width.is_finite() && width > 0.0 && width <= CONTENT_FIT_MAX_WIDTH
+                    })
                     && f.pixel_ratio.is_finite()
                     && CONTENT_FIT_SCALE_RANGE.contains(&f.pixel_ratio)
             })
@@ -289,6 +296,11 @@ impl MeasuredContent {
         (self.fit.content_height * self.fit.pixel_ratio / self.scale_at_ready)
             .ceil()
             .max(min_height)
+    }
+    fn logical_width(self) -> Option<f64> {
+        self.fit
+            .content_width
+            .map(|width| (width * self.fit.pixel_ratio / self.scale_at_ready).ceil())
     }
 }
 #[derive(Deserialize)]
@@ -2239,19 +2251,35 @@ fn dialog_client_size(
     saved: Option<&SavedPosition>,
     current_frame: bool,
 ) -> (f64, f64) {
-    let content_height = content
-        .filter(|_| spec.fit_content)
-        .map(|fit| fit.logical_height(1.0));
+    let content = content.filter(|_| spec.fit_content);
+    let content_height = content.map(|fit| fit.logical_height(1.0));
+    let content_width = content.and_then(|fit| fit.logical_width());
     let (width, height) = remembered_client_size(saved, spec.resizable || current_frame)
         .unwrap_or((spec.size.0, content_height.unwrap_or(spec.size.1)));
     // Keep a larger user size, but a remembered/live size cannot clip newly added content.
     // The shared placement path subsequently caps this to the destination work area.
-    (width, height.max(content_height.unwrap_or(1.0)))
+    (
+        width.max(content_width.unwrap_or(1.0)),
+        height.max(content_height.unwrap_or(1.0)),
+    )
 }
 fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Option<(f64, f64)> {
     saved.filter(|_| resizable)?.size.filter(|(width, height)| {
         width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
     })
+}
+fn custom_color_refit_size(
+    fit: MeasuredContent,
+    current: (f64, f64),
+    user_size: Option<(f64, f64)>,
+) -> (f64, f64) {
+    // Mode/error changes can remove content as well as add it. Keep a user's larger size,
+    // but do not turn the previous programmatic content height into a permanent floor.
+    (
+        current.0.max(fit.logical_width().unwrap_or(1.0)),
+        fit.logical_height(1.0)
+            .max(user_size.map_or(1.0, |size| size.1)),
+    )
 }
 fn position_for(
     saved: Option<&SavedPosition>,
@@ -2360,7 +2388,24 @@ fn place_content_window<R: Runtime>(
                 .iter()
                 .all(|value| value.is_finite())
         });
-    let client_size = dialog_client_size(&spec, content_fit, saved, current_frame);
+    let mut client_size = dialog_client_size(&spec, content_fit, saved, current_frame);
+    if current_frame && kind == "customColor" {
+        if let Some(fit) = content_fit {
+            // A resize can still be waiting for the persistence debounce when the form reports
+            // its next measurement. Consult that pending user frame before the stored one.
+            let pending = REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .sessions
+                .values()
+                .find(|session| session.registration.window_label == window.label())
+                .and_then(|session| session.pending_move.as_ref())
+                .map(|(_, position)| position.clone());
+            let user_size = remembered_client_size(pending.as_ref(), true)
+                .or_else(|| remembered_client_size(positions.get(kind), true));
+            client_size = custom_color_refit_size(fit, client_size, user_size);
+        }
+    }
     // A user size remains useful after its display is removed; its position does not.
     let saved = restorable_position(saved, &monitors);
     let client = window.inner_size().map_err(|e| e.to_string())?;
@@ -5128,13 +5173,53 @@ mod tests {
         );
     }
     #[test]
+    fn custom_color_refits_shrink_removed_content_but_keep_user_sizes() {
+        let spec = kind_spec("customColor").unwrap();
+        assert_eq!(spec.size, (460.0, 320.0));
+        assert_eq!(spec.min_size, (360.0, 240.0));
+        assert!(spec.fit_content);
+        for scale in [1.0, 1.5, 2.0] {
+            for user_size in [None, Some((600.0_f64, 500.0_f64))] {
+                let mut current = user_size.unwrap_or(spec.size);
+                // Hex, validation error, CMYK explanation, then Hex again.
+                for height in [300.0_f64, 350.0, 390.0, 300.0] {
+                    let fit = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({
+                            "contentHeight": height,
+                            "contentWidth": 460.0,
+                            "pixelRatio": scale
+                        })),
+                        Some(scale),
+                    )
+                    .unwrap();
+                    current = custom_color_refit_size(fit, current, user_size);
+                    assert_eq!(
+                        current,
+                        (
+                            user_size.map_or(spec.size.0, |size| size.0),
+                            height.max(user_size.map_or(1.0, |size| size.1))
+                        )
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     fn content_refits_preserve_user_sizes_and_cap_to_work_area() {
         use std::cell::Cell;
         for (macos, border, title_bar) in [(true, 0, 28), (false, 16, 40)] {
             for scale in [1.0, 1.5, 2.0] {
                 for kind in ["pageSize", "export"] {
-                    for user_height in [180.0_f64, 800.0] {
-                        let spec = kind_spec(kind).unwrap();
+                    let spec = kind_spec(kind).unwrap();
+                    // Includes the old Custom Page Size 420x300 frame, a narrower but
+                    // taller frame, and a wider but shorter frame. Each axis fits independently.
+                    for (extra_width, user_height) in [
+                        (0.0_f64, 180.0_f64),
+                        (0.0, 300.0),
+                        (-40.0, 800.0),
+                        (80.0, 300.0),
+                        (80.0, 800.0),
+                    ] {
                         let work = WorkArea {
                             id: "screen".into(),
                             x: -1000.0,
@@ -5145,7 +5230,7 @@ mod tests {
                         }
                         .inset(12.0);
                         let mut saved = SavedPosition {
-                            size: Some((spec.size.0, user_height)),
+                            size: Some((spec.size.0 + extra_width, user_height)),
                             monitor: work.id.clone(),
                             x: -900.0,
                             y: 100.0,
@@ -5153,17 +5238,39 @@ mod tests {
                             offset_y: 0.0,
                         };
                         // Initial full form, extra cancellation line, removed line, huge report.
-                        for height in [334.0, 358.0, 334.0, 4096.0] {
+                        for height in [
+                            if macos { 334.0_f64 } else { 286.0_f64 },
+                            358.0,
+                            334.0,
+                            4096.0,
+                        ] {
+                            let width = if height == 4096.0 {
+                                4096.0
+                            } else {
+                                spec.size.0
+                            };
                             let measured = MeasuredContent::new(
-                                ContentFit::from_ready(
-                                    &json!({"contentHeight":height,"pixelRatio":scale}),
-                                ),
+                                ContentFit::from_ready(&json!({
+                                    "contentHeight": height,
+                                    "contentWidth": width,
+                                    "pixelRatio": scale
+                                })),
                                 Some(scale),
                             );
                             let desired = dialog_client_size(&spec, measured, Some(&saved), true);
+                            assert_eq!(
+                                desired,
+                                (
+                                    width.max(saved.size.unwrap().0),
+                                    height.max(saved.size.unwrap().1)
+                                )
+                            );
+                            assert!(desired.0 >= spec.size.0);
+                            assert!(desired.0 >= saved.size.unwrap().0);
                             assert!(desired.1 >= height);
                             assert!(desired.1 >= saved.size.unwrap().1);
                             let initial = dialog_client_size(&spec, measured, Some(&saved), false);
+                            assert!(initial.0 >= spec.size.0);
                             assert!(initial.1 >= height);
                             let client = Cell::new((1_u32, 1_u32));
                             let position = Cell::new((0.0, 0.0));
@@ -5203,6 +5310,11 @@ mod tests {
                                 },
                             )
                             .unwrap();
+                            let maximum_width = (work.width * scale) as u32 - border;
+                            assert_eq!(
+                                client.get().0,
+                                ((desired.0 * scale).ceil() as u32).min(maximum_width)
+                            );
                             let maximum = (work.height * scale) as u32 - title_bar;
                             assert_eq!(
                                 client.get().1,
@@ -5417,6 +5529,7 @@ mod tests {
             "structureTemplates",
             "pageSize",
             "arrangementSpacing",
+            "customColor",
             "insertTable",
             "export",
             "engineInstall",
@@ -5439,6 +5552,7 @@ mod tests {
             json!({"contentHeight": 262.5, "pixelRatio": 1.25}),
             json!({"contentHeight": 4096, "pixelRatio": 8}),
             json!({"contentHeight": 263, "pixelRatio": 0.5}),
+            json!({"contentHeight": 334, "contentWidth": 420, "pixelRatio": 2}),
         ] {
             ready.data = data;
             assert!(ready.validate().is_ok(), "{}", ready.data);
@@ -5456,6 +5570,9 @@ mod tests {
             json!({"contentHeight": 263, "pixelRatio": 17}),
             json!({"contentHeight": "263", "pixelRatio": 1}),
             json!({"contentHeight": 263, "pixelRatio": 1, "width": 480}),
+            json!({"contentHeight": 334, "contentWidth": null, "pixelRatio": 2}),
+            json!({"contentHeight": 334, "contentWidth": 0, "pixelRatio": 2}),
+            json!({"contentHeight": 334, "contentWidth": 4097, "pixelRatio": 2}),
         ] {
             ready.data = data;
             assert!(ready.validate().is_err(), "{}", ready.data);
@@ -5469,6 +5586,7 @@ mod tests {
             MeasuredContent::new(
                 Some(ContentFit {
                     content_height,
+                    content_width: None,
                     pixel_ratio,
                 }),
                 Some(scale),
@@ -5482,11 +5600,20 @@ mod tests {
         // WebView zoom or larger text (ratio above the monitor scale) grows the window.
         assert_eq!(fit(263.0, 1.25, 1.0).logical_height(240.0), 329.0);
         assert_eq!(fit(263.0, 1.875, 1.5).logical_height(240.0), 329.0);
+        let width = MeasuredContent::new(
+            ContentFit::from_ready(&json!({
+                "contentHeight": 334, "contentWidth": 420, "pixelRatio": 1.875
+            })),
+            Some(1.5),
+        )
+        .unwrap();
+        assert_eq!(width.logical_width(), Some(525.0));
         // Explicit caller floors are honored; production content fitting passes 1px.
         assert_eq!(fit(200.0, 1.0, 1.0).logical_height(240.0), 240.0);
         // No usable scale at measurement, or no measurement: the spec size applies.
         let measured = Some(ContentFit {
             content_height: 263.0,
+            content_width: None,
             pixel_ratio: 2.0,
         });
         for scale in [

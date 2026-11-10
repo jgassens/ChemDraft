@@ -825,7 +825,9 @@ describe("user feedback app stress", () => {
     await mount(selectDocumentObjects(doc, doc.pages[0].id, []), "tool.bond");
     const before = molecules(current())[0], started = performance.now();
     await pointer("pointermove", before.atoms[0]);
-    const label = "O" + "Me".repeat(14) + "C";
+    // Keep all 30 characters within the known formula grammar: exhausted hover text now hands
+    // the next key back to canvas shortcuts instead of accepting arbitrary label text.
+    const label = "O" + "CH".repeat(14) + "N";
     for (const char of label) await key(char);
     expect(editor()?.value).toBe(label);
     await key("Backspace"); expect(editor()?.value).toBe(label.slice(0, -1));

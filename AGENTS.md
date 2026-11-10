@@ -172,11 +172,11 @@ commit checkpoints or present a recognition as certain.
 ### 4.6 NMR claims (absolute)
 
 The shipped backend is the OCL-native provider: HOSE-fragment lookup over statistics from NMRShiftDB2
-experimental assignments. Never describe it as fixture-backed or synthetic (fixtures are test-only
-and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
+assignments (the database does not mark which are experimental). Never describe it as fixture-backed
+or synthetic (fixtures are test-only and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
 multiplicity and J are first-order estimates, labelled so. Stick height is equivalent nuclei, not
 integration; lineshape and field are simulation parameters. Never fabricate a shift for an unmatched
-environment; partial results carry warnings. No calibrated confidence percentages, only honest tiers.
+environment; partial results carry warnings. Rule-based estimates are allowed only when visibly labelled as estimates, per owner 2026-11-09. No calibrated confidence percentages, only honest tiers.
 
 ### 4.7 Licensing and redistribution
 

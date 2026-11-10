@@ -442,11 +442,12 @@ function depictionOrder(mol: OclMolecule, bond: number): DepictionBondOrder {
 function inventDepiction2D(
   mol: OclMolecule,
   inputOrder: Pick<InputOrderedOclMolecule, "originalToEngineAtom" | "engineToOriginalAtom"> | undefined,
-  openUnspecifiedDoubleBonds: boolean
+  openUnspecifiedDoubleBonds: boolean,
+  keepMarkedAtomCoordinates = false
 ): Depiction2D {
   // Ordinary explicit H atoms are real ChemDraft atoms. OCL removes them by default during
   // coordinate invention, so keeping them is required for both atom identity and index mapping.
-  mol.inventCoordinates({ keepHydrogens: true });
+  mol.inventCoordinates({ keepHydrogens: true, ...(keepMarkedAtomCoordinates ? { keepMarkedAtomCoordinates: true } : {}) });
   mol.ensureHelperArrays(OCL.Molecule.cHelperParities);
 
   const up = OCL.Molecule.cBondTypeUp;
@@ -725,7 +726,7 @@ function inputHydrogenNeighbourCounts(brackets: TaggedBracketSmiles): Map<number
  * molecule's identity (canonical idcode compared before/after — belt and braces; the inventor only
  * writes coordinates and stereo bonds).
  */
-export function relayoutMolfile2D(molfile: string): Depiction2D {
+export function relayoutMolfile2D(molfile: string, options: { fixedAtomIndices?: readonly number[] } = {}): Depiction2D {
   // Only explicit input CTfile markers carry intent. OCL also reports unknown parity for
   // degenerate geometry, which must not turn an ordinary native bond into an open bond.
   const inputEitherPairs = new Set(v2000Blocks(molfile)?.bondLines.flatMap((line) => {
@@ -735,7 +736,14 @@ export function relayoutMolfile2D(molfile: string): Depiction2D {
   }));
   const parsed = parseMolfileWithInputOrder(molfile);
   const identityBefore = parsed.molecule.getIDCode();
-  const laidOut = inventDepiction2D(parsed.molecule, parsed, false);
+  for (const index of options.fixedAtomIndices ?? []) {
+    const engineIndex = parsed.originalToEngineAtom[index];
+    if (!Number.isInteger(index) || engineIndex === undefined) throw new Error("Invalid fixed atom index for 2D cleanup.");
+    parsed.molecule.setAtomMarker(engineIndex, true);
+  }
+  // Marked coordinates guide the inventor's attachment angles. The caller must still restore
+  // fixed coordinates exactly: OCL normalizes scale and may repack disconnected fragments.
+  const laidOut = inventDepiction2D(parsed.molecule, parsed, false, (options.fixedAtomIndices?.length ?? 0) > 0);
   const waves = new Map(molfileWavyBonds(molfile).map((bond) => [numericAtomPairKey(bond.from, bond.to), bond]));
   const invented = {
     ...laidOut,
@@ -754,6 +762,14 @@ export function relayoutMolfile2D(molfile: string): Depiction2D {
     throw new Error("2D re-layout unexpectedly changed the molecule's identity.");
   }
   return depiction;
+}
+
+/** Read the actual final coordinates/wedges, including E/Z, isotopes, charges and radicals.
+ * Used after fitting a constrained layout back onto fixed native atoms. */
+export function assertConstrainedLayoutIdentity(before: string, after: string): void {
+  if (parseMolfileWithInputOrder(before).molecule.getIDCode() !== parseMolfileWithInputOrder(after).molecule.getIDCode()) {
+    throw new Error("Clean Up Selection refused: the constrained layout would change stereochemistry. The drawing was kept unchanged.");
+  }
 }
 
 /** Per-atom stereo verdict, index-aligned to the molfile's atom order (so index i corresponds to

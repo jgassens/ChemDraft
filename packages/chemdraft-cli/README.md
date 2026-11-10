@@ -378,9 +378,9 @@ The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivale
 the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
 
 What the numbers are:
-  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
-    assignments. They are predictions, not measurements. source "hose-fragment" is a database
-    match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
+  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2
+    assignments (the database does not mark which are experimental). They are predictions, not
+    measurements. source "hose-fragment" is a database match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
     rule applies and always flagged by an NMR_RULE_ESTIMATED warning.
   - 1H multiplicity and J are first-order estimates from bond topology. They are labelled
     estimated ("estimated": true) and are never measured values.

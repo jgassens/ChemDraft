@@ -1,5 +1,6 @@
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { waveSettingRanges, type WaveSetting } from "@chemdraft/art-engine";
+import { isBlockedByModalDialog } from "@chemdraft/shortcut-engine";
 import {
   Fragment,
   useCallback,
@@ -153,7 +154,7 @@ import {
 } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
+import { listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 import { registerInlinePopover } from "./window-manager/popoverEscape";
 
 export type ToolPaletteMode = "docked" | "floating";
@@ -2039,7 +2040,27 @@ function ArtToolbarStyleControls() {
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
-  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number } | null>(null);
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number; wave: boolean } | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForPaletteCommandCancels(() => {
+      if (sliderDragRef.current?.wave) sliderDragRef.current = null;
+    }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    const cancelWaveDrag = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !sliderDragRef.current?.wave) return;
+      // This capture listener runs before modal/menu handlers in the detached palette too.
+      // Let the owning surface close without disarming the slider or swallowing its key.
+      if (event.defaultPrevented || isBlockedByModalDialog(event.target) ||
+          document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) return;
+      sliderDragRef.current = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onCancel?.();
+    };
+    window.addEventListener("keydown", cancelWaveDrag, true);
+    return () => { disposed = true; unlisten?.(); window.removeEventListener("keydown", cancelWaveDrag, true); };
+  }, [onCancel]);
   const [colorOpen, setColorOpen] = useState(false);
   const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -2404,7 +2425,8 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, commit);
     };
     const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      if ((numeric || valueLabel) && event.key === "Escape") {
+      // Wave drags use the capture listener above so menus and modals retain Escape.
+      if (valueLabel && event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
         sliderDragRef.current = null;
@@ -2447,7 +2469,7 @@ function ArtToolbarStyleControls() {
             data-palette-control="true"
             onPointerDown={(event) => {
               event.stopPropagation();
-              sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+              sliderDragRef.current = { sliderKey, pointerId: event.pointerId, wave: Boolean(numeric) };
               if (typeof event.currentTarget.setPointerCapture === "function") {
                 event.currentTarget.setPointerCapture(event.pointerId);
               }
@@ -2539,7 +2561,9 @@ function ArtToolbarStyleControls() {
       data-art-line-ends-support-all={currentArtStyle?.supportsLineEndsAll ?? false}
       data-art-corners-support-all={currentArtStyle?.supportsCornersAll ?? false}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (event.key === "Escape" && !event.defaultPrevented &&
+            !isBlockedByModalDialog(event.target) &&
+            !document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
           onCancel?.();
           setColorOpen(false);
         }

@@ -300,6 +300,18 @@ describe("page crossing overrides", () => {
 });
 
 describe("page layout presets and migration", () => {
+  it("retains optional page compatibility data through native serialization without backfilling older pages", () => {
+    const document = createEmptyDocument({ now: timestamp });
+    expect(deserializeDocument(serializeDocument(document)).pages[0].compatibility).toBeUndefined();
+    document.pages[0].compatibility = { sourceFormat: "cdxml", originalId: "1", warnings: [], unknown: {
+      cdxmlPageAttributes: { BoundingBox: "0 0 1080 1440", WidthPages: "2", HeightPages: "2" },
+      cdxmlRootPageAttributes: { PrintMargins: "36 36 36 36" }, cdxmlPageNativeSetup: "source setup snapshot"
+    } };
+    expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+    const edited = applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0].id, layout: createPageLayout("a4") }, { now: timestamp });
+    expect(edited.pages[0].compatibility).toEqual(document.pages[0].compatibility);
+  });
+
   it("converts required paper presets through the 96 CSS px per inch coordinate convention", () => {
     expect(createPageLayout("letter")).toMatchObject({
       widthPx: inchesToCssPx(8.5),

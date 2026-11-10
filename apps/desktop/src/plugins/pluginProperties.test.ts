@@ -45,6 +45,14 @@ describe("plugin properties use the property panel's RDKit analysis", () => {
   it.each(["invalid smiles", "C".repeat(501), "C".repeat(5001), ""])("declines invalid or oversized input", async structure => {
     expect(await computePropertiesForPlugin({ format: "smiles", structure }, client)).toMatchObject({ available: false, reason: expect.any(String) });
   });
+  it("explains the character and heavy atom limits", async () => {
+    expect(await computePropertiesForPlugin({ format: "smiles", structure: "C".repeat(5001) }, client)).toEqual({
+      available: false, reason: "The structure is too long: 5001 characters; the limit is 5000."
+    });
+    expect(await computePropertiesForPlugin({ format: "smiles", structure: "C".repeat(501) }, client)).toEqual({
+      available: false, reason: "The structure has 501 heavy atoms, over the 500 limit for this analysis."
+    });
+  });
   it("declines missing or failed engines", async () => {
     expect(await computePropertiesForPlugin({ format: "smiles", structure: "C" }, null)).toMatchObject({ available: false });
     expect(await computePropertiesForPlugin({ format: "smiles", structure: "C" }, { analyze: vi.fn().mockRejectedValue(new Error("engine unavailable")) } as unknown as AnalysisClient))
