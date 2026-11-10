@@ -21,6 +21,7 @@ ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a 
 | `Custom_Bond.png` | `tool.bond` | Draw a single bond | Active |
 | `Custom_Bond_Wedge.png` | `tool.wedgeBond` | Draw a solid wedge bond | Active |
 | `Custom_Bond_Hashed.png` | `tool.hashedBond` | Draw a hashed wedge bond | Active |
+| Original `wavyBond` SVG glyph in `icons.tsx` | `tool.wavyBond` | Draw a wavy single bond, explicitly unknown at its from atom; click again to reverse | Active; bond flyouts and Customize gallery; no hover key |
 | `Custom_Bond_Dashed.png` | `tool.dashedBond` | Draw a dashed bond | Active |
 | `Custom_Bond_Bold.png` | `tool.boldBond` | Draw a bold bond | Active |
 | `Custom_Draw_Line.png` | `tool.chain` | Press-drag an alkane zig-zag chain along the straight drag axis; carries the Chain tools flyout (long-press / Alt+ArrowDown) | Active |

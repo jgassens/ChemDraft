@@ -119,6 +119,14 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
+    commandId: "tool.wavyBond",
+    title: "Wavy bond",
+    kind: "bond",
+    category: "structure",
+    icon: "wavyBond",
+    usageHint: usageHint("click canvas or atom", "click bond to apply, again to reverse", "Esc exits")
+  },
+  {
     commandId: "tool.dashedBond",
     title: "Dashed Bond",
     kind: "bond",

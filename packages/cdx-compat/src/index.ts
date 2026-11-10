@@ -736,6 +736,12 @@ function exportBond(
       `E/Z-unspecified double bond ${bond.id} is kept for ChemDraft only; other apps will see a plain double bond.`
     ));
   }
+  if (bond.display?.bondStyle === "wavy") {
+    warnings.push(warning(
+      "cdxml.wavy_bond_not_written",
+      `CDXML export: wavy bond ${bond.id} written as a plain single bond (wavy display not yet supported)`
+    ));
+  }
   const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);
@@ -3591,7 +3597,7 @@ function cdxmlBondDisplay(
 
 function cdxmlBondDisplayForBondStyle(display: MoleculeBond["display"]): string | undefined {
   const bondStyle = display?.bondStyle;
-  if (!bondStyle) {
+  if (!bondStyle || bondStyle === "wavy") {
     return undefined;
   }
   return cdxmlBeginDisplayByBondStyle[bondStyle];
