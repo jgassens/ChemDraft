@@ -173,6 +173,45 @@ describe("applyNativeStylePreset", () => {
       anchor: { kind: "atom", objectId: "chain", atomId: "a0" } });
   });
 
+  it.each(NativeStylePresets)("carries an explicitly anchored far mark without changing chemistry for $id", preset => {
+    const document = markedChain();
+    const mark = electronMark(document);
+    mark.x = 494; // Centre 500: 400 px from the explicitly chosen atom, beyond every preset radius.
+    mark.atomAssociation = "explicit";
+    mark.radical = true;
+    chain(document).atoms[0]!.markRadicals = 1;
+    const warnings: CompatibilityWarning[] = [];
+    const result = commitPreset(document, preset.id, warnings);
+    const styledMark = electronMark(result);
+    expect(warnings).toEqual([]);
+    expect(chain(result).style.stylePresetId).toBe(preset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(styledMark).toMatchObject({ anchor: mark.anchor, atomAssociation: "explicit", radical: true, charge: -1 });
+    expect(styledMark.x + styledMark.width / 2 - chain(result).atoms[0]!.x)
+      .toBeCloseTo(400 * preset.drawing.bondLengthPx / 40, 9);
+    expectAssignedChemistry(result, chain(result));
+  });
+
+  it.each(NativeStylePresets)("carries an over-valent mark without reassigning its atom for $id", preset => {
+    const document = markedChain();
+    // A drawn O- with a double bond exceeds its charge-dependent valence. Association preserves
+    // the drawing; it must not move the mark to a carbon with more available valence.
+    chain(document).atoms[0]!.element = "O";
+    chain(document).bonds[0]!.order = "double";
+    const mark = electronMark(document);
+    const warnings: CompatibilityWarning[] = [];
+    const result = commitPreset(document, preset.id, warnings);
+    const styledMark = electronMark(result);
+    expect(warnings).toEqual([]);
+    expect(chain(result).style.stylePresetId).toBe(preset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(chain(result).bonds).toEqual(chain(document).bonds);
+    expect(styledMark.anchor).toEqual(mark.anchor);
+    expect(styledMark.x + styledMark.width / 2 - chain(result).atoms[0]!.x)
+      .toBeCloseTo(-20 * preset.drawing.bondLengthPx / 40, 9);
+    expectAssignedChemistry(result, chain(result));
+  });
+
   it("refuses a molecule when scaled offsets would lose charge at commit and warns with the atom and field", () => {
     const document = markedChain();
     const molecule = chain(document);

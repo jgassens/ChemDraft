@@ -1,8 +1,6 @@
 // The commit normalizer and layout edits must resolve marks using exactly the same rules.
 import { nativeDrawingStyleFromObjectStyle, type DocumentPage, type ElectronMarkObject,
   type MoleculeObject, type MoleculeBond } from "@chemdraft/chem-core";
-import { atomBondOrderUsageMap } from "@chemdraft/layout-engine";
-import { nativeElementFromAtomLabel, nativeAtomChargeSupportsValence } from "./atoms";
 import { distance, type PagePoint } from "./shared";
 import { nativeBondLengthPx } from "./molecule";
 
@@ -17,9 +15,25 @@ export interface NativeElectronMarkAssignments {
   assignedRadicalsByAtomKey: Map<string, number>;
 }
 
-/** Sticky atom anchors first, then nearest supportable atoms within each molecule's radius.
+export interface NativeElectronMarkAssignmentOptions {
+  /** A direct drop found no atom in its capture radius. Suppress legacy capture for this commit only. */
+  floatingElectronMarkIds?: ReadonlySet<string>;
+}
+
+/** The atom fields contributed by each mark kind; display-only marks contribute nothing. */
+export function electronMarkAtomContribution(mark: ElectronMarkObject): { charge: number; radicals: number } {
+  if (mark.markKind === "charge") {
+    return { charge: nativeChargeValue(mark.charge) ?? 0, radicals: mark.radical === true ? 1 : 0 };
+  }
+  return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
+}
+
+/** Explicit atom anchors stay bound at any distance; legacy anchors are sticky within radius.
+ * Other marks use the nearest atom in radius without valence-based reassignment.
  * Evaluate on the original page before any geometry changes. Point marks outside the radius float. */
-export function nativeElectronMarkAssignments(page: DocumentPage): NativeElectronMarkAssignments {
+export function nativeElectronMarkAssignments(
+  page: DocumentPage, options: NativeElectronMarkAssignmentOptions = {}
+): NativeElectronMarkAssignments {
   const electronMarks = page.objects.filter((object): object is ElectronMarkObject =>
     object.type === "electron-mark" &&
     (object.markKind === "lone-pair" ||
@@ -36,19 +50,7 @@ export function nativeElectronMarkAssignments(page: DocumentPage): NativeElectro
     return { anchorByMarkId: new Map(), assignedChargeByAtomKey: new Map(), assignedRadicalsByAtomKey: new Map() };
   }
 
-  // What a mark contributes to its atom. Lone pairs contribute nothing — they anchor for
-  // positioning only, since implied lone pairs are already part of the octet arithmetic.
-  const markContribution = (mark: ElectronMarkObject): { charge: number; radicals: number } => {
-    if (mark.markKind === "charge") {
-      return { charge: nativeChargeValue(mark.charge) ?? 0, radicals: mark.radical === true ? 1 : 0 };
-    }
-    return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
-  };
-
   const moleculeById = new Map(molecules.map((molecule) => [molecule.id, molecule] as const));
-  const usageByMoleculeId = new Map(molecules.map((molecule) =>
-    [molecule.id, atomBondOrderUsageMap(molecule.atoms, molecule.bonds)] as const
-  ));
   // The atom-targeted tool drops the mark one bond length out (the chain-growth slot), so a
   // molecule drawn or pasted with longer bonds needs its radius to scale with its own bonds.
   const associationRadiusByMoleculeId = new Map(molecules.map((molecule) => [
@@ -58,39 +60,18 @@ export function nativeElectronMarkAssignments(page: DocumentPage): NativeElectro
   const assignedChargeByAtomKey = new Map<string, number>();
   const assignedRadicalsByAtomKey = new Map<string, number>();
   const anchorByMarkId = new Map<string, { objectId: string; atomId: string } | undefined>();
+  // Recording an unassigned result also blocks pass 2 from applying the wider legacy radius.
+  for (const id of options.floatingElectronMarkIds ?? []) anchorByMarkId.set(id, undefined);
 
   const markCanAssociate = (
     moleculeId: string,
     atomId: string,
     center: PagePoint,
-    contribution: { charge: number; radicals: number }
+    explicit = false
   ): boolean => {
-    const molecule = moleculeById.get(moleculeId);
-    const atom = molecule?.atoms.find((candidate) => candidate.id === atomId);
-    if (!molecule || !atom ||
-      distance(center, atom) > (associationRadiusByMoleculeId.get(moleculeId) ?? nativeChargeAssociationRadiusPx)) {
-      return false;
-    }
-
-    const element = nativeElementFromAtomLabel(atom.element);
-    if (!element) {
-      // Nicknames and condensed labels are superatoms outside the element valence tables. They
-      // still own nearby charge/radical marks; only the distance can be judged without inventing
-      // valence rules for labels such as Me, N3, or Ph.
-      return true;
-    }
-
-    if (contribution.charge === 0 && contribution.radicals === 0) {
-      return true;
-    }
-
-    const key = nativeElectronMarkAtomKey(moleculeId, atomId);
-    const intrinsicCharge = atom.formalCharge - (atom.markCharge ?? 0);
-    const candidateCharge = intrinsicCharge + (assignedChargeByAtomKey.get(key) ?? 0) + contribution.charge;
-    // Each unpaired electron occupies a bonding slot, so it counts as used valence.
-    const candidateUsage = (usageByMoleculeId.get(moleculeId)?.get(atomId) ?? 0) +
-      (assignedRadicalsByAtomKey.get(key) ?? 0) + contribution.radicals;
-    return nativeAtomChargeSupportsValence(element, candidateUsage, candidateCharge);
+    const atom = moleculeById.get(moleculeId)?.atoms.find((candidate) => candidate.id === atomId);
+    return atom !== undefined &&
+      (explicit || distance(center, atom) <= (associationRadiusByMoleculeId.get(moleculeId) ?? nativeChargeAssociationRadiusPx));
   };
 
   const assign = (moleculeId: string, atomId: string, contribution: { charge: number; radicals: number }) => {
@@ -100,29 +81,29 @@ export function nativeElectronMarkAssignments(page: DocumentPage): NativeElectro
   };
 
   // Pass 1 — sticky anchors. A mark that is already bound to an atom (by the charge tool or an
-  // earlier pass) keeps that atom while it stays in radius and the chemistry stays legal, so
+  // earlier pass) keeps that atom while it stays in radius, or at any distance if explicit, so
   // dragging a mark between two nearby atoms doesn't flicker and a crowded placement can't be
   // stolen by whichever neighbor happens to sit marginally closer.
   electronMarks.forEach((mark) => {
-    if (mark.anchor.kind !== "atom" || !mark.anchor.objectId || !mark.anchor.atomId) {
+    if (anchorByMarkId.has(mark.id) || mark.anchor.kind !== "atom" || !mark.anchor.objectId || !mark.anchor.atomId) {
       return;
     }
 
-    const contribution = markContribution(mark);
+    const contribution = electronMarkAtomContribution(mark);
     const center = nativeChargeMarkCenter(mark);
-    if (markCanAssociate(mark.anchor.objectId, mark.anchor.atomId, center, contribution)) {
+    if (markCanAssociate(mark.anchor.objectId, mark.anchor.atomId, center, mark.atomAssociation === "explicit")) {
       assign(mark.anchor.objectId, mark.anchor.atomId, contribution);
       anchorByMarkId.set(mark.id, { objectId: mark.anchor.objectId, atomId: mark.anchor.atomId });
     }
   });
 
-  // Pass 2 — everything else associates with its nearest supportable atom in radius, or floats.
+  // Pass 2 — everything else associates with its nearest atom in radius, or floats.
   electronMarks.forEach((mark) => {
     if (anchorByMarkId.has(mark.id)) {
       return;
     }
 
-    const contribution = markContribution(mark);
+    const contribution = electronMarkAtomContribution(mark);
     const center = nativeChargeMarkCenter(mark);
     let nearest: { objectId: string; atomId: string; distance: number } | undefined;
     molecules.forEach((molecule) => {
@@ -132,7 +113,7 @@ export function nativeElectronMarkAssignments(page: DocumentPage): NativeElectro
         if (
           separation <= associationRadius &&
           (!nearest || separation < nearest.distance) &&
-          markCanAssociate(molecule.id, atom.id, center, contribution)
+          markCanAssociate(molecule.id, atom.id, center)
         ) {
           nearest = { objectId: molecule.id, atomId: atom.id, distance: separation };
         }

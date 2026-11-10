@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { type MoleculeObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning } from "@chemdraft/export-engine";
-import { copyAsMolfile, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
+import { applySingleBondToolAtPoint, copyAsMolfile, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
 
 function fixture() {
@@ -14,6 +16,85 @@ function fixture() {
   return toggleBracketRepeatUnit(insertNativeBracket(document, { x: 90, y: 100 }, "square", { x: 190, y: 180 }));
 }
 describe("document repeat-unit export mapping", () => {
+  it.each(["v2000", "v3000"] as const)("keeps the one-copy note without a molecule id when an imported SRU is written to %s", flavor => {
+    const source = readFileSync(new URL("../../../packages/fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8")
+      .replace(/<crossingbond[^>]*\/>/, "").replace('SRULabel="x-y"', 'SRULabel="n"');
+    const document = openChemDraftPayload(source).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const warnings: string[] = [];
+    expect(copyAsMolfile(document, flavor, warnings)).toContain("SRU");
+    expect(warnings).toEqual([
+      "A molecule is inside a repeat unit n; polymer formula not computed; values and molecular graph exports are for one drawn copy only."
+    ]);
+    expect(warnings.join(" ")).not.toContain(molecule.id);
+  });
+
+  it.each(["missing snapshot", "new atom", "deleted atom"])("omits the stale polymer note after declining an imported SRU: %s", edit => {
+    const source = readFileSync(new URL("../../../packages/fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8")
+      .replace(/<crossingbond[^>]*\/>/, "").replace('SRULabel="x-y"', 'SRULabel="n"');
+    const document = openChemDraftPayload(source).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    if (edit === "missing snapshot") {
+      for (const object of document.pages[0].objects) {
+        if (object.type === "bracket") delete object.compatibility!.unknown.cdxmlBracketAtomSnapshots;
+      }
+    } else if (edit === "new atom") {
+      molecule.atoms.push({ ...molecule.atoms[0], id: "new-atom", x: 150 });
+    } else {
+      molecule.atoms.pop();
+      molecule.bonds = [];
+    }
+    for (const flavor of ["v2000", "v3000"] as const) {
+      const warnings: string[] = [];
+      expect(copyAsMolfile(document, flavor, warnings)).not.toContain("SRU");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("only the bare structure is written");
+      expect(warnings.join(" ")).not.toContain("polymer formula not computed");
+      expect(warnings.join(" ")).not.toContain("inside a repeat unit");
+      expect(warnings.join(" ")).not.toContain(molecule.id);
+    }
+  });
+
+  it.each(["v2000", "v3000"] as const)("drops cached one-copy notes as well as live notes for a declined SRU in %s", flavor => {
+    // Command results are frozen undo snapshots; clone before simulating an edit.
+    const document = structuredClone(toggleBracketRepeatUnit(insertNativeBracket(
+      applySingleBondToolAtPoint(createPhase4Document("Cached SRU context"), { x: 140, y: 140 }),
+      { x: 100, y: 100 }, "square", { x: 260, y: 200 })));
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(molecule.chemistry?.warnings).toContainEqual(expect.objectContaining({ code: "chemistry.bracket_multiplier" }));
+    for (const object of document.pages[0].objects) {
+      if (object.type === "bracket") object.containedObjectIds.push("missing");
+    }
+    const before = structuredClone(document);
+    const warnings: string[] = [];
+    expect(copyAsMolfile(document, flavor, warnings)).not.toContain("SRU");
+    expect(warnings).toEqual([expect.stringContaining("its membership includes missing or non-molecular objects")]);
+    expect(document).toEqual(before);
+  });
+
+  it.each(["multiple", "unknown"] as const)("keeps the %s one-copy note without cached chemistry", usage => {
+    const document = structuredClone(fixture());
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(molecule.chemistry).toBeUndefined();
+    for (const object of document.pages[0].objects) {
+      if (object.type !== "bracket") continue;
+      object.bracketUsage = usage;
+      object.repeatUnit = false;
+      object.repeatCount = usage === "multiple" ? 3 : undefined;
+      object.containedObjectIds = [molecule.id];
+    }
+    const description = usage === "multiple" ? "a multiple group x3" : "a bracket group with unknown usage";
+    for (const flavor of ["v2000", "v3000"] as const) {
+      const warnings: string[] = [];
+      expect(copyAsMolfile(document, flavor, warnings)).not.toContain("SRU");
+      expect(warnings).toEqual([
+        expect.stringContaining("cannot be represented as an SRU"),
+        `A molecule is inside ${description}; values and molecular graph exports are for one drawn copy only.`
+      ]);
+      expect(warnings.join(" ")).not.toContain(molecule.id);
+    }
+  });
+
   it("finds atoms inside brackets even when the molecule extends outside, and writes crossing bonds", () => {
     const doc = structuredClone(fixture());
     const warnings: string[] = [];

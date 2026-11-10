@@ -1,15 +1,17 @@
 import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
 import {
   atomProblem, readNativeDocumentContents, formulaSpansFromText,
-  nativeElectronMarkAtomKey, isEditableNativeMoleculeGraph,
-  nativeChargeValue, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude
+  nativeElectronMarkAtomKey, nativeElectronMarkAssignments, isEditableNativeMoleculeGraph,
+  nativeChargeValue, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude,
+  type NativeElectronMarkAssignmentOptions
 } from "@chemdraft/document-workflow-core";
 export {
-  isEditableNativeMoleculeGraph, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude
+  isEditableNativeMoleculeGraph, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude,
+  electronMarkAtomContribution
 } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
-import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
+import { repeatUnits, repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
@@ -72,6 +74,7 @@ import {
 } from "@chemdraft/art-engine";
 import {
   adoptDerivedDocument,
+  bracketChemistryWarnings,
   bracketPairs,
   withoutBracketPairMetadata,
   moleculeBracketWarningMessages,
@@ -8265,10 +8268,7 @@ function addChargeMarkAtPoint(
  * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
  * copies pasted without their mark all settle correctly with no history diffing.
  */
-export interface CommittedDocumentNormalizationOptions {
-  /** A direct drop found no atom in its capture radius. Suppress legacy capture for this commit only. */
-  floatingElectronMarkIds?: ReadonlySet<string>;
-}
+export type CommittedDocumentNormalizationOptions = NativeElectronMarkAssignmentOptions;
 
 /**
  * What every committed document passes through: MainWindow's five commit paths (the initial
@@ -8307,14 +8307,6 @@ export function reconcileNativeChargeMarks(
   return changed ? adoptDerivedDocument(document, { ...document, pages }) : document;
 }
 
-/** The atom fields contributed by each mark kind; display-only marks contribute nothing. */
-export function electronMarkAtomContribution(mark: ElectronMarkObject): { charge: number; radicals: number } {
-  if (mark.markKind === "charge") {
-    return { charge: nativeChargeValue(mark.charge) ?? 0, radicals: mark.radical === true ? 1 : 0 };
-  }
-  return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
-}
-
 function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: CommittedDocumentNormalizationOptions): DocumentPage {
   const electronMarks = page.objects.filter((object): object is ElectronMarkObject =>
     object.type === "electron-mark" &&
@@ -8332,84 +8324,7 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: Committed
     return page;
   }
 
-  const moleculeById = new Map(molecules.map((molecule) => [molecule.id, molecule] as const));
-  // The atom-targeted tool drops the mark one bond length out (the chain-growth slot), so a
-  // molecule drawn or pasted with longer bonds needs its radius to scale with its own bonds.
-  const associationRadiusByMoleculeId = new Map(molecules.map((molecule) => [
-    molecule.id,
-    Math.max(nativeChargeAssociationRadiusPx, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 1.15)
-  ] as const));
-  const assignedChargeByAtomKey = new Map<string, number>();
-  const assignedRadicalsByAtomKey = new Map<string, number>();
-  const anchorByMarkId = new Map<string, { objectId: string; atomId: string } | undefined>();
-  // Recording an unassigned result also blocks pass 2 from applying the wider legacy radius.
-  for (const id of options.floatingElectronMarkIds ?? []) anchorByMarkId.set(id, undefined);
-
-  const markCanAssociate = (
-    moleculeId: string,
-    atomId: string,
-    center: PagePoint,
-    explicit = false
-  ): boolean => {
-    const atom = moleculeById.get(moleculeId)?.atoms.find((candidate) => candidate.id === atomId);
-    return atom !== undefined &&
-      (explicit || distance(center, atom) <= (associationRadiusByMoleculeId.get(moleculeId) ?? nativeChargeAssociationRadiusPx));
-  };
-
-  const assign = (moleculeId: string, atomId: string, contribution: { charge: number; radicals: number }) => {
-    const key = nativeElectronMarkAtomKey(moleculeId, atomId);
-    assignedChargeByAtomKey.set(key, (assignedChargeByAtomKey.get(key) ?? 0) + contribution.charge);
-    assignedRadicalsByAtomKey.set(key, (assignedRadicalsByAtomKey.get(key) ?? 0) + contribution.radicals);
-  };
-
-  // Pass 1 — sticky anchors. A mark that is already bound to an atom (by the charge tool or an
-  // earlier pass) keeps that atom while it stays in radius, so
-  // dragging a mark between two nearby atoms doesn't flicker and a crowded placement can't be
-  // stolen by whichever neighbor happens to sit marginally closer.
-  electronMarks.forEach((mark) => {
-    if (anchorByMarkId.has(mark.id) || mark.anchor.kind !== "atom" || !mark.anchor.objectId || !mark.anchor.atomId) {
-      return;
-    }
-
-    const contribution = electronMarkAtomContribution(mark);
-    const center = nativeChargeMarkCenter(mark);
-    if (markCanAssociate(mark.anchor.objectId, mark.anchor.atomId, center, mark.atomAssociation === "explicit")) {
-      assign(mark.anchor.objectId, mark.anchor.atomId, contribution);
-      anchorByMarkId.set(mark.id, { objectId: mark.anchor.objectId, atomId: mark.anchor.atomId });
-    }
-  });
-
-  // Pass 2 — everything else associates with its nearest atom in radius, or floats.
-  electronMarks.forEach((mark) => {
-    if (anchorByMarkId.has(mark.id)) {
-      return;
-    }
-
-    const contribution = electronMarkAtomContribution(mark);
-    const center = nativeChargeMarkCenter(mark);
-    let nearest: { objectId: string; atomId: string; distance: number } | undefined;
-    molecules.forEach((molecule) => {
-      const associationRadius = associationRadiusByMoleculeId.get(molecule.id) ?? nativeChargeAssociationRadiusPx;
-      molecule.atoms.forEach((atom) => {
-        const separation = distance(center, atom);
-        if (
-          separation <= associationRadius &&
-          (!nearest || separation < nearest.distance) &&
-          markCanAssociate(molecule.id, atom.id, center)
-        ) {
-          nearest = { objectId: molecule.id, atomId: atom.id, distance: separation };
-        }
-      });
-    });
-
-    if (nearest) {
-      assign(nearest.objectId, nearest.atomId, contribution);
-      anchorByMarkId.set(mark.id, { objectId: nearest.objectId, atomId: nearest.atomId });
-    } else {
-      anchorByMarkId.set(mark.id, undefined);
-    }
-  });
-
+  const { anchorByMarkId, assignedChargeByAtomKey, assignedRadicalsByAtomKey } = nativeElectronMarkAssignments(page, options);
   const nextObjectById = new Map<string, DocumentObject>();
 
   molecules.forEach((molecule) => {
@@ -19994,9 +19909,19 @@ export function copyAsMolfile(
   const repeatWarnings: ExportWarning[] = [];
   const repeatUnitGroups = repeatUnitMolfileGroups(document, molecules, repeatWarnings, { merged: true, expansions });
   // SRU encoding preserves the annotation; the graph and cached formula still describe one copy.
-  // Read live context before merging, which can rebuild cached chemistry under a new molecule id.
-  const repeatMessages = [...repeatWarnings.map(warning => warning.message),
-    ...molecules.flatMap(molecule => moleculeBracketWarningMessages(molecule, document))];
+  // Keep SRU context only for annotations actually written, but retain multiple/unknown context.
+  // Read it before merging, which can rebuild cached chemistry under a new molecule id, and
+  // describe molecules without native ids.
+  const writtenRepeatUnits = new Set(repeatUnitGroups.map(group => group.objectId));
+  const nonSruGroups = new Set(repeatUnits(document, molecules).filter(unit => unit.usage !== "sru").map(unit => unit.objectId));
+  // The graph-only writer re-emits cached bracket notes with native ids. Live context below
+  // replaces those notes, including when an SRU is declined and its old note must be dropped.
+  const cachedBracketMessages = new Set(moleculeBracketWarningMessages(merged));
+  const repeatMessages = [...repeatWarnings.map(warning => molecules.reduce((message, molecule) =>
+    message.replaceAll(`member "${molecule.id}"`, "member molecule"), warning.message)),
+    ...molecules.flatMap(molecule => bracketChemistryWarnings(document, molecule)
+      .filter(warning => writtenRepeatUnits.has(warning.objectId) || nonSruGroups.has(warning.objectId))
+      .map(warning => warning.message.replace(`Molecule ${molecule.id} is`, "A molecule is")))];
   warningsOut?.push(...repeatMessages);
   const options = {
     fromDocFrame: true,
@@ -20015,7 +19940,7 @@ export function copyAsMolfile(
         message.startsWith(`Atom label "${atom.element}" is not an element symbol;`)
       )).map(atom => atom.element));
       return nativeMoleculeExportWarnings(molecule, { unrecognizedLabels }).map(warning => warning.message);
-    }), ...writerWarnings.filter(message => !repeatMessages.some(warning => warning.includes(message))));
+    }), ...writerWarnings.filter(message => !cachedBracketMessages.has(message) && !repeatMessages.some(warning => warning.includes(message))));
   }
 }
 
