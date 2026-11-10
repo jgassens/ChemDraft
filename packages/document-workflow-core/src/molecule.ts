@@ -495,9 +495,15 @@ export function scaleParsedMolfileAtoms(
   point: PagePoint,
   page: ChemDraftDocument["pages"][number],
   targetBondLengthPx: number = nativeBondLengthPx,
-  constrainToPage = true
+  constrainToPage = true,
+  bondStatistic: "mean" | "median" = "mean"
 ): ParsedMolfileGraph["atoms"] {
-  const { scale } = molfileCoordinateScale(graph.atoms, graph.bonds, targetBondLengthPx, 1.5);
+  // Generated depictions and authored templates retain their established mean sizing.
+  // External MOL/RXN and recognition input explicitly opt into the shared median scaler.
+  const averageBondLength = bondStatistic === "mean" ? averageParsedMolfileBondLength(graph) : 0;
+  const scale = bondStatistic === "median"
+    ? molfileCoordinateScale(graph.atoms, graph.bonds, targetBondLengthPx, 1.5).scale
+    : targetBondLengthPx / (averageBondLength > 0 ? averageBondLength : 1.5);
   const scaledAtoms = graph.atoms.map((atom) => ({
     ...atom,
     x: atom.x * scale,
@@ -526,6 +532,23 @@ export function scaleParsedMolfileAtoms(
   }
 
   return atoms;
+}
+
+function averageParsedMolfileBondLength(graph: ParsedMolfileGraph): number {
+  const atomById = new Map(graph.atoms.map((atom) => [atom.id, atom]));
+  const lengths = graph.bonds
+    .map((bond) => {
+      const fromAtom = atomById.get(bond.fromAtomId);
+      const toAtom = atomById.get(bond.toAtomId);
+      return fromAtom && toAtom ? Math.hypot(fromAtom.x - toAtom.x, fromAtom.y - toAtom.y) : 0;
+    })
+    .filter((length) => length > 0.0001);
+
+  if (lengths.length === 0) {
+    return 0;
+  }
+
+  return lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
 }
 
 // Per-molecule cache of the ring-interior side map (molecule objects are immutable, so a new

@@ -927,7 +927,7 @@ export async function buildSmilesDocument(
   let molecule = moleculeFromDocument(document);
   molecule = withDativeBondStyles(molecule, depicted.dativeBondIndices);
   document = replaceMolecule(document, molecule);
-  // Apply an explicitly requested size after the shared median-based insertion.
+  // Retain the CLI's established mean-then-median scaling and rounding for identical output.
   if (Math.abs(bondLength - CLI_DEFAULT_BOND_LENGTH_PX) > 0.0001) {
     document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
     molecule = moleculeFromDocument(document);

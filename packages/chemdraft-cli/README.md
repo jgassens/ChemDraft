@@ -407,7 +407,9 @@ and 2 for bad arguments.
 
 Export one SMILES string or a JSON batch to CDXML, PDF, SDF, MOL, or SMILES.
 
-Exported MOL/SDF use the MDL convention of a 1.5 Angstrom median bond length per CTAB/record; pasted MOL is scaled to the document's bond length.
+Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,
+MOL pasted (including RXN MOL blocks) or recognized from an image is scaled by its median bond
+to the document's bond length. SMILES depictions, name-to-structure and templates retain mean-based sizing.
 
 ~~~bash
 pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml

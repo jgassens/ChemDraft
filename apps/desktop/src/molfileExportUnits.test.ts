@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { type MoleculeObject, moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { molfileCoordinateScale } from "@chemdraft/layout-engine";
+import { createSmilesMolecule, pastedStructureDepictionFromMolfile, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
 import { createPhase4Document, copyAsMolfile, createNativeMolfileMolecule } from "./documentWorkflow";
 
 function chain(id: string, x: number, lengths: number[]): MoleculeObject {
@@ -52,6 +53,45 @@ it("MOL paste uses the median even for legacy drawing units and an outlier bond"
   const imported = createNativeMolfileMolecule(document, { x: 300, y: 300 }, raw, "molfile-v2000");
   expect(imported.atoms[1]!.x - imported.atoms[0]!.x).toBeCloseTo(28, 4);
   expect(imported.atoms[3]!.x - imported.atoms[2]!.x).toBeCloseTo(280, 4);
+});
+
+it.each([1, 22])("SMILES depictions and templates retain mean sizing while MOL paste uses the median (input unit %s)", unit => {
+  const document = createPhase4Document("input scope");
+  document.styles.drawing = { bondLengthPx: 28 };
+  const raw = moleculeToMolfileV2000(chain("source", 100, [unit, unit, 4 * unit]), { kekuleBondOrders: new Map() }).contents;
+  const depiction = pastedStructureDepictionFromMolfile(raw);
+  const point = { x: 300, y: 300 };
+  const smiles = createSmilesMolecule(document, point, depiction, "CCCC");
+  const template = structureTemplateMolecule({
+    id: "test-uneven-chain", name: "Test uneven chain", synonyms: [],
+    family: "crown-ethers-cryptands", category: "supramolecular",
+    smiles: "CCCC", formula: "C4H10", charge: 0,
+    source: { database: "PubChem", cid: null }, note: "Synthetic test-only layout with unequal bonds.",
+    layout: {
+      atoms: depiction.atoms,
+      bonds: depiction.bonds.map(bond => [bond.from, bond.to, 1] as const)
+    }
+  }, { document, centre: point });
+  const pasted = createNativeMolfileMolecule(document, point, raw, "molfile-v2000");
+  for (const molecule of [smiles, template]) {
+    // Input mean = 2 units, median = 1 unit. Keep the pre-fix depiction dimensions.
+    expect(molecule.atoms[1]!.x - molecule.atoms[0]!.x).toBeCloseTo(14, 4);
+    expect(molecule.atoms[3]!.x - molecule.atoms[2]!.x).toBeCloseTo(56, 4);
+    expect(molecule.atoms[3]!.x - molecule.atoms[0]!.x).toBeCloseTo(84, 4);
+  }
+  expect(pasted.atoms[1]!.x - pasted.atoms[0]!.x).toBeCloseTo(28, 4);
+  expect(pasted.atoms[3]!.x - pasted.atoms[2]!.x).toBeCloseTo(112, 4);
+});
+
+it("identifier MOL input retains raw coordinates while clipboard MOL uses Angstrom units", () => {
+  const document = createPhase4Document("identifier units");
+  document.pages[0]!.objects = [chain("source", 100, [22, 22, 88])];
+  const raw = parseMolfileGraph(copyAsMolfile(document, "v2000", [], { coordinateUnits: "raw" })!);
+  const exported = parseMolfileGraph(copyAsMolfile(document, "v2000")!);
+  expect(raw.atoms[1]!.x - raw.atoms[0]!.x).toBe(22);
+  expect(raw.atoms[3]!.x - raw.atoms[2]!.x).toBe(88);
+  expect(exported.atoms[1]!.x - exported.atoms[0]!.x).toBeCloseTo(1.5, 4);
+  expect(exported.atoms[3]!.x - exported.atoms[2]!.x).toBeCloseTo(6, 4);
 });
 
 it("bondless Copy As and paste use the document nominal bond length", () => {

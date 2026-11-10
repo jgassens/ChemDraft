@@ -7662,12 +7662,20 @@ export function MainWindow({
       }
       case "clipboard.copyAs.mol": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        try {
+          await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        } catch (error) {
+          setStatus(`Copy As MOL failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
         return;
       }
       case "clipboard.copyAs.molV2000": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        try {
+          await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        } catch (error) {
+          setStatus(`Copy As MOL V2000 failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
         return;
       }
       case "clipboard.copyAs.cdxml": {
@@ -7692,13 +7700,13 @@ export function MainWindow({
       case "clipboard.copyAs.inchiKey": {
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
         const warnings: string[] = [];
-        const molfile = copyAsMolfile(current, "v2000", warnings);
-        if (!molfile) {
-          setStatus(`Nothing to copy as ${label}`);
-          return;
-        }
-        setStatus(`Computing ${label}…`);
         try {
+          const molfile = copyAsMolfile(current, "v2000", warnings, { coordinateUnits: "raw" });
+          if (!molfile) {
+            setStatus(`Nothing to copy as ${label}`);
+            return;
+          }
+          setStatus(`Computing ${label}…`);
           // Same lazy-engine path the analyze command uses: neither the Emscripten glue nor the
           // 7.5 MB wasm belongs in the startup graph for users who never touch InChI.
           const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");

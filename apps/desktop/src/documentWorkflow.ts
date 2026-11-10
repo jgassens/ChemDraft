@@ -5010,7 +5010,7 @@ export function createNativeMolfileMolecule(
 
   const page = firstPage(document);
   const { bondLengthPx, objectStyle } = documentDrawingDefaults(document);
-  const atoms = scaleParsedMolfileAtoms(graph, point, page, bondLengthPx).map((atom) => ({
+  const atoms = scaleParsedMolfileAtoms(graph, point, page, bondLengthPx, true, "median").map((atom) => ({
     id: atom.id,
     element: atom.element,
     ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
@@ -19968,11 +19968,13 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
  * lossy-emission notes (V2000 flattens dative bonds to single; any other label — a placeholder,
  * unrecognized text, a flagged group, a bonded "Ar" — writes as a dummy atom) — V3000 keeps dative
  * bonds as coordination type 9 and stays silent about them.
+ * External copies default to Angstrom units; identifier computation requests raw coordinates.
  */
 export function copyAsMolfile(
   document: ChemDraftDocument,
   flavor: "v2000" | "v3000",
-  warningsOut?: string[]
+  warningsOut?: string[],
+  options: { coordinateUnits?: "angstrom" | "raw" } = {}
 ): string | undefined {
   const molecules = copyAsScopeMolecules(document);
   const scoped = copyAsMergedMolecule(molecules);
@@ -19990,7 +19992,7 @@ export function copyAsMolfile(
   const repeatMessages = [...repeatWarnings.map(warning => warning.message),
     ...molecules.flatMap(molecule => moleculeBracketWarningMessages(molecule, document))];
   warningsOut?.push(...repeatMessages);
-  const options = {
+  const writerOptions = {
     fromDocFrame: true,
     warnings: writerWarnings,
     kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
@@ -19999,7 +20001,11 @@ export function copyAsMolfile(
     placeholderAtoms
   };
   try {
-    return moleculeToInteropMolfile(merged, flavor, documentDrawingDefaults(document).bondLengthPx, options).contents;
+    // Identifier computation keeps the raw drawing coordinates and their established rounding.
+    if (options.coordinateUnits === "raw") {
+      return (flavor === "v2000" ? moleculeToMolfileV2000 : moleculeToMolfileV3000)(merged, writerOptions).contents;
+    }
+    return moleculeToInteropMolfile(merged, flavor, documentDrawingDefaults(document).bondLengthPx, writerOptions).contents;
   } finally {
     warningsOut?.push(...molecules.flatMap(molecule => {
       // Account only for labels the writer actually diagnosed, retaining drawn atom indices.
