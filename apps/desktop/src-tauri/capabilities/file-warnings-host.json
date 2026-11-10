@@ -3,5 +3,5 @@
   "identifier": "file-warnings-host",
   "description": "Display-only warnings webview: private snapshots, ready and row actions. No document, filesystem, engine, generic events or menu grants.",
   "windows": ["file-warnings"],
-  "permissions": ["allow-file-warnings-request", "allow-file-warnings-ready", "allow-file-warnings-action", "core:window:allow-start-dragging"]
+  "permissions": ["allow-file-warnings-request", "allow-file-warnings-ready", "allow-file-warnings-action"]
 }

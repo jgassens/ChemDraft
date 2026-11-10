@@ -46,7 +46,7 @@ export function FileWarningsWindow({ platform = detectShortcutPlatform() }: { pl
   }, [snapshot]);
   if (!snapshot) return null;
   return <div className="open-warnings-list" data-open-warnings-list role="dialog" aria-label="File warnings">
-    <div className="open-warnings-header" data-tauri-drag-region="deep">
+    <div className="open-warnings-header">
       <h2 className="open-warnings-heading">{snapshot.reports.length > 1 ? "Open and save warnings" : snapshot.reports[0]?.heading}</h2>
       <button ref={closeButton} type="button" className="open-warnings-close" aria-label="Close the warnings list" onClick={() => send({ kind: "close" })}>×</button>
     </div>

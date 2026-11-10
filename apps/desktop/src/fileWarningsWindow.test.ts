@@ -140,7 +140,7 @@ describe("warnings presentation source guards", () => {
   it("keeps the warnings host outside generic event/command/menu capabilities", () => {
     const host = JSON.parse(source("../src-tauri/capabilities/file-warnings-host.json"));
     expect(host.windows).toEqual(["file-warnings"]);
-    expect(host.permissions).toEqual(["allow-file-warnings-request", "allow-file-warnings-ready", "allow-file-warnings-action", "core:window:allow-start-dragging"]);
+    expect(host.permissions).toEqual(["allow-file-warnings-request", "allow-file-warnings-ready", "allow-file-warnings-action"]);
     const native = source("../src-tauri/src/file_warnings_window.rs");
     expect(native).not.toContain("install_app_menu(");
     expect(native).not.toContain("addChildWindow_");
