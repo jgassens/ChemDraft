@@ -25,19 +25,21 @@ const u32 = (value: number) => [...u16(value), ...u16(value >>> 16)];
 const coord = (value: number) => u32(value * 65536);
 const property = (tag: number, bytes: number[]) => [...u16(tag), ...u16(bytes.length), ...bytes];
 const record = (tag: number, id: number, ...children: number[][]) => [...u16(tag), ...u32(id), ...children.flat(), 0, 0];
-const binaryPageStep = (heads: number[][], lineType?: number) => new Uint8Array([
+const binaryPage = (...children: number[][]) => new Uint8Array([
   ...new TextEncoder().encode(MAGIC), 4, 3, 2, 1, ...Array(10).fill(0),
-  ...record(0x8000, 0, record(0x8001, 1,
-    record(0x800e, 41, property(0x0c04, u32(30)), property(0x0c01, [2, 5].flatMap(u32)),
-      property(0x0c02, [8, 11, 14, 17, 20].flatMap(u32))),
-    ...[2, 5, 8, 11, 14, 17, 20].map((id, index) => record(0x8003, id,
-      record(0x8004, id + 1, property(0x0402, u16(index % 2 ? 8 : 6)),
-        property(0x0200, [60, 30 + index * 30].flatMap(coord))))),
-    record(0x8007, 30, property(0x0a00, u16(1)), ...heads,
-      ...(lineType === undefined ? [] : [property(0x0a01, u16(lineType))]),
-      property(0x0204, [90, 100, 90, 160].flatMap(coord)),
-      property(0x0a20, u16(1000)), property(0x000a, u16(2)))))
+  ...record(0x8000, 0, record(0x8001, 1, ...children))
 ]);
+const binaryPageStep = (heads: number[][], lineType?: number) => binaryPage(
+  record(0x800e, 41, property(0x0c04, u32(30)), property(0x0c01, [2, 5].flatMap(u32)),
+    property(0x0c02, [8, 11, 14, 17, 20].flatMap(u32))),
+  ...[2, 5, 8, 11, 14, 17, 20].map((id, index) => record(0x8003, id,
+    record(0x8004, id + 1, property(0x0402, u16(index % 2 ? 8 : 6)),
+      property(0x0200, [60, 30 + index * 30].flatMap(coord))))),
+  record(0x8007, 30, property(0x0a00, u16(1)), ...heads,
+    ...(lineType === undefined ? [] : [property(0x0a01, u16(lineType))]),
+    property(0x0204, [90, 100, 90, 160].flatMap(coord)),
+    property(0x0a20, u16(1000)), property(0x000a, u16(2)))
+);
 const assertPageStep = (document: ChemDraftDocument, tool = "reactionArrow") => {
   const objects = document.pages[0].objects;
   const reaction = objects.find(object => object.type === "reaction")!;
@@ -57,6 +59,29 @@ const assertPageStep = (document: ChemDraftDocument, tool = "reactionArrow") => 
 };
 
 describe("independently authored binary CDX arrowed lines", () => {
+  it("keeps a binary NoHead line unheaded through three visible CDX cycles", () => {
+    let bytes = binaryPage(record(0x8007, 30, property(0x0a00, u16(1)),
+      property(0x0a02, u16(0)), property(0x0204, [90, 100, 90, 160].flatMap(coord))));
+    expect(all(readCdx(bytes), "graphic")[0].attrs.ArrowType).toBe("NoHead");
+    for (let cycle = 0; cycle <= 3; cycle++) {
+      const imported = importCdx(bytes);
+      expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+      const objects = imported.document!.pages[0].objects;
+      expect(objects).toHaveLength(1);
+      expect(objects[0]).toMatchObject({ type: "graphic", graphicKind: "line" });
+      if (objects[0].type !== "graphic") throw new Error("Expected a plain line");
+      expect(objects[0].data.markerStart).toBeUndefined();
+      expect(objects[0].data.markerEnd).toBeUndefined();
+      expect(objects[0].data.artToolId).toBeUndefined();
+      if (cycle < 3) {
+        bytes = exportDocumentToCdx(imported.document!, { embedNativePayload: false }).bytes;
+        expect(all(readCdx(bytes), "graphic")[0].attrs).toMatchObject({
+          GraphicType: "Line", ArrowType: "NoHead", BoundingBox: "100 90 160 90"
+        });
+      }
+    }
+  });
+
   for (const [name, heads, tool, markers] of [
     ["ArrowType FullHead", [property(0x0a02, u16(2))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
     ["separate head", [property(0x0a2f, u16(1)), property(0x0a35, u16(2)), property(0x0a36, u16(1))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
@@ -65,7 +90,7 @@ describe("independently authored binary CDX arrowed lines", () => {
     ["NoHead with separate head", [property(0x0a02, u16(0)), property(0x0a35, u16(2))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
     ["half head", [property(0x0a35, u16(3))], "fishhookArrow", { markerEnd: { kind: "half-arrow" } }]
   ] as const) {
-    it.each([undefined, 0, 1])(`${name} with LineType %s keeps its step target through three CDX cycles`, lineType => {
+    it.each([undefined, 0, 1, 8, 9])(`${name} with LineType %s keeps its step target through three CDX cycles`, lineType => {
       let bytes = binaryPageStep([...heads], lineType);
       const decoded = all(readCdx(bytes), "graphic")[0];
       expect(decoded.attrs).toMatchObject({ GraphicType: "Line", BoundingBox: "100 90 160 90" });
@@ -76,6 +101,12 @@ describe("independently authored binary CDX arrowed lines", () => {
         const arrow = assertPageStep(imported.document!, tool);
         expect(arrow).toMatchObject({ data: markers });
         if (lineType === 1) expect(arrow!.style.strokeDasharray).toBeTruthy();
+        if (cycle === 0 && lineType !== undefined && lineType >= 8) {
+          expect(imported.warnings).toContainEqual(expect.objectContaining({
+            code: "cdxml.arrow_line_type_approximation", sourceObjectId: "30",
+            message: expect.stringContaining(`arrow 30 has unmapped LineType="${lineType}"`)
+          }));
+        }
         expect(imported.warnings.filter(warning => ["cdxml.reaction_step_preserved", "cdxml.reaction_reference_unresolved"].includes(warning.code))).toEqual([]);
         if (cycle < 3) bytes = exportDocumentToCdx(imported.document!, { embedNativePayload: false }).bytes;
       }
@@ -94,6 +125,75 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
   const exportWarnings = (document: ChemDraftDocument) => format === "CDX"
     ? exportDocumentToCdx(document, { embedNativePayload: false }).warnings
     : exportDocumentToCdxml(document, { embedNativePayload: false }).warnings;
+
+  it.each(format === "CDXML" ? ["NoHead", "no head", "NONE", "Unspecified", "0", ""] : ["NoHead", "0"])(
+    "keeps ArrowType=%s as a plain line through three visible round trips", arrowType => {
+      const source = `<graphic id="30" GraphicType="Line" ArrowType="${arrowType}" BoundingBox="100 90 160 90"/>`;
+      let imported = open(page(source));
+      const expectedType = format === "CDX" ? "NoHead" : arrowType;
+      const original = imported.document!.pages[0].objects[0];
+      for (let cycle = 0; cycle <= 3; cycle++) {
+        expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+        const objects = imported.document!.pages[0].objects;
+        expect(objects).toHaveLength(1);
+        expect(objects[0]).toMatchObject({ type: "graphic", graphicKind: "line",
+          x: original.x, y: original.y, width: original.width, height: original.height, style: original.style });
+        if (objects[0].type !== "graphic") throw new Error("Expected a plain graphic");
+        expect(objects[0].data.markerStart).toBeUndefined();
+        expect(objects[0].data.markerEnd).toBeUndefined();
+        expect(objects[0].data.artToolId).toBeUndefined();
+        expect(all(output(imported.document!), "graphic")[0].attrs).toMatchObject({
+          GraphicType: "Line", ArrowType: expectedType, BoundingBox: "100 90 160 90"
+        });
+        if (cycle < 3) imported = roundTrip(imported.document!);
+      }
+    }
+  );
+
+  it.each(["ArrowType", "ArrowheadHead", "ArrowheadTail"])("warns about an unmapped line style on the %s path", attribute => {
+    // Dotted has no binary enum; unknown bit 8 exercises the same warning in real CDX.
+    const lineType = format === "CDX" ? "8" : "Dotted";
+    const head = attribute === "ArrowType" ? "FullHead" : "Full";
+    const imported = open(page(`<graphic id="30" GraphicType="Line" ${attribute}="${head}"
+      LineType="${lineType}" BoundingBox="100 90 160 90"/>`));
+    expect(imported.document!.pages[0].objects[0]).toMatchObject({ type: "graphic", graphicKind: "path" });
+    const warnings = imported.warnings.filter(warning => warning.code === "cdxml.arrow_line_type_approximation");
+    expect(warnings).toEqual([expect.objectContaining({ sourceObjectId: "30",
+      message: expect.stringContaining(`arrow 30 has unmapped LineType="${lineType}"`) })]);
+    const exported = output(imported.document!);
+    expect([...all(exported, "graphic"), ...all(exported, "arrow")][0].attrs.LineType).toBe(lineType);
+  });
+
+  it.each(["", 'ReactionStepArrows="999" ReactionStepReactants="998" ReactionStepProducts="997"',
+    'ReactionStepObjectsAboveArrow="40" ReactionStepPlusses="40"'])(
+    "preserves a scheme-less step with no primary links (%s) instead of inventing a reaction", links => {
+      const imported = open(page(`<step id="21" ${links}><scheme id="22"/></step>
+        <t id="40" p="100 60"><s>Synthetic conditions</s></t>`));
+      const objects = imported.document!.pages[0].objects;
+      expect(objects.filter(object => object.type === "reaction")).toEqual([]);
+      expect(objects.find(object => object.compatibility?.originalId === "21")).toMatchObject({
+        type: "unknown-compatibility-object", sourceObjectType: "step",
+        raw: { attributes: { id: "21" }, children: expect.any(Array) }
+      });
+      expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.reaction_step_preserved",
+        sourceObjectId: "21", message: expect.stringContaining("step 21") }));
+      if (links.includes("999")) expect(imported.warnings.filter(warning => warning.code === "cdxml.reaction_reference_unresolved")).toHaveLength(3);
+    }
+  );
+
+  it.each(["ReactionStepArrows", "ReactionStepReactants", "ReactionStepProducts"])(
+    "imports a scheme-less step with only a resolved %s link", attribute => {
+      const target = attribute === "ReactionStepArrows"
+        ? '<graphic id="30" GraphicType="Line" ArrowType="FullHead" BoundingBox="100 90 160 90"/>'
+        : molecule;
+      const imported = open(page(`<step id="21" ${attribute}="${attribute === "ReactionStepArrows" ? "30" : "2"}"/>${target}`));
+      const reaction = imported.document!.pages[0].objects.find(object => object.type === "reaction")!;
+      expect(reaction).toBeDefined();
+      expect(reaction.components.length + (reaction.arrowObjectIds?.length ?? 0)).toBe(1);
+      expect(imported.warnings.filter(warning => warning.code === "cdxml.reaction_step_preserved")).toEqual([]);
+      expect(roundTrip(imported.document!).document!.pages[0].objects.filter(object => object.type === "reaction")).toHaveLength(1);
+    }
+  );
 
   it("names a curly bracket whose glyph cannot be native", () => {
     const imported = open(page(molecule + glyph(10, "Curly", 'Warning="synthetic warning"') + glyph(11, "Square") + glyph(12)));

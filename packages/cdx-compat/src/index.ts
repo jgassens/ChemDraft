@@ -995,7 +995,7 @@ function importReactionStep(
   supersededBySourceId: ReadonlyMap<string, string>,
   warnings: CompatibilityConversionWarning[],
   sourceFormat: "CDXML" | "CDX"
-): ReactionObject {
+): ReactionObject | undefined {
   const id = `cdxml_reaction_${pageIndex + 1}_${schemeIndex + 1}_${stepIndex + 1}`;
   const components: ReactionObject["components"] = [];
   const componentKeys = new Set<string>();
@@ -1054,6 +1054,9 @@ function importReactionStep(
       }
     }
   }
+  // Conditions and plus signs alone do not establish a reaction. Keep an unlinked step
+  // opaque rather than inventing an empty reaction from its source container or children.
+  if (!arrowObjectIds.length && !components.some(component => component.role !== "agent")) return undefined;
   for (const attribute of Object.keys(step.attributes)) {
     if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
       warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: id,
@@ -2321,6 +2324,10 @@ function exportGraphicAsCdxmlGraphic(
   if (type === "Line" || type === "Arc") {
     attrs.push(...cdxmlGraphicLineAttributes(graphic));
   }
+  const arrowType = graphic.compatibility?.unknown.cdxmlArrowType;
+  if (type === "Line" && typeof arrowType === "string" && isCdxmlNoHead(arrowType)) {
+    attrs.push(`ArrowType="${escapeXmlAttribute(arrowType)}"`);
+  }
   return `<graphic ${attrs.join(" ")}/>`;
 }
 
@@ -3141,8 +3148,14 @@ function importPageObjects(
     .map((step, stepIndex) => ({ scheme, schemeIndex, step, stepIndex })));
   pendingSteps.sort((a, b) => sourceStepOrder.get(a.step.children)! - sourceStepOrder.get(b.step.children)!);
   pendingSteps.forEach(({ scheme, schemeIndex, step, stepIndex }) => {
-    objects.push(importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
-      rootsBySourceId, objectsById, supersededBySourceId, warnings, sourceFormat));
+    const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
+      rootsBySourceId, objectsById, supersededBySourceId, warnings, sourceFormat);
+    if (reaction) objects.push(reaction);
+    else {
+      warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: step.attributes.id,
+        message: `${sourceFormat} step ${step.attributes.id ?? "(unknown)"} has no resolvable arrow, reactant or product links; preserved as an unknown compatibility object instead of an empty native reaction.` });
+      objects.push(importUnknownCompatibilityObject(step, pageIndex, objectIndex++, sourceFormat));
+    }
   });
   for (const group of bracketGroups) {
     const attachments = childElements(group, "bracketattachment");
@@ -4280,20 +4293,18 @@ function importGraphic(
           cdxmlBracketGeometry: JSON.stringify([box.x, box.y, box.width, box.height, 0, element.attributes.BracketType === "Round" ? "round" : "square", "open"]) } } };
   }
   const separateHeads = cdxmlArrowMarkers(element);
+  const noHead = isCdxmlNoHead(element.attributes.ArrowType);
   if (element.attributes.GraphicType === "Line" &&
-      (!element.attributes.ArrowType || normalizedCdxmlToken(element.attributes.ArrowType) === "nohead") &&
-      (separateHeads.markerStart || separateHeads.markerEnd)) {
-    // Binary line graphics may use the same head/tail properties as standalone arrows.
-    // An ArrowType-only check silently imported those headed lines as decorative paths.
-    return importArrowGraphic(element, pageIndex, objectIndex, context);
-  }
-  if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
-    // Arrow identity depends on ArrowType alone: Solid, absent and unknown LineType values
-    // must take the same headed-arrow path as Dashed and Bold.
+      (!noHead || separateHeads.markerStart || separateHeads.markerEnd)) {
+    // Both head encodings share the line-style warning before either import path returns.
     const lineType = element.attributes.LineType;
     if (lineType !== undefined && !["solid", "dashed", "bold", "wavy"].includes(normalizedCdxmlToken(lineType))) {
       context.warnings.push({ code: "cdxml.arrow_line_type_approximation", sourceObjectId: element.attributes.id,
         message: `${context.sourceFormat} arrow ${element.attributes.id ?? "(unknown)"} has unmapped LineType="${lineType}"; the arrowhead and reaction links are imported, while its line style is approximated and the source LineType is retained in compatibility data and visible export.` });
+    }
+    if (noHead) {
+      // Binary line graphics may use the same head/tail properties as standalone arrows.
+      return importArrowGraphic(element, pageIndex, objectIndex, context);
     }
     // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
     // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
@@ -4302,7 +4313,7 @@ function importGraphic(
     if (normalizedCdxmlToken(element.attributes.ArrowType) === "halfhead") {
       return importHalfHeadArrowAsFishhook(element, pageIndex, objectIndex, context);
     }
-    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType);
+    const arrowKind = arrowKindFromCdxml(element.attributes.ArrowType!);
     // Reaction and resonance arrows come in as editable art arrows (draggable ends, arc, arrowhead
     // size), tagged so a later export re-emits them as reaction arrows. Only unknown kinds keep
     // the legacy `reaction-arrow` representation.
@@ -4666,6 +4677,8 @@ function importShapeGraphic(
       unknown: {
         cdxmlElementName: elementName,
         cdxmlGraphicType: type,
+        ...(elementName === "graphic" && type === "Line" && element.attributes.ArrowType !== undefined && isCdxmlNoHead(element.attributes.ArrowType)
+          ? { cdxmlArrowType: element.attributes.ArrowType } : {}),
         ...((graphicKind === "unknown" || graphicKind === "ellipse") && elementName === "graphic" ? { cdxmlGraphicAttributes: { ...element.attributes },
           cdxmlGraphicColorTable: Object.fromEntries(context.colorTable.colorByIndex),
           ...(graphicKind === "ellipse" ? { cdxmlGraphicStyle: { ...style } } : {}) } : {}),
@@ -4848,6 +4861,10 @@ function graphicKindFromCdxmlShape(type: string | undefined, data: GraphicObject
 
 function normalizedCdxmlToken(value: string | undefined): string {
   return value?.replace(/\s+/g, "").toLowerCase() ?? "";
+}
+
+function isCdxmlNoHead(value: string | undefined): boolean {
+  return ["", "nohead", "none", "unspecified", "0"].includes(normalizedCdxmlToken(value));
 }
 
 function cdxmlCornerRadiusToCssPx(value: string | undefined): number {
