@@ -36,7 +36,7 @@ test("empty and unmountable DMGs fail closed; failed detach never recursively de
   for (const fail of ["attach", "detach", "no-app"]) {
     const events = [];
     const check = () => withDmgApps("final.dmg", () => assert.fail("no app may pass"), {
-      makeTemp: () => "virtual-mount", entries: () => [], cleanup: () => events.push("cleanup"),
+      makeTemp: () => "virtual-mount", entries: () => [], cleanup: () => events.push("cleanup"), wait: () => {},
       run: (command, args) => {
         assert.equal(command, "/usr/bin/hdiutil");
         events.push(args[0]);
@@ -44,7 +44,31 @@ test("empty and unmountable DMGs fail closed; failed detach never recursively de
       }
     });
     assert.throws(check, fail === "no-app" ? /no app bundle/ : new RegExp(`Cannot ${fail === "attach" ? "mount" : "detach"}`));
-    assert.deepEqual(events, fail === "attach" ? ["attach", "cleanup"] : fail === "detach" ? ["attach", "detach"] : ["attach", "detach", "cleanup"]);
+    assert.deepEqual(events, fail === "attach" ? ["attach", "cleanup"] : fail === "detach" ? ["attach", "detach", "detach"] : ["attach", "detach", "cleanup"]);
+  }
+});
+
+test("detach retries with force and preserves a prior verification error", () => {
+  for (const retrySucceeds of [true, false]) {
+    const calls = [];
+    const original = new Error("verification failed");
+    let cleaned = false;
+    assert.throws(() => withDmgApps("final.dmg", () => { throw original; }, {
+      makeTemp: () => "virtual-mount", entries: () => ["ChemDraft.app"],
+      cleanup: () => { cleaned = true; }, wait: () => calls.push("wait"),
+      run: (_command, args) => {
+        calls.push(args);
+        if (args[0] === "attach") return { status: 0 };
+        return { status: args.includes("-force") && retrySucceeds ? 0 : 1, stderr: "detach failed" };
+      }
+    }), (error) => {
+      assert.equal(error, original);
+      assert.match(error.message, /verification failed/);
+      if (!retrySucceeds) assert.match(error.message, /Cannot detach virtual-mount: detach failed/);
+      return true;
+    });
+    assert.deepEqual(calls.slice(1), [["detach", "virtual-mount"], "wait", ["detach", "-force", "virtual-mount"]]);
+    assert.equal(cleaned, retrySucceeds);
   }
 });
 

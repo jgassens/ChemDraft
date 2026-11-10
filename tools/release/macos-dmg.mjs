@@ -13,10 +13,13 @@ export function readAppPlist(app, run = spawnSync) {
 
 export function withDmgApps(dmg, checkApp, {
   run = spawnSync, makeTemp = () => mkdtempSync(join(tmpdir(), "chemdraft-dmg-")),
-  entries = readdirSync, cleanup = (path) => rmSync(path, { recursive: true, force: true })
+  entries = readdirSync, cleanup = (path) => rmSync(path, { recursive: true, force: true }),
+  wait = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
 } = {}) {
   const mount = makeTemp();
   let mounted = false;
+  let earlierError;
+  let failed = false;
   try {
     const attach = run("/usr/bin/hdiutil", ["attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg], { encoding: "utf8" });
     if (attach.status !== 0) throw new Error(`Cannot mount ${dmg}: ${attach.stderr || attach.error?.message}`);
@@ -24,11 +27,34 @@ export function withDmgApps(dmg, checkApp, {
     const apps = entries(mount).filter((name) => name.endsWith(".app"));
     if (!apps.length) throw new Error(`${dmg}: no app bundle found`);
     return apps.map((app) => checkApp(join(mount, app)));
+  } catch (error) {
+    failed = true;
+    earlierError = error;
+    throw error;
   } finally {
     if (mounted) {
-      const detach = run("/usr/bin/hdiutil", ["detach", mount], { encoding: "utf8" });
+      const detachDmg = (args) => {
+        try {
+          return run("/usr/bin/hdiutil", args, { encoding: "utf8" });
+        } catch (error) {
+          return { status: null, error };
+        }
+      };
+      let detach = detachDmg(["detach", mount]);
+      if (detach.status !== 0) {
+        wait();
+        detach = detachDmg(["detach", "-force", mount]);
+      }
       // Never recursively remove a mountpoint if detach failed.
-      if (detach.status !== 0) throw new Error(`Cannot detach ${mount}: ${detach.stderr || detach.error?.message}`);
+      if (detach.status !== 0) {
+        const message = `Cannot detach ${mount}: ${detach.stderr || detach.error?.message}`;
+        if (failed && earlierError instanceof Error) {
+          earlierError.message += `; ${message}`;
+          throw earlierError;
+        }
+        if (failed) throw new Error(`${String(earlierError)}; ${message}`, { cause: earlierError });
+        throw new Error(message);
+      }
     }
     cleanup(mount);
   }

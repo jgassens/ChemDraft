@@ -331,6 +331,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          token: ''
       - name: Check all attached release builds when complete
         shell: pwsh
         env:
