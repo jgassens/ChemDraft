@@ -1,5 +1,5 @@
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
-import { BracketLabelEditor } from "./BracketLabelEditor";
+import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
 import { bracketLabelPlan, bracketLabelContainsPoint } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
@@ -2623,6 +2623,8 @@ export function MainWindow({
   const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   const [bracketLabelEdit, setBracketLabelEdit] = useState<{ objectId: string; tabId: string }>();
+  const bracketLabelEditRef = useRef(bracketLabelEdit); bracketLabelEditRef.current = bracketLabelEdit;
+  const bracketLabelEditorRef = useRef<BracketLabelEditorHandle>(null);
   useEffect(() => { setBracketLabelEdit(undefined); }, [activeDocumentTabId]);
   const bracketActions = useMemo(() => createBracketCommands(document), [document]);
   const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
@@ -7622,9 +7624,14 @@ export function MainWindow({
   // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
   // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
   // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
-  // refs only, including the table draft snapshot shared with Copy As.
+  // refs only, including private table and repeat-label drafts.
   const documentForFlush = useCallback((): ChemDraftDocument => {
-    const current = documentWithTableDraft();
+    let current = documentWithTableDraft();
+    const bracket = bracketLabelEditRef.current;
+    const label = bracketLabelEditorRef.current?.draft();
+    if (bracket?.tabId === activeDocumentTabIdRef.current && label !== undefined) {
+      current = setBracketRepeatLabel(current, bracket.objectId, label);
+    }
     const edit = activeAtomLabelEditRef.current;
     if (
       !edit ||
@@ -7993,6 +8000,18 @@ export function MainWindow({
     commitDocumentChange(current => applyTableObjectEdit(current, table), label);
     setStatus(label);
   }, [commitDocumentChange]);
+
+  const finishBracketLabelEdit = useCallback((value?: string) => {
+    const edit = bracketLabelEditRef.current;
+    if (!edit || edit.tabId !== activeDocumentTabIdRef.current) return;
+    if (value !== undefined) {
+      commitDocumentChange(current => setBracketRepeatLabel(current, edit.objectId, value), "Edit repeat-unit label");
+    }
+    reconcileSavedDocumentDirtyState();
+    bracketLabelEditRef.current = undefined;
+    setBracketLabelEdit(undefined);
+    canvasRegionRef.current?.focus({ preventScroll: true });
+  }, [commitDocumentChange, reconcileSavedDocumentDirtyState]);
 
   const finishTableCellEdit = useCallback((value: TableRichText, action: TableEditingAction) => {
     const cell = tableCellEditRef.current;
@@ -9444,6 +9463,8 @@ export function MainWindow({
     const tableWasEditing = Boolean(tableCellEditRef.current);
     setTableCellEdit(undefined);
     tableCellEditRef.current = undefined;
+    setBracketLabelEdit(undefined);
+    bracketLabelEditRef.current = undefined;
     setTableResizePreview(undefined);
     if (tableWasEditing) canvasRegionRef.current?.focus({ preventScroll: true });
     setActiveEditorObjectId(undefined);
@@ -9549,6 +9570,8 @@ export function MainWindow({
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setBracketLabelEdit(undefined);
+    bracketLabelEditRef.current = undefined;
     setActiveTextSelection(undefined);
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
@@ -9577,6 +9600,7 @@ export function MainWindow({
         return false;
       }
       if (commit === false) return false;
+      bracketLabelEditorRef.current?.commit({ finishComposition: true });
     }
     const labelEdit = activeAtomLabelEditRef.current;
     if (finishDrafts && labelEdit) {
@@ -11457,7 +11481,13 @@ export function MainWindow({
           clearScheduledTextEditorFocus();
           setActiveTextEditObjectId(undefined);
           setActiveAtomLabelEdit(undefined);
-          setBracketLabelEdit({ objectId: closing.id, tabId: activeDocumentTabIdRef.current });
+          const tabId = activeDocumentTabIdRef.current;
+          if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
+            savedDocumentsRef.current.set(tabId, documentRef.current);
+          }
+          const edit = { objectId: closing.id, tabId };
+          bracketLabelEditRef.current = edit;
+          setBracketLabelEdit(edit);
         }
       }
     }));
@@ -14168,7 +14198,7 @@ export function MainWindow({
     const saveFromInlineEditor = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
           isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
-          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor]")) return;
+          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor], [data-bracket-label-editor]")) return;
       const commandId = shortcutRegistry.resolve({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
@@ -22457,12 +22487,8 @@ export function MainWindow({
                 {bracketLabelEdit?.tabId === activeDocumentTabId ? (() => {
                   const object = findDocumentObject(document, bracketLabelEdit.objectId);
                   return object?.type === "bracket" && bracketLabelPlan(object) ? <BracketLabelEditor
-                    key={`${activeDocumentTabId}:${object.id}`} object={object}
-                    onFinish={value => {
-                      if (value !== undefined) commitDocumentChange(current => setBracketRepeatLabel(current, object.id, value), "Edit repeat-unit label");
-                      setBracketLabelEdit(undefined);
-                      canvasRegionRef.current?.focus({ preventScroll: true });
-                    }} /> : null;
+                    key={`${activeDocumentTabId}:${object.id}`} object={object} ref={bracketLabelEditorRef}
+                    onDraftChange={markDocumentDirty} onFinish={finishBracketLabelEdit} /> : null;
                 })() : null}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
