@@ -1,6 +1,6 @@
 import { applyPatches, bracketPairs, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
-import { transformPointForObject } from "@chemdraft/layout-engine";
+import { repeatUnits } from "@chemdraft/export-engine";
 
 export function selectedBracketPair(document: ChemDraftDocument): BracketObject[] {
   const page = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
@@ -43,18 +43,9 @@ export function bracketRepeatUnitStatus(document: ChemDraftDocument): string {
   if (!close) return "No bracket pair selected";
   const label = close.label ?? "n";
   if (!pair.some(object => object.repeatUnit || object.bracketKind === "polymer")) return `Removed repeat unit "${label}"`;
-  const page = document.pages.find(page => page.objects.some(object => object.id === close.id))!;
-  const explicit = new Set(pair.flatMap(object => object.containedObjectIds));
-  const left = Math.min(...pair.map(object => object.x));
-  const top = Math.min(...pair.map(object => object.y));
-  const right = Math.max(...pair.map(object => object.x + object.width));
-  const bottom = Math.max(...pair.map(object => object.y + object.height));
-  const count = page.objects.reduce((count, object) => count + (object.type !== "molecule" ? 0 :
-    object.atoms.filter(atom => {
-      if (explicit.has(object.id)) return true;
-      const point = transformPointForObject(object, atom);
-      return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
-    }).length), 0);
+  const unit = repeatUnits(document).find(unit => pair.some(object => object.id === unit.objectId));
+  if (unit?.reason) return `Marked repeat unit "${label}"; membership is ambiguous: ${unit.reason}`;
+  const count = unit?.members.reduce((total, member) => total + member.atomIds.length, 0) ?? 0;
   return `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "${label}"`;
 }
 

@@ -10,7 +10,7 @@ type RepeatUnit = {
 };
 
 /** Scope follows exported molecules, even when the user selected no bracket glyphs. */
-function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
+export function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
   const exported = molecules && new Set(molecules.map(molecule => molecule.id));
   return document.pages.flatMap(page => [...bracketPairs(page.objects).values()].flatMap(pair => {
     if (!pair.some(object => object.repeatUnit || object.bracketKind === "polymer")) return [];

@@ -32,7 +32,9 @@ describe("bracket pair annotations", () => {
         ({ ...molecule.atoms[0], id: `count_atom_${index}`, x: 140 + index * 5, y: 140 })), bonds: [] } : object) }] };
     const closing = selectedBracketPair(repeat).find(object => object.side === "close")!;
     const edited = setBracketRepeatLabel(repeat, closing.id, "m");
-    expect(bracketRepeatUnitStatus(edited)).toBe(`Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "m"`);
+    expect(bracketRepeatUnitStatus(edited)).toBe(count === 0
+      ? 'Marked repeat unit "m"; membership is ambiguous: its atom membership is empty'
+      : `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "m"`);
     expect(bracketRepeatUnitStatus(toggleBracketRepeatUnit(edited))).toBe('Removed repeat unit "m"');
   });
   it("counts enclosed atoms of a partially bracketed molecule without counting outside atoms", () => {
@@ -41,6 +43,15 @@ describe("bracket pair annotations", () => {
       object.type === "bracket" ? { ...object, containedObjectIds: [] } : object.type === "molecule"
         ? { ...object, atoms: object.atoms.map((atom, index) => index ? { ...atom, x: 400 } : atom) } : object) }] };
     expect(bracketRepeatUnitStatus(partial)).toBe('Marked 1 atom as repeat unit "n"');
+  });
+  it("reports ambiguous membership for rotated brackets using the export reason", () => {
+    const original = repeatAroundMolecule();
+    const rotated = { ...original, pages: [{ ...original.pages[0], objects: original.pages[0].objects.map(object =>
+      object.type === "bracket" && object.side === "close" ? { ...object, rotation: 35 } : object) }] };
+    const warnings: string[] = [];
+    copyAsMolfile(rotated, "v3000", warnings);
+    expect(warnings[0]).toContain("rotated or projected brackets have no unambiguous atom membership");
+    expect(bracketRepeatUnitStatus(rotated)).toBe('Marked repeat unit "n"; membership is ambiguous: rotated or projected brackets have no unambiguous atom membership');
   });
   it("hits the shared label bounds after rotating a bracket, and excludes its glyph", () => {
     const closing = selectedBracketPair(repeatAroundMolecule()).find(object => object.side === "close")!;
