@@ -23,6 +23,11 @@ function hill(counts: ReadonlyMap<string, number>): string {
 }
 
 describe("abbreviation table", () => {
+  it.each([["TBDPS", "C16H19Si"], ["TIPS", "C9H21Si"], ["TES", "C6H15Si"], ["PMB", "C8H9O"], ["MOM", "C2H5O"], ["SEM", "C6H15OSi"]])("expands %s to %s", (label, formula) => {
+    const definition = abbreviationForLabel(label)!;
+    expect(definition.formula).toBe(formula);
+    expect(hill(abbreviationElementCounts(definition))).toBe(formula);
+  });
   it("answers to every label and alias once", () => {
     const spellings = abbreviationDefinitions.flatMap((definition) => [definition.label, ...definition.aliases]);
     expect(new Set(spellings).size).toBe(spellings.length);
