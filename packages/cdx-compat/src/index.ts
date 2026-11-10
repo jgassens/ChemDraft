@@ -23,6 +23,7 @@ import {
   type DocumentPage,
   type GraphicMarker,
   type GraphicObject,
+  type GraphicPathNode,
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
@@ -144,6 +145,7 @@ interface IdAllocator {
 
 interface VisibleExportContext {
   ids: Map<string, string>;
+  curveColors: readonly string[];
   bondIdsByRefKey: Map<string, string>;
   crossingPartnerKeysByRefKey: Map<string, Set<string>>;
   crossingFrontKeysByRefKey: Map<string, { front: number; back: number }>;
@@ -166,6 +168,7 @@ interface ImportPageContext {
   displayByRefKey: Map<string, string>;
   crossingHints: CdxmlCrossingImportHint[];
   colorTable: CdxmlColorTable;
+  curveLineDefaults: Record<string, string>;
 }
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
@@ -191,9 +194,21 @@ export function exportDocumentToCdxml(
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
     .filter((object): object is TableObject => object.type === "table")
     .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts));
+  // Keep the existing palette indices stable; curves can carry arbitrary source colors.
+  const curveColors: string[] = [...standardCdxmlColorTable];
+  for (const page of parsedDocument.pages) {
+    for (const object of page.objects) {
+      const unknown = object.compatibility?.unknown;
+      const curveColor = object.type === "graphic" && unknown?.cdxmlElementName === "curve"
+        ? object.style.strokeColor ?? defaultCdxmlStrokeColor
+        : unknown?.cdxmlCurveColor;
+      const color = typeof curveColor === "string" ? normalizeHexColor(curveColor) : undefined;
+      if (color && !curveColors.includes(color)) curveColors.push(color);
+    }
+  }
+  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts, curveColors));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -205,7 +220,7 @@ export function exportDocumentToCdxml(
   const envelopePages = parsedDocument.pages.map((page, pageIndex) =>
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts, curveColors);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -451,12 +466,12 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[]): string {
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[]): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
     `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
-    buildStandardColorTableXml(),
+    buildStandardColorTableXml(colors),
     ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
       `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
     ...pages,
@@ -465,10 +480,10 @@ function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], f
   ].join("\n");
 }
 
-function buildStandardColorTableXml(): string {
+function buildStandardColorTableXml(colors: readonly string[]): string {
   return [
     "  <colortable>",
-    ...standardCdxmlColorTable.map((color) => {
+    ...colors.map((color) => {
       const rgb = hexToRgb(color) ?? { r: 0, g: 0, b: 0 };
       return `    <color r="${formatColorComponent(rgb.r)}" g="${formatColorComponent(rgb.g)}" b="${formatColorComponent(rgb.b)}"/>`;
     }),
@@ -486,9 +501,9 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[]): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[], curveColors: readonly string[]): string {
   const allocator = createIdAllocator(pageIndex);
-  const context = createVisibleExportContext(page);
+  const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const visibleChildren = page.objects
     .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById, fonts))
@@ -504,6 +519,17 @@ function exportVisibleObject(
   objectsById: ReadonlyMap<string, DocumentObject>,
   fonts: readonly string[]
 ): string {
+  if (object.type === "unknown-compatibility-object" && object.sourceObjectType === "curve") {
+    const sourceAttributes = object.compatibility?.unknown.cdxmlCurveAttributes;
+    if (isRecord(sourceAttributes)) {
+      const attributes = preservedCurveAttributes(sourceAttributes);
+      attributes.id = idFor(context.ids, object.id, allocator);
+      const sourceColor = object.compatibility?.unknown.cdxmlCurveColor;
+      const colorIndex = typeof sourceColor === "string" ? context.curveColors.indexOf(sourceColor) : -1;
+      if (colorIndex >= 0) attributes.color = String(colorIndex + 2);
+      return curveXml(attributes);
+    }
+  }
   if (object.type === "table") {
     return exportTableObject(object, context.ids, allocator, warnings, fonts);
   }
@@ -520,7 +546,7 @@ function exportVisibleObject(
     return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings);
   }
   if (object.type === "graphic") {
-    return exportGraphicObject(object, context.ids, allocator, warnings);
+    return exportGraphicObject(object, context.ids, allocator, warnings, context.curveColors);
   }
   if (object.type === "bracket") {
     warnings.push({
@@ -566,7 +592,7 @@ function exportVisibleObject(
   return "";
 }
 
-function createVisibleExportContext(page: DocumentPage): VisibleExportContext {
+function createVisibleExportContext(page: DocumentPage, curveColors: readonly string[]): VisibleExportContext {
   const crossingPartnerKeysByRefKey = new Map<string, Set<string>>();
   const crossingFrontKeysByRefKey = new Map<string, { front: number; back: number }>();
 
@@ -582,6 +608,7 @@ function createVisibleExportContext(page: DocumentPage): VisibleExportContext {
 
   return {
     ids: new Map(),
+    curveColors,
     bondIdsByRefKey: new Map(),
     crossingPartnerKeysByRefKey,
     crossingFrontKeysByRefKey
@@ -889,18 +916,22 @@ function exportGraphicObject(
   graphic: GraphicObject,
   ids: Map<string, string>,
   allocator: IdAllocator,
-  warnings: CompatibilityConversionWarning[]
+  warnings: CompatibilityConversionWarning[],
+  curveColors: readonly string[] = standardCdxmlColorTable
 ): string {
   if (graphic.graphicKind === "image") {
     warnings.push({ code: "cdxml.picture_not_saved", message: `CDXML export: picture ${graphic.id} is not saved in CDXML`, sourceObjectId: graphic.id });
     return "";
   }
   const graphicId = idFor(ids, graphic.id, allocator);
+  if (graphic.compatibility?.unknown.cdxmlElementName === "curve") {
+    return exportGraphicAsCdxmlCurve(graphic, graphicId, warnings, curveColors);
+  }
   warnForGraphicCdxmlLimitations(graphic, warnings);
   // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a
   // native arrow. The element's ArrowheadHead/ArrowheadTail/ArrowheadType triple is RICHER than the
-  // closed ArrowType enum — it can say hollow, angled, or half-headed per end — so round-tripping
-  // the source form loses less than promoting it to a reaction arrow would.
+  // closed ArrowType enum — it can say which ends are full/half with a shared solid/open type —
+  // so round-tripping the source form loses less than promoting it to a reaction arrow would.
   if (graphic.compatibility?.unknown.cdxmlElementName === "arrow") {
     return exportGraphicAsCdxmlArrow(graphic, graphicId, warnings);
   }
@@ -1158,6 +1189,95 @@ function exportGraphicAsCdxmlArrow(
   return `<arrow ${attrs.join(" ")}/>`;
 }
 
+/** Curves keep their source spelling where the corresponding native value is unchanged. Source
+ * attributes hold sizing ratios and handedness that the native marker model cannot express. */
+function exportGraphicAsCdxmlCurve(
+  graphic: GraphicObject,
+  graphicId: string,
+  warnings: CompatibilityConversionWarning[],
+  colors: readonly string[]
+): string {
+  const attributes = preservedCurveAttributes(graphic.compatibility?.unknown.cdxmlCurveAttributes);
+  const sourceNodes = curveNodesFromCdxml(attributes.CurvePoints);
+  const nodes = graphic.data.pathNodes;
+  if (!nodes?.length || graphic.data.artPathKind !== "bezier") {
+    warnings.push({
+      code: "cdxml.curve_geometry_payload_only",
+      message: "This curve no longer has native Bezier nodes; its source CDXML curve is retained, and its edited geometry remains only in the native payload.",
+      sourceObjectId: graphic.id
+    });
+  } else if (JSON.stringify(nodes) !== JSON.stringify(sourceNodes)) {
+    // A closed spline needs the first incoming and last outgoing handles for its final segment.
+    // Incoming/knot/outgoing triples retain them without duplicating the first native node.
+    const points = graphic.data.pathClosed
+      ? nodes.flatMap(node => [node.inControl ?? node.point, node.point, node.outControl ?? node.point])
+      : [nodes[0].point];
+    if (!graphic.data.pathClosed) {
+      for (let index = 1; index < nodes.length; index += 1) {
+        points.push(nodes[index - 1].outControl ?? nodes[index - 1].point,
+          nodes[index].inControl ?? nodes[index].point, nodes[index].point);
+      }
+    }
+    attributes.CurvePoints = points.map(formatPoint).join(" ");
+    delete attributes.BoundingBox;
+  }
+  const sourceMarkers = cdxmlArrowMarkers({ name: "curve", attributes, children: [] });
+  if (graphic.data.markerStart?.kind !== sourceMarkers.markerStart?.kind ||
+      graphic.data.markerEnd?.kind !== sourceMarkers.markerEnd?.kind) {
+    delete attributes.ArrowheadHead;
+    delete attributes.ArrowheadTail;
+    delete attributes.ArrowheadType;
+    const head = cdxmlArrowheadForMarker(graphic.data.markerEnd);
+    const tail = cdxmlArrowheadForMarker(graphic.data.markerStart);
+    if (head) attributes.ArrowheadHead = head.head;
+    if (tail) attributes.ArrowheadTail = tail.head;
+    attributes.ArrowheadType = head?.type ?? tail?.type ?? "Solid";
+    warnForUnrepresentableArrowheads(graphic, warnings);
+  }
+  if ([graphic.data.markerStart, graphic.data.markerEnd].some(marker => marker && marker.kind !== "none" &&
+    ((marker.sizePx !== undefined && marker.sizePx !== (marker.kind === "half-arrow" ? defaultCdxmlHalfArrowheadSizePx : defaultCdxmlArrowheadSizePx)) || marker.angleDegrees))) {
+    warnings.push({ code: "cdxml.curve_head_size_payload_only",
+      message: "Edited native curve head dimensions remain only in the native payload; standard CDXML retains the source head sizing attributes.", sourceObjectId: graphic.id });
+  }
+  const color = normalizeHexColor(graphic.style.strokeColor ?? defaultCdxmlStrokeColor);
+  const colorIndex = color ? colors.indexOf(color) : -1;
+  if (colorIndex >= 0) attributes.color = String(colorIndex + 2);
+  else {
+    delete attributes.color;
+    warnings.push({ code: "cdxml.graphic_color_approximation",
+      message: `Curve color "${graphic.style.strokeColor}" cannot be represented in the CDXML color table.`, sourceObjectId: graphic.id });
+  }
+  const sourceStyle = graphicStyleFromCdxmlCurve({ name: "curve", attributes, children: [] }, { colorByIndex: new Map() });
+  if (graphic.style.strokeWidth !== sourceStyle.strokeWidth) {
+    attributes.LineWidth = formatNumber(cssPxToCdxml(graphic.style.strokeWidth ?? defaultCdxmlLineWidthPx));
+    // Explicit widths take precedence over a Bold line's inherited BoldWidth.
+    if (normalizedCdxmlToken(attributes.LineType) === "bold") attributes.BoldWidth = attributes.LineWidth;
+  }
+  if (graphic.style.strokeDasharray !== sourceStyle.strokeDasharray) {
+    if (graphic.style.strokeDasharray) attributes.LineType = "Dashed";
+    else delete attributes.LineType;
+  }
+  if (Boolean(graphic.data.pathClosed) !== cdxmlCurveIsClosed(attributes)) {
+    attributes.Closed = graphic.data.pathClosed ? "yes" : "no";
+  }
+  if (graphic.rotation || graphic.style.tiltXDegrees || graphic.style.tiltYDegrees) {
+    warnings.push({ code: "cdxml.curve_transform_payload_only",
+      message: "Curve rotation and tilt remain only in the native payload; standard CDXML retains the untransformed Bezier points.", sourceObjectId: graphic.id });
+  }
+  attributes.id = graphicId;
+  return curveXml(attributes);
+}
+
+function preservedCurveAttributes(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([name, attribute]) =>
+    /^[a-z_][\w.:-]*$/i.test(name) && typeof attribute === "string")) as Record<string, string>;
+}
+
+function curveXml(attributes: Record<string, string>): string {
+  return `<curve ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ")}/>`;
+}
+
 /** The write side of {@link cdxmlArrowMarkers}: name which ends are headed and how, so an arrow
  *  keeps its head across a round trip. Every exported `<arrow>` used to claim `ArrowheadType="Solid"`
  *  with no `ArrowheadHead`, which reads back — correctly — as a headless line.
@@ -1193,13 +1313,21 @@ function cdxmlArrowheadForMarker(marker: GraphicMarker | undefined): { head: str
   }
 }
 
-/** CDXML's arrowhead enum covers full, half, and unfilled heads and nothing else, so the decorative
- *  native heads have no spelling. Drop them with a warning rather than exporting a full head that
- *  claims the user drew something they didn't. */
+/** The per-end CDXML heads describe full/half heads; Solid/Hollow/Angle is one shared type.
+ *  Decorative heads have no spelling, and mixed solid/open ends cannot share that type. */
 function warnForUnrepresentableArrowheads(
   graphic: GraphicObject,
   warnings: CompatibilityConversionWarning[]
 ): void {
+  const head = cdxmlArrowheadForMarker(graphic.data.markerEnd);
+  const tail = cdxmlArrowheadForMarker(graphic.data.markerStart);
+  if (head && tail && head.type !== tail.type) {
+    warnings.push({
+      code: "cdxml.arrow_marker_payload_only",
+      message: `Native start (tail) ${graphic.data.markerStart!.kind} style cannot be combined with the end (head) ${graphic.data.markerEnd!.kind} style in standard CDXML: ArrowheadType applies to both ends. The exported tail uses the head's ${head.type} type; its original style is preserved exactly only in the embedded ChemDraft payload.`,
+      sourceObjectId: graphic.id
+    });
+  }
   const dropped = [graphic.data.markerEnd, graphic.data.markerStart].filter(
     (marker): marker is GraphicMarker =>
       marker !== undefined && marker.kind !== "none" && cdxmlArrowheadForMarker(marker) === undefined
@@ -1563,13 +1691,15 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
 
   const importTransform = importTransformForTree(tree);
   const colorTable = importCdxmlColorTable(tree);
+  const root = tree.map(elementView).find(element => element?.name.toLowerCase() === "cdxml");
+  const curveLineDefaults = cdxmlCurveLineDefaults(root?.attributes ?? {});
   const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
   let importedPages: DocumentPage[];
   try {
     importedPages = pageElements.map((pageElement, pageIndex) => {
       const pageTemplate = base.pages[0];
       const importedPage = applyImportTransformToPageObjects(
-        importPageObjects(pageElement, pageIndex, warnings, colorTable),
+        importPageObjects(pageElement, pageIndex, warnings, colorTable, curveLineDefaults),
         importTransform
       );
       return {
@@ -1625,7 +1755,8 @@ function importPageObjects(
   pageElement: XmlElementView,
   pageIndex: number,
   warnings: CompatibilityConversionWarning[],
-  colorTable: CdxmlColorTable
+  colorTable: CdxmlColorTable,
+  curveLineDefaults: Record<string, string>
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
   const context: ImportPageContext = {
@@ -1634,7 +1765,8 @@ function importPageObjects(
     zByRefKey: new Map(),
     displayByRefKey: new Map(),
     crossingHints: [],
-    colorTable
+    colorTable,
+    curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) }
   };
   let objectIndex = 1;
 
@@ -1661,6 +1793,9 @@ function importPageObjects(
     }
     if (element.name === "arrow") {
       return single(importArrowGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "curve") {
+      return single(importCurveGraphic(element, pageIndex, objectIndex, context));
     }
     if (element.name === "group") {
       return importGroup(element);
@@ -2831,6 +2966,119 @@ function importArrowGraphic(
   };
 }
 
+/** CDXML curves use the existing editable art-arrow representation, including for electron
+ * pushing. Unlike the anchored mechanism object, it can express independent heads and any number
+ * of cubic segments without inventing chemistry anchors that the source curve never stated. */
+function importCurveGraphic(
+  element: XmlElementView,
+  pageIndex: number,
+  objectIndex: number,
+  context: ImportPageContext
+): DocumentObject {
+  const nodes = curveNodesFromCdxml(element.attributes.CurvePoints);
+  if (!nodes) {
+    const object = importUnknownCompatibilityObject(element, pageIndex, objectIndex);
+    const message = `CDXML curve "${element.attributes.id ?? object.id}" has invalid or unsupported CurvePoints; the original curve is preserved for CDXML export.`;
+    context.warnings.push({ code: "cdxml.curve_points_preserved", message, sourceObjectId: object.id });
+    return { ...object, compatibility: { ...object.compatibility!, unknown: {
+      cdxmlCurveAttributes: element.attributes,
+      cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) ?? defaultCdxmlStrokeColor
+    } } };
+  }
+  const id = `cdxml_graphic_${pageIndex + 1}_${objectIndex}`;
+  const markers = cdxmlArrowMarkers(element);
+  const hasHead = Boolean(markers.markerStart || markers.markerEnd);
+  const fishhook = markers.markerStart?.kind === "half-arrow" || markers.markerEnd?.kind === "half-arrow";
+  const points = nodes.flatMap(node => [node.point, ...(node.inControl ? [node.inControl] : []), ...(node.outControl ? [node.outControl] : [])]);
+  const box = parseCdxmlXyBoundingBox(element.attributes.BoundingBox) ?? paddedBoundsForPoints(points, 1);
+  const warnings: CompatibilityWarning[] = [];
+  const note = (code: string, message: string) => {
+    warnings.push({ code, message, objectId: id });
+    context.warnings.push({ code, message, sourceObjectId: id });
+  };
+  if (hasHead && ["HeadSize", "ArrowheadCenterSize", "ArrowheadWidth"].some(name => element.attributes[name] !== undefined)) {
+    note("cdxml.curve_head_size_approximation", `CDXML curve "${element.attributes.id ?? id}" uses native default arrowhead dimensions; the source HeadSize, ArrowheadCenterSize and ArrowheadWidth attributes are retained exactly for CDXML export.`);
+  }
+  if ([element.attributes.ArrowheadHead, element.attributes.ArrowheadTail].some(head =>
+    ["halfleft", "halfright"].includes(normalizedCdxmlToken(head)))) {
+    note("cdxml.curve_half_head_handedness_approximation", `CDXML curve "${element.attributes.id ?? id}" uses the native fishhook orientation; the source half-head handedness is retained exactly for CDXML export.`);
+  }
+  if (normalizedCdxmlToken(element.attributes.ArrowheadType) === "hollow" && hasHead) {
+    note("cdxml.curve_hollow_head_approximation", `CDXML curve "${element.attributes.id ?? id}" uses an open native arrowhead for the hollow head; its original ArrowheadType is retained for CDXML export.`);
+  }
+  if ([element.attributes.ArrowheadHead, element.attributes.ArrowheadTail].some(head =>
+    !["", "none", "unspecified", "full", "half", "halfleft", "halfright", "angle"].includes(normalizedCdxmlToken(head))) ||
+    (hasHead && !["", "solid", "full", "half", "angle", "hollow"].includes(normalizedCdxmlToken(element.attributes.ArrowheadType)))) {
+    note("cdxml.curve_head_approximation", `CDXML curve "${element.attributes.id ?? id}" has unrecognized arrowhead attributes; its native head is approximate and the original attributes are retained for CDXML export.`);
+  }
+  const lineType = normalizedCdxmlToken(element.attributes.LineType);
+  if (lineType && !["solid", "dashed", "bold"].includes(lineType)) {
+    note("cdxml.curve_line_type_approximation", `CDXML curve "${element.attributes.id ?? id}" has LineType="${element.attributes.LineType}"; the Bezier is drawn as a solid native stroke and the source LineType is retained for CDXML export.`);
+  }
+  const effectiveElement = { ...element, attributes: { ...context.curveLineDefaults, ...element.attributes } };
+  if (["LineWidth", "BoldWidth"].some(name => effectiveElement.attributes[name] !== undefined &&
+    !((parseNumber(effectiveElement.attributes[name]) ?? 0) > 0))) {
+    note("cdxml.curve_line_width_approximation", `CDXML curve "${element.attributes.id ?? id}" has an invalid line width; a native default is used and the source width attributes are retained for CDXML export.`);
+  }
+  return {
+    id, type: "graphic", ...box, rotation: 0,
+    graphicKind: "path",
+    style: graphicStyleFromCdxmlCurve(effectiveElement, context.colorTable),
+    data: {
+      artPathKind: "bezier", pathNodes: nodes,
+      ...(cdxmlCurveIsClosed(element.attributes) ? { pathClosed: true } : {}),
+      ...markers,
+      ...(hasHead ? { artToolId: fishhook ? "fishhookCurved" : "curvedArrow90" } : {})
+    },
+    compatibility: {
+      sourceFormat: "cdxml", originalId: element.attributes.id, warnings,
+      unknown: { cdxmlElementName: "curve", cdxmlCurveAttributes: element.attributes, cdxmlCoordinateSpace: "xy" }
+    }
+  };
+}
+
+/** Read x/y pairs without rounding. Support both a start + cubic triples and the CDXML spline
+ * spelling (incoming handle, knot, outgoing handle for each node, including the exterior handles).
+ * Three points describe one quadratic; degree elevation to cubic is an exact format conversion. */
+function curveNodesFromCdxml(value: string | undefined): GraphicPathNode[] | undefined {
+  if (!value?.trim()) return undefined;
+  const coordinates = value.trim().split(/\s+/).map(Number);
+  if (coordinates.length % 2 || !coordinates.every(Number.isFinite)) return undefined;
+  const points: Point[] = [];
+  for (let index = 0; index < coordinates.length; index += 2) {
+    points.push({ x: cdxmlToCssPx(coordinates[index]), y: cdxmlToCssPx(coordinates[index + 1]) });
+  }
+  if (points.length === 2) return points.map(point => ({ point }));
+  if (points.length === 3) {
+    const [start, control, end] = points;
+    return [
+      { point: start, outControl: { x: start.x + (control.x - start.x) * 2 / 3, y: start.y + (control.y - start.y) * 2 / 3 } },
+      { point: end, inControl: { x: end.x + (control.x - end.x) * 2 / 3, y: end.y + (control.y - end.y) * 2 / 3 } }
+    ];
+  }
+  if (points.length >= 4 && (points.length - 1) % 3 === 0) {
+    const nodes: GraphicPathNode[] = [];
+    for (let index = 0; index < points.length; index += 3) {
+      nodes.push({ point: points[index],
+        ...(index > 0 ? { inControl: points[index - 1] } : {}),
+        ...(index + 1 < points.length ? { outControl: points[index + 1] } : {}) });
+    }
+    return nodes;
+  }
+  if (points.length >= 6 && points.length % 3 === 0) {
+    const nodes: GraphicPathNode[] = [];
+    for (let index = 0; index < points.length; index += 3) {
+      nodes.push({ point: points[index + 1], inControl: points[index], outControl: points[index + 2] });
+    }
+    return nodes;
+  }
+  return undefined;
+}
+
+function cdxmlCurveIsClosed(attributes: Record<string, string>): boolean {
+  return ["yes", "true", "1"].includes(normalizedCdxmlToken(attributes.Closed));
+}
+
 /** The native arrow tool an imported `<arrow>` stands for, judged by which ends carry heads. */
 function artToolIdForImportedArrowMarkers(
   markers: Pick<GraphicObject["data"], "markerStart" | "markerEnd">
@@ -2853,22 +3101,25 @@ function artToolIdForImportedArrowMarkers(
  *  — which an `<arrow>` element never carries — imported every ChemDraw arrow as a bare line. */
 function cdxmlArrowMarkers(element: XmlElementView): Pick<GraphicObject["data"], "markerStart" | "markerEnd"> {
   const arrowheadType = normalizedCdxmlToken(element.attributes.ArrowheadType);
-  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType);
-  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType);
+  const isCurve = element.name === "curve";
+  const markerEnd = cdxmlArrowMarker(element.attributes.ArrowheadHead, arrowheadType, isCurve);
+  const markerStart = cdxmlArrowMarker(element.attributes.ArrowheadTail, arrowheadType, isCurve);
   return {
     ...(markerEnd ? { markerEnd } : {}),
     ...(markerStart ? { markerStart } : {})
   };
 }
 
-function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string): GraphicMarker | undefined {
+function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string, isCurve: boolean): GraphicMarker | undefined {
   const head = normalizedCdxmlToken(arrowhead);
   // An absent attribute and "Unspecified" both mean the end is unheaded — which is why ChemDraw
   // writes a plain line arrow as `ArrowheadType="Solid"` with no `ArrowheadHead` at all.
   if (head === "" || head === "none" || head === "unspecified") {
     return undefined;
   }
-  if (head === "halfleft" || head === "halfright") {
+  // Curve aliases stay scoped here: <arrow> keeps its historical full-head fallback for Half,
+  // ArrowheadType=Half and a per-end Angle token.
+  if (head === "halfleft" || head === "halfright" || (isCurve && (head === "half" || arrowheadType === "half"))) {
     // Native fishhook heads are one-sided but not left/right-handed, so both spellings land on the
     // same marker; a ChemDraft-authored arrow keeps its exact head in the embedded payload.
     return { kind: "half-arrow", sizePx: defaultCdxmlHalfArrowheadSizePx };
@@ -2877,7 +3128,7 @@ function cdxmlArrowMarker(arrowhead: string | undefined, arrowheadType: string):
   // one. "Hollow" and "Angle" are both unfilled, and `open-arrow` is the nearest native head to
   // either; an unstated type means ChemDraw's default solid head.
   return {
-    kind: arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
+    kind: (isCurve && head === "angle") || arrowheadType === "hollow" || arrowheadType === "angle" ? "open-arrow" : "filled-arrow",
     sizePx: defaultCdxmlArrowheadSizePx
   };
 }
@@ -3027,6 +3278,20 @@ function graphicStyleFromCdxmlShape(
   }
 
   return style;
+}
+
+function graphicStyleFromCdxmlCurve(element: XmlElementView, colorTable: CdxmlColorTable): GraphicObject["style"] {
+  const style = graphicStyleFromCdxmlShape(element, colorTable);
+  const width = normalizedCdxmlToken(element.attributes.LineType) === "bold"
+    ? parseNumber(element.attributes.BoldWidth) ?? parseNumber(element.attributes.LineWidth)
+    : parseNumber(element.attributes.LineWidth);
+  if (width !== undefined && width > 0) style.strokeWidth = cdxmlToCssPx(width);
+  return style;
+}
+
+function cdxmlCurveLineDefaults(attributes: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(["LineWidth", "BoldWidth"].flatMap(name =>
+    attributes[name] === undefined ? [] : [[name, attributes[name]]]));
 }
 
 function graphicDataFromCdxmlShape(
@@ -3855,12 +4120,17 @@ function boundsForDocumentObjects(objects: readonly DocumentObject[]): { x: numb
 }
 
 function boundsForPoints(points: readonly Point[]): { x: number; y: number; width: number; height: number } {
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-  const maxX = Math.max(...xs);
-  const maxY = Math.max(...ys);
+  // Imported curves can contain enough nodes to overflow the argument stack of Math.min(...xs).
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
   return {
     x: minX,
     y: minY,
