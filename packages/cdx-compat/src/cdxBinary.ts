@@ -40,10 +40,10 @@ function warningSink(warnings: CdxWarning[]): (warning: CdxWarning) => void {
   };
 }
 
-type Prop = { tag: number; name: string; kind: string; names?: Map<number, string>; values?: Map<string, number> };
+type Prop = { tag: number; name: string; kind: string; idReference?: boolean; names?: Map<number, string>; values?: Map<string, number> };
 const byTag = new Map<number, Prop>(), byName = new Map<string, Prop>(), objectTag = new Map<string, number>();
-for (const [tag, name, kind, list] of PROPS) {
-  const p: Prop = { tag, name, kind };
+for (const [tag, name, kind, list, idReference] of PROPS) {
+  const p: Prop = { tag, name, kind, idReference };
   if (list) {
     p.names = new Map();
     p.values = new Map();
@@ -141,14 +141,13 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
       ids.set(id, String(next)); used.add(next++);
     }
   });
-  // Scalar bracket references need the same numeric ID mapping as object headers and ID lists.
-  // Otherwise symbolic GraphicID/BondID/InnerAtomID values are omitted by the integer encoder.
-  const references = new Set(["B", "E", "object", "SupersededBy", "BondCircularOrdering", "ConnectionOrder",
-    "GraphicID", "BondID", "InnerAtomID"]);
   const copy = (x: CdxElement): CdxElement => {
     const attrs = Object.fromEntries(Object.entries(x.attrs).map(([key, value]) => {
-      const kind = byName.get(key)?.kind;
-      const isReference = references.has(key) || kind === "ids" || kind === "attachments";
+      const property = byName.get(key);
+      // Reference semantics live beside the binary tags; <represent object> is a CDXML child
+      // encoded by the composite RepresentsProperty property rather than its own scalar tag.
+      const isReference = property?.idReference || property?.kind === "ids" || property?.kind === "attachments"
+        || x.name === "represent" && key === "object";
       return [key, key === "id" && objectTag.has(x.name) ? ids.get(value) ?? value
         : isReference ? value.split(/\s+/).map((id) => ids.get(id) ?? id).join(" ") : value];
     }));

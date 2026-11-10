@@ -78,6 +78,29 @@ describe("binary CDX headers and reference codec cases", () => {
     expect(source.kids[0].kids[2].kids[0].attrs.GraphicID).toBe("graphic");
   });
 
+  it("remaps symbolic alternative-group and chemical-property display references", () => {
+    const source = element("CDXML", {}, [element("page", { id: "1" }, [
+      element("altgroup", { id: "alternative" }),
+      element("t", { id: "display" }),
+      element("fragment", { id: "fragment" }, [
+        element("n", { id: "atom", AltGroupID: "alternative" })
+      ]),
+      element("chemicalproperty", { id: "property", ChemicalPropertyDisplayID: "display" })
+    ])]);
+    const expected = file(object(0x8001, 1,
+      object(0x800a, 2), object(0x8006, 3),
+      object(0x8003, 4, object(0x8004, 5, property(0x0434, u32(2)))),
+      object(0x8020, 6, property(0x0bb1, u32(3)))));
+    const warnings: CdxWarning[] = [];
+    expect(writeCdx(source, warnings)).toEqual(expected);
+    expect(warnings).toEqual([]);
+    const page = readCdx(expected).kids[0];
+    expect(page.kids[2].kids[0].attrs.AltGroupID).toBe(page.kids[0].attrs.id);
+    expect(page.kids[3].attrs.ChemicalPropertyDisplayID).toBe(page.kids[1].attrs.id);
+    expect(source.kids[0].kids[2].kids[0].attrs.AltGroupID).toBe("alternative");
+    expect(source.kids[0].kids[3].attrs.ChemicalPropertyDisplayID).toBe("display");
+  });
+
   it("preserves independently built page setup bytes, including top/left/bottom/right print margins", () => {
     const marginProperty = property(0x0802, [24, 30, 48, 42].flatMap(coord));
     // Binary rectangles are top/left/bottom/right; visible BoundingBox text is left/top/right/bottom.
