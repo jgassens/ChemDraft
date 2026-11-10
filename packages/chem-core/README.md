@@ -60,3 +60,6 @@ Native conditions labels carry an optional strict conditions-only attachment:
 length? }, offset, placement?: "auto" | "manual" }. Frame axes are perpendicular unit vectors;
 offset is the label centre in that frame. Native serialization retains the attachment without
 a schema-version migration.
+
+Wavy art paths optionally store `waveSmoothness` (0–100%), `waveHeight` (peak-to-trough, 0–48 px)
+and `waveWidth` (wavelength, 4–120 px). Omitted settings preserve legacy rendering until edited.

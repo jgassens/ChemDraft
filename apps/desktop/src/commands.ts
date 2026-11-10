@@ -16,6 +16,8 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import {
+  waveSettingRanges,
+  type WaveSetting,
   MARKER_SIZE_MAX_PX,
   MARKER_SIZE_STEP_PX,
   SHAFT_MARK_SIZE_MAX_PX,
@@ -1382,6 +1384,32 @@ export function moleculeStructureBondLengthForCommand(commandId: string): { valu
   return numberCommandValue(commandId, customMoleculeStructureBondLengthCommandPrefix, moleculeStructureNumberRanges.bondLengthPx);
 }
 
+export function objectWaveCommandId(setting: WaveSetting, value: number): string {
+  return `object.wave.${setting}:${canonicalCommandNumber(value)}`;
+}
+
+export function objectWaveForCommand(commandId: string): { setting: WaveSetting; value: number } | undefined {
+  for (const setting of Object.keys(waveSettingRanges) as WaveSetting[]) {
+    const range = waveSettingRanges[setting];
+    const parsed = numberCommandValue(commandId, `object.wave.${setting}:`, range);
+    if (parsed && Number.isInteger((parsed.value - range.min) / range.step) &&
+      commandId === objectWaveCommandId(setting, parsed.value)) return { setting, value: parsed.value };
+  }
+  return undefined;
+}
+
+/** Every slider step has its own registry command; the gallery omits these exhaustive values. */
+export const objectWaveCommands = (Object.keys(waveSettingRanges) as WaveSetting[]).flatMap(setting => {
+  const { min, max, step } = waveSettingRanges[setting];
+  return Array.from({ length: (max - min) / step + 1 }, (_, index) => {
+    const value = min + index * step;
+    return {
+      id: objectWaveCommandId(setting, value),
+      title: `Wave ${setting}: ${value}${setting === "smoothness" ? "%" : " px"}`
+    };
+  });
+});
+
 export function objectMarkerSizeCommandId(value: number): string {
   return `${customObjectMarkerSizeCommandPrefix}${canonicalCommandNumber(value)}`;
 }
@@ -1895,6 +1923,9 @@ export const textToolbarActions: CommandSpec[] = [
 ];
 
 export const objectStyleActions: CommandSpec[] = [
+  ...objectWaveCommands.map(({ id, title }) => ({
+    id, title, icon: "style", source: "core", category: "object-style"
+  } satisfies CommandSpec)),
   ...objectStyleTargetCommands.map(({ id, title }) => ({
     id,
     title,

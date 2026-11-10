@@ -1285,3 +1285,19 @@ formatted.
   or float because its atom becomes invalid. Deliberately dragging a mark away still detaches it.
 - Confirm C–OMe cannot be raised to a multiple bond, a dashed dative bond cannot be raised, and
   dashed display cannot be applied to a multiple bond. Ignore hides only (!); exports still warn.
+
+### Adjustable wavy lines (macOS and Windows)
+
+- Draw/select a Wavy Line, then open Object Settings (the Art controls). Check Wave smoothness,
+  height and width sliders: angular → rounded, peak-to-trough height, and wavelength respectively.
+- Drag each slider: preview follows the pointer, release saves one Undo step; Undo/Redo restores it.
+  Escape or cancelling a drag restores the previous shape. Check keyboard arrows and Home/End.
+- Check short/long, diagonal and reversed waves with/without arrowheads, mixed wave selections,
+  save/reopen and SVG/PDF export. Non-wave shapes must not change or show these sliders alone.
+- Open an older document and select its wavy art without adjusting a slider: its geometry must stay
+  identical through save/reopen and export. Only explicitly adjusted lines get the new geometry.
+- Select waves together with a molecule, straight line and rectangle; adjust every slider and
+  confirm only selected waves change. Check the molecule's bonds, stereo, charge and labels, and an
+  unselected wave. Repeat Undo/Redo and cancel; mixed wave values should read Mixed until adjusted.
+- Open Customize Main Toolbar and search for Wave; value-specific smoothness, height and width
+  commands should be available and work when added to a toolbar.

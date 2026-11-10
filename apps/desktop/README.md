@@ -138,3 +138,13 @@ preview, and Top / inside or Bottom / outside placement. Straight-arrow Top foll
 and blank Save removes the label. Labels are editable native text, follow their arrow through
 transforms and clipboard operations, and can be dragged to adjust their placement. Disabling
 authoring keeps existing labels visible and attached. SVG and PDF use the canvas rendering plan.
+
+## Adjustable wavy lines
+
+Select a Wavy Line and open Object Settings to adjust **Wave smoothness**, **Wave height** and
+**Wave width** with sliders. Height is peak-to-trough; width is wave spacing in document pixels.
+Dragging previews the shape and release saves one Undo step. Settings survive native save/reopen
+and use the same geometry for canvas and export. Escape or cancelling a drag restores the starting
+shape. Width fits whole cycles between the endpoints, so actual spacing may differ on short lines.
+Only selected wavy art paths change, including in mixed selections; molecules and other graphics
+stay unchanged. Existing lines keep their legacy shape until a wave slider is explicitly adjusted.

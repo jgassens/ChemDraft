@@ -341,6 +341,7 @@ import {
   objectPaintTypeForCommand,
   objectStyleActions,
   objectMarkerKindForCommand,
+  objectWaveForCommand,
   objectMarkerSizeForCommand,
   objectShaftMarkSizeAutoCommandId,
   objectShaftMarkSizeForCommand,
@@ -538,6 +539,7 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
+  applyGraphicWaveSettingToSelection,
   applyGraphicObjectMarkerSizeToSelection,
   applyGraphicShaftMarkSizeToSelection,
   graphicObjectHasShaftMark,
@@ -8361,6 +8363,20 @@ export function MainWindow({
       };
     }
 
+    const wave = objectWaveForCommand(commandId);
+    if (wave) {
+      const ids = graphicObjectIds.filter((id) => {
+        const object = findDocumentObject(currentDocument, id);
+        return object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy";
+      });
+      return {
+        document: applyGraphicWaveSettingToSelection(currentDocument, wave.setting, wave.value, ids),
+        handled: true,
+        targeted: ids.length > 0,
+        message: `Updated wave ${wave.setting}`
+      };
+    }
+
     const markerSize = objectMarkerSizeForCommand(commandId);
     if (markerSize) {
       const markerObjectIds = graphicObjectIds.filter((objectId) =>
@@ -8609,6 +8625,16 @@ export function MainWindow({
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
+
+  // Both native palettes and the web fallback commit wave edits through their registered command.
+  // The registered handler retains the preview's start document for one Undo entry per gesture.
+  const commitArtStyleCommand = useCallback((commandId: string) => {
+    if (objectWaveForCommand(commandId)) {
+      void invokeCommandRef.current(commandId);
+    } else {
+      commitObjectStylePreview(commandId);
+    }
+  }, [commitObjectStylePreview]);
 
   const applyPendingMoleculeStyleOverrideChoice = useCallback((choice: "keep" | "clear" | "cancel") => {
     const prompt = moleculeStyleOverridePrompt;
@@ -9241,7 +9267,7 @@ export function MainWindow({
         previewMoleculeInspectorCommand(commandId);
       }),
       commit: (commandId) => diagnose("commit", commandId, () => {
-        commitObjectStylePreview(commandId);
+        commitArtStyleCommand(commandId);
         commitMoleculeInspectorPreview(commandId);
       }),
       cancel: () => diagnose("cancel", undefined, () => {
@@ -9253,7 +9279,7 @@ export function MainWindow({
     cancelMoleculeInspectorPreview,
     cancelObjectStylePreview,
     commitMoleculeInspectorPreview,
-    commitObjectStylePreview,
+    commitArtStyleCommand,
     previewMoleculeInspectorCommand,
     previewObjectStyleCommand
   ]);
@@ -11863,6 +11889,10 @@ export function MainWindow({
 
     objectStyleActions.forEach((action) => {
       register(action, () => {
+        if (objectWaveForCommand(action.id)) {
+          commitObjectStylePreview(action.id);
+          return;
+        }
         if (!applyObjectStyleCommand(action.id)) {
           setStatus(`${action.title} unavailable`);
         }
@@ -12002,6 +12032,7 @@ export function MainWindow({
     fuseDieneAtHoveredNativeBond,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
+    commitObjectStylePreview,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
     currentMoleculeInspector,
@@ -12760,7 +12791,7 @@ export function MainWindow({
       return;
     }
 
-    if (applyObjectStyleCommand(commandId)) {
+    if (!objectWaveForCommand(commandId) && applyObjectStyleCommand(commandId)) {
       return;
     }
 
@@ -21686,7 +21717,7 @@ export function MainWindow({
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
-                  onArtStyleCommit: commitObjectStylePreview,
+                  onArtStyleCommit: commitArtStyleCommand,
                   onArtStyleCancel: cancelObjectStylePreview,
                   onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
                   onMoleculeInspectorCommit: commitMoleculeInspectorPreview,

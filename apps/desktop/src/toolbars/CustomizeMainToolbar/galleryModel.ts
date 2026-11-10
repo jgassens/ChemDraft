@@ -61,8 +61,9 @@ function matchesSearch(query: string, ...fields: (string | undefined)[]): boolea
 /**
  * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then any
  * section widgets (style controls) offered, then the FULL command catalog deduped by id (first spec
- * wins, matching the Customize dialog) and filtered by the search box. Not capped — the toolbar must
- * be able to host every tool, and the tray scrolls. `presentItemIds` are the customization ids already
+ * wins, matching the Customize dialog) and filtered by the search box. Exhaustive wave slider steps
+ * stay in Object Settings; the remaining catalog is not capped and the tray scrolls.
+ * `presentItemIds` are the customization ids already
  * in the toolbar — present command/widget tiles render grayed and inert so an item can't be added twice.
  */
 export function buildGalleryModel(
@@ -101,6 +102,11 @@ export function buildGalleryModel(
       continue;
     }
     seen.add(command.id);
+    // Like arbitrary size/thickness values, wave slider steps belong in their existing controls,
+    // rather than 315 individual tiles. This filters presentation only; all commands stay registered.
+    if (command.id.startsWith("object.wave.")) {
+      continue;
+    }
     // A retired alias is not a separate tool. Both ids pass the catalog's tool.* filter, so the
     // gallery listed two identically-titled "Reaction Arrow" tiles — and the legacy one built the
     // retired object type.

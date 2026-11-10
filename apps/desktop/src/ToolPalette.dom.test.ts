@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import { applyGraphicWaveSettingToSelection, createPhase4Document, insertNativeArtGraphicObject, selectDocumentObjects } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { toolbarAsset } from "./toolbarAssets";
@@ -186,7 +186,7 @@ describe("ToolPalette art color popover", () => {
         }
       }));
     });
-    return { onCommit, onInvoke, onPreview };
+    return { onCommit, onInvoke, onPreview, onCancel };
   }
 
   function colorTrigger(): HTMLButtonElement {
@@ -231,6 +231,76 @@ describe("ToolPalette art color popover", () => {
       })
     });
   }
+
+  it("previews wave sliders, commits once on release, and supports keyboard bounds", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    for (const [setting, max] of [["smoothness", "100"], ["height", "48"], ["width", "120"]]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Wave ${setting}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.type).toBe("range");
+      expect(slider.max).toBe(max);
+      act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      expect(onCommit).toHaveBeenLastCalledWith(`object.wave.${setting}:${max}`);
+    }
+    onCommit.mockClear();
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(height);
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5");
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => { height.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5");
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+    });
+    expect(onCancel).toHaveBeenCalled();
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.rect") });
+    expect(container.querySelector('[aria-label="Wave height"]')).toBeNull();
+  });
+
+  it("shows mixed wave values with pixel units and counts only wavy art", () => {
+    let drawing = insertNativeArtGraphicObject(createPhase4Document(), { x: 220, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 12);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 320, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 24);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 420, y: 180 }, "tool.art.rect");
+    drawing = selectDocumentObjects(drawing, drawing.pages[0].id, drawing.pages[0].objects.map(object => object.id));
+    const currentArtStyle = createArtInspectorModel({ document: drawing,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(drawing), requestedPaintTarget: "stroke" });
+    expect(currentArtStyle.wavy).toMatchObject({ count: 2, height: { value: null, mixed: true } });
+    renderPalette({ currentArtStyle });
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    expect(height.closest("label")?.textContent).toContain("Mixed");
+    const heightTooltip = height.closest("[data-tooltip-owner-id]")?.querySelector('[role="tooltip"]')?.textContent;
+    expect(heightTooltip).toBe("Wave height applies to 2 of 3 selected graphics: Mixed");
+    expect(height.step).toBe("0.5");
+    const width = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    const widthTooltip = width.closest("[data-tooltip-owner-id]")?.querySelector('[role="tooltip"]')?.textContent;
+    expect(widthTooltip).toContain("Wave width applies to 2 of 3 selected graphics:");
+    expect(widthTooltip).toContain(" px");
+    expect(widthTooltip).not.toContain("%");
+    expect(container.querySelector('[data-toolbar-style-controls="art"] [title]')).toBeNull();
+  });
+
+  it.each(["Escape", "blur"])("cancels an active wave drag on %s and ignores the later release", ending => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.focus(); slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    act(() => {
+      if (ending === "Escape") slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else slider.blur();
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 }));
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
 
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
     const onCancel = vi.fn();
