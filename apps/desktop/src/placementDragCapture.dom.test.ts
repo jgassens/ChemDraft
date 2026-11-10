@@ -233,6 +233,15 @@ describe("placement drags that start on an object follow pointer capture", () =>
     expect(bridge().snapshot().document.pages[0].objects).toEqual(snapshot.document.pages[0].objects);
   });
 
+  it("reports when a repeat unit is marked and removed", async () => {
+    await renderMainWindow(createPhase4Document("Repeat unit status"), "tool.roundBracket");
+    await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 93);
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Marked as repeat unit");
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Repeat unit removed");
+  });
+
   it("marks a pair as a repeat unit and edits its annotation label in one undo step", async () => {
     await renderMainWindow(createPhase4Document("Repeat unit"), "tool.roundBracket");
     await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 92);

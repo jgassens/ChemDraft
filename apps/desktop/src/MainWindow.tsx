@@ -1763,7 +1763,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.09.55-codex";
+const CURRENT_BUILD_STAMP = "11.10.10.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11435,8 +11435,11 @@ export function MainWindow({
 
     bracketActions.forEach(action => register(action, () => {
       if (action.id === "bracket.repeatUnit.toggle") {
-        commitDocumentChange(toggleBracketRepeatUnit(documentRef.current), action.title);
-        setStatus(action.title);
+        const nextDocument = toggleBracketRepeatUnit(documentRef.current);
+        if (commitDocumentChange(nextDocument, action.title)) {
+          setStatus(selectedBracketPair(nextDocument).some(object => object.repeatUnit)
+            ? "Marked as repeat unit" : "Repeat unit removed");
+        }
       } else {
         const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
         if (closing) {
