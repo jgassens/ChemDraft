@@ -2,7 +2,7 @@ import type { MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import {
   nativeAtomBondOrderUsage, nativeAtomChargeSupportsValence, nativeAtomLabelFreeValence,
   nativeAtomLabelContextInMolecule, nativeAtomLabelHeadElement, nativeAtomLabelReading,
-  nativeAtomValidationState, type NativeAtomLabelReading
+  nativeAtomValidationState, nativeAtomValence, type NativeAtomLabelReading
 } from "./atoms";
 
 /** The validation/ring-template admission measure, including Kekulé orders and radicals. */
@@ -32,7 +32,11 @@ export function labelOnBondedAtom(
   const typed = nativeAtomLabelReading(label, context);
   const reading = typed.kind;
   // An attached label is a new neutral atom; the source retains its own charge.
+  // Element labels normally leave room for implicit hydrogens, so FreeValence is undefined.
+  // A normally monovalent element still takes only one attachment here, just like CF3 or OMe:
+  // typing Cl on a ring carbon means a chloro substituent, even where Cl(III) could be valid.
   const freeValence = nativeAtomLabelFreeValence(label, 0, context);
+  const monovalentElement = typed.kind === "element" && nativeAtomValence[typed.element] === 1;
   const base = { bondCount, external, reading, freeValence };
   if (bondCount < 2) return { ...base, kind: "unchanged" };
   const sourceContext = nativeAtomLabelContextInMolecule(atom, molecule, true);
@@ -48,7 +52,7 @@ export function labelOnBondedAtom(
   }
   if (freeValence !== undefined && freeValence === external) return { ...base, kind: "relabel" };
   const reason = reading === "generic" ? "generic" : reading === "heavy-hydrogen" ? "heavy-hydrogen"
-    : freeValence === 1 ? "one-bond" : undefined;
+    : freeValence === 1 || monovalentElement ? "one-bond" : undefined;
   if (!reason) return { ...base, kind: "relabel" };
 
   // #83 distinguishes an imported element (Ac/Pr/Ts/Ar) from the typed group spelling,

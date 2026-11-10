@@ -888,15 +888,17 @@ describe("hover label typing", () => {
     await hover(0);
     await press("C");
     await hover(1);
-    await press("F");
+    // F now attaches as a monovalent substituent on this ring. Use a multivalent element to
+    // keep testing a fresh relabel and its continuation after drifting away from the first C.
+    await press("N");
     expect(molecule().atoms[0]!.element).toBe("C");
-    expect(molecule().atoms[1]!.element).toBe("F");
+    expect(molecule().atoms[1]!.element).toBe("N");
     expect(editor()).toBeNull();
-    await press("3");
-    expect(editor()?.value).toBe("F3");
+    await press("H");
+    expect(editor()?.value).toBe("NH");
     await press("Enter");
     expect(molecule().atoms[0]!.element).toBe("C");
-    expect(molecule().atoms[1]).toMatchObject({ element: "F3" });
+    expect(molecule().atoms[1]).toMatchObject({ element: "NH" });
     expectIntact();
   });
 

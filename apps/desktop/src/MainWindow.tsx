@@ -4758,18 +4758,20 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = applyNativeAtomElementTarget(currentDocument, target, element);
+    const result = commitNativeAtomLabelTarget(currentDocument, target, element);
+    const nextDocument = result.document;
     if (nextDocument === currentDocument) {
       setStatus(`Cannot set hovered atom to ${element}`);
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
+    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered atom to ${element}`);
+    setStatus(result.message ?? `Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeAtomLabel = useCallback((label: string) => {
@@ -9418,7 +9420,11 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
     hoverLabelAssignmentRef.current = undefined;
+    hoverRetargetedForLabelRef.current = false;
     setFreeformNativeBond(undefined);
+    // History restores chemistry, not a label key's temporary target. Resolve the current pointer
+    // against the restored graph through the same path as pointermove, before another hover key.
+    rederiveNativeCanvasHoverRef.current(nextHistory.present);
     setLastAnalysis(null);
     setStatus(
       undoLabel
@@ -15573,7 +15579,18 @@ export function MainWindow({
   // Hover-key edits, keyboard history navigation and label continuation all reuse pointermove's
   // hover derivation at the last canvas pointer position, against the updated document.
   const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
-    const clientPoint = lastCanvasPointerClientPointRef.current;
+    // Menu history navigation shares the keyboard path's editor and gesture guards.
+    if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current ||
+        isSnapshotSessionActive() || selectionMarqueeRef.current || selectionLassoRef.current ||
+        tapeMeasureDragRef.current || spin3dTugDragRef.current) return;
+    let clientPoint = pointerInsideCanvasRef.current ? lastCanvasPointerClientPointRef.current : undefined;
+    const canvas = canvasRegionRef.current;
+    // Layout can move the canvas without a pointer event. History and charge keys must never
+    // resurrect a hover from a saved client point that is now outside the workspace.
+    if (clientPoint && (!canvas || !clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()))) {
+      lastCanvasPointerClientPointRef.current = undefined;
+      clientPoint = undefined;
+    }
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
     // resolve the element at the pointer the way a real pointer event's target would report it.
     // (Guarded like agentBridge.ts: hosts without layout, such as jsdom, have no elementFromPoint.)
@@ -15581,7 +15598,7 @@ export function MainWindow({
       ? window.document.elementFromPoint(clientPoint.x, clientPoint.y)
       : undefined;
     updateNativeCanvasHover(sourceDocument, clientPoint ? pagePointFromClientPoint(clientPoint) : undefined, eventTarget);
-  }, [pagePointFromClientPoint, updateNativeCanvasHover]);
+  }, [isSnapshotSessionActive, pagePointFromClientPoint, updateNativeCanvasHover]);
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
@@ -15592,20 +15609,33 @@ export function MainWindow({
     const handleVisibilityChange = () => {
       if (window.document.hidden) clearCanvasHover();
     };
+    const canvas = canvasRegionRef.current;
+    const clearLastCanvasPointer = () => {
+      lastCanvasPointerClientPointRef.current = undefined;
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
       pointerInsideCanvasRef.current = Boolean(canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()));
       if (pointerInsideCanvasRef.current) {
         lastCanvasPointerClientPointRef.current = clientPoint;
+      } else {
+        clearLastCanvasPointer();
       }
     };
 
+    // Leaving for a menu or another window may deliver no further move to this webview.
+    canvas?.addEventListener("pointerleave", clearLastCanvasPointer);
+    window.addEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+    window.addEventListener("blur", clearLastCanvasPointer);
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
     window.addEventListener("blur", clearCanvasHover);
     window.document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      canvas?.removeEventListener("pointerleave", clearLastCanvasPointer);
+      window.removeEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+      window.removeEventListener("blur", clearLastCanvasPointer);
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("blur", clearCanvasHover);

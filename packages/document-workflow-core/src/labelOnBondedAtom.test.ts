@@ -71,9 +71,19 @@ describe("same-head label decisions", () => {
     expect(nativeAtomValidationState({ ...m.atoms[0]!, element: "SH", labelLiteral: true }, m.bonds, 0, m.atoms).valid).toBe(true);
   });
 
-  it.each(["NH2", "NO2", "CF3", "COOH", "CN", "NMe2", "OH", "OMe", "Ph", "CH2CN"])("retains %s attachment on carbon", label => {
+  it.each(["Cl", "Br", "F", "I", "NH2", "NO2", "CF3", "COOH", "CN", "NMe2", "OH", "OMe", "Ph", "CH2CN"])("retains %s attachment on carbon", label => {
     const m = graph("C");
     expect(labelOnBondedAtom(label, m.atoms[0]!, m).kind).toBe("substituent");
+  });
+
+  it.each(["Cl", "Br", "F", "I"])("keeps %s terminal relabels and declines attachment to a saturated source", label => {
+    const terminal = graph("C");
+    terminal.bonds = terminal.bonds.slice(0, 1);
+    expect(labelOnBondedAtom(label, terminal.atoms[0]!, terminal).kind).toBe("unchanged");
+    const saturated = graph("C");
+    saturated.bonds = saturated.bonds.map(b => ({ ...b, order: "double" }));
+    expect(labelOnBondedAtom(label, saturated.atoms[0]!, saturated)).toMatchObject({ kind: "relabel", reason: "source-valence" });
+    expect(nativeAtomValidationState({ ...saturated.atoms[0]!, element: label, labelLiteral: true }, saturated.bonds, 0, saturated.atoms).valid).toBe(false);
   });
 
   it.each(["NMe2", "NHMe"])("relabels neutral two-bond N as %s even when over-valent", label => {
