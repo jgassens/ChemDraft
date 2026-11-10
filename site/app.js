@@ -60,7 +60,6 @@
       for (const { link, meta, find } of targets) {
         const asset = find(assets);
         if (!asset?.browser_download_url) {
-          link.closest(".download-option").hidden = true;
           continue;
         }
 
