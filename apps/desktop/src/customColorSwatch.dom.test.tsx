@@ -17,6 +17,7 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { persistCustomSwatches } from "./toolbars/customSwatchSettings";
 import { CustomColorSwatchWidget } from "./toolbars/CustomColorSwatchWidget";
 import { ToolbarWidgetStateContext } from "./toolbars/toolbarWidgets";
+import { PALETTE_TOOLTIP_DOM_EVENT } from "./toolbars/toolbarTooltip";
 import type { ToolbarPaletteItemModel } from "./toolsets";
 
 const native = vi.hoisted(() => ({ open: vi.fn(), send: vi.fn(), hostReceive: undefined as ((message: DialogMessage) => void) | undefined,
@@ -107,6 +108,9 @@ describe.each(["macos", "windows"] as const)("custom swatch application (%s comm
     expect(element.querySelector(`[data-page-svg-object-visual="${source.arrow.id}"]`)!.innerHTML).toBe(presetArrow);
     expect(presetArrow).toContain('#1f5fbf');
     await command("edit.undo"); expect(snapshot()).toEqual(before);
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Undid Apply Colour #1F5FBF");
+    await command("edit.redo");
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("Redid Apply Colour #1F5FBF");
   });
 
   it("colours the selected characters through the same editor path as presets", async () => {
@@ -158,6 +162,7 @@ describe("custom swatch toolbar and native dialog requests", () => {
     await act(async () => persistCustomSwatches(setCustomSwatchSlot(state, 1, 2, "#123456")));
     await render(false); invoke.mockClear();
     const set = h.element.querySelector<HTMLButtonElement>('[aria-label="Custom color 1, slot 2: #123456"]')!;
+    expect(set.title).toBe("#123456");
     expect(set.getAttribute("aria-disabled")).toBe("true"); expect(set.disabled).toBe(false);
     await act(async () => set.click()); expect(invoke).not.toHaveBeenCalled();
     await act(async () => set.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "F10", shiftKey: true })));
@@ -168,6 +173,18 @@ describe("custom swatch toolbar and native dialog requests", () => {
     await act(async () => set.click()); expect(invoke).toHaveBeenCalledExactlyOnceWith(customSwatchCommandId(1, 2, "apply"));
     expect(h.element.querySelector('[aria-controls]')).toBeNull();
     expect(h.element.querySelectorAll('[role="group"][aria-label^="Custom Color Swatch"]')).toHaveLength(2);
+  });
+
+  it("announces the stored colour to the native floating tooltip", async () => {
+    saveCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), 1, 1, "#123456"));
+    document.body.classList.add("palette-window-body");
+    const tooltip = vi.fn(); window.addEventListener(PALETTE_TOOLTIP_DOM_EVENT, tooltip);
+    try {
+      const h = host(); await act(async () => h.root.render(<CustomColorSwatchWidget swatch={1} />));
+      await act(async () => h.element.querySelector("button")!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
+      expect(tooltip).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({ visible: true, title: "#123456" }) }));
+    } finally { document.body.classList.remove("palette-window-body"); window.removeEventListener(PALETTE_TOOLTIP_DOM_EVENT, tooltip); }
   });
 
   it("updates all mounted palettes on persisted settings, storage events, and the native settings notification", async () => {
@@ -181,6 +198,17 @@ describe("custom swatch toolbar and native dialog requests", () => {
     saveCustomSwatches(setCustomSwatchSlot(state, 4, 1, "#445566"));
     await act(async () => { for (const handler of native.events.get("chemdraft://custom-color-swatches") ?? []) handler({ payload: null }); });
     expect(document.querySelectorAll('[aria-label="Custom color 4, slot 1: #445566"]')).toHaveLength(2);
+  });
+
+  it("opens the empty slot dialog once on a right-button press", async () => {
+    await mountDrawing(drawing().document, "macos");
+    const palette = host();
+    await act(async () => palette.root.render(<ToolbarWidgetStateContext.Provider value={{ onInvoke: id => { void command(id); } }}><CustomColorSwatchWidget swatch={1} /></ToolbarWidgetStateContext.Provider>));
+    await act(async () => { const button = palette.element.querySelector<HTMLButtonElement>("button")!;
+      button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 2 }));
+      button.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 })); });
+    expect(native.open).toHaveBeenCalledOnce();
+    expect(native.open.mock.calls[0][0]).toMatchObject({ dialogKind: "customColor", data: { swatch: 1, slot: 1, color: null } });
   });
 
   it("opens the native customColor request, saves without applying, and clears through the registered command", async () => {
@@ -207,6 +235,36 @@ describe("custom swatch toolbar and native dialog requests", () => {
 });
 
 describe("CustomColorForm", () => {
+  it("reports a fresh content measurement when mode or validation changes", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const height = this.textContent?.includes(CMYK_APPROXIMATION_NOTE) ? 390 : this.textContent?.includes("whole number") || this.textContent?.includes("Server error") ? 350 : 300;
+      return { top: 0, height } as DOMRect;
+    });
+    const h = host();
+    await act(async () => h.root.render(<DialogWindow hostId="color-host" />));
+    const message = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "customColor",
+      sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Color", swatch: 4, slot: 2, color: null } } as DialogMessage;
+    await act(async () => native.hostReceive!(message));
+    const ready = () => native.send.mock.calls.filter(([, sent]) => sent.type === "ready").map(([, sent]) => sent.data.contentHeight);
+    expect(ready()).toEqual([300]);
+    await act(async () => { const select = h.element.querySelector("select")!; select.value = "RGB"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await input(h.element.querySelector<HTMLInputElement>("input")!, "300");
+    expect(ready().at(-1)).toBe(350);
+    await act(async () => { const select = h.element.querySelector("select")!; select.value = "CMYK"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(ready().at(-1)).toBe(390);
+    await act(async () => { const select = h.element.querySelector("select")!; select.value = "Hex"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(ready().at(-1)).toBe(300);
+  });
+
+  it("requests a new measurement when a host error appears or clears", async () => {
+    const h = host(), onReady = vi.fn();
+    const render = (error?: string) => act(async () => h.root.render(<CustomColorForm initial={{ title: "Color", swatch: 1, slot: 1, color: null }}
+      onSubmit={() => {}} onCancel={() => {}} onClear={() => {}} onReady={onReady} error={error} />));
+    await render(); expect(onReady).toHaveBeenCalledTimes(1);
+    await render("A long host error that can wrap"); expect(onReady).toHaveBeenCalledTimes(2);
+    await render(); expect(onReady).toHaveBeenCalledTimes(3);
+  });
+
   it("routes a native snapshot to the lazy form and sends a normalized OK action after ready", async () => {
     const h = host();
     await act(async () => h.root.render(<DialogWindow hostId="color-host" />));
