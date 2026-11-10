@@ -3138,12 +3138,11 @@ fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreferencesClose {
-    Hide,
     Close,
     Destroyed,
 }
 
-// All close paths use this transaction. Capture before hiding/destroying, without holding
+// All close paths use this transaction. Capture before destroying, without holding
 // REGISTRY across native calls. A Destroyed event can only drain a previously captured frame.
 fn flush_preferences_to(
     registry: &Mutex<Registry>,
@@ -3330,7 +3329,7 @@ mod tests {
             .join("dialog-positions.json")
     }
 
-    fn assert_preferences_close_reopens(platform: &str, close: PreferencesClose) {
+    fn assert_preferences_close_reopens(platform: &str) {
         for scale in [1.0, 1.5, 2.0] {
             // A debounced worker may already have drained every event. A stale queued move
             // must also lose to the live close-time frame, including a resize with no move.
@@ -3348,22 +3347,18 @@ mod tests {
                     }),
                     ..Registry::default()
                 });
-                flush_preferences_to(&registry, &path, close, || {
+                flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
                     assert!(
                         registry.try_lock().is_ok(),
                         "native reads cannot hold REGISTRY"
                     );
                     preferences_native_frame(platform, scale, false)
                 });
-                // Native destruction follows CloseRequested; Hide keeps the renderer alive.
-                if close == PreferencesClose::Close {
-                    flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
-                        panic!("Destroyed must never query a dead native window")
-                    });
-                    assert!(registry.lock().unwrap().preferences.is_none());
-                } else {
-                    assert!(registry.lock().unwrap().preferences.is_some());
-                }
+                // Native destruction follows CloseRequested.
+                flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
+                    panic!("Destroyed must never query a dead native window")
+                });
+                assert!(registry.lock().unwrap().preferences.is_none());
                 drop(registry);
                 // Read disk after dropping all live state, just as an app relaunch does.
                 let positions: HashMap<String, SavedPosition> =
@@ -3429,14 +3424,7 @@ mod tests {
     #[test]
     fn preferences_native_x_and_red_close_save_live_frame_before_destroy_and_relaunch() {
         for platform in ["windows", "macos"] {
-            assert_preferences_close_reopens(platform, PreferencesClose::Close);
-        }
-    }
-
-    #[test]
-    fn preferences_menu_hide_saves_live_frame_and_relaunch_restores_it() {
-        for platform in ["windows", "macos"] {
-            assert_preferences_close_reopens(platform, PreferencesClose::Hide);
+            assert_preferences_close_reopens(platform);
         }
     }
 
@@ -3538,7 +3526,7 @@ mod tests {
                     )
                 };
                 // The unchanged app-clamped frame must leave the user's larger size on disk.
-                flush_preferences_to(&registry, &path, PreferencesClose::Hide, || {
+                flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
                     capture(origin, programmed)
                 });
                 let read = || -> SavedPosition {
@@ -3548,7 +3536,7 @@ mod tests {
                 };
                 assert_eq!(read().size, original.size);
                 // A move with no resize saves its live origin, retaining the pre-clamp size.
-                flush_preferences_to(&registry, &path, PreferencesClose::Hide, || {
+                flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
                     capture(moved, programmed)
                 });
                 assert_eq!((read().x, read().y), (-1300.0, 200.0));
@@ -3567,7 +3555,7 @@ mod tests {
                         ..original.clone()
                     },
                 ));
-                flush_preferences_to(&registry, &path, PreferencesClose::Hide, || {
+                flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
                     capture(moved, programmed)
                 });
                 assert_eq!(read().size, Some((700.0, 500.0)));
@@ -3584,13 +3572,13 @@ mod tests {
     }
 
     #[test]
-    fn preferences_native_and_menu_paths_share_the_close_flush_before_disposal() {
+    fn preferences_close_paths_flush_before_disposal_and_preferences_command_raises() {
         let source = include_str!("dialog_windows.rs");
         let events = source
             .split("pub(crate) fn on_window_event")
             .nth(1)
             .unwrap()
-            .split("// Focus uses the shared raising path")
+            .split("\n#[cfg(test)]")
             .next()
             .unwrap();
         assert!(events.contains("WindowEvent::CloseRequested { .. } if window.label() == super::PREFERENCES_WINDOW_LABEL => {\n            flush_preferences(window.app_handle(), PreferencesClose::Close);"));
@@ -3599,7 +3587,7 @@ mod tests {
             .split("pub(crate) fn dismiss_owned")
             .nth(1)
             .unwrap()
-            .split("fn reveal_on_main")
+            .split("pub(crate) fn prepare_preferences")
             .next()
             .unwrap();
         assert!(
@@ -3609,19 +3597,40 @@ mod tests {
                 < owner_close.find("window.destroy()").unwrap()
         );
         let lib = include_str!("lib.rs");
-        let menu_close = lib
+        // The Preferences command opens or raises; it no longer disposes of the window.
+        let menu_open = lib
             .split("async fn toggle_preferences_window")
             .nth(1)
             .unwrap()
             .split("fn ensure_preferences_window")
             .next()
             .unwrap();
-        assert!(
-            menu_close
-                .find("dialog_windows::PreferencesClose::Hide")
-                .unwrap()
-                < menu_close.find("window.hide()").unwrap()
-        );
+        assert!(menu_open.contains("ensure_preferences_window(&app).map(|_| ())"));
+        let existing_window = lib
+            .split("fn ensure_preferences_window")
+            .nth(1)
+            .unwrap()
+            .split("let owner = app")
+            .next()
+            .unwrap();
+        assert!(existing_window.contains("app.get_webview_window(PREFERENCES_WINDOW_LABEL)"));
+        assert!(existing_window.contains("dialog_windows::show_preferences(&target)"));
+        assert!(existing_window.contains("return Ok(window);"));
+        for path in [menu_open, existing_window] {
+            assert!(!path.contains("window.hide()"));
+            assert!(!path.contains("window.close()"));
+            assert!(!path.contains("window.destroy()"));
+            assert!(!path.contains("flush_preferences"));
+        }
+        // macOS Close Window still uses CloseRequested and its native close-time flush.
+        let menu_close = lib
+            .split("fn close_key_window")
+            .nth(1)
+            .unwrap()
+            .split("fn about_metadata")
+            .next()
+            .unwrap();
+        assert!(menu_close.contains("(CloseWindowRoute::TauriClose, Some(window)) => {\n            if let Err(error) = window.close()"));
     }
 
     #[test]

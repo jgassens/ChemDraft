@@ -977,9 +977,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 - Preferences frame regression: open Preferences with no saved position; it must centre over the
   document, including when the document is on a secondary monitor. Move Preferences outside the
-  document bounds, close with its title bar, and reopen: restore its position. Repeat using the
-  Preferences command to hide/reopen it, after an app restart, and after a drag begun within 500 ms
-  of opening followed by immediate close. That immediate user move must be restored on reopen.
+  document bounds, invoke the Preferences command again: it must raise the open window. Close with
+  its title bar and reopen: restore its position. Repeat after an app restart and after a drag begun
+  within 500 ms of opening followed by immediate close. That immediate user move must be restored
+  on reopen.
   Test both directions between 100% and 150%/200% displays on Windows and different display scales
   on macOS, including negative monitor coordinates and work-area edges. Disconnect the saved
   monitor and reopen: centre over the document with the title bar reachable. Repeat after owner
@@ -1296,7 +1297,7 @@ formatted.
   then close/reopen and restart. No minimized coordinates or tiny client size may be saved. Check
   immediate close after a drag/resize and a burst of resize events still saves the latest frame.
 - In Preferences, check Windows ownership/no taskbar entry, macOS hiding on Cmd-Tab, front ordering
-  above floating toolbars, hide/reopen via its menu command, native-prompt suspension/restoration,
+  above floating toolbars, raising the open window via its menu command, native-prompt suspension/restoration,
   and dismissal when the document closes. Test keyboard access to every setting after scrolling.
 - Increase OS text scaling or webview zoom and use long drawing names/disclosure/error text. Verify
   content fits when possible and otherwise scrolls above the actions; install progress, failures,
