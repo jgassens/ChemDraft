@@ -18,6 +18,49 @@ function documentWithObject(object: unknown) {
 }
 
 describe("integrated 1.2 native document features", () => {
+  it("keeps bracket identity snapshots in legacy open metadata without raising the minimum version", () => {
+    const snapshot = { sourceId: "11", atomId: "a", element: "C",
+      incidentBonds: [{ id: "b", fromAtomId: "a", toAtomId: "c", fromElement: "C", toElement: "O" }] };
+    // No 1.2 pair fields: this isolates the new metadata's version rule.
+    const bracket = { ...base, type: "bracket", bracketKind: "square", containedObjectIds: [],
+      compatibility: { warnings: [], unknown: { cdxmlBracketAtomSnapshots: [snapshot] } } };
+    const document = documentWithObject(bracket);
+    const saved = JSON.parse(serializeDocument(document));
+    expect(minimumAppVersionForDocument(document)).toBe("1.1.1");
+    expect(saved).not.toHaveProperty("formatVersion");
+    expect(saved).not.toHaveProperty("ignorableFields");
+    expect(Released111DocumentSchema.parse(saved)).toEqual(document);
+    expect(readSerializedDocument(JSON.stringify(saved)).document).toEqual(document);
+    for (const invalid of [
+      { ...snapshot, unexpected: true },
+      { ...snapshot, element: "" },
+      { ...snapshot, incidentBonds: [{ ...snapshot.incidentBonds[0], fromElement: undefined }] },
+      { ...snapshot, incidentBonds: [{ ...snapshot.incidentBonds[0], unexpected: true }] }
+    ]) {
+      expect(() => documentWithObject({ ...bracket,
+        compatibility: { warnings: [], unknown: { cdxmlBracketAtomSnapshots: [invalid] } } })).toThrow();
+    }
+    expect(documentWithObject({ ...bracket, compatibility: { warnings: [], unknown: {} } })).toBeDefined();
+  });
+
+  it.each(["atoms", "bonds"] as const)("versions %s import provenance that the strict 1.1.1 reader cannot preserve", field => {
+    const molecule = { ...base, type: "molecule", structureFormat: "unknown", structure: "",
+      atoms: [{ id: "a", element: "C", x: 0, y: 0, formalCharge: 0,
+        ...(field === "atoms" ? { cdxmlSourceId: "11" } : {}) },
+        { id: "b", element: "O", x: 22, y: 0, formalCharge: 0 }],
+      bonds: [{ id: "bond", fromAtomId: "a", toAtomId: "b", order: "single",
+        ...(field === "bonds" ? { cdxmlSourceId: "13" } : {}) }], superatoms: [], rGroups: [] };
+    const document = documentWithObject(molecule);
+    const saved = JSON.parse(serializeDocument(document));
+    expect(saved).toMatchObject({ formatVersion: "1.2.0", minAppVersion: "1.2.0" });
+    expect(saved).not.toHaveProperty("ignorableFields");
+    expect(readSerializedDocument(JSON.stringify(saved)).document).toEqual(saved);
+    const { formatVersion: _format, minAppVersion: _minimum, ...withoutHeader } = saved;
+    expect(Released111DocumentSchema.safeParse(withoutHeader).success).toBe(false);
+    const pattern = `pages.*.objects.*[type=molecule].${field}.*.cdxmlSourceId`;
+    expect(() => readDocument({ ...saved, ignorableFields: [pattern] })).toThrow(/known field .* cannot be declared ignorable/);
+  });
+
   it.each([
     ["compatibility", {}],
     ["compatibility.sourceFormat", { sourceFormat: "cdxml" }],

@@ -86,6 +86,24 @@ export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocume
   "field:pages.*.objects.*[type=bracket].crossingBondIds.*.objectId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
   "field:pages.*.objects.*[type=bracket].crossingBondIds.*.bondId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
 
+  // Import identity snapshots carry chemistry provenance, but 1.1.1 already preserves
+  // this entire open compatibility record. Typing it must not raise the file version.
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.sourceId": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.atomId": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.element": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds.*.id": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds.*.fromAtomId": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds.*.toAtomId": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds.*.fromElement": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+  "field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots.*.incidentBonds.*.toElement": { introducedIn: "1.2.0", kind: "feature", ignorable: false, preservedByBaseline: true },
+
+  // Per-object identities distinguish delete/redraw from coordinate edits. Unlike the open
+  // bracket metadata, 1.1.1's strict atom/bond schemas cannot retain these fields.
+  "field:pages.*.objects.*[type=molecule].atoms.*.cdxmlSourceId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=molecule].bonds.*.cdxmlSourceId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+
   // #322 typed preset metadata that 1.1.1 already preserves in its open style records.
   // Only graphics had a strict style schema: their new preset field really requires 1.2.
   // Keep every addition inventoried without mistaking stricter validation for a new wire feature.

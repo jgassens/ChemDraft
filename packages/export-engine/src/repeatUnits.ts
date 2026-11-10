@@ -1,4 +1,4 @@
-import { bracketChemistryWarnings, bracketPairs, type BracketObject, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
+import { bracketChemistryWarnings, bracketPairs, CdxmlBracketAtomSnapshotSchema, type BracketObject, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
 import { projectedPlaneSvgTransformForObject, transformPointForObject } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
 
@@ -83,10 +83,11 @@ function importedMembership(pair: BracketObject[], objects: readonly DocumentObj
     members.set(molecule!.id, ids);
   }
   reason ??= importedBoundaryReason(pair, members, objects);
+  reason ??= importedIdentityReason(pair, memberRecords, members, objects);
   return { members, reason: reason ?? connectivityReason, referencedObjectIds, connectivity };
 }
 
-/** Import snapshots distinguish later additions from intentionally excluded source atoms. */
+/** Keep the specific diagnostics for plainly new ids; map presence alone proves no identity. */
 function importedBoundaryReason(pair: BracketObject[], members: Map<string, Set<string>>, objects: readonly DocumentObject[]): string | undefined {
   const left = Math.min(...pair.map(object => object.x));
   const top = Math.min(...pair.map(object => object.y));
@@ -111,6 +112,69 @@ function importedBoundaryReason(pair: BracketObject[], members: Map<string, Set<
         }
       }
     }
+  }
+  return undefined;
+}
+
+/** Native ids can be recycled. Check source provenance, elements and the complete incident graph. */
+function importedIdentityReason(pair: BracketObject[], records: Record<string, unknown>[], members: Map<string, Set<string>>,
+  objects: readonly DocumentObject[]): string | undefined {
+  for (const member of new Map(records.map(entry => [JSON.stringify(entry), entry])).values()) {
+    if (typeof member.atomId !== "string" || typeof member.objectId !== "string") continue;
+    // A whole-molecule member already includes every current atom; no atom can be silently
+    // excluded by a stale atom-level reference, including in a pre-snapshot native document.
+    if (records.some(entry => entry.objectId === member.objectId && entry.atomId === undefined)) continue;
+    const molecule = objects.find(object => object.id === member.objectId);
+    if (molecule?.type !== "molecule") continue;
+    const snapshots = pair.map(object => object.compatibility?.unknown.cdxmlBracketAtomSnapshots
+      ?.filter(snapshot => snapshot.sourceId === member.sourceId));
+    if (snapshots.some(entries => entries?.length !== 1)) {
+      return `its imported atom-level membership cannot rule out edits to member "${member.atomId}" without an import-time atom and incident-bond snapshot`;
+    }
+    const parsed = CdxmlBracketAtomSnapshotSchema.safeParse(snapshots[0]![0]);
+    if (!parsed.success || parsed.data.atomId !== member.atomId ||
+      snapshots.some(entries => JSON.stringify(entries![0]) !== JSON.stringify(snapshots[0]![0]))) {
+      return `its imported atom-level membership has an invalid or inconsistent identity snapshot for member "${member.atomId}"`;
+    }
+    const snapshot = parsed.data;
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    const sourceAtoms = molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId;
+    const sourceBonds = molecule.compatibility?.unknown.cdxmlBondIdsByBondId;
+    if (atoms.get(member.atomId)?.element !== snapshot.element) {
+      return `its imported atom-level membership has edited atom "${member.atomId}" with a different element`;
+    }
+    if (atoms.get(member.atomId)?.cdxmlSourceId !== member.sourceId) {
+      return `its imported atom-level membership cannot prove atom "${member.atomId}" is the imported original after an edit`;
+    }
+    const incident = molecule.bonds.filter(bond => bond.fromAtomId === member.atomId || bond.toAtomId === member.atomId);
+    for (const bond of incident) {
+      const original = snapshot.incidentBonds.find(entry => entry.id === bond.id);
+      if (!original) {
+        const atomIds = members.get(member.objectId)!;
+        return atomIds.has(bond.fromAtomId) !== atomIds.has(bond.toAtomId)
+          ? `its imported atom-level membership has a new boundary bond "${bond.id}" between member and non-member atoms`
+          : `its imported atom-level membership has a new bond "${bond.id}" touching a member atom`;
+      }
+      // Reversing a bond does not change its membership. The crossing-bond check below still
+      // enforces the source's directional InnerAtomID association where one was supplied.
+      if (!(bond.fromAtomId === original.fromAtomId && bond.toAtomId === original.toAtomId ||
+        bond.fromAtomId === original.toAtomId && bond.toAtomId === original.fromAtomId)) {
+        return `its imported atom-level membership has edited bond "${bond.id}" with different endpoints`;
+      }
+      for (const [id, element] of [[original.fromAtomId, original.fromElement], [original.toAtomId, original.toElement]]) {
+        if (atoms.get(id)?.element !== element) {
+          return `its imported atom-level membership has edited atom "${id}" with a different element`;
+        }
+        if (!record(sourceAtoms) || typeof sourceAtoms[id] !== "string" || atoms.get(id)?.cdxmlSourceId !== sourceAtoms[id]) {
+          return `its imported atom-level membership cannot prove atom "${id}" is the imported original after an edit`;
+        }
+      }
+      if (!record(sourceBonds) || typeof sourceBonds[bond.id] !== "string" || bond.cdxmlSourceId !== sourceBonds[bond.id]) {
+        return `its imported atom-level membership cannot prove bond "${bond.id}" is the imported original after an edit`;
+      }
+    }
+    const missing = snapshot.incidentBonds.find(original => !incident.some(bond => bond.id === original.id));
+    if (missing) return `its imported atom-level membership no longer has incident bond "${missing.id}" on member "${member.atomId}"`;
   }
   return undefined;
 }

@@ -23,6 +23,24 @@ const binary = (source: string) => writeCdx(cdxElementFromOrderedTree(new XMLPar
   ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(source)));
 
 describe("native bracket group interchange", () => {
+  it.each(["CDXML", "CDX"])("snapshots member elements and all incident bonds without crossing attachments in %s", format => {
+    const source = fixture("brackets-native-sru").replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="11"')
+      .replace(/<crossingbond[^>]*\/>/, "");
+    const document = (format === "CDX" ? importCdx(binary(source)) : openChemDraftPayload(source)).document!;
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const [member, outside] = molecule.atoms;
+    const [bond] = molecule.bonds;
+    expect([member.cdxmlSourceId, outside.cdxmlSourceId, bond.cdxmlSourceId]).toEqual(["11", "12", "13"]);
+    for (const bracket of document.pages[0].objects.filter(object => object.type === "bracket")) {
+      expect(bracket.compatibility!.unknown.cdxmlBracketAtomSnapshots).toEqual([
+        { sourceId: "11", atomId: member.id, element: "C", incidentBonds: [
+          { id: bond.id, fromAtomId: member.id, toAtomId: outside.id, fromElement: "C", toElement: "O" }
+        ] }
+      ]);
+      expect(bracket.crossingBondIds).toBeUndefined();
+    }
+  });
+
   it("keeps surviving atom members after membership edits and names each dropped source id", () => {
     const document = openChemDraftPayload(fixture("brackets-native-sru")
       .replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="11 12 missing"')).document!;

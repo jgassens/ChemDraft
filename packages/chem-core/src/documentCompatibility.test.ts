@@ -61,11 +61,18 @@ describe("native feature version registry", () => {
     ]));
   });
 
-  it("proves every baseline-preservation exemption against the frozen reader's style schema", () => {
+  it("proves every baseline-preservation exemption against the frozen reader's open metadata", () => {
     const exemptions = Object.entries(NativeDocumentFeatureVersions).filter(([, feature]) => feature.preservedByBaseline);
-    expect(exemptions).toHaveLength(15);
+    expect(exemptions).toHaveLength(25);
     const style = { stylePresetId: "chemdraft.acs1996", color: "#12ab34", bondLengthPx: 22 };
     for (const [token] of exemptions) {
+      if (token.startsWith("field:pages.*.objects.*[type=bracket].compatibility.unknown.cdxmlBracketAtomSnapshots")) {
+        const released = Released111ObjectSchema.innerType().options.find(option => option.shape.type.value === "bracket")!;
+        const compatibility = { warnings: [], unknown: { cdxmlBracketAtomSnapshots: [{ sourceId: "11", atomId: "a", element: "C",
+          incidentBonds: [{ id: "b", fromAtomId: "a", toAtomId: "c", fromElement: "C", toElement: "O" }] }] } };
+        expect(released.shape.compatibility.parse(compatibility), token).toEqual(compatibility);
+        continue;
+      }
       const match = /^field:pages\.\*\.objects\.\*\[type=([^\]]+)\]\.style\.stylePresetId$/.exec(token);
       expect(match, token).not.toBeNull();
       const kind = match![1]!;

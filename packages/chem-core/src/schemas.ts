@@ -329,6 +329,8 @@ export const RGroupDisplaySchema = z
 export const MoleculeAtomSchema = z
   .object({
     id: IdSchema,
+    /** Import provenance for bracket membership; new atoms must not inherit a deleted atom's source id. */
+    cdxmlSourceId: IdSchema.optional(),
     element: z.string().min(1),
     /** Explicit isotope mass number; absent means natural abundance. D/T use their own symbols. */
     isotope: z.number().int().positive().max(999).optional(),
@@ -412,6 +414,8 @@ export const MoleculeBondDisplaySchema = z
 export const MoleculeBondSchema = z
   .object({
     id: IdSchema,
+    /** Import provenance for bracket membership; new bonds have no source identity. */
+    cdxmlSourceId: IdSchema.optional(),
     fromAtomId: IdSchema,
     toAtomId: IdSchema,
     order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
@@ -641,6 +645,20 @@ function refineTable(table: z.infer<typeof TableObjectShapeSchema>, ctx: z.Refin
 
 export const TableObjectSchema = TableObjectShapeSchema.superRefine(refineTable);
 
+/** Import provenance, not live membership. Coordinates deliberately do not participate. */
+export const CdxmlBracketAtomSnapshotSchema = z.object({
+  sourceId: IdSchema,
+  atomId: IdSchema,
+  element: z.string().min(1),
+  incidentBonds: z.array(z.object({
+    id: IdSchema,
+    fromAtomId: IdSchema,
+    toAtomId: IdSchema,
+    fromElement: z.string().min(1),
+    toElement: z.string().min(1)
+  }).strict())
+}).strict();
+
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
   bracketKind: z.enum(["square", "round", "curly", "polymer", "unknown"]),
@@ -652,7 +670,14 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
   repeatCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   crossingBondIds: z.array(BondRefSchema).optional(),
   label: z.string().optional(),
-  containedObjectIds: z.array(IdSchema).default([])
+  containedObjectIds: z.array(IdSchema).default([]),
+  compatibility: CompatibilityMetadataSchema.extend({
+    unknown: z.object({
+      // Source ids bind these snapshots to cdxmlBracketMembers. Copying a pair remaps the
+      // member's objectId but keeps molecule-local atom/bond ids, so this also survives copies.
+      cdxmlBracketAtomSnapshots: z.array(CdxmlBracketAtomSnapshotSchema).optional()
+    }).catchall(z.unknown()).default({})
+  }).optional()
 }).strict();
 
 const GraphicObjectShapeSchema = BaseObjectSchema.extend({
@@ -858,6 +883,7 @@ export type TableCell = z.infer<typeof TableCellSchema>;
 export type TableRichText = z.infer<typeof TableRichTextSchema>;
 export type TableStyle = z.infer<typeof TableStyleSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
+export type CdxmlBracketAtomSnapshot = z.infer<typeof CdxmlBracketAtomSnapshotSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
 export type VisualEffect = z.infer<typeof VisualEffectSchema>;
