@@ -26,6 +26,11 @@ node. Bare `R`, `R'`, and `R''` keep their text without acquiring a numeric inde
 `cdx.atom_label_unexpanded` names each label exported without an expanded atom graph: the text and
 drawn attachments are preserved, but the file does not supply an explicit chemical expansion to
 other readers. A nameless unexpanded node imports as an unknown atom with a warning, never carbon.
+Text-only `Unspecified` nodes also retain their literal label, charge and source annotations on
+visible export, without creating superatom records. Nested `AnonymousAlternativeGroup` and
+`NamedAlternativeGroup` nodes cannot be ordinary superatoms: `cdxml.abbreviation_not_expanded`
+names the source node and unsupported alternative-group semantics. Their label and original
+expansion remain compatibility data and are written back through CDXML and CDX.
 Synthetic coverage includes chain formulas, a ring NMe, a repeated-formula linker, a metal fragment,
 peptide labels, and nested fragment connection points; it is not a claim of general peptide or
 multi-attachment fragment expansion.
@@ -311,5 +316,13 @@ Copying a complete pair and every referenced object carries and remaps its compa
 incomplete copies drop those records with user-visible warnings.
 
 These are synthetic-fixture-covered paths, not a general Tier B polymer claim. Groups with missing
-or non-pair attachments still use unknown-object preservation. No independent-reader or interactive
+or non-pair attachments still use unknown-object preservation. `cdxml.bracket_group_preserved`
+names each source group whose usage, repeat count, members and crossing bonds have no native group
+representation; its glyphs remain independent and its group is omitted from visible export.
+Unsupported source glyph kinds, including `Curly`, use `cdxml.bracket_type_preserved`, naming the
+source graphic and the omitted native glyph/visible export. Nested bracket groups remain raw source
+children of an exportable outer pair, with `cdxml.bracket_nested_group_preserved` naming every group
+whose native semantics are not imported. These warnings also apply to binary CDX.
+See [the C1 loss handoff](C1-remaining-losses-handoff.md) for synthetic cases and decisions.
+No independent-reader or interactive
 platform verification is claimed. See [the bracket handoff](../../docs/architecture/brackets-repeat-units.md).

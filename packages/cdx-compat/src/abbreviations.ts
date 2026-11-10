@@ -2,6 +2,38 @@ import type { MoleculeObject } from "@chemdraft/chem-core";
 import type { CompatibilityConversionWarning } from "./index";
 import type { CdxElement } from "./cdxBinary";
 
+/** Shared structural gate for import and source measurements. No chemistry is inferred here. */
+export function abbreviationExpansionIssue(
+  attributes: Record<string, string>,
+  fragments: readonly { atoms: readonly Record<string, string>[]; bonds: readonly Record<string, string>[] }[],
+  outerBonds: readonly Record<string, string>[],
+  depth: number
+): string | undefined {
+  const { atoms = [], bonds = [] } = fragments[0] ?? {};
+  const connectionPoints = new Set(atoms.filter(atom => ["ExternalConnectionPoint", "12"].includes(atom.NodeType)).map(atom => atom.id ?? ""));
+  const body = atoms.filter(atom => !["ExternalConnectionPoint", "12"].includes(atom.NodeType));
+  const connections = bonds.filter(bond => connectionPoints.has(bond.B ?? "") || connectionPoints.has(bond.E ?? ""));
+  const attachment = connections.map(bond => connectionPoints.has(bond.B ?? "") ? bond.E : bond.B).find(id => id !== undefined);
+  const chargeValue = Number(attributes.Charge);
+  const charge = Number.isInteger(chargeValue) ? chargeValue : 0;
+  if (fragments.length !== 1) return "it carries more than one expanded fragment.";
+  if (depth > 4) return "its nesting exceeds the supported abbreviation depth.";
+  if (["AnonymousAlternativeGroup", "NamedAlternativeGroup", "8", "9"].includes(attributes.NodeType)) {
+    return `NodeType="${attributes.NodeType}" carries alternative-group semantics that cannot be represented as a native superatom.`;
+  }
+  if (charge !== 0) return `its charge ${charge} cannot be assigned to a nested atom without guessing.`;
+  if (!body.length) return "it carries no atoms to expand.";
+  if (connectionPoints.size > 1) return `it attaches at ${connectionPoints.size} points, and which bond meets which atom cannot be read from the file.`;
+  if (connections.length > connectionPoints.size) return "its external connection point does not have exactly one attachment bond.";
+  if (attachment !== undefined && !body.some(atom => atom.id === attachment)) return "its attachment bond does not reach a body atom.";
+  if (outerBonds.some(bond => bond.B === attributes.id || bond.E === attributes.id) && attachment === undefined) {
+    return "it has no attachment bond connecting its body to the outer drawing.";
+  }
+  if (attributes.Isotope !== undefined || (attributes.Radical !== undefined && !["None", "0"].includes(attributes.Radical))) {
+    return "its wrapper isotope or radical cannot be assigned to a nested atom without guessing.";
+  }
+}
+
 interface SourceAbbreviation {
   atomIds: string[];
   expanded: boolean;

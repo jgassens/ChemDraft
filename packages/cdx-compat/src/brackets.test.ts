@@ -425,7 +425,10 @@ describe("CDXML bracket graphics", () => {
     const unknown = imported.document!.pages[0].objects.find(object => object.type === "unknown-compatibility-object");
     expect(JSON.stringify(unknown)).toContain("crossingbond");
     expect(JSON.stringify(unknown)).toContain("InnerAtomID");
-    expect(imported.warnings.find(warning => warning.code === "cdxml.bracket_group_preserved")?.message).toBe("CDXML import: bracket group bg_crossing has unsupported attachment count or bracket references; the following data is not interpreted: atom or object membership and crossing-bond attachments; the group is preserved as an unknown compatibility object.");
+    expect(imported.warnings.find(warning => warning.code === "cdxml.bracket_group_preserved")).toMatchObject({
+      sourceObjectId: "bg_crossing",
+      message: "CDXML import: bracket group bg_crossing has 1 attachments or unsupported bracket references; bracket usage, repeat count, bracket members and crossing bonds are not imported as native group semantics (atom or object membership and crossing-bond attachments); the group is preserved as an unknown compatibility object and is not written to visible export."
+    });
     const paired = fixture("crossing-bonds").replace('<bracketedgroup id="bg_crossing"', '<graphic id="g_other" BoundingBox="198 174 186 186" GraphicType="Bracket" BracketType="Round"/><bracketedgroup id="bg_crossing"')
       .replace('</bracketedgroup>', '<bracketattachment id="ba_other" GraphicID="g_other"/></bracketedgroup>');
     const native = openChemDraftPayload(paired);

@@ -51,7 +51,7 @@ import {
   writeCdx,
   type CdxElement
 } from "./cdxBinary";
-import { restoreCdxmlAbbreviations } from "./abbreviations";
+import { abbreviationExpansionIssue, restoreCdxmlAbbreviations } from "./abbreviations";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -1255,6 +1255,21 @@ function exportVisibleObject(
   }
   if (object.type === "reaction") {
     return "";
+  }
+  if (object.type === "unknown-compatibility-object" && isRecord(object.raw) && isRecord(object.raw.attributes)) {
+    const attributes = preservedCurveAttributes(object.raw.attributes);
+    const sourceId = attributes.id ?? object.compatibility?.originalId ?? object.id;
+    if (object.sourceObjectType === "graphic" && attributes.GraphicType === "Bracket") {
+      warnings.push({ code: "cdxml.bracket_type_preserved", sourceObjectId: sourceId,
+        message: `Bracket ${sourceId} with bracket kind "${attributes.BracketType ?? "unspecified"}" is NOT written to visible export; its source is retained in the native document only.` });
+      return "";
+    }
+    if (object.sourceObjectType === "bracketedgroup") {
+      const groups = [object.raw as unknown as XmlElementView, ...findElements(Array.isArray(object.raw.children) ? object.raw.children : [], "bracketedgroup")];
+      for (const group of groups) warnings.push({ code: "cdxml.bracket_group_preserved", sourceObjectId: group.attributes.id ?? sourceId,
+        message: `Bracket group ${group.attributes.id ?? sourceId}: bracket usage, repeat count, bracket members and crossing bonds are NOT written to visible export; the source is retained in the native document only.` });
+      return "";
+    }
   }
   if (object.type === "mechanism-arrow" || object.type === "electron-mark") {
     warnings.push({
@@ -2967,6 +2982,12 @@ function importPageObjects(
     }
     if (element.name === "bracketedgroup") {
       bracketGroups.push(element);
+      // The native model describes a pair, not a hierarchy of bracket groups. The source
+      // children can be written back, but every unrepresented group needs its own diagnostic.
+      for (const nested of findElements(element.children, "bracketedgroup")) {
+        warnings.push({ code: "cdxml.bracket_nested_group_preserved", sourceObjectId: nested.attributes.id,
+          message: `${sourceFormat} nested bracket group ${nested.attributes.id ?? "(unknown)"} is not imported as a native bracket group: bracket usage, repeat count, bracket members and crossing bonds remain source compatibility data only.` });
+      }
       return { objects: [], rootIds: [] };
     }
     if (element.name === "arrow") {
@@ -3070,7 +3091,8 @@ function importPageObjects(
       const data = [group.attributes.BracketedObjectIDs ? "atom or object membership" : undefined,
         attachments.some(attachment => childElements(attachment, "crossingbond").length > 0) ? "crossing-bond attachments" : undefined,
         group.attributes.BracketUsage && group.attributes.BracketUsage !== "SRU" ? `bracket usage "${group.attributes.BracketUsage}"` : undefined].filter(Boolean);
-      warnings.push({ code: "cdxml.bracket_group_preserved", message: `${sourceFormat} import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported attachment count or bracket references${data.length ? `; the following data is not interpreted: ${data.join(" and ")}` : ""}; the group is preserved as an unknown compatibility object.` });
+      warnings.push({ code: "cdxml.bracket_group_preserved", sourceObjectId: group.attributes.id,
+        message: `${sourceFormat} import: bracket group ${group.attributes.id ?? "(unknown)"} has ${attachments.length} attachments or unsupported bracket references; bracket usage, repeat count, bracket members and crossing bonds are not imported as native group semantics${data.length ? ` (${data.join(" and ")})` : ""}; the group is preserved as an unknown compatibility object and is not written to visible export.` });
       const remaining = [...new Set(pair.filter((object): object is BracketObject => object !== undefined))];
       const memberIds = splitCdxmlIdList(group.attributes.BracketedObjectIDs);
       const members = objects.filter(object => memberIds.includes(object.compatibility?.originalId ?? "") ||
@@ -3313,13 +3335,19 @@ function expandCdxmlAbbreviationNodes(
       // A standard nickname/formula node need not carry an expansion. Its text belongs to this
       // atom, not to another carbon or a standalone text object. Never infer an element from the
       // absent Element attribute (whose default would otherwise be carbon).
-      if (["Nickname", "Fragment", "Formula", "GenericNickname", "Monomer", "4", "5", "6", "7", "14"].includes(atomElement.attributes.NodeType)) {
+      const statedElement = atomElement.attributes.Element === undefined ? undefined : elementFromCdxmlAtom(atomElement.attributes.Element);
+      const unspecifiedLabel = ["Unspecified", "0"].includes(atomElement.attributes.NodeType) &&
+        (statedElement === undefined || atomicNumberForElementSymbol(statedElement) === undefined) && cdxmlAtomLabelText(atomElement);
+      if (["Nickname", "Fragment", "Formula", "GenericNickname", "Monomer", "4", "5", "6", "7", "14"].includes(atomElement.attributes.NodeType) || unspecifiedLabel) {
         const label = cdxmlAtomLabelText(atomElement);
         literalLabelByCdxmlId.set(nodeId, label ?? "*");
+        // Keep the source kind, charge, annotations and label runs for visible interchange.
+        if (unspecifiedLabel) abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
         warnings.push({
           code: "cdxml.abbreviation_not_expanded",
+          sourceObjectId: nodeId,
           message: label
-            ? `Kept the abbreviation "${label}" as a literal label with its bonds: it carries no expanded atom graph.`
+            ? `Kept abbreviation node ${nodeId} ("${label}") as a literal label with its bonds: it carries no expanded atom graph.`
             : `Kept abbreviation node ${nodeId} as an unknown atom (*): it carries neither label text nor an expanded atom graph.`
         });
       }
@@ -3344,37 +3372,17 @@ function expandCdxmlAbbreviationNodes(
         : bondElement.attributes.B)
       .find((id): id is string => id !== undefined);
 
-    const outerBondCount = bondElements.filter((bondElement) =>
-      bondElement.attributes.B === nodeId || bondElement.attributes.E === nodeId).length;
-    const charge = parseInteger(atomElement.attributes.Charge) ?? 0;
-    let notExpandableReason: string | undefined;
-    if (childElements(atomElement, "fragment").length !== 1) {
-      notExpandableReason = "it carries more than one expanded fragment.";
-    } else if (depth > 4) {
-      notExpandableReason = "its nesting exceeds the supported abbreviation depth.";
-    } else if (charge !== 0) {
-      notExpandableReason = `its charge ${charge} cannot be assigned to a nested atom without guessing.`;
-    } else if (bodyAtoms.length === 0) {
-      notExpandableReason = "it carries no atoms to expand.";
-    } else if (connectionPointIds.size > 1) {
-      notExpandableReason = `it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`;
-    } else if (nestedBonds.filter(touchesConnectionPoint).length > connectionPointIds.size) {
-      notExpandableReason = "its external connection point does not have exactly one attachment bond.";
-    } else if (attachment !== undefined && !bodyAtoms.some((atom) => atom.attributes.id === attachment)) {
-      notExpandableReason = "its attachment bond does not reach a body atom.";
-    } else if (outerBondCount > 0 && attachment === undefined) {
-      notExpandableReason = "it has no attachment bond connecting its body to the outer drawing.";
-    } else if (atomElement.attributes.Isotope !== undefined ||
-      (atomElement.attributes.Radical !== undefined && !["None", "0"].includes(atomElement.attributes.Radical))) {
-      notExpandableReason = "its wrapper isotope or radical cannot be assigned to a nested atom without guessing.";
-    }
+    const notExpandableReason = abbreviationExpansionIssue(atomElement.attributes,
+      childElements(atomElement, "fragment").map(fragment => ({ atoms: childElements(fragment, "n").map(n => n.attributes), bonds: childElements(fragment, "b").map(b => b.attributes) })),
+      bondElements.map(bond => bond.attributes), depth);
     if (notExpandableReason) {
       // An Element naming nothing is warned about where the atom is imported, not here.
       const element = elementFromCdxmlAtom(atomElement.attributes.Element) ?? "*";
       const keptAs = label ? "a label" : element === "C" ? "a carbon atom" : `an atom (${element})`;
       warnings.push({
         code: "cdxml.abbreviation_not_expanded",
-        message: `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as ${keptAs}: ${notExpandableReason}`
+        sourceObjectId: nodeId,
+        message: `Kept abbreviation node ${nodeId}${label ? ` ("${label}")` : ""} as ${keptAs}: ${notExpandableReason}`
       });
       expandedAtoms.push(atomElement);
       abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
@@ -4198,8 +4206,8 @@ function importGraphic(
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
   if (element.attributes.GraphicType === "Bracket" && !["Square", "Round"].includes(element.attributes.BracketType)) {
-    context.warnings.push({ code: "cdxml.bracket_type_preserved",
-      message: `Unsupported ${context.sourceFormat} bracket type "${element.attributes.BracketType ?? "unspecified"}" was preserved as an unknown compatibility object.` });
+    context.warnings.push({ code: "cdxml.bracket_type_preserved", sourceObjectId: element.attributes.id,
+      message: `${context.sourceFormat} bracket ${element.attributes.id ?? "(unknown)"} has unsupported bracket kind "${element.attributes.BracketType ?? "unspecified"}"; it is not imported as a native glyph and is not written to visible export. Its source remains an unknown compatibility object.` });
     return importUnknownCompatibilityObject(element, pageIndex, objectIndex, context.sourceFormat);
   }
   if (element.attributes.GraphicType === "Bracket" && ["Square", "Round"].includes(element.attributes.BracketType)) {
