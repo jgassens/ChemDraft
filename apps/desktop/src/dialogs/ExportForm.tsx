@@ -25,7 +25,7 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
   model3d: "3D"
 };
 const implementedExportFormats = exportFormatDescriptors.filter((descriptor) => descriptor.status === "implemented");
-const exportFormatOptionExtensions = [...new Set(implementedExportFormats.flatMap((descriptor) => descriptor.extensions))];
+const registeredExportFormatExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 interface ExportDialogProps {
   state: ExportDialogState;
   previewEnabled: boolean;
@@ -546,7 +546,7 @@ export function rasterExportFormatForDialogFormat(format: ExportFormatId): Nativ
 function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
   const extension = descriptor.extensions[0] ?? descriptor.id;
   const trimmed = filename.trim() || "Untitled";
-  const escapedExtensions = exportFormatOptionExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const escapedExtensions = registeredExportFormatExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
   return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
 }

@@ -64,6 +64,7 @@ it("lists every implemented desktop export format without deferred formats", () 
     "sdf", "smiles", "cdxml", "cdx"
   ]);
   expect(select.textContent).not.toMatch(/deferred|\.cds|\.chm/i);
+  expect(updateExportDialogFormat({ ...exportFixture(), filename: "compound.mol" }, "pdf").filename).toBe("compound.pdf");
 });
 
 it("updates the old picker path hint when filename or format changes and keeps all option controls", () => {
