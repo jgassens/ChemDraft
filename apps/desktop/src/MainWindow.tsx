@@ -2420,7 +2420,7 @@ export function MainWindow({
   const atomProblemTargetRef = useRef<{ tabId: string; target: AtomProblemTarget; source: ChemDraftDocument; version: number } | undefined>(undefined);
   const atomProblemVersionRef = useRef(0);
   const fixAtomProblemRef = useRef<(tabId: string, action: AtomProblemAction, version: number) => void>(() => {});
-  const refreshAtomProblemRef = useRef<() => void>(() => {});
+  const refreshAtomProblemRef = useRef<(afterIgnore?: boolean) => void>(() => {});
   const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
   const vibeGuideActionRef = useRef<(action: "saveStarter" | "openPluginManager") => Promise<void>>(async () => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
@@ -9709,7 +9709,7 @@ export function MainWindow({
     void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
-  refreshAtomProblemRef.current = () => {
+  refreshAtomProblemRef.current = (afterIgnore = false) => {
     const target = atomProblemTargetRef.current;
     if (!target) return;
     const source = target.tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present
@@ -9717,7 +9717,10 @@ export function MainWindow({
     if (!source || source === target.source) return;
     target.source = source;
     target.version = ++atomProblemVersionRef.current;
-    void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, atomProblemSnapshot(source, target.target, target.version))
+    const data = atomProblemSnapshot(source, target.target, target.version);
+    // Restore remains available when reopening a suppressed warning, but it is not an outstanding problem after Ignore.
+    const refreshed = afterIgnore && data.fixes.every(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
+    void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, refreshed)
       .catch(error => setStatus(`Atom problem could not update: ${String(error)}`));
   };
   fixAtomProblemRef.current = (tabId, action, version) => {
@@ -9745,7 +9748,7 @@ export function MainWindow({
       nonPristineTabsRef.current.add(tabId);
       setDocumentTabs([...documentTabsRef.current]);
     }
-    refreshAtomProblemRef.current();
+    refreshAtomProblemRef.current(action === "ignore");
   };
   useEffect(() => { refreshAtomProblemRef.current(); }, [document, documentTabs, activeDocumentTabId]);
   useEffect(() => {

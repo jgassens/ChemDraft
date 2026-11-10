@@ -277,7 +277,6 @@ export class DialogCoordinator {
         await this.owner.fixAtomProblem(message.documentTabId, data.action, data.targetVersion);
       } catch (error) { receipt.data = { status: "error", error: String(error).slice(0, 2048) }; }
       finally { finish(); session.inFlight.delete(message.requestId); session.terminalRequestId = undefined; }
-      if (!session.settled && data.action === "ignore" && receipt.data.status === "applied") { await this.settle(session, "close"); return; }
       if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);
       return;
     }
