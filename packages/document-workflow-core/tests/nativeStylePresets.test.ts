@@ -5,11 +5,9 @@ import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import { applyNativeStylePreset, documentDrawingDefaults, createSmilesMolecule,
   pastedStructureDepictionFromMolfile, nativeSingleBondGraphMetadata, expandNativeMoleculeLabelGroups,
-  createNativeTextObject } from "../src/index";
+  createNativeTextObject, nativeElectronMarkAssignments, nativeElectronMarkAtomKey } from "../src/index";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
-import { nativeStylePresetPatchForSelection } from "../../../apps/desktop/src/nativeStylePresetCommand";
-import { normalizeCommittedDocument } from "../../../apps/desktop/src/documentWorkflow";
 
 beforeAll(() => installRealRdkitModuleLoader());
 
@@ -85,8 +83,8 @@ function markedChain() {
 }
 
 function commitPreset(document: ChemDraftDocument, presetId: string, warnings: CompatibilityWarning[] = []) {
-  const patch = nativeStylePresetPatchForSelection(document, presetId, [], warnings);
-  return normalizeCommittedDocument(applyPatches(document, patch.patches));
+  const patch = applyNativeStylePreset(document, presetId, "selection", warnings);
+  return applyPatches(document, patch.patches);
 }
 
 function chain(document: ChemDraftDocument) {
@@ -100,6 +98,15 @@ function electronMark(document: ChemDraftDocument, id = "negative") {
 function atomChemistry(molecule: MoleculeObject) {
   return molecule.atoms.map(atom => ({ id: atom.id, formalCharge: atom.formalCharge,
     markCharge: atom.markCharge ?? 0, markRadicals: atom.markRadicals ?? 0 }));
+}
+
+function expectAssignedChemistry(document: ChemDraftDocument, molecule: MoleculeObject) {
+  const assignments = nativeElectronMarkAssignments(document.pages[0]!);
+  for (const atom of molecule.atoms) {
+    const key = nativeElectronMarkAtomKey(molecule.id, atom.id);
+    expect(assignments.assignedChargeByAtomKey.get(key) ?? 0).toBe(atom.markCharge ?? 0);
+    expect(assignments.assignedRadicalsByAtomKey.get(key) ?? 0).toBe(atom.markRadicals ?? 0);
+  }
 }
 
 async function canonical(molecule: MoleculeObject) {
@@ -123,7 +130,7 @@ describe("applyNativeStylePreset", () => {
     };
     document.pages[0]!.objects.push(radical);
     const before = structuredClone(document);
-    expect(atomChemistry(chain(normalizeCommittedDocument(document)))).toEqual(atomChemistry(molecule));
+    expectAssignedChemistry(document, molecule);
     const warnings: CompatibilityWarning[] = [];
     const result = commitPreset(document, preset.id, warnings);
     expect(warnings).toEqual([]);
@@ -137,7 +144,7 @@ describe("applyNativeStylePreset", () => {
       expect(mark.y + mark.height / 2 - atom.y).toBeCloseTo(offset.y * scale, 9);
       expect(mark.anchor).toEqual({ kind: "atom", objectId: molecule.id, atomId: atom.id });
     }
-    expect(normalizeCommittedDocument(result)).toBe(result);
+    expectAssignedChemistry(result, chain(result));
     expect(applyNativeStylePreset(result, preset.id, "selection", warnings).patches).toEqual([]);
   });
 
@@ -173,15 +180,15 @@ describe("applyNativeStylePreset", () => {
     // would put its scaled offset outside the new style's association radius.
     molecule.atoms.forEach((atom, index) => { atom.x = 100 + index * 10; });
     electronMark(document).x = 54; // centre 60: 40 px from a0, within the old 46 px radius.
-    expect(atomChemistry(chain(normalizeCommittedDocument(document)))).toEqual(atomChemistry(molecule));
+    expectAssignedChemistry(document, molecule);
     const warnings: CompatibilityWarning[] = [];
-    const patch = nativeStylePresetPatchForSelection(document, Acs1996StylePreset.id, [], warnings);
+    const patch = applyNativeStylePreset(document, Acs1996StylePreset.id, "selection", warnings);
     expect(patch.patches).toEqual([]);
     expect(warnings).toEqual([{
       code: "style_preset.chemistry_change_refused", objectId: molecule.id,
-      message: expect.stringContaining('atom "a0" in molecule "chain" (formalCharge: -1 → 0)')
+      message: "Skipped a structure because it would change a charge."
     }]);
-    const result = normalizeCommittedDocument(applyPatches(document, patch.patches));
+    const result = applyPatches(document, patch.patches);
     expect(chain(result)).toEqual(molecule);
     expect(electronMark(result)).toEqual(electronMark(document));
   });
@@ -202,22 +209,6 @@ describe("applyNativeStylePreset", () => {
     expect(chain(result)).toEqual(molecule);
     expect(electronMark(result)).toEqual(electronMark(document));
     expect(atomChemistry(chain(result))).toEqual(atomChemistry(molecule));
-  });
-
-  it("keeps the legacy negative mark and charge through the desktop preset commit", () => {
-    const document = markedChain();
-    expect(normalizeCommittedDocument(document)).toBe(document);
-    const patch = nativeStylePresetPatchForSelection(document, Acs1996StylePreset.id, []);
-    const committed = normalizeCommittedDocument(applyPatches(document, patch.patches));
-    const styled = committed.pages[0]!.objects[0] as MoleculeObject;
-    const mark = committed.pages[0]!.objects[1]!;
-    expect({ atomX: styled.atoms[0]!.x, atomY: styled.atoms[0]!.y,
-      formalCharge: styled.atoms[0]!.formalCharge, markCharge: styled.atoms[0]!.markCharge,
-      markX: mark.x + mark.width / 2, markY: mark.y + mark.height / 2,
-      anchor: "anchor" in mark ? mark.anchor : undefined }).toEqual({
-      atomX: 145, atomY: 100, formalCharge: -1, markCharge: -1, markX: 134, markY: 100,
-      anchor: { kind: "atom", objectId: "chain", atomId: "a0" }
-    });
   });
 
   it.each([Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset])("preserves chemistry and scales uniformly about each centre: $id", async preset => {

@@ -104,7 +104,7 @@ export function applyNativeStylePreset(
           const mismatch = presetChemistryMismatch(workingPage, candidatePage, object.id);
           if (mismatch) {
             warnings.push({ code: "style_preset.chemistry_change_refused", objectId: object.id,
-              message: `Style preset "${preset.name}" was not applied to molecule "${object.id}": commit normalization would change ${mismatch}.` });
+              message: `Skipped a structure because it would change a ${mismatch}.` });
             continue;
           }
           workingPage = candidatePage;
@@ -168,7 +168,7 @@ function presetChemistryMismatch(before: DocumentPage, after: DocumentPage, targ
       const changed = normalized[index]!;
       for (const field of ["formalCharge", "markCharge", "markRadicals"] as const) {
         if (atom[field] !== changed[field]) {
-          return `atom "${atom.id}" in molecule "${object.id}" (${field}: ${atom[field]} → ${changed[field]})`;
+          return field === "markRadicals" ? "radical" : "charge";
         }
       }
     }

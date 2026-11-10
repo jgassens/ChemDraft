@@ -1721,7 +1721,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.30-codex";
+const CURRENT_BUILD_STAMP = "11.10.11.49-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10916,16 +10916,21 @@ export function MainWindow({
     nativeStylePresetActions.forEach(action => register(action, () => {
       const presetId = nativeStylePresetIdForCommand(action.id)!;
       const warnings: CompatibilityWarning[] = [];
+      let appliedStructures = 0;
       const changed = commitDocumentChange(current => {
         const patch = nativeStylePresetPatchForSelection(current, presetId,
           selectedNativeMoleculePartsRef.current.map(part => part.objectId), warnings);
+        const moleculeIds = new Set(current.pages.flatMap(page => page.objects.filter(object => object.type === "molecule").map(object => object.id)));
+        appliedStructures = patch.patches.filter(leaf => leaf.op === "updateObject" && moleculeIds.has(leaf.objectId)).length;
         // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
         // while a native document-wide edit may contain more objects. Both paths are atomic.
         return applyPatches(current, patch.patches);
       }, action.title);
       if (changed) setSelectedNativeMoleculeParts([]);
       setActiveEditorObjectId(undefined);
-      setStatus(warnings.length ? warnings.map(warning => warning.message).join(" ")
+      const kinds = [...new Set(warnings.map(warning => warning.message.includes("radical") ? "radical" : "charge"))];
+      const reason = kinds.join(" or ");
+      setStatus(warnings.length ? `${changed ? `Applied ${action.title}${appliedStructures ? ` to ${appliedStructures} structure${appliedStructures === 1 ? "" : "s"}` : ""}; skipped` : "Skipped"} ${warnings.length} structure${warnings.length === 1 ? "" : "s"} because ${warnings.length === 1 ? "it" : "they"} would change a ${reason}.`
         : changed ? `Applied ${action.title}` : `${action.title} already matches`);
     }));
 
