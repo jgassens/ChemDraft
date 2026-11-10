@@ -1,4 +1,7 @@
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
+import { BracketLabelEditor } from "./BracketLabelEditor";
+import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel } from "./bracketCommands";
+import { bracketLabelPlan } from "@chemdraft/layout-engine";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
@@ -304,7 +307,6 @@ import {
 } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
-  getExportFormatDescriptor,
   type ExportFormatId,
   type ExportResult
 } from "@chemdraft/export-engine";
@@ -879,7 +881,9 @@ import {
   enableWindowsLastDocumentCloseAction,
   isBrowserReloadChord
 } from "./keyboardShortcuts";
-import { decodeDocumentBytes } from "./documentText";
+import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
+import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
@@ -1070,7 +1074,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital" | "bracket";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -1080,6 +1084,7 @@ type NativePlacementDragState = {
   bondOrder?: NativeBondOrderValue;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
+  bracketKind?: BracketObject["bracketKind"];
   chainAnchor?: NativeChainAnchor;
   /** Flexible chain variant: the zig-zag follows the accumulated pointer path. */
   chainFlexible?: boolean;
@@ -1971,6 +1976,7 @@ interface NativeOpenDocumentPayload {
   path: string;
   displayName: string;
   contents: string;
+  bytes?: number[];
 }
 
 interface ChemDraftAgentArtDebugSnapshot {
@@ -2357,8 +2363,8 @@ export function MainWindow({
       // The live atom/bond graph, not the object's `structure` string: that string is empty for an
       // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
       // system, which analysed a different molecule than the one on the page.
-      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule);
-      const subjectKey = analysisSubjectKey(molecule);
+      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule, documentRef.current);
+      const subjectKey = analysisSubjectKey(molecule, documentRef.current);
       const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
       if (!client) {
@@ -2472,7 +2478,7 @@ export function MainWindow({
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
   const pendingDocumentOpensRef = useRef<Array<{
-    contents: string; displayName: string; path?: string;
+    contents: DocumentContents; displayName: string; path?: string;
     options?: { dirty?: boolean; statusOverride?: string };
   }>>([]);
   const documentTabSnapshotsRef = useRef(new Map<string, {
@@ -2604,6 +2610,9 @@ export function MainWindow({
   useEffect(() => { setTableCellEdit(undefined); }, [activeDocumentTabId]);
   const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const [bracketLabelEdit, setBracketLabelEdit] = useState<{ objectId: string; tabId: string }>();
+  useEffect(() => { setBracketLabelEdit(undefined); }, [activeDocumentTabId]);
+  const bracketActions = useMemo(() => createBracketCommands(document), [document]);
   const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   const insertTableFromDialogRef = useRef<(tabId: string, options: InsertTableOptions) => Promise<void>>(async () => {});
@@ -2984,7 +2993,7 @@ export function MainWindow({
   const analysisReportIsStale =
     analysisReport !== undefined &&
     analysisSubject !== undefined &&
-    (selectedMolecule ? analysisSubjectKey(selectedMolecule) : undefined) !== analysisSubject;
+    (selectedMolecule ? analysisSubjectKey(selectedMolecule, document) : undefined) !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -7068,7 +7077,7 @@ export function MainWindow({
 
   const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
     const currentDocument = documentRef.current;
-    commitDocumentChangeWithPageFit(insertNativeBracket(currentDocument, point, bracketKind));
+    commitDocumentChangeWithPageFit(insertNativeBracket(currentDocument, point, bracketKind), `Draw ${bracketKind} bracket pair`);
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Inserted ${bracketKind} bracket`);
@@ -7435,10 +7444,12 @@ export function MainWindow({
       activePage,
       pastePointerPagePoint()
     );
+    const warnings: string[] = [];
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      placement.point
+      placement.point,
+      warnings
     );
     if (nextDocument === documentRef.current) {
       setStatus("Clipboard selection unchanged");
@@ -7454,7 +7465,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Pasted ChemDraft selection");
+    setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
   }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, pastePointerPagePoint]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
@@ -7511,7 +7522,7 @@ export function MainWindow({
 
     selectionClipboardPayloadRef.current = payload;
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
-    const notices = [...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
+    const notices = [...(payload.warnings ?? []), ...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
@@ -9641,19 +9652,20 @@ export function MainWindow({
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
   const openDocumentContentsNow = useCallback(async (
-    contents: string,
+    contents: DocumentContents,
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions,
     reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
   ) => {
+    assertDocumentSize(contents.length);
     if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       perfHook(() => reportOutcome?.("queued"));
       return;
     }
-    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
+    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
     const existing = documentTabsRef.current.find((tab) =>
       path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
         documentTabSnapshotsRef.current.get(tab.id)?.file.path) !== undefined &&
@@ -9697,7 +9709,9 @@ export function MainWindow({
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
     setPageFitPrompt(tabPageFitRef.current);
-    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+    const sourceLabel = typeof contents === "string"
+      ? openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel)
+      : openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel).replaceAll("CDXML", "CDX");
     const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
     tabWarningsRef.current = warningsReport;
     setOpenWarningsReport(warningsReport);
@@ -9716,7 +9730,7 @@ export function MainWindow({
   // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
   // file must wait and then find the tab the first one made, not add a second tab for one path.
   const openDocumentContents = useCallback((
-    contents: string,
+    contents: DocumentContents,
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions
@@ -10042,7 +10056,7 @@ export function MainWindow({
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     for (const path of paths) {
       try {
-        await openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
+        await openDocumentContents(await readNativeDocumentFile(path), nativePathBasename(path), path);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -10075,7 +10089,7 @@ export function MainWindow({
     }
 
     try {
-      const contents = await readNativeTextFile(path);
+      const contents = await readNativeDocumentFile(path);
       await openDocumentContents(contents, nativePathBasename(path), path);
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -10115,18 +10129,19 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
 
     const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
-      const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
-      const now = Date.now();
-      const last = lastNativeOpenPayloadKeyRef.current;
-      // A single OS open is delivered via both the Tauri event and the pending-document
-      // poll, so coalesce identical payloads that arrive close together. Use a time window
-      // rather than a permanent key so a later request still activates its already-open tab.
-      if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
-        return;
-      }
-      lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
       try {
-        await openDocumentContents(payload.contents, payload.displayName, payload.path);
+        const contents = decodeNativeDocumentContents(payload);
+        const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
+        const now = Date.now();
+        const last = lastNativeOpenPayloadKeyRef.current;
+        // A single OS open is delivered via both the Tauri event and the pending-document
+        // poll, so coalesce identical payloads that arrive close together. Use a time window
+        // rather than a permanent key so a later request still activates its already-open tab.
+        if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
+          return;
+        }
+        lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
+        await openDocumentContents(contents, payload.displayName, payload.path);
       } catch (error) {
         const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
         setStatus(failure);
@@ -10711,7 +10726,7 @@ export function MainWindow({
     if (!savingDocument || !savingFileState) return false;
     const savedDocument = active ? documentForFlush() : savingDocument;
     // The baseline and payload describe the same single draft snapshot.
-    const payload = createNativeSavePayload(savedDocument);
+    let payload = createDocumentFileSave(savedDocument);
     const finishSave = (path?: string) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
@@ -10723,7 +10738,7 @@ export function MainWindow({
       const nextFileState = { path: path ?? savingFileState.path, dirty };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
-        operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
+        operation: "save", displayName, sourceLabel: payload.kind === "binary" ? "ChemDraft CDX envelope" : "ChemDraft CDXML envelope", warnings: payload.warnings
       } : undefined;
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
@@ -10747,7 +10762,7 @@ export function MainWindow({
     };
     try {
       if (!isDesktopRuntime()) {
-        downloadText(payload.filename, payload.contents, payload.mimeType);
+        downloadExportResult(payload.filename, payload);
         finishSave();
         return true;
       }
@@ -10763,7 +10778,8 @@ export function MainWindow({
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);
-      await writeNativeTextFile(finalPath, payload.contents);
+      payload = createDocumentFileSave(savedDocument, finalPath);
+      await writeNativeExportResult(finalPath, payload);
       finishSave(finalPath);
       return true;
     } catch (error) {
@@ -11307,6 +11323,21 @@ export function MainWindow({
       setStatus(changed ? `Applied ${action.title}` : `${action.title} already matches`);
     }));
 
+    bracketActions.forEach(action => register(action, () => {
+      if (action.id === "bracket.repeatUnit.toggle") {
+        commitDocumentChange(toggleBracketRepeatUnit(documentRef.current), action.title);
+        setStatus(action.title);
+      } else {
+        const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
+        if (closing) {
+          clearScheduledTextEditorFocus();
+          setActiveTextEditObjectId(undefined);
+          setActiveAtomLabelEdit(undefined);
+          setBracketLabelEdit({ objectId: closing.id, tabId: activeDocumentTabIdRef.current });
+        }
+      }
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
@@ -11509,6 +11540,8 @@ export function MainWindow({
           // The live graph, expanded the way the Molecular Inspector reads it — never the stored
           // structure, which after a 3D flatten spells every label as a dummy "*" and would put the
           // placeholder graph's formula over the drawing's (validationFacingStructure).
+          const bracketRefusal = analysisFacingStructure(molecule, document).refusalReason;
+          if (bracketRefusal) { setStatus(bracketRefusal); return; }
           const analysis = await chemistryAdapter.analyzeStructure(validationFacingStructure(molecule));
           setLastAnalysis(analysis);
           publishAnalysisWindow(
@@ -11709,8 +11742,9 @@ export function MainWindow({
         }
 
         if (action.id === "layout.duplicate") {
-          const changed = commitDocumentChangeWithPageFit((current) => duplicateSelectedDocumentObjects(current));
-          setStatus(changed ? action.title : "No selected object");
+          const warnings: string[] = [];
+          const changed = commitDocumentChangeWithPageFit((current) => duplicateSelectedDocumentObjects(current, undefined, warnings));
+          setStatus([changed ? action.title : "No selected object", ...warnings].join("; "));
           return;
         }
 
@@ -12048,7 +12082,7 @@ export function MainWindow({
     return bindings;
   }, [
     isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
-    tableActions, activeTableCell,
+    tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -12291,12 +12325,17 @@ export function MainWindow({
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
+  const bracketMenuItems = useMemo(() => bracketActions.filter(action => action.id === "bracket.repeatUnit.toggle").map(action => ({
+    location: "structure", command: { kind: "command" as const, id: action.id, commandId: action.id,
+      label: action.title, enabled: action.enabled !== false, coreRouted: true }
+  })), [bracketActions]);
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
   const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
     ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
+    ...bracketMenuItems,
     ...pluginRuntime.pluginMenuItems
-  ], availablePluginUpdateCount), [availablePluginUpdateCount, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
+  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -14980,8 +15019,7 @@ export function MainWindow({
       return;
     }
 
-    void file
-      .text()
+    void readBrowserDocumentFile(file)
       .then((contents) => {
         return openDocumentContents(contents, file.name);
       })
@@ -15137,12 +15175,15 @@ export function MainWindow({
       | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle; bondOrder?: NativeBondOrderValue }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
+      | { kind: "bracket"; bracketKind: BracketObject["bracketKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
       | { kind: "orbital"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
-    const placementDocument = placement.kind === "template"
+    const placementDocument = placement.kind === "bracket"
+      ? insertNativeBracket(startDocument, point, placement.bracketKind)
+      : placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
       : placement.kind === "arrow"
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
@@ -15172,6 +15213,7 @@ export function MainWindow({
       bondOrder: placement.kind === "single-bond" ? placement.bondOrder : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      bracketKind: placement.kind === "bracket" ? placement.bracketKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
@@ -15240,6 +15282,10 @@ export function MainWindow({
       ?.bonds.find((bond) => bond.id === target.bondId);
     if (bondStyle === "dashed" && targetBond && targetBond.order !== "single") {
       setStatus("Dashed (dative) display needs a single bond");
+      return;
+    }
+    if (bondStyle === "wavy" && targetBond && targetBond.order !== "single") {
+      setStatus("Wavy bond requires a single bond");
       return;
     }
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
@@ -15574,6 +15620,9 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "bracket" && drag.bracketKind) {
+      return insertNativeBracket(drag.startDocument, drag.startPoint, drag.bracketKind, point);
+    }
     if (drag.kind === "orbital") {
       return aimNativeOrbitalPlacement(drag.placementDocument, drag.objectId, point, drag.shiftKey);
     }
@@ -15630,7 +15679,7 @@ export function MainWindow({
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
-    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
+    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -15643,7 +15692,7 @@ export function MainWindow({
       (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
       commitInsertionHistoryWithPageFit(drag.startDocument, placed);
     } else {
-      commitDocumentHistoryFrom(drag.startDocument, placed);
+      commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
     }
     return true;
   }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);
@@ -15690,7 +15739,7 @@ export function MainWindow({
     const label = nativePlacementStatusLabel(drag);
     const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
       ? "Inserted angled"
-      : drag.kind === "chain"
+      : drag.kind === "chain" || drag.kind === "bracket"
         ? "Inserted"
         : "Inserted rotated";
     // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
@@ -17421,7 +17470,9 @@ export function MainWindow({
       if (bracketKind) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -18810,7 +18861,9 @@ export function MainWindow({
       if (bracketKind && point) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -21419,7 +21472,7 @@ export function MainWindow({
         hasSearchableStructure,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
-        pluginMenuItems: pluginRuntime.pluginMenuItems,
+        pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
         keybindingScheme
       }),
@@ -21437,7 +21490,8 @@ export function MainWindow({
       pluginRuntime.pluginMenuItems,
       availablePluginUpdateCount,
       structureSearchEnabled,
-      hasSearchableStructure
+      hasSearchableStructure,
+      bracketMenuItems
     ]
   );
 
@@ -21660,7 +21714,7 @@ export function MainWindow({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
+        accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
         className="native-file-input"
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
@@ -22048,7 +22102,7 @@ export function MainWindow({
             const files = Array.from(event.dataTransfer.files);
             void (async () => {
               for (const file of files) {
-                try { await openDocumentContents(await file.text(), file.name); }
+                try { await openDocumentContents(await readBrowserDocumentFile(file), file.name); }
                 catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
               }
             })();
@@ -22119,6 +22173,16 @@ export function MainWindow({
                       onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
                   </>;
                 })()}
+                {bracketLabelEdit?.tabId === activeDocumentTabId ? (() => {
+                  const object = findDocumentObject(document, bracketLabelEdit.objectId);
+                  return object?.type === "bracket" && bracketLabelPlan(object) ? <BracketLabelEditor
+                    key={`${activeDocumentTabId}:${object.id}`} object={object}
+                    onFinish={value => {
+                      if (value !== undefined) commitDocumentChange(current => setBracketRepeatLabel(current, object.id, value), "Edit repeat-unit label");
+                      setBracketLabelEdit(undefined);
+                      canvasRegionRef.current?.focus({ preventScroll: true });
+                    }} /> : null;
+                })() : null}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -22617,6 +22681,7 @@ export function MainWindow({
         }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          bracketActions={findDocumentObject(document, objectContextMenu.objectId)?.type === "bracket" ? bracketActions : []}
           tableActions={selectedTable(document) ? tableActions : []}
           arrowActions={(() => {
             const object = activePage.objects.find(object => object.id === objectContextMenu.objectId);
@@ -24155,6 +24220,7 @@ function isSemanticCircularGraphicArc(
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
+  if (bondStyle === "wavy") return "wavy bond";
   if (bondStyle === "wedge") {
     return "solid wedge bond";
   }
@@ -24172,6 +24238,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "bracket") return `${drag.bracketKind} bracket pair`;
   if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
@@ -25822,6 +25889,7 @@ function ArtStyleQaLayer({
 
 export function ObjectLayerContextMenu({
   arrowActions = [],
+  bracketActions = [],
   layoutActions = [],
   tableActions = [],
   bondStereoActions = [],
@@ -25840,6 +25908,7 @@ export function ObjectLayerContextMenu({
   arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
+  bracketActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
@@ -25942,6 +26011,9 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {bracketActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+        data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
+        onClick={() => onInvoke(action.id)}>{action.title}</button>)}
       {tableRowColumnActions.map(action => (
         <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
           data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
@@ -30117,10 +30189,12 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
-  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
+  const pathD = bracketGlyphPathD(object.bracketKind, width, height, undefined, object.side);
+  const label = bracketLabelPlan(object);
   return (
     <svg
       className="bracket-glyph"
+      style={{ overflow: "visible" }}
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
@@ -30130,6 +30204,9 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
         d={pathD}
         transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}
       />
+      {label ? <text className="bracket-repeat-label" x={label.x} y={label.y} fontSize={label.fontSize}
+        fontFamily={label.fontFamily} fill="#172026" stroke="none"
+        transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}>{label.text}</text> : null}
     </svg>
   );
 }
@@ -33279,6 +33356,8 @@ export async function createDialogExportResult(
     });
   }
 
+  if (state.format === "cdx") return exportDocumentCdx(document, false);
+
   if (state.format === "cdxml") {
     return exportPhase4Cdxml(document, {
       creationProgram: state.cdxml.creationProgram.trim() || "ChemDraft"
@@ -33382,7 +33461,7 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 async function pickNativeOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
-    title: "Open ChemDraft or CDXML Document",
+    title: "Open ChemDraft, CDXML or CDX Document",
     multiple: false,
     fileAccessMode: "scoped"
   });
@@ -33397,7 +33476,11 @@ async function pickNativeSavePath(
   const selected = await save({
     title: options?.title ?? "Save ChemDraft Document",
     defaultPath,
-    filters: [{ name: options ? "Saved document" : "ChemDraft", extensions: [options?.extension ?? "chemdraft"] }]
+    filters: options ? [{ name: "Saved document", extensions: [options.extension] }] : [
+      { name: "ChemDraft", extensions: ["chemdraft"] },
+      { name: "CDXML", extensions: ["cdxml"] },
+      { name: "CDX (*.cdx)", extensions: ["cdx"] }
+    ]
   });
   return selected ?? undefined;
 }
@@ -33460,12 +33543,6 @@ function prewarmNativeDialogModule(): void {
   });
 }
 
-/** An opened document's text, decoded by its byte-order mark (see documentText.ts) — `readTextFile`
- *  alone assumes UTF-8, so a UTF-16 CDXML file opened as noise. */
-async function readNativeTextFile(path: string): Promise<string> {
-  return decodeDocumentBytes(await readNativeBinaryFile(path));
-}
-
 async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
   const { readFile } = await import("@tauri-apps/plugin-fs");
   return readFile(path);
@@ -33493,7 +33570,9 @@ function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumen
     value !== null &&
     typeof (value as NativeOpenDocumentPayload).path === "string" &&
     typeof (value as NativeOpenDocumentPayload).displayName === "string" &&
-    typeof (value as NativeOpenDocumentPayload).contents === "string"
+    typeof (value as NativeOpenDocumentPayload).contents === "string" &&
+    ((value as NativeOpenDocumentPayload).bytes === undefined ||
+      Array.isArray((value as NativeOpenDocumentPayload).bytes))
   );
 }
 
@@ -33508,7 +33587,7 @@ async function writeNativeBinaryFile(path: string, bytes: Uint8Array): Promise<v
 }
 
 function ensureChemDraftFileExtension(path: string): string {
-  return /\.(chemdraft|cdxml)$/i.test(path) ? path : `${path}.chemdraft`;
+  return /\.(chemdraft|cdxml|cdx)$/i.test(path) ? path : `${path}.chemdraft`;
 }
 
 function ensureExportFileExtension(path: string, extensions: readonly string[]): string {

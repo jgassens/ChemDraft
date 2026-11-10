@@ -72,6 +72,15 @@
         "role": "Editor",
         "rank": "Alternate",
         "contentTypes": ["com.cambridgesoft.cdxml", "public.xml"]
+      },
+      {
+        "ext": ["cdx"],
+        "name": "CDX Document",
+        "description": "Binary chemical drawing document",
+        "mimeType": "chemical/x-cdx",
+        "role": "Editor",
+        "rank": "Alternate",
+        "contentTypes": ["com.cambridgesoft.chemdraw.cdx", "public.data"]
       }
     ],
     "windows": {

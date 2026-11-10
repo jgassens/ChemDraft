@@ -2065,9 +2065,10 @@ describe("Phase 4 document workflow", () => {
     expect(applyFormulaTextFormatting(formatted)).toBe(formatted);
   });
 
-  it("maps bracket tool commands and inserts a selected default bracket", () => {
+  it("maps bracket tool commands and inserts a selected default pair", () => {
     expect(bracketKindForToolCommand("tool.bracket")).toBe("curly");
     expect(bracketKindForToolCommand("tool.squareBracket")).toBe("square");
+    expect(bracketKindForToolCommand("tool.roundBracket")).toBe("round");
     expect(bracketKindForToolCommand("tool.text")).toBeUndefined();
 
     const blank = createPhase4Document("Bracket Fixture");
@@ -2081,12 +2082,13 @@ describe("Phase 4 document workflow", () => {
       height: nativeBracketDefaultSize.height
     });
     if (object.type === "bracket") {
-      // Centered on the click point.
-      expect(object.x).toBe(200 - nativeBracketDefaultSize.width / 2);
+      // The default pair is centered on the click point.
+      expect(object.x).toBe(160);
       expect(object.y).toBe(220 - nativeBracketDefaultSize.height / 2);
       expect(object.containedObjectIds).toEqual([]);
     }
-    expect(placed.selection.objectIds).toEqual([object.id]);
+    expect(placed.pages[0].objects).toHaveLength(2);
+    expect(placed.selection.objectIds).toEqual(placed.pages[0].objects.map(item => item.id));
   });
 
   it("registers orbital tools as closed art shapes with chemistry command ids", () => {

@@ -1,5 +1,7 @@
 import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
+import { bracketVisualBounds } from "@chemdraft/layout-engine";
+import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
@@ -62,6 +64,9 @@ import {
 } from "@chemdraft/art-engine";
 import {
   adoptDerivedDocument,
+  bracketPairs,
+  withoutBracketPairMetadata,
+  moleculeBracketWarningMessages,
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -128,6 +133,7 @@ import {
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
+  importCdx,
   type ChemDraftOpenResult,
   type CompatibilityConversionWarning
 } from "@chemdraft/cdx-compat";
@@ -354,6 +360,7 @@ export interface ChemDraftSelectionClipboardPayload {
   objects: DocumentObject[];
   selectionIds: string[];
   bounds: SelectionBounds;
+  warnings?: string[];
 }
 
 export interface NativeTextSelectionRange {
@@ -1441,6 +1448,8 @@ export function nativeBondStyleForToolCommand(commandId: string): NativeBondTool
       return "wedge";
     case "tool.hashedBond":
       return "hashed";
+    case "tool.wavyBond":
+      return "wavy";
     case "tool.dashedBond":
       return "dashed";
     case "tool.boldBond":
@@ -4801,7 +4810,8 @@ export function convertNativeTextObjectToAtom(
 
 const bracketKindByToolCommandId: ReadonlyMap<string, BracketObject["bracketKind"]> = new Map([
   ["tool.bracket", "curly"],
-  ["tool.squareBracket", "square"]
+  ["tool.squareBracket", "square"],
+  ["tool.roundBracket", "round"]
 ]);
 
 export function bracketKindForToolCommand(commandId: string): BracketObject["bracketKind"] | undefined {
@@ -4810,37 +4820,51 @@ export function bracketKindForToolCommand(commandId: string): BracketObject["bra
 
 export const nativeBracketDefaultSize = { width: 16, height: 64 } as const;
 
-/** Click placement: a default-size bracket centered on the click point, clamped to the page. */
+/** One glyph per native object; both members are added and selected in one patch batch. */
 export function insertNativeBracket(
   document: ChemDraftDocument,
   point: PagePoint,
-  bracketKind: BracketObject["bracketKind"]
+  bracketKind: BracketObject["bracketKind"],
+  end?: PagePoint
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const { width, height } = nativeBracketDefaultSize;
+  const left = clamp(end ? Math.min(point.x, end.x) : point.x - 40, 0, page.width - 2);
+  const top = clamp(end ? Math.min(point.y, end.y) : point.y - nativeBracketDefaultSize.height / 2, 0, page.height - 2);
+  const boxWidth = Math.min(Math.max(end ? Math.abs(end.x - point.x) : 80, 2), page.width - left);
+  const height = Math.min(Math.max(end ? Math.abs(end.y - point.y) : nativeBracketDefaultSize.height, 2), page.height - top);
+  const width = Math.min(nativeBracketDefaultSize.width, boxWidth / 3);
+  const containedObjectIds = page.objects.filter(object => object.type !== "bracket" &&
+    object.x >= left && object.y >= top && object.x + object.width <= left + boxWidth &&
+    object.y + object.height <= top + height).map(object => object.id);
+  const allocateId = pendingObjectIdAllocator(document);
   const object: BracketObject = {
-    id: nextObjectId(document, "bracket"),
+    id: allocateId("bracket"),
     type: "bracket",
-    x: clamp(point.x - width / 2, 0, Math.max(0, page.width - width)),
-    y: clamp(point.y - height / 2, 0, Math.max(0, page.height - height)),
+    x: left,
+    y: top,
     width,
     height,
     rotation: 0,
     style: {},
     bracketKind,
-    containedObjectIds: [],
+    side: "open",
+    containedObjectIds,
     compatibility: {
       sourceFormat: "chemdraft-native",
       warnings: [],
       unknown: {}
     }
   };
+  const closing: BracketObject = { ...object, id: allocateId("bracket"),
+    x: left + boxWidth - width, side: "close", pairId: object.id };
+  object.pairId = object.id;
 
   return applyPatches(
     document,
     [
       { op: "addObject", pageId: page.id, object },
-      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+      { op: "addObject", pageId: page.id, object: closing },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id, closing.id] }
     ],
     { now: phase4Timestamp }
   );
@@ -7136,10 +7160,23 @@ export function deleteSelectedDocumentObjects(
   if (objectIds.length === 0) {
     return document;
   }
+  const removedIds = new Set(objectIds);
+  const removedPairIds = new Set(page.objects.flatMap(object =>
+    object.type === "bracket" && object.pairId && removedIds.has(object.id) ? [object.pairId] : []));
 
   return applyPatches(
     document,
-    objectIds.map((objectId) => ({ op: "removeObject", objectId })),
+    [
+      ...objectIds.map((objectId): DocumentPatch => ({ op: "removeObject", objectId })),
+      ...page.objects.flatMap((object): DocumentPatch[] => {
+        if (object.type !== "bracket" || !object.pairId || removedIds.has(object.id) || !removedPairIds.has(object.pairId)) return [];
+        return [{ op: "updateObject", objectId: object.id, changes: {
+          pairId: undefined, repeatUnit: undefined, label: undefined, containedObjectIds: [],
+          bracketUsage: undefined, repeatCount: undefined, crossingBondIds: undefined,
+          bracketKind: object.bracketKind === "polymer" ? "square" : object.bracketKind
+        } }];
+      })
+    ],
     { now: phase4Timestamp }
   );
 }
@@ -7322,6 +7359,7 @@ export function applyNativeBondDisplayStyleTarget(
   if (!bond) {
     return document;
   }
+  if (bondStyle === "wavy" && bond.order !== "single") return document;
   if (bond.display?.bondStyle === bondStyle) {
     return nativeBondDisplayStyleReverses(bond, bondStyle)
       ? applyPatch(
@@ -7359,12 +7397,12 @@ export function applyNativeBondDisplayStyleTarget(
 
 /**
  * Whether applying `bondStyle` to a bond already drawn that way reverses it rather than doing
- * nothing: a wedge or hashed wedge clicked again with its own tool swaps its narrow end to the
+ * nothing: a wedge, hashed wedge or wavy bond clicked again with its own tool swaps its stereo end to the
  * other atom. The narrow end marks the stereocentre, so this is a stereo edit the user asked for
  * by clicking, and its undo restores the bond exactly. Every other style is direction-free.
  */
 export function nativeBondDisplayStyleReverses(bond: MoleculeBond, bondStyle: NativeBondDisplayStyle): boolean {
-  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed");
+  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed" || bondStyle === "wavy");
 }
 
 /** The same bond drawn from its other end; a left/right double-bond side is mirrored to stay put. */
@@ -14458,7 +14496,8 @@ function distributeSelectedDocumentObjectsBySpacing(
 
 export function duplicateSelectedDocumentObjects(
   document: ChemDraftDocument,
-  offset: PagePoint = { x: 24, y: 24 }
+  offset: PagePoint = { x: 24, y: 24 },
+  warningsOut?: string[]
 ): ChemDraftDocument {
   const page = firstPage(document);
   const directlySelected = new Set(document.selection.objectIds);
@@ -14553,8 +14592,11 @@ export function duplicateSelectedDocumentObjects(
     patches.push({ op: "addObject", pageId: page.id, object: duplicateGroup });
   }
 
+  remapCopiedBracketPairs(duplicates, duplicateIdByOriginalId, warningsOut);
+
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
+  remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId);
   const selectionIds = [
     ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
@@ -14610,10 +14652,14 @@ export function createSelectionClipboardPayload(
     return undefined;
   }
 
+  const clipboardObjects = structuredClone(copiedObjects) as DocumentObject[];
+  const warnings: string[] = [];
+  remapCopiedBracketPairs(clipboardObjects, new Map(clipboardObjects.map(object => [object.id, object.id])), warnings);
   return {
     kind: "chemdraft-selection",
     version: 1,
-    objects: structuredClone(copiedObjects) as DocumentObject[],
+    objects: clipboardObjects,
+    ...(warnings.length ? { warnings } : {}),
     selectionIds: [
       ...document.selection.objectIds.filter((objectId) =>
         selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
@@ -14738,6 +14784,7 @@ export function parseSelectionClipboardPayload(
       kind: "chemdraft-selection",
       version: 1,
       objects,
+      ...(Array.isArray(payload.warnings) ? { warnings: payload.warnings.filter((message): message is string => typeof message === "string") } : {}),
       selectionIds: payload.selectionIds.filter((id): id is string => typeof id === "string"),
       bounds: {
         x: payload.bounds.x,
@@ -14757,10 +14804,114 @@ export function parseSelectionClipboardPayload(
   }
 }
 
+function remapCopiedBracketPairs(objects: DocumentObject[], idMap: ReadonlyMap<string, string>, warningsOut: string[] = []) {
+  const completePairs = bracketPairs(objects);
+  const pairs = new Map<string, string>();
+  const copiedById = new Map(objects.map(object => [object.id, object]));
+  const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  const missingByPair = new Map<string, string[]>();
+  // Validate the entire pair before mutating either half. Atom/bond ids stay molecule-local.
+  for (const [pairId, pair] of completePairs) {
+    const missing = new Set<string>();
+    const checkObject = (id: string, atomId?: unknown, bondId?: unknown) => {
+      const copied = copiedById.get(idMap.get(id) ?? "");
+      if (!copied || typeof atomId === "string" && (copied.type !== "molecule" || !copied.atoms.some(atom => atom.id === atomId)) ||
+        typeof bondId === "string" && (copied.type !== "molecule" || !copied.bonds.some(bond => bond.id === bondId))) {
+        missing.add([id, atomId, bondId].filter(value => typeof value === "string").join("/"));
+      }
+    };
+    for (const bracket of pair) {
+      bracket.containedObjectIds.forEach(id => checkObject(id));
+      bracket.crossingBondIds?.forEach(ref => checkObject(ref.objectId, undefined, ref.bondId));
+      const unknown = bracket.compatibility?.unknown;
+      if (typeof unknown?.cdxmlBracketMembership === "string") {
+        try {
+          const membership: unknown = JSON.parse(unknown.cdxmlBracketMembership);
+          if (!Array.isArray(membership) || membership.some(id => typeof id !== "string")) missing.add("invalid membership snapshot");
+          else membership.forEach(id => checkObject(id));
+        } catch { missing.add("invalid membership snapshot"); }
+      }
+      if (Array.isArray(unknown?.cdxmlBracketMemberObjectIds)) for (const id of unknown.cdxmlBracketMemberObjectIds) {
+        if (typeof id === "string") checkObject(id);
+      }
+      if (Array.isArray(unknown?.cdxmlBracketMembers)) for (const member of unknown.cdxmlBracketMembers) {
+        if (!record(member)) continue;
+        if (typeof member.objectId === "string") checkObject(member.objectId, member.atomId);
+        else missing.add(`member ${String(member.sourceId)}`);
+      }
+      if (Array.isArray(unknown?.cdxmlBracketCrossings)) for (const crossing of unknown.cdxmlBracketCrossings) {
+        if (!record(crossing)) continue;
+        if (record(crossing.ref) && typeof crossing.ref.objectId === "string") {
+          const molecule = copiedById.get(idMap.get(crossing.ref.objectId) ?? "");
+          const sourceInner = record(crossing.attributes) ? crossing.attributes.InnerAtomID : undefined;
+          const atomSources = molecule?.compatibility?.unknown.cdxmlAtomIdsByAtomId;
+          const innerAtomId = crossing.innerAtomId ?? (record(atomSources) ? Object.keys(atomSources).find(id => atomSources[id] === sourceInner) : undefined);
+          checkObject(crossing.ref.objectId, innerAtomId, crossing.ref.bondId);
+          if (sourceInner !== undefined && innerAtomId === undefined) missing.add(`InnerAtomID ${String(sourceInner)}`);
+        } else missing.add(`crossing BondID ${record(crossing.attributes) ? String(crossing.attributes.BondID) : "unknown"}`);
+      }
+    }
+    missingByPair.set(pairId, [...missing]);
+  }
+  for (const object of objects) if (object.type === "bracket") {
+    const complete = !!object.pairId && completePairs.has(object.pairId);
+    const missing = object.pairId ? missingByPair.get(object.pairId) ?? [] : [];
+    if (object.pairId && complete) {
+      const pairId = pairs.get(object.pairId) ?? object.id;
+      pairs.set(object.pairId, pairId); object.pairId = pairId;
+    } else {
+      const plain = withoutBracketPairMetadata(object);
+      delete object.pairId;
+      delete object.repeatUnit;
+      delete object.label;
+      delete object.bracketUsage;
+      delete object.repeatCount;
+      delete object.crossingBondIds;
+      Object.assign(object, plain);
+    }
+    object.containedObjectIds = object.containedObjectIds.flatMap(id => {
+      const mapped = idMap.get(id);
+      if (mapped === undefined) warningsOut.push(`Bracket ${object.id}: membership ${id} was dropped because the object was not copied.`);
+      return mapped === undefined ? [] : [mapped];
+    });
+    object.crossingBondIds = object.crossingBondIds?.flatMap(ref => {
+      const mapped = idMap.get(ref.objectId);
+      const molecule = objects.find(object => object.id === mapped);
+      if (!mapped || molecule?.type !== "molecule" || !molecule.bonds.some(bond => bond.id === ref.bondId)) {
+        warningsOut.push(`Bracket ${object.id}: crossing ${ref.objectId}/${ref.bondId} was dropped because the bond was not copied.`);
+      }
+      return mapped && molecule?.type === "molecule" && molecule.bonds.some(bond => bond.id === ref.bondId)
+        ? [{ objectId: mapped, bondId: ref.bondId }] : [];
+    });
+    if (object.compatibility) {
+      const unknown = object.compatibility.unknown;
+      if (complete && missing.length === 0) {
+        // Imported pairs can share the same record arrays; replace rather than remap twice.
+        if (Array.isArray(unknown.cdxmlBracketMembers)) unknown.cdxmlBracketMembers = unknown.cdxmlBracketMembers.map(member =>
+          record(member) && typeof member.objectId === "string" ? { ...member, objectId: idMap.get(member.objectId)! } : member);
+        if (Array.isArray(unknown.cdxmlBracketCrossings)) unknown.cdxmlBracketCrossings = unknown.cdxmlBracketCrossings.map(crossing =>
+          record(crossing) && record(crossing.ref) && typeof crossing.ref.objectId === "string"
+            ? { ...crossing, ref: { ...crossing.ref, objectId: idMap.get(crossing.ref.objectId)! } } : crossing);
+        if (Array.isArray(unknown.cdxmlBracketMemberObjectIds)) unknown.cdxmlBracketMemberObjectIds = unknown.cdxmlBracketMemberObjectIds.map(id => typeof id === "string" ? idMap.get(id) : id);
+        if (typeof unknown.cdxmlBracketMembership === "string") {
+          const membership: unknown = JSON.parse(unknown.cdxmlBracketMembership);
+          if (Array.isArray(membership)) unknown.cdxmlBracketMembership = JSON.stringify(membership.flatMap(id => typeof id === "string" && idMap.has(id) ? [idMap.get(id)] : []));
+        }
+      } else {
+        const dropped = ["bracketedGroup", "cdxmlBracketAttachment", "cdxmlBracketCrossings", "cdxmlBracketMembership",
+          "cdxmlBracketMemberObjectIds", "cdxmlBracketMembers", "cdxmlBracketState", "cdxmlBracketInvalidRepeatCount"].filter(key => key in unknown);
+        for (const key of dropped) delete unknown[key];
+        if (dropped.length) warningsOut.push(`Bracket ${object.id}: preserved ${dropped.join(", ")} data was dropped because ${complete ? `references were not copied: ${missing.join(", ")}` : "its complete pair was not copied"}.`);
+      }
+    }
+  }
+}
+
 export function pasteSelectionClipboardPayload(
   document: ChemDraftDocument,
   payload: ChemDraftSelectionClipboardPayload,
-  point: PagePoint
+  point: PagePoint,
+  warningsOut?: string[]
 ): ChemDraftDocument {
   const page = firstPage(document);
   const dx = point.x - payload.bounds.centerX;
@@ -14829,15 +14980,73 @@ export function pasteSelectionClipboardPayload(
     patches.push({ op: "addObject", pageId: page.id, object: pastedGroup });
   }
 
+  warningsOut?.push(...(payload.warnings ?? []));
+  remapCopiedBracketPairs([...pastedById.values()], idBySourceId, warningsOut);
+
   const selectedIds = payload.selectionIds
     .map((sourceId) => idBySourceId.get(sourceId))
     .filter((objectId): objectId is string => objectId !== undefined);
   const fallbackSelectionIds = selectedIds.length > 0
     ? selectedIds
     : [...idBySourceId.values()];
+  remapCopiedReactionReferences(document, patches, idBySourceId);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+/** A copied step refers to the copied drawables, including forward references and shared intermediates. */
+function remapCopiedReactionReferences(document: ChemDraftDocument, patches: DocumentPatch[], ids: ReadonlyMap<string, string>): void {
+  const remap = (references: readonly string[]) => references.flatMap(id => {
+    const copiedId = ids.get(id);
+    return copiedId === undefined ? [] : [copiedId];
+  });
+  const copiedSchemeKeys = new Map<string, string>();
+  const schemeKeys = new Set<string>();
+  for (const object of [
+    ...document.pages.flatMap(page => page.objects),
+    ...patches.flatMap(patch => patch.op === "addObject" ? [patch.object] : [])
+  ]) {
+    const key = object.type === "reaction" ? object.compatibility?.unknown.cdxmlSchemeKey : undefined;
+    if (typeof key === "string") schemeKeys.add(key);
+  }
+  for (const patch of patches) {
+    if (patch.op !== "addObject" || patch.object.type !== "reaction") continue;
+    const reaction = patch.object;
+    const source = reaction.compatibility?.unknown;
+    let compatibility = reaction.compatibility;
+    if (source && compatibility) {
+      const unknown = { ...source };
+      if (typeof source.cdxmlSchemeKey === "string") {
+        let key = copiedSchemeKeys.get(source.cdxmlSchemeKey);
+        if (key === undefined) {
+          key = `copied_scheme_${reaction.id}`;
+          const prefix = key;
+          let suffix = 1;
+          while (schemeKeys.has(key)) key = `${prefix}_${suffix++}`;
+          schemeKeys.add(key);
+          copiedSchemeKeys.set(source.cdxmlSchemeKey, key);
+        }
+        unknown.cdxmlSchemeKey = key;
+        delete unknown.cdxmlSchemeId;
+      }
+      const references = source.cdxmlStepReferences;
+      if (references && typeof references === "object" && !Array.isArray(references)) {
+        unknown.cdxmlStepReferences = Object.fromEntries(Object.entries(references).map(([attribute, value]) => [
+          attribute, Array.isArray(value) ? remap(value.filter((id): id is string => typeof id === "string")) : []
+        ]));
+      }
+      compatibility = { ...compatibility, unknown };
+    }
+    patch.object = {
+      ...reaction,
+      ...(compatibility === undefined ? {} : { compatibility }),
+      components: reaction.components.flatMap(component => remap([component.objectId]).map(objectId => ({ ...component, objectId }))),
+      conditionsTextObjectIds: remap(reaction.conditionsTextObjectIds),
+      ...(reaction.arrowObjectIds === undefined ? {} : { arrowObjectIds: remap(reaction.arrowObjectIds) }),
+      ...(reaction.plusObjectIds === undefined ? {} : { plusObjectIds: remap(reaction.plusObjectIds) })
+    };
+  }
 }
 
 export function rotateSelectedDocumentObjects90(document: ChemDraftDocument): ChemDraftDocument {
@@ -16073,6 +16282,7 @@ function buildNativeMoleculeEngineRelayout(
   const engineBondByPair = new Map(
     engineBonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
+  const unknownStereoAtomIds = new Set(molecule.bonds.filter(bond => bond.display?.bondStyle === "wavy").map(bond => bond.fromAtomId));
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
     const toIndex = atomIndexById.get(bond.toAtomId);
@@ -16081,7 +16291,11 @@ function buildNativeMoleculeEngineRelayout(
         ? atomPairKey(`${Math.min(fromIndex, toIndex)}`, `${Math.max(fromIndex, toIndex)}`)
         : undefined;
     const engineBond = pairKey !== undefined ? engineBondByPair.get(pairKey) : undefined;
-    const wedge = engineBond?.wedge ?? null;
+    const proposedStereoAtomId = engineBond && molecule.atoms[engineBond.from]?.id;
+    // An explicit unknown centre and its directed marker survive every depictor, even one
+    // that proposes a new wedge from the same centre on the new coordinates.
+    const wedge = bond.display?.bondStyle === "wavy" ? "wavy"
+      : proposedStereoAtomId && unknownStereoAtomIds.has(proposedStereoAtomId) ? null : engineBond?.wedge ?? null;
     const {
       bondStyle: previousStyle,
       depthWeight: _depthWeight,
@@ -16096,8 +16310,8 @@ function buildNativeMoleculeEngineRelayout(
     // A wedge/hash is narrow at `from`. OCL may move the stereo marker to a different adjacent bond
     // and may orient that bond opposite to ChemDraft's pre-existing endpoint order. Preserve the
     // engine's directed narrow end; an unordered-pair-only transfer can turn R/S into unspecified.
-    const engineFromAtomId = wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
-    const engineToAtomId = wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
+    const engineFromAtomId = previousStyle === "wavy" ? bond.fromAtomId : wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
+    const engineToAtomId = previousStyle === "wavy" ? bond.toAtomId : wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
     const directedBond = engineFromAtomId && engineToAtomId
       ? { ...bond, fromAtomId: engineFromAtomId, toAtomId: engineToAtomId }
       : bond;
@@ -18080,6 +18294,7 @@ function relocateRepeatedStereoMarkers(
 
       for (const candidate of source) {
         if (candidate.order !== "single") continue;
+        if (candidate.display?.bondStyle === "wavy") continue;
         const neighborId = candidate.fromAtomId === centerId
           ? candidate.toAtomId
           : candidate.toAtomId === centerId
@@ -18237,6 +18452,7 @@ function relocateRepeatedStereoMarkers(
 
     for (const candidate of depthAligned) {
       if (candidate.order !== "single") continue;
+      if (candidate.display?.bondStyle === "wavy") continue;
       const neighborId = candidate.fromAtomId === centerId
         ? candidate.toAtomId
         : candidate.toAtomId === centerId
@@ -18579,6 +18795,20 @@ export function flattenNativeMolecule3d(
     };
   }
   mark("flatten.reconcile-stereo");
+
+  // Explicit unknown intent belongs to the wave's original directed bond, even when
+  // the reader cannot perceive that atom as stereogenic. Never lose or redirect it.
+  const committedBondById = new Map(committedBonds.map(bond => [bond.id, bond]));
+  const lostWaves = molecule.bonds.filter(bond => {
+    if (bond.display?.bondStyle !== "wavy") return false;
+    const actual = committedBondById.get(bond.id);
+    return actual?.display?.bondStyle !== "wavy" || actual.order !== "single" ||
+      actual.fromAtomId !== bond.fromAtomId || actual.toAtomId !== bond.toAtomId;
+  });
+  if (lostWaves.length) return {
+    status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+    refusalReasons: [`flatten would lose or redirect explicit unknown stereo at ${lostWaves.length} bond(s); re-orient and try again`]
+  };
 
   const stagedMolecule: MoleculeObject = {
     ...molecule,
@@ -19325,8 +19555,10 @@ export function exportPhase4Cdxml(
  * bond side (an imported CDXML, a file from before the record existed) gets the side its drawing
  * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
  */
-export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  return readNativeDocumentContents(contents, openChemDraftPayload);
+export function openNativeDocument(contents: string | Uint8Array): ChemDraftOpenResult {
+  return typeof contents === "string"
+    ? readNativeDocumentContents(contents, openChemDraftPayload)
+    : readNativeDocumentContents("", () => importCdx(contents));
 }
 
 const importedPageFitPaddingPx = 24;
@@ -19645,7 +19877,10 @@ export function copyAsMergedMolecule(
  * is room: it has no 999-atom ceiling, and a V2000 overflow falls back to that lossy `structure`
  * string, silently.
  */
-export function analysisFacingStructure(molecule: MoleculeObject): { structureFormat: string; structure: string; refusalReason?: string } {
+export function analysisFacingStructure(molecule: MoleculeObject, document?: ChemDraftDocument): { structureFormat: string; structure: string; refusalReason?: string } {
+  const bracketWarnings = moleculeBracketWarningMessages(molecule, document);
+  if (bracketWarnings.length) return { structureFormat: "molfile-v3000", structure: "",
+    refusalReason: bracketWarnings.join(" ") };
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
   if (unknownIds.length > 0) {
     // No query molfile reaches a descriptor engine. The client maps this to an unsupported run,
@@ -19705,11 +19940,12 @@ export function validationFacingStructure(
  * positions left out, so moving or rotating the molecule never reads as a stale report, while any
  * change to its chemistry (an element, a charge, a bond order, a label) does.
  */
-export function analysisSubjectKey(molecule: MoleculeObject): string {
+export function analysisSubjectKey(molecule: MoleculeObject, document?: ChemDraftDocument): string {
   return JSON.stringify([
     molecule.id,
     molecule.atoms.map(({ x: _x, y: _y, z: _z, ...atom }) => atom),
-    molecule.bonds
+    molecule.bonds,
+    moleculeBracketWarningMessages(molecule, document)
   ]);
 }
 
@@ -19719,6 +19955,7 @@ export function analysisSubjectKey(molecule: MoleculeObject): string {
  */
 export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
   const molecules = copyAsScopeMolecules(document);
+  reportRepeatUnitExportWarnings(document, "SMILES", molecules, warningsOut);
   if (molecules.length === 0) {
     return undefined;
   }
@@ -19732,7 +19969,7 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
       if (smiles.length > 0) parts.push(smiles);
     }
   } finally {
-    warningsOut?.push(...warnings.map((warning) => warning.message));
+    warningsOut?.push(...warnings.map((warning) => warning.message).filter(message => !warningsOut.some(previous => previous.includes(message))));
   }
   return parts.length > 0 ? parts.join(".") : undefined;
 }
@@ -19750,6 +19987,7 @@ export function copyAsMolfile(
   warningsOut?: string[]
 ): string | undefined {
   const molecules = copyAsScopeMolecules(document);
+  const repeatWarnings = reportRepeatUnitExportWarnings(document, "MOL", molecules, warningsOut);
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
@@ -19774,11 +20012,17 @@ export function copyAsMolfile(
         message.startsWith(`Atom label "${atom.element}" is not an element symbol;`)
       )).map(atom => atom.element));
       return nativeMoleculeExportWarnings(molecule, { unrecognizedLabels }).map(warning => warning.message);
-    }), ...writerWarnings);
+    }), ...writerWarnings.filter(message => !repeatWarnings.some(warning => warning.includes(message))));
   }
 }
 
 const copyAsPagePaddingPx = 16;
+
+function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, molecules: readonly MoleculeObject[], warningsOut?: string[]) {
+  const messages = repeatUnitExportWarnings(document, format, { objects: copyAsScopeObjects(document), molecules }).map(warning => warning.message);
+  warningsOut?.push(...messages);
+  return messages;
+}
 
 /**
  * A temporary document holding only the copy scope, translated onto a page fitted to its bounds —
@@ -19798,6 +20042,7 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
     }
     // Preserve the exact legacy crop for unrotated objects, including stored frames
     // that differ from their ink bounds (labels, table overflow and art effects).
+    if (object.type === "bracket") return bracketVisualBounds(object);
     if (object.rotation === 0) return object;
     if (object.type === "graphic") return documentObjectVisualBounds(object, page.objects);
     if (object.type === "text") return textVisualBoundsForArrangement(object);
@@ -20494,9 +20739,11 @@ function remapAnchorsAfterMoleculeMerge(
       const childObjectIds = [...new Set(object.childObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
       return [{ op: "updateObject", objectId: object.id, changes: { childObjectIds } }];
     }
-    if (object.type === "bracket" && object.containedObjectIds.includes(absorbedObjectId)) {
+    if (object.type === "bracket" && (object.containedObjectIds.includes(absorbedObjectId) || object.crossingBondIds?.some(ref => ref.objectId === absorbedObjectId))) {
       const containedObjectIds = [...new Set(object.containedObjectIds.map((id) => id === absorbedObjectId ? hostObjectId : id))];
-      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds } }];
+      return [{ op: "updateObject", objectId: object.id, changes: { containedObjectIds,
+        crossingBondIds: object.crossingBondIds?.flatMap(ref => ref.objectId !== absorbedObjectId ? [ref] :
+          bondIdMap.has(ref.bondId) ? [{ objectId: hostObjectId, bondId: bondIdMap.get(ref.bondId)! }] : []) } }];
     }
     return [];
   });
@@ -20593,7 +20840,7 @@ function nativeBondWithOrderAndDisplay(
   order: MoleculeBond["order"],
   useDrawingDefault = true
 ): MoleculeBond {
-  const bondStyle = bond.display?.bondStyle;
+  const bondStyle = bond.display?.bondStyle === "wavy" && order !== "single" ? undefined : bond.display?.bondStyle;
   if (order === "double") {
     // This helper is used only by drawing/order edits. Imported and pasted graphs retain
     // their own display data; ring/template insertion also keeps its explicit placement.
@@ -20601,6 +20848,7 @@ function nativeBondWithOrderAndDisplay(
       (useDrawingDefault && loadDrawingSettings().defaultDoubleBond === "centred"
         ? "center" : defaultDoubleBondSide(molecule, { ...bond, order }));
     const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    if (restDisplay.bondStyle === "wavy") delete restDisplay.bondStyle;
     const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,

@@ -136,6 +136,8 @@ describe("desktop direct plugin patch application", () => {
     { type: "group", childObjectIds: ["mol_direct"] },
     { type: "bracket", bracketKind: "square", containedObjectIds: ["mol_direct"] },
     { type: "reaction", components: [{ role: "reactant", objectId: "mol_direct" }] },
+    { type: "reaction", components: [], arrowObjectIds: ["mol_direct"] },
+    { type: "reaction", components: [], plusObjectIds: ["mol_direct"] },
     { type: "superatom", label: "R", metadata: { label: "R", attachmentPoints: [{ kind: "object", objectId: "mol_direct" }] } },
     { type: "r-group-label", label: "R", display: { label: "R", attachmentPoints: [{ kind: "object", objectId: "mol_direct" }] } }
   ])("keeps an off-page group attached to an existing object through $type unmoved", fields => {
@@ -569,7 +571,8 @@ describe("accepting a proposal into a document it was not laid out for", () => {
           atoms: [{ id: "a1", element: "C", x: 100, y: 100, labelBondSide: { side: "left", atomId: "a1" } }],
           bonds: [{ id: "a1", fromAtomId: "a1", toAtomId: "a1" }],
           superatoms: [attachment], rGroups: [attachment], chemistry: { warnings: [warning] } },
-        { type: "reaction", components: [{ role: "reactant", objectId }], conditionsTextObjectIds: [objectId] },
+        { type: "reaction", components: [{ role: "reactant", objectId }], conditionsTextObjectIds: [objectId],
+          arrowObjectIds: [objectId], plusObjectIds: [objectId] },
         { type: "reaction-arrow", arrowKind: "forward", start: atomAnchor, end: bondAnchor, labels: [objectId] },
         { type: "mechanism-arrow", arrowKind: "full-headed", source: atomAnchor, target: bondAnchor, warnings: [warning] },
         { type: "electron-mark", markKind: "lone-pair", anchor: atomAnchor },

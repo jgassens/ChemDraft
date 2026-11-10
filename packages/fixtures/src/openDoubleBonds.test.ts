@@ -5,7 +5,7 @@ import {
   type MoleculeObject
 } from "../../chem-core/src/index";
 import { parseMolfileGraph } from "../../clipboard-adapter/src/index";
-import { openChemDraftPayload, exportDocumentToCdxml } from "../../cdx-compat/src/index";
+import { canonicalVisibleCdxml, openChemDraftPayload, exportDocumentToCdxml } from "../../cdx-compat/src/index";
 import { depictSmiles2D, relayoutMolfile2D, perceiveStereoCentersFromMolfile } from "../../ocl-adapter/src/index";
 import {
   createSmilesMolecule, insertSmilesMolecule, pastedStructureDepictionFromMolfile,
@@ -119,14 +119,15 @@ describe.each(cases)("$id interchange", (entry) => {
     });
   });
 
-  it("preserves either bonds in the native CDXML payload and warns for each bond", () => {
+  it("writes either bonds as visible Wavy doubles without a native-only warning", () => {
     const document = deserializeDocument(read(`${entry.id}.json`));
     const molecule = native(entry.id);
     const exported = exportDocumentToCdxml(document);
-    const warnings = exported.warnings.filter((warning) => warning.code === "cdxml.open_double_bond_native_only");
-    expect(warnings.map((warning) => warning.message)).toEqual(entry.eitherBondIndices.map((i) =>
-      `E/Z-unspecified double bond ${molecule.bonds[i]!.id} is kept for ChemDraft only; other apps will see a plain double bond.`));
-    const roundtrip = openChemDraftPayload(exported.contents).document!.pages[0]!.objects[0] as MoleculeObject;
+    expect(exported.warnings.map((warning) => warning.code)).not.toContain("cdxml.open_double_bond_native_only");
+    const visible = canonicalVisibleCdxml(exported.contents);
+    const visibleDoubleBonds = [...visible.matchAll(/<b\b[^>]*Order="2"[^>]*\/>/g)].map(([bond]) => bond);
+    expect(visibleDoubleBonds.filter((bond) => bond.includes('Display="Wavy"'))).toHaveLength(entry.eitherBondIndices.length);
+    const roundtrip = openChemDraftPayload(visible).document!.pages[0]!.objects[0] as MoleculeObject;
     expect(eitherIndices(roundtrip.bonds)).toEqual(entry.eitherBondIndices);
   });
 
@@ -187,7 +188,9 @@ it("CDXML Wavy is order-sensitive and does not turn a single bond into an open d
   const result = openChemDraftPayload(source);
   const mol = result.document!.pages[0]!.objects[0] as MoleculeObject;
   expect(eitherIndices(mol.bonds)).toEqual([]);
-  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(true);
+  expect(mol.bonds).toHaveLength(3);
+  expect(mol.bonds[1]).toMatchObject({ order: "single", display: { bondStyle: "wavy" } });
+  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(false);
 });
 
 it("SMILES-to-native is geometry-defined by default and explicitly opts into perceived open bonds", async () => {

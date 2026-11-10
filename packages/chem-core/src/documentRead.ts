@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ChemDraftDocumentSchema, type ChemDraftDocument } from "./schemas";
+import { normalizeBracketPairs } from "./brackets";
 import { nativeSchemaInventory, NativeDocumentBaselineAppVersion, NativeDocumentFeatureVersions, NativeDocumentFormatVersion, NativeDocumentReaderVersion } from "./documentFeatures";
 import { NativeFieldPatternSchema, nativeFieldPatternMatches, nativeFieldPatternsOverlap } from "./nativeFieldPatterns";
 import { DefaultNativeDrawingStyle, DocumentStylePreset } from "./styles";
@@ -13,6 +14,7 @@ export type NativeDocumentWarningCode =
   | "NATIVE_BOND_STYLE_FALLBACK"
   | "NATIVE_STYLE_PRESET_FALLBACK"
   | "NATIVE_CHEMISTRY_ENUM_FALLBACK"
+  | "NATIVE_BRACKET_USAGE_PRESERVED"
   | "NATIVE_VISUAL_ENUM_FALLBACK";
 
 export interface NativeDocumentReadWarning {
@@ -93,7 +95,9 @@ export function readNativeDocument(
     const warningPath = warning?.path ?? path;
     const warningOriginal = warning ? warning.originalValue : originalValue;
     warnings.push({ code, path: warningPath, originalValue: warningOriginal,
-      message: kind === "field" ? `Preserved unrecognized field ${path.join(".")}.`
+      message: code === "NATIVE_BRACKET_USAGE_PRESERVED"
+        ? `Unknown bracket usage ${JSON.stringify(warningOriginal)} in object ${String(ownNativeValue(valueAtPath(working, path.slice(0, 4)), "id"))} was kept as-is; ChemDraft does not interpret it.`
+        : kind === "field" ? `Preserved unrecognized field ${path.join(".")}.`
         : `Unsupported value ${JSON.stringify(warningOriginal)} at ${warningPath.join(".")}; using ${JSON.stringify(fallbackValue) ?? "the default"}.` });
   };
 
@@ -107,6 +111,14 @@ export function readNativeDocument(
   if (newer) normalizeStylePresetIds(working, preserve);
   const finish = (document: ChemDraftDocument): NativeDocumentReadResult => {
     preserveOmittedJsonKeys(working, document, [], preserve);
+    // Orphan cleanup removes the active usage marker along with the pair's known semantics.
+    // Keep an unrecognized source usage even in that case; it remains uninterpreted file data.
+    for (const extension of extensions) {
+      const path = extension.path as (string | number)[];
+      if (isBracketUsagePath(working, path) && valueAtPath(document, path) === undefined) {
+        delete extension.fallbackValue;
+      }
+    }
     if (extensions.length) document.compatibility.nativeExtensions = extensions.map((extension) => ({
       ...extension, path: stableExtensionPath(document, extension.path as (string | number)[])
     }));
@@ -117,7 +129,7 @@ export function readNativeDocument(
     if (parsed.success) {
       // Zod deliberately omits __proto__ record keys. Keep them as inert file data, just like
       // unknown strict-object keys, rather than installing them on the active metadata object.
-      return finish(parsed.data);
+      return finish(normalizeBracketPairs(parsed.data));
     }
     let changed = false;
     for (const issue of parsed.error.issues) {
@@ -173,6 +185,7 @@ export function readNativeDocument(
       }
     }
     if (!changed) {
+      // document.ts's legacy migration already uses the strict normalizing validator.
       if (!newer) return finish(migrateLegacy(working));
       throw new NativeDocumentReadError("NATIVE_INVALID_DOCUMENT", [], undefined, parsed.error.message);
     }
@@ -232,7 +245,7 @@ function isUnknownChemicalField(root: unknown, path: (string | number)[]): boole
     if (path.length === 5) return true;
     return !["style", "transform", "compatibility", "bounds"].includes(String(path[4]));
   }
-  if (["reaction", "superatom", "r-group-label", "generic-atom-label", "mechanism-arrow", "electron-mark"].includes(String(type))) {
+  if (["reaction", "superatom", "r-group-label", "generic-atom-label", "mechanism-arrow", "electron-mark", "bracket"].includes(String(type))) {
     return path.length === 5 || !["style", "compatibility", "bounds"].includes(String(path[4]));
   }
   return false;
@@ -248,8 +261,16 @@ function throwUnsupportedValue(path: (string | number)[], originalValue: unknown
     `Unsupported value ${JSON.stringify(originalValue)}; ${chemistry ? "chemical identity cannot be preserved" : "no safe fallback is defined"}.`);
 }
 
-/** Only the chemistry enums main already degraded. Unknown fields and malformed types stay strict. */
+function isBracketUsagePath(root: unknown, path: (string | number)[]): boolean {
+  return /^pages\.\d+\.objects\.\d+\.bracketUsage$/.test(path.join("."))
+    && ownNativeValue(valueAtPath(root, path.slice(0, 4)), "type") === "bracket";
+}
+
+/** Legacy chemistry classifiers and opaque bracket usages; unknown fields and malformed types stay strict. */
 function chemistryFallback(root: unknown, path: (string | number)[]): { value: "unknown"; code: NativeDocumentWarningCode; container?: boolean } | undefined {
+  // The strict model uses an uninterpreted marker; the extension retains the exact source string
+  // for re-save. This is never a default usage such as generic or sru.
+  if (isBracketUsagePath(root, path)) return { value: "unknown", code: "NATIVE_BRACKET_USAGE_PRESERVED" };
   const key = path.join(".");
   const type = ownNativeValue(valueAtPath(root, path.slice(0, 4)), "type");
   const molecule = type === "molecule" && (

@@ -1,6 +1,7 @@
 import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
-import { exportFormatDescriptors, getExportFormatDescriptor, type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { desktopExportFormatDescriptors as exportFormatDescriptors, getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "../desktopExportFormats";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { isDesktopRuntime } from "../window-manager";
 import type { NativeRasterExportFormat } from "../nativeRasterExport";

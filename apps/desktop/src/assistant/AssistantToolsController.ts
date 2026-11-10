@@ -195,6 +195,7 @@ export class AssistantToolsController implements PluginHostAssistant {
             return this.options.host().applyPatchForPlugin(plugin.id, undefined,
               { patch, reason: `Assistant: ${input.name}`, warnings: [], requiresUserApproval: true }, {
                 objectIds: [...request.selection, ...request.inserted],
+                getDocument: request.context.getDocument,
                 apply: application => {
                   this.running(plugin, requestId);
                   if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");

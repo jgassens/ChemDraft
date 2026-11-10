@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ChemDraftDocumentSchema as Released111DocumentSchema } from "./__fixtures__/v1.1.1/schemas";
 import { createEmptyDocument, parseDocument, readDocument, readSerializedDocument, serializeDocument } from "./document";
-import { minimumAppVersionForDocument } from "./documentFeatures";
+import { minimumAppVersionForDocument, NativeDocumentFeatureVersions } from "./documentFeatures";
 
 const base = { id: "object", x: 0, y: 0, width: 30, height: 30, rotation: 0, style: {} };
 const text = { ...base, type: "text", text: "THF", spans: [] };
@@ -17,6 +17,15 @@ function documentWithObject(object: unknown) {
 }
 
 describe("integrated 1.2 native document features", () => {
+  it("classifies every bracket relation and usage enum as meaning-bearing", () => {
+    const bracketFeatures = Object.entries(NativeDocumentFeatureVersions).filter(([token]) =>
+      /^(field|value):pages\.\*\.objects\.\*\[type=bracket\]\.(side|pairId|repeatUnit|bracketUsage|repeatCount|crossingBondIds)(\.|=|$)/.test(token));
+    expect(bracketFeatures).toHaveLength(14);
+    for (const [token, feature] of bracketFeatures) {
+      expect(feature, token).toEqual({ introducedIn: "1.2.0", kind: "feature", ignorable: false });
+    }
+  });
+
   it.each(["chemdraft.synthetic", "chemdraft.document", "chemdraft.acs1996", "chemdraft.rscjournal"])(
     "versions object preset metadata %s and retains the applied style", stylePresetId => {
       const document = documentWithObject({ ...text, style: { stylePresetId, fontSizePx: 10 } });
@@ -65,10 +74,50 @@ describe("integrated 1.2 native document features", () => {
     "pages.*.objects.*[type=electron-mark].atomAssociation",
     "pages.*.objects.*[type=text].arrowAttachment",
     "pages.*.objects.*[type=text].arrowAttachment.parentObjectId",
-    "pages.*.objects.*[type=text].arrowAttachment.frame.normal.x"
+    "pages.*.objects.*[type=text].arrowAttachment.frame.normal.x",
+    "pages.*.objects.*[type=molecule].bonds.*.display.bondStyle",
+    "pages.*.objects.*[type=reaction].arrowObjectIds",
+    "pages.*.objects.*[type=reaction].plusObjectIds",
+    "pages.*.objects.*[type=bracket].side",
+    "pages.*.objects.*[type=bracket].pairId",
+    "pages.*.objects.*[type=bracket].repeatUnit",
+    "pages.*.objects.*[type=bracket].bracketUsage",
+    "pages.*.objects.*[type=bracket].repeatCount",
+    "pages.*.objects.*[type=bracket].crossingBondIds",
+    "pages.*.objects.*[type=bracket].crossingBondIds.*.objectId",
+    "pages.*.objects.*[type=bracket].crossingBondIds.*.bondId"
   ])("refuses a file header that declares meaningful state ignorable: %s", pattern => {
     expect(() => readDocument({ ...createEmptyDocument(), formatVersion: "1.3.0", ignorableFields: [pattern] }))
       .toThrow(/known field .* cannot be declared ignorable/);
+  });
+
+  it("versions wavy stereochemistry, shared scheme links and complete bracket semantics without ignorable headers", () => {
+    const molecule = { ...base, id: "molecule", type: "molecule", structureFormat: "unknown", structure: "",
+      atoms: [{ id: "a", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "b", element: "C", x: 22, y: 0, formalCharge: 0 }],
+      bonds: [{ id: "bond", fromAtomId: "a", toAtomId: "b", order: "single", display: { bondStyle: "wavy" } }],
+      superatoms: [], rGroups: [] };
+    const reaction = { ...base, id: "reaction", type: "reaction", components: [{ role: "reactant", objectId: molecule.id }],
+      conditionsTextObjectIds: [], arrowObjectIds: ["arrow"], plusObjectIds: ["plus"], mappingState: "absent" };
+    const open = { ...base, id: "open", type: "bracket", bracketKind: "square", side: "open", pairId: "pair",
+      repeatUnit: false, bracketUsage: "multiple", repeatCount: 3, containedObjectIds: [molecule.id],
+      crossingBondIds: [{ objectId: molecule.id, bondId: "bond" }] };
+    const close = { ...open, id: "close", x: 40, side: "close", label: "m" };
+    const arrow = { ...base, id: "arrow", type: "graphic", graphicKind: "line", data: {} };
+    const plus = { ...base, id: "plus", type: "plus" };
+    // Exercise each addition alone as well as together, so another feature cannot hide a missing rule.
+    for (const objects of [[molecule], [reaction, arrow, plus], [open, close], [molecule, reaction, arrow, plus, open, close]]) {
+      const document = createEmptyDocument({ now: "2026-11-09T00:00:00.000Z" });
+      const parsed = parseDocument({ ...document, pages: [{ ...document.pages[0], objects }] });
+      const contents = serializeDocument(parsed);
+      const saved = JSON.parse(contents);
+      expect(saved).toMatchObject({ formatVersion: "1.2.0", minAppVersion: "1.2.0" });
+      expect(saved).not.toHaveProperty("ignorableFields");
+      expect(saved.pages[0].objects).toEqual(parsed.pages[0]!.objects);
+      expect(readSerializedDocument(contents).warnings).toEqual([]);
+      expect(serializeDocument(readSerializedDocument(contents).document)).toBe(contents);
+      expect(Released111DocumentSchema.safeParse(saved).success).toBe(false);
+    }
   });
 
   it("removes the version and ignorable headers when the last 1.2 feature is removed", () => {

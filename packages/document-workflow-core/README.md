@@ -41,6 +41,12 @@ desktop importers did not change.
 | `shared.ts` | Ids, page access, numeric helpers |
 | `testing.ts` | Test-only hooks, served as `@chemdraft/document-workflow-core/testing` and kept out of the barrel: the longest-path work counter |
 
+`documentReactionSummary` reads native reaction steps in page order, including component roles,
+arrow/plus links, condition text and mapping state. `documentInventory().reactions` exposes the same
+summary to headless document consumers. Shared intermediates retain their object ids. The summary
+reads recorded roles rather than guessing chemistry from placement; `layoutReactionScheme` remains
+a visual layout builder and does not synthesize reaction semantics from drawings.
+
 ## What belongs here
 
 - Pure functions from document data to document data (`ChemDraftDocument` in, `ChemDraftDocument` out),

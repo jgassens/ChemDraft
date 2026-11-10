@@ -181,6 +181,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"
@@ -623,6 +628,28 @@
               "submenu": null,
               "tooltip": {
                 "title": "Square Bracket Tool",
+                "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.roundBracket",
+              "title": "Round Bracket Tool",
+              "icon": "roundBracket",
+              "category": "annotation",
+              "id": "tool.roundBracket",
+              "kind": "button",
+              "label": "Round Bracket Tool",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.roundBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Round Bracket Tool",
                 "shortcut": null
               },
               "layout": {
@@ -1931,6 +1958,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"
@@ -2509,6 +2541,28 @@
               "submenu": null,
               "tooltip": {
                 "title": "Square Bracket Tool",
+                "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.roundBracket",
+              "title": "Round Bracket Tool",
+              "icon": "roundBracket",
+              "category": "annotation",
+              "id": "tool.roundBracket",
+              "kind": "button",
+              "label": "Round Bracket Tool",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.roundBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Round Bracket Tool",
                 "shortcut": null
               },
               "layout": {

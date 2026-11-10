@@ -51,6 +51,38 @@ unchanged. Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPP
 `serializeDocumentWithWarnings` returns `{ contents, warnings }`, and the validated container API
 `prepareNativeDocumentForSerializationWithWarnings` returns `{ value, warnings }`.
 
+Bond displays are `bold`, `wedge`, `hashed`, `dashed`, and `wavy`. Optional
+`MoleculeBond.display.bondStyle: "wavy"` is valid only with `order: "single"` (schema rejection
+otherwise) and means explicitly unknown stereo at `fromAtomId`. It follows additive v1 conventions:
+no migration or backfill. MOL V2000 writes single-bond stereo 4; V3000 writes CFG=2.
+
+Native `reaction` objects reference participants through `components` (`reactant`, `product`,
+`agent`) and text through `conditionsTextObjectIds`. Optional `arrowObjectIds` and `plusObjectIds`
+link the step's existing drawable objects. Multiple steps may reference the same molecule, including
+an intermediate used as one step's product and the next step's reactant. These additive optional
+fields follow the existing v1 convention; older reaction documents load without a migration.
+
+Each `BracketObject` is one glyph. Optional `side` (`open`/`close`), `pairId`, and `repeatUnit`
+fields extend the existing v1 schema additively, like image payloads. Old documents need no
+migration: an absent side keeps the original opening glyph, and no repeat label is added.
+Pairs share an opaque `pairId`; the closing member's existing `label` field carries the repeat
+subscript. Drawing and label placement belong to layout-engine.
+
+Optional `bracketUsage` is `sru`, `multiple`, `generic`, or `unknown`; unrecognised stored strings
+load as `unknown`. Legacy `repeatUnit: true` without a usage still means an SRU. `repeatCount` is an
+optional safe positive integer (meaningful for a multiple group); `label` remains free text, including
+`n` or `x-y`. `crossingBondIds` optionally lists molecule-scoped `BondRef` values
+(`{ objectId, bondId }`), since bond ids are local to each molecule. No migration or backfill is
+needed. Pair cleanup removes all multiplier and crossing metadata from an orphan, and patches
+prune references to deleted bonds or molecules. Copies carry references only to copied objects.
+
+`bracketChemistryWarnings` reads live document membership, preserved atom membership, crossing
+references, and geometric enclosure. Cached formula and mass metadata carry
+`chemistry.bracket_multiplier` warnings after loading or patching; values describe one drawn copy,
+never an expanded polymer or multiplier. `moleculeBracketWarningMessages` lets graph consumers keep
+that context when only a molecule is available. The MOL writers return those warnings too; callers
+can pass `document` for live context. Plain generic pairs stay quiet.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

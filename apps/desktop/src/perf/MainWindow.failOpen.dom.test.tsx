@@ -17,14 +17,14 @@ const native = vi.hoisted(() => ({ desktop: true, runtime: undefined as import("
   dismiss: undefined as (() => void) | undefined, showPopover: vi.fn(), hidePopover: vi.fn(),
   snapshot: undefined as import("../dialogs/dialogProtocol").DialogMessage | undefined,
   receive: undefined as ((delivery: import("../dialogs/dialogTransport").DialogDelivery) => void) | undefined,
-  publish: vi.fn(), writeText: vi.fn(), writeFile: vi.fn(), readFile: vi.fn(), pickOpen: vi.fn(), pickSave: vi.fn()
+  publish: vi.fn(), writeText: vi.fn(), writeFile: vi.fn(), stat: vi.fn(), fileOpen: vi.fn(), fileRead: vi.fn(), fileClose: vi.fn(), pickOpen: vi.fn(), pickSave: vi.fn()
 }));
 vi.mock("../dialogs/dialogTransport", () => ({ nativeDialogTransport: {
   subscribe: async (receive: typeof native.receive) => { native.receive = receive; return () => {}; },
   open: async (snapshot: NonNullable<typeof native.snapshot>) => { native.snapshot = snapshot; return { hostId: "export-host", windowLabel: "dialog-main-export-1" }; },
   publish: native.publish, close: async () => {}
 } }));
-vi.mock("@tauri-apps/plugin-fs", async original => ({ ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeText, writeFile: native.writeFile }));
+vi.mock("@tauri-apps/plugin-fs", async original => ({ ...await original<typeof import("@tauri-apps/plugin-fs")>(), stat: native.stat, open: native.fileOpen, writeTextFile: native.writeText, writeFile: native.writeFile }));
 vi.mock("../nativeFileDialog", () => ({ prewarmNativeFileDialogs: async () => ({}), open: native.pickOpen, save: native.pickSave }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@tauri-apps/api/core", async original => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: native.invoke, isTauri: () => false }));
@@ -492,9 +492,24 @@ it.each((["documentOpenStarted", "documentOpenCommitted", "documentOpenSkipped",
     await mount(); vi.useFakeTimers();
     const { createNativeSavePayload } = await import("../documentWorkflow");
     native.pickOpen.mockResolvedValue("/drawings/opened.chemdraft");
-    native.readFile.mockResolvedValue(new TextEncoder().encode(createNativeSavePayload(createPhase4Document("Opened drawing")).contents));
+    let bytes = new TextEncoder().encode(createNativeSavePayload(createPhase4Document("Opened drawing")).contents);
+    native.stat.mockImplementation(async () => ({ size: bytes.length }));
+    native.fileClose.mockResolvedValue(undefined);
+    native.fileOpen.mockImplementation(async () => {
+      let offset = 0;
+      return {
+        read: native.fileRead.mockImplementation(async (buffer: Uint8Array) => {
+          if (offset === bytes.length) return null;
+          const count = Math.min(buffer.length, bytes.length - offset);
+          buffer.set(bytes.subarray(offset, offset + count));
+          offset += count;
+          return count;
+        }),
+        close: native.fileClose
+      };
+    });
     if (method === "documentOpenSkipped") await command("document.open");
-    if (method === "documentOpenFailed") native.readFile.mockResolvedValue(new TextEncoder().encode("{ invalid document"));
+    if (method === "documentOpenFailed") bytes = new TextEncoder().encode("{ invalid document");
     let reject!: (error: Error) => void;
     const pending = new Promise<void>((_, fail) => { reject = fail; });
     const fault = vi.spyOn(runtime.perfProbe!, method).mockImplementation(() => {
@@ -516,8 +531,11 @@ it.each((["documentOpenStarted", "documentOpenCommitted", "documentOpenSkipped",
     else {
       expect(container.textContent).toContain("Opened opened.chemdraft");
       expect((window as Window & { __CHEMDRAFT_AGENT__: import("../agentBridge").ChemDraftAgentBridge }).__CHEMDRAFT_AGENT__.snapshot().file.path).toBe("/drawings/opened.chemdraft");
-      expect(native.readFile).toHaveBeenCalledWith("/drawings/opened.chemdraft");
     }
+    expect(native.stat).toHaveBeenCalledWith("/drawings/opened.chemdraft");
+    expect(native.fileOpen).toHaveBeenCalledWith("/drawings/opened.chemdraft", { read: true });
+    expect(native.fileRead).toHaveBeenCalledWith(expect.any(Uint8Array));
+    expect(native.fileClose).toHaveBeenCalledTimes(method === "documentOpenSkipped" ? 2 : 1);
     if (failure === "reject") reject(new Error("open probe rejection"));
     await Promise.resolve(); await Promise.resolve();
     const calls = fault.mock.calls.length, rows = localStorage.getItem("chemdraft.perfLog");

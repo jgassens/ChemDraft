@@ -8,6 +8,7 @@ import {
   type DocumentObject
 } from "./schemas";
 import { engineDocuments } from "./engineDocuments";
+import { normalizeBracketPairs } from "./brackets";
 import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
 import { ignorableFieldsForNativeFeatures, minimumAppVersionForDocument, NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion } from "./documentFeatures";
 import { compareNativeVersions, restoreNativeExtensions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
@@ -64,7 +65,7 @@ export function validateDocument(candidate: unknown): DocumentValidationResult {
   const result = ChemDraftDocumentSchema.safeParse(candidate);
 
   if (result.success) {
-    return { ok: true, document: result.data, issues: [] };
+    return { ok: true, document: normalizeBracketPairs(result.data), issues: [] };
   }
 
   return {
@@ -77,7 +78,7 @@ export function validateDocument(candidate: unknown): DocumentValidationResult {
 }
 
 export function parseDocument(candidate: unknown): ChemDraftDocument {
-  return ChemDraftDocumentSchema.parse(candidate);
+  return normalizeBracketPairs(ChemDraftDocumentSchema.parse(candidate));
 }
 
 export function validateDocumentObject(candidate: unknown): DocumentObject {

@@ -1776,7 +1776,7 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(commands.some((command) => command.id === "tool.art.circle")).toBe(true);
     expect(commands.some((command) => command.id === "atom.setHoveredElement.O")).toBe(true);
-    expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
+    expect(markup).toContain(".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
   });
@@ -2619,7 +2619,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
     expect(mainWindowSource).toContain("const savedDocument = active ? documentForFlush() : savingDocument;");
-    expect(mainWindowSource).toContain("const payload = createNativeSavePayload(savedDocument);");
+    expect(mainWindowSource).toContain("createDocumentFileSave(savedDocument, finalPath)");
     expect(mainWindowSource).toContain("tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present");
     expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false })");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
@@ -2907,6 +2907,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.sOrbital",
       "tool.bracket",
       "tool.squareBracket",
+      "tool.roundBracket",
       "tool.chain",
       "style.formulaText",
       "layout.bringToFront",
@@ -6049,7 +6050,7 @@ describe("ChemDraft desktop shell", () => {
     // with the graphic arrowhead marker. Its chemical identity is preserved for CDXML re-export.
     expect(markup).toContain("graphic-marker-end-");
     expect(markup).toContain("graphic-object");
-    expect(markup).toContain('data-graphic-kind="unknown"');
+    expect(markup).toContain('data-bracket-kind="round"');
     expect(markup).toContain("generic-object");
     expect(markup).toContain('data-atom-count="5"');
   });

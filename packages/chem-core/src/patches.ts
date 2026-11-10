@@ -11,7 +11,8 @@ import {
   type DocumentPage,
   type MoleculeBond,
   type MoleculeObject,
-  type PageLayout
+  type PageLayout,
+  type ReactionObject
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
 import { engineDocuments } from "./engineDocuments";
@@ -19,6 +20,7 @@ import { pageMarginFromLayout } from "./page-layout";
 import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
 import { nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle,
   type NativeDrawingStyle, type NativeTextStyle } from "./styles";
+import { bracketPairs, withoutBracketPairMetadata, withBracketChemistryWarnings } from "./brackets";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -248,6 +250,22 @@ function validateDraft(
   draft: ChemDraftDocument,
   unvalidated: { compatibility?: boolean; styles?: boolean; plugins?: boolean } = {}
 ): ChemDraftDocument {
+  for (const page of draft.pages) {
+    if (!page.objects.some(object => object.type === "bracket")) continue;
+    const pairs = bracketPairs(page.objects);
+    const objects = new Map(page.objects.map(object => [object.id, object]));
+    page.objects = page.objects.map(object => {
+      if (object.type !== "bracket") return object;
+      if (object.pairId && !pairs.has(object.pairId)) return withoutBracketPairMetadata(object);
+      const containedObjectIds = object.containedObjectIds.filter(id => objects.has(id));
+      const crossingBondIds = object.crossingBondIds?.filter(ref => {
+        const molecule = objects.get(ref.objectId);
+        return molecule?.type === "molecule" && molecule.bonds.some(bond => bond.id === ref.bondId);
+      });
+      return containedObjectIds.length === object.containedObjectIds.length && crossingBondIds?.length === object.crossingBondIds?.length
+        ? object : { ...object, containedObjectIds, ...(crossingBondIds ? { crossingBondIds } : {}) };
+    });
+  }
   // Compatibility warnings and plugin data pass through by reference. Drawing-default patches
   // replace styles with field-validated native values; other style metadata stays validated on the
   // base. Re-parsing these fields re-created every warning object
@@ -262,13 +280,13 @@ function validateDraft(
     plugins: unvalidated.plugins ? draft.plugins : {},
     pages: draft.pages.map((page) => ({ ...page, objects: [] }))
   });
-  return {
+  return withBracketChemistryWarnings({
     ...shell,
     compatibility: unvalidated.compatibility ? shell.compatibility : draft.compatibility,
     styles: unvalidated.styles ? shell.styles : draft.styles,
     plugins: unvalidated.plugins ? shell.plugins : draft.plugins,
     pages: shell.pages.map((page, index) => ({ ...page, objects: draft.pages[index]!.objects }))
-  };
+  });
 }
 
 const freezeResults =
@@ -369,6 +387,43 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
   forgetShiftedDuplicateLocations(document);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
   pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
+  pruneReactionReferences(location.page, new Set([objectId]));
+}
+
+/** Replace changed reactions rather than mutating objects shared with undo snapshots. */
+function pruneReactionReferences(page: DocumentPage, removed: ReadonlySet<string>): void {
+  page.objects = page.objects.map(object => object.type === "reaction" ? pruneReactionObjectReferences(object, removed) : object);
+}
+
+/** Pure removal rule, shared with write-scope checks. Returns the original object if unchanged. */
+export function pruneReactionObjectReferences(object: ReactionObject, removed: ReadonlySet<string>): ReactionObject {
+  const components = object.components.filter(component => !removed.has(component.objectId));
+  const conditionsTextObjectIds = object.conditionsTextObjectIds.filter(id => !removed.has(id));
+  const arrowObjectIds = object.arrowObjectIds?.filter(id => !removed.has(id));
+  const plusObjectIds = object.plusObjectIds?.filter(id => !removed.has(id));
+  const sourceReferences = object.compatibility?.unknown.cdxmlStepReferences;
+  let compatibility = object.compatibility;
+  if (compatibility && sourceReferences && typeof sourceReferences === "object" && !Array.isArray(sourceReferences)) {
+    let changed = false;
+    const references = Object.fromEntries(Object.entries(sourceReferences).map(([key, value]) => {
+      if (!Array.isArray(value)) return [key, value];
+      const kept = value.filter(id => typeof id !== "string" || !removed.has(id));
+      if (kept.length !== value.length) changed = true;
+      return [key, kept];
+    }));
+    if (changed) {
+      compatibility = { ...compatibility, unknown: { ...compatibility.unknown, cdxmlStepReferences: references } };
+    }
+  }
+  if (components.length === object.components.length && conditionsTextObjectIds.length === object.conditionsTextObjectIds.length
+    && arrowObjectIds?.length === object.arrowObjectIds?.length && plusObjectIds?.length === object.plusObjectIds?.length
+    && compatibility === object.compatibility) return object;
+  return {
+    ...object, components, conditionsTextObjectIds,
+    ...(arrowObjectIds === undefined ? {} : { arrowObjectIds }),
+    ...(plusObjectIds === undefined ? {} : { plusObjectIds }),
+    ...(compatibility === undefined ? {} : { compatibility })
+  };
 }
 
 /**
@@ -424,6 +479,7 @@ function removeObjects(document: ChemDraftDocument, objectIds: readonly string[]
     // into splice would overflow the argument stack on a page of 100,000 objects.
     page.objects = kept;
     pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => removedHere.has(ref.objectId)));
+    pruneReactionReferences(page, removedHere);
     removedHere.forEach((id) => removed.add(id));
   }
   forgetShiftedDuplicateLocations(document);

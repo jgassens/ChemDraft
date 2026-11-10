@@ -8,9 +8,13 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components requiring attribution
 --------------------------------------------------------------------------------
 
-Octet Draw - Copyright 2026 Sam Ellis - Apache-2.0 - portions of the structure search URL building (apps/desktop/src-tauri/src/structure_search.rs)
+Octet Draw - Copyright 2026 Sam Ellis - Apache-2.0
+  Portions of structure search URL building (apps/desktop/src-tauri/src/structure_search.rs),
+  offline name/CAS lookup (packages/document-workflow-core), and CDX binary reader/writer
+  and tag table (packages/cdx-compat/src/cdxBinary.ts, cdxTags.ts), adapted.
   https://github.com/SamChemMan/Octet-Draw
-  Modified for ChemDraft: fixed-host browser links, native preference enforcement and rate limiting.
+  Modified for ChemDraft: fixed-host browser links, native preference enforcement, rate limiting,
+  injected lazy loading, OPSIN-first resolution and provenance, and binary compatibility mapping.
 
 Network transport and diagnostics (locked Rust dependencies)
   webpki-roots 1.0.9: CDLA-Permissive-2.0 (Mozilla root certificate list).
@@ -542,11 +546,6 @@ A.6 Stax2 API 4.2.2 -- BSD-2-Clause (Simplified BSD), (c) 2010- FasterXML.com
     CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
     ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
-
-Offline name dictionary lookup
-  Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw),
-  Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0.
-  Modified for ChemDraft: injected lazy loading, OPSIN-first resolution and provenance.
 
 Wikidata chemical names and structures
   Data licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).

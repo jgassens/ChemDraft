@@ -51,6 +51,26 @@ hash canonical UTF-8 bytes
 
 `fast-xml-parser` is configured in ordered mode with attribute and text coercion disabled. CDXML is validated before parsing so malformed XML returns a warning result instead of a raw exception or a partially trusted parse.
 
+New envelopes use visible hash-semantics version `"2"`, stored as root attribute
+`attrib4345="|x|32"` (the opaque encoding of binary property `0x4345`). That selector is included
+in the visible XML hash. CDX Save As also stores `visibleHashVersion: "2"` in its native envelope
+JSON; the two version copies must agree. The raw binary hash covers property `0x4345` and every
+other byte except the native envelope property itself. Both the stored XML hash and the binary
+hash must match, even if an external editor recomputes the binary hash.
+
+Version `"2"` uses only current canonicalization, which decodes numeric character references once
+and preserves text and attribute control characters with appropriate escaping. An absent version
+uses only the frozen released canonicalization, which leaves numeric references literal and uses
+the released whitespace escaping. Unknown versions require the existing conflict review; readers
+never try both semantics. Removing or changing the hashed selector cannot authorize an edit.
+
+Known, accepted legacy limitation: a line break encoded as `&#10;` and the literal text `&#10;`
+encoded as `&amp;#10;` have the same legacy hash (similarly for other numeric references). This is
+a cosmetic substitution that never changes chemistry. Unversioned files open silently whenever
+the legacy checks match, including unchanged files with line breaks, without any new prompt or
+conflict. CDX still requires its binary hash to match. Saving a legacy document again upgrades it
+to version `"2"`; cross-semantics substitutions in v2 files require the existing conflict review.
+
 ## 3. Open Behavior
 
 `openChemDraftPayload` first strips a leading byte-order mark and leading whitespace, then sniffs:
@@ -85,7 +105,7 @@ Session restore renews per-run fs/asset access natively while reading the app's 
 `document-session.json`. Only readable tab envelopes' saved paths are considered (including
 legacy single-document sessions and readable kept tabs retried on launch). The outer active-tab
 mirror and arbitrary objects in document contents never authorize paths. Each grant uses
-`allow_file` for one absolute, existing, regular `.chemdraft` or `.cdxml` file; directories,
+`allow_file` for one absolute, existing, regular `.chemdraft`, `.cdxml` or `.cdx` file; directories,
 symlink components, Windows reparse points, and read-only files are refused. Both session IPC
 commands accept only the main document window, and no frontend path-grant command is exposed.
 
@@ -95,6 +115,34 @@ Save) explains the failure and opens Save As. Cancel preserves the drawing and s
 replaces its association. Autosave does not persist this transient result: access is checked
 again on each launch. The filesystem checks are a restore-time safeguard, not a defense against
 another local process replacing a path after it was checked.
+
+## Binary CDX desktop boundary
+
+File > Open, shell-open requests, and dropped files detect the eight-byte `VjCD0100` header,
+regardless of extension. CDX reaches `importCdx` as a `Uint8Array`; shell requests carry a JSON
+byte array through the existing event/pending-open transport without UTF-8 decoding. Text
+documents retain the UTF-8/UTF-16 byte-order-mark decoder and existing CDXML/native JSON opener.
+Malformed CDX reports `cdx.invalid_binary` with the codec's reason; import warnings use the
+same status line and warning report as CDXML.
+
+Save As offers CDX alongside ChemDraft and CDXML. Saving to `.cdx` (including later Save and
+session-restored paths) calls `exportDocumentToCdx` with `embedNativePayload: true`. Its
+ChemDraft-specific property contains the exact native document; unchanged visible objects restore
+that payload, and external visible edits trigger the existing conflict choice. File > Export CDX
+uses `embedNativePayload: false`, for visible interchange only. Both use the existing scoped native
+file dialogs and byte writer; save and export warnings remain visible after writing.
+
+The binary codec feeds the shared CDXML conversion: supported fixtures cover atoms, bonds,
+coordinates, charge, isotopes, representable radicals and stereo, text, and supported drawing
+objects. It accepts both byte orders and legacy/UTF-8 text. Unsupported attributes, elements,
+values and malformed properties warn; unknown binary properties retain raw bytes where possible.
+Complex graphics, unusual fonts, proprietary style state and unrepresented chemistry are not
+promised a lossless visible conversion. Native metadata does not expand another reader's supported
+visible subset. Compatibility is claimed only to fixture coverage, never for arbitrary CDX files.
+Limits are 64 MB, 64 nested child-object levels and one million objects.
+
+macOS registers `.cdx` as an Alternate editor with the established CDX UTI and `public.data`.
+Windows registers `.chemdraft` only; neither `.cdx` nor `.cdxml` is associated by its installer.
 
 ## 5. Visible CDXML Subset
 

@@ -50,6 +50,7 @@ import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
 import { createTableCommands, type ActiveTableCell } from "./tableCommands";
+import { createBracketCommands } from "./bracketCommands";
 export { tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./tableCommands";
 import { templateDialogAction, templateInsertActions } from "./templateCommands";
 import { atomProblemCommands } from "./atomProblemCommands";
@@ -2462,6 +2463,7 @@ export function allShellCommands(
     ...createSelectionNudgeActions(document.selection.objectIds.length > 0 || options.availability?.hasMoleculeFragmentSelection === true),
     ...atomProblemCommands(document).map(command => command.spec),
     ...createTableCommands(document, options.activeTableCell),
+    ...createBracketCommands(document),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled, options.compoundLayoutSettings),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The

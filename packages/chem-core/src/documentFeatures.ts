@@ -44,6 +44,32 @@ export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocume
   "field:compatibility.nativeExtensions.*.originalValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
   "field:compatibility.nativeExtensions.*.fallbackValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
 
+  // #327: a wavy single bond explicitly leaves fromAtomId's stereochemistry unknown.
+  // Dropping it would lose chemical meaning even though it lives in the display container.
+  'value:pages.*.objects.*[type=molecule].bonds.*.display.bondStyle="wavy"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+
+  // #335: scheme steps refer to shared drawables rather than owning duplicate objects.
+  "field:pages.*.objects.*[type=reaction].arrowObjectIds": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=reaction].plusObjectIds": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+
+  // #338: bracket pairing, group usage, counts and crossing references carry document or
+  // chemical meaning, including an opaque future usage. No part of these relations may be
+  // declared safe for a reader to omit; preserving an unknown usage does not make it ignorable.
+  "field:pages.*.objects.*[type=bracket].side": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].side="open"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].side="close"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].pairId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].repeatUnit": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].bracketUsage": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].bracketUsage="sru"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].bracketUsage="multiple"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].bracketUsage="generic"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=bracket].bracketUsage="unknown"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].repeatCount": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].crossingBondIds": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].crossingBondIds.*.objectId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=bracket].crossingBondIds.*.bondId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+
   // #322: optional preset metadata on every native object. Concrete drawing values remain
   // in style, so a reader without preset selection can ignore this display-only identifier.
   "field:pages.*.objects.*[type=annotation].style.stylePresetId": { introducedIn: "1.2.0", kind: "feature", ignorable: true },

@@ -27,6 +27,7 @@ import {
   encodeBase64UrlBytes,
   encodeBase64UrlUtf8,
   exportDocumentToCdxml,
+  legacyVisibleCdxmlHash,
   openChemDraftPayload,
   sha256Utf8Hex,
   visibleHashForCdxml
@@ -46,11 +47,11 @@ it("warns when a picture is omitted from visible CDXML and retains the native pa
 });
 
 describe("files that are not CDXML", () => {
-  it("names a ChemDraw binary .cdx file and says what to do", () => {
+  it("directs binary CDX text to the byte import API", () => {
     const opened = openChemDraftPayload("VjCD0100\u0004\u0003\u0002\u0001�\u0000");
     expect(opened.document).toBeUndefined();
     expect(opened.warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
-    expect(opened.warnings?.[0].message).toContain("Save As");
+    expect(opened.warnings?.[0].message).toContain("importCdx");
     // The same file base64-encoded, as some interchange files carry it.
     expect(openChemDraftPayload("VmpDRDAxMDAEAwIBAAAAAAAA").warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
   });
@@ -65,6 +66,40 @@ describe("files that are not CDXML", () => {
   it("still opens CDXML whatever the root element's case", () => {
     const opened = openChemDraftPayload('<?xml version="1.0"?><cdxml><page id="1"><t p="0 0"><s>Hi</s></t></page></cdxml>');
     expect(opened.document).toBeDefined();
+  });
+});
+
+describe("CDXML character references", () => {
+  it.each([
+    ["&nbsp; &copy; &NewLine; &Tab;", "&nbsp; &copy; &NewLine; &Tab;"],
+    ["A&#10;B&#13;C&#9;D&#xA;E&#xD;F&#x9;G&#x1F9EA;", "A\nB\rC\tD\nE\rF\tG🧪"],
+    ["&amp;#10; &amp;#xD; &amp;copy;", "&#10; &#xD; &copy;"],
+    ["&amp; &lt; &gt; &quot; &apos;", "& < > \" '"]
+  ])("decodes only XML and numeric references once in text and attributes: %s", (source, expected) => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g" Label="${source}">
+      <t id="2" p="0 0"><s>${source}</s></t><t id="3" p="0 20"><s>other</s></t>
+      </group></page></CDXML>`);
+    expect(opened.document).toBeDefined();
+    const objects = opened.document!.pages[0].objects;
+    expect(objects.find(object => object.type === "text")).toMatchObject({ text: expected });
+    expect(objects.find(object => object.type === "group")?.compatibility?.unknown.attributes).toEqual({ Label: expected });
+  });
+
+  it("preserves CR, TAB and LF through repeated visible CDXML saves and reopens", () => {
+    const expected = "A\rB\tC\nD";
+    let document = openChemDraftPayload(`<CDXML><page id="1"><group id="g" Label="A&#13;B&#9;C&#10;D">
+      <t id="2" p="0 0"><s>A&#13;B&#9;C&#10;D</s></t><t id="3" p="0 20"><s>other</s></t>
+      </group></page></CDXML>`).document!;
+    for (let iteration = 0; iteration < 3; iteration++) {
+      expect(document).toBeDefined();
+      expect(document.pages[0].objects.find(object => object.type === "text")).toMatchObject({ text: expected });
+      expect(document.pages[0].objects.find(object => object.type === "group")?.compatibility?.unknown.attributes).toEqual({ Label: expected });
+      const xml = exportDocumentToCdxml(document).contents;
+      expect(xml).toContain('Label="A&#13;B&#9;C&#10;D"');
+      expect(xml).toContain("A&#13;B\tC\nD");
+      // Strip the native payload so it cannot hide a lossy visible serialization.
+      document = openChemDraftPayload(xml.replace(/<objecttag\b[^>]*\/>/g, "")).document!;
+    }
   });
 });
 
@@ -481,6 +516,133 @@ describe("CDXML abbreviation fallbacks", () => {
 });
 
 describe("CDXML-compatible ChemDraft envelope", () => {
+  it.each([
+    [
+      '<CDXML b="2" a="A&#13;B&#9;C&#10;D"><page id="1"><t p="0 0"><s>A&#13;B&#9;C&#10;D &amp; &lt; &gt; &quot; &apos; &amp;#10;</s></t></page></CDXML>',
+      '<CDXML a="A&amp;#13;B&amp;#9;C&amp;#10;D" b="2"><page id="1"><t p="0 0"><s>A&amp;#13;B&amp;#9;C&amp;#10;D &amp; &lt; &gt; " \' &amp;#10;</s></t></page></CDXML>'
+    ],
+    [
+      '<CDXML a="A\rB\tC\nD"><page id="1"><!-- ignored --><t p="0 0"><s>A\rB\tC\n    D</s></t></page></CDXML>',
+      '<CDXML a="A\nB\tC\nD"><page id="1"><t p="0 0"><s>A\nB\tC\n    D</s></t></page></CDXML>'
+    ],
+    [
+      '<?xml version="1.0"?><CDXML><page id="1"><t><![CDATA[A & B]]></t><objecttag Name="org.chemdraft/visible-cdxml-hash" Value="ignored"/></page></CDXML>',
+      '<CDXML><page id="1"><t>A &amp; B</t></page></CDXML>'
+    ]
+  ])("freezes the released app's visible hash semantics for %s", (xml, legacyCanonicalXml) => {
+    expect(legacyVisibleCdxmlHash(xml)).toBe(createHash("sha256").update(legacyCanonicalXml, "utf8").digest("hex"));
+  });
+
+  it.each([
+    ["literal controls", "before\n    middle\rtab\tend", "Legacy\nattribute\rvalue\tend"],
+    ["numeric references", "before&#10;    middle&#13;tab&#9;end", "Legacy&#10;attribute&#13;value&#9;end"]
+  ])("restores unchanged legacy CDXML with %s, but conflicts after text or attribute edits", (_name, visibleText, visibleAttribute) => {
+    const document = documentWithObjects([{
+      id: "legacy_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "before\nmiddle\rtab\tend", spans: []
+    }]);
+    // Retain a real native envelope, but serialize its visible text/attribute as a released
+    // writer did, including per-line indentation inside text and literal attribute controls.
+    const saved = exportDocumentToCdxml(document).contents
+      .replace(' attrib4345="|x|32"', "")
+      .replace(/(<t\b[^>]*>)[\s\S]*?(<\/t>)/, `$1${visibleText}$2`)
+      .replace('CreationProgram="ChemDraft"', `CreationProgram="${visibleAttribute}"`);
+    const legacyHash = legacyVisibleCdxmlHash(saved);
+    expect(legacyHash).not.toBe(visibleHashForCdxml(saved));
+    const legacy = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyHash);
+    const opened = openChemDraftPayload(legacy);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.document).toEqual(document);
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+
+    for (const edited of [legacy.replace(">before", ">Before"), legacy.replace('CreationProgram="Legacy', 'CreationProgram="legacy')]) {
+      expect(edited).not.toBe(legacy);
+      expect(legacyVisibleCdxmlHash(edited)).not.toBe(legacyHash);
+      expect(visibleHashForCdxml(edited)).not.toBe(legacyHash);
+      const conflicted = openChemDraftPayload(edited);
+      expect(conflicted.document).toBeUndefined();
+      expect(conflicted.conflict?.kind).toBe("visible-layer-modified");
+      expect(conflicted.conflict?.embeddedDocument).toEqual(document);
+      expect(conflicted.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+    }
+  });
+
+  it.each([
+    ["known, accepted limitation: a legacy CDXML numeric-reference substitution opens without conflict", "legacy"],
+    ["conflicts on a cross-semantics text substitution in a v2 CDXML envelope", "current"]
+  ] as const)("%s", (_name, version) => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: version === "legacy" ? "A\nB" : "A&#10;B", spans: []
+    }]);
+    let saved = exportDocumentToCdxml(document).contents;
+    if (version === "legacy") {
+      saved = saved.replace(' attrib4345="|x|32"', "").replace("A\nB", "A&#10;B");
+      saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyVisibleCdxmlHash(saved));
+    }
+    const unchanged = openChemDraftPayload(saved);
+    expect(unchanged.document).toEqual(document);
+    expect(unchanged.conflict).toBeUndefined();
+    const edited = version === "legacy"
+      ? saved.replace("A&#10;B", "A&amp;#10;B")
+      : saved.replace("A&amp;#10;B", "A&#10;B");
+    expect(edited).not.toBe(saved);
+    // The legacy canonicalizer aliases the numeric reference and its escaped literal.
+    const alternateHash = version === "legacy" ? visibleHashForCdxml : legacyVisibleCdxmlHash;
+    expect(alternateHash(edited)).toBe(extractObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash));
+    const opened = openChemDraftPayload(edited);
+    if (version === "legacy") {
+      expect(legacyVisibleCdxmlHash(edited)).toBe(legacyVisibleCdxmlHash(saved));
+      expect(opened.source).toBe("native-payload");
+      expect(opened.document).toEqual(document);
+      expect(opened.conflict).toBeUndefined();
+      expect(opened.warnings).toEqual([]);
+      return;
+    }
+    expect(opened.document).toBeUndefined();
+    expect(opened.conflict?.embeddedDocument).toEqual(document);
+    expect(opened.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({
+      text: "A\nB"
+    });
+    expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+  });
+
+  it.each([undefined, "|x|31", "|x|33", "", "2"])("rejects a stripped or altered hash version %j even with a cross-semantics edit", (version) => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "A&#10;B", spans: []
+    }]);
+    const saved = exportDocumentToCdxml(document).contents;
+    expect(saved).toContain(' attrib4345="|x|32"');
+    const altered = saved.replace(' attrib4345="|x|32"', version === undefined ? "" : ` attrib4345="${version}"`);
+    for (const candidate of [altered, altered.replace("A&amp;#10;B", "A&#10;B")]) {
+      const opened = openChemDraftPayload(candidate);
+      expect(opened.document).toBeUndefined();
+      expect(opened.conflict?.embeddedDocument).toEqual(document);
+      expect(opened.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+    }
+  });
+
+  it("never accepts an unknown hash version even when the current visible hash agrees", () => {
+    let saved = exportDocumentToCdxml(documentWithObjects([singleBondMolecule()])).contents
+      .replace(' attrib4345="|x|32"', ' attrib4345="|x|33"');
+    saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, visibleHashForCdxml(saved));
+    expect(openChemDraftPayload(saved).conflict?.kind).toBe("visible-layer-modified");
+  });
+
+  it("rejects upgrading a legacy selector to authorize a cross-semantics edit", () => {
+    const document = documentWithObjects([{
+      id: "hash_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "A\nB", spans: []
+    }]);
+    let saved = exportDocumentToCdxml(document).contents
+      .replace(' attrib4345="|x|32"', "").replace("A\nB", "A&#10;B");
+    saved = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyVisibleCdxmlHash(saved));
+    const edited = saved.replace("A&#10;B", "A&amp;#10;B").replace("<CDXML ", '<CDXML attrib4345="|x|32" ');
+    expect(openChemDraftPayload(edited).conflict?.embeddedDocument).toEqual(document);
+  });
+
   it("hashes UTF-8 bytes with the bundled SHA-256 helper", () => {
     expect(sha256Hex(utf8Bytes("abc"))).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -744,7 +906,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       .map(item => item.sourceObjectId)).toEqual(["styled_text", "bold_box"]);
   });
 
-  it("exports text, plus signs, and reaction arrows visibly while warning for payload-only reaction metadata", () => {
+  it("exports text, plus signs, reaction arrows and native reaction steps", () => {
     const document = documentWithObjects([
       {
         id: "text_001",
@@ -819,9 +981,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(result.contents).toContain('<graphic id="');
     expect(result.contents).toContain('GraphicType="Line"');
     expect(result.contents).toContain('ArrowType="FullHead"');
+    expect(result.contents).toContain("<scheme ");
+    expect(result.contents).toContain("<step ");
     expect(result.warnings.map((item) => item.code)).toEqual([
-      "cdxml.reaction_scheme_export_partial",
-      "cdxml.mechanism_payload_only"
+      "cdxml.mechanism_payload_only",
+      "cdxml.reaction_mapping_payload_only"
     ]);
   });
 
@@ -869,7 +1033,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     });
   });
 
-  it("warns when a native graphic path bend cannot be represented exactly in visible CDXML", () => {
+  it("exports a native graphic path bend as a real CDXML curve", () => {
     const graphic = {
       id: "art_cdxml_bent_line",
       type: "graphic",
@@ -894,14 +1058,15 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       creationProgram: "Graphic Bend Warning Test"
     });
 
-    expect(result.contents).toContain('GraphicType="Line"');
+    expect(result.contents).toContain('<curve ');
+    expect(result.contents).toContain('CurvePoints="75 127.5 105 47.5 135 47.5 165 127.5"');
     expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
       type: "graphic",
       data: {
         pathControlPoint: { x: 160, y: 90 }
       }
     });
-    expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_path_control_payload_only");
+    expect(result.warnings.map((item) => item.code)).not.toContain("cdxml.graphic_path_control_payload_only");
   });
 
   it("exports circular graphic arcs from native radian sweep metadata", () => {
@@ -1754,7 +1919,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.document?.pages[0].objects.map((object) => object.type)).toEqual([
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect(opened.document?.pages[0].crossings).toEqual([{
@@ -1766,7 +1931,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     }]);
     expect(opened.warnings.map((item) => item.code)).toEqual(
       expect.arrayContaining([
-        "cdxml.object_import_unsupported"
+        "cdxml.bracket_group_preserved"
       ])
     );
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
@@ -1781,14 +1946,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "molecule",
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
     // The FullHead reaction arrow imports as an editable art arrow tagged with its chemical identity.
     expect((opened.document?.pages[0].objects[1] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
-    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.bracket_group_preserved");
   });
 
   it("exports native crossing overrides as visible reciprocal CrossingBonds and coherent Z values", () => {
@@ -1846,20 +2011,28 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
   });
 
-  it("warns when brackets and curved art degrade on the way to CDXML", () => {
+  it("warns for approximated brackets and exports curved art as a real curve", () => {
     const bracket = exportDocumentToCdxml(documentWithObjects([
       {
         id: "bracket_001",
         type: "bracket",
-        x: 144, y: 126, width: 16, height: 64, rotation: 0, style: {},
-        bracketKind: "curly",
+        x: 144, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "open", pairId: "bracket_pair",
+        containedObjectIds: []
+      },
+      {
+        id: "bracket_002",
+        type: "bracket",
+        x: 244, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "close", pairId: "bracket_pair",
         containedObjectIds: []
       }
     ]), { creationProgram: "T" });
 
-    // The bracket still exports as a placeholder, but no longer silently.
-    expect(bracket.contents).toContain('GraphicType="Unknown"');
-    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_payload_only");
+    // Rotated pairs retain their group with an axis-aligned glyph approximation.
+    expect(bracket.contents).toContain("<bracketedgroup");
+    expect(bracket.contents).toContain('GraphicType="Bracket"');
+    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_geometry_approximated");
 
     const orbital = exportDocumentToCdxml(documentWithObjects([
       {
@@ -1880,9 +2053,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       }
     ]), { creationProgram: "T" });
 
-    // Bezier curves carry an artPathKind, so the older pathD-only check never fired for them.
-    expect(orbital.contents).toContain('GraphicType="Unknown"');
-    expect(orbital.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_shape_payload_only");
+    expect(orbital.contents).toContain('<curve ');
+    expect(orbital.contents).toContain('Closed="yes"');
+    expect(orbital.contents).not.toContain('GraphicType="Unknown"');
+    expect(orbital.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
 
     // A shape CDXML can represent stays quiet.
     const oval = exportDocumentToCdxml(documentWithObjects([
@@ -2098,6 +2272,27 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     const reopenedHeads = (reopened.document?.pages[0].objects ?? [])
       .map((object) => (object as GraphicObject).data.markerEnd?.kind);
     expect(reopenedHeads).toEqual(["filled-arrow", "open-arrow", "half-arrow", "filled-arrow", undefined]);
+  });
+
+  it.each([
+    'ArrowheadHead="Half" ArrowheadType="Solid"',
+    'ArrowheadHead="Full" ArrowheadType="Half"',
+    'ArrowheadHead="Angle" ArrowheadType="Solid"'
+  ])("keeps the legacy standalone <arrow> mapping for %s", attributes => {
+    // These tokens historically used the full-head fallback on <arrow>. Curve-specific aliases
+    // must not change either that import or the resulting standard CDXML export.
+    const opened = openChemDraftPayload(`<CDXML><page><arrow id="a1"
+      Head3D="120 30 0" Tail3D="30 30 0" ${attributes}/></page></CDXML>`);
+    const arrow = opened.document!.pages[0].objects[0] as GraphicObject;
+    expect(arrow.data.markerEnd).toEqual({ kind: "filled-arrow", sizePx: 16 });
+    expect(arrow.data.markerStart).toBeUndefined();
+    expect(arrow.data.artToolId).toBe("reactionArrow");
+    const exported = exportDocumentToCdxml(opened.document!);
+    expect(exported.warnings).toEqual([]);
+    expect(exported.contents).toContain("<arrow ");
+    expect(exported.contents).toContain('ArrowheadHead="Full" ArrowheadType="Solid"');
+    const after = openChemDraftPayload(canonicalVisibleCdxml(exported.contents));
+    expect((after.document!.pages[0].objects[0] as GraphicObject).data.markerEnd).toEqual(arrow.data.markerEnd);
   });
 
   it("warns instead of inventing a CDXML spelling for decorative arrowheads", () => {

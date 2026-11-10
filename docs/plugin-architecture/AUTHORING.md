@@ -141,7 +141,15 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.22`). API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
+`0.1.25`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
+API 0.1.23 adds native wavy single bonds (#327).
+Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
+`fromAtomId` is the explicitly unknown stereocentre. Preserve both endpoints when copying; never
+assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plugins using wavy bonds
+should declare `^0.1.23`.
+API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
+and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
@@ -163,13 +171,16 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.22` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.25` packages remain compatible, each on a host at or above the version
 it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
 | 0.1.21 | `chemistry.properties` and session-local extra assistant tools | Existing `chemistry.compute` / assistant permissions |
 | 0.1.22 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
+| 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
+| 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
+| 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |

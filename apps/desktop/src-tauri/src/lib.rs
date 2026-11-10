@@ -734,6 +734,8 @@ struct NativeOpenDocumentPayload {
     path: String,
     display_name: String,
     contents: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -6960,7 +6962,7 @@ fn handle_opened_document_urls<R: Runtime>(
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
-/// second launch). Flags are skipped; the first existing `.chemdraft`/`.cdxml` file wins,
+/// second launch). Flags are skipped; the first supported document file wins,
 /// mirroring the first-file-URL rule of the macOS path.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_opened_document_args<R: Runtime>(
@@ -6988,13 +6990,23 @@ fn is_openable_document_path(path: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            // `.cdx` cannot be read yet, but it is accepted so the opener can say so; filtering it
-            // out here made "Open with ChemDraft" on a .cdx do nothing at all.
             extension.eq_ignore_ascii_case("chemdraft")
                 || extension.eq_ignore_ascii_case("cdxml")
                 || extension.eq_ignore_ascii_case("cdx")
         });
-    extension_ok && path.is_file()
+    if !path.is_file() {
+        return false;
+    }
+    if extension_ok {
+        return true;
+    }
+    // A renamed binary CDX still opens; inspect only its header here.
+    use std::io::Read;
+    let mut header = [0; 8];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && header == *b"VjCD0100"
 }
 
 /// Queue an opened document for the window to drain on mount (cold start). Only after setup,
@@ -7041,11 +7053,8 @@ fn open_document_payload_from_url(
     open_document_payload_from_path(&path).map(Some)
 }
 
-/// An opened document's bytes as text, by the same rule as `decodeDocumentBytes` (documentText.ts):
-/// a UTF-8/UTF-16 byte-order mark decides, otherwise lenient UTF-8. `read_to_string` failed on
-/// anything that was not valid UTF-8, and that failure was only logged — so double-clicking a UTF-16
-/// CDXML file (or a .cdx renamed .cdxml) did nothing at all. Now it reaches the opener, which can say
-/// what the file is.
+/// Text documents use the same byte-order-mark rule as documentText.ts. Binary CDX is dispatched
+/// before this decoder and travels as bytes through the existing shell-open event and pending queue.
 fn decode_document_text(bytes: &[u8]) -> String {
     let utf16 = |body: &[u8], little_endian: bool| {
         let units = body
@@ -7068,8 +7077,29 @@ fn decode_document_text(bytes: &[u8]) -> String {
     }
 }
 
+const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
-    let contents = decode_document_text(&fs::read(path).map_err(|error| error.to_string())?);
+    use std::io::Read;
+    let read_error = |error| format!("Could not read document {}: {error}", path.display());
+    let file = fs::File::open(path).map_err(read_error)?;
+    let too_big = || "Document exceeds the 64 MB size limit".to_string();
+    if file.metadata().map_err(read_error)?.len() > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    // Keep the read bounded even if another process grows the file after the metadata check.
+    let mut data = Vec::new();
+    file.take(MAX_OPEN_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(read_error)?;
+    if data.len() as u64 > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    let (contents, bytes) = if data.starts_with(b"VjCD0100") {
+        (String::new(), Some(data))
+    } else {
+        (decode_document_text(&data), None)
+    };
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -7080,6 +7110,7 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
         path: path.to_string_lossy().to_string(),
         display_name,
         contents,
+        bytes,
     })
 }
 
@@ -9167,6 +9198,7 @@ mod tests {
             path: "cold-open.chemdraft".into(),
             display_name: "cold-open.chemdraft".into(),
             contents: "<CDXML/>".into(),
+            bytes: None,
         }
     }
 
@@ -9934,8 +9966,6 @@ mod tests {
         assert!(is_openable_document_path(&dir.join("a.chemdraft")));
         assert!(is_openable_document_path(&dir.join("b.CDXML")));
         assert!(!is_openable_document_path(&dir.join("c.txt")));
-        // A ChemDraw binary reaches the opener, which says what it is; filtering it out here made
-        // "Open with ChemDraft" on a .cdx do nothing at all.
         assert!(is_openable_document_path(&dir.join("d.Cdx")));
         assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
         assert!(!is_openable_document_path(&dir));
@@ -9943,6 +9973,23 @@ mod tests {
         let payload = open_document_payload_from_path(&dir.join("a.chemdraft")).expect("payload");
         assert_eq!(payload.display_name, "a.chemdraft");
         assert_eq!(payload.contents, "<CDXML/>");
+        assert!(payload.bytes.is_none());
+        assert!(serde_json::to_value(&payload)
+            .unwrap()
+            .get("bytes")
+            .is_none());
+
+        let binary = [b"VjCD0100".as_slice(), &[0xFF, 0x00, 0x80]].concat();
+        for name in ["renamed.data", "binary.cdxml", "binary.cdx"] {
+            let path = dir.join(name);
+            fs::write(&path, &binary).expect("binary fixture");
+            assert!(is_openable_document_path(&path));
+            let payload = open_document_payload_from_path(&path).expect("binary payload");
+            assert!(payload.contents.is_empty());
+            assert_eq!(payload.bytes.as_deref(), Some(binary.as_slice()));
+            let json = serde_json::to_value(&payload).expect("binary event serialization");
+            assert_eq!(json["bytes"], serde_json::json!(binary));
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -10925,11 +10972,8 @@ mod tests {
         be.extend(units.iter().flat_map(|unit| unit.to_be_bytes()));
         assert_eq!(decode_document_text(&be), xml);
 
-        // A binary ChemDraw file must still reach the opener, signature intact, so it can say what
-        // the file is rather than the open silently doing nothing.
-        let mut cdx = b"VjCD0100".to_vec();
-        cdx.extend_from_slice(&[0x04, 0x03, 0x02, 0x01, 0xFF, 0x00, 0x80]);
-        assert!(decode_document_text(&cdx).starts_with("VjCD0100"));
+        let native = "{\"schemaVersion\":1}";
+        assert_eq!(decode_document_text(native.as_bytes()), native);
     }
 
     /// NSIS ignores `rank`, so a Windows `.cdxml` association is never "Alternate": a per-user install
@@ -10970,6 +11014,22 @@ mod tests {
         }));
         expect_true(engine3d_bundled_binary_name().starts_with(ENGINE3D_SIDECAR_BASENAME));
         expect_true(engine3d_bundled_binary_name().contains(engine3d_target_triple()));
+    }
+
+    #[test]
+    fn open_document_rejects_oversized_file() {
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-open-oversized-{}", std::process::id()));
+        let file = fs::File::create(&path).expect("create fixture");
+        file.set_len(MAX_OPEN_DOCUMENT_BYTES + 1)
+            .expect("size fixture");
+        drop(file);
+        let error = match open_document_payload_from_path(&path) {
+            Ok(_) => panic!("oversized document must be refused"),
+            Err(error) => error,
+        };
+        fs::remove_file(path).expect("remove fixture");
+        assert_eq!(error, "Document exceeds the 64 MB size limit");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
