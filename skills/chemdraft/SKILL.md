@@ -121,13 +121,15 @@ before delivering it, and prefer SVG or PNG figures until this is fixed.
 
 ## Fixed-scale figures for documents
 
-For every structure going into Word, a handout, an exam, slides or a report,
-use `--style document` and SVG: `render`, `grid`, `reaction`, `document`, and
+For structures going into Word, a handout, an exam, slides or a report,
+default to `--style document` and SVG: `render`, `grid`, `reaction`, `document`, and
 `render-document` all accept it. With MCP, send `style: "document"` to the
 corresponding tool. Document style fixes one bond at 14.4 pt, the plain line
 width at 1.134 pt, and labels at Arial 10 pt; its SVG root dimensions and
 viewBox are in points. Insert the SVG at its natural size (100%). Use the
 returned `widthPt` and `heightPt` when software needs dimensions.
+For an exact ACS, RSC or Sketch appearance, follow [art](references/art.md):
+document sizing replaces preset dimensions and the handwriting font.
 
 Never scale, zoom, stretch or crop a structure to fit a page, cell or slide.
 Change the layout around it instead: wrap text, use fewer structures per row,
@@ -148,12 +150,16 @@ the user asks for a particular size; do not combine document style with
    counterions. A drawing instruction does not authorize changing chemistry.
 2. Then obtain the SMILES, a text encoding of atoms and bonds. If only a
    chemical name is known, use `name` or `name_to_structure`. ChemDraft checks its built-in
-   structure templates before OPSIN. For hosts such as beta-cyclodextrin, β-CD,
+   structure templates, then local OPSIN, then the offline Wikidata name dictionary.
+   Dictionary fallback handles known trivial/trade names and CAS registry numbers;
+   it runs only after an OPSIN parse miss, not when the engine is unavailable.
+   Keep `source` and `matchedName` or `matchedCas` with dictionary results.
+   For hosts such as beta-cyclodextrin, β-CD,
    cucurbit[7]uril and 18-crown-6, use the template name rather than writing SMILES.
    Templates work without Java and supply an original layout at default bond length.
    Only exact canonical isomeric SMILES matches receive that layout; never remove
    stereo or charge to force a match. OPSIN parses
-   systematic names, not every trivial or trade name. When it fails on a
+   systematic names, not every trivial or trade name. When the full lookup fails on a
    common name, look the compound up in PubChem and cite the CID (recipes
    11 and 12 show the lookup), or supply a systematic name and say it came
    from memory. Either way, confirm the formula with `analyze` and the
@@ -191,7 +197,7 @@ SMILES with the drawn structure exactly; a mismatch shows no name. Metals,
 charged zwitterions, and some radicals can be declined with a plain reason.
 
 The CLI and MCP cannot name a structure today: `name` and `name_to_structure`
-only convert a name to a structure using templates before OPSIN. Do not offer a
+only convert a name to a structure using templates, OPSIN and the offline dictionary. Do not offer a
 structure-to-name result from a headless route, invent or recall one from
 memory, or claim a name that Orthonym declined. Point a user who needs a name
 to the app's Orthonym plugin.
@@ -205,6 +211,12 @@ or Me at stereocentres, hand-drawn or sketched looks, publication or
 journal figures, annotations, arrows and brackets. The workflow is
 `document` (MCP `build_document`) → edit the native JSON →
 `render-document` (MCP `render_document`) → look → iterate.
+
+CLI/MCP style options are only `fit` and `document`. For ACS, RSC or Sketch,
+use the native JSON fields described in [art](references/art.md).
+That path also renders wavy single bonds and paired round brackets with repeat labels.
+A wavy bond declares unknown stereo at its starting atom; it is not a cosmetic effect.
+Repeat-unit chemistry describes one drawn copy, not a computed polymer.
 
 When reading native files, inspect `minAppVersion` and `documentWarnings` in the rendering
 result. Each warning has a named `code` and `message`; native compatibility warnings also retain
@@ -296,9 +308,3 @@ allowed. See the relevant reference for combined versus per-job files.
 - [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
 - [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.
 - `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity and figure checks (recipe 11; `--help` lists commands and options).
-
-Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
-Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
-`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
-CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
-The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.
