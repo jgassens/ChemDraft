@@ -937,7 +937,7 @@ import {
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 import { isCompoundLayoutCommandHidden, compoundLayoutCommandDisabledReason, isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useStructureSearchEnabled } from "./structureSearchSettings";
-import { createStructureSearchController, structureSearchCommands, structureSearchDocument, structureSearchSite } from "./structureSearch";
+import { createStructureSearchController, structureSearchCommands, structureSearchDocument, structureSearchErrorStatus, structureSearchSite } from "./structureSearch";
 import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
 import { useDirectElectronMarkEditing } from "./useDirectElectronMarkEditing";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
@@ -12132,7 +12132,7 @@ export function MainWindow({
           ));
           if (opened) setStatus(`Opened ${site === "pubchem" ? "PubChem" : "Reaxys"} search`);
         } catch (error) {
-          setStatus(`Structure search failed: ${error instanceof Error ? error.message : String(error)}`);
+          setStatus(structureSearchErrorStatus(error));
         }
       });
     });

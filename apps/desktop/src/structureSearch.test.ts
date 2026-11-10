@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { applySingleBondToolAtNativeAtom, createPhase4Document, insertNativeBracket,
+import { repeatUnits } from "@chemdraft/export-engine";
+import { applyPatch } from "@chemdraft/chem-core";
+import { applySingleBondToolAtNativeAtom, copyAsSmiles, createPhase4Document, insertNativeBracket,
   insertNativeSingleBondMolecule } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { allShellCommands } from "./commands";
 import { buildAppMenuModel, flattenAppMenuCommands, structureSearchMenuItems } from "./appMenu";
 import { nativePromptButtons } from "./nativePrompt";
 import { createStructureSearchController, stripSearchCxSmiles, structureSearchCommands,
-  structureSearchDocument, structureSearchNotice } from "./structureSearch";
+  structureSearchDocument, structureSearchErrorStatus, structureSearchNotice, StructureSearchRefusal } from "./structureSearch";
 import { loadStructureSearchEnabled, saveStructureSearchEnabled, STRUCTURE_SEARCH_DEFAULT_ENABLED,
   STRUCTURE_SEARCH_STORAGE_KEY } from "./structureSearchSettings";
 
@@ -39,6 +41,31 @@ function propane(source = drawing()) {
     objectId: molecule.id, kind: "atom", atomId: molecule.atoms[1]!.id, distanceToPointer: 0
   });
 }
+function pentaneWithRepeatUnit() {
+  let source = drawing();
+  for (let index = 0; index < 3; index++) {
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    source = applySingleBondToolAtNativeAtom(source, {
+      objectId: molecule.id, kind: "atom", atomId: molecule.atoms.at(-1)!.id, distanceToPointer: 0
+    });
+  }
+  const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+  expect(molecule.atoms).toHaveLength(5);
+  const members = molecule.atoms.slice(0, 3);
+  const bracketed = toggleBracketRepeatUnit(insertNativeBracket(source, {
+    x: Math.min(...members.map(atom => atom.x)) - 5, y: Math.min(...members.map(atom => atom.y)) - 5
+  }, "round", {
+    x: Math.max(...members.map(atom => atom.x)) + 5, y: Math.max(...members.map(atom => atom.y)) + 5
+  }));
+  const pair = bracketed.pages[0]!.objects.filter(object => object.type === "bracket");
+  expect(pair).toHaveLength(2);
+  expect(pair[0]!.pairId).toBe(pair[1]!.pairId);
+  expect(pair.map(object => object.side).sort()).toEqual(["close", "open"]);
+  expect(pair.every(object => object.bracketKind === "round" && object.repeatUnit && object.bracketUsage === "sru")).toBe(true);
+  expect(pair.find(object => object.side === "close")!.label).toBe("n");
+  expect(repeatUnits(bracketed)).toMatchObject([{ members: [{ atomIds: members.map(atom => atom.id) }] }]);
+  return bracketed;
+}
 function setup(answer = "continue") {
   let time = 1000;
   let enabled = true;
@@ -49,6 +76,116 @@ function setup(answer = "continue") {
 }
 
 describe("online structure search", () => {
+  it.each([
+    ["multiple", "Search can't include a repeated (multiple) bracket group. Select atoms outside the brackets."],
+    ["unknown", "Search can't include bracketed structure. Select atoms outside the brackets."]
+  ] as const)("refuses a %s bracket group using its original usage", async (usage, message) => {
+    const source = drawing();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const plain = insertNativeBracket(source, { x: 250, y: 250 }, "round", { x: 400, y: 400 });
+    const bracketed = applyPatch(plain, { op: "batch", patches: plain.pages[0]!.objects
+      .filter(object => object.type === "bracket").map(object => ({
+        op: "updateObject" as const, objectId: object.id, changes: {
+          bracketUsage: usage, repeatCount: usage === "multiple" ? 3 : undefined,
+          containedObjectIds: [molecule.id]
+        }
+      })) });
+    const document = applyPatch(bracketed, { op: "setSelection", objectIds: [molecule.id] });
+    const scoped = structureSearchDocument(document);
+    const flow = setup();
+
+    const error = await flow.search("pubchem", scoped).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(StructureSearchRefusal);
+    expect(structureSearchErrorStatus(error)).toBe(message);
+    expect(flow.serialize).not.toHaveBeenCalled();
+    expect(flow.prompt).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("refuses a whole molecule once after Mark as Repeat Unit and selection patches cache its warning", async () => {
+    const source = drawing();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const plain = insertNativeBracket(source, { x: 250, y: 250 }, "round", { x: 400, y: 400 });
+    const marked = toggleBracketRepeatUnit(plain);
+    const document = applyPatch(marked, { op: "setSelection", objectIds: [molecule.id] });
+    const cached = document.pages[0]!.objects.find(object => object.type === "molecule")!;
+    expect(cached.chemistry?.warnings).toEqual([
+      expect.objectContaining({ code: "chemistry.bracket_multiplier" })
+    ]);
+    const scoped = structureSearchDocument(document);
+    const flow = setup();
+
+    const error = await flow.search("pubchem", scoped).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(StructureSearchRefusal);
+    expect(structureSearchErrorStatus(error)).toBe(
+      "Search can't include a polymer repeat unit. Select atoms outside the brackets."
+    );
+    expect(flow.serialize).not.toHaveBeenCalled();
+    expect(flow.prompt).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["atom", "bond", "molecule", "all"] as const)(
+    "refuses a real round repeat-unit pair once in plain language for %s selection", async selection => {
+      const bracketed = pentaneWithRepeatUnit();
+      const molecule = bracketed.pages[0]!.objects.find(object => object.type === "molecule")!;
+      const document = { ...bracketed, selection: { ...bracketed.selection, objectIds: selection === "all"
+        ? bracketed.pages[0]!.objects.map(object => object.id) : [molecule.id] } };
+      const fragments = selection === "atom" ? [{ objectId: molecule.id, atomIds: [molecule.atoms[1]!.id], bondIds: [] }]
+        : selection === "bond" ? [{ objectId: molecule.id, atomIds: [], bondIds: [molecule.bonds[0]!.id] }] : [];
+      const original = structuredClone(document);
+      const scoped = structureSearchDocument(document, fragments);
+      const prompt = vi.fn(async () => "continue");
+      const open = vi.fn(async () => undefined);
+      const search = createStructureSearchController({ enabled: () => true, storage, prompt, open });
+
+      const error = await search("pubchem", scoped).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(StructureSearchRefusal);
+      expect(structureSearchErrorStatus(error)).toBe(
+        "Search can't include a polymer repeat unit. Select atoms outside the brackets."
+      );
+      expect(prompt).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
+      expect(document).toEqual(original);
+    }
+  );
+
+  it.each([new Error("Browser unavailable"), "Browser unavailable"])("keeps the failure prefix for %s", error => {
+    expect(structureSearchErrorStatus(error)).toBe("Structure search failed: Browser unavailable");
+  });
+
+  it.each(["atom", "bond"] as const)("searches only the selected %s outside the real repeat-unit pair", async selection => {
+    const bracketed = pentaneWithRepeatUnit();
+    const molecule = bracketed.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const document = { ...bracketed, selection: { ...bracketed.selection, objectIds: [molecule.id] } };
+    const scoped = structureSearchDocument(document, [{ objectId: molecule.id,
+      atomIds: selection === "atom" ? [molecule.atoms[4]!.id] : [],
+      bondIds: selection === "bond" ? [molecule.bonds[3]!.id] : []
+    }]);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", {
+      site: "pubchem", smiles: selection === "atom" ? "C" : "CC"
+    });
+  });
+
+  it("keeps detailed SMILES copy/export warnings for the real repeat-unit pair", async () => {
+    const bracketed = pentaneWithRepeatUnit();
+    const molecule = bracketed.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const document = { ...bracketed, selection: { ...bracketed.selection, objectIds: [molecule.id] } };
+    const original = structuredClone(document);
+    const warnings: string[] = [];
+
+    expect(await copyAsSmiles(document, warnings)).toBe("CCCCC");
+    expect(warnings).toEqual([expect.stringContaining(
+      "SMILES cannot hold the repeat unit n around 3 atoms (bracket "
+    )]);
+    expect(warnings[0]).toContain("only the bare structure is written.");
+    expect(document).toEqual(original);
+  });
+
   it("has one exported true default and persists the preference", async () => {
     vi.mocked(isTauri).mockReturnValue(false);
     expect(STRUCTURE_SEARCH_DEFAULT_ENABLED).toBe(true);
@@ -175,9 +312,9 @@ describe("online structure search", () => {
     const prompt = vi.fn(async () => "continue");
     const search = createStructureSearchController({ enabled: () => true, storage, prompt });
 
-    await expect(search("pubchem", scoped)).rejects.toThrow(
-      /Structure search refused: SMILES cannot hold the repeat unit n around 2 atoms/
-    );
+    await expect(search("pubchem", scoped)).rejects.toMatchObject({
+      message: "Search can't include a polymer repeat unit. Select atoms outside the brackets."
+    });
     expect(prompt).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
     expect(document).toEqual(original);
@@ -196,12 +333,9 @@ describe("online structure search", () => {
     const prompt = vi.fn(async () => "continue");
     const search = createStructureSearchController({ enabled: () => true, storage, prompt });
 
-    let message = "";
-    try { await search("pubchem", structureSearchDocument(document)); }
-    catch (error) { message = error instanceof Error ? error.message : String(error); }
-    const warning = "SMILES cannot hold the repeat unit n around 2 atoms";
-    expect(message).toContain(`Structure search refused: ${warning}`);
-    expect(message.split(warning)).toHaveLength(2);
+    await expect(search("pubchem", structureSearchDocument(document))).rejects.toMatchObject({
+      message: "Search can't include a polymer repeat unit. Select atoms outside the brackets."
+    });
     expect(prompt).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -222,7 +356,9 @@ describe("online structure search", () => {
     const search = createStructureSearchController({ enabled: () => true, storage, prompt });
 
     if (bondIndex === 0) {
-      await expect(search("pubchem", scoped)).rejects.toThrow("SMILES cannot hold the repeat unit n around 1 atoms");
+      await expect(search("pubchem", scoped)).rejects.toMatchObject({
+        message: "Search can't include a polymer repeat unit. Select atoms outside the brackets."
+      });
       expect(prompt).not.toHaveBeenCalled();
       expect(invoke).not.toHaveBeenCalled();
     } else {
