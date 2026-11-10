@@ -189,7 +189,7 @@ describe.each(["macos", "windows"] as const)("hover label chemistry and history 
     const after = molecule();
     expect(after.atoms).toEqual([{ ...before.atoms[0], labelLiteral: true }, ...before.atoms.slice(1)]);
     expect(after.bonds).toEqual(before.bonds);
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Labeled atom Cl");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Cl has unsupported valence 2.");
     await key("z", historyModifiers);
     expect(molecule()).toEqual(before);
     await key("z", { ...historyModifiers, shiftKey: true });
@@ -207,7 +207,7 @@ describe.each(["macos", "windows"] as const)("hover label chemistry and history 
     await type("Cl");
     expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: "Cl", labelLiteral: true }, ...before.atoms.slice(1)]);
     expect(molecule().bonds).toEqual(before.bonds);
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Labeled atom Cl");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Cl has unsupported valence 2.");
   });
 
   it("relabels a terminal carbon to Cl without inserting an atom or changing its bond", async () => {
