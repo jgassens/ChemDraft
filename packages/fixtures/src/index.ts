@@ -76,6 +76,12 @@ export const cdxmlFixtureDescriptors: FixtureDescriptor[] = [
     path: "packages/fixtures/cdxml/reaction-arrow.cdxml"
   },
   {
+    id: "cdxml.scheme-and-sru",
+    format: "cdxml",
+    description: "Synthetic two-step reaction scheme and SRU bracket group with crossing bonds.",
+    path: "packages/fixtures/cdxml/scheme-and-sru.cdxml"
+  },
+  {
     id: "cdxml.arrow-heads",
     format: "cdxml",
     description: "Synthetic standalone <arrow> elements covering the ArrowheadHead/ArrowheadTail/ArrowheadType spellings.",
