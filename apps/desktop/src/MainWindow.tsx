@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.08.14.43-opus";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -29862,10 +29862,12 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
 }
 
 const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
+  const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   if (object.graphicKind === "image" && object.data.image) {
     const image = object.data.image;
     return (
-      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none" aria-hidden="true">
+      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none"
+        opacity={plan.opacity === 1 ? undefined : plan.opacity} aria-hidden="true">
         <image
           className="graphic-glyph-image"
           href={`data:${image.mimeType};base64,${image.dataBase64}`}
@@ -29875,7 +29877,6 @@ const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" 
       </svg>
     );
   }
-  const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
   const height = plan.height;

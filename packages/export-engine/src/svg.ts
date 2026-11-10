@@ -7,6 +7,7 @@ import {
   DocumentStyleScale,
   documentStylePointBounds,
   planPageSvgRender,
+  planNativeArtVisual,
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
@@ -105,7 +106,10 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     // Raster sampling and previews scale the whole page, including picture frames.
     const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
       : physicalPictureFrame(image, pointsPerUnit);
-    return serializeSvgFragment({ ...fragment, tag: "g", children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
+    const opacity = planNativeArtVisual(image).opacity;
+    return serializeSvgFragment({ ...fragment, tag: "g", attrs: {
+      ...fragment.attrs, opacity: opacity === 1 ? undefined : opacity
+    }, children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
       ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
       // Keep the native frame so later document-style conversion cannot rescale the picture twice.
       "data-chemdraft-picture-frame": `${image.x} ${image.y} ${image.width} ${image.height} ${image.rotation}`,

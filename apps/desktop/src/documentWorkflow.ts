@@ -6,7 +6,7 @@ import { snapPlacementDegrees } from "./placementSnap";
 import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./ringTemplates";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
-import { planTableLayout, tableVisualBoundsForArrangement, transformPointForObject } from "@chemdraft/layout-engine";
+import { planTableLayout, tableVisualBoundsForArrangement, transformPointForObject, rotatedGraphicLocalBounds } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
@@ -13717,49 +13717,6 @@ export function documentObjectVisualBounds(
   };
 }
 
-function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: ObjectBounds,
-  rotationDegrees: number
-): ObjectBounds {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = {
-    x: Math.max(object.width, 1) / 2,
-    y: Math.max(object.height, 1) / 2
-  };
-  const rotationRadians = degreesToRadians(rotationDegrees);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAround(point, center, rotationRadians));
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-
-  return {
-    x: roundLayoutCoordinate(minX),
-    y: roundLayoutCoordinate(minY),
-    width: roundLayoutCoordinate(maxX - minX),
-    height: roundLayoutCoordinate(maxY - minY)
-  };
-}
-
-function roundLayoutCoordinate(value: number): number {
-  return Number(value.toFixed(3));
-}
-
 /**
  * Translate one object by a delta (no per-object clamping — the group clamps as a whole).
  *
@@ -19781,6 +19738,10 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
   }
 
   const bounds = objects.map((object): ObjectBounds => {
+    // A plane tilt changes ellipse ink bounds even with zero in-plane rotation.
+    if (object.type === "graphic" && object.graphicKind === "ellipse") {
+      return documentObjectVisualBounds(object, page.objects);
+    }
     // Preserve the exact legacy crop for unrotated objects, including stored frames
     // that differ from their ink bounds (labels, table overflow and art effects).
     if (object.rotation === 0) return object;
