@@ -54,6 +54,17 @@ test("both thin app targets pass with their own feed and compatible universal Sp
   }
 });
 
+test("embedded release commit is a full SHA and matches the expected source", () => {
+  const bundle = validBundle();
+  const commit = "a".repeat(40);
+  assert.throws(() => verifyInventory({ ...bundle, commit }), /ChemDraftSourceCommit.*missing/);
+  bundle.plist.ChemDraftSourceCommit = "short";
+  assert.throws(() => verifyInventory(bundle), /ChemDraftSourceCommit.*invalid/);
+  bundle.plist.ChemDraftSourceCommit = commit;
+  assert.equal(verifyInventory({ ...bundle, commit }), 4);
+  assert.throws(() => verifyInventory({ ...bundle, commit: "b".repeat(40) }), /ChemDraftSourceCommit.*expected/);
+});
+
 test("wrong feed, missing runtime, wrong JVM, wrong helpers and high minos fail closed", () => {
   const feed = validBundle(); feed.plist.SUFeedURL = feedForTarget("arm64");
   assert.throws(() => verifyInventory(feed), /SUFeedURL/);

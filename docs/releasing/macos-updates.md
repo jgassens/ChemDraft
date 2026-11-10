@@ -77,11 +77,13 @@ Sparkle compares the packaged app's `CFBundleVersion`. Tauri derives the macOS v
 `apps/desktop/src-tauri/tauri.conf.json`, so every published update must increase that `version`.
 Do not reuse a published version.
 
-1. Increase `version` in `apps/desktop/src-tauri/tauri.conf.json` and run the normal tests/build.
+1. Increase `version` in `apps/desktop/src-tauri/tauri.conf.json`, prepare the release notes,
+   run the normal tests/build, and commit before producing release artifacts. Build from a clean tree.
 2. Build, sign, notarize, staple and verify both Mac artifacts using the steps below and
    `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`.
 3. Generate and verify both feeds as described below. Create GitHub release `vX.Y.Z` with both
-   final DMGs and the Windows installer from the same commit and version.
+   final DMGs and the Windows installer, each with its `.build.json` record. Run the
+   [joint release body check](three-builds.md) to require the same commit and version before publishing.
 4. After the release assets are reachable, land both feeds and their notes on `main` through the
    normal PR flow. Do not change the generated signature, length, or DMG URL.
 
@@ -256,12 +258,14 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    ./run-app
    CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target aarch64-apple-darwin --bundles app,dmg
    node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ChemDraft.app --target aarch64-apple-darwin
+   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_aarch64.dmg --target aarch64-apple-darwin
    ```
 
    Sign with Developer ID, submit for notarization, staple and validate the app and DMG
    using `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app
    verification command above again on the final app. Save the final arm64 DMG in its own clean staging folder,
-   e.g. `/absolute/path/release-arm64`, retaining its architecture-specific name.
+   e.g. `/absolute/path/release-arm64`, retaining its architecture-specific name and adjacent
+   `.dmg.build.json`. Do not change the source checkout between building and recording.
 
 4. Only after packaging arm64, replace the shared staging runtime with Intel:
 
@@ -270,6 +274,8 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    ./run-app -t x86_64-apple-darwin
    CHEMDRAFT_STABLE_BUILD=1 pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app,dmg
    node tools/release/verify-macos-app.mjs apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app --target x86_64-apple-darwin
+   # If Tauri emitted an _x64.dmg, rename it to _x86_64.dmg before recording.
+   node tools/release/record-build.mjs --artifact apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ChemDraft_X.Y.Z_x86_64.dmg --target x86_64-apple-darwin
    ```
 
    `run-app` creates and verifies the staged Intel JRE before building its worktree
@@ -279,7 +285,9 @@ obtain the pinned JDK automatically unless `JAVA_HOME` explicitly supplies one.
    `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`. Run the app verification
    command above again on the final app. Save its final
    DMG in `/absolute/path/release-intel` with a distinct
-   architecture-specific name. Neither architecture may overwrite the other's
+   architecture-specific name and its `.dmg.build.json`. If Tauri names the Intel DMG with `_x64`,
+   rename it to `_x86_64` before recording and preparing the same-basename release notes.
+   Neither architecture may overwrite the other's
    artifact. The JRE output `resources/opsin/jre` is shared: never build these in
    parallel in one checkout. Rebuild arm64's runtime before another arm64 build.
 
@@ -302,6 +310,10 @@ slice's minimum OS checked; app, sidecar and JRE must be thin. Parsing handles
 `LC_BUILD_VERSION`, legacy `LC_VERSION_MIN_MACOSX`, and fat headers. Upstream
 architecture-specific libraries inside the OPSIN JAR remain packaged as-is.
 Run this gate on the final signed app too; it performs no signing or mutation.
+Stable DMG builds use Tauri's existing `bundle.macOS.infoPlist` mechanism to embed the full
+`ChemDraftSourceCommit` before signing. The verifier compares an embedded commit with the current
+checkout's HEAD, or `--commit <full-sha>` when supplied. App-only smoke builds retain their existing
+plist. The recorder and stable DMG build both refuse a dirty tree.
 
 ### Publish two appcasts
 
@@ -314,7 +326,7 @@ DMG, uses the matching notes, and merges the existing root feed.
 node tools/release/generate-macos-appcast.mjs --target aarch64-apple-darwin --version X.Y.Z --staging /absolute/path/release-arm64
 node tools/release/generate-macos-appcast.mjs --target x86_64-apple-darwin --version X.Y.Z --staging /absolute/path/release-intel
 node tools/release/verify-macos-feed.mjs /absolute/path/release-arm64/appcast.xml --dmg /absolute/path/release-arm64/ChemDraft_X.Y.Z_aarch64.dmg
-node tools/release/verify-macos-feed.mjs /absolute/path/release-intel/appcast-intel.xml --dmg /absolute/path/release-intel/ChemDraft_X.Y.Z_x64.dmg
+node tools/release/verify-macos-feed.mjs /absolute/path/release-intel/appcast-intel.xml --dmg /absolute/path/release-intel/ChemDraft_X.Y.Z_x86_64.dmg
 ```
 
 The feed verifier mounts each DMG read-only and runs the same app gate on every app inside.
@@ -340,7 +352,8 @@ Its runner availability and successful full build still need an actual CI run.
 Acceptance on a **real Intel Mac**, including the declared minimum OS, remains
 mandatory; Rosetta and unsigned hosted CI do not establish it:
 
-- [ ] Confirm the Apple-silicon DMG, Intel DMG and Windows x64 installer use the same commit and version.
+- [ ] Collect all three `.build.json` records beside their artifacts and pass the
+      [joint release body check](three-builds.md), including the release tag or explicit `--commit` check.
 - [ ] On a real Intel Mac, launch, draw, save and reopen, export, run Name to Structure via OPSIN,
       use Spin 3D, install a plugin and check for updates. Complete the existing Apple-silicon and
       Windows hands-on checks as well.

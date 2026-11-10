@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { isMachO, machOSlices, packedVersion, targetArchitecture, versionString } from "./macos-mach-o.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
+import { COMMIT_PATTERN, gitOutput } from "./record-build.mjs";
 
 const requiredLicensePaths = new Set(requiredLicenseFiles.map(({ target }) => `Contents/Resources/${target}`));
 
@@ -15,7 +16,11 @@ export function feedForTarget(target) {
 }
 
 // Records contain bundle-relative POSIX paths and parsed slices; no filesystem needed by this gate.
-export function verifyInventory({ target, plist, records, allowSidecarPlaceholder = false }) {
+export function verifyInventory({ target, plist, records, commit, allowSidecarPlaceholder = false }) {
+  if (commit !== undefined || plist.ChemDraftSourceCommit !== undefined) {
+    if (!COMMIT_PATTERN.test(plist.ChemDraftSourceCommit ?? "")) throw new Error("ChemDraftSourceCommit: missing or invalid full source commit");
+    if (commit !== undefined && plist.ChemDraftSourceCommit !== commit) throw new Error(`ChemDraftSourceCommit: expected ${commit}, found ${plist.ChemDraftSourceCommit}`);
+  }
   const expected = targetArchitecture(target);
   const minimum = packedVersion(plist.LSMinimumSystemVersion);
   if (plist.SUFeedURL !== feedForTarget(target)) throw new Error(`SUFeedURL: expected ${feedForTarget(target)}, found ${plist.SUFeedURL}`);
@@ -78,18 +83,22 @@ export function inventoryApp(app) {
   return records;
 }
 
-export function verifyApp(app, target, { run = spawnSync, inventory = inventoryApp, allowSidecarPlaceholder = false } = {}) {
+export function verifyApp(app, target, { run = spawnSync, inventory = inventoryApp, commit, allowSidecarPlaceholder = false } = {}) {
   const plistResult = run("/usr/bin/plutil", ["-convert", "json", "-o", "-", join(app, "Contents", "Info.plist")], { encoding: "utf8" });
   if (plistResult.status !== 0) throw new Error(`Cannot read bundle Info.plist: ${plistResult.stderr || plistResult.error?.message}`);
-  return verifyInventory({ target, plist: JSON.parse(plistResult.stdout), records: inventory(app), allowSidecarPlaceholder });
+  const plist = JSON.parse(plistResult.stdout);
+  if (commit === undefined && plist.ChemDraftSourceCommit !== undefined) {
+    commit = gitOutput(fileURLToPath(new URL("../../", import.meta.url)), ["rev-parse", "HEAD"]);
+  }
+  return verifyInventory({ target, plist, records: inventory(app), commit, allowSidecarPlaceholder });
 }
 
 function main() {
-  const { values, positionals } = parseArgs({ options: { target: { type: "string" }, "allow-sidecar-placeholder": { type: "boolean", default: false } }, allowPositionals: true });
-  if (positionals.length !== 1 || !values.target || !positionals[0].endsWith(".app")) throw new Error("Usage: node tools/release/verify-macos-app.mjs <built.app> --target <triple> [--allow-sidecar-placeholder (smoke CI only)]");
+  const { values, positionals } = parseArgs({ options: { target: { type: "string" }, commit: { type: "string" }, "allow-sidecar-placeholder": { type: "boolean", default: false } }, allowPositionals: true });
+  if (positionals.length !== 1 || !values.target || !positionals[0].endsWith(".app")) throw new Error("Usage: node tools/release/verify-macos-app.mjs <built.app> --target <triple> [--commit <full-sha>] [--allow-sidecar-placeholder (smoke CI only)]");
   targetArchitecture(values.target);
   const app = resolve(positionals[0]);
-  const count = verifyApp(app, values.target, { allowSidecarPlaceholder: values["allow-sidecar-placeholder"] });
+  const count = verifyApp(app, values.target, { commit: values.commit, allowSidecarPlaceholder: values["allow-sidecar-placeholder"] });
   if (values["allow-sidecar-placeholder"]) console.warn("Smoke CI only: sidecar placeholder permitted; this is not release acceptance.");
   console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS, Sparkle feed and bundled licences (${app})`);
 }

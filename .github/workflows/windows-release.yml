@@ -136,8 +136,13 @@ jobs:
           $expected = "ChemDraft_$($config.version)_x64-setup.exe"
           if ($installers.Count -ne 1 -or $installers[0].Name -cne $expected) { throw 'Expected exactly one stable x64 installer.' }
           if (Get-ChildItem "$bundleDir/*.sig") { throw 'Updater signing ran before Authenticode.' }
+          # record-build resolves git rev-parse HEAD in this checkout and refuses a dirty tree.
+          # Do this before creating the untracked release-assets staging directory.
+          node tools/release/record-build.mjs --artifact $installers[0].FullName --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Release build record failed.' }
           New-Item -ItemType Directory -Path release-assets | Out-Null
           Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets
+          Copy-Item -LiteralPath "$($installers[0].FullName).build.json" -Destination release-assets
           "version=$($config.version)" >> $env:GITHUB_OUTPUT
           "installer=$expected" >> $env:GITHUB_OUTPUT
           Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha"
@@ -171,7 +176,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-nsis-unsigned
-          path: release-assets/*.exe
+          path: |
+            release-assets/*.exe
+            release-assets/*.exe.build.json
           if-no-files-found: error
 
       - name: Authenticode-sign and download final installer
@@ -195,7 +202,8 @@ jobs:
           EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
           INSTALLER: ${{ steps.bundle.outputs.installer }}
         run: |
-          $signed = @(Get-ChildItem signpath-signed -Recurse -File)
+          # The source record travels beside the installer; retain the original record unchanged.
+          $signed = @(Get-ChildItem signpath-signed -Recurse -File | Where-Object { $_.Name -cne "$env:INSTALLER.build.json" })
           if ($signed.Count -ne 1 -or $signed[0].Name -cne $env:INSTALLER) { throw 'SignPath must return exactly the expected installer.' }
           $signature = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
           if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }

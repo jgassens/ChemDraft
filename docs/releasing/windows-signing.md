@@ -112,8 +112,10 @@ are none. This workflow supplies the Windows artifacts only.
    SHA-256 hashes and byte sizes. Build-time label checks inspect the native build output and built
    frontend assets. Install and launch the artifact on Windows to confirm its actual title and app
    identity and complete the update/session-preservation checks in [windows-updates.md](windows-updates.md#verification).
-5. Download **`windows-release`**, which contains the final installer, its `.exe.sig`, `latest.json`,
-   and `SHA256SUMS.txt`. **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
+5. Download **`windows-release`**, which contains the final installer, its `.exe.build.json`,
+   `.exe.sig`, `latest.json`, and `SHA256SUMS.txt`. The build record uses `git rev-parse HEAD`
+   from the checked-out source and refuses a dirty tree; keep it beside the installer.
+   **`windows-nsis-unsigned` is input to SignPath, not the release installer.**
    For a local updater signature check, from the repository root run:
 
    ```text
@@ -129,7 +131,9 @@ are none. This workflow supplies the Windows artifacts only.
    use it only for draft dry runs. Only this job has
    `contents: write`; the build/signing job has read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
-7. After all three artifacts pass review, publish the joint release. Only **after** the installer
+7. Collect both DMGs and the installer with all three `.build.json` files, then pass the
+   [joint release body check](three-builds.md) against the release tag or explicit `--commit`.
+   After all three artifacts pass review, publish the joint release. Only **after** the installer
    URL is publicly downloadable, commit the generated `latest.json` to `main` through the normal PR
    path. This workflow neither publishes the release nor updates the feed on `main`.
 
