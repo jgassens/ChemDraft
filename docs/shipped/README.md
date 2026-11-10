@@ -22,9 +22,10 @@ The notice also appears on session restore. See the [manual checklist](../manual
 
 ## Electron-mark drops and editing (2026-11-10)
 
-PR #333 adds moving, resizing and styling electron marks behind Direct electron-mark editing,
-off by default. Dropped charges and radicals can associate with the atom they land on; charges
-are placed beside its label. Undo and Redo restore edits. See the [manual checklist](../manual-stress-checklist.md).
+PR #333 adds electron-mark drops: charges and radicals can associate with the atom they land on,
+and charges are placed beside its label, whether Direct electron-mark editing is on or off. Moving,
+resizing and styling are also available through Direct electron-mark editing, off by default.
+Undo and Redo restore edits. See the [manual checklist](../manual-stress-checklist.md).
 
 ## Reaction conditions (2026-11-10)
 
@@ -105,11 +106,11 @@ PRs #278, #279, #282, #288, #289, #296 and #330 fix hover-label cancellation and
 wedge keys and abbreviations, quitting with a label draft, Text-tool Escape, keyboard nudging,
 flyout navigation and dialog sizing. PRs #283–#286, #291, #295 and #308 fix table paste, picture
 opacity, text placement, Windows controls, NMR labels, Preferences/flyouts and export details.
-PR #332 adds adjustable wavy art lines; PR #274 hardens tests. See the [manual checklist](../manual-stress-checklist.md).
+PR #274 hardens tests. See the [manual checklist](../manual-stress-checklist.md).
 
 ## Adjustable wavy art lines (2026-11-09)
 
-PR #209 adds smoothness, peak-to-trough height and wavelength sliders in Object Settings.
+PRs #209 and #332 add smoothness, peak-to-trough height and wavelength sliders in Object Settings.
 Edits use registered value-specific commands, live preview and one Undo entry per drag;
 Escape/cancel restores the starting document. Settings persist in native documents and share
 canvas/export geometry. Only selected wavy art paths change; molecular bonds and other graphics

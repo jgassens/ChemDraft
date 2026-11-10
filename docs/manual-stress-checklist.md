@@ -1,10 +1,5 @@
 # Manual stress checklist
 
-- Wavy bond: choose it from the bond flyout and Customize gallery; draw, convert a single bond,
-  click again to reverse its unknown stereo end, and convert back to wedge/plain. Each edit is one
-  Undo/Redo step. Check label clearance and canvas/SVG/PDF/PNG parity, no R/S at the wave's `from`
-  atom, SMILES without `@` there, MOL V2000 stereo 4 and V3000 CFG=2, on macOS and Windows.
-
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -1391,6 +1386,10 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
 
 - Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.
   It displays a wave. Undo and Redo restore each edit; export MOL and check the unknown stereo survives.
+- Choose it from the Customize gallery too; click a wavy bond again to reverse its unknown stereo
+  end, then convert back to wedge/plain. Each edit is one Undo/Redo step. Check label clearance and
+  canvas/SVG/PDF/PNG parity, no R/S at the wave's `from` atom, SMILES without `@` there, MOL V2000
+  stereo 4 and V3000 CFG=2.
 
 ### Round brackets and repeat units
 
@@ -1400,8 +1399,9 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
 
 ### Electron-mark editing
 
-- In Preferences enable Direct electron-mark editing. Drag a charge mark onto an atom: it lands
-  beside the atom label. Move it again, then Undo and Redo; its placement follows each edit.
+- With Direct electron-mark editing off (the default), drag a charge mark onto an atom: it lands
+  beside the atom label. Undo and Redo the drop. Enable Direct electron-mark editing in Preferences,
+  then move, resize and rotate the mark; Undo and Redo restore each edit.
 
 ### Reaction conditions
 
@@ -1414,6 +1414,8 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
 - In Customize Main Toolbar add a Custom Color Swatch from Object Style. Click an empty slot, enter
   a colour and choose OK. Select a bond and click the slot: the colour applies. Undo and Redo it;
   restart and check that the swatch retains its colour.
+- Export a drawing with coloured objects and formatted, differently coloured text runs as CDXML.
+  Reopen it and check that the text, style runs and colours survive.
 
 ### Double and triple bond tools
 
@@ -1440,8 +1442,9 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
 
 ### Structure search
 
-- Select a molecule and choose Search PubChem from Tools. Cancel the first consent prompt: no
-  browser opens. Run it again and choose Continue: the browser opens with the selected structure.
+- Select a molecule and choose Search PubChem (opens browser) from Tools. On first use only, cancel
+  the consent prompt: no browser opens. Run it again and choose Continue: the browser opens with the
+  selected structure. Consent is remembered per site across restarts, and dev builds share app data.
   With nothing selected the search is disabled.
 
 ### Name dictionary
