@@ -29,10 +29,13 @@ export interface NativePromptOptions {
   choices: readonly NativePromptChoice[];
   /** Tauri parents message boxes to the invoking window on both desktop platforms. */
   owner?: "document";
+  /** Prompts in the same queue wait for the actual box to close, even if its caller aborts. */
+  serializationKey?: string;
 }
 export type NativePromptFallback = (prompt: NativePromptOptions) => Promise<string>;
 export type NativePromptProvider = (prompt: NativePromptOptions, fallback: NativePromptFallback) => Promise<string>;
 let provider: NativePromptProvider | undefined;
+const promptQueues = new Map<string, Promise<void>>();
 
 /** Test injection is scoped by the returned restore function; it never enables native access. */
 export function setNativePromptProvider(next: NativePromptProvider): () => void {
@@ -83,7 +86,17 @@ export async function nativePrompt(
   const buttons = nativePromptButtons(prompt, platform);
   const cancel = prompt.choices.find((choice) => choice.cancel)!;
   if (signal?.aborted) return cancel.id;
-  const response = showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);
+  const show = () => signal?.aborted ? Promise.resolve(cancel.id)
+    : showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);
+  let response: Promise<string>;
+  if (prompt.serializationKey !== undefined) {
+    const key = prompt.serializationKey;
+    response = (promptQueues.get(key) ?? Promise.resolve()).then(show);
+    // Use the real response, not the abort race below: an OS box cannot be dismissed by aborting.
+    const settled = response.then(() => undefined, () => undefined);
+    promptQueues.set(key, settled);
+    void settled.then(() => { if (promptQueues.get(key) === settled) promptQueues.delete(key); });
+  } else response = show();
   if (!signal) return response;
   // The native API cannot dismiss an open OS box. Release the caller immediately and ignore any
   // later answer; the suspension remains until the actual box closes.

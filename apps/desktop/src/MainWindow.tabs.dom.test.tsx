@@ -1322,6 +1322,46 @@ describe("documents in one window", () => {
       await modalButton(label);
     }
 
+    it("keeps one box open across tab switches and applies each queued file's own answer", async () => {
+      const shown: NativePromptOptions[] = [];
+      let visible = 0;
+      let peakVisible = 0;
+      const restore = setNativePromptProvider(prompt => {
+        shown.push(prompt);
+        peakVisible = Math.max(peakVisible, ++visible);
+        return new Promise<string>(resolve => {
+          pendingPrompt = { prompt, resolve: id => { visible--; resolve(id); } };
+        });
+      });
+      try {
+        await open("Existing");
+        await osOpen("/drawings/A.cdxml");
+        await osOpen("/drawings/B.cdxml");
+        await osOpen("/drawings/C.cdxml");
+        const stale = pendingPrompt;
+        await activate(0);
+        await activate(1);
+        expect(pendingPrompt).toBe(stale);
+        expect(shown).toHaveLength(1);
+        // The abandoned native box still exists, but its answer must be ignored.
+        await dismissPageFit("resize");
+        expectPageFit("A.cdxml");
+        expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe("letter");
+        await dismissPageFit("keep");
+        expectPageFit("B.cdxml");
+        await dismissPageFit("resize");
+        expectPageFit("C.cdxml");
+        await dismissPageFit("keep");
+        expect(pendingPrompt).toBeUndefined();
+        expect(peakVisible).toBe(1);
+        expect(visible).toBe(0);
+        for (const [index, preset] of [[1, "letter"], [2, "custom"], [3, "letter"]] as const) {
+          await activate(index);
+          expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe(preset);
+        }
+      } finally { restore(); }
+    });
+
     it("keeps a delayed batch read ahead of later files after cancelling a close", async () => {
       let finishB!: (contents: Uint8Array) => void;
       let finishC!: (contents: Uint8Array) => void;

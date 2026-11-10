@@ -23410,6 +23410,7 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
   const prompt = useNativePrompt({
     title: "Imported Content Exceeds Page",
+    serializationKey: "imported-page-fit",
     message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
     kind: "warning",
     choices: [
