@@ -150,6 +150,16 @@ const runWidget: PluginCommandHandler = async (context) => {
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
+For rule-based shift estimates, set `linkedFigure.spectrum.peaks[i].estimated: true` on each
+estimated peak (`PluginLinkedFigurePeak` already includes this optional boolean). A report caption
+alone does not identify the estimated rows to the host; map any provider-specific `source:
+"rule-estimate"` flag to `estimated: true` when building the report. For example:
+`{ id: "c0", ppm: 42.5, intensity: 1, atomIndices: [0], estimated: true }`.
+The host retains this disclosure in JCAMP-DX comments listing ppm and zero-based structure atom
+indices, and in SVG captions shared by PNG, PDF and image clipboard exports. Method labels apply
+only to non-estimated primary peaks when estimates are present. Exports without estimates retain
+their existing output. There is no spectrum CSV export in the host.
+
 ### Panel report limits
 
 API 0.1.19 rejects an entire report when any limit is exceeded; it never truncates content.

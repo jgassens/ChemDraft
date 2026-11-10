@@ -920,6 +920,28 @@ describe("LinkedFigureView", () => {
     expect(document.getElementById(menu.id)).toBeNull();
   });
 
+  it.each(["jdx", "png", "svg", "pdf"] as const)("discloses rule estimates through the %s export action", async (format) => {
+    mount(createElement(LinkedFigureView, { spectrum: {
+      ...spectrum,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment" },
+      peaks: spectrum.peaks.map((peak, index) => ({ ...peak, estimated: index === 0 }))
+    } }));
+    click(container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!);
+    const items = [...container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
+    if (format === "jdx") {
+      const jdx = vi.mocked(saveTextFile).mock.calls[0]![1];
+      expect(jdx).toContain("Rule-based shift estimates are present");
+      expect(jdx).toContain("HOSE (non-estimated primary peaks only); rule-based estimates");
+    } else {
+      const markup = vi.mocked(exportSpectrumFigure).mock.calls[0]![1];
+      const exported = new DOMParser().parseFromString(markup, "image/svg+xml").documentElement;
+      expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("rule-estimated");
+      expect(markup).toContain("HOSE = non-estimated primary peaks only");
+      expect(markup).not.toContain("method = HOSE only");
+    }
+  });
+
   it.each(["jdx", "png", "svg", "pdf"] as const)("reports cancelled and failed %s exports", async (format) => {
     mount(createElement(LinkedFigureView, { spectrum }));
     const exporter = format === "jdx" ? vi.mocked(saveTextFile) : vi.mocked(exportSpectrumFigure);

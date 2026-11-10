@@ -149,6 +149,14 @@ export function spectrumToJcampDx(
       : "primary";
   const comparison = spectrum.comparison;
   const peaks = spectrumPeaksForMode(spectrum.peaks, comparisonMode).sort((a, b) => b.ppm - a.ppm);
+  const estimatedPeaks = peaks.filter((peak) => peak.estimated);
+  const hasEstimated = estimatedPeaks.length > 0;
+  const hasOtherPrimary = spectrum.peaks.some((peak) => !peak.estimated);
+  const primaryMethod = hasEstimated
+    ? hasOtherPrimary && comparison
+      ? `${comparison.primaryLabel} (non-estimated primary peaks only); rule-based estimates`
+      : "Rule-based estimates"
+    : comparison?.primaryLabel;
   const lines = [
     `##TITLE=${options.title ?? "Predicted NMR spectrum"}`,
     "##JCAMP-DX=5.01",
@@ -161,10 +169,15 @@ export function spectrumToJcampDx(
     `##.OBSERVE FREQUENCY=${formatFrequencyMHz(observeMHz)}`,
     `##.OBSERVE NUCLEUS=${jcampNucleus(spectrum.nucleus)}`,
     `##$CHEMDRAFT PROTON FREQUENCY=${formatFrequencyMHz(protonFrequencyMHz)}`,
-    `##$CHEMDRAFT COMPARISON MODE=${comparisonMode === "primary" ? comparison?.primaryLabel.toUpperCase() ?? "PRIMARY" : "BOTH"}`,
+    `##$CHEMDRAFT COMPARISON MODE=${comparisonMode === "primary" ? hasEstimated ? "PRIMARY" : comparison?.primaryLabel.toUpperCase() ?? "PRIMARY" : "BOTH"}`,
+    ...(primaryMethod ? [`##$CHEMDRAFT PRIMARY METHOD=${primaryMethod}`] : []),
     ...(comparison ? [
-      `##$CHEMDRAFT PRIMARY METHOD=${comparison.primaryLabel}`,
       `##$CHEMDRAFT ALTERNATIVE METHOD=${comparison.alternativeLabel}`
+    ] : []),
+    ...(hasEstimated ? [
+      "##$CHEMDRAFT RULE ESTIMATES=Rule-based shift estimates are present",
+      ...estimatedPeaks.map((peak) =>
+        `$$ Rule-estimated peak: ${peak.ppm.toFixed(4)} ppm; atom indices (0-based): ${peak.atomIndices.length ? peak.atomIndices.join(", ") : "not provided"}; variant: ${peak.variant}`)
     ] : []),
     "##$CHEMDRAFT INTENSITY SEMANTICS=Predicted equivalent-nuclei count; not experimental integration",
     "##XUNITS=PPM",
@@ -181,7 +194,8 @@ function spectrumNote(
   alternativeLabel: string,
   hasVisibleAlternative: boolean,
   primaryLabel: string | undefined,
-  hasEstimated: boolean
+  hasEstimated: boolean,
+  hasOtherPrimary: boolean
 ): string {
   return `Height = predicted equivalent nuclei (not experimental integration)${
     hasEstimated ? " · grey dashed = rule-estimated" : ""
@@ -189,7 +203,9 @@ function spectrumNote(
     hasVisibleAlternative ? ` · dashed orange = ${alternativeLabel}` : ""
   }${
     primaryLabel
-      ? hasVisibleAlternative
+      ? hasEstimated
+        ? hasOtherPrimary ? ` · ${primaryLabel} = non-estimated primary peaks only` : ""
+        : hasVisibleAlternative
         ? ` · methods = ${primaryLabel} + ${alternativeLabel}`
         : ` · method = ${primaryLabel} only`
       : ""
@@ -204,7 +220,9 @@ function spectrumNote(
 export function standaloneSpectrumSvg(
   svg: SVGSVGElement,
   alternativeLabel = "alternative",
-  primaryLabel?: string
+  primaryLabel?: string,
+  /** Source data keeps disclosure even when zoom or overlapping curves hide estimated peaks. */
+  peaks?: readonly PluginLinkedFigurePeak[]
 ): string {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
@@ -221,10 +239,17 @@ export function standaloneSpectrumSvg(
   const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
   style.textContent = STANDALONE_SPECTRUM_STYLE;
   const hasVisibleAlternative = clone.querySelector(".lf-curve.is-alternative") !== null;
-  const hasEstimated = clone.querySelector(".lf-curve.is-estimated") !== null;
+  const hasEstimated = peaks
+    ? peaks.some((peak) => peak.estimated)
+    : clone.querySelector(".lf-curve.is-estimated, .lf-peak.is-estimated") !== null;
+  const hasOtherPrimary = peaks
+    ? peaks.some((peak) => !peak.estimated)
+    : clone.querySelector(".lf-curve:not(.is-estimated):not(.is-alternative):not(.is-active)") !== null;
   if (primaryLabel) {
     clone.setAttribute("data-comparison-mode", hasVisibleAlternative ? "both" : "primary");
-    clone.setAttribute("data-primary-method", primaryLabel);
+    clone.setAttribute("data-primary-method", hasEstimated
+      ? hasOtherPrimary ? `${primaryLabel} (non-estimated primary peaks only); rule-based estimates` : "Rule-based estimates"
+      : primaryLabel);
     clone.setAttribute("data-alternative-method", alternativeLabel);
   }
   let note = clone.querySelector<SVGTextElement>(".lf-spectrum-note");
@@ -235,7 +260,7 @@ export function standaloneSpectrumSvg(
     note.setAttribute("y", "11");
     clone.appendChild(note);
   }
-  note.textContent = spectrumNote(alternativeLabel, hasVisibleAlternative, primaryLabel, hasEstimated);
+  note.textContent = spectrumNote(alternativeLabel, hasVisibleAlternative, primaryLabel, hasEstimated, hasOtherPrimary);
   clone.insertBefore(rect, clone.firstChild);
   clone.insertBefore(style, clone.firstChild);
   return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}`;
