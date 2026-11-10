@@ -51,7 +51,7 @@ and no receipt upgrade from another engine is attempted.
 | Orthonym | 1.0.8, provenance commit `461987b947f76e41ff0baa6c2aa19ecd79cacd0b` |
 | Orthonym wheel SHA-256 | `ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d` |
 | Apple silicon / Windows requirements SHA-256 (LF) | `ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a` |
-| Intel Mac requirements SHA-256 (LF) | `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64`: 64 zeros until the Intel lock is generated and pinned |
+| Intel Mac requirements SHA-256 (LF) | `c3488fe10418a1417efe4c4ddbbbb164b280165642690ff6f78284d351946b43` |
 | centres | `https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar` |
 | centres size / SHA-256 | 2,291,742 bytes / `6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb` |
 | Free-space requirement | 1,000,000,000 bytes (800 MB update peak plus 25% margin) |
@@ -77,9 +77,10 @@ uv downloads this wheel directly as a package dependency, outside Tauri's webvie
 allowlist and the Rust download client. No capability URL or `.sha256` URL is added: uv checks
 the wheel hash recorded by `--generate-hashes` under `--require-hashes`.
 
-The release does not exist yet and its wheel SHA-256 is unknown. **The Intel lock is deliberately
-absent**, and the placeholder lock hash must not ship. After publishing the wheel, run exactly
-this command from `apps/desktop/src-tauri/resources/naming/`:
+Release `rdkit-2026.3.5-macos-x86_64-1` is published; the wheel SHA-256 is
+`05e40941bf81748b58d3d80bd3c1bd37f52d6d1cf2ae816bbfe615eb43c9c304`. The Intel lock
+is committed and pinned. To re-lock, run exactly this command from
+`apps/desktop/src-tauri/resources/naming/`:
 
 ```sh
 uv pip compile requirements-macos-x86_64.in --python-version 3.12 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
@@ -87,12 +88,11 @@ uv pip compile requirements-macos-x86_64.in --python-version 3.12 --python-platf
 
 Commit the generated lock with the direct URL's actual `--hash=sha256:...`, and set
 `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` in `naming_engine/pins.rs` to the lock's SHA-256 with
-line endings normalized to LF. The Intel lock-hash test fails until both are present and match;
-the installer refuses a missing or mismatched lock. Do not reuse the universal lock on Intel.
+line endings normalized to LF. The installer refuses a missing or mismatched lock. Do not reuse the universal lock on Intel.
 Resolving a new output can also refresh transitive dependencies: review the resulting versions.
 Offline, availability of cp312 Intel wheels at macOS 11 or earlier is unverified for jpype1
 1.7.1 and lxml 6.1.3, and for the existing lock's numpy 2.5.4 and pillow 13.0.0; audit these
-before pinning the Intel lock. Orthonym 1.0.8 and packaging 26.3 have pure-Python wheels.
+when validating the Intel lock. Orthonym 1.0.8 and packaging 26.3 have pure-Python wheels.
 
 **Name generation on Intel must be proven on a real Intel Mac**, including a macOS 11 install,
 JPype with the bundled Intel JRE, ethanol and glycine with OPSIN read-back, `[Fe]` abstention,

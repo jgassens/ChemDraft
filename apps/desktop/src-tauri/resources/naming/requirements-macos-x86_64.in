@@ -5,10 +5,11 @@
 #
 #   uv pip compile requirements-macos-x86_64.in --python-version 3.12 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
 #
-# The release is not published yet. Compile only once it exists: --generate-hashes
-# records the direct URL's real --hash=sha256:... for uv pip install --require-hashes.
-# Do not substitute a placeholder wheel hash. Then set REQUIREMENTS_LOCK_SHA256_MACOS_X86_64
-# in src/naming_engine/pins.rs to the LF-normalized lock SHA-256; its test fails until set.
+# Release rdkit-2026.3.5-macos-x86_64-1 is published; its wheel SHA-256 is
+# 05e40941bf81748b58d3d80bd3c1bd37f52d6d1cf2ae816bbfe615eb43c9c304.
+# --generate-hashes records the direct URL hash for uv pip install --require-hashes.
+# After re-locking, set REQUIREMENTS_LOCK_SHA256_MACOS_X86_64 in
+# src/naming_engine/pins.rs to the LF-normalized lock SHA-256.
 # See docs/architecture/naming-engine.md for the remaining Intel validation.
 
 # Orthonym 1.0.8, the PyPI wheel (pure Python, MIT). Its wheel tree is identical, file for file, to
