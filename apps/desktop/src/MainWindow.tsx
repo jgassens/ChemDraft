@@ -1715,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.14.45-codex";
+const CURRENT_BUILD_STAMP = "11.09.21.14-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -4552,18 +4552,20 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = applyNativeAtomElementTarget(currentDocument, target, element);
+    const result = commitNativeAtomLabelTarget(currentDocument, target, element);
+    const nextDocument = result.document;
     if (nextDocument === currentDocument) {
       setStatus(`Cannot set hovered atom to ${element}`);
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
+    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered atom to ${element}`);
+    setStatus(result.message ?? `Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeAtomLabel = useCallback((label: string) => {
@@ -9151,7 +9153,11 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
     hoverLabelAssignmentRef.current = undefined;
+    hoverRetargetedForLabelRef.current = false;
     setFreeformNativeBond(undefined);
+    // History restores chemistry, not a label key's temporary target. Resolve the current pointer
+    // against the restored graph through the same path as pointermove, before another hover key.
+    rederiveNativeCanvasHoverRef.current(nextHistory.present);
     setLastAnalysis(null);
     setStatus(
       undoLabel
