@@ -58,7 +58,7 @@ describe.each(["macos", "windows"] as const)("Export keyboard on %s", platform =
   });
 });
 it("lists every implemented desktop export format without planned/deferred rows or developer notes", () => {
-  act(() => root.render(createElement(ExportForm, { state: exportFixture(), onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
+  act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), busy: false }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
   const select = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
   const options = Array.from(select.options);
   expect(options.map(option => option.value)).toEqual([
@@ -68,7 +68,7 @@ it("lists every implemented desktop export format without planned/deferred rows 
   expect(new Set(options.map(option => option.value))).toEqual(new Set(desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented").map(descriptor => descriptor.id)));
   expect(select.textContent).not.toMatch(/\(planned\)|\(deferred\)|\.cds|\.chm/i);
   for (const descriptor of desktopExportFormatDescriptors) {
-    act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), format: descriptor.id }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
+    act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), format: descriptor.id, busy: false }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
     const visibleText = `${container.textContent} ${[...container.querySelectorAll("[title]")].map(node => node.getAttribute("title")).join(" ")}`;
     expect(visibleText).not.toContain("Initial MOL export should alias the tested V2000 writer");
     expect(visibleText).not.toMatch(/\(planned\)|\(deferred\)|should alias|resvg pipeline|delegates through|SVG export path/i);
@@ -83,10 +83,10 @@ it.each(["macos", "windows"] as const)("suggests one extension for every impleme
   for (const descriptor of desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented")) {
     const expected = `colours.${descriptor.extensions[0]}`;
     for (const sourceExtension of sourceExtensions) {
-      const state = updateExportDialogFormat({ ...exportFixture(), filename: `colours.${sourceExtension.toUpperCase()}`, destinationPath: `${folder}colours.${sourceExtension}` }, descriptor.id);
+      const state = updateExportDialogFormat({ ...exportFixture(), filename: `colours.${sourceExtension.toUpperCase()}`, destinationPath: `${folder}colours.${sourceExtension}`, busy: false }, descriptor.id);
       expect(state).toMatchObject({ filename: expected, destinationPath: `${folder}${expected}` });
     }
-    const state = updateExportDialogFormat({ ...exportFixture(), filename: "colours.cdxml" }, descriptor.id);
+    const state = updateExportDialogFormat({ ...exportFixture(), filename: "colours.cdxml", busy: false }, descriptor.id);
     act(() => root.render(createElement(ExportForm, { state, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn(), platform })));
     expect(container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!.value).toBe(expected);
   }
