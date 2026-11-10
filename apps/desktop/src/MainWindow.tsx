@@ -762,6 +762,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  sendPaletteCommandCancel,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -1716,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.01.10-codex";
+const CURRENT_BUILD_STAMP = "11.09.22.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -8364,7 +8365,7 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document, objectWaveForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
@@ -13568,6 +13569,14 @@ export function MainWindow({
       if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
         return;
       }
+      // The detached palette can leave keyboard focus in this document window during a drag.
+      if (event.key === "Escape" && artStylePreviewRef.current &&
+          objectWaveForCommand(artStylePreviewRef.current.commandId)) {
+        event.preventDefault();
+        cancelObjectStylePreview();
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -13877,6 +13886,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelObjectStylePreview,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,

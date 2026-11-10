@@ -149,7 +149,7 @@ import {
 } from "./toolsets";
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
-import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
+import { listenForPaletteCommandCancels, type ToolsetArtPaintTarget, type ToolsetFlyoutSnapshot } from "./window-manager";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -2029,7 +2029,23 @@ function ArtToolbarStyleControls() {
   const gradientRailRef = useRef<HTMLDivElement | null>(null);
   const gradientStopColorPickerRef = useRef<HTMLDivElement | null>(null);
   const gradientStopDragRef = useRef<{ stopIndex: number; moved: boolean } | null>(null);
-  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number } | null>(null);
+  const sliderDragRef = useRef<{ sliderKey: string; pointerId: number; wave: boolean } | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForPaletteCommandCancels(() => {
+      if (sliderDragRef.current?.wave) sliderDragRef.current = null;
+    }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    const cancelWaveDrag = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !sliderDragRef.current?.wave) return;
+      sliderDragRef.current = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onCancel?.();
+    };
+    window.addEventListener("keydown", cancelWaveDrag, true);
+    return () => { disposed = true; unlisten?.(); window.removeEventListener("keydown", cancelWaveDrag, true); };
+  }, [onCancel]);
   const [colorOpen, setColorOpen] = useState(false);
   const [effectColorOpen, setEffectColorOpen] = useState(false);
   const [draftColor, setDraftColor] = useState(currentColor);
@@ -2385,13 +2401,6 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, commit);
     };
     const applySliderKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-      if (numeric && event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        sliderDragRef.current = null;
-        onCancel?.();
-        return;
-      }
       const currentPercent = Number(event.currentTarget.value);
       const basePercent = Number.isFinite(currentPercent) ? currentPercent : percent;
       let nextPercent = basePercent;
@@ -2429,7 +2438,7 @@ function ArtToolbarStyleControls() {
           data-palette-control="true"
           onPointerDown={(event) => {
             event.stopPropagation();
-            sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+            sliderDragRef.current = { sliderKey, pointerId: event.pointerId, wave: Boolean(numeric) };
             if (typeof event.currentTarget.setPointerCapture === "function") {
               event.currentTarget.setPointerCapture(event.pointerId);
             }
