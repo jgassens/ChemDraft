@@ -71,9 +71,9 @@ it.each(["a", "\\\"\n", "🧪", "\u0001"])("bounds the full warning receipt incl
   expect(new TextEncoder().encode(JSON.stringify(delivery)).length).toBeLessThanOrEqual(4096);
 });
 
-it("retains an accepted, abbreviated success notice for six curly brackets exported to CDXML", async () => {
+it("retains an accepted, abbreviated success notice for six polymer brackets exported to CDXML", async () => {
   let document = createPhase4Document("Warning receipt");
-  for (let i = 0; i < 6; i++) document = insertNativeBracket(document, { x: 100 + i * 50, y: 100 }, "curly");
+  for (let i = 0; i < 6; i++) document = insertNativeBracket(document, { x: 100 + i * 50, y: 100 }, "polymer");
   const result = await createDialogExportResult(document, { ...exportFixture(), format: "cdxml", busy: false });
   expect(result.warnings.length).toBeGreaterThanOrEqual(6);
   const details = [formatExportStatus("CDXML", result.format, result.warnings), ...result.warnings.map(warning => warning.message)].join("\n");
