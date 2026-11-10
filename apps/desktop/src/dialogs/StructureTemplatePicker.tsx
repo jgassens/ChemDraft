@@ -96,7 +96,7 @@ export function StructureTemplatePicker({ title, templateIds, onInsert, onClose,
   return <section className="cd-template-picker" role="dialog" aria-label="Structure templates" aria-busy={busy}
     onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>
     <header><h2>Templates</h2><p>Drawing: <strong>{title}</strong></p>
-      <label>Search templates<input ref={search} type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
+      <label>Search templates<input ref={search} type="search" autoCorrect="off" autoCapitalize="off" spellCheck={false} value={query} onChange={event => setQuery(event.target.value)} /></label>
     </header>
     <div className="cd-template-families">
       {families.map(({ family, templates }) => <section key={family} aria-labelledby={`template-family-${family}`}>

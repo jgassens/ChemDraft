@@ -719,6 +719,31 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.visibleCdxmlHash)).toBe(visibleHashForCdxml(result.contents));
   });
 
+  it("warns when the visible CDXML text layer drops character formatting", () => {
+    const document = documentWithObjects([{
+      id: "styled_text",
+      type: "text",
+      x: 96, y: 112, width: 120, height: 24, rotation: 0,
+      style: {},
+      text: "H2O",
+      spans: [
+        { text: "H", script: "normal", style: {} },
+        { text: "2", script: "subscript", style: { fontWeight: 700 } },
+        { text: "O", script: "normal", style: {} }
+      ]
+    }, {
+      id: "bold_box",
+      type: "text",
+      x: 96, y: 150, width: 120, height: 24, rotation: 0,
+      style: { fontWeight: 700 },
+      text: "Bold",
+      spans: []
+    }]);
+    const result = exportDocumentToCdxml(document);
+    expect(result.warnings.filter(item => item.code === "cdxml.text_format_native_only")
+      .map(item => item.sourceObjectId)).toEqual(["styled_text", "bold_box"]);
+  });
+
   it("exports text, plus signs, and reaction arrows visibly while warning for payload-only reaction metadata", () => {
     const document = documentWithObjects([
       {

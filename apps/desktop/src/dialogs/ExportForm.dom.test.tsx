@@ -55,7 +55,7 @@ describe.each(["macos", "windows"] as const)("Export keyboard on %s", platform =
     expect(cancel).toHaveBeenCalledTimes(2);
   });
 });
-it("clears an old picker grant when filename or format changes and keeps all option controls", () => {
+it("updates the old picker path hint when filename or format changes and keeps all option controls", () => {
   const state = { ...exportFixture(), destinationPath: "C:\\Drawing.pdf", busy: false };
   const change = vi.fn();
   act(() => root.render(createElement(ExportForm, { state, onChange: change, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
@@ -64,12 +64,61 @@ it("clears an old picker grant when filename or format changes and keeps all opt
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Renamed.pdf");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  expect(change).toHaveBeenCalledWith(expect.objectContaining({ filename: "Renamed.pdf", destinationPath: undefined }));
-  expect(updateExportDialogFormat(state, "svg")).toMatchObject({ filename: "Drawing.svg", destinationPath: undefined });
+  expect(change).toHaveBeenCalledWith(expect.objectContaining({ filename: "Renamed.pdf", destinationPath: "C:\\Renamed.pdf" }));
+  expect(updateExportDialogFormat(state, "svg")).toMatchObject({ filename: "Drawing.svg", destinationPath: "C:\\Drawing.svg" });
   for (const format of ["svg", "pdf", "png", "jpeg", "cdxml"] as const) {
     act(() => root.render(createElement(ExportForm, { state: { ...state, format }, onChange: change, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
     expect(container.querySelector("fieldset")).not.toBeNull();
   }
+});
+
+it.each([
+  ["/Users/me/Figures/Drawing.pdf", "/Users/me/Figures/"],
+  ["C:\\Figures\\Drawing.pdf", "C:\\Figures\\"]
+])("keeps the chosen folder as a hint after filename and format changes (%s)", (path, folder) => {
+  const state = { ...exportFixture(), destinationPath: path, busy: false };
+  expect(updateExportDialogFormat(state, "svg")).toMatchObject({
+    filename: "Drawing.svg", destinationPath: `${folder}Drawing.svg`
+  });
+  const change = vi.fn();
+  act(() => root.render(createElement(ExportForm, {
+    state, onChange: change, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+  })));
+  const input = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Renamed.pdf");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(change).toHaveBeenCalledWith(expect.objectContaining({
+    filename: "Renamed.pdf", destinationPath: `${folder}Renamed.pdf`
+  }));
+});
+
+it.each([
+  { platform: "macOS", path: "/Users/me/Figures/Drawing.pdf", invalid: "../Temporary.pdf", folder: "/Users/me/Figures/", preview: false },
+  { platform: "macOS", path: "/Users/me/Figures/Drawing.pdf", invalid: "../Temporary.pdf", folder: "/Users/me/Figures/", preview: true },
+  { platform: "Windows", path: "C:\\Figures\\Drawing.pdf", invalid: "Sub\\Temporary.pdf", folder: "C:\\Figures\\", preview: false },
+  { platform: "Windows", path: "C:\\Figures\\Drawing.pdf", invalid: "Sub\\Temporary.pdf", folder: "C:\\Figures\\", preview: true }
+])("keeps the chosen folder after an invalid filename is corrected ($platform, preview $preview)", async ({ path, invalid, folder, preview }) => {
+  act(() => saveExportPreviewEnabled(preview));
+  let selected: ExportDialogState = { ...exportFixture(), destinationPath: path, busy: false };
+  function Form() {
+    const [state, setState] = useState(selected);
+    selected = state;
+    return createElement(ExportForm, {
+      state, onChange: setState, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+    });
+  }
+  await act(async () => root.render(createElement(Form)));
+  const input = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  const enter = (filename: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, filename);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  enter(invalid);
+  expect(selected.destinationPath).toBe(path);
+  enter("Final.pdf");
+  expect(selected).toMatchObject({ filename: "Final.pdf", destinationPath: `${folder}Final.pdf` });
 });
 
 it("keeps the action footer outside the scrollable form body", () => {

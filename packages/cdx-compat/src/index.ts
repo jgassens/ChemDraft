@@ -511,6 +511,19 @@ function exportVisibleObject(
     return exportMoleculeObject(object, context, allocator, warnings);
   }
   if (object.type === "text") {
+    const styledSpan = object.spans.some(span =>
+      (span.script ?? "normal") !== "normal" || Object.keys(span.style).length > 0);
+    const styledObject = [
+      "fontFamily", "fontSizePx", "fontWeight", "fontStyle", "textDecoration", "color",
+      "textAlign", "letterSpacingPx", "lineHeight", "paragraphSpacingPx"
+    ].some(key => Object.hasOwn(object.style, key));
+    if (styledSpan || styledObject) {
+      warnings.push({
+        code: "cdxml.text_format_native_only",
+        message: "Text formatting is preserved in the embedded ChemDraft data, but the visible CDXML text is plain and may look different in other apps.",
+        sourceObjectId: object.id
+      });
+    }
     return exportTextObject(object, context.ids, allocator);
   }
   if (object.type === "plus") {
