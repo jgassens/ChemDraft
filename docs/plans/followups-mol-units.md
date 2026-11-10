@@ -12,3 +12,4 @@ Deferred:
 - Preserve z/3D input separately from drawing geometry; physical conformer/model units stay unchanged.
 - Multi-record SDF import.
 - Open/drop of .mol/.sdf files.
+- The structural fallback (used only when neither side has canonical SMILES) does not check coordinate-derived stereo (wedge parity, E/Z); consider an orientation-sign check.

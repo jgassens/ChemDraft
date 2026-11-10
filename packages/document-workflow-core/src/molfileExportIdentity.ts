@@ -1,8 +1,8 @@
-import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { findV2000CountsLineIndex, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import type { ComputeStructureIdentifiers } from "./moleculeSmiles";
 
 /** Compare the raw source with the exact final CTAB, using the caller's identifier engine.
- * When either canonical identity is unavailable, compare the coordinate-free CTAB graph.
+ * When both canonical identities are unavailable, compare the coordinate-free CTAB graph.
  * Never mask stereo, rewrite coordinates, or substitute native SMILES at this boundary.
  */
 export async function assertMolfileExportIdentity(
@@ -26,15 +26,20 @@ export async function assertMolfileExportIdentity(
     }
     return;
   }
+  if (source !== undefined || exported !== undefined) {
+    throw new Error(`${label} refused: the exported structure could not be verified (canonical SMILES available for only one side).`);
+  }
   const structure = (molfile: string, side: "source" | "exported") => {
     try {
       return coordinateFreeStructure(molfile);
     } catch (error) {
-      throw new Error(`${label} refused: could not verify the ${side} structure (${error instanceof Error ? error.message : String(error)}).`);
+      const reason = (error instanceof Error ? error.message : String(error))
+        .replace(/^Clipboard text/, "MOL data").replace(/\.+$/, "");
+      throw new Error(`${label} refused: the ${side} MOL could not be read back (${reason}).`);
     }
   };
   if (structure(sourceMolfile, "source") !== structure(exportedMolfile, "exported")) {
-    throw new Error(`${label} refused: exported coordinates would change the structure (coordinate-free MOL atom or bond data differ).`);
+    throw new Error(`${label} refused: the exported structure differs from the drawing (coordinate-free MOL atom or bond data differ).`);
   }
 }
 
@@ -46,7 +51,7 @@ function coordinateFreeStructure(molfile: string): string {
   // The clipboard parser owns element/charge/isotope and directed connectivity. Supplement
   // fields it does not expose: MDL radical codes, exact query bond types, and raw stereo flags.
   if (graph.format === "molfile-v2000") {
-    const counts = lines.findIndex(line => /V2000\s*$/.test(line));
+    const counts = findV2000CountsLineIndex(lines);
     const atomStart = counts + 1;
     for (const [index] of graph.atoms.entries()) {
       // Atom-block charge code 4 denotes a doublet radical.

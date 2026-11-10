@@ -123,18 +123,29 @@ describe("desktop final MOL/SDF identity guard", () => {
     expect(engine).toHaveBeenNthCalledWith(2, result);
   });
 
-  it("checks each final SDF graph when only its exported canonical SMILES is unavailable", async () => {
+  it("refuses SDF when only its exported canonical SMILES is unavailable", async () => {
     const real = identifiers.computeStructureIdentifiers;
     vi.spyOn(identifiers, "computeStructureIdentifiers").mockImplementation(async contents =>
       contents.startsWith("Named structure 1\n") ? undefined : real(contents));
-    const result = await exportStructureListSdf(documentWithStructures());
+    await expect(exportStructureListSdf(documentWithStructures())).rejects.toThrow(
+      "SDF record 1 (Named structure 1) refused: the exported structure could not be verified (canonical SMILES available for only one side)."
+    );
+  });
+
+  it("exports an SDF title ending in V2000 when both canonical SMILES are unavailable", async () => {
+    const document = documentWithStructures();
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    molecule.structure = `Sample V2000${molecule.structure.slice(molecule.structure.indexOf("\n"))}`;
+    vi.spyOn(identifiers, "computeStructureIdentifiers").mockResolvedValue(undefined);
+    const result = await exportStructureListSdf(document);
+    expect(result.contents.startsWith("Sample V2000\n")).toBe(true);
     expect(result.contents.match(/\$\$\$\$/g)).toHaveLength(2);
-    expect(result.warnings).toEqual([]);
+    expectAngstromScale(result.contents);
   });
 
   it("does not treat missing identifiers on both sides as proof of identity", async () => {
     await expect(assertMolfileExportIdentity("raw", "scaled", undefined, "Copy As MOL")).rejects.toThrow(
-      "Copy As MOL refused: could not verify the source structure (Clipboard text is not a supported V2000 or V3000 molfile.)."
+      "Copy As MOL refused: the source MOL could not be read back (MOL data is not a supported V2000 or V3000 molfile)."
     );
   });
 
@@ -146,12 +157,12 @@ describe("desktop final MOL/SDF identity guard", () => {
       molecule.bonds = [{ ...molecule.bonds[0]!, order: "unknown" }];
     }
     const before = structuredClone(document);
-    const engine = vi.spyOn(identifiers, "computeStructureIdentifiers").mockResolvedValue(undefined);
+    vi.spyOn(identifiers, "computeStructureIdentifiers").mockResolvedValue(undefined);
     for (const flavor of ["v2000", "v3000"] as const) {
       const existingWarnings: string[] = [];
       const expected = copyAsMolfile(document, flavor, existingWarnings);
       const warnings: string[] = [];
-      const result = await copyAsMolfileForExport(document, flavor, warnings, engine);
+      const result = await copyAsMolfileForExport(document, flavor, warnings, identifiers.computeStructureIdentifiers);
       expect(result).toBe(expected);
       expect(warnings).toEqual(existingWarnings);
       expect(warnings).toContainEqual(kind === "unknown-order bond"
@@ -197,16 +208,18 @@ describe("desktop final MOL/SDF identity guard", () => {
       mutate(document.pages[0]!.objects[0] as MoleculeObject);
       const exported = copyAsMolfile(document, flavor)!;
       await expect(assertMolfileExportIdentity(source, exported, undefined, "MOL export")).rejects.toThrow(
-        "MOL export refused: exported coordinates would change the structure (coordinate-free MOL atom or bond data differ)."
+        "MOL export refused: the exported structure differs from the drawing (coordinate-free MOL atom or bond data differ)."
       );
     });
 
-    it("compares the graph when only source SMILES is unavailable", async () => {
+    it("refuses when only source SMILES is unavailable", async () => {
       const document = documentWithStructures();
       const source = copyAsMolfile(document, flavor, [], { coordinateUnits: "raw" })!;
       const exported = copyAsMolfile(document, flavor)!;
       const engine = vi.fn<ComputeStructureIdentifiers>().mockResolvedValueOnce(undefined).mockResolvedValueOnce({ smiles: "CC" });
-      await expect(assertMolfileExportIdentity(source, exported, engine, "MOL export")).resolves.toBeUndefined();
+      await expect(assertMolfileExportIdentity(source, exported, engine, "MOL export")).rejects.toThrow(
+        "MOL export refused: the exported structure could not be verified (canonical SMILES available for only one side)."
+      );
       expect(engine).toHaveBeenCalledTimes(2);
     });
 
@@ -221,14 +234,14 @@ describe("desktop final MOL/SDF identity guard", () => {
       expect(parseMolfileGraph(source).bonds.map(bond => bond.order))
         .toEqual(parseMolfileGraph(exported).bonds.map(bond => bond.order));
       await expect(assertMolfileExportIdentity(source, exported, undefined, "MOL export")).rejects.toThrow(
-        "MOL export refused: exported coordinates would change the structure"
+        "MOL export refused: the exported structure differs from the drawing (coordinate-free MOL atom or bond data differ)."
       );
     });
 
     it("refuses malformed final bytes when canonical SMILES is unavailable", async () => {
       const source = copyAsMolfile(documentWithStructures(), flavor)!;
       await expect(assertMolfileExportIdentity(source, "invalid", undefined, "MOL export")).rejects.toThrow(
-        "MOL export refused: could not verify the exported structure"
+        "MOL export refused: the exported MOL could not be read back (MOL data is not a supported V2000 or V3000 molfile)."
       );
     });
   });
