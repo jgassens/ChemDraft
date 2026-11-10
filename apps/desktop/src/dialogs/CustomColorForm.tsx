@@ -14,7 +14,6 @@ export function CustomColorForm({ initial, onSubmit, onCancel, onClear, onReady,
   onReady?(form: HTMLFormElement): void; busy?: boolean; error?: string; platform?: DialogPlatform;
 }) {
   const form = useRef<HTMLFormElement>(null);
-  const readyReported = useRef(false);
   const submitting = useRef(false);
   const composing = useRef(false);
   const [mode, setMode] = useState<Mode>("Hex");
@@ -25,9 +24,8 @@ export function CustomColorForm({ initial, onSubmit, onCancel, onClear, onReady,
   if (parsed.ok) lastValid.current = parsed.hex;
   useEffect(() => { if (!busy) submitting.current = false; }, [busy, error]);
   useEffect(() => {
-    if (readyReported.current || !form.current) return;
-    readyReported.current = true; onReady?.(form.current);
-  }, [onReady]);
+    if (form.current) onReady?.(form.current);
+  }, [onReady, mode, error, parsed.ok ? "" : parsed.message]);
   const labels = mode === "Hex" ? ["Hex color"] : mode === "RGB" ? ["Red", "Green", "Blue"] : ["Cyan", "Magenta", "Yellow", "Black"];
   return <form ref={form} className="cd-page-size-form cd-dialog-fit cd-custom-color-form" aria-label="Custom Color" aria-busy={busy}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}

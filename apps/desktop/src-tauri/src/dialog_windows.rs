@@ -64,8 +64,8 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             resizable: true,
             title: "Custom Color",
             size: (460.0, 320.0),
-            min_size: (360.0, 320.0),
-            fit_content: false,
+            min_size: (360.0, 240.0),
+            fit_content: true,
         }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
@@ -1471,6 +1471,9 @@ pub(crate) async fn dialog_send(
             .ok_or("Unknown dialog host")?;
         authorize(session, window.label(), false, Some(&message))?;
         let reveal = message.message_type == "ready" && !session.ready;
+        let refit = message.message_type == "ready"
+            && session.ready
+            && session.snapshot.dialog_kind == "customColor";
         if message.message_type == "action" {
             if !session.ready {
                 return Err("Dialog is not ready".into());
@@ -1482,17 +1485,17 @@ pub(crate) async fn dialog_send(
                 return Ok(());
             }
         }
-        if reveal {
+        if reveal || refit {
             session.ready = true;
             session.content_fit =
                 MeasuredContent::new(ContentFit::from_ready(&message.data), scale_at_ready);
         }
         // Only this Rust-validated path can write the owner's private channel.
         send_owner(session, window.label(), &message)?;
-        reveal
+        (reveal, refit.then_some(session.content_fit).flatten())
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
-    if reveal {
+    if reveal.0 {
         let target = window.clone();
         if let Err(error) =
             super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
@@ -1502,7 +1505,67 @@ pub(crate) async fn dialog_send(
             close_session(&app, &host_id, "error");
             return Err(error);
         }
+    } else if let Some(fit) = reveal.1 {
+        let target = window.clone();
+        super::run_on_main_thread_blocking(&window, move || refit_custom_color(&target, fit))??;
     }
+    Ok(())
+}
+
+fn refit_custom_color<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    fit: MeasuredContent,
+) -> Result<(), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("Dialog monitor unavailable")?;
+    let work = WorkArea::from_monitor(&monitor);
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let client = window.inner_size().map_err(|e| e.to_string())?;
+    let spec = kind_spec("customColor")?;
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
+        .map_err(|e| e.to_string())?;
+    finish_placement(
+        (
+            (f64::from(position.x), f64::from(position.y), scale),
+            (
+                f64::from(client.width) / scale,
+                fit.logical_height(spec.min_size.1),
+            ),
+        ),
+        &work,
+        true,
+        None,
+        |x, y| {
+            window
+                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
+                .map_err(|e| e.to_string())
+        },
+        |w, h| {
+            window
+                .set_size(tauri::PhysicalSize::new(w, h))
+                .map_err(|e| e.to_string())
+        },
+        || {
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let client = window.inner_size().map_err(|e| e.to_string())?;
+            Ok(DialogFrame {
+                outer: (outer.width, outer.height),
+                client: (client.width, client.height),
+            })
+        },
+    )?;
+    let client = window.inner_size().map_err(|e| e.to_string())?;
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(
+            (f64::from(client.width) / scale).min(spec.min_size.0),
+            f64::from(client.height) / scale,
+        )))
+        .map_err(|e| e.to_string())?;
+    mark_transient(window.label());
     Ok(())
 }
 
@@ -3274,6 +3337,7 @@ mod tests {
             "structureTemplates",
             "pageSize",
             "arrangementSpacing",
+            "customColor",
             "insertTable",
             "export",
             "engineInstall",
@@ -3281,7 +3345,7 @@ mod tests {
         ] {
             assert_eq!(
                 kind_spec(kind).unwrap().fit_content,
-                matches!(kind, "insertTable" | "vibeCodeGuide")
+                matches!(kind, "insertTable" | "vibeCodeGuide" | "customColor")
             );
         }
     }
