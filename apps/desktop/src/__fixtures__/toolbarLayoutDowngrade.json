@@ -3,7 +3,13 @@
     "version": 1,
     "toolsetOrder": ["core.main", "plugin.example", "user.colors"],
     "toolsetOverrides": [
-      { "toolsetId": "core.main", "title": "My Main", "visible": true, "mode": "floating" },
+      {
+        "toolsetId": "core.main", "title": "My Main", "visible": true, "mode": "floating",
+        "itemOrder": { "core.main.items": ["tool.tripleBond", "user.main.space.1", "tool.doubleBond", "tool.select"] },
+        "itemAdditions": [
+          { "groupId": "core.main.items", "index": 1, "item": { "id": "user.main.space.1", "kind": "spacer", "primary": { "type": "none" } } }
+        ]
+      },
       {
         "toolsetId": "core.structure",
         "hiddenCommandIds": ["tool.eraser"],

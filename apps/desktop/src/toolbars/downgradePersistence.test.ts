@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseToolsetLayoutState } from "@chemdraft/toolset-registry";
 import { ToolsetLayoutStateSchema as ReleasedLayoutSchema } from "../__fixtures__/toolbarLayoutSchema-v1.1.1";
 import fixture from "../__fixtures__/toolbarLayoutDowngrade.json";
-import { migrateMainToolbarDefaultsLayoutState } from "../toolsets";
+import { createDesktopToolsetRegistry, getToolsetItemGroups, migrateMainToolbarDefaultsLayoutState } from "../toolsets";
 import { mergeVisibilityIntoLayoutState, withCurrentMainToolbarDefaults } from "./toolbarLayoutState";
 
 // Rust's toolbar_customization_persistence_tests compare the actual files written by the native
@@ -31,12 +31,35 @@ describe("v1.1.1 toolbar layout downgrade contract", () => {
     });
   });
 
-  it("falls back to the pre-revision migration without losing saved layout when metadata is unavailable", () => {
-    // Missing/corrupt/stale side files return exactly legacyState in the native reader tests.
-    const migrated = parseToolsetLayoutState(migrateMainToolbarDefaultsLayoutState(fixture.legacyState));
+  it("never persists a destructive fallback when native metadata is missing, corrupt or unmatched", () => {
+    // This is the exact IPC state returned by Rust's missing/corrupt/unmatched side-file tests.
+    const loaded = { ...fixture.legacyState, mainToolbarDefaultsMetadataUnavailable: true };
+    const migrated = parseToolsetLayoutState(migrateMainToolbarDefaultsLayoutState(loaded));
     expect(migrated).toEqual(current);
     expect(migrated.toolsetOverrides).toEqual(fixture.legacyState.toolsetOverrides);
     expect(migrated.userToolsets).toEqual(fixture.legacyState.userToolsets);
     expect(migrated.toolsetOrder).toEqual(fixture.legacyState.toolsetOrder);
+    // Reproduce startup's automatic visibility save, serialization and next load. The hint must
+    // not escape into the strict schema or files, nor may Chain/hides be added to Main's override.
+    const saved = mergeVisibilityIntoLayoutState(migrated, ["core.main"], new Set(["core.main"]));
+    expect(saved).not.toHaveProperty("mainToolbarDefaultsMetadataUnavailable");
+    expect(saved.toolsetOverrides.find(override => override.toolsetId === "core.main"))
+      .toEqual(fixture.legacyState.toolsetOverrides[0]);
+    const reloaded = parseToolsetLayoutState(migrateMainToolbarDefaultsLayoutState(JSON.parse(JSON.stringify(saved))));
+    const ids = getToolsetItemGroups("core.main", createDesktopToolsetRegistry(reloaded)).flat().map(item => item.id);
+    expect(ids).toContain("tool.doubleBond");
+    expect(ids).toContain("tool.tripleBond");
+    expect(ids).not.toContain("tool.chain");
+    expect(createDesktopToolsetRegistry(reloaded).get("core.main"))
+      .toEqual(createDesktopToolsetRegistry(current).get("core.main"));
+    expect(loaded).toEqual({ ...fixture.legacyState, mainToolbarDefaultsMetadataUnavailable: true });
+  });
+
+  it("honours a genuine pre-#340 inline revision without any side file", () => {
+    expect(migrateMainToolbarDefaultsLayoutState(current)).toBe(current);
+    const ids = getToolsetItemGroups("core.main", createDesktopToolsetRegistry(current)).flat().map(item => item.id);
+    expect(ids).toContain("tool.doubleBond");
+    expect(ids).toContain("tool.tripleBond");
+    expect(ids).not.toContain("tool.chain");
   });
 });
