@@ -1,5 +1,8 @@
 # Save, Open, and File Format
 
+For native payload version fields, feature introduction rules, and tolerant reading, see
+[Native document versions and forward reading](native-document-compatibility.md).
+
 Status: Implemented CDXML-compatible ChemDraft envelope, progressive visible CDXML subset, and native desktop save/open bridge.
 
 ChemDraft keeps `ChemDraftDocument` as the in-memory source of truth. Save/open compatibility belongs at the boundary:

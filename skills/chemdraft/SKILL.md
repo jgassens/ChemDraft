@@ -206,6 +206,11 @@ journal figures, annotations, arrows and brackets. The workflow is
 `document` (MCP `build_document`) → edit the native JSON →
 `render-document` (MCP `render_document`) → look → iterate.
 
+When reading native files, inspect `minAppVersion` and `documentWarnings` in the rendering
+result. Each warning has a named `code` and `message`; native compatibility warnings also retain
+`path` and `originalValue`. A newer file can show visual fallbacks. Saving as `.chemdraft`
+preserves unknown content and its source minimum version; unsupported chemistry fails.
+
 - Appearance changes never change chemistry, and they are always allowed.
   Confirm after every edit that the reported canonical SMILES still
   matches the source (art.md shows how when explicit H is added).

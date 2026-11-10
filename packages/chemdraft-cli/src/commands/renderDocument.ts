@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
-import { type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { NativeDocumentBaselineAppVersion, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-core";
 import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
@@ -34,7 +34,7 @@ ${figureStyleHelp}
   --padding <px>                     SVG/PNG crop padding (default 24)
 SVG/PNG/PDF render the first page. PDF retains native page size. ChemDraft retains every page.
 Input limit: 5 MB, 100 pages, 2000 objects/page, 500 heavy atoms/molecule, 2000 atoms/molecule, 4000 bonds/molecule.
-Result: canonical SMILES and stereo counts per molecule, plus every export warning.
+Result: canonical SMILES and stereo counts per molecule, minAppVersion, documentWarnings and every export warning.
 Exit 0 success, 1 export/chemistry failure (ok:false), 2 invalid input or arguments.`;
 
 async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarning[]) {
@@ -96,6 +96,10 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     const paddingValue = stringOption(parsed, "--padding");
     const padding = paddingValue === undefined ? renderDefaults.padding : numericOption(paddingValue, "--padding", true);
     const opened = await loadAgentDocument(file);
+    const compatibility = {
+      minAppVersion: opened.nativeDocumentVersions?.minAppVersion ?? NativeDocumentBaselineAppVersion,
+      documentWarnings: opened.warnings
+    };
     let document = opened.document!;
     const name = basename(out);
     writeProgress(io, `Rendering document ${file}…`);
@@ -135,7 +139,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
       if (format !== "chemdraft" && document.pages.length > 1) warnings.push({
         code: "export.first_page_only", severity: "warning", message: "Only the first page was rendered; other pages remain in the source document."
       });
-      writeJsonLine(io, { name, ok: true, document: file, files, format,
+      writeJsonLine(io, { name, ok: true, document: file, files, format, ...compatibility,
         ...figureStyleResult(figure, physicalSize, format === "png" || format === "both"),
         molecules: molecules.map((molecule) => ({ ...molecule,
           exportWarnings: warnings.filter((warning) => warning.objectId === undefined || warning.objectId === molecule.objectId) })),
@@ -143,7 +147,8 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
       writeProgress(io, `Wrote ${files.join(", ")}`);
       return cliExitCode.ok;
     } catch (error) {
-      writeJsonLine(io, { name, document: file, ok: false, ...figureStyleResult(figure), error: error instanceof Error ? error.message : String(error) });
+      writeJsonLine(io, { name, document: file, ok: false, ...compatibility, ...figureStyleResult(figure),
+        error: error instanceof Error ? error.message : String(error) });
       return cliExitCode.failed;
     }
   } catch (error) { return handleCliError(error, io, "render-document"); }

@@ -6,7 +6,10 @@ import { IdentityVerificationTimeoutError } from "./depiction2d/identityWorkerCl
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
+import { withNativeUtilitySuspension } from "./nativeUtilitySuspension";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
@@ -243,11 +246,11 @@ describe("documents in one window", () => {
     vi.useRealTimers();
   });
 
-  async function mount(initialDocument = createPhase4Document("Untitled"), strict = false) {
+  async function mount(initialDocument = createPhase4Document("Untitled"), strict = false, shortcutPlatform?: ShortcutPlatform) {
     root = createRoot(container);
     await act(async () => {
       const main = createElement(MainWindow, {
-        initialDocument, initialActiveToolCommandId: "tool.select",
+        initialDocument, initialActiveToolCommandId: "tool.select", shortcutPlatform,
         initialPaletteMode: "hidden", initialCrosshairsVisible: false, initialRulersVisible: false, nativePalette: true
       });
       root!.render(strict ? createElement(StrictMode, null, main) : main);
@@ -1014,6 +1017,213 @@ describe("documents in one window", () => {
     expect(active()).toBe(0);
     expect(drawnText()).toContain("Retain this note");
     expect(bridge().snapshot().file.dirty).toBe(true);
+  });
+
+  function futureFileContents(name: string) {
+    return JSON.stringify({ ...createPhase4Document(name), formatVersion: "1.10.0", minAppVersion: "1.10.2",
+      conditionsLabel: { text: "keep future content" }, styles: { drawing: { stylePresetId: "future-preset" } } });
+  }
+
+  it.each(["picker", "os/recent", "native drop", "browser drop", "browser picker"])(
+    "native compatibility: %s opens with one notice and preserves future data on save", async path => {
+      const prompts: NativePromptOptions[] = [];
+      const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const contents = futureFileContents("Future drawing");
+      try {
+        if (path === "picker") {
+          native.picker.mockResolvedValueOnce("C:\\Drawings\\future.chemdraft");
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await command("document.open");
+        } else if (path === "os/recent") {
+          const payload = { path: "C:\\Drawings\\future.chemdraft", displayName: "future.chemdraft", contents };
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+          // Activating an already-open file is not another open and must not show another box.
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+        } else if (path === "native drop") {
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await act(async () => native.events.get("tauri://drag-drop")!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
+        } else {
+          native.desktop = false;
+          const file = { name: "future.chemdraft", text: async () => contents };
+          if (path === "browser drop") {
+            const event = new Event("drop", { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
+            await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
+          } else {
+            const input = container.querySelector<HTMLInputElement>('input[type="file"][accept*="chemdraft"]')!;
+            Object.defineProperty(input, "files", { value: [file], configurable: true });
+            await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+          }
+        }
+        expect(bridge().snapshot().document.title).toBe("Future drawing");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ owner: "document",
+          message: "This file was made with a newer ChemDraft (1.10.2). Some features may not show. Update to keep them." });
+        // Exercise app history admission and the Save path, including edits made after opening.
+        native.desktop = true;
+        await paste("An edit");
+        native.savePicker.mockResolvedValueOnce("C:\\Drawings\\saved.chemdraft");
+        await command("document.saveAs");
+        const saved = native.writeFile.mock.calls.at(-1)![1];
+        const reopened = openNativeDocument(saved);
+        expect(reopened.nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+        expect(reopened.warnings.map(warning => warning.code)).toEqual(expect.arrayContaining([
+          "NATIVE_UNKNOWN_FIELD_PRESERVED", "NATIVE_STYLE_PRESET_FALLBACK"
+        ]));
+        expect(prompts).toHaveLength(1);
+      } finally { restore(); }
+    });
+
+  it("native compatibility: session restore shows once per installed file, including StrictMode", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const future = buildDocumentSessionEnvelope({ contents: futureFileContents("Restored future"), payloadHash: "future", filename: "future.chemdraft" },
+        { dirty: true }, "future.chemdraft", false);
+      native.session = future;
+      act(() => root!.unmount());
+      container.innerHTML = "";
+      await mount(createPhase4Document("Untitled"), true);
+      expect(bridge().snapshot().document.title).toBe("Restored future");
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]!.message).toContain("(1.10.2)");
+      const saved = await flush();
+      expect(openNativeDocument(saved.tabs![0]!.contents).nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+    } finally { restore(); }
+  });
+
+  it("native compatibility: older and same-version opens and session restores remain quiet", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    try {
+      for (const minimum of [undefined, "1.1.1", "1.2.0"]) {
+        const contents = JSON.stringify({ ...createPhase4Document(`Minimum ${minimum}`), minAppVersion: minimum });
+        await act(async () => native.events.get("chemdraft://open-document")!({
+          contents, displayName: `${minimum}.chemdraft`, path: `/tmp/${minimum}.chemdraft`
+        }));
+      }
+      await flush(); await remount();
+      expect(prompts).toEqual([]);
+    } finally { restore(); }
+  });
+
+  describe.each(["macos", "windows"] as const)("restored native compatibility on %s", platform => {
+    const toolsetIds = ["core.main", "core.art"];
+    const layout = {
+      version: 1, toolsetOrder: [], userToolsets: [],
+      toolsetOverrides: toolsetIds.map(toolsetId => ({ toolsetId, visible: true }))
+    };
+    const fixture = (name: string) => readFileSync(resolve(
+      "packages/chem-core/src/__fixtures__/compat", `${name}.chemdraft`), "utf8");
+    const path = (name: string) => platform === "windows" ? `C:\\Drawings\\${name}.chemdraft` : `/tmp/${name}.chemdraft`;
+    async function restart(strict = false) {
+      act(() => root!.unmount());
+      container.innerHTML = "";
+      native.toolsetWindows.clear();
+      await mount(createPhase4Document("Untitled"), strict, platform);
+    }
+
+    it("creates the native toolsets before either restored notice and never falls back while notices are open", async () => {
+      vi.useFakeTimers();
+      native.suspendUtilities = true;
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      native.session = buildDocumentTabsSession(["newer-1.3", "newer-format-only"].map(name =>
+        buildDocumentSessionEnvelope({ contents: fixture(name), payloadHash: name, filename: `${name}.chemdraft` },
+          { path: path(name), dirty: false }, `${name}.chemdraft`, false)), 0);
+      const events: string[] = [];
+      const prompts: NativePromptOptions[] = [];
+      const restore = setNativePromptProvider(prompt => withNativeUtilitySuspension(() => {
+        events.push("notice"); prompts.push(prompt);
+        return new Promise<string>(resolve => { pendingPrompt = { prompt, resolve }; });
+      }));
+      let finishLayout!: (value: unknown) => void;
+      const loadingLayout = new Promise(resolve => { finishLayout = resolve; });
+      native.loadToolsetLayout.mockImplementation(() => loadingLayout);
+      let finishArt!: () => void;
+      const openNormally = native.openToolset.getMockImplementation()!;
+      native.openToolset.mockImplementation(async id => {
+        events.push(`request:${id}`);
+        if (id === "core.art") await new Promise<void>(resolve => { finishArt = resolve; });
+        const state = await openNormally(id);
+        events.push(`created:${id}`);
+        return state;
+      });
+      native.openToolset.mockClear();
+      try {
+        await restart(true);
+        expect(tabs()).toHaveLength(2);
+        expect(native.openToolset).not.toHaveBeenCalled();
+        expect(prompts).toEqual([]);
+        await act(async () => finishLayout(layout));
+        for (const id of toolsetIds) expect(native.openToolset).toHaveBeenCalledWith(id, expect.anything());
+        expect(prompts).toEqual([]);
+        expect(native.suspensionDepth).toBe(0);
+        await act(async () => finishArt());
+        expect(events).toEqual(["request:core.main", "created:core.main", "request:core.art", "created:core.art", "notice"]);
+        expect(prompts).toHaveLength(1);
+        expect(pendingPrompt?.prompt.title).toBe("Newer ChemDraft file");
+        expect(native.suspensionDepth).toBe(1);
+        for (const id of toolsetIds) expect(native.toolsetWindows.has(id)).toBe(true);
+
+        // A late catalog update must not treat temporarily hidden toolsets as native failures.
+        native.openToolset.mockClear();
+        const runtime = vi.mocked(createPluginRuntime).mock.results.at(-1)!.value as DesktopPluginRuntime;
+        await act(async () => runtime.registerPlugin({
+          id: "org.test.newer-restore", name: "Late startup plugin", version: "0.0.1", apiVersion: "^0.1.6",
+          entry: "dist/plugin.js", permissions: [], contributes: { commands: [] }
+        }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+        expect(native.openToolset).not.toHaveBeenCalled();
+        expect(container.querySelector(".native-shell")).not.toBeNull();
+        expect(container.querySelector('[role="status"]')?.textContent).not.toContain("unavailable");
+        await modalButton("OK");
+        expect(prompts).toHaveLength(2);
+        expect(pendingPrompt?.prompt.title).toBe("Newer ChemDraft file");
+        await modalButton("OK");
+        expect(prompts).toHaveLength(2);
+        expect(native.suspensionDepth).toBe(0);
+        for (const id of toolsetIds) expect(native.toolsetWindows.get(id)).toBe(true);
+        expect(container.querySelector(".native-shell")).not.toBeNull();
+      } finally { restore(); }
+    });
+
+    it.each(["newer-1.3", "newer-format-only", "plain-1.2"])(
+      "gives %s identical notices through File > Open and successive autosave restores", async name => {
+        native.suspendUtilities = true;
+        native.loadToolsetLayout.mockResolvedValue(layout);
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        const prompts: NativePromptOptions[] = [];
+        const restore = setNativePromptProvider(prompt => withNativeUtilitySuspension(async () => {
+          for (const id of toolsetIds) expect(native.toolsetWindows.has(id)).toBe(true);
+          prompts.push(prompt);
+          return "ok";
+        }));
+        try {
+          await restart();
+          native.picker.mockResolvedValueOnce(path(name));
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fixture(name)));
+          await command("document.open");
+          const expected = [...prompts];
+          expect(expected).toHaveLength(name === "plain-1.2" ? 0 : 1);
+          if (expected.length) expect(expected[0]).toMatchObject({ title: "Newer ChemDraft file", owner: "document",
+            message: "This file was made with a newer ChemDraft (1.3.0). Some features may not show. Update to keep them." });
+          for (let relaunch = 0; relaunch < 2; relaunch++) {
+            const saved = await flush();
+            if (name === "newer-format-only") {
+              // File > Save intentionally omits unused version headers; the session must retain them.
+              expect(openNativeDocument(saved.tabs![0]!.contents).document?.formatVersion).toBeUndefined();
+              expect(saved.tabs![0]!.nativeDocumentVersions).toEqual({ formatVersion: "1.3.0" });
+            }
+            prompts.length = 0;
+            await restart();
+            expect(prompts).toEqual(expected);
+            expect(container.querySelector(".native-shell")).not.toBeNull();
+            for (const id of toolsetIds) expect(native.toolsetWindows.get(id)).toBe(true);
+          }
+        } finally { restore(); }
+      });
   });
 
   it("Open adds a tab for an edited Untitled, including after undo and after Save", async () => {

@@ -4,6 +4,31 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Native files use feature-based minimum app versions. `readSerializedDocument(contents)` and
+`readDocument(candidate)` return `{ document, warnings, formatVersion, minAppVersion }`; use these
+when the host needs to present compatibility warnings. `deserializeDocument` remains the
+document-only convenience API. Legacy visual classifiers degrade with named warnings in every file,
+including unversioned files, and preserve their original values for re-save. Main's legacy chemistry
+classifiers (bond order, structure/expansion encoding, reaction mapping, mechanism-arrow kind and
+electron-mark kind) likewise open as `unknown`, with `NATIVE_CHEMISTRY_ENUM_FALLBACK` naming the
+original value/path; saves restore the original string. Newer files also
+preserve unknown visual JSON fields. Unknown fields on chemistry objects require an explicit matching
+`ignorableFields` header pattern; unlisted chemistry fields, other unknown chemistry values and malformed
+known input fail. Known chemistry fields cannot be declared ignorable.
+`serializeDocument` reconstructs preserved data and omits the new top-level version fields for
+documents using only 1.1.1 features, so the released strict reader still accepts plain files.
+`parseDocument`, validation and patches remain strict. Feature additions must update
+`NativeDocumentFeatureVersions` in `documentFeatures.ts`; the frozen-schema inventory test guards
+missing field/enum entries and their required `ignorable` safety declarations. The writer derives
+`ignorableFields` from used display-only field entries and retained future fields; all version and
+ignorable headers are omitted for plain 1.1.1 documents. See
+[the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
+
+Preservation follows unique IDs. Identity-free arrays restore only while their known content is
+unchanged. Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
+`serializeDocumentWithWarnings` returns `{ contents, warnings }`, and the validated container API
+`prepareNativeDocumentForSerializationWithWarnings` returns `{ value, warnings }`.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

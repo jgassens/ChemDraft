@@ -55,6 +55,15 @@ the saved native coordinates and inventory retain native units.
 
 ## Common contract
 
+`render-document` reads newer native JSON and ChemDraft envelopes with the same tolerant reader
+as the app. Its JSON result includes `minAppVersion` (the file's effective minimum, `1.1.1` for
+legacy files) and `documentWarnings`: objects with `code`, `message`, and, for native forward
+reading, `path` and `originalValue`. These fields are also retained if rendering fails after a
+successful read. Existing `warnings` strings and `exportWarnings` include the open warnings too.
+Unknown visual content is preserved when saving with `--format chemdraft`, together with at least
+its source minimum app version; a preview can use a fallback. Unsupported chemistry still fails.
+All compatibility information stays inside the JSON result; the CLI shows no update prompt.
+
 Commands write machine-readable JSON lines to stdout and human-readable progress to stderr. A
 successful line has ok: true, a name, command inputs, command outputs, and warnings: []; a failed
 line has ok: false, its identifying inputs, and an error string. Commands exit 0 when all jobs

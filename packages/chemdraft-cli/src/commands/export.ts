@@ -261,14 +261,16 @@ interface PerJobExportResult {
 }
 
 async function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument, warnings: string[] = []): Promise<string> {
+  // Validate the graph first so unknown bonds get a specific refusal even when RDKit
+  // declined their identifiers and the depiction used the unverified OCL fallback.
+  // Do not accept a supposedly verified canonical source made from an already lossy molfile.
+  const notes: ExportWarning[] = [];
+  await currentMoleculeIdentityMolfile(built.molecule, [], notes);
   if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
     throw new Error(
       "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
     );
   }
-  // Do not accept a supposedly verified canonical source made from an already lossy molfile.
-  const notes: ExportWarning[] = [];
-  await currentMoleculeIdentityMolfile(built.molecule, [], notes);
   warnings.push(...notes.map((note) => note.message));
   return built.sourceCanonicalSmiles;
 }

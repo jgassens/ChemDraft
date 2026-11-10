@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { NativeFieldPatternSchema } from "./nativeFieldPatterns";
+import { NativeExtensionsSchema, NativeVersionSchema } from "./nativeCompatibilityState";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
 import { decodeImageBase64, imageBase64Error } from "./imageBytes";
@@ -43,24 +45,6 @@ export const PointSchema = z
 
 const OpacitySchema = z.number().finite().min(0).max(1);
 const NormalizedCoordinateSchema = z.number().finite().min(0).max(1);
-
-/**
- * An enum that already carries an `"unknown"` member, degrading to it instead of rejecting.
- *
- * Every classifier below — arrow kind, bond order, bracket kind, graphic kind — spells `"unknown"`
- * as a member precisely because the value can come from a file this build does not fully understand:
- * an imported CDXML, or a document a newer ChemDraft wrote. A bare `z.enum` does not honour that
- * intent. It fails the field, which fails the object, which fails the page, which fails the *whole
- * document* — so one arrow of a kind added after this build shipped makes the file unopenable, when
- * the schema's own vocabulary says the answer is to call that arrow unknown and draw the rest.
- *
- * The `"unknown"` member is the contract; this is what makes it true.
- */
-function degradingEnum<const Values extends readonly ["unknown" | (string & {}), ...("unknown" | (string & {}))[]]>(
-  values: Values & (Extract<Values[number], "unknown"> extends never ? never : unknown)
-) {
-  return z.enum(values as unknown as [Values[number], ...Values[number][]]).catch("unknown" as Values[number]);
-}
 
 export const GraphicGradientStopSchema = z
   .object({
@@ -299,7 +283,7 @@ export const ChemicalMetadataSchema = z
 export const SuperatomMetadataSchema = z
   .object({
     label: z.string().min(1),
-    expandedStructureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]).optional(),
+    expandedStructureFormat: z.enum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]).optional(),
     expandedStructure: z.string().optional(),
     attachmentPoints: z.array(AnchorSchema).default([]),
     warnings: z.array(CompatibilityWarningSchema).default([])
@@ -402,7 +386,7 @@ export const MoleculeBondSchema = z
     id: IdSchema,
     fromAtomId: IdSchema,
     toAtomId: IdSchema,
-    order: degradingEnum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
+    order: z.enum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
     /** Explicitly unspecified E/Z; absence retains geometry-defined interpretation. */
     stereo: z.literal("either").optional(),
     display: MoleculeBondDisplaySchema.optional()
@@ -467,7 +451,7 @@ export const MoleculeTransformStateSchema = z
 
 export const MoleculeObjectSchema = BaseObjectSchema.extend({
   type: z.literal("molecule"),
-  structureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
+  structureFormat: z.enum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
   structure: z.string(),
   chemistry: ChemicalMetadataSchema.optional(),
   atoms: z.array(MoleculeAtomSchema).transform((atoms) => atoms.map(normalizeAtomIsotope)).default([]),
@@ -488,12 +472,12 @@ export const ReactionObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction"),
   components: z.array(ReactionComponentSchema),
   conditionsTextObjectIds: z.array(IdSchema).default([]),
-  mappingState: degradingEnum(["absent", "partial", "complete", "unknown"]).default("unknown")
+  mappingState: z.enum(["absent", "partial", "complete", "unknown"]).default("unknown")
 }).strict();
 
 export const ArrowObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction-arrow"),
-  arrowKind: degradingEnum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
+  arrowKind: z.enum(["forward", "resonance", "equilibrium", "retrosynthesis", "unknown"]),
   start: AnchorSchema,
   end: AnchorSchema,
   labels: z.array(IdSchema).default([])
@@ -501,7 +485,7 @@ export const ArrowObjectSchema = BaseObjectSchema.extend({
 
 export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
   type: z.literal("mechanism-arrow"),
-  arrowKind: degradingEnum(["full-headed", "half-headed", "unknown"]),
+  arrowKind: z.enum(["full-headed", "half-headed", "unknown"]),
   source: AnchorSchema,
   target: AnchorSchema,
   controlPoints: z.array(PointSchema).default([]),
@@ -510,7 +494,7 @@ export const MechanismArrowObjectSchema = BaseObjectSchema.extend({
 
 export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
   type: z.literal("electron-mark"),
-  markKind: degradingEnum(["lone-pair", "radical-dot", "charge", "unknown"]),
+  markKind: z.enum(["lone-pair", "radical-dot", "charge", "unknown"]),
   anchor: AnchorSchema,
   charge: z.number().int().optional(),
   /** Charge marks draw circled (⊕/⊖) by default; "plain" renders the bare +/− glyph. */
@@ -552,7 +536,7 @@ export const TableCellSchema = TableRichTextSchema.extend({
 
 export const TableColumnSchema = z.object({
   id: IdSchema,
-  align: degradingEnum(["left", "center", "right", "decimal", "unknown"]),
+  align: z.enum(["left", "center", "right", "decimal", "unknown"]),
   width: z.discriminatedUnion("mode", [
     z.object({ mode: z.literal("auto") }).strict(),
     z.object({ mode: z.literal("fixed"), px: z.number().finite().positive().max(4000) }).strict()
@@ -563,7 +547,7 @@ export const TableColumnSchema = z.object({
 export const TableRowSchema = z.object({ id: IdSchema, cells: z.array(TableCellSchema) }).strict();
 
 export const TableStyleSchema = z.object({
-  preset: degradingEnum(["three-line", "grid", "unknown"]).default("three-line"),
+  preset: z.enum(["three-line", "grid", "unknown"]).default("three-line"),
   topRulePt: z.number().finite().min(0).max(6).default(1),
   headerRulePt: z.number().finite().min(0).max(6).default(0.5),
   bottomRulePt: z.number().finite().min(0).max(6).default(1),
@@ -621,14 +605,14 @@ export const TableObjectSchema = TableObjectShapeSchema.superRefine(refineTable)
 
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
-  bracketKind: degradingEnum(["square", "round", "curly", "polymer", "unknown"]),
+  bracketKind: z.enum(["square", "round", "curly", "polymer", "unknown"]),
   label: z.string().optional(),
   containedObjectIds: z.array(IdSchema).default([])
 }).strict();
 
 const GraphicObjectShapeSchema = BaseObjectSchema.extend({
   type: z.literal("graphic"),
-  graphicKind: degradingEnum(["line", "rect", "ellipse", "path", "image", "unknown"]),
+  graphicKind: z.enum(["line", "rect", "ellipse", "path", "image", "unknown"]),
   style: GraphicObjectStyleSchema.default({}),
   data: GraphicObjectDataSchema.default({})
 }).strict();
@@ -777,6 +761,9 @@ export const DocumentSelectionSchema = z
 export const ChemDraftDocumentSchema = z
   .object({
     schema: z.literal(DocumentSchemaVersion),
+    formatVersion: NativeVersionSchema.optional(),
+    minAppVersion: NativeVersionSchema.optional(),
+    ignorableFields: z.array(NativeFieldPatternSchema).optional(),
     id: IdSchema,
     title: z.string(),
     createdAt: IsoDateSchema,
@@ -787,7 +774,9 @@ export const ChemDraftDocumentSchema = z
     plugins: MetadataSchema.default({}),
     compatibility: z
       .object({
-        warnings: z.array(CompatibilityWarningSchema).default([])
+        warnings: z.array(CompatibilityWarningSchema).default([]),
+        // In-memory preservation state. The serializer restores the original fields instead.
+        nativeExtensions: NativeExtensionsSchema.optional()
       })
       .strict()
       .default({ warnings: [] })
