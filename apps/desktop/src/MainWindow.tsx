@@ -10075,8 +10075,9 @@ export function MainWindow({
     target.source = source;
     target.version = ++atomProblemVersionRef.current;
     const data = atomProblemSnapshot(source, target.target, target.version);
-    // Restore remains available when reopening a suppressed warning, but it is not an outstanding problem after Ignore.
-    const refreshed = afterIgnore && data.fixes.every(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
+    // Suppressed warnings can still offer chemical fixes alongside Restore. After Ignore,
+    // none is outstanding; reopening the warning still exposes all of its actions.
+    const refreshed = afterIgnore && data.fixes.some(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
     void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, refreshed)
       .catch(error => setStatus(`Atom problem could not update: ${String(error)}`));
   };

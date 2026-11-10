@@ -135,6 +135,43 @@ it("Ignore hides only the badge; context-menu Restore works for a suppressed inv
   expect(container.querySelector('[role="status"]')!.textContent).toContain("Undid Ignore warning");
   expect(container.querySelector("main")!.dataset.canUndo).toBe("false");
 });
+describe.each(["MacIntel", "Win32"])("problem completion (%s)", platform => {
+  it("updates the same window while the restored warning remains, then closes after its fix", async () => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    const source = problemMolecule("N", Array(4).fill("C"));
+    source.atoms[0]!.warningSuppressed = true;
+    await mount(problemDocument(source));
+    await command(atomProblemCommandId(target));
+    await deliver("ready", {});
+    if (snapshot.dialogKind !== "atomProblem") throw new Error("Expected problem window");
+    const version = snapshot.data.targetVersion;
+    await deliver("action", { action: "restore", targetVersion: version });
+    expect(native.close).not.toHaveBeenCalled();
+    expect(native.open).toHaveBeenCalledTimes(1);
+    expect(snapshot.data.targetVersion).toBeGreaterThan(version);
+    expect(snapshot.data.fixes.map(fix => fix.action)).toContain("charge");
+    expect(snapshot.data.fixes.map(fix => fix.action)).toContain("ignore");
+    expect(snapshot.data.fixes.map(fix => fix.action)).not.toContain("restore");
+    await deliver("action", { action: "charge", targetVersion: snapshot.data.targetVersion });
+    expect(native.close).toHaveBeenCalledExactlyOnceWith("opaque", "close");
+  });
+  it.each([
+    ["ignore", problemMolecule("N", Array(4).fill("C"))],
+    ["ignore", problemMolecule("OH2")],
+    ["charge", problemMolecule("N", Array(4).fill("C"))],
+    ["hydrogens", problemMolecule("OH2")]
+  ] as const)("closes after %s even when the warning offers a suggested fix", async (action, source) => {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    await mount(problemDocument(source));
+    await command(atomProblemCommandId(target));
+    await deliver("ready", {});
+    if (snapshot.dialogKind !== "atomProblem") throw new Error("Expected problem window");
+    expect(snapshot.data.fixes.some(fix => fix.action === "charge" || fix.action === "hydrogens")).toBe(true);
+    await deliver("action", { action, targetVersion: snapshot.data.targetVersion });
+    expect(badge()).toBeNull();
+    expect(native.close).toHaveBeenCalledExactlyOnceWith("opaque", "close");
+  });
+});
 it("stops drawing gestures at the marker even with the bond tool active", async () => {
   await mount(problemDocument()); await command("tool.bond.single");
   const before = current().document;
