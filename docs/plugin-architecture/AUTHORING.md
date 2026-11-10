@@ -837,6 +837,12 @@ only objects selected when that command started plus its accepted insertions. Fl
 1–256 operations are atomic. The direct write is one undo entry labelled with the plugin and command;
 it does not open the proposal review tray/window. Assistant writes join one transaction per request.
 
+The host also refuses indirect changes outside that scope. For example, removing a selected molecule
+is refused if it would remove membership references from an unselected bracket; select the bracket
+as well. Editing a selected bracket's label or repeat count may refresh derived warnings on enclosed
+molecules without selecting them. The host checks again against the commit-time document after any
+canvas gesture wait. Writes are refused when no active document is available to validate the scope.
+
 ### Native tables (0.1.18)
 
 Plugins may read the optional `tableStyle.autoColumnMinEm` minimum auto column width in em.

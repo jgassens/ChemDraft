@@ -830,7 +830,7 @@ describe("PluginHost", () => {
 
   it("validates and applies a direct patch during the owning command", async () => {
     const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["mol_001"] }));
-    const host = new PluginHost({ applyDocumentPatch });
+    const host = new PluginHost({ applyDocumentPatch, getActiveDocument: () => createEmptyDocument({ now: timestamp }) });
     host.registerPlugin(
       {
         id: "org.test.direct-write",
@@ -866,6 +866,7 @@ describe("PluginHost", () => {
     });
     expect(applyDocumentPatch).toHaveBeenCalledWith({
       signal: expect.any(AbortSignal),
+      writeScopeObjectIds: [],
       plugin: { id: "org.test.direct-write", name: "Direct Writer", version: "0.0.1" },
       command: { id: "plugin.directWrite.insert", title: "Insert Structure" },
       patch: {
@@ -881,7 +882,8 @@ describe("PluginHost", () => {
 
   it("refuses unselected edits and unsupported direct ops, while proposals stay available", async () => {
     const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: [] }));
-    const host = new PluginHost({ applyDocumentPatch, now: () => timestamp });
+    const host = new PluginHost({ applyDocumentPatch, now: () => timestamp,
+      getActiveDocument: () => createEmptyDocument({ now: timestamp }) });
     const patches: Record<string, unknown> = {
       removeObject: { op: "removeObject", objectId: "mol_001" },
       updateObject: { op: "updateObject", objectId: "mol_001", changes: { structure: "CCO" } },
@@ -916,7 +918,10 @@ describe("PluginHost", () => {
             });
             await context.documents.applyPatch!({
               reason: "typed note",
-              patch: { op: "addAnnotation", pageId: "page_001", annotation: { id: "ann_001" } } as never
+              patch: { op: "addAnnotation", pageId: "page_001", annotation: {
+                id: "ann_001", type: "annotation", x: 0, y: 0, width: 10, height: 10, rotation: 0,
+                style: {}, message: "note", targetObjectIds: []
+              } }
             });
             // The same edit is still available for review.
             return context.documents.proposePatch({ reason: "edit for review", patch: patches.removeObject as never });
@@ -1909,7 +1914,7 @@ describe("PluginHost recognition, document binding, and queue release", () => {
   });
 
   it("refuses a patch carrying a recognition review block, but lets another command write directly", async () => {
-    const { host, applyDocumentPatch } = recognitionHost();
+    const { host, applyDocumentPatch } = recognitionHost({ getActiveDocument: () => createEmptyDocument({ now: timestamp }) });
     const patch = { op: "addObject", pageId: "page_001", object: moleculeObject() } as const;
     register(host, ["document.write"], {
       "plugin.recognizer.smuggle": (context) =>
@@ -2238,7 +2243,8 @@ describe("PluginHost recognition, document binding, and queue release", () => {
   it("binds documents.applyPatch to the document the command was invoked on", async () => {
     let activeKey = "document-a";
     let switchDocument = false;
-    const { host, applyDocumentPatch } = recognitionHost({ getActiveDocumentKey: () => activeKey });
+    const { host, applyDocumentPatch } = recognitionHost({ getActiveDocumentKey: () => activeKey,
+      getActiveDocument: () => createEmptyDocument({ now: timestamp }) });
     register(host, ["document.write"], {
       "plugin.recognizer.write": async (context) => {
         if (switchDocument) activeKey = "document-b"; // File > New/Open while the plugin runs

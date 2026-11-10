@@ -176,7 +176,7 @@ import {
   type ViewportState
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
-import { CommandRegistry } from "@chemdraft/plugin-host";
+import { assertPluginPatchWriteScope, CommandRegistry } from "@chemdraft/plugin-host";
 import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
@@ -12443,7 +12443,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -12460,6 +12460,7 @@ export function MainWindow({
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
         const before = documentRef.current;
+        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds);
         const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(before, patch, {
           avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
