@@ -45,7 +45,7 @@ export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy =
       <span aria-hidden="true">×</span>
       <label>Height<input type="number" min="0" max="100000" step="any" value={state.height}
         onChange={e => onChange({ ...state, height: e.target.value })} aria-describedby={!size ? "page-size-error" : undefined} /></label>
-      <label>Units<select value={state.unit} onChange={e => onChange(convertPageSizeDraft(state, e.target.value as PageUnit))}>
+      <label>Units<select className="native-dialog-panel-select" value={state.unit} onChange={e => onChange(convertPageSizeDraft(state, e.target.value as PageUnit))}>
         <option value="inch">Inches</option><option value="mm">Millimeters</option>
         {state.unit === "css-px" ? <option value="css-px">Pixels</option> : null}
       </select></label>

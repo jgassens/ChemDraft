@@ -151,7 +151,7 @@ export function MolecularInspectorPane({
         {active && alternatives.length > 0 ? (
           <label className="analysis-panel-change">
             <span>change</span>
-            <select
+            <select className="native-dialog-panel-select"
               value={active.id}
               disabled={busy}
               onChange={(event) =>

@@ -3964,15 +3964,18 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn close_window_closes_report_windows_through_tauri_and_everything_else_natively() {
+    fn close_window_closes_reports_and_hosted_dialogs_through_tauri() {
         use super::{close_window_route, CloseWindowRoute};
         assert_eq!(
             close_window_route(Some(&plugin_panel_window_label("v1x6f7267x70616e656c"))),
             CloseWindowRoute::TauriClose
         );
+        assert_eq!(
+            close_window_route(Some("preferences")),
+            CloseWindowRoute::TauriClose
+        );
         for other in [
             Some("main"),
-            Some("preferences"),
             Some("spin3d-debugger"),
             Some("toolset-core-main"),
             Some("plugin-panel-"),
@@ -6197,6 +6200,7 @@ async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> 
     let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         if toggle_should_hide(&window) {
+            dialog_windows::flush_preferences(&app, dialog_windows::PreferencesClose::Hide);
             return window.hide().map_err(|error| error.to_string());
         }
     }
@@ -6208,13 +6212,14 @@ fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        window.show().map_err(|error| error.to_string())?;
-        window.unminimize().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        dialog_windows::show_preferences(&window, false)?;
         return Ok(window);
     }
+    let owner = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or("Unknown dialog owner")?;
 
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
         WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
@@ -6224,11 +6229,24 @@ fn ensure_preferences_window<R: Runtime>(
     .min_inner_size(360.0, 280.0)
     .resizable(true)
     .accept_first_mouse(true)
-    .visible(true)
-    .center()
-    .build()
-    .map_err(|error| error.to_string())?;
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .maximizable(false)
+    .minimizable(false);
+    #[cfg(windows)]
+    let builder = builder.parent(&owner).map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    let builder = {
+        let _ = owner;
+        builder
+    };
+    let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
+    if let Err(error) = dialog_windows::show_preferences(&window, true) {
+        let _ = window.destroy();
+        return Err(error);
+    }
     Ok(window)
 }
 

@@ -1616,14 +1616,18 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-/* Keep native palette menus light without changing the inspector's closed-control styling. */
+/* Shared readable native lists in palettes, dialogs and plugin panels; closed controls keep their styling. */
 .toolbar-select,
-.molecule-inspector-field select {
+.molecule-inspector-field select,
+.native-dialog-panel-select,
+.lf-select {
   color-scheme: light;
 }
 
 .toolbar-select option,
-.molecule-inspector-field select option {
+.molecule-inspector-field select option,
+.native-dialog-panel-select option,
+.lf-select option {
   background-color: var(--cd-bg-control);
   color: var(--cd-text-primary);
 }
@@ -3349,7 +3353,12 @@ textarea:focus-visible,
   min-width: 0;
 }
 
-.toolbar-cell-shell[data-tooltip-visible="true"] .tool-tooltip {
+.toolbar-control-tooltip {
+  position: relative;
+}
+
+.toolbar-cell-shell[data-tooltip-visible="true"] .tool-tooltip,
+.toolbar-control-tooltip[data-tooltip-visible="true"] .tool-tooltip {
   opacity: 1;
   transform: translate(-50%, 0);
   transition: opacity 90ms ease, transform 90ms ease;

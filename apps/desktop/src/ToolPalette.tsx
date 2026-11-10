@@ -46,6 +46,8 @@ import { MainStyleWidget } from "./toolbars/mainStyleWidget";
 import {
   type ClearTooltipOptions,
   TOOLTIP_DELAY_MS,
+  PaletteControlTooltip,
+  PaletteControlTooltipContext,
   useNativeFloatingTooltip,
   usePaletteTooltipState
 } from "./toolbars/toolbarTooltip";
@@ -148,6 +150,7 @@ import {
 import type { ArtInspectorEffectKind } from "./artInspectorModel";
 import { loadSystemFonts, type SystemFontFamily, type SystemFontFace } from "./systemFonts";
 import type { ToolsetArtPaintTarget, ToolsetFlyoutSnapshot } from "./window-manager";
+import { registerInlinePopover } from "./window-manager/popoverEscape";
 
 export type ToolPaletteMode = "docked" | "floating";
 export type ToolPaletteOrientation = "vertical" | "horizontal";
@@ -253,11 +256,12 @@ export function ToolPalette({
    *  BEFORE the widget filter). A DndContext must wrap this component (ToolbarCustomizeController). */
   customize?: { groupIds: readonly (string | undefined)[] };
 }) {
+  const tooltipState = usePaletteTooltipState();
   const {
     visibleTooltipId,
     requestTooltip,
     clearTooltip
-  } = usePaletteTooltipState();
+  } = tooltipState;
 
   const effectiveItemGroups = itemGroups ?? commandGroupsToPaletteItemGroups(groups ?? []);
   const renderPaletteItem = (
@@ -378,7 +382,7 @@ export function ToolPalette({
   );
 
   return (
-    <ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
+    <PaletteControlTooltipContext.Provider value={tooltipState}><ToolbarWidgetStateContext.Provider value={effectiveWidgetState}>
       <aside
         className={[
           "tool-palette",
@@ -422,7 +426,7 @@ export function ToolPalette({
           )
         )}
       </aside>
-    </ToolbarWidgetStateContext.Provider>
+    </ToolbarWidgetStateContext.Provider></PaletteControlTooltipContext.Provider>
   );
 }
 
@@ -2076,46 +2080,46 @@ function ArtToolbarStyleControls() {
       ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
       : label;
   const strokeWidthControl = supportsStrokeWidth ? (
-    <label className="toolbar-control-label art-stroke-width-control art-stroke-control"
-      title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}>
-      <select
-        className="toolbar-select"
-        value={strokeWidthCommandId}
-        aria-label="Stroke width"
-        disabled={!selected}
-        title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}
-        data-palette-control="true"
-        onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onInvoke(event.currentTarget.value)}
-      >
-        {objectStrokeWidthCommands.map((command) => (
-          <option key={command.id} value={command.id}>
-            {command.strokeWidth}px
-          </option>
-        ))}
-      </select>
-    </label>
+    <PaletteControlTooltip tooltip={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}>
+      <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+        <select
+          className="toolbar-select"
+          value={strokeWidthCommandId}
+          aria-label="Stroke width"
+          disabled={!selected}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => onInvoke(event.currentTarget.value)}
+        >
+          {objectStrokeWidthCommands.map((command) => (
+            <option key={command.id} value={command.id}>
+              {command.strokeWidth}px
+            </option>
+          ))}
+        </select>
+      </label>
+    </PaletteControlTooltip>
   ) : null;
   const strokeDashControl = supportsDash && effectiveArtStyleTarget === "stroke" ? (
-    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control"
-      title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}>
-      <select
-        className="toolbar-select"
-        value={strokeDashCommandId}
-        aria-label="Dash pattern"
-        disabled={!selected}
-        title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}
-        data-palette-control="true"
-        onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onInvoke(event.currentTarget.value)}
-      >
-        {objectStrokeDashCommands.map((command) => (
-          <option key={command.id} value={command.id}>
-            {command.title.replace(" Stroke", "")}
-          </option>
-        ))}
-      </select>
-    </label>
+    <PaletteControlTooltip tooltip={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}>
+      <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+        <select
+          className="toolbar-select"
+          value={strokeDashCommandId}
+          aria-label="Dash pattern"
+          disabled={!selected}
+          data-palette-control="true"
+          onPointerDown={(event) => event.stopPropagation()}
+          onChange={(event) => onInvoke(event.currentTarget.value)}
+        >
+          {objectStrokeDashCommands.map((command) => (
+            <option key={command.id} value={command.id}>
+              {command.title.replace(" Stroke", "")}
+            </option>
+          ))}
+        </select>
+      </label>
+    </PaletteControlTooltip>
   ) : null;
   const gradientRailStyle = {
     "--art-gradient-rail": activeGradientStops.length > 0
@@ -2150,6 +2154,14 @@ function ArtToolbarStyleControls() {
     const maxIndex = activeGradientStops.length - 1;
     setSelectedGradientStopIndex((current) => maxIndex < 0 ? 0 : Math.max(0, Math.min(maxIndex, current)));
   }, [activeGradientStops.length, activeGradientStopsKey]);
+
+  useEffect(() => {
+    if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) return;
+    return registerInlinePopover(() => {
+      setColorOpen(false); setEffectColorOpen(false); setGradientStopColorOpen(false);
+      onCancel?.();
+    });
+  }, [colorOpen, effectColorOpen, gradientStopColorOpen, onCancel]);
 
   useEffect(() => {
     if (!colorOpen && !effectColorOpen && !gradientStopColorOpen) {
@@ -2398,51 +2410,38 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, true);
     };
     return (
-      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}
-        title={`${supportTitle(label, supportedCount)}: ${percent}%`}>
-        <span className="art-inspector-slider-header">
-          <span className="art-inspector-slider-label">{shortLabel}</span>
-          <span className="art-inspector-slider-value">{percent}%</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={percent}
-          disabled={!selected || supportedCount === 0}
-          aria-label={label}
-          title={`${supportTitle(label, supportedCount)}: ${percent}%`}
-          data-palette-control="true"
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
-            if (typeof event.currentTarget.setPointerCapture === "function") {
-              event.currentTarget.setPointerCapture(event.pointerId);
-            }
-            applySliderPointer(event, false);
-          }}
-          onPointerMove={(event) => {
-            if (event.buttons === 1 && sliderOwnsPointer(event)) {
+      <PaletteControlTooltip tooltip={`${supportTitle(label, supportedCount)}: ${percent}%`}>
+        <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}>
+          <span className="art-inspector-slider-header">
+            <span className="art-inspector-slider-label">{shortLabel}</span>
+            <span className="art-inspector-slider-value">{percent}%</span>
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={percent}
+            disabled={!selected || supportedCount === 0}
+            aria-label={label}
+            data-palette-control="true"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              sliderDragRef.current = { sliderKey, pointerId: event.pointerId };
+              if (typeof event.currentTarget.setPointerCapture === "function") {
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }
               applySliderPointer(event, false);
-            }
-          }}
-          onPointerUp={(event) => {
-            event.stopPropagation();
-            if (!sliderOwnsPointer(event)) {
-              return;
-            }
-            if (
-              typeof event.currentTarget.hasPointerCapture === "function" &&
-              event.currentTarget.hasPointerCapture(event.pointerId) &&
-              typeof event.currentTarget.releasePointerCapture === "function"
-            ) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-            sliderDragRef.current = null;
-            applySliderPointer(event, true);
-          }}
-          onPointerCancel={(event) => {
-            if (sliderOwnsPointer(event)) {
+            }}
+            onPointerMove={(event) => {
+              if (event.buttons === 1 && sliderOwnsPointer(event)) {
+                applySliderPointer(event, false);
+              }
+            }}
+            onPointerUp={(event) => {
+              event.stopPropagation();
+              if (!sliderOwnsPointer(event)) {
+                return;
+              }
               if (
                 typeof event.currentTarget.hasPointerCapture === "function" &&
                 event.currentTarget.hasPointerCapture(event.pointerId) &&
@@ -2451,21 +2450,34 @@ function ArtToolbarStyleControls() {
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }
               sliderDragRef.current = null;
-            }
-          }}
-          onChange={(event) => {
-            if (sliderDragRef.current?.sliderKey === sliderKey) {
-              previewCommand(commandId(Number(event.currentTarget.value) / 100));
-            }
-          }}
-          onKeyDown={applySliderKey}
-          onBlur={() => {
-            if (sliderDragRef.current?.sliderKey === sliderKey) {
-              sliderDragRef.current = null;
-            }
-          }}
-        />
-      </label>
+              applySliderPointer(event, true);
+            }}
+            onPointerCancel={(event) => {
+              if (sliderOwnsPointer(event)) {
+                if (
+                  typeof event.currentTarget.hasPointerCapture === "function" &&
+                  event.currentTarget.hasPointerCapture(event.pointerId) &&
+                  typeof event.currentTarget.releasePointerCapture === "function"
+                ) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+                sliderDragRef.current = null;
+              }
+            }}
+            onChange={(event) => {
+              if (sliderDragRef.current?.sliderKey === sliderKey) {
+                previewCommand(commandId(Number(event.currentTarget.value) / 100));
+              }
+            }}
+            onKeyDown={applySliderKey}
+            onBlur={() => {
+              if (sliderDragRef.current?.sliderKey === sliderKey) {
+                sliderDragRef.current = null;
+              }
+            }}
+          />
+        </label>
+      </PaletteControlTooltip>
     );
   };
 
@@ -2495,60 +2507,63 @@ function ArtToolbarStyleControls() {
       <div className="art-inspector-row art-inspector-main-row">
         <div className="art-target-toggle" role="group" aria-label="Art paint target">
           {supportsFill ? (
-            <button
-              type="button"
-              className={effectiveArtStyleTarget === "fill" ? "active" : ""}
-              aria-label="Target fill"
-              title={supportTitle("Target fill color", fillSupportedCount, supportsFillAll)}
-              disabled={!selected}
-              data-command-id="object.style.target.fill"
-              data-palette-control="true"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => onInvoke("object.style.target.fill")}
-            >
-              <span className="art-target-fill-glyph" aria-hidden="true" />
-            </button>
+            <PaletteControlTooltip tooltip={supportTitle("Target fill color", fillSupportedCount, supportsFillAll)}>
+              <button
+                type="button"
+                className={effectiveArtStyleTarget === "fill" ? "active" : ""}
+                aria-label="Target fill"
+                disabled={!selected}
+                data-command-id="object.style.target.fill"
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onInvoke("object.style.target.fill")}
+              >
+                <span className="art-target-fill-glyph" aria-hidden="true" />
+              </button>
+            </PaletteControlTooltip>
           ) : null}
           {supportsStroke ? (
-            <button
-              type="button"
-              className={effectiveArtStyleTarget === "stroke" ? "active" : ""}
-              aria-label="Target stroke"
-              title={supportTitle("Target stroke color", strokeSupportedCount, supportsStrokeAll)}
-              disabled={!selected}
-              data-command-id="object.style.target.stroke"
-              data-palette-control="true"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => onInvoke("object.style.target.stroke")}
-            >
-              <span className="art-target-stroke-glyph" aria-hidden="true" />
-            </button>
+            <PaletteControlTooltip tooltip={supportTitle("Target stroke color", strokeSupportedCount, supportsStrokeAll)}>
+              <button
+                type="button"
+                className={effectiveArtStyleTarget === "stroke" ? "active" : ""}
+                aria-label="Target stroke"
+                disabled={!selected}
+                data-command-id="object.style.target.stroke"
+                data-palette-control="true"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => onInvoke("object.style.target.stroke")}
+              >
+                <span className="art-target-stroke-glyph" aria-hidden="true" />
+              </button>
+            </PaletteControlTooltip>
           ) : null}
         </div>
-        <label
-          className="toolbar-control-label art-paint-type-control"
-          title={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
-        >
-          <select
-            className="toolbar-select"
-            value={activePaintTypeCommandId}
-            aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
-            disabled={!selected || !activeTargetSupported}
-            data-art-paint-type-select={effectiveArtStyleTarget}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {activePaintTypeMixed ? (
-              <option value="object.paint.type.mixed">Mixed</option>
-            ) : null}
-            {activePaintTypeCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {command.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PaletteControlTooltip tooltip={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}>
+          <label
+            className="toolbar-control-label art-paint-type-control"
+  >
+            <select
+              className="toolbar-select"
+              value={activePaintTypeCommandId}
+              aria-label={`${effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"} paint type`}
+              disabled={!selected || !activeTargetSupported}
+              data-art-paint-type-select={effectiveArtStyleTarget}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => onInvoke(event.currentTarget.value)}
+            >
+              {activePaintTypeMixed ? (
+                <option value="object.paint.type.mixed">Mixed</option>
+              ) : null}
+              {activePaintTypeCommands.map((command) => (
+                <option key={command.id} value={command.id}>
+                  {command.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </PaletteControlTooltip>
         <div
           className="art-color-picker"
           role="group"
@@ -2557,40 +2572,41 @@ function ArtToolbarStyleControls() {
           data-color-picker="true"
           data-palette-control="true"
         >
-          <button
-            type="button"
-            className="toolbar-color-trigger"
-            aria-label="Open object color picker"
-            aria-expanded={colorOpen}
-            disabled={!selected || !activeTargetSupported}
-            title={`Pick ${supportTitle(
+          <PaletteControlTooltip tooltip={`Pick ${supportTitle(
               effectiveArtStyleTarget,
               effectiveArtStyleTarget === "fill" ? fillSupportedCount : strokeSupportedCount,
               effectiveArtStyleTarget === "fill" ? supportsFillAll : supportsStrokeAll
-            )} color`}
-            style={{ "--picker-color": currentColor } as CSSProperties}
-            onClick={(event) => {
-              // Native palettes hand the swatch's client rect up so the picker opens in its own
-              // floating window (overflows the little palette, floats over the document). Web /
-              // docked palettes fall through to the inline popover.
-              if (onRequestColorPopover) {
-                const rect = event.currentTarget.getBoundingClientRect();
-                onRequestColorPopover({
-                  left: rect.left,
-                  top: rect.top,
-                  right: rect.right,
-                  bottom: rect.bottom
-                });
-                return;
-              }
-              setEffectColorOpen(false);
-              setGradientStopColorOpen(false);
-              setColorOpen((open) => !open);
-            }}
-          >
-            <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
-            <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
-          </button>
+            )} color`}>
+            <button
+              type="button"
+              className="toolbar-color-trigger"
+              aria-label="Open object color picker"
+              aria-expanded={colorOpen}
+              disabled={!selected || !activeTargetSupported}
+              style={{ "--picker-color": currentColor } as CSSProperties}
+              onClick={(event) => {
+                // Native palettes hand the swatch's client rect up so the picker opens in its own
+                // floating window (overflows the little palette, floats over the document). Web /
+                // docked palettes fall through to the inline popover.
+                if (onRequestColorPopover) {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  onRequestColorPopover({
+                    left: rect.left,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.bottom
+                  });
+                  return;
+                }
+                setEffectColorOpen(false);
+                setGradientStopColorOpen(false);
+                setColorOpen((open) => !open);
+              }}
+            >
+              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+              <span className="toolbar-color-trigger-label">{effectiveArtStyleTarget === "fill" ? "Fill" : "Stroke"}</span>
+            </button>
+          </PaletteControlTooltip>
           {colorOpen && !onRequestColorPopover ? (
             <div className="art-color-popover" role="dialog" aria-label="Art color picker">
               <ColorPickerPopoverBody
@@ -2603,78 +2619,81 @@ function ArtToolbarStyleControls() {
           ) : null}
         </div>
         {strokeDashControl}
-        <button
-          type="button"
-          className="art-inspector-symbol-button"
-          aria-label={effectiveArtStyleTarget === "fill" ? "No fill" : "No stroke"}
-          title={effectiveArtStyleTarget === "fill"
+        <PaletteControlTooltip tooltip={effectiveArtStyleTarget === "fill"
             ? supportTitle("No fill", fillSupportedCount, supportsFillAll)
-            : supportTitle("No stroke", strokeSupportedCount, supportsStrokeAll)}
-          disabled={!selected || !activeTargetSupported}
-          data-command-id={effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onInvoke(effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
-        >
-          ∅
-        </button>
-        {!isMoleculeRingArtTarget ? (
+            : supportTitle("No stroke", strokeSupportedCount, supportsStrokeAll)}>
           <button
             type="button"
             className="art-inspector-symbol-button"
-            aria-label="Swap fill and stroke"
-            title="Swap fill and stroke"
-            disabled={!selected || !supportsFill || !supportsStroke}
-            data-command-id="object.style.swapFillStroke"
+            aria-label={effectiveArtStyleTarget === "fill" ? "No fill" : "No stroke"}
+            disabled={!selected || !activeTargetSupported}
+            data-command-id={effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none"}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke("object.style.swapFillStroke")}
+            onClick={() => onInvoke(effectiveArtStyleTarget === "fill" ? "object.style.fill.none" : "object.style.stroke.none")}
           >
-            ⇄
+            ∅
           </button>
+        </PaletteControlTooltip>
+        {!isMoleculeRingArtTarget ? (
+          <PaletteControlTooltip tooltip="Swap fill and stroke">
+            <button
+              type="button"
+              className="art-inspector-symbol-button"
+              aria-label="Swap fill and stroke"
+              disabled={!selected || !supportsFill || !supportsStroke}
+              data-command-id="object.style.swapFillStroke"
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke("object.style.swapFillStroke")}
+            >
+              ⇄
+            </button>
+          </PaletteControlTooltip>
         ) : null}
         <div className="art-effect-button-group" role="group" aria-label="Art effects">
           {objectEffectCommands.map((command) => {
             const effectKind = command.effectKind;
             const active = effectKind !== "none" && activeEffectKinds.includes(effectKind);
             return (
-              <button
-                type="button"
-                key={command.id}
-                className={active ? "active" : ""}
-                aria-pressed={active}
-                aria-label={command.title}
-                title={command.title}
-                disabled={!selected}
-                data-command-id={command.id}
-                data-art-effect-button={effectKind}
-                data-palette-control="true"
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => {
-                  if (effectKind !== "none") {
-                    setFocusedEffectKind(effectKind);
-                    if (!active) {
-                      onInvoke(command.id);
+              <PaletteControlTooltip tooltip={command.title} key={command.id}>
+                <button
+                  type="button"
+
+                  className={active ? "active" : ""}
+                  aria-pressed={active}
+                  aria-label={command.title}
+                  disabled={!selected}
+                  data-command-id={command.id}
+                  data-art-effect-button={effectKind}
+                  data-palette-control="true"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => {
+                    if (effectKind !== "none") {
+                      setFocusedEffectKind(effectKind);
+                      if (!active) {
+                        onInvoke(command.id);
+                      }
+                      return;
                     }
-                    return;
-                  }
 
-                  setFocusedEffectKind(undefined);
-                  setEffectColorOpen(false);
-                  onInvoke(command.id);
-                }}
-                onDoubleClick={() => {
-                  if (effectKind === "none" || !active) {
-                    return;
-                  }
+                    setFocusedEffectKind(undefined);
+                    setEffectColorOpen(false);
+                    onInvoke(command.id);
+                  }}
+                  onDoubleClick={() => {
+                    if (effectKind === "none" || !active) {
+                      return;
+                    }
 
-                  setFocusedEffectKind(undefined);
-                  setEffectColorOpen(false);
-                  onInvoke(objectEffectDisableCommandId(effectKind));
-                }}
-              >
-                {command.label}
-              </button>
+                    setFocusedEffectKind(undefined);
+                    setEffectColorOpen(false);
+                    onInvoke(objectEffectDisableCommandId(effectKind));
+                  }}
+                >
+                  {command.label}
+                </button>
+              </PaletteControlTooltip>
             );
           })}
         </div>
@@ -2700,24 +2719,25 @@ function ArtToolbarStyleControls() {
             data-color-picker="true"
             data-palette-control="true"
           >
-            <button
-              type="button"
-              className="toolbar-color-trigger art-effect-color-trigger"
-              aria-label={`Open ${effectLabel(visibleEffectKind)} effect color picker`}
-              aria-expanded={effectColorOpen}
-              title={`${effectLabel(visibleEffectKind)} effect color`}
-              data-art-effect-color-trigger={visibleEffectKind}
-              data-palette-control="true"
-              style={{ "--picker-color": currentEffectColor } as CSSProperties}
-              onClick={() => {
-                setColorOpen(false);
-                setGradientStopColorOpen(false);
-                setEffectColorOpen((open) => !open);
-              }}
-            >
-              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
-              <span className="toolbar-color-trigger-label">Effect</span>
-            </button>
+            <PaletteControlTooltip tooltip={`${effectLabel(visibleEffectKind)} effect color`}>
+              <button
+                type="button"
+                className="toolbar-color-trigger art-effect-color-trigger"
+                aria-label={`Open ${effectLabel(visibleEffectKind)} effect color picker`}
+                aria-expanded={effectColorOpen}
+                data-art-effect-color-trigger={visibleEffectKind}
+                data-palette-control="true"
+                style={{ "--picker-color": currentEffectColor } as CSSProperties}
+                onClick={() => {
+                  setColorOpen(false);
+                  setGradientStopColorOpen(false);
+                  setEffectColorOpen((open) => !open);
+                }}
+              >
+                <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+                <span className="toolbar-color-trigger-label">Effect</span>
+              </button>
+            </PaletteControlTooltip>
             {effectColorOpen ? (
               <div
                 className="art-color-popover art-effect-color-popover"
@@ -2760,131 +2780,136 @@ function ArtToolbarStyleControls() {
             style={gradientRailStyle}
           >
             {activeGradientStops.map((stop, index) => (
-              <button
-                type="button"
-                key={`gradient-stop-${index}`}
-                className={[
-                  "art-gradient-stop-marker",
-                  index === activeGradientStopIndex ? "active" : ""
-                ].filter(Boolean).join(" ")}
-                aria-label={`Drag gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
-                title="Drag to move gradient stop; use arrow keys for 1% nudges"
-                data-command-id={objectGradientStopOffsetCommandId(index, stop.offset)}
-                data-art-gradient-stop={index}
-                data-art-gradient-stop-active={index === activeGradientStopIndex ? "true" : undefined}
-                data-palette-control="true"
-                style={{
-                  "--art-gradient-stop-color": stop.color,
-                  "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
-                  opacity: stop.opacity
-                } as CSSProperties}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                  event.preventDefault();
-                  setSelectedGradientStopIndex(index);
-                  setGradientStopColorOpen(false);
-                  gradientStopDragRef.current = { stopIndex: index, moved: false };
-                  if (typeof event.currentTarget.setPointerCapture === "function") {
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                  }
-                }}
-                onPointerMove={(event) => {
-                  const drag = gradientStopDragRef.current;
-                  if (drag?.stopIndex !== index || event.buttons !== 1) {
-                    return;
-                  }
-                  event.stopPropagation();
-                  event.preventDefault();
-                  if (previewGradientStopOffset(index, event.clientX)) {
-                    drag.moved = true;
-                  }
-                }}
-                onPointerUp={(event) => {
-                  const drag = gradientStopDragRef.current;
-                  event.stopPropagation();
-                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
-                    event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                  if (drag?.stopIndex === index && drag.moved) {
-                    commitGradientStopOffset(index, event.clientX);
-                  }
-                  gradientStopDragRef.current = null;
-                }}
-                onPointerCancel={(event) => {
-                  const drag = gradientStopDragRef.current;
-                  if (typeof event.currentTarget.hasPointerCapture === "function" &&
-                    event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                  gradientStopDragRef.current = null;
-                  if (drag?.moved) {
-                    onCancel?.();
-                  }
-                }}
-                onKeyDown={(event) => applyGradientStopOffsetKey(index, stop.offset, event)}
-                onClick={() => setSelectedGradientStopIndex(index)}
-              />
+              <PaletteControlTooltip tooltip="Drag to move gradient stop; use arrow keys for 1% nudges" key={`gradient-stop-${index}`}>
+                <button
+                  type="button"
+
+                  className={[
+                    "art-gradient-stop-marker",
+                    index === activeGradientStopIndex ? "active" : ""
+                  ].filter(Boolean).join(" ")}
+                  aria-label={`Drag gradient stop ${index + 1} at ${Math.round(stop.offset * 100)}%`}
+                  data-command-id={objectGradientStopOffsetCommandId(index, stop.offset)}
+                  data-art-gradient-stop={index}
+                  data-art-gradient-stop-active={index === activeGradientStopIndex ? "true" : undefined}
+                  data-palette-control="true"
+                  style={{
+                    "--art-gradient-stop-color": stop.color,
+                    "--art-gradient-stop-offset": `${Math.round(stop.offset * 100)}%`,
+                    opacity: stop.opacity
+                  } as CSSProperties}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    setSelectedGradientStopIndex(index);
+                    setGradientStopColorOpen(false);
+                    gradientStopDragRef.current = { stopIndex: index, moved: false };
+                    if (typeof event.currentTarget.setPointerCapture === "function") {
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }
+                  }}
+                  onPointerMove={(event) => {
+                    const drag = gradientStopDragRef.current;
+                    if (drag?.stopIndex !== index || event.buttons !== 1) {
+                      return;
+                    }
+                    event.stopPropagation();
+                    event.preventDefault();
+                    if (previewGradientStopOffset(index, event.clientX)) {
+                      drag.moved = true;
+                    }
+                  }}
+                  onPointerUp={(event) => {
+                    const drag = gradientStopDragRef.current;
+                    event.stopPropagation();
+                    if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                      event.currentTarget.hasPointerCapture(event.pointerId)) {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                    }
+                    if (drag?.stopIndex === index && drag.moved) {
+                      commitGradientStopOffset(index, event.clientX);
+                    }
+                    gradientStopDragRef.current = null;
+                  }}
+                  onPointerCancel={(event) => {
+                    const drag = gradientStopDragRef.current;
+                    if (typeof event.currentTarget.hasPointerCapture === "function" &&
+                      event.currentTarget.hasPointerCapture(event.pointerId)) {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                    }
+                    gradientStopDragRef.current = null;
+                    if (drag?.moved) {
+                      onCancel?.();
+                    }
+                  }}
+                  onKeyDown={(event) => applyGradientStopOffsetKey(index, stop.offset, event)}
+                  onClick={() => setSelectedGradientStopIndex(index)}
+                />
+              </PaletteControlTooltip>
             ))}
           </div>
-          <button
-            type="button"
-            className="art-inspector-symbol-button"
-            aria-label="Add gradient stop"
-            title="Add gradient stop"
-            disabled={!activeGradient?.canAddStop}
-            data-command-id={objectGradientAddStopCommand.id}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => {
-              setSelectedGradientStopIndex(nextInsertedGradientStopIndex(activeGradientStops));
-              onInvoke(objectGradientAddStopCommand.id);
-            }}
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className="art-inspector-symbol-button"
-            aria-label="Delete selected gradient stop"
-            title="Delete selected gradient stop"
-            disabled={!activeGradient?.canDeleteStop}
-            data-command-id={objectGradientDeleteStopCommandId(activeGradientStopIndex)}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => {
-              setSelectedGradientStopIndex((current) => Math.max(0, current - 1));
-              onInvoke(objectGradientDeleteStopCommandId(activeGradientStopIndex));
-            }}
-          >
-            −
-          </button>
+          <PaletteControlTooltip tooltip="Add gradient stop">
             <button
-            type="button"
-            className="art-inspector-symbol-button"
-            aria-label="Reverse gradient stops"
-            title="Reverse gradient stops"
-            disabled={!activeGradient?.editable}
-            data-command-id={objectGradientReverseCommand.id}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke(objectGradientReverseCommand.id)}
-          >
-            ⇆
-          </button>
-          <button
-            type="button"
-            className="art-inspector-symbol-button"
-            aria-label="Rotate gradient stops"
-            title="Rotate gradient stops"
-            disabled={!activeGradient?.editable}
-            data-command-id={objectGradientRotateCommand.id}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => onInvoke(objectGradientRotateCommand.id)}
-          >
-            ↻
-          </button>
+              type="button"
+              className="art-inspector-symbol-button"
+              aria-label="Add gradient stop"
+              disabled={!activeGradient?.canAddStop}
+              data-command-id={objectGradientAddStopCommand.id}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setSelectedGradientStopIndex(nextInsertedGradientStopIndex(activeGradientStops));
+                onInvoke(objectGradientAddStopCommand.id);
+              }}
+            >
+              +
+            </button>
+          </PaletteControlTooltip>
+          <PaletteControlTooltip tooltip="Delete selected gradient stop">
+            <button
+              type="button"
+              className="art-inspector-symbol-button"
+              aria-label="Delete selected gradient stop"
+              disabled={!activeGradient?.canDeleteStop}
+              data-command-id={objectGradientDeleteStopCommandId(activeGradientStopIndex)}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setSelectedGradientStopIndex((current) => Math.max(0, current - 1));
+                onInvoke(objectGradientDeleteStopCommandId(activeGradientStopIndex));
+              }}
+            >
+              −
+            </button>
+          </PaletteControlTooltip>
+            <PaletteControlTooltip tooltip="Reverse gradient stops">
+              <button
+              type="button"
+              className="art-inspector-symbol-button"
+              aria-label="Reverse gradient stops"
+              disabled={!activeGradient?.editable}
+              data-command-id={objectGradientReverseCommand.id}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke(objectGradientReverseCommand.id)}
+            >
+              ⇆
+            </button>
+            </PaletteControlTooltip>
+          <PaletteControlTooltip tooltip="Rotate gradient stops">
+            <button
+              type="button"
+              className="art-inspector-symbol-button"
+              aria-label="Rotate gradient stops"
+              disabled={!activeGradient?.editable}
+              data-command-id={objectGradientRotateCommand.id}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onInvoke(objectGradientRotateCommand.id)}
+            >
+              ↻
+            </button>
+          </PaletteControlTooltip>
         </div>
       ) : null}
       {showGradientStopEditor ? (
@@ -2906,24 +2931,25 @@ function ArtToolbarStyleControls() {
             data-color-picker="true"
             data-palette-control="true"
           >
-            <button
-              type="button"
-              className="toolbar-color-trigger art-gradient-stop-color-trigger"
-              aria-label="Open gradient stop color picker"
-              aria-expanded={gradientStopColorOpen}
-              title="Pick gradient stop color"
-              data-art-gradient-stop-color-trigger="true"
-              data-palette-control="true"
-              style={{ "--picker-color": currentGradientStopColor } as CSSProperties}
-              onClick={() => {
-                setColorOpen(false);
-                setEffectColorOpen(false);
-                setGradientStopColorOpen((open) => !open);
-              }}
-            >
-              <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
-              <span className="toolbar-color-trigger-label">Stop</span>
-            </button>
+            <PaletteControlTooltip tooltip="Pick gradient stop color">
+              <button
+                type="button"
+                className="toolbar-color-trigger art-gradient-stop-color-trigger"
+                aria-label="Open gradient stop color picker"
+                aria-expanded={gradientStopColorOpen}
+                data-art-gradient-stop-color-trigger="true"
+                data-palette-control="true"
+                style={{ "--picker-color": currentGradientStopColor } as CSSProperties}
+                onClick={() => {
+                  setColorOpen(false);
+                  setEffectColorOpen(false);
+                  setGradientStopColorOpen((open) => !open);
+                }}
+              >
+                <span className="toolbar-color-trigger-swatch" aria-hidden="true" />
+                <span className="toolbar-color-trigger-label">Stop</span>
+              </button>
+            </PaletteControlTooltip>
             {gradientStopColorOpen ? (
               <div className="art-color-popover" role="dialog" aria-label="Gradient stop color picker">
                 <ColorPickerPopoverBody
@@ -2946,48 +2972,48 @@ function ArtToolbarStyleControls() {
       {showAdvancedStrokeControls && (supportsLineEnds || supportsCorners) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {showAdvancedStrokeControls && supportsLineEnds ? (
-        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control"
-          title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}>
-          <span className="art-stroke-control-label">Line ends</span>
-          <select
-            className="toolbar-select"
-            value={`object.stroke.cap.${strokeCap}`}
-            aria-label="Line ends"
-            disabled={!selected}
-            title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {objectStrokeLineCapCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {lineCapLabel(command.strokeLineCap)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PaletteControlTooltip tooltip={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}>
+          <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
+            <span className="art-stroke-control-label">Line ends</span>
+            <select
+              className="toolbar-select"
+              value={`object.stroke.cap.${strokeCap}`}
+              aria-label="Line ends"
+              disabled={!selected}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => onInvoke(event.currentTarget.value)}
+            >
+              {objectStrokeLineCapCommands.map((command) => (
+                <option key={command.id} value={command.id}>
+                  {lineCapLabel(command.strokeLineCap)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </PaletteControlTooltip>
         ) : null}
         {showAdvancedStrokeControls && supportsCorners ? (
-        <label className="toolbar-control-label art-stroke-join-control art-stroke-control"
-          title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}>
-          <span className="art-stroke-control-label">Corners</span>
-          <select
-            className="toolbar-select"
-            value={`object.stroke.join.${strokeJoin}`}
-            aria-label="Corners"
-            disabled={!selected}
-            title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}
-            data-palette-control="true"
-            onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => onInvoke(event.currentTarget.value)}
-          >
-            {objectStrokeLineJoinCommands.map((command) => (
-              <option key={command.id} value={command.id}>
-                {lineJoinLabel(command.strokeLineJoin)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PaletteControlTooltip tooltip={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}>
+          <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
+            <span className="art-stroke-control-label">Corners</span>
+            <select
+              className="toolbar-select"
+              value={`object.stroke.join.${strokeJoin}`}
+              aria-label="Corners"
+              disabled={!selected}
+              data-palette-control="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => onInvoke(event.currentTarget.value)}
+            >
+              {objectStrokeLineJoinCommands.map((command) => (
+                <option key={command.id} value={command.id}>
+                  {lineJoinLabel(command.strokeLineJoin)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </PaletteControlTooltip>
         ) : null}
       </div>
       ) : null}
@@ -3190,6 +3216,8 @@ function ColorPickerControl({
   const normalizedCurrentColor = normalizeHexColor(currentColor) ?? textColorCommands[0].color;
   const [open, setOpen] = useState(false);
   const [draftHex, setDraftHex] = useState(normalizedCurrentColor);
+
+  useEffect(() => open ? registerInlinePopover(() => setOpen(false)) : undefined, [open]);
 
   useEffect(() => {
     onOpenChange?.(open);
@@ -3919,6 +3947,8 @@ function ToolbarPaletteItem({
     clearHoldTimer();
   }, [clearHoldTimer]);
 
+  useEffect(() => menuOpen ? registerInlinePopover(() => setMenuOpen(false)) : undefined, [menuOpen]);
+
   useEffect(() => {
     if (!menuOpen) {
       return undefined;
@@ -4627,6 +4657,8 @@ function DistributeCommandIconButton({
   useEffect(() => () => {
     clearHoldTimer();
   }, [clearHoldTimer]);
+
+  useEffect(() => menuOpen ? registerInlinePopover(() => setMenuOpen(false)) : undefined, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) {

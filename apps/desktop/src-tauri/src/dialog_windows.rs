@@ -1013,23 +1013,44 @@ struct Session {
     pending_move: Option<(Instant, SavedPosition)>,
     content_fit: Option<MeasuredContent>,
 }
+struct PreferencesFrame {
+    applied_position: Option<(i32, i32)>,
+    pending_move: Option<(Instant, SavedPosition)>,
+}
+impl PreferencesFrame {
+    fn record_move(&mut self, position: (i32, i32), scale: f64, saved: SavedPosition) {
+        // Native placement may be rounded or constrained by a few physical pixels.
+        // Retain the marker through those events, but accept a user's larger move immediately.
+        let tolerance = scale.ceil().max(2.0);
+        if self.applied_position.is_some_and(|applied| {
+            (f64::from(applied.0) - f64::from(position.0)).abs() <= tolerance
+                && (f64::from(applied.1) - f64::from(position.1)).abs() <= tolerance
+        }) {
+            return;
+        }
+        self.applied_position = None;
+        self.pending_move = Some((Instant::now(), saved));
+    }
+}
 #[derive(Default)]
 struct Registry {
+    preferences: Option<PreferencesFrame>,
     sessions: HashMap<String, Session>,
     next_slot: u64,
 }
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
 
 pub(crate) fn is_dialog_label(label: &str) -> bool {
-    label
-        .strip_prefix("dialog-main-")
-        .and_then(|s| s.split_once('-'))
-        .is_some_and(|(kind, slot)| {
-            kind_spec(kind).is_ok()
-                && !slot.is_empty()
-                && slot.len() <= 20
-                && slot.bytes().all(|c| c.is_ascii_digit())
-        })
+    label == super::PREFERENCES_WINDOW_LABEL
+        || label
+            .strip_prefix("dialog-main-")
+            .and_then(|s| s.split_once('-'))
+            .is_some_and(|(kind, slot)| {
+                kind_spec(kind).is_ok()
+                    && !slot.is_empty()
+                    && slot.len() <= 20
+                    && slot.bytes().all(|c| c.is_ascii_digit())
+            })
 }
 fn authorize(
     session: &Session,
@@ -1571,6 +1592,10 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
     }
 }
 pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+    flush_preferences(app, PreferencesClose::Close);
+    if let Some(window) = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL) {
+        let _ = window.destroy();
+    }
     let sessions = std::mem::take(&mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).sessions);
     for mut session in sessions.into_values() {
         flush_position(app, &mut session);
@@ -1759,6 +1784,9 @@ fn bring_to_front_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Resul
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SavedPosition {
+    // Logical client size, independent of monitor DPI; old position-only files load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<(f64, f64)>,
     monitor: String,
     x: f64,
     y: f64,
@@ -1801,6 +1829,41 @@ impl WorkArea {
         )
     }
 }
+fn saved_frame(
+    work: &WorkArea,
+    position: (i32, i32),
+    outer: (u32, u32),
+    size: Option<(f64, f64)>,
+) -> SavedPosition {
+    let x = f64::from(position.0) / work.scale;
+    let y = f64::from(position.1) / work.scale;
+    SavedPosition {
+        size,
+        monitor: work.id.clone(),
+        x,
+        y,
+        offset_x: ((x - work.x) / (work.width - f64::from(outer.0) / work.scale).max(1.0))
+            .clamp(0.0, 1.0),
+        offset_y: ((y - work.y) / (work.height - f64::from(outer.1) / work.scale).max(1.0))
+            .clamp(0.0, 1.0),
+    }
+}
+fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Option<(f64, f64)> {
+    saved.filter(|_| resizable)?.size.filter(|(width, height)| {
+        width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
+    })
+}
+fn restorable_position<'a>(
+    saved: Option<&'a SavedPosition>,
+    monitors: &[WorkArea],
+) -> Option<&'a SavedPosition> {
+    saved.filter(|p| {
+        [p.x, p.y, p.offset_x, p.offset_y]
+            .iter()
+            .all(|v| v.is_finite())
+            && monitors.iter().any(|m| m.id == p.monitor)
+    })
+}
 fn position_for(
     saved: Option<&SavedPosition>,
     monitors: &[WorkArea],
@@ -1841,6 +1904,19 @@ fn read_positions<R: Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, Save
         .unwrap_or_default()
 }
 fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    let (kind, content_fit, spec) = if window.label() == super::PREFERENCES_WINDOW_LABEL {
+        ("preferences".to_string(), None, preferences_spec())
+    } else {
+        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let session = registry
+            .sessions
+            .values()
+            .find(|s| s.registration.window_label == window.label())
+            .ok_or("Unknown dialog window")?;
+        let kind = session.snapshot.dialog_kind.clone();
+        let spec = kind_spec(&kind)?;
+        (kind, session.content_fit, spec)
+    };
     let app = window.app_handle();
     let owner = app
         .get_webview_window(super::MAIN_WINDOW_LABEL)
@@ -1861,31 +1937,19 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     let frame = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let positions = read_positions(app);
-    let (kind, content_fit) = REGISTRY
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .sessions
-        .values()
-        .find(|s| s.registration.window_label == window.label())
-        .map(|s| (s.snapshot.dialog_kind.clone(), s.content_fit))
-        .ok_or("Unknown dialog window")?;
-    let spec = kind_spec(&kind)?;
     // Logical, through the scale at measurement; finish_placement converts at the destination.
     let fitted_height = content_fit
         .filter(|_| spec.fit_content)
         .map(|fit| fit.logical_height(spec.min_size.1));
-    let client_size = (spec.size.0, fitted_height.unwrap_or(spec.size.1));
+    let remembered = remembered_client_size(positions.get(&kind), kind == "preferences");
+    let client_size = remembered.unwrap_or((spec.size.0, fitted_height.unwrap_or(spec.size.1)));
     let client = window.inner_size().map_err(|e| e.to_string())?;
     // Centre the frame the dialog will have: today's decorations around the fitted client.
     let size = (
-        f64::from(frame.width) / scale,
+        f64::from(frame.width) / scale + client_size.0 - f64::from(client.width) / scale,
         f64::from(frame.height) / scale + client_size.1 - f64::from(client.height) / scale,
     );
-    let saved = positions.get(&kind).filter(|p| {
-        [p.x, p.y, p.offset_x, p.offset_y]
-            .iter()
-            .all(|v| v.is_finite())
-    });
+    let saved = restorable_position(positions.get(&kind), &monitors);
     let (x, y, destination_scale) = position_for(
         saved,
         &monitors,
@@ -1910,7 +1974,8 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             f64::from(owner_size.height) / destination.scale,
         ),
     });
-    let fits_work_area = template_placement.is_some() || fitted_height.is_some();
+    let fits_work_area =
+        template_placement.is_some() || fitted_height.is_some() || remembered.is_some();
     if fits_work_area {
         // The picker, and a fitted dialog, must also fit work areas smaller than its normal
         // minimum. Restore a bounded minimum after measuring the destination's decorations.
@@ -1923,9 +1988,10 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     finish_placement(
         ((x, y, destination_scale), client_size),
         destination,
-        fitted_height.is_some(),
+        fits_work_area,
         template_placement,
         |x, y| {
+            mark_preferences_position(window.label(), (x as i32, y as i32));
             window
                 .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
                 .map_err(|e| e.to_string())
@@ -1933,7 +1999,13 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         |width, height| {
             window
                 .set_size(tauri::PhysicalSize::new(width, height))
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            // AppKit may move a bottom-anchored frame when its client size changes.
+            if window.label() == super::PREFERENCES_WINDOW_LABEL {
+                let position = window.outer_position().map_err(|e| e.to_string())?;
+                mark_preferences_position(window.label(), (position.x, position.y));
+            }
+            Ok(())
         },
         || {
             let outer = window.outer_size().map_err(|e| e.to_string())?;
@@ -2040,7 +2112,23 @@ fn finish_placement(
     );
     move_to(x * scale, y * scale)
 }
+fn mark_preferences_position(label: &str, position: (i32, i32)) {
+    if label == super::PREFERENCES_WINDOW_LABEL {
+        if let Some(frame) = REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preferences
+            .as_mut()
+        {
+            frame.applied_position = Some(position);
+        }
+    }
+}
 pub(crate) fn mark_transient(label: &str) {
+    // Preferences uses placement positions with DPI tolerance; suspension also guards restores.
+    if label == super::PREFERENCES_WINDOW_LABEL {
+        return;
+    }
     if let Some(session) = REGISTRY
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -2069,16 +2157,13 @@ fn should_persist(
         && ready
         && !transient
 }
-fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+fn sample_position<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    ready: bool,
+    transient: bool,
+    closing: bool,
+) -> Option<SavedPosition> {
     let app = window.app_handle();
-    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(session) = registry
-        .sessions
-        .values_mut()
-        .find(|s| s.registration.window_label == window.label())
-    else {
-        return;
-    };
     if !should_persist(
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
@@ -2091,40 +2176,66 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
             window.is_maximized().unwrap_or(true),
             window.is_fullscreen().unwrap_or(true),
         ),
-        super::quit_in_progress(),
+        // An explicit close captures the last live frame even after quit has begun. Events
+        // from teardown still use the ordinary quit/suspension/minimized guards.
+        super::quit_in_progress() && !closing,
         super::utility_windows_suspended(),
-        session.ready,
-        Instant::now() < session.transient_until,
+        ready,
+        transient,
     ) {
-        return;
+        return None;
     }
     let Ok(position) = window.outer_position() else {
-        return;
+        return None;
     };
-    if !super::UTILITY_SUSPENSION
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .persist_move(window.label(), (position.x, position.y))
+    if !closing
+        && !super::UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .persist_move(window.label(), (position.x, position.y))
     {
-        return;
+        return None;
     }
     let Ok(Some(monitor)) = window.current_monitor() else {
-        return;
+        return None;
     };
     let m = WorkArea::from_monitor(&monitor);
     let Ok(size) = window.outer_size() else {
+        return None;
+    };
+    let client = if window.label() == super::PREFERENCES_WINDOW_LABEL {
+        let client = window.inner_size().ok()?;
+        Some((
+            f64::from(client.width) / m.scale,
+            f64::from(client.height) / m.scale,
+        ))
+    } else {
+        None
+    };
+    Some(saved_frame(
+        &m,
+        (position.x, position.y),
+        (size.width, size.height),
+        client,
+    ))
+}
+fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let app = window.app_handle();
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(session) = registry
+        .sessions
+        .values_mut()
+        .find(|s| s.registration.window_label == window.label())
+    else {
         return;
     };
-    let x = f64::from(position.x) / m.scale;
-    let y = f64::from(position.y) / m.scale;
-    let saved = SavedPosition {
-        monitor: m.id,
-        x,
-        y,
-        offset_x: ((x - m.x) / (m.width - f64::from(size.width) / m.scale).max(1.0))
-            .clamp(0.0, 1.0),
-        offset_y: ((y - m.y) / (m.height - f64::from(size.height) / m.scale).max(1.0))
-            .clamp(0.0, 1.0),
+    let Some(saved) = sample_position(
+        window,
+        session.ready,
+        Instant::now() < session.transient_until,
+        false,
+    ) else {
+        return;
     };
     session.pending_move = Some((Instant::now(), saved));
     drop(registry);
@@ -2147,6 +2258,13 @@ fn take_pending_positions(registry: &mut Registry) -> PositionWrites {
                 .map(|(at, saved)| (at, s.snapshot.dialog_kind.clone(), saved))
         })
         .collect();
+    if let Some((at, saved)) = registry
+        .preferences
+        .as_mut()
+        .and_then(|p| p.pending_move.take())
+    {
+        moves.push((at, "preferences".into(), saved));
+    }
     // Several tabs can have the same kind open. Persist the most recent genuine move for that
     // kind, rather than letting HashMap iteration choose which position survives the burst.
     moves.sort_by_key(|(at, _, _)| *at);
@@ -2192,6 +2310,14 @@ fn debounce_positions(
         flush(path);
     }
 }
+fn merge_positions(positions: &mut HashMap<String, SavedPosition>, writes: PositionWrites) {
+    for (kind, mut saved) in writes {
+        if saved.size.is_none() {
+            saved.size = positions.get(&kind).and_then(|previous| previous.size);
+        }
+        positions.insert(kind, saved);
+    }
+}
 fn write_positions(path: &std::path::Path, writes: PositionWrites) {
     if writes.is_empty() {
         return;
@@ -2207,9 +2333,14 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
         .filter(|b| b.len() <= MAX_BYTES)
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    positions.extend(writes);
+    merge_positions(&mut positions, writes);
     if let Ok(bytes) = serde_json::to_vec(&positions) {
-        let _ = std::fs::write(path, bytes);
+        use std::io::Write;
+        if let Err(error) = std::fs::File::create(path)
+            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+        {
+            eprintln!("Could not persist dialog frames: {error}");
+        }
     }
 }
 fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
@@ -2221,10 +2352,139 @@ fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) 
     }
 }
 
+// Preferences retains its renderer and settings permissions. Its native frame, owner,
+// suspension and reveal lifecycle belong to this host, like protocol-backed dialogs.
+fn preferences_spec() -> DialogKindSpec {
+    DialogKindSpec {
+        maximizable: false,
+        resizable: true,
+        title: "ChemDraft Preferences",
+        size: (460.0, 360.0),
+        min_size: (360.0, 280.0),
+        fit_content: false,
+    }
+}
+pub(crate) fn show_preferences<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    first: bool,
+) -> Result<(), String> {
+    let target = window.clone();
+    super::run_on_main_thread_blocking(window, move || {
+        if first {
+            REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .preferences = Some(PreferencesFrame {
+                applied_position: None,
+                pending_move: None,
+            });
+            place_window(&target)?;
+        } else {
+            // A hidden retained Preferences window may outlive a disconnected display.
+            // Keep reachable retained frames in place, as with other hosted dialogs.
+            let positions = read_positions(target.app_handle());
+            if let Some(saved) = positions.get("preferences") {
+                let monitors: Vec<_> = target
+                    .available_monitors()
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .map(WorkArea::from_monitor)
+                    .collect();
+                if restorable_position(Some(saved), &monitors).is_none() {
+                    mark_transient(target.label());
+                    place_window(&target)?;
+                }
+            }
+        }
+        show_on_main(&target)
+    })
+    .and_then(|result| result)
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreferencesClose {
+    Hide,
+    Close,
+    Destroyed,
+}
+
+// All close paths use this transaction. Capture before hiding/destroying, without holding
+// REGISTRY across native calls. A Destroyed event can only drain a previously captured frame.
+fn flush_preferences_to(
+    registry: &Mutex<Registry>,
+    path: &std::path::Path,
+    close: PreferencesClose,
+    capture: impl FnOnce() -> Option<SavedPosition>,
+) {
+    let current = if close == PreferencesClose::Destroyed {
+        None
+    } else {
+        capture()
+    };
+    // Serialize snapshot + write with the worker so immediate close/reopen sees the latest frame.
+    let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+    let mut registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+    let pending = registry
+        .preferences
+        .as_mut()
+        .and_then(|p| p.pending_move.take());
+    if close == PreferencesClose::Destroyed {
+        registry.preferences = None;
+    }
+    drop(registry);
+    if let Some(saved) = current.or_else(|| pending.map(|(_, saved)| saved)) {
+        write_positions(path, vec![("preferences".into(), saved)]);
+    }
+}
+pub(crate) fn flush_preferences<R: Runtime>(app: &tauri::AppHandle<R>, close: PreferencesClose) {
+    if let Ok(path) = saved_path(app) {
+        flush_preferences_to(&REGISTRY, &path, close, || {
+            app.get_webview_window(super::PREFERENCES_WINDOW_LABEL)
+                .and_then(|window| sample_position(&window, true, false, true))
+        });
+    }
+}
+fn persist_preferences_move<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(frame) = registry.preferences.as_mut() else {
+        return;
+    };
+    let Some(saved) = sample_position(window, true, false, false) else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(scale) = window.scale_factor() else {
+        return;
+    };
+    frame.record_move((position.x, position.y), scale, saved);
+    drop(registry);
+    if let Ok(path) = saved_path(window.app_handle()) {
+        let _ = POSITION_WORKER.try_send(path);
+    }
+}
+
 /// Native close/destroy settles even if the renderer crashes or never executes cleanup.
 pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
     if !is_dialog_label(window.label()) {
         return;
+    }
+    if window.label() == super::PREFERENCES_WINDOW_LABEL {
+        match event {
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    persist_preferences_move(&webview);
+                }
+            }
+            WindowEvent::CloseRequested { .. } => {
+                flush_preferences(window.app_handle(), PreferencesClose::Close);
+            }
+            WindowEvent::Destroyed => {
+                flush_preferences(window.app_handle(), PreferencesClose::Destroyed);
+            }
+            _ => {}
+        }
+        // Focus uses the shared raising path below; Preferences has no protocol session.
     }
     match event {
         WindowEvent::Focused(true) => {
@@ -2272,6 +2532,465 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The native policy is shared. Pass a platform into the fixture so either test host
+    // exercises both decoration models, rather than choosing with cfg! or OS detection.
+    fn preferences_native_frame(
+        platform: &str,
+        scale: f64,
+        minimized: bool,
+    ) -> Option<SavedPosition> {
+        if !should_persist(true, minimized, (false, false), false, false, true, false) {
+            return None;
+        }
+        let decorations = match platform {
+            "windows" => (16.0, 40.0),
+            "macos" => (0.0, 28.0),
+            _ => panic!("Unknown test platform"),
+        };
+        let work = WorkArea {
+            id: "secondary".into(),
+            x: -1600.0,
+            y: 0.0,
+            width: 1600.0,
+            height: 1000.0,
+            scale,
+        };
+        // Physical measurements from the destination monitor, including native decorations.
+        let client = ((800.0 * scale) as u32, (600.0 * scale) as u32);
+        Some(saved_frame(
+            &work,
+            ((-1400.0 * scale) as i32, (120.0 * scale) as i32),
+            (
+                ((800.0 + decorations.0) * scale) as u32,
+                ((600.0 + decorations.1) * scale) as u32,
+            ),
+            Some((
+                f64::from(client.0) / work.scale,
+                f64::from(client.1) / work.scale,
+            )),
+        ))
+    }
+
+    fn preferences_test_path(platform: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        std::env::temp_dir()
+            .join(format!(
+                "chemdraft-preferences-close-{}-{}-{platform}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ))
+            .join("dialog-positions.json")
+    }
+
+    fn assert_preferences_close_reopens(platform: &str, close: PreferencesClose) {
+        for scale in [1.0, 1.5, 2.0] {
+            // A debounced worker may already have drained every event. A stale queued move
+            // must also lose to the live close-time frame, including a resize with no move.
+            for stale_pending in [false, true] {
+                let path = preferences_test_path(platform);
+                let mut stale = preferences_native_frame(platform, scale, false).unwrap();
+                stale.size = Some(preferences_spec().size);
+                stale.x = -1500.0;
+                let registry = Mutex::new(Registry {
+                    preferences: Some(PreferencesFrame {
+                        applied_position: Some((0, 0)),
+                        pending_move: stale_pending.then_some((Instant::now(), stale)),
+                    }),
+                    ..Registry::default()
+                });
+                flush_preferences_to(&registry, &path, close, || {
+                    assert!(
+                        registry.try_lock().is_ok(),
+                        "native reads cannot hold REGISTRY"
+                    );
+                    preferences_native_frame(platform, scale, false)
+                });
+                // Native destruction follows CloseRequested; Hide keeps the renderer alive.
+                if close == PreferencesClose::Close {
+                    flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
+                        panic!("Destroyed must never query a dead native window")
+                    });
+                    assert!(registry.lock().unwrap().preferences.is_none());
+                } else {
+                    assert!(registry.lock().unwrap().preferences.is_some());
+                }
+                drop(registry);
+                // Read disk after dropping all live state, just as an app relaunch does.
+                let positions: HashMap<String, SavedPosition> =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let saved = &positions["preferences"];
+                assert_eq!(saved.size, Some((800.0, 600.0)), "{platform}");
+                assert_eq!((saved.x, saved.y), (-1400.0, 120.0), "{platform}");
+                let work = WorkArea {
+                    id: "secondary".into(),
+                    x: -1600.0,
+                    y: 0.0,
+                    width: 1600.0,
+                    height: 1000.0,
+                    scale,
+                };
+                let decorations = if platform == "windows" {
+                    (16.0, 40.0)
+                } else {
+                    (0.0, 28.0)
+                };
+                let client = remembered_client_size(Some(saved), true).unwrap();
+                let placement = position_for(
+                    restorable_position(Some(saved), std::slice::from_ref(&work)),
+                    std::slice::from_ref(&work),
+                    &work,
+                    (0.0, 0.0, 1200.0, 800.0),
+                    (client.0 + decorations.0, client.1 + decorations.1),
+                );
+                assert!((placement.0 + 1400.0 * scale).abs() < 1e-6, "{platform}");
+                assert!((placement.1 - 120.0 * scale).abs() < 1e-6, "{platform}");
+                assert_eq!(placement.2, scale);
+                let reopened_client = std::cell::Cell::new((0, 0));
+                finish_placement(
+                    (placement, client),
+                    &work,
+                    true,
+                    None,
+                    |_, _| Ok::<_, String>(()),
+                    |width, height| {
+                        reopened_client.set((width, height));
+                        Ok(())
+                    },
+                    || {
+                        Ok(DialogFrame {
+                            client: reopened_client.get(),
+                            outer: (
+                                reopened_client.get().0 + (decorations.0 * scale) as u32,
+                                reopened_client.get().1 + (decorations.1 * scale) as u32,
+                            ),
+                        })
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    reopened_client.get(),
+                    ((800.0 * scale) as u32, (600.0 * scale) as u32)
+                );
+                std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_native_x_and_red_close_save_live_frame_before_destroy_and_relaunch() {
+        for platform in ["windows", "macos"] {
+            assert_preferences_close_reopens(platform, PreferencesClose::Close);
+        }
+    }
+
+    #[test]
+    fn preferences_menu_hide_saves_live_frame_and_relaunch_restores_it() {
+        for platform in ["windows", "macos"] {
+            assert_preferences_close_reopens(platform, PreferencesClose::Hide);
+        }
+    }
+
+    #[test]
+    fn preferences_minimized_close_and_destroy_keep_the_last_valid_frame() {
+        for platform in ["windows", "macos"] {
+            let path = preferences_test_path(platform);
+            let valid = preferences_native_frame(platform, 1.5, false).unwrap();
+            let registry = Mutex::new(Registry {
+                preferences: Some(PreferencesFrame {
+                    applied_position: None,
+                    pending_move: Some((Instant::now(), valid.clone())),
+                }),
+                ..Registry::default()
+            });
+            flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
+                preferences_native_frame(platform, 1.5, true)
+            });
+            let bytes = std::fs::read(&path).unwrap();
+            let positions: HashMap<String, SavedPosition> = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(positions["preferences"].size, valid.size);
+            assert_eq!(positions["preferences"].x, valid.x);
+            flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
+                panic!("Destroyed cannot sample a frame")
+            });
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_preference_frames_load_and_invalid_client_sizes_are_ignored() {
+        let legacy: SavedPosition = serde_json::from_value(json!({
+            "monitor":"one", "x":0, "y":0, "offsetX":0.5, "offsetY":0.5
+        }))
+        .unwrap();
+        assert_eq!(remembered_client_size(Some(&legacy), true), None);
+        for size in [
+            (0.0, 600.0),
+            (800.0, -1.0),
+            (800.0, f64::NAN),
+            (f64::INFINITY, 600.0),
+        ] {
+            let invalid = SavedPosition {
+                size: Some(size),
+                ..legacy.clone()
+            };
+            assert_eq!(remembered_client_size(Some(&invalid), true), None);
+        }
+        let resized = SavedPosition {
+            size: Some((800.0, 600.0)),
+            ..legacy.clone()
+        };
+        let mut positions = HashMap::from([("preferences".into(), resized)]);
+        merge_positions(&mut positions, vec![("preferences".into(), legacy)]);
+        assert_eq!(positions["preferences"].size, Some((800.0, 600.0)));
+    }
+
+    #[test]
+    fn preferences_native_and_menu_paths_share_the_close_flush_before_disposal() {
+        let source = include_str!("dialog_windows.rs");
+        let events = source
+            .split("pub(crate) fn on_window_event")
+            .nth(1)
+            .unwrap()
+            .split("// Focus uses the shared raising path")
+            .next()
+            .unwrap();
+        assert!(events.contains("WindowEvent::CloseRequested { .. } => {\n                flush_preferences(window.app_handle(), PreferencesClose::Close);"));
+        assert!(events.contains("WindowEvent::Destroyed => {\n                flush_preferences(window.app_handle(), PreferencesClose::Destroyed);"));
+        let owner_close = source
+            .split("pub(crate) fn dismiss_owned")
+            .nth(1)
+            .unwrap()
+            .split("fn reveal_on_main")
+            .next()
+            .unwrap();
+        assert!(
+            owner_close
+                .find("flush_preferences(app, PreferencesClose::Close)")
+                .unwrap()
+                < owner_close.find("window.destroy()").unwrap()
+        );
+        let lib = include_str!("lib.rs");
+        let menu_close = lib
+            .split("async fn toggle_preferences_window")
+            .nth(1)
+            .unwrap()
+            .split("fn ensure_preferences_window")
+            .next()
+            .unwrap();
+        assert!(
+            menu_close
+                .find("dialog_windows::PreferencesClose::Hide")
+                .unwrap()
+                < menu_close.find("window.hide()").unwrap()
+        );
+    }
+
+    #[test]
+    fn preferences_first_open_centres_and_move_close_reopen_restores_at_destination_scale() {
+        assert!(is_dialog_label(super::super::PREFERENCES_WINDOW_LABEL));
+        let owner = WorkArea {
+            id: "owner".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 900.0,
+            scale: 2.0,
+        };
+        let other = WorkArea {
+            id: "other".into(),
+            x: -1200.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 900.0,
+            scale: 1.5,
+        };
+        let monitors = vec![owner.clone(), other];
+        let size = preferences_spec().size;
+        let owner_rect = (100.0, 100.0, 900.0, 700.0);
+        assert_eq!(
+            position_for(None, &monitors, &owner, owner_rect, size),
+            (640.0, 540.0, 2.0)
+        );
+        let mut registry = Registry {
+            preferences: Some(PreferencesFrame {
+                applied_position: None,
+                pending_move: Some((
+                    Instant::now(),
+                    SavedPosition {
+                        size: None,
+                        monitor: "other".into(),
+                        x: -830.0,
+                        y: 135.0,
+                        offset_x: 0.5,
+                        offset_y: 0.25,
+                    },
+                )),
+            }),
+            ..Registry::default()
+        };
+        let writes = take_pending_positions(&mut registry);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "preferences");
+        assert!(take_pending_positions(&mut registry).is_empty());
+        let saved = restorable_position(Some(&writes[0].1), &monitors);
+        assert_eq!(
+            position_for(saved, &monitors, &owner, owner_rect, size),
+            (-1245.0, 202.5, 1.5)
+        );
+        // Close flushing writes the same format read by every shared-host dialog.
+        let bytes =
+            serde_json::to_vec(&HashMap::from([(writes[0].0.clone(), writes[0].1.clone())]))
+                .unwrap();
+        let positions: HashMap<String, SavedPosition> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            position_for(
+                restorable_position(positions.get("preferences"), &monitors),
+                &monitors,
+                &owner,
+                owner_rect,
+                size
+            ),
+            (-1245.0, 202.5, 1.5)
+        );
+    }
+    #[test]
+    fn offscreen_page_size_and_preferences_clamp_but_removed_monitor_centres() {
+        let owner = WorkArea {
+            id: "owner".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 900.0,
+            scale: 1.0,
+        };
+        let monitors = vec![owner.clone()];
+        for (kind, size) in [
+            ("pageSize", kind_spec("pageSize").unwrap().size),
+            ("preferences", preferences_spec().size),
+        ] {
+            let saved = SavedPosition {
+                size: None,
+                monitor: "owner".into(),
+                x: -16000.0,
+                y: 16000.0,
+                offset_x: -2.0,
+                offset_y: 2.0,
+            };
+            let restorable = restorable_position(Some(&saved), &monitors);
+            assert!(restorable.is_some(), "{kind}");
+            assert_eq!(
+                position_for(
+                    restorable,
+                    &monitors,
+                    &owner,
+                    (100.0, 100.0, 900.0, 700.0),
+                    size
+                ),
+                (0.0, 900.0 - size.1, 1.0),
+                "{kind}"
+            );
+            let missing = SavedPosition {
+                size: None,
+                monitor: "removed".into(),
+                ..saved.clone()
+            };
+            assert!(restorable_position(Some(&missing), &monitors).is_none());
+            assert_eq!(
+                position_for(
+                    restorable_position(Some(&missing), &monitors),
+                    &monitors,
+                    &owner,
+                    (100.0, 100.0, 900.0, 700.0),
+                    size
+                ),
+                (
+                    100.0 + (900.0 - size.0) / 2.0,
+                    100.0 + (700.0 - size.1) / 2.0,
+                    1.0
+                ),
+                "{kind}"
+            );
+            let invalid = SavedPosition {
+                offset_x: f64::NAN,
+                ..saved
+            };
+            assert!(restorable_position(Some(&invalid), &monitors).is_none());
+        }
+        assert!(!should_persist(
+            true,
+            true,
+            (false, false),
+            false,
+            false,
+            true,
+            false
+        ));
+    }
+    #[test]
+    fn preferences_user_move_immediately_after_restore_is_pending_for_close_flush() {
+        let restored = SavedPosition {
+            size: None,
+            monitor: "owner".into(),
+            x: 320.0,
+            y: 270.0,
+            offset_x: 0.5,
+            offset_y: 0.5,
+        };
+        let mut registry = Registry {
+            preferences: Some(PreferencesFrame {
+                applied_position: Some((320, 270)),
+                pending_move: None,
+            }),
+            ..Registry::default()
+        };
+        let frame = registry.preferences.as_mut().unwrap();
+        frame.record_move((321, 271), 1.0, restored.clone());
+        assert!(frame.pending_move.is_none());
+        assert_eq!(frame.applied_position, Some((320, 270)));
+        // No sleep or timer expiry: the very next event is a genuine user drag.
+        frame.record_move(
+            (360, 310),
+            1.0,
+            SavedPosition {
+                x: 360.0,
+                y: 310.0,
+                ..restored
+            },
+        );
+        assert!(frame.applied_position.is_none());
+        let writes = take_pending_positions(&mut registry);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, "preferences");
+        assert_eq!((writes[0].1.x, writes[0].1.y), (360.0, 310.0));
+        assert!(take_pending_positions(&mut registry).is_empty());
+    }
+    #[test]
+    fn preferences_placement_tolerance_scales_and_retains_original_marker() {
+        let saved = SavedPosition {
+            size: None,
+            monitor: "owner".into(),
+            x: 320.0,
+            y: 270.0,
+            offset_x: 0.5,
+            offset_y: 0.5,
+        };
+        for (scale, tolerance) in [(1.0, 2), (1.5, 2), (2.5, 3), (4.0, 4)] {
+            let mut frame = PreferencesFrame {
+                applied_position: Some((320, 270)),
+                pending_move: None,
+            };
+            for delta in [1, -1, tolerance, -tolerance] {
+                frame.record_move((320 + delta, 270 - delta), scale, saved.clone());
+                assert!(frame.pending_move.is_none());
+                assert_eq!(frame.applied_position, Some((320, 270)));
+            }
+            frame.record_move((320 + tolerance + 1, 270), scale, saved.clone());
+            assert!(frame.pending_move.is_some());
+            assert!(frame.applied_position.is_none());
+        }
+    }
     #[test]
     fn vibe_code_guide_kind_and_messages_are_bounded() {
         let spec = kind_spec("vibeCodeGuide").unwrap();
@@ -2604,6 +3323,7 @@ mod tests {
         let mut registry = Registry::default();
         let (registration, _) = register(&mut registry, engine_install_snapshot(), false).unwrap();
         let saved = SavedPosition {
+            size: None,
             monitor: "other".into(),
             x: 1200.0,
             y: 20.0,
@@ -2911,6 +3631,7 @@ mod tests {
             ("disconnected", (-1488.0, 0.0)),
         ] {
             let saved = SavedPosition {
+                size: None,
                 monitor: monitor.into(),
                 x: 9999.0,
                 y: 9999.0,
@@ -3008,6 +3729,7 @@ mod tests {
         let registry = std::sync::Arc::new(Mutex::new(Registry::default()));
         let (r, _) = register(&mut registry.lock().unwrap(), snapshot(), false).unwrap();
         let saved = SavedPosition {
+            size: None,
             monitor: "display".into(),
             x: 1.0,
             y: 2.0,
@@ -3064,6 +3786,7 @@ mod tests {
         let (second, _) = register(&mut registry, other, false).unwrap();
         let now = Instant::now();
         let position = SavedPosition {
+            size: None,
             monitor: "display".into(),
             x: 1.0,
             y: 2.0,
@@ -3674,6 +4397,7 @@ mod tests {
             (580.0, 470.0, 2.0)
         );
         let saved = SavedPosition {
+            size: None,
             monitor: "other".into(),
             x: 0.0,
             y: 0.0,

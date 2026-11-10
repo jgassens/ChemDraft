@@ -154,11 +154,13 @@ describe("ToolPalette art color popover", () => {
 
   function renderPalette({
     commandId = "tool.art.rect",
+    includeGrid = false,
     currentArtStyle = artInspectorModelFor(commandId),
     onCancel = vi.fn(),
     onRequestColorPopover
   }: {
     commandId?: string;
+    includeGrid?: boolean;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
     onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
@@ -168,7 +170,7 @@ describe("ToolPalette art color popover", () => {
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.art"),
+        itemGroups: includeGrid ? getToolsetItemGroups("core.art") : widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -308,6 +310,51 @@ describe("ToolPalette art color popover", () => {
     expect(onRequestColorPopover).toHaveBeenCalledWith({ left: 12, top: 34, right: 60, bottom: 58 });
     // …and the inline (clipped) popover must NOT render — the window hosts it instead.
     expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it.each(["fill", "stroke"] as const)("toggles the inline %s picker with a full pointer and click sequence", target => {
+    renderPalette({ currentArtStyle: { ...artInspectorModelFor("tool.art.rect"), activePaintTarget: target } });
+    const click = () => act(() => {
+      colorTrigger().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      colorTrigger().dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      colorTrigger().dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    click();
+    expect(container.querySelector(".art-color-popover")).not.toBeNull();
+    click();
+    expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it("uses the app tooltip on Art stroke width and paint controls, with no native titles", async () => {
+    vi.useFakeTimers();
+    const relays: Array<{ visible: boolean; title?: string }> = [];
+    const relay = (event: Event) => relays.push((event as CustomEvent).detail);
+    document.body.classList.add("palette-window-body");
+    window.addEventListener("chemdraft:palette-tooltip", relay);
+    try {
+      renderPalette({ includeGrid: true });
+      expect(container.querySelector('[data-toolbar-style-controls="art"] [title]')).toBeNull();
+      const icon = container.querySelector<HTMLElement>(".icon-button-shell[data-tooltip-owner-id]")!;
+      await act(async () => icon.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
+      await act(async () => { vi.advanceTimersByTime(500); });
+      expect(icon.dataset.tooltipVisible).toBe("true");
+      const width = container.querySelector('[aria-label="Stroke width"]')!.closest<HTMLElement>("[data-tooltip-owner-id]")!;
+      await act(async () => {
+        icon.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: width }));
+        width.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: icon }));
+      });
+      expect(relays.at(-1)).toMatchObject({ visible: true, title: "Stroke width" });
+      const paint = container.querySelector('[aria-label="Fill paint type"]')!.closest<HTMLElement>("[data-tooltip-owner-id]")!;
+      await act(async () => {
+        width.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: paint }));
+        paint.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: width }));
+      });
+      expect(relays.at(-1)).toMatchObject({ visible: true, title: "Fill paint type" });
+    } finally {
+      document.body.classList.remove("palette-window-body");
+      window.removeEventListener("chemdraft:palette-tooltip", relay);
+      vi.useRealTimers();
+    }
   });
 
   it("uses shared color picker palettes for art colors", () => {

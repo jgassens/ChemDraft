@@ -94,7 +94,7 @@ it("clears retained document/root/shell scrolling on content update, fit and rev
   await act(async () => native.resized?.());
   expectReset();
   offset();
-  await act(async () => native.content?.({ ...rings, flyout: { ...rings.flyout, title: "Updated rings" } }));
+  await act(async () => native.content?.({ ...rings, generation: 2, flyout: { ...rings.flyout, title: "Updated rings" } }));
   expectReset();
 });
 
@@ -132,11 +132,11 @@ it("keeps scroll guards active but diagnostics silent in an unlabelled stable bu
 it("sends the live content kind on each reveal of a prewarmed Art popover", async () => {
   await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.art", kind: "artColor", prewarm: true })));
   expect(native.show).not.toHaveBeenCalled();
-  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor", openedAt: 0 }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
   await act(async () => native.content?.({ ...rings, toolsetId: "core.art" }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "flyout");
-  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor", openedAt: 2 }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
 });
 
