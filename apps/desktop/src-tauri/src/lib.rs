@@ -2699,6 +2699,13 @@ fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Va
     };
     let state = serde_json::from_str(&contents)
         .map_err(|error| format!("Toolbar customization state is invalid: {error}"))?;
+    restore_toolset_customization_extensions(path, state).map(Some)
+}
+
+fn restore_toolset_customization_extensions(
+    path: &Path,
+    state: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let (mut legacy, inline) = split_toolset_customization_state(state)?;
     let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
     // The side file is optional metadata. Missing, unreadable or invalid metadata must never
@@ -2737,7 +2744,7 @@ fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Va
             serde_json::Value::Bool(true),
         );
     }
-    Ok(Some(legacy))
+    Ok(legacy)
 }
 
 fn write_toolset_customization_state(path: &Path, state: serde_json::Value) -> Result<(), String> {
@@ -2750,9 +2757,22 @@ fn write_toolset_customization_state_with_main_writer(
     write_main: impl FnOnce(&Path, &str) -> Result<(), String>,
 ) -> Result<(), String> {
     let (legacy, mut extensions) = split_toolset_customization_state(state)?;
+    // An explicit replacement can recover malformed JSON: there is no usable previous binding
+    // to preserve. Genuine read failures still abort before either file is written; LOAD remains
+    // strict so it can never turn corrupt saved data into defaults and overwrite it silently.
+    let contents = match fs::read(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let previous = contents
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .filter(serde_json::Value::is_object)
+        .map(|state| restore_toolset_customization_extensions(path, state))
+        .transpose()?;
     // Read back whichever binding matches the CURRENT main file, including a previous binding
     // left by an interrupted save. Repeated failed saves must not evict that binding either.
-    if let Some(previous) = read_toolset_customization_state(path)? {
+    if let Some(previous) = previous {
         let (previous_legacy, previous_extensions) = split_toolset_customization_state(previous)?;
         if previous_legacy != legacy {
             extensions.previous = Some(ToolsetCustomizationBinding {
@@ -2874,6 +2894,102 @@ mod toolbar_customization_persistence_tests {
             read_toolset_customization_state(&files.main()).unwrap(),
             Some(without_metadata(legacy))
         );
+    }
+
+    fn assert_explicit_save_recovers_corrupt_main_file(with_side_file: bool) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), "{").unwrap();
+        if with_side_file {
+            let mut stale_legacy = legacy.clone();
+            stale_legacy["toolsetOverrides"][0]["visible"] = json!(false);
+            fs::write(
+                files.side(),
+                json!({
+                    "version": 1,
+                    "legacyState": stale_legacy,
+                    "fields": {"mainToolbarDefaultsRevision": 2}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        // Use the persistence function called by save_toolset_customization_state: an explicit
+        // customization must replace corrupt saved data with the user's chosen valid layout.
+        write_toolset_customization_state(&files.main(), current.clone())
+            .expect("explicit customization must recover a corrupt main file");
+        // This exact fixture has the frozen v1.1.1 shape, with no extension fields inline.
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file() {
+        assert_explicit_save_recovers_corrupt_main_file(false);
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file_with_valid_side_file() {
+        assert_explicit_save_recovers_corrupt_main_file(true);
+    }
+
+    fn assert_explicit_save_recovers_invalid_main_bytes(contents: &[u8]) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), contents).unwrap();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_null_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"null");
+    }
+
+    #[test]
+    fn explicit_save_recovers_array_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"[]");
+    }
+
+    #[test]
+    fn explicit_save_recovers_non_utf8_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(&[0xff, 0xfe]);
+    }
+
+    #[test]
+    fn explicit_save_propagates_main_file_read_errors_without_writing() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        // A directory at the main path causes a genuine I/O failure on macOS and Windows,
+        // independent of whether the test runner can bypass filesystem permission bits.
+        fs::create_dir(files.main()).unwrap();
+        let side = json!({
+            "version": 1,
+            "legacyState": legacy,
+            "fields": {"mainToolbarDefaultsRevision": 2}
+        })
+        .to_string();
+        fs::write(files.side(), &side).unwrap();
+        let read_error = fs::read_to_string(files.main()).unwrap_err().to_string();
+
+        assert_eq!(
+            write_toolset_customization_state(&files.main(), current).unwrap_err(),
+            read_error
+        );
+        assert!(files.main().is_dir());
+        assert_eq!(fs::read_to_string(files.side()).unwrap(), side);
     }
 
     #[test]
