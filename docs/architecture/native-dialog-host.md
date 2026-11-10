@@ -220,8 +220,10 @@ clipped content. When the live body overflows, the full client height plus that 
 second content minimum. This includes Custom Page Size's wrapped fields and Export's final
 **Include page guides** option. A live viewport without overflow never becomes a content minimum,
 so an oversized remembered frame is not mistaken for intrinsic content.
-Horizontal overflow similarly supplies an optional `contentWidth`; it does not impose the initial
-spec width on a user size that fits with wrapping. Both sides accept only finite positive
+The form also probes its intrinsic minimum width with a temporary `min-content` grid and supplies
+`contentWidth`, including any live horizontal overflow. It measures width even after a fit removes
+overflow, so the live minimum is not lost on the next report. The probe allows wrapping and does not
+mistake a larger user viewport for required content. Both sides accept only finite positive
 `contentHeight` and optional `contentWidth` values of at most 4096 and a `pixelRatio` from 0.5 to 8;
 the form sends an empty `ready` otherwise, so the initial spec size applies. The native host
 rejects a malformed nonempty payload. When `ready` arrives the host records the window's native scale factor with it, and
@@ -238,9 +240,16 @@ height. The natural content height has a 1px floor, independent of the kind's re
 that minimum must never add an empty band. The destination monitor's OS work area already excludes
 the taskbar/menu bar/Dock; the shared host additionally reserves a 12 logical-pixel margin on every
 edge. Every initial/reopened client is capped to that area minus the *measured* title bar and
-borders. Placement re-centres the final outer frame on first open and restores normalized offsets
-on subsequent opens. The resize minimum is bounded by the resulting client, so small screens and
-short forms remain usable. Later content growth (fields wrapping in a narrow window, a long
+borders. Placement re-centres the final outer frame on first open and restores the saved logical
+outer origin on subsequent opens, clamping only to keep the frame inside the work area. Saved
+normalized offsets remain readable for file compatibility but no longer reconstruct the origin:
+that reconstruction changed the position whenever the newly measured size differed from the saved
+outer size. Physical Windows origins are rounded so fractional DPI conversions do not lose a pixel
+on each round trip. The live minimum inner size follows the latest measured logical content size
+on both platforms, capped by the resulting client after decoration subtraction. Each re-fit can
+increase or decrease the minimum independently of a larger user size. Retained windows, including
+Preferences, reuse their latest measurement when shown again. Small screens and short forms remain
+usable. Later content growth (fields wrapping in a narrow window, a long
 message) re-fits from the live origin without taking focus. Screen-capped content scrolls above
 the pinned actions.
 Measured content minima win over smaller remembered/live dimensions independently; larger user
@@ -293,7 +302,9 @@ and pinned actions. The Rust placement simulation exercises both native platform
 versus destination DPI, remembered sizes larger than a new screen, negative coordinates, decoration
 subtraction and heights below the previous minimum. New pure-helper tests cover logical frame
 round trips, old/invalid size records and work-area margins, immediate user versus programmatic resize events, and preserving a user
-size through later move-only writes. Native tests, lint/builds and hands-on
+size through later move-only writes. Regression cases also cover live width/height minimum updates
+on grow/shrink re-fits and three Custom Page Size save/reopen cycles at Windows 1x/1.5x and macOS 2x,
+including a different initial measurement from the saved frame. Native tests, lint/builds and hands-on
 checks on macOS and Windows are left to integration for this worker task.
 
 Escape, title-bar close and Cmd/Ctrl+W cancel. Valid Enter in a field applies; composition Enter does

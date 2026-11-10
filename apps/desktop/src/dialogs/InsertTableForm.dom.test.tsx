@@ -106,7 +106,7 @@ it.each([
     // A taller window must not be measured as content (the Windows empty band) ...
     layOut(form, natural, 400, overflow);
     vi.stubGlobal("devicePixelRatio", 1.25);
-    expect(measureDialogContent(form)).toEqual({ contentHeight: Math.max(natural, overflow), pixelRatio: 1.25 });
+    expect(measureDialogContent(form)).toEqual({ contentHeight: Math.max(natural, overflow), contentWidth: 480, pixelRatio: 1.25 });
     // ... and a shorter one must not hide the buttons (the macOS cut-off).
     layOut(form, natural, 240, overflow);
     const fit = measureDialogContent(form)!;
@@ -155,10 +155,10 @@ it("waits for fonts before measuring, but never longer than the bound", async ()
     layOut(form, 262, 240); // the web font arrives and the text grows
     loaded();
     await vi.advanceTimersByTimeAsync(0);
-    expect(fit).toEqual({ contentHeight: 262, pixelRatio: 1 });
+    expect(fit).toEqual({ contentHeight: 262, contentWidth: 480, pixelRatio: 1 });
     const stuck = measureDialogContentWhenFontsReady(form, { ready: new Promise(() => {}) }, 1000);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(await stuck).toEqual({ contentHeight: 262, pixelRatio: 1 });
+    expect(await stuck).toEqual({ contentHeight: 262, contentWidth: 480, pixelRatio: 1 });
   } finally {
     form.remove();
     vi.useRealTimers();
@@ -274,7 +274,7 @@ it("measures a scrolling body at its natural height, then restores the layout", 
   };
   Object.defineProperty(form, "scrollHeight", { configurable: true, get: () => unclipped() ? 318 : 240 });
   try {
-    expect(measureDialogContent(form)).toEqual({ contentHeight: 318, pixelRatio: 1 });
+    expect(measureDialogContent(form)).toEqual({ contentHeight: 318, contentWidth: 480, pixelRatio: 1 });
     expect(form.style.getPropertyValue("height")).toBe("123px");
     expect(form.style.getPropertyValue("min-height")).toBe("");
     expect(body.getAttribute("style") ?? "").toBe("");
@@ -333,7 +333,7 @@ it.each(["macos", "windows"] as const)("sends ready once on %s with the form's m
     await act(async () => { await document.fonts?.ready; await new Promise(resolve => setTimeout(resolve, 0)); });
     const readies = host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready");
     expect(readies).toHaveLength(1);
-    expect(readies[0].data).toEqual({ contentHeight: 263, pixelRatio: platform === "macos" ? 2 : 1.5 });
+    expect(readies[0].data).toEqual({ contentHeight: 263, contentWidth: 480, pixelRatio: platform === "macos" ? 2 : 1.5 });
     expect(parseDialogMessage(readies[0])).toBeDefined();
     // A replayed snapshot at the same revision does not re-measure or resend ready.
     await act(async () => host.receive!(snapshot));

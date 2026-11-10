@@ -10,7 +10,7 @@ import { useEffect, useRef } from "react";
 export interface DialogContentFit {
   /** Rendered content height in CSS pixels, rounded up. */
   contentHeight: number;
-  /** Minimum CSS width, only when the live layout has horizontal overflow. */
+  /** Intrinsic minimum CSS width, including any live horizontal overflow. */
   contentWidth?: number;
   /** `devicePixelRatio` at measurement: CSS px × ratio = physical px, so WebView zoom and text scaling are covered. */
   pixelRatio: number;
@@ -65,7 +65,15 @@ export function measureDialogContent(element: HTMLElement): DialogContentFit | u
   const liveContentHeight = overflow > 0 ? top + liveRect.height + overflow + marginBottom : 0;
   const overflowWidth = Math.max(0, element.scrollWidth - element.clientWidth,
     ...bodies.map(body => body.scrollWidth - body.clientWidth));
-  const contentWidth = overflowWidth > 0 ? Math.ceil(liveRect.width + overflowWidth) : undefined;
+  // Read before lifting the body's overflow constraint. Ellipsis is a deliberate choice to
+  // clip text, not a request to fit all of it. Keep its declared minimum (including percentages)
+  // and a small width floor during the intrinsic probe, without affecting height measurement.
+  const clippedText = view ? Array.from(element.querySelectorAll<HTMLElement>("*")).flatMap(child => {
+    const css = view.getComputedStyle(child);
+    const overflowX = css.overflowX || css.overflow.split(" ")[0];
+    return /\bellipsis\b/.test(css.textOverflow) && ["hidden", "clip"].includes(overflowX)
+      ? [{ child, minWidth: css.minWidth && css.minWidth !== "auto" ? css.minWidth : "32px" }] : [];
+  }) : [];
   const restores = [
     // Intrinsic grid rows avoid WebKit's viewport-constrained flex cross/track sizes, including
     // nested labels and native closed selects. Keep the actual width, gaps, margins and padding.
@@ -76,6 +84,23 @@ export function measureDialogContent(element: HTMLElement): DialogContentFit | u
     const rect = element.getBoundingClientRect();
     const contentHeight = Math.ceil(Math.max(liveContentHeight,
       rect.top + (view?.scrollY ?? 0) + Math.max(rect.height, element.scrollHeight) + marginBottom));
+    // Measure width independently of the viewport. Reporting overflow alone loses the minimum
+    // as soon as a successful native fit removes that overflow, allowing the next drag to clip.
+    // min-content keeps wrapping available and does not turn a larger user window into a minimum.
+    const restoreWidth = overrideStyles(element, { width: "min-content", "min-width": "0px", "max-width": "none", "grid-template-columns": "min-content" });
+    const restoreClippedText = clippedText.map(({ child, minWidth }) => overrideStyles(child, {
+      width: "32px", "min-width": minWidth
+    }));
+    let minimumWidth: number;
+    try { minimumWidth = element.getBoundingClientRect().width; }
+    finally {
+      for (const restore of restoreClippedText.reverse()) restore();
+      restoreWidth();
+    }
+    const width = Math.ceil(Math.max(minimumWidth || 0, overflowWidth > 0 ? liveRect.width + overflowWidth : 0));
+    // Keep valid height/DPI data even when unwrapped content exceeds the protocol bound.
+    // Native placement further caps this width to the destination work area and decorations.
+    const contentWidth = width > 0 ? Math.min(width, DIALOG_CONTENT_MAX_WIDTH) : undefined;
     const fit = { contentHeight, ...(contentWidth === undefined ? {} : { contentWidth }), pixelRatio: view?.devicePixelRatio || 1 };
     return validDialogContentFit(fit) ? fit : undefined;
   } finally {
