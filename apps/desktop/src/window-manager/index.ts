@@ -538,6 +538,41 @@ export async function listenForToolsetPopoverContentRequests(
   );
 }
 
+/** Navigation stays in the focused document or palette; identify the open so delayed keys cannot
+ * activate a different flyout in the reused popover window. */
+export interface ToolsetFlyoutSession {
+  toolsetId: string;
+  flyoutId: string;
+  openedAt: number;
+}
+export interface ToolsetFlyoutKey extends ToolsetFlyoutSession {
+  key: string;
+}
+const TOOLSET_FLYOUT_KEY_EVENT = "chemdraft://toolset-flyout-key";
+const TOOLSET_FLYOUT_CLOSED_EVENT = "chemdraft://toolset-flyout-closed";
+
+export async function sendToolsetFlyoutKey(payload: ToolsetFlyoutKey): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_FLYOUT_KEY_EVENT, payload);
+}
+
+export async function listenForToolsetFlyoutKeys(handler: (payload: ToolsetFlyoutKey) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<ToolsetFlyoutKey>(TOOLSET_FLYOUT_KEY_EVENT, event => handler(event.payload));
+}
+
+export async function notifyToolsetFlyoutClosed(payload: ToolsetFlyoutSession): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_FLYOUT_CLOSED_EVENT, payload);
+}
+
+export async function listenForToolsetFlyoutClosed(handler: (payload: ToolsetFlyoutSession) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<ToolsetFlyoutSession>(TOOLSET_FLYOUT_CLOSED_EVENT, event => handler(event.payload));
+}
+
 export interface BondStereoPopoverAction {
   sessionId: string;
   action: "geometry" | "flipped" | "keep" | "close";

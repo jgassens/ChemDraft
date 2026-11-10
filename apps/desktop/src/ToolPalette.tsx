@@ -4009,6 +4009,29 @@ function ToolbarPaletteItem({
       return undefined;
     }
 
+    const navigateMenu = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const menu = shellRef.current?.querySelector<HTMLElement>('[data-toolbar-submenu="true"]');
+      if (!menu) return;
+      const target = event.target;
+      if (target instanceof Element && !shellRef.current?.contains(target) &&
+          target.closest('input, textarea, select, [contenteditable="true"], button')) return;
+      const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      if (["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const backwards = event.key === "ArrowUp" || event.key === "ArrowLeft";
+        const next = index < 0 ? (backwards ? buttons.length - 1 : 0)
+          : (index + (backwards ? buttons.length - 1 : 1)) % buttons.length;
+        buttons[next]?.focus({ preventScroll: true });
+      } else if ((event.key === "Enter" || event.key === " ") && index >= 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        buttons[index]?.click();
+      }
+    };
+
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) {
@@ -4032,9 +4055,11 @@ function ToolbarPaletteItem({
 
     document.addEventListener("pointerdown", closeOnOutsidePointer, true);
     document.addEventListener("keydown", closeOnEscape, true);
+    document.addEventListener("keydown", navigateMenu, true);
     return () => {
       document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
       document.removeEventListener("keydown", closeOnEscape, true);
+      document.removeEventListener("keydown", navigateMenu, true);
     };
   }, [menuOpen]);
 

@@ -5,6 +5,8 @@ import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
 import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
+import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   listenForToolsetPopoverContent,
   notifyToolsetPopoverClosed,
@@ -12,6 +14,8 @@ import {
   newToolsetPopoverOpening,
   listenForToolsetPopoverDismiss,
   listenForToolsetPopoverRelease,
+  listenForToolsetFlyoutKeys,
+  notifyToolsetFlyoutClosed,
   listenForBondStereoPopoverActions,
   listenForToolsetTextStyle,
   requestToolsetPopoverContent,
@@ -53,13 +57,15 @@ function hideNativePopoverWindow() {
 export function PalettePopoverWindow({
   toolsetId = "core.art",
   kind = "artColor",
-  prewarm = false
+  prewarm = false,
+  platform = detectDesktopShortcutPlatform()
 }: {
   toolsetId?: string;
   kind?: string;
   /** Built hidden ahead of use (Rust prewarm_toolset_popover): stay invisible until the palette
    *  pushes real content — never reveal off the initial placeholder state. */
   prewarm?: boolean;
+  platform?: ShortcutPlatform;
 }) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
@@ -75,10 +81,16 @@ export function PalettePopoverWindow({
   const keepWindowFocusRef = useRef(false);
   const hidePopoverWindow = () => {
     keepWindowFocusRef.current = false;
-    if (!closedOpening.current || compareToolsetPopoverOpenings(contentRef.current, closedOpening.current) > 0) {
-      closedOpening.current = contentRef.current;
+    const current = contentRef.current;
+    if (!closedOpening.current || compareToolsetPopoverOpenings(current, closedOpening.current) > 0) {
+      closedOpening.current = current;
     }
-    void notifyToolsetPopoverClosed(toolsetId, contentOpenedAt.current, contentRef.current.generation).catch(() => undefined);
+    void notifyToolsetPopoverClosed(toolsetId, contentOpenedAt.current, current.generation).catch(() => undefined);
+    if (current.kind === "flyout" && current.flyout.variant !== "bondStereo") {
+      // closedOpening rejects replays while allowing a newer generation at the same timestamp.
+      void notifyToolsetFlyoutClosed({ toolsetId, flyoutId: current.flyout.flyoutId,
+        openedAt: contentOpenedAt.current }).catch(() => undefined);
+    }
     hideNativePopoverWindow();
   };
   const closedBondStereoSessions = useRef(new Set<string>());
@@ -94,6 +106,8 @@ export function PalettePopoverWindow({
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const contentRef = useRef(content);
   contentRef.current = content;
+  const [highlightedCommandId, setHighlightedCommandId] = useState<string>();
+  const highlightedCommandRef = useRef<string | undefined>(undefined);
   const resetScroll = (phase: "reveal" | "release" | "guard" = "guard") => {
     const reset = () => {
       // A reused WKWebView can retain scrolling from layout at its previous, smaller size.
@@ -128,8 +142,8 @@ export function PalettePopoverWindow({
 
   useEffect(() => {
     const shell = shellRef.current;
-    if (shell) return installPaletteInputFocus(shell, undefined, undefined, () => keepWindowFocusRef.current);
-  }, []);
+    if (shell) return installPaletteInputFocus(shell, platform, undefined, () => keepWindowFocusRef.current);
+  }, [platform]);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-popover-window-html");
@@ -202,6 +216,11 @@ export function PalettePopoverWindow({
       perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       // A fresh push is a fresh open — it may follow a dismissal.
       contentPushedRef.current = true;
+      if (compareToolsetPopoverOpenings(opening, contentRef.current) !== 0 || payload.kind !== "flyout" ||
+          contentRef.current.kind !== "flyout" || contentRef.current.flyout.flyoutId !== payload.flyout.flyoutId) {
+        highlightedCommandRef.current = undefined;
+        setHighlightedCommandId(undefined);
+      }
       contentOpenedAt.current = openedAt;
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
@@ -329,7 +348,8 @@ export function PalettePopoverWindow({
       try {
         // Rust maps other popovers to Preserve; their fields lease the keyboard.
         // Only a deliberate E/Z keyboard reveal owns focus without a field lease.
-        const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
+        const preserveFocus = content.kind === "flyout" &&
+          !(content.flyout.variant === "bondStereo" && content.flyout.keyboardOpen);
         keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
           content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
         await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus", content.kind);
@@ -388,7 +408,8 @@ export function PalettePopoverWindow({
         return;
       }
       resetScroll();
-      void showCurrentToolsetPopoverWindow("focus", contentRef.current.kind).then(() => resetScroll("reveal")).catch(() => undefined);
+      void showCurrentToolsetPopoverWindow(contentRef.current.kind === "flyout" ? "preserve" : "focus",
+        contentRef.current.kind).then(() => resetScroll("reveal")).catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
   }, [prewarm, toolsetId]);
@@ -488,13 +509,41 @@ export function PalettePopoverWindow({
     if (!command.enabled || dismissedRef.current) {
       return;
     }
-    if (content.kind === "flyout" && content.flyout.variant === "bondStereo" && content.flyout.id) {
-      const action = command.id === "molecule.bondStereo:flipped" ? "flipped" : "geometry";
-      void sendBondStereoPopoverAction({ sessionId: content.flyout.id, action }).catch(() => undefined);
-    } else void sendPaletteCommand(command.id).catch(() => undefined);
     dismissedRef.current = true;
+    const current = contentRef.current;
+    if (current.kind === "flyout" && current.flyout.variant === "bondStereo" && current.flyout.id) {
+      const action = command.id === "molecule.bondStereo:flipped" ? "flipped" : "geometry";
+      void sendBondStereoPopoverAction({ sessionId: current.flyout.id, action }).catch(() => undefined);
+    } else void sendPaletteCommand(command.id).catch(() => undefined);
     hidePopoverWindow();
   };
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForToolsetFlyoutKeys(payload => {
+      const current = contentRef.current;
+      if (disposed || dismissedRef.current || current.kind !== "flyout" || current.flyout.variant === "bondStereo" ||
+          payload.toolsetId !== toolsetId || payload.flyoutId !== current.flyout.flyoutId ||
+          payload.openedAt !== contentOpenedAt.current) return;
+      const commands = current.flyout.commands.filter(command => command.enabled);
+      // Match the inline flyout: both axes navigate, including multi-column ring
+      // grids. The owning palette's orientation does not determine its menu's axis.
+      const backward = payload.key === "ArrowLeft" || payload.key === "ArrowUp";
+      const index = commands.findIndex(command => command.id === highlightedCommandRef.current);
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(payload.key)) {
+        const next = index < 0 ? (backward ? commands.length - 1 : 0)
+          : (index + (backward ? commands.length - 1 : 1)) % commands.length;
+        highlightedCommandRef.current = commands[next]?.id;
+        setHighlightedCommandId(highlightedCommandRef.current);
+      } else if ((payload.key === "Enter" || payload.key === " ") && index >= 0) {
+        // Use the same disabled/dismissed guard and command channel as a mouse pick.
+        // Dismissal is synchronous, so queued repeats cannot invoke a second time.
+        chooseFlyoutCommand(commands[index]!);
+      }
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); };
+  }, [toolsetId]);
 
 	return (
 	  <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
@@ -533,7 +582,9 @@ export function PalettePopoverWindow({
               key={command.id}
               type="button"
               role="menuitemradio"
+              disabled={!command.enabled}
               aria-checked={command.active}
+              data-keyboard-highlighted={command.enabled && command.id === highlightedCommandId || undefined}
               data-command-id={command.id}
               onClick={() => chooseFlyoutCommand(command)}
             >
@@ -556,6 +607,7 @@ export function PalettePopoverWindow({
               type="button"
               role="menuitem"
               disabled={!command.enabled}
+              data-keyboard-highlighted={command.enabled && command.id === highlightedCommandId || undefined}
               data-command-id={command.id}
               data-shortcut-label={command.shortcutLabel ?? "No shortcut"}
               data-toolbar-asset={command.assetName}
