@@ -30,6 +30,8 @@ import tempfile
 import threading
 import time
 
+from sidecar_reply import read_result
+
 from PIL import Image
 from rdkit import Chem, RDLogger
 
@@ -201,7 +203,7 @@ def main():
                         size = "{}x{} {}".format(probe.width, probe.height, probe.mode)
                     requested = time.monotonic()
                     sidecar.send({"id": case, "type": "recognize", "imagePath": path})
-                    reply = sidecar.read(REQUEST_TIMEOUT_S)
+                    reply = read_result(sidecar.read, case, REQUEST_TIMEOUT_S)
                     wall = time.monotonic() - requested
                     header, row = size_table(last_vote(log_path), expected, all_sizes)
                     print()
