@@ -178,7 +178,7 @@ function ExportFormBody({
         <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-format">
           Export as
         </label>
-        <select
+        <select className="native-dialog-panel-select"
           id="chemdraft-export-format"
           disabled={state.busy}
           value={state.format}
@@ -214,7 +214,7 @@ function ExportFormBody({
         {previewEnabled && visual ? <fieldset style={exportDialogFieldsetStyle}>
           <legend style={exportDialogLegendStyle}>Preview and size</legend>
           <label style={exportDialogLabelStyle}>Preset
-            <select aria-label="Size preset" disabled={state.busy} value={pendingPreset ?? presetValue} style={exportDialogInputStyle}
+            <select className="native-dialog-panel-select" aria-label="Size preset" disabled={state.busy} value={pendingPreset ?? presetValue} style={exportDialogInputStyle}
               onPointerDown={() => { keyboardPreset.current = false; }}
               onKeyDown={(event) => {
                 if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -227,7 +227,7 @@ function ExportFormBody({
             ><option value="custom">Custom</option><option value="slide">Slide - 1920 px longest side, 96 DPI</option><option value="poster">Poster - 24 in longest side, 300 DPI</option><option value="publication">Publication - 85 mm longest side, 600 DPI</option></select>
           </label>
           <label style={exportDialogLabelStyle}>Crop
-            <select disabled={state.busy} value={presentation.crop} onChange={(event) => changePresentation({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
+            <select className="native-dialog-panel-select" disabled={state.busy} value={presentation.crop} onChange={(event) => changePresentation({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
           </label>
           <label style={exportDialogLabelStyle}><input type="checkbox" disabled={state.busy} checked={presentation.linked !== false} onChange={(event) => changePresentation({ linked: event.currentTarget.checked, height: event.currentTarget.checked ? undefined : height })} />Link width and height</label>
           <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(width)} onChange={(event) => changePresentation({ width: readNumber(event.currentTarget.value) })} /></label>
@@ -246,7 +246,7 @@ function ExportFormBody({
           }} /></label>
           {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
           <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" && state.presentation ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
-          {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
+          {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select className="native-dialog-panel-select" disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
           {state.format === "pdf" ? <p style={exportDialogHintStyle}>Preview of the PDF page layout</p> : null}
           <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label={state.format === "pdf" ? "Preview of the PDF page layout" : "Actual export renderer preview"}>
             {preview.result ? <img src={preview.result.url} alt={state.format === "pdf" ? "Preview of the PDF page layout" : "Export preview"} style={{ width: "100%", height: 220, objectFit: "contain" }} />
@@ -306,7 +306,7 @@ function ExportFormBody({
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-type">
               PDF type
             </label>
-            <select
+            <select className="native-dialog-panel-select"
               id="chemdraft-export-pdf-type"
               disabled={state.busy}
               value={state.pdf.pdfType}
@@ -319,7 +319,7 @@ function ExportFormBody({
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-page">
               Page
             </label>
-            <select
+            <select className="native-dialog-panel-select"
               id="chemdraft-export-pdf-page"
               disabled={state.busy}
               value={state.pdf.page}
@@ -332,7 +332,7 @@ function ExportFormBody({
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-pdf-background">
               Background
             </label>
-            <select
+            <select className="native-dialog-panel-select"
               id="chemdraft-export-pdf-background"
               disabled={state.busy}
               value={state.pdf.background}
@@ -370,7 +370,7 @@ function ExportFormBody({
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-scale">
               Scale
             </label>
-            <select
+            <select className="native-dialog-panel-select"
               id="chemdraft-export-raster-scale"
               disabled={state.busy}
               value={String(state.raster.scale)}
@@ -387,7 +387,7 @@ function ExportFormBody({
             <label style={exportDialogLabelStyle} htmlFor="chemdraft-export-raster-background">
               Background
             </label>
-            <select
+            <select className="native-dialog-panel-select"
               id="chemdraft-export-raster-background"
               disabled={state.busy}
               value={state.raster.background}
