@@ -45,6 +45,7 @@ import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./open
 import { createTableCommands, type ActiveTableCell } from "./tableCommands";
 export { tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./tableCommands";
 import { templateDialogAction, templateInsertActions } from "./templateCommands";
+import { atomProblemCommands } from "./atomProblemCommands";
 export { templateInsertCommandId } from "./templateCommands";
 
 export interface CommandAvailability {
@@ -330,7 +331,7 @@ export const editActions: CommandSpec[] = [
     icon: "bond",
     source: "core",
     category: "edit",
-    description: "Grow two methyl groups, or attach isopropyl when carbon has fewer than two free valences"
+    description: "Add two methyls directly with two free carbon valences, or isopropyl through one bond with one; leave fully substituted carbon unchanged"
   },
   {
     id: "atom.addCyclicBondToHoveredAtom",
@@ -2352,6 +2353,7 @@ export function allShellCommands(
 ): CommandSpec[] {
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
+    ...atomProblemCommands(document).map(command => command.spec),
     ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled),

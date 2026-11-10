@@ -27,6 +27,14 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "atomProblem" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Atom problem",
+            size: (460.0, 360.0),
+            min_size: (360.0, 260.0),
+            fit_content: false,
+        }),
         "vibeCodeGuide" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -137,6 +145,44 @@ struct Snapshot {
     width: f64,
     height: f64,
     unit: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AtomProblemSnapshot {
+    title: String,
+    explanation: String,
+    target_version: u64,
+    fixes: Vec<AtomProblemFix>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AtomProblemFix {
+    action: String,
+    label: String,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum AtomProblemAction {
+    Cancel,
+    Hydrogens {
+        #[serde(rename = "targetVersion")]
+        target_version: u64,
+    },
+    Charge {
+        #[serde(rename = "targetVersion")]
+        target_version: u64,
+    },
+    Ignore {
+        #[serde(rename = "targetVersion")]
+        target_version: u64,
+    },
+    Restore {
+        #[serde(rename = "targetVersion")]
+        target_version: u64,
+    },
+}
+fn problem_action(action: &str) -> bool {
+    matches!(action, "hydrogens" | "charge" | "ignore" | "restore")
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -772,12 +818,49 @@ impl Message {
             || !token(&self.request_id)
             || self.snapshot_revision == 0
             || self.snapshot_revision > 9_007_199_254_740_991
-            || ((self.dialog_kind == "engineInstall" || self.dialog_kind == "toolInstall")
+            || ((self.dialog_kind == "engineInstall"
+                || self.dialog_kind == "toolInstall"
+                || self.dialog_kind == "atomProblem")
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 3400)
         {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "atomProblem" => {
+                serde_json::from_value::<AtomProblemSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    valid_title(&s.title)
+                        && !s.title.contains('\0')
+                        && !s.explanation.is_empty()
+                        && s.explanation.encode_utf16().count() <= 1024
+                        && !s.explanation.contains('\0')
+                        && (1..=9_007_199_254_740_991).contains(&s.target_version)
+                        && s.fixes.len() <= 4
+                        && s.fixes.iter().all(|f| {
+                            problem_action(&f.action)
+                                && !f.label.is_empty()
+                                && f.label.encode_utf16().count() <= 128
+                                && !f.label.contains('\0')
+                        })
+                        && s.fixes
+                            .iter()
+                            .map(|f| &f.action)
+                            .collect::<std::collections::HashSet<_>>()
+                            .len()
+                            == s.fixes.len()
+                })
+            }
+            "action" if self.dialog_kind == "atomProblem" => serde_json::from_value::<
+                AtomProblemAction,
+            >(self.data.clone())
+            .is_ok_and(|a| match a {
+                AtomProblemAction::Cancel => true,
+                AtomProblemAction::Hydrogens { target_version }
+                | AtomProblemAction::Charge { target_version }
+                | AtomProblemAction::Ignore { target_version }
+                | AtomProblemAction::Restore { target_version } => {
+                    (1..=9_007_199_254_740_991).contains(&target_version)
+                }
+            }),
             "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
                 serde_json::from_value::<VibeGuideSnapshot>(self.data.clone())
                     .is_ok_and(|s| valid_title(&s.title) && !s.title.contains('\0'))
@@ -1131,6 +1214,19 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
 fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if message.dialog_kind == "atomProblem"
+        && message.data["action"] != "cancel"
+        && (message.data["targetVersion"] != session.snapshot.data["targetVersion"]
+            || !session.snapshot.data["fixes"]
+                .as_array()
+                .is_some_and(|fixes| {
+                    fixes
+                        .iter()
+                        .any(|fix| fix["action"] == message.data["action"])
+                }))
+    {
+        return Err("This atom problem changed; use the current window actions".into());
+    }
     if message.dialog_kind == "structureTemplates"
         && message.data["action"] == "insert"
         && !session.snapshot.data["templateIds"]
@@ -1204,6 +1300,13 @@ fn update_snapshot(session: &mut Session, message: &Message) {
         session.terminal_request = None;
     }
     session.snapshot = message.clone();
+}
+fn releases_action_reservation(message: &Message) -> bool {
+    (message.dialog_kind == "atomProblem" && message.data["status"] == "applied")
+        || matches!(
+            message.data["status"].as_str(),
+            Some("error" | "picked" | "cancelled" | "inserted")
+        )
 }
 
 fn register(
@@ -1289,6 +1392,7 @@ pub(crate) async fn dialog_open(
         session.owner_channel = Some(channel);
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
+                || session.snapshot.dialog_kind == "atomProblem"
                 || session.snapshot.dialog_kind == "toolInstall"
                 || session.snapshot.dialog_kind == "structureTemplates"
                 || session.terminal_request.is_none()
@@ -1509,10 +1613,8 @@ pub(crate) fn dialog_publish(
         if let Some(previous) = session.receipts.get(&message.request_id) {
             return send_host(session, previous);
         }
-        if matches!(
-            message.data["status"].as_str(),
-            Some("error" | "picked" | "cancelled" | "inserted")
-        ) && session.terminal_request.as_ref() == Some(&message.request_id)
+        if releases_action_reservation(&message)
+            && session.terminal_request.as_ref() == Some(&message.request_id)
         {
             session.terminal_request = None;
         }
@@ -3130,6 +3232,7 @@ mod tests {
     fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {
         for dialog in [
             "dialog-main-pageSize-1",
+            "dialog-main-atomProblem-1",
             "dialog-main-export-1",
             "dialog-main-insertTable-1",
         ] {
@@ -3160,6 +3263,51 @@ mod tests {
     }
     fn snapshot() -> Message {
         serde_json::from_value(json!({"protocolVersion":1,"ownerWindowId":"main","documentTabId":"tab-1","dialogKind":"pageSize","sessionId":"session-1","requestId":"request-1","snapshotRevision":1,"type":"snapshot","data":{"title":"Drawing","width":8.5,"height":11,"unit":"inch"}})).unwrap()
+    }
+    #[test]
+    fn atom_problem_uses_the_modeless_host_and_restricts_actions_to_the_current_target() {
+        let spec = kind_spec("atomProblem").unwrap();
+        assert!(spec.resizable);
+        assert!(!spec.maximizable);
+        let mut message = snapshot();
+        message.dialog_kind = "atomProblem".into();
+        message.data = json!({"title":"Drawing", "explanation":"N has charge 0, expected 1 for valence 4.",
+            "targetVersion":1, "fixes":[{"action":"charge", "label":"Set formal charge to +1"}, {"action":"ignore", "label":"Ignore warning"}]});
+        assert!(message.validate().is_ok());
+        let capability = include_str!("../capabilities/dialog-host.json");
+        assert!(capability.contains("dialog-main-atomProblem-*"));
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(is_dialog_label(&registration.window_label));
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        assert!(delivery(session, "main", &message).is_ok());
+        for data in [
+            json!({"action":"deleteBond", "targetVersion":1}),
+            json!({"action":"charge", "targetVersion":0}),
+            json!({"action":"charge", "targetVersion":1, "charge":2}),
+        ] {
+            message.message_type = "action".into();
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+        message.data = json!({"action":"charge", "targetVersion":2});
+        assert!(message.validate().is_ok());
+        assert!(reserve_action(session, &message).is_err());
+        message.data = json!({"action":"hydrogens", "targetVersion":1});
+        assert!(reserve_action(session, &message).is_err());
+        message.data = json!({"action":"charge", "targetVersion":1});
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(!reserve_action(session, &message).unwrap());
+        message.request_id = "other".into();
+        assert!(reserve_action(session, &message).is_err());
+        message.message_type = "result".into();
+        message.data = json!({"status":"accepted"});
+        assert!(!releases_action_reservation(&message));
+        message.data = json!({"status":"applied"});
+        assert!(message.validate().is_ok());
+        assert!(releases_action_reservation(&message));
+        message.dialog_kind = "pageSize".into();
+        assert!(!releases_action_reservation(&message));
     }
     #[test]
     fn spacing_preview_payloads_stay_bounded_and_do_not_reserve_save() {

@@ -6,6 +6,7 @@ import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstal
 import { perfHook, perfProbe, sendPerfCompletion } from "../perf/runtime";
 import type { InsertTableOptions } from "./dialogProtocol";
 import type { StructureTemplatesSnapshot } from "./dialogProtocol";
+import type { AtomProblemSnapshot, AtomProblemAction } from "./dialogProtocol";
 
 export interface EngineInstallPresenter {
   action(action: EngineInstallAction): void | Promise<void>;
@@ -40,10 +41,12 @@ export class DialogCoordinator {
   private sessions = new Map<string, Session>();
   private subscription?: Promise<() => void>;
   private stopped = false;
+  private atomProblemOpening: Promise<void> = Promise.resolve();
   constructor(private transport: DialogTransport, private owner: {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
     insertTable?(tabId: string, options: InsertTableOptions): void | Promise<void>;
     insertTemplate?(tabId: string, templateId: string): void | Promise<void>;
+    fixAtomProblem?(tabId: string, action: AtomProblemAction, targetVersion: number): void | Promise<void>;
     applyArrangementSpacing?(tabId: string, percent: number): void | Promise<void>;
     previewArrangementSpacing?(tabId: string, percent: number): string | Promise<string>;
     onSpacingSettled?(tabId: string): void;
@@ -97,6 +100,27 @@ export class DialogCoordinator {
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     return this.open(tabId, "pageSize", data);
   }
+  async openAtomProblem(tabId: string, data: AtomProblemSnapshot): Promise<void> {
+    // Serialize opens across tabs so concurrent commands cannot create two problem windows.
+    const opening = this.atomProblemOpening.then(async () => {
+      for (const session of this.sessions.values()) {
+        if (session.snapshot.dialogKind === "atomProblem" && session.snapshot.documentTabId !== tabId) await this.settle(session, "close");
+      }
+      await this.updateAtomProblem(tabId, data);
+      await this.open(tabId, "atomProblem", data);
+    });
+    this.atomProblemOpening = opening.catch(() => {});
+    return opening;
+  }
+  async updateAtomProblem(tabId: string, data: AtomProblemSnapshot): Promise<void> {
+    const session = this.sessions.get(`${tabId}:atomProblem`);
+    if (!session || session.settled || session.snapshot.dialogKind !== "atomProblem") return;
+    if (data.fixes.length === 0) { await this.settle(session, "close"); return; }
+    const snapshot = { ...session.snapshot, data };
+    if (!parseDialogMessage(snapshot)) throw new Error("Invalid atom problem snapshot");
+    session.snapshot = snapshot;
+    if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
+  }
   async openInsertTable(tabId: string, data: InsertTableOptions & { title: string }): Promise<void> {
     return this.open(tabId, "insertTable", data);
   }
@@ -147,7 +171,7 @@ export class DialogCoordinator {
     if (existing) {
       // Reuse the retained snapshot and native window, preserving its local draft and position.
       const receipt = existing.terminalRequestId ? existing.receipts.get(existing.terminalRequestId) : undefined;
-      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall" || kind === "structureTemplates") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) {
+      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall" || kind === "structureTemplates" || kind === "atomProblem") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) {
         if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", existing.snapshot.sessionId));
         await this.transport.open(existing.snapshot);
         if (perfProbe) perfHook(() => sendPerfCompletion(existing.registration!.windowLabel, existing.snapshot.sessionId, "dialog-open"));
@@ -157,7 +181,7 @@ export class DialogCoordinator {
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -168,7 +192,7 @@ export class DialogCoordinator {
       if (afterClose) await afterClose;
       if (session.settled || this.stopped) return;
       session.registration = await this.transport.open(snapshot);
-      if (!session.settled && session.ready && (session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall")) await this.transport.publish(session.registration.hostId, session.snapshot);
+      if (!session.settled && session.ready && (session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall" || session.snapshot.dialogKind === "atomProblem")) await this.transport.publish(session.registration.hostId, session.snapshot);
       await this.flushExportFrame(session);
       if (session.settled) await this.transport.close(session.registration.hostId, session.settledReason ?? "error");
       else if (session.ready && session.previewRequest) {
@@ -190,12 +214,12 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "atomProblem" ? "Atom problem" : parsed.dialogKind === "insertTable" ? "Insert Table" : parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
       clearTimeout(session.timer); session.ready = true;
-      if ((session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall") && session.registration) await this.transport.publish(session.registration.hostId, session.snapshot);
+      if ((session.snapshot.dialogKind === "engineInstall" || session.snapshot.dialogKind === "toolInstall" || session.snapshot.dialogKind === "atomProblem") && session.registration) await this.transport.publish(session.registration.hostId, session.snapshot);
       await this.flushExportFrame(session); return;
     }
     if (message.type === "request") {
@@ -231,6 +255,31 @@ export class DialogCoordinator {
     }
     // Cancellation invalidates owner work immediately, even while a receipt is pending.
     if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
+    if (session.snapshot.dialogKind === "atomProblem") {
+      const data = message.data;
+      if (!("targetVersion" in data) || data.targetVersion !== session.snapshot.data.targetVersion || !session.snapshot.data.fixes.some(f => f.action === data.action)) {
+        await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "error", error: "This atom problem changed. Use the current window actions." } });
+        return;
+      }
+      const previous = session.receipts.get(message.requestId);
+      if (previous) { await session.inFlight.get(message.requestId); if (!session.settled) await this.transport.publish(session.registration.hostId, previous); return; }
+      if (session.terminalRequestId) return;
+      session.terminalRequestId = message.requestId;
+      const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "applied" } };
+      session.receipts.set(message.requestId, receipt);
+      let finish!: () => void;
+      session.inFlight.set(message.requestId, new Promise<void>(resolve => { finish = resolve; }));
+      try {
+        await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "accepted" } });
+        if (session.settled) return;
+        if (session.snapshot.data.targetVersion !== data.targetVersion) throw new Error("This atom problem changed. Use the current window actions.");
+        if (!this.owner.fixAtomProblem) throw new Error("Atom fixes are unavailable.");
+        await this.owner.fixAtomProblem(message.documentTabId, data.action, data.targetVersion);
+      } catch (error) { receipt.data = { status: "error", error: String(error).slice(0, 2048) }; }
+      finally { finish(); session.inFlight.delete(message.requestId); session.terminalRequestId = undefined; }
+      if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);
+      return;
+    }
     if (session.snapshot.dialogKind === "vibeCodeGuide") {
       if (message.data.action !== "saveStarter" && message.data.action !== "openPluginManager") return;
       if (session.receipts.has(message.requestId)) return;
@@ -382,7 +431,7 @@ export class DialogCoordinator {
     const toolClosed = session.toolInstall ? new Promise<void>(resolve => { finishToolClose = resolve; }) : undefined;
     if (session.snapshot.dialogKind === "engineInstall") session.engineInstall?.closed();
     else if (session.snapshot.dialogKind === "toolInstall") session.toolInstall?.closed(toolClosed);
-    else if (session.snapshot.dialogKind === "export") this.owner.onSettled?.(session.snapshot.documentTabId, reason, "export");
+    else if (session.snapshot.dialogKind === "export" || session.snapshot.dialogKind === "atomProblem") this.owner.onSettled?.(session.snapshot.documentTabId, reason, session.snapshot.dialogKind);
     else this.owner.onSettled?.(session.snapshot.documentTabId, reason);
     if (close && session.registration) {
       try { await this.transport.close(session.registration.hostId, reason); }

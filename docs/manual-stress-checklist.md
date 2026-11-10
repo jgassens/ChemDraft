@@ -7,6 +7,29 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Invalid structure exports (macOS and Windows): draw/import a carbon with five single bonds;
+copy as MOL V2000, MOL V3000, CDXML and SMILES, and export CDXML, SDF and SMILES. Each writes
+the drawing and reports the same warning naming the carbon and unsupported valence 5. Clear
+Warning and repeat: the (!) badge hides, exports still warn, and analysis still reports the
+problem. Save/reopen and undo/redo suppression; check that atoms, bonds and charges stay unchanged.
+
+Atom problem window (macOS and Windows): change a pincer Ru–N bond to double. The edit lands
+with (!) on neutral N. Click the badge, then reach it with Tab and activate with Enter/Space:
+each opens the same movable, modeless native Atom problem window without editing the drawing.
+It explains the current bonds, valence and charge and offers +1. Apply it: N becomes N+, stays
+selected, and one Undo restores the warning; Redo restores N+. Repeat with an S(III) atom
+(one S=O and one S–C bond): explicitly add H to reach S(IV). For a literal OH2 on one bond,
+remove H to get OH. Each fix is one labelled Undo and leaves connectivity/coordinates intact.
+Five-bond carbon offers no H/charge fix; Ignore hides only its badge, while validation/export
+still warn. Right-click that atom, choose Atom problem…, then Restore: the badge returns in one
+Undo step. Retarget to a second invalid atom: no second window appears and no automatic change
+occurs. Correct or delete the target using drawing tools: the window shows No problem. Move the
+window off the document onto another monitor, close/reopen it, and check its remembered position,
+first-open centring, toolbar usability/stacking, document ownership, and no Windows taskbar entry.
+Repeat at mixed DPI; switch tabs while it is open, apply a fix to its originating drawing, and
+verify selection/Undo there. Closing/replacing that drawing closes its window. Check badge focus,
+clicks with a drawing tool active, Space scrolling prevention, and absence of badges in exports.
+
 Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example
@@ -612,13 +635,16 @@ double-click opens a fresh app with that document. On macOS, ⌘Q
 and the application menu's Quit the same way, with a palette open.
 
 Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
-neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
-unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
-and check it refuses with the same reason; benzene and cyclohexane on a benzene or cyclohexane bond
-still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom Label
-tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring is placed
-separately, the OMe and its bond are unchanged, and the status says an atom on that bond has no free
-valence.
+neopentane (a four-bond carbon): the ghost previews the fused ring and flags the invalid attachment;
+the click fuses it onto the existing molecule, the over-valent carbon shows (!), and the status
+reports the fused template. Undo once restores neopentane. Press 6 over the same bond and check
+the ring also fuses with (!) and one Undo step; benzene and cyclohexane on a benzene or cyclohexane
+bond still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom
+Label tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring
+fuses onto that bond, the OMe label stays and shows (!) for its extra attachment, and Undo once
+restores the original molecule. Setting the C–OMe bond to double or triple is still refused: a
+multiple bond to a group label cannot be represented by that label, so the bond stays single and
+no Undo entry is added.
 
 Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
 `invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
@@ -1121,3 +1147,25 @@ one step and preserve selection. Highlight characters inside one box and confirm
 formatted.
 
 - **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.
+
+## Drawing unsupported valence (macOS and Windows)
+
+- Draw a Ru donor complex with neutral N bonded to Ru and two carbons. Set the solid Ru–N bond
+  to double using hover `2`, order cycling, and the bond tool. Each edit must land with (!) on N;
+  Undo/Redo restores the exact authored graph without adding charge. Dashed Ru–N stays single.
+- Draw neopentane, relabel its centre S and endpoints O, then raise two S–O bonds to double one
+  at a time. The intermediate S(V) has (!); the final H2SO4 has no (!). Repeat with literal S/O
+  labels and explicit OH for the acid oxygens. Keep every atom, coordinate and charge as drawn.
+- Grow, connect, merge and chain-drag from full atoms and group labels. An eighth bond must not
+  hide the growth target or arrow, and a full target must still snap. Only actual overlaps or page
+  edges may prevent placement. Hover `8`, `0`, ring hotkeys and fused/spiro ring tools must land
+  with (!) where needed; a chemistry warning must never place the requested ring separately.
+- Hover the central CH of isobutane and press `9`: one bond attaches a new CH bearing two methyls;
+  the source carbon has four bonds. On a secondary carbon it adds two methyls directly. One Undo
+  removes the whole fragment, and Redo restores it without recomputing. On an already four-bond
+  carbon, `9` leaves the graph unchanged so this command never makes pentavalent carbon.
+- Place + on a four-bond C, then a second + on four-bond N+. Both stay on the clicked atom with (!).
+  Place a radical on full carbon and edit surrounding bonds: the mark must not jump to a neighbour
+  or float because its atom becomes invalid. Deliberately dragging a mark away still detaches it.
+- Confirm C–OMe cannot be raised to a multiple bond, a dashed dative bond cannot be raised, and
+  dashed display cannot be applied to a multiple bond. Ignore hides only (!); exports still warn.

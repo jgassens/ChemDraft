@@ -652,7 +652,7 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.newAtomPoint.y).toBeCloseTo(300, 3);
   });
 
-  it("finds atom-level hover hits only when valence is available", () => {
+  it("finds atom-level hover hits regardless of degree", () => {
     const hit = findNearestAtomHit({
       atoms: baseInput.atoms,
       bonds: baseInput.bonds,
@@ -664,7 +664,7 @@ describe("layout-engine molecule growth planning", () => {
     expect(hit).toEqual({
       atomId: "atom_002",
       degree: 1,
-      availableBonds: 3,
+      availableBonds: Number.POSITIVE_INFINITY,
       distance: Math.sqrt(5)
     });
 
@@ -679,7 +679,7 @@ describe("layout-engine molecule growth planning", () => {
       point: { x: 160, y: 220 },
       hitRadius: 16,
       maxBondsPerAtom: 4
-    })).toBeUndefined();
+    })).toMatchObject({ atomId: "atom_001", degree: 4, availableBonds: Number.POSITIVE_INFINITY });
   });
 
   it("finds nearest atoms without valence filtering for edit hit testing", () => {
@@ -729,7 +729,7 @@ describe("layout-engine molecule growth planning", () => {
     })).toBeUndefined();
   });
 
-  it("rejects growth from atoms that already have four bonds", () => {
+  it("plans growth from atoms that already have four bonds", () => {
     expect(planBondExtension({
       ...baseInput,
       atoms: [
@@ -748,7 +748,7 @@ describe("layout-engine molecule growth planning", () => {
       preferredAtomId: "atom_001",
       objectBounds: { x: 112, y: 134, width: 136, height: 172 },
       clickPoint: { x: 100, y: 220 }
-    })).toBeUndefined();
+    })).toMatchObject({ sourceAtomId: "atom_001" });
   });
 
   it("rejects distant clicks that are outside the active molecule hit envelope", () => {
@@ -908,7 +908,21 @@ describe("layout-engine molecule growth planning", () => {
     });
   });
 
-  it("rejects freeform growth when the source atom is saturated or the drag is too short", () => {
+  it.each(["guided", "freeform"] as const)("%s growth snaps to a degree-four target even with an explicit degree cap", mode => {
+    const target = { id: "target", x: 280, y: 220 - Math.sqrt(3) * 40 };
+    const input = {
+      ...baseInput,
+      atoms: [...baseInput.atoms, target],
+      bonds: [...baseInput.bonds, ...Array.from({ length: 4 }, (_, i) => ({ fromAtomId: target.id, toAtomId: `other${i}` }))],
+      maxBondsPerAtom: 1
+    };
+    const plan = mode === "guided"
+      ? planBondExtension({ ...input, preferredAtomId: "atom_002", clickPoint: target })
+      : planFreeformBondExtension({ ...input, sourceAtomId: "atom_002", endPoint: target, forceCustomLength: true });
+    expect(plan).toMatchObject({ sourceAtomId: "atom_002", targetAtomId: target.id, newAtomPoint: { x: target.x, y: target.y } });
+  });
+
+  it("allows saturated sources but rejects drags that are too short", () => {
     expect(planFreeformBondExtension({
       atoms: [
         { id: "atom_001", x: 160, y: 220 },
@@ -928,7 +942,7 @@ describe("layout-engine molecule growth planning", () => {
       bondLength: 80,
       pageBounds: baseInput.pageBounds,
       maxBondsPerAtom: 4
-    })).toBeUndefined();
+    })).toMatchObject({ sourceAtomId: "atom_001" });
 
     expect(planFreeformBondExtension({
       atoms: baseInput.atoms,

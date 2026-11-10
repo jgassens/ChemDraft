@@ -74,6 +74,8 @@ export interface NativeAtomValidationState {
   formalCharge: number;
   expectedFormalCharge?: number;
   valid: boolean;
+  /** User acknowledgement hides only the canvas badge, never the diagnostic. */
+  warningSuppressed?: true;
   /** Why the badge shows, short enough for the status line ("OMe attaches by 1 bond; this atom has 2."). */
   invalidReason?: string;
   /**
@@ -293,21 +295,20 @@ export function nativeAtomValidationState(
   atoms: readonly MoleculeAtom[] = [atom],
   resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
 ): NativeAtomValidationState {
+  const state = nativeAtomDiagnostic(atom, bonds, effectiveFormalCharge, atoms, resolution);
+  return atom.warningSuppressed === true ? { ...state, warningSuppressed: true } : state;
+}
+
+function nativeAtomDiagnostic(
+  atom: MoleculeAtom,
+  bonds: readonly MoleculeBond[],
+  effectiveFormalCharge: number,
+  atoms: readonly MoleculeAtom[],
+  resolution: NativeBondOrderResolution
+): NativeAtomValidationState {
   const element = nativeElementFromAtomLabel(atom.element);
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
   const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
-
-  // The user dismissed this atom's warning from the context menu — report it valid so no
-  // badge renders and no warning is stored, whatever the arithmetic says.
-  if (atom.warningSuppressed === true) {
-    return {
-      atomId: atom.id,
-      element: element ?? (atom.element.trim() || "(blank)"),
-      valenceUsed,
-      formalCharge: effectiveFormalCharge,
-      valid: true
-    };
-  }
 
   // Aromatic bonds with no Kekulé pattern were counted as single so the formula and label still
   // have a number, but that number is a guess: say so on the atom rather than let it pass.
