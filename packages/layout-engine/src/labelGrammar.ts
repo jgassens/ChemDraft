@@ -9,6 +9,7 @@ import {
   abbreviationBondedSpellings,
   abbreviationForBondedElementLabel,
   abbreviationForLabel,
+  schemeSodiumHydroxideAbbreviation,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
   isBondedGenericAtomLabel,
@@ -17,16 +18,6 @@ import {
 } from "@chemdraft/template-library";
 
 import { nativeElementFromAtomLabel, nativeElementSymbols, type NativeElementSymbol } from "./valence";
-
-/** Explicit editable label expanded by the ordinary abbreviation machinery.
- * A renderer alias must never conceal atoms remaining in the drawn graph. */
-const sodiumHydroxideLabel: AbbreviationDefinition = {
-  label: "NaOH", aliases: [], name: "sodium hydroxide", smiles: "[Na+].[OH-]",
-  formula: "HNaO", attachmentCount: 0,
-  atoms: [{ element: "Na", charge: 1, hydrogens: 0, x: 0, y: 0 },
-    { element: "O", charge: -1, hydrogens: 1, x: 1.5, y: 0 }],
-  bonds: []
-};
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
@@ -138,6 +129,8 @@ export type NativeAtomLabelReading =
 export interface NativeAtomLabelContext {
   /** The atom has at least one bond. Decides "Ar": aryl when bonded, argon when not. */
   bonded?: boolean;
+  /** Explicit scheme-created abbreviation; never inferred from typed text. */
+  schemeAbbreviation?: "NaOH";
   /**
    * The label was entered as text — typed in the label editor or text tool, or a file's text label —
    * rather than stored as an element of a structure. Only a typed "Ar", "Ac", "Pr" or "Ts" means a
@@ -200,7 +193,8 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   if (element) {
     return { kind: "element", element };
   }
-  const definition = trimmed === "NaOH" ? sodiumHydroxideLabel : abbreviationForLabel(trimmed);
+  const definition = !context.typed && trimmed === context.schemeAbbreviation
+    ? schemeSodiumHydroxideAbbreviation : abbreviationForLabel(trimmed);
   if (definition && !(context.bondSide === "right" && sideDependentSpellings.has(trimmed))) {
     return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition } };
   }

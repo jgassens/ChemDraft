@@ -255,6 +255,19 @@ describe("assistant document drawing defaults", () => {
     const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"] });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(calls).toBe(1);
+    expect(result.structuredContent?.alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_skipped", component: expect.objectContaining({ role: "product", index: 0 }) })
+    ]);
+  });
+  it("passes alignment timeouts into the assistant tool result", async () => {
+    const { context } = testContext(false);
+    context.confirmPageGrowth = async () => true;
+    context.chemistry.reactionProductAligner = async () => () => ({ matchedAtomCount: 0, warnings: ["timeout"] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"] });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_timeout", component: expect.objectContaining({ role: "product", index: 0 }) })
+    ]);
   });
   it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
     const { context, replace } = testContext(false);

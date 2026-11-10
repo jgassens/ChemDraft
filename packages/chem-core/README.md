@@ -2,6 +2,9 @@
 
 Owns the native document model, schema versions, migrations, validation, serialization, patch application, and native style presets (including `DocumentStylePreset`).
 
+Scheme-created NaOH label atoms carry optional `schemeAbbreviation: "NaOH"` chemistry metadata
+(requires 1.2 support; never ignorable). Typed labels do not set it and retain their earlier meaning.
+
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
 ## Native drawing presets

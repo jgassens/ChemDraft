@@ -15,6 +15,14 @@ import {
   parseCondensedLabelFormula
 } from "./index";
 
+it("requires explicit scheme metadata to read NaOH as an ion-pair group", () => {
+  expect(nativeAtomLabelReading("NaOH").kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaOH", { typed: true }).kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaOH", { schemeAbbreviation: "NaOH" }).kind).toBe("group");
+  expect(nativeAtomLabelReading("NaOH", { typed: true, schemeAbbreviation: "NaOH" }).kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaCl", { schemeAbbreviation: "NaOH" }).kind).toBe("formula");
+});
+
 const groupOf = (label: string, context: Parameters<typeof nativeAtomLabelReading>[1] = {}) => {
   const reading = nativeAtomLabelReading(label, context);
   if (reading.kind !== "group") throw new Error(`"${label}" read as ${reading.kind}, not a group.`);

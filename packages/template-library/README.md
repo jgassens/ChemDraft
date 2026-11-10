@@ -37,6 +37,10 @@ model's, and that the atoms and hydrogens are what RDKit reads from the entry's 
 The chemistry these groups take part in (reading a label, free valence, validation) lives in
 `@chemdraft/document-workflow-core`; this package holds data only.
 
+`schemeSodiumHydroxideAbbreviation` is explicit scheme-builder data in the same table module.
+It is excluded from typed-label lookup: only an atom carrying matching `schemeAbbreviation`
+metadata uses its ion-pair expansion. Existing typed NaOH formula placeholders keep their meaning.
+
 ## Generic labels (`src/genericLabels.ts`)
 
 Placeholders drawn on purpose — R, R′, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?, and the dummy atom `*` —

@@ -6,7 +6,7 @@ import {
   assertMoleculeMatchesSmiles, chemicalIdentityMolfile, buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
   nativeTextObjectSizeForText, documentDrawingDefaults,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
-  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
+  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform, type ReactionAlignmentWarning
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
@@ -23,6 +23,7 @@ import { toolSchemas, type ToolInput } from "./tools/schemas";
 
 export interface AssistantWrite {
   patch: DocumentPatch; summary: string; warnings: string[];
+  alignmentWarnings?: ReactionAlignmentWarning[];
   /** Input SMILES keyed by the actual new molecule id, checked again after patch normalization. */
   expectedSmiles?: ReadonlyMap<string, string>;
   /** Captured before preparation; also checked inside the desktop write gate. */
@@ -168,6 +169,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
   return { ...result, summary, warnings: built.warnings,
+    ...(built.alignmentWarnings ? { alignmentWarnings: built.alignmentWarnings } : {}),
     ...(declined.length ? { declined, reason: declineReason } : {}) };
 }
 
@@ -350,8 +352,9 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [...layoutWarnings, ...scheme.warnings], expected),
+  const plan = insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [...layoutWarnings, ...scheme.warnings], expected),
     placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
+  return { ...plan, alignmentWarnings: scheme.alignmentWarnings };
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);

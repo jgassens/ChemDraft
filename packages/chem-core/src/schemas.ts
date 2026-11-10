@@ -350,6 +350,8 @@ export const MoleculeAtomSchema = z
      * implicit hydrogen count drops by one per radical.
      */
     markRadicals: z.number().int().nonnegative().optional(),
+    /** Explicit scheme abbreviation; typed labels never acquire this chemical meaning. */
+    schemeAbbreviation: z.enum(["NaOH"]).optional(),
     labelVisible: z.boolean().optional(),
     /**
      * The label was typed with the text tool and means exactly what it says: no implicit

@@ -56,6 +56,20 @@ describe("shared reaction and grid layout", () => {
     });
     expect(calls).toBe(1);
     expect(result.molecules).toHaveLength(4);
+    expect(result.alignmentWarnings.map(warning => [warning.code, warning.component.index])).toEqual([
+      ["reaction.alignment_skipped", 0], ["reaction.alignment_timeout", 1], ["reaction.alignment_timeout", 2]
+    ]);
+  });
+  it("passes adapter timeout diagnostics through the layout and does not align without reactants", async () => {
+    const options = {
+      reactants: [{ molecule: molecule("r") }], products: [{ molecule: molecule("p") }],
+      arrowKind: "forward" as const, anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24,
+      alignProduct: () => ({ matchedAtomCount: 0, warnings: ["timeout" as const] })
+    };
+    expect((await layoutReactionSchemeAsync(options)).alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_timeout", component: { role: "product", index: 0 } })
+    ]);
+    expect((await layoutReactionSchemeAsync({ ...options, reactants: [] })).alignmentWarnings).toEqual([]);
   });
   it("places a reaction deterministically at its anchor without molecule overlaps", () => {
     const options = {

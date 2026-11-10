@@ -225,6 +225,13 @@ arguments.
 
 Render a reaction scheme as PNG or SVG.
 
+JSON results include `alignmentWarnings`: `reaction.alignment_skipped` for a product without a
+qualifying shared core (a complete ring or six heavy atoms) or a refused alignment, and
+`reaction.alignment_timeout` for a canceled search or exhausted scheme budget. The component is
+identified by `role: "product"` and zero-based input `index`. Small/unrelated products also report
+skipped alignment; no warning is emitted when there are no reactants. An earlier completed match
+may still be used after a later search times out. Messages also appear in `warnings`.
+
 Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
 
 Reaction labels allow at most 6 `--above` and 6 `--below` entries, a non-empty `--caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `--conditions`; batch jobs use the same caps.

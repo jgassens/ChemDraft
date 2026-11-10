@@ -25,9 +25,32 @@ it("keeps a completed core when a later pair times out and stops at the shared b
       deadline: 1500, now: () => now, yieldControl: async () => { yields++; }
     });
     expect(result!.matchedAtomCount).toBeGreaterThanOrEqual(6);
+    expect(result!.warnings).toEqual(["timeout"]);
     expect(calls).toBe(2);
     expect(yields).toBe(3);
     expect(now).toBeLessThanOrEqual(1500);
+  } finally { spy.mockRestore(); }
+});
+
+it("reports a completed search without a qualifying core as skipped", async () => {
+  const align = await createReactionProductAligner();
+  const result = await align([await generateSmiles2DMolfile("CC")], await generateSmiles2DMolfile("CO"));
+  expect(result).toEqual({ matchedAtomCount: 0, warnings: ["skipped"] });
+});
+
+it("reports a canceled FMCS search and an exhausted budget as timeouts", async () => {
+  const rdkit = await ensureRdkit() as Awaited<ReturnType<typeof ensureRdkit>> & {
+    get_mcs_as_json(list: unknown, options: string): string;
+  };
+  const reference = await generateSmiles2DMolfile("c1ccccc1");
+  const align = await createReactionProductAligner();
+  const spy = vi.spyOn(rdkit, "get_mcs_as_json").mockReturnValue(JSON.stringify({ canceled: true }));
+  try {
+    expect(await align([reference], reference)).toEqual({ matchedAtomCount: 0, warnings: ["timeout"] });
+    spy.mockClear();
+    expect(await align([reference], reference, { deadline: 500, now: () => 0, yieldControl: async () => {} }))
+      .toEqual({ matchedAtomCount: 0, warnings: ["timeout"] });
+    expect(spy).not.toHaveBeenCalled();
   } finally { spy.mockRestore(); }
 });
 

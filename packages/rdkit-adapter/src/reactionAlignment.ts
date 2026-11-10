@@ -15,7 +15,9 @@ interface AlignmentModule extends RdkitMinimalModule {
 }
 
 export interface ReactionProductAlignment {
-  molfile: string;
+  molfile?: string;
+  /** A completed match may still carry a later search timeout. */
+  warnings?: ("skipped" | "timeout")[];
   matchedAtomCount: number;
 }
 export const REACTION_ALIGNMENT_BUDGET_MS = 1_500;
@@ -41,13 +43,14 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
     if (!target) throw new Error("RDKit could not parse a reaction product for orientation matching.");
     let template: AlignmentMol | null = null;
     let bestCount = 0;
+    let timedOut = false;
     try {
       if (!target.generate_aligned_coords) throw new Error("The RDKit build has no aligned-coordinate function.");
       for (const reactant of reactants) {
         await budget.yieldControl();
         // MinimalLib's FMCS timeout is in whole seconds. Never start a search unless its
         // entire one-second allowance fits within the remaining scheme budget.
-        if (budget.deadline - budget.now() < 1_000) break;
+        if (budget.deadline - budget.now() < 1_000) { timedOut = true; break; }
         const reference = rdkit.get_mol(reactant, JSON.stringify({ removeHs: false })) as AlignmentMol | null;
         if (!reference) continue;
         const list = new rdkit.MolList();
@@ -59,7 +62,7 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
           const common = JSON.parse(rdkit.get_mcs_as_json(list, JSON.stringify({
             Timeout: 1, RingMatchesRingOnly: true, CompleteRingsOnly: true, BondCompare: "CompareAny"
           }))) as { smarts?: string; canceled?: boolean; numAtoms: number; numBonds: number };
-          if (common.canceled) continue; // An earlier completed match is still useful.
+          if (common.canceled) { timedOut = true; continue; } // An earlier completed match is still useful.
           if (!common.smarts || common.numAtoms <= bestCount) continue;
           query = rdkit.get_qmol(common.smarts);
           if (!query) continue;
@@ -79,14 +82,14 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
           template?.delete(); template = candidate; bestCount = common.numAtoms;
         } finally { query?.delete(); list.delete(); reference.delete(); }
       }
-      if (!template) return undefined;
+      if (!template) return { matchedAtomCount: 0, warnings: [timedOut ? "timeout" : "skipped"] };
       const before = target.get_smiles();
       const atomsBefore = parseV2000AtomBlock(product);
       // Rigid alignment retains the existing depiction and bond lengths. RDKit adjusts directed
       // wedge/hash spelling when a reflection is needed; callers must retain the returned bonds.
       const match = JSON.parse(target.generate_aligned_coords(template,
         JSON.stringify({ alignOnly: true, acceptFailure: false }))) as { atoms?: number[] };
-      if (!match.atoms?.length) return undefined;
+      if (!match.atoms?.length) return { matchedAtomCount: 0, warnings: [...(timedOut ? ["timeout" as const] : []), "skipped"] };
       const molfile = target.get_molblock();
       const atomsAfter = parseV2000AtomBlock(molfile);
       const check = rdkit.get_mol(molfile, JSON.stringify({ removeHs: false })) as AlignmentMol | null;
@@ -96,7 +99,7 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
           throw new Error("Reaction alignment refused: atom order or canonical isomeric SMILES changed.");
         }
       } finally { check?.delete(); }
-      return { molfile, matchedAtomCount: bestCount };
+      return { molfile, matchedAtomCount: bestCount, warnings: timedOut ? ["timeout"] : [] };
     } finally { template?.delete(); target.delete(); }
   };
 }

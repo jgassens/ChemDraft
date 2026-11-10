@@ -29,6 +29,8 @@ export interface NativeDocumentFeatureVersion {
  * are never declared safe to ignore.
  */
 export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocumentFeatureVersion>> = {
+  "field:pages.*.objects.*[type=molecule].atoms.*.schemeAbbreviation": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  'value:pages.*.objects.*[type=molecule].atoms.*.schemeAbbreviation="NaOH"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },
   "field:formatVersion": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },
   "field:minAppVersion": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },
   "field:ignorableFields": { introducedIn: "1.2.0", kind: "envelope", ignorable: false },

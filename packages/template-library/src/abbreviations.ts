@@ -563,3 +563,13 @@ export function abbreviationElementCounts(definition: AbbreviationDefinition): M
   }
   return counts;
 }
+
+/** Explicit editable label expanded by the ordinary abbreviation machinery.
+ * A renderer alias must never conceal atoms remaining in the drawn graph. */
+export const schemeSodiumHydroxideAbbreviation: AbbreviationDefinition = {
+  label: "NaOH", aliases: [], name: "sodium hydroxide", smiles: "[Na+].[OH-]",
+  formula: "HNaO", attachmentCount: 0,
+  atoms: [{ element: "Na", charge: 1, hydrogens: 0, x: 0, y: 0 },
+    { element: "O", charge: -1, hydrogens: 1, x: 1.5, y: 0 }],
+  bonds: []
+};

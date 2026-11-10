@@ -5,7 +5,7 @@ import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed, createReactionProductAligner } from "@chemdraft/rdkit-adapter";
-import { layoutReactionSchemeAsync } from "@chemdraft/document-workflow-core";
+import { layoutReactionSchemeAsync, type ReactionAlignmentWarning } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
@@ -96,6 +96,7 @@ export interface RenderedReactionScheme extends ParsedReactionSmiles {
   conditions: string;
   agentTexts: ReactionAgentText[];
   warnings: string[];
+  alignmentWarnings: ReactionAlignmentWarning[];
 }
 
 export interface ReactionAgentText {
@@ -696,7 +697,7 @@ export async function renderReactionScheme(
     orientationWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   });
-  const { document, warnings: layoutWarnings } = await layoutReactionSchemeAsync({
+  const { document, warnings: layoutWarnings, alignmentWarnings } = await layoutReactionSchemeAsync({
     alignProduct,
     style: options.style,
     reactants: reactants.map(componentFor),
@@ -734,6 +735,7 @@ export async function renderReactionScheme(
     arrow,
     conditions: conditionText,
     agentTexts,
+    alignmentWarnings,
     warnings: [
       ...reactants,
       ...products
@@ -772,7 +774,8 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       arrow: rendered.arrow,
       conditions: rendered.conditions,
       layouts: rendered.layouts,
-      warnings: rendered.warnings
+      warnings: rendered.warnings,
+      alignmentWarnings: rendered.alignmentWarnings
     });
     writeProgress(io, `Wrote ${job.out}`);
     return true;

@@ -34,6 +34,12 @@ export interface ReactionSchemeComponent {
   bounds?: LayoutBounds;
 }
 
+export interface ReactionAlignmentWarning {
+  code: "reaction.alignment_skipped" | "reaction.alignment_timeout";
+  component: { role: "product"; index: number };
+  message: string;
+}
+
 export interface ReactionSchemeLayout {
   document: ChemDraftDocument;
   molecules: MoleculeObject[];
@@ -43,6 +49,7 @@ export interface ReactionSchemeLayout {
   below?: TextObject;
   caption?: TextObject;
   warnings: string[];
+  alignmentWarnings: ReactionAlignmentWarning[];
 }
 
 export interface ReactionSchemeLayoutOptions {
@@ -75,11 +82,17 @@ export async function layoutReactionSchemeAsync(options: ReactionSchemeLayoutOpt
   const scheduler = options.alignmentScheduler ?? { now: () => performance.now(),
     yieldControl: () => new Promise<void>(resolve => setTimeout(resolve, 0)) };
   const budget = { ...scheduler, deadline: scheduler.now() + 1_500 };
-  const warnings: string[] = [];
+  const alignmentWarnings: ReactionAlignmentWarning[] = [];
+  const warn = (index: number, moleculeId: string, reason: "skipped" | "timeout", detail?: string) => {
+    const message = reason === "timeout" ? "Shared-core orientation search reached its time limit." :
+      "Shared-core orientation skipped: no qualifying shared core or aligned depiction.";
+    alignmentWarnings.push({ code: `reaction.alignment_${reason}`, component: { role: "product", index },
+      message: detail ?? `Product ${index + 1} (${moleculeId}): ${message}` });
+  };
   const products: ReactionSchemeComponent[] = [];
-  for (const component of options.products) {
+  for (const [index, component] of options.products.entries()) {
     let molecule = component.molecule;
-    if (options.alignProduct && options.reactants.length && budget.now() < budget.deadline) {
+    if (options.alignProduct && options.reactants.length) {
       await budget.yieldControl();
       if (budget.now() < budget.deadline) try {
         const writerWarnings: string[] = [];
@@ -87,15 +100,17 @@ export async function layoutReactionSchemeAsync(options: ReactionSchemeLayoutOpt
         const product = stereoPerceptionMolfile(molecule, writerWarnings);
         if (writerWarnings.length) throw new Error(writerWarnings.join(" "));
         const alignment = await options.alignProduct(references, product, budget);
-        if (alignment) molecule = alignedMolecule(molecule, alignment.molfile);
+        for (const reason of alignment?.warnings ?? (alignment?.molfile ? [] : ["skipped" as const])) warn(index, molecule.id, reason);
+        if (alignment?.molfile) molecule = alignedMolecule(molecule, alignment.molfile);
       } catch (error) {
-        warnings.push(`Shared-core orientation unavailable for ${molecule.id}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+        warn(index, molecule.id, "skipped",
+          `Shared-core orientation unavailable for ${molecule.id}: ${error instanceof Error ? error.message : String(error)}`);
+      } else warn(index, molecule.id, "timeout");
     }
     products.push({ ...component, molecule });
   }
   const result = layoutReactionScheme({ ...options, products });
-  return { ...result, warnings: [...warnings, ...result.warnings] };
+  return { ...result, alignmentWarnings, warnings: [...alignmentWarnings.map(warning => warning.message), ...result.warnings] };
 }
 
 /** Persist real label atoms, just like authored abbreviations: nothing invisible remains
@@ -107,12 +122,16 @@ function condenseSchemeLabels(molecule: MoleculeObject): MoleculeObject {
     const sodium = molecule.atoms.find(a => a.element === "Na" && a.formalCharge === 1 && !a.hydrogenCount);
     const hydroxide = molecule.atoms.find(a => a.element === "O" && a.formalCharge === -1 &&
       (a.hydrogenCount === undefined || a.hydrogenCount === 1));
-    if (sodium && hydroxide) return { ...molecule, atoms: [{ ...sodium, element: "NaOH", formalCharge: 0, labelVisible: true }] };
+    if (sodium && hydroxide) return { ...molecule, atoms: [{ ...sodium, element: "NaOH", schemeAbbreviation: "NaOH", formalCharge: 0, labelVisible: true }] };
   }
   let atoms = [...molecule.atoms], bonds = [...molecule.bonds];
   for (const metal of molecule.atoms.filter(a => a.element === "Mg" && a.formalCharge === 0 && !a.hydrogenCount && eligible(a))) {
     const incident = bonds.filter(b => b.fromAtomId === metal.id || b.toAtomId === metal.id);
     if (incident.length !== 2) continue;
+    // Only R–Mg–Br: a second halide or other non-carbon ligand is a salt, not a Grignard.
+    const carbonBonds = incident.filter(b => b.order === "single" && b.stereo === undefined && !b.display?.bondStyle &&
+      atoms.some(a => a.id === (b.fromAtomId === metal.id ? b.toAtomId : b.fromAtomId) && a.element === "C"));
+    if (carbonBonds.length !== 1) continue;
     for (const bond of incident) {
       if (bond.order !== "single" || bond.stereo !== undefined || bond.display?.bondStyle) continue;
       const halide = atoms.find(a => a.id === (bond.fromAtomId === metal.id ? bond.toAtomId : bond.fromAtomId));
@@ -291,7 +310,7 @@ export function layoutReactionScheme(options: Omit<ReactionSchemeLayoutOptions, 
     molecules,
     pluses,
     arrow,
-    warnings,
+    warnings, alignmentWarnings: [],
     ...(above ? { above } : {}),
     ...(below ? { below } : {}),
     ...(caption ? { caption } : {})

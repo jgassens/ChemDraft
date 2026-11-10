@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { moleculeInkBounds, planPageSvgRender, planReactionArrowGeometry, reactionArrowInkBounds,
   reactionSchemeDrawingMetrics, representativeMoleculeBondLength, atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import * as rdkitAdapter from "@chemdraft/rdkit-adapter";
 import { chemicalIdentityMolfile, planReactionLabels, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { buildSmilesDocument, canonicalSmiles } from "../document";
 
@@ -18,6 +19,15 @@ import {
 } from "./reaction";
 
 vi.setConfig({ testTimeout: 60_000 });
+
+it.each(["Br[Mg]Br", "Cl[Mg]Br", "O[Mg]Br"])("leaves magnesium salts expanded: %s", async smiles => {
+  const rendered = await renderReactionScheme({ reactants: [smiles], products: [], agents: [] });
+  const drawn = rendered.document.pages[0]!.objects.find(object => object.type === "molecule")!;
+  expect(drawn.atoms.map(atom => atom.element)).toEqual((await buildSmilesDocument(smiles)).molecule.atoms.map(atom => atom.element));
+  expect(drawn.atoms).toHaveLength(3);
+  expect(drawn.bonds).toHaveLength(2);
+  expect(await canonicalSmiles(chemicalIdentityMolfile(drawn), "salt")).toBe(await canonicalSmiles(smiles, "input"));
+});
 
 it.each([
   { smiles: "[Na+].[OH-]", labels: ["Na+", "OH-"], condensed: "NaOH" },
@@ -138,6 +148,19 @@ function expectSchemeInsideViewBox(rendered: RenderedReactionScheme): void {
 }
 
 describe("chemdraft reaction", () => {
+  it.each([false, true])("emits structured alignment warnings in CLI JSON (timeout: %s)", async timeout => {
+    const spy = timeout ? vi.spyOn(rdkitAdapter, "createReactionProductAligner").mockResolvedValue(
+      () => ({ matchedAtomCount: 0, warnings: ["timeout"] })) : undefined;
+    try {
+      const stdout: string[] = [];
+      expect(await runReactionCommand(["--rxn", "CC>>CO", "--out", join(outputDirectory, `warning-${timeout}.svg`)],
+        { stdout: line => stdout.push(line), stderr: () => undefined })).toBe(0);
+      expect(JSON.parse(stdout[0]!).alignmentWarnings).toEqual([
+        expect.objectContaining({ code: timeout ? "reaction.alignment_timeout" : "reaction.alignment_skipped",
+          component: { role: "product", index: 0 } })
+      ]);
+    } finally { spy?.mockRestore(); }
+  });
   it("uses moderate chemistry-symbol widths for reaction labels shared with MCP", async () => {
     const rendered = await renderReactionScheme("CCO>>CCO", { above: ["⇌≡≈′⁺⁻₂"] });
     const label = rendered.document.pages[0]!.objects.find(object => object.type === "text" && object.text === "⇌≡≈′⁺⁻₂")!;
@@ -495,7 +518,8 @@ describe("reaction scheme geometry and chemical identity", () => {
       expect(await canonicalSmiles(chemicalIdentityMolfile(molecules[i]!), "placed molecule"))
         .toBe(await canonicalSmiles(inputs[i]!, "input"));
     }
-    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
+    expect(rendered.alignmentWarnings.map(warning => [warning.code, warning.component.index])).toEqual(
+      fixture.name === "aspirin" ? [["reaction.alignment_skipped", 1]] : []);
     if (fixture.name === "aspirin") {
       // The salicylate query disambiguates the six symmetry-equivalent ring matches using both
       // substituents; testing an unconstrained benzene query could hide a reversed core.

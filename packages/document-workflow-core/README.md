@@ -137,7 +137,18 @@ Hosts may inject `createReactionProductAligner` from rdkit-adapter. The shared p
 FMCS and `generate_aligned_coords` result to orient each product against the largest reactant
 core (a complete ring or six heavy atoms), retaining directed stereo and canonical identity.
 All searches share a 1.5 s scheme budget and yield between one-second FMCS searches.
-A timed-out later pair retains an earlier completed match. Unavailable or refused alignment leaves the original depiction and reports a warning.
+A timed-out later pair retains an earlier completed match. `alignmentWarnings` reports structured
+`reaction.alignment_timeout` (FMCS cancellation or insufficient remaining budget) and
+`reaction.alignment_skipped` (completed search without a complete ring or six-heavy-atom core,
+failed alignment, or refusal). Each names the product by its zero-based input `component.index`
+and `component.role`; human-readable messages also appear in `warnings`. Small or unrelated
+products therefore report skipped alignment, even when no shared ring is expected. Without an
+injected aligner or without reactants no alignment is requested and no alignment warning is emitted.
+Original depictions are retained when alignment cannot be applied.
+
+Scheme-created NaOH atoms carry explicit `schemeAbbreviation: "NaOH"` metadata and expand to
+`[Na+].[OH-]` for chemistry. A typed NaOH label retains the release formula-placeholder meaning.
+Only R–Mg–Br with one carbon substituent condenses to MgBr; magnesium salts retain their atoms.
 
 Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a

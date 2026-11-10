@@ -103,7 +103,8 @@ Layout must not change chemical identity.
 
 Reaction builders may store explicit editable NaOH, MgBr and H2O atom labels.
 The ordinary abbreviation/spelled-label grammar expands them for chemistry; a drawn label is
-one selectable atom, with no invisible atoms or bonds behind it. NaOH expands to [Na+].[OH-].
+one selectable atom, with no invisible atoms or bonds behind it. Only NaOH with explicit
+`schemeAbbreviation: "NaOH"` metadata expands to [Na+].[OH-]; typed NaOH stays a formula placeholder.
 Ordinary expanded molecules keep their individual atom and bond rendering.
 
 Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavelength tied to the
