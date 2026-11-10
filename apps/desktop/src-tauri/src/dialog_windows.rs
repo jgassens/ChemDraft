@@ -4483,7 +4483,12 @@ mod tests {
                             offset_y: 0.0,
                         };
                         // Initial full form, extra cancellation line, removed line, huge report.
-                        for height in [if macos { 334.0_f64 } else { 286.0_f64 }, 358.0, 334.0, 4096.0] {
+                        for height in [
+                            if macos { 334.0_f64 } else { 286.0_f64 },
+                            358.0,
+                            334.0,
+                            4096.0,
+                        ] {
                             let width = if height == 4096.0 {
                                 4096.0
                             } else {
