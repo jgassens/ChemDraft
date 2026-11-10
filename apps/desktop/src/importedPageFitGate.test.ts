@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ImportedPageFitGate } from "./importedPageFitGate";
 
 describe("imported page-size choices", () => {
-  it.each(["macos", "windows"])("opens each pending file after dismissal on %s", async () => {
+  it("opens each pending file after dismissal", async () => {
     const gate = new ImportedPageFitGate();
     const show = vi.fn();
     let queue = Promise.resolve();
