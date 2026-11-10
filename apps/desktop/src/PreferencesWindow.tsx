@@ -1,3 +1,5 @@
+import { loadResizableFloatingToolbars, saveResizableFloatingToolbars } from "./toolbarResizeSettings";
+import { broadcastResizableToolbars } from "./window-manager";
 import { measureDialogContentWhenFontsReady, observeDialogContent } from "./dialogs/dialogContentFit";
 import { isDesktopRuntime } from "./window-manager";
 import { useEffect, useRef, useState } from "react";
@@ -132,6 +134,7 @@ export function PreferencesWindow() {
   const [structureSearchEnabled, setStructureSearchEnabled] = useState(loadStructureSearchEnabled);
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
+  const [resizableToolbars, setResizableToolbars] = useState(loadResizableFloatingToolbars);
   const [drawing, setDrawing] = useState(loadDrawingSettings);
   const [directElectronMarkEditing, setDirectElectronMarkEditing] = useState(loadDirectElectronMarkEditing);
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
@@ -239,6 +242,19 @@ export function PreferencesWindow() {
           }} />
           <span className="preferences-radio-body"><span>Direct electron-mark editing</span>
             <small>Grab marks anywhere in their frame, drag them with electron tools, and resize or rotate them with handles. Use scaled symbol rendering. Off by default.</small></span>
+        </label>
+      </section>
+      <section className="preferences-section">
+        <h2>Toolbars</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={resizableToolbars} onChange={event => {
+            const enabled = event.currentTarget.checked;
+            setResizableToolbars(enabled);
+            saveResizableFloatingToolbars(enabled);
+            void broadcastResizableToolbars(enabled);
+          }} />
+          <span className="preferences-radio-body"><span>Resizable floating toolbars</span>
+            <small>Drag the edges of floating toolbars to resize them. When off, toolbars size themselves to fit their tools.</small></span>
         </label>
       </section>
       <section className="preferences-section">

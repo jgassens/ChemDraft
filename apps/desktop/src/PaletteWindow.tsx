@@ -22,6 +22,7 @@ import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocus
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommandHidden } from "./compoundLayoutSettings";
+import { useResizableToolbarsSetting } from "./useResizableToolbarsSetting";
 import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { TOOLBAR_SELECTION_KINDS, type ToolbarSelectionModel } from "./toolbars/toolbarSelectionKind";
@@ -51,6 +52,9 @@ import {
   currentWindowLogicalPosition,
   currentWindowLogicalWorkArea,
   fitCurrentPaletteWindow,
+  configurePaletteResize,
+  listenForPaletteUserSize,
+  setResizableToolbarsNative,
   dismissToolsetPopovers,
   toolsetPopoverTimestamp,
   hidePaletteFloatingTooltip,
@@ -145,6 +149,13 @@ export function PaletteWindow({
   const settlingBeforeForwardRef = useRef(false);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
+  const resizableToolbars = useResizableToolbarsSetting();
+  const [userSized, setUserSized] = useState<boolean | null>(null);
+  useEffect(() => {
+    void setResizableToolbarsNative(resizableToolbars).catch(error => {
+      console.error("Could not configure native toolbar resizing", error);
+    });
+  }, [resizableToolbars]);
   const compoundLayoutSettings = useCompoundLayoutSettings();
   const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState(() => initialRegistry ?? desktopToolsetRegistry);
@@ -216,6 +227,28 @@ export function PaletteWindow({
   );
   const itemGroups = useMemo(() => paletteGroups.map((group) => group.items), [paletteGroups]);
   const gridWindowSize = useMemo(() => computePaletteGridSize(toolset.gridLayout, itemGroups), [itemGroups, toolset.gridLayout]);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    if (resizableToolbars) setUserSized(null);
+    void (async () => {
+      const stop = await listenForPaletteUserSize(event => {
+        if (event.toolsetId === toolset.id) setUserSized(Boolean(event.size));
+      });
+      if (disposed) { stop(); return; }
+      unlisten = stop;
+      await setResizableToolbarsNative(resizableToolbars);
+      const cellWidth = toolset.gridLayout?.cellWidth ?? 24;
+      const cellHeight = toolset.gridLayout?.cellHeight ?? 24;
+      const padding = toolset.gridLayout?.padding ?? 4;
+      const size = await configurePaletteResize(
+        Math.max(96, cellWidth + padding * 2),
+        Math.max(56, toolset.id === "core.main" ? (toolset.preferredWindowSize ?? gridWindowSize)?.height ?? 56 : 22 + cellHeight + padding * 2)
+      );
+      if (!disposed) setUserSized(Boolean(size));
+    })().catch(() => { if (!disposed) setUserSized(false); });
+    return () => { disposed = true; unlisten?.(); };
+  }, [toolset.id, toolset.gridLayout, toolset.preferredWindowSize, gridWindowSize, resizableToolbars]);
   // The main window owns live command metadata/availability and publishes snapshots to detached
   // palettes. The state initializer above is only a first-paint fallback before that handshake.
   // Snapshots arrive already remapped for the active keybinding scheme; re-applying here covers the
@@ -443,6 +476,10 @@ export function PaletteWindow({
   }, [platform]);
 
   useEffect(() => {
+    if (resizableToolbars && userSized !== false) {
+      if (bodyRef.current) bodyRef.current.style.maxHeight = "";
+      return;
+    }
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
     if (!preferredSize) {
       return;
@@ -489,7 +526,7 @@ export function PaletteWindow({
         const sizeKey = `${width}x${height}`;
         if (sizeKey !== lastSize) {
           lastSize = sizeKey;
-          await fitCurrentPaletteWindow({ width, height }, area);
+          await fitCurrentPaletteWindow({ width, height }, area, resizableToolbars);
         }
       } finally {
         sizing = false;
@@ -528,7 +565,7 @@ export function PaletteWindow({
         sizeAnimationFrameRef.current = undefined;
       }
     };
-  }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
+  }, [colorPickerOpen, gridWindowSize, resizableToolbars, userSized, toolset.preferredWindowSize]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1143,7 +1180,7 @@ export function PaletteWindow({
   return (
     <main
       ref={shellRef}
-      className="palette-window-shell"
+      className={`palette-window-shell${resizableToolbars && userSized ? " user-sized" : ""}`}
       aria-label={`ChemDraft floating ${toolset.title}`}
       data-toolset-id={toolset.id}
       data-palette-drag-surface={customizeThisPalette ? undefined : "true"}

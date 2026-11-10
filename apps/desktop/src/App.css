@@ -2487,6 +2487,29 @@ textarea:focus-visible,
   overflow-y: auto;
 }
 
+.palette-window-shell.user-sized {
+  width: 100vw;
+  height: 100vh;
+  grid-template-rows: 22px minmax(0, 1fr);
+}
+.palette-window-shell.user-sized .palette-window-content {
+  max-height: none;
+  min-width: 0;
+  overflow: auto;
+}
+.palette-window-shell.user-sized .tool-palette {
+  width: 100%;
+  max-width: 100%;
+}
+.palette-window-shell.user-sized:not([data-toolset-id="core.main"]) .tool-group-grid {
+  width: 100%;
+  grid-template-columns: repeat(auto-fit, var(--toolbar-cell-width)) !important;
+}
+.palette-window-shell.user-sized:not([data-toolset-id="core.main"]) .toolbar-item-grid-slot {
+  grid-column: auto !important;
+  grid-row: auto !important;
+}
+
 .palette-title {
   position: relative;
   box-sizing: border-box;

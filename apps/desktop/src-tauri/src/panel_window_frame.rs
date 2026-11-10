@@ -162,6 +162,53 @@ impl Frame {
         Some(self.clamped(monitor.work_area).placement(monitor))
     }
 
+    /// Palettes share the panel encoding, with per-toolset limits and a fallback display
+    /// when a saved monitor was unplugged. All coordinates use destination scale.
+    pub fn restore_toolbar(
+        &self,
+        monitors: &[Monitor],
+        minimum: (f64, f64),
+        fixed_height: Option<f64>,
+    ) -> Option<Placement> {
+        if !self.valid() {
+            return None;
+        }
+        let usable = |m: &&Monitor| {
+            m.scale.is_finite()
+                && m.scale > 0.0
+                && [
+                    m.work_area.x,
+                    m.work_area.y,
+                    m.work_area.width,
+                    m.work_area.height,
+                ]
+                .iter()
+                .all(|n| n.is_finite())
+                && m.work_area.width > 0.0
+                && m.work_area.height > 0.0
+        };
+        let monitor = monitors
+            .iter()
+            .filter(usable)
+            .find(|m| m.identity == self.monitor)
+            .or_else(|| monitors.iter().find(usable))?;
+        let area = monitor.work_area;
+        let width = self.width.clamp(minimum.0.min(area.width), area.width);
+        let height = fixed_height
+            .unwrap_or(self.height)
+            .clamp(minimum.1.min(area.height), area.height);
+        Some(
+            Self {
+                x: self.x.clamp(area.x, area.x + area.width - width),
+                y: self.y.clamp(area.y, area.y + area.height - height),
+                width,
+                height,
+                ..self.clone()
+            }
+            .placement(monitor),
+        )
+    }
+
     pub fn restore_normal(&self, monitors: &[Monitor]) -> Option<Placement> {
         let monitor = self.attached_monitor(monitors)?;
         Some(self.placement(monitor))

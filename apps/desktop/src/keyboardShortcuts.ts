@@ -14,6 +14,7 @@ import {
   selectionNudgeActions,
   textToolbarActions,
   toolbarCustomizationActions,
+  resetToolbarSizesAction,
   viewActions,
   type CommandSpec
 } from "./commands";
@@ -100,7 +101,8 @@ export function createMainWindowShortcutCommands(
     ...pageSizeActions,
     ...pageOrientationActions,
     ...textToolbarActions,
-    ...toolbarCustomizationActions
+    ...toolbarCustomizationActions,
+    resetToolbarSizesAction(false)
   ], scheme);
 }
 

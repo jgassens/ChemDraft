@@ -104,6 +104,7 @@ export function nativeStylePresetMenuItems(): PluginAppMenuItem[] {
 }
 
 export interface AppMenuContext {
+  resizableToolbars?: boolean;
   structureSearchEnabled?: boolean;
   hasSearchableStructure?: boolean;
   /** Explicit in tests so both desktop conventions can be checked from one host. */
@@ -254,9 +255,9 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     kind: "submenu",
     id: "view.toolbars",
     label: "Toolbars",
-    items: context.toolbars.map((toggle) =>
+    items: [...context.toolbars.map((toggle) =>
       command(toggle.commandId, toggle.title, { checked: toggle.checked, id: toggle.id })
-    )
+    ), separator(), command("view.toolbars.resetSizes", "Reset Toolbar Sizes", { enabled: context.resizableToolbars === true })]
   };
 
   const sections: AppMenuSection[] = [

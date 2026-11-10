@@ -72,6 +72,7 @@ export interface CommandAvailability {
 }
 
 export interface ShellCommandOptions {
+  resizableToolbars?: boolean;
   structureSearchEnabled?: boolean;
   hasSearchableStructure?: boolean;
   customSwatches?: CustomSwatchState;
@@ -2428,6 +2429,10 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   ];
 }
 
+export function resetToolbarSizesAction(enabled: boolean): CommandSpec {
+  return { id: "view.toolbars.resetSizes", title: "Reset Toolbar Sizes", icon: "palette", source: "core", category: "view", enabled, disabledReason: enabled ? undefined : "Turn on Resizable floating toolbars in Preferences" };
+}
+
 export const toolbarCustomizationActions: CommandSpec[] = [
   {
     id: "view.customizeToolbars",
@@ -2490,7 +2495,8 @@ export function allShellCommands(
     ...textToolbarActions,
     ...objectStyleActions,
     ...nativeStylePresetActions,
-    ...toolbarCustomizationActions
+    ...toolbarCustomizationActions,
+    resetToolbarSizesAction(options.resizableToolbars === true)
   ]);
 }
 

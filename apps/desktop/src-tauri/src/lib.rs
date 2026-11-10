@@ -31,6 +31,7 @@ mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
 mod structure_search;
+mod toolbar_resize;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
@@ -621,6 +622,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "view.toggleRulers",
     "view.toggleCrosshairs",
     "view.customizeToolbars",
+    "view.toolbars.resetSizes",
     "view.customizeMainToolbar",
     "layout.group",
     "layout.ungroup",
@@ -860,6 +862,8 @@ struct PersistedToolsetState {
     x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frame: Option<panel_window_frame::Frame>,
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -1203,10 +1207,11 @@ pub fn run() {
                 return;
             };
 
+            toolbar_resize::window_event(window, event);
             if utility_windows_suspended() {
+                toolbar_resize::cancel(window.label());
                 return;
             }
-
             match event {
                 // Minimizing the document minimizes its owned palettes too, and Windows parks a
                 // minimized window far off-screen and reports that as a Moved. Persisting it saved
@@ -1358,6 +1363,11 @@ pub fn run() {
             close_toolset_window,
             suspend_toolset_windows,
             list_toolset_window_states,
+            set_resizable_toolbars,
+            configure_toolset_resize,
+            current_toolset_user_size,
+            reset_toolbar_sizes,
+            fit_toolset_window,
             load_toolset_customization_state,
             save_toolset_customization_state,
             load_document_session,
@@ -2556,6 +2566,60 @@ fn close_toolset_window(
     Ok(state)
 }
 
+/// Preference changes only ever configure windows in the palette directory.
+#[tauri::command]
+async fn set_resizable_toolbars(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    toolbar_resize::authorize_preference(&window)?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        toolbar_resize::set_enabled(&target, enabled)
+    })?
+}
+
+/// B3 supplies one tool cell plus its title, in logical pixels.
+#[tauri::command]
+async fn configure_toolset_resize(
+    window: tauri::WebviewWindow,
+    min_width: f64,
+    min_height: f64,
+) -> Result<Option<toolbar_resize::Size>, String> {
+    let id = toolbar_resize::palette_id(&window)?;
+    let minimum = toolbar_resize::minimum(min_width, min_height)?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        toolbar_resize::configure(&target, &id, Some(minimum), true)?;
+        toolbar_resize::user_size(&target)
+    })?
+}
+
+#[tauri::command]
+fn current_toolset_user_size(
+    window: tauri::WebviewWindow,
+) -> Result<Option<toolbar_resize::Size>, String> {
+    toolbar_resize::user_size(&window)
+}
+
+#[tauri::command]
+async fn reset_toolbar_sizes(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != MAIN_WINDOW_LABEL {
+        return Err("Only the document window may reset toolbar sizes.".into());
+    }
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || toolbar_resize::reset(&target))?
+}
+
+/// The content-fit path is native so a queued fit cannot overwrite a user resize.
+#[tauri::command]
+async fn fit_toolset_window(
+    window: tauri::WebviewWindow,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    toolbar_resize::palette_id(&window)?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || toolbar_resize::fit(&target, width, height))?
+}
+
 #[tauri::command]
 fn list_toolset_window_states(app: tauri::AppHandle) -> Result<Vec<ToolsetWindowState>, String> {
     // Report the state of every palette window we've opened this session (from the directory),
@@ -3280,6 +3344,7 @@ fn set_toolbars_menu(
     rulers_visible: bool,
     crosshairs_visible: bool,
     has_multiple_document_tabs: Option<bool>,
+    resizable_toolbars: Option<bool>,
 ) -> Result<(), String> {
     // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
     // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
@@ -3287,6 +3352,7 @@ fn set_toolbars_menu(
         rulers_visible,
         crosshairs_visible,
         has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
+        resizable_toolbars: resizable_toolbars.unwrap_or(false),
     };
     // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
     // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
@@ -7832,6 +7898,7 @@ struct ViewMenuState {
     rulers_visible: bool,
     crosshairs_visible: bool,
     has_multiple_document_tabs: bool,
+    resizable_toolbars: bool,
 }
 
 impl Default for ViewMenuState {
@@ -7840,6 +7907,7 @@ impl Default for ViewMenuState {
             rulers_visible: true,
             crosshairs_visible: true,
             has_multiple_document_tabs: false,
+            resizable_toolbars: false,
         }
     }
 }
@@ -7890,7 +7958,10 @@ fn classify_toolbars_menu_update(
             .all(|(old, new)| old.toolset_id == new.toolset_id && old.title == new.title);
     let tab_close_changed = cfg!(target_os = "macos")
         && previous_view.has_multiple_document_tabs != next_view.has_multiple_document_tabs;
-    if !same_rows || tab_close_changed {
+    if !same_rows
+        || tab_close_changed
+        || previous_view.resizable_toolbars != next_view.resizable_toolbars
+    {
         ToolbarsMenuUpdate::Rebuild
     } else if previous_entries.as_slice() == next_entries && *previous_view == next_view {
         ToolbarsMenuUpdate::Unchanged
@@ -8633,7 +8704,7 @@ fn create_view_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
-    let toolbars_menu = create_toolbars_menu(app, entries)?;
+    let toolbars_menu = create_toolbars_menu(app, entries, view_state.resizable_toolbars)?;
     let customize_toolbars = MenuItem::with_id(
         app,
         "view.customizeToolbars",
@@ -8680,6 +8751,7 @@ struct ToolbarMenuEntry {
 fn create_toolbars_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     entries: &[ToolbarMenuEntry],
+    resizable_toolbars: bool,
 ) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
 
@@ -8695,6 +8767,14 @@ fn create_toolbars_menu<R: Runtime>(
         menu.append(&item)?;
     }
 
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "view.toolbars.resetSizes",
+        "Reset Toolbar Sizes",
+        resizable_toolbars,
+        None::<&str>,
+    )?)?;
     Ok(menu)
 }
 
@@ -8709,6 +8789,7 @@ fn ensure_toolset_window<R: Runtime>(
         // Already built — but it may have been created (or dragged) offscreen earlier, or the
         // display it lived on may have been unplugged while it was hidden. Re-clamp on the way in,
         // so re-opening from View ▸ Toolbars is always enough to recover a lost palette.
+        toolbar_resize::configure(&window, toolset_id, None, true)?;
         recover_offscreen_toolset_window(app, &window);
         window.show().map_err(|error| error.to_string())?;
         configure_toolset_utility_window(&window, true)?;
@@ -8791,6 +8872,7 @@ fn ensure_toolset_window<R: Runtime>(
     disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, true)?;
     install_toolset_input_focus(&window)?;
+    toolbar_resize::configure(&window, toolset_id, None, true)?;
     Ok(())
 }
 
@@ -10511,6 +10593,17 @@ mod tests {
                 ToolbarsMenuUpdate::ChecksOnly
             }
         );
+        assert_eq!(
+            classify_toolbars_menu_update(
+                &previous,
+                &previous.0,
+                ViewMenuState {
+                    resizable_toolbars: true,
+                    ..view
+                }
+            ),
+            ToolbarsMenuUpdate::Rebuild
+        );
         let mut renamed = previous.0.clone();
         renamed[1].title = "Art (renamed)".to_string();
         assert_eq!(
@@ -11168,7 +11261,9 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}{}",
+            include_str!("../capabilities/toolbar-resize.json"),
+            include_str!("../capabilities/toolbar-size-reset.json"),
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),

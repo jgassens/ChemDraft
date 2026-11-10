@@ -175,6 +175,18 @@ describe("app menu model", () => {
     expect([...webIds].sort()).toEqual([...nativeIds].sort());
   });
 
+  it.each(["macos", "windows"] as const)("wires the toolbar size reset in the %s menu", (platform) => {
+    for (const enabled of [false, true]) {
+      const commands = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform, resizableToolbars: enabled }));
+      expect(commands.find(item => item.commandId === "view.toolbars.resetSizes")).toMatchObject({ enabled, label: "Reset Toolbar Sizes" });
+    }
+    const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+    const menu = source.split("fn create_toolbars_menu<R: Runtime>")[1]?.split("fn ensure_toolset_window")[0];
+    expect(menu).toContain('"view.toolbars.resetSizes"');
+    expect(menu).toContain("resizable_toolbars,");
+    expect(source).toContain("create_toolbars_menu(app, entries, view_state.resizable_toolbars)");
+  });
+
   it("exposes the OS-predefined clipboard commands as web commands but excludes them from the native set", () => {
     const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
     const predefined = commands.filter((command) => command.nativePredefined).map((command) => command.commandId);
@@ -235,7 +247,9 @@ describe("app menu model", () => {
     if (toolbars?.kind === "submenu") {
       expect(toolbars.items.map((item) => (item.kind === "command" ? item.commandId : item.kind))).toEqual([
         "view.toolset.toggle.core.main",
-        "view.toolset.toggle.core.art"
+        "view.toolset.toggle.core.art",
+        "separator",
+        "view.toolbars.resetSizes"
       ]);
     }
 

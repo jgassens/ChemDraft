@@ -21,6 +21,24 @@ JS; Rust just hosts the windows and persists their geometry. The browser build r
 `ToolPalette` in-window; `isDesktopRuntime()` (with a `localStorage["chemdraft.forceWebPalettes"]`
 escape hatch) picks the renderer.
 
+### Resizable toolbars (1.3)
+
+The **Resizable floating toolbars** preference in Preferences ▸ Toolbars is off by default and is
+stored as the validated boolean `chemdraft.resizable-floating-toolbars.v1`. When enabled, native
+edge and corner handles let palettes remember user-sized frames; the Main toolbar remains one row
+and resizes horizontally only. The registered native commands are `set_resizable_toolbars`,
+`configure_toolset_resize`, `current_toolset_user_size`, `reset_toolbar_sizes`, and
+`fit_toolset_window`.
+
+Saved geometry remains in `toolbar-state.json` under `toolsets[id].frame`, alongside the legacy
+`x` and `y` position fields. A frame records monitor identity, monitor-relative logical coordinates,
+and logical width and height. Restore uses the destination monitor's scale and clamps to its work
+area. Only a completed user resize saves a frame: content fitting, DPI changes, minimized owners,
+suspension, and quit do not overwrite it. Disabling the preference resumes content fitting but keeps
+the saved frames; **Reset Toolbar Sizes** clears them. The optional frame field is ignored by the
+tolerant 1.2 reader, verified by a frozen 1.2 reader test, so opening the file with 1.2 retains its
+toolbar positions without an error.
+
 **Persistence split:** `toolbar-layout-state.json` holds user *intent* (visibility as
 `toolsetOverrides[].visible`, order, renames, hidden items, user toolsets) — JS reads/writes it via
 `load/save_toolset_customization_state`. `toolbar-state.json` holds window *geometry* only. A layout

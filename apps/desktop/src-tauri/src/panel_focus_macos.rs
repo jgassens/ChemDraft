@@ -28,7 +28,7 @@ use std::{
 // and ~3.3 pt inside right/bottom, but not left/top; ~5 pt works nowhere.
 // Use about 2 pt, below the first failing probe on the narrowest edges, rather than
 // intercepting a 6 pt strip where AppKit cannot resize and the page gets no hit.
-// Both the overlay and activation monitor use this band through resize_edge.
+// Both the overlay and activation monitor use this band through palette_resize_edge.
 const MAC_NATIVE_RESIZE_BAND_PT: f64 = 2.0;
 
 #[derive(Default)]
@@ -200,7 +200,8 @@ fn observe_panel<R: tauri::Runtime>(
                     let point = content.convertPoint_fromView(native.locationInWindow(), None);
                     let bounds = content.bounds();
                     resize_enabled(panel.styleMask())
-                        && resize_edge(
+                        && palette_resize_edge(
+                            panel,
                             point.x - bounds.origin.x,
                             point.y - bounds.origin.y,
                             bounds.size.width,
@@ -238,6 +239,15 @@ pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
         && (x < edge || y < edge || x >= width - edge || y >= height - edge)
 }
 
+fn palette_resize_edge(panel: &NSWindow, x: f64, y: f64, width: f64, height: f64) -> bool {
+    resize_edge(x, y, width, height)
+        && super::super::toolbar_resize::permits_edge(
+            super::super::toolbar_resize::mode(panel as *const NSWindow as usize),
+            x < MAC_NATIVE_RESIZE_BAND_PT || x >= width - MAC_NATIVE_RESIZE_BAND_PT,
+            y < MAC_NATIVE_RESIZE_BAND_PT || y >= height - MAC_NATIVE_RESIZE_BAND_PT,
+        )
+}
+
 fn resize_enabled(style: NSWindowStyleMask) -> bool {
     style.contains(NSWindowStyleMask::Resizable) && !style.contains(NSWindowStyleMask::FullScreen)
 }
@@ -259,7 +269,8 @@ define_class!(
                 return std::ptr::null_mut();
             };
             if resize_enabled(panel.styleMask())
-                && resize_edge(
+                && palette_resize_edge(
+                    &panel,
                     point.x - frame.origin.x,
                     point.y - frame.origin.y,
                     frame.size.width,
@@ -366,6 +377,31 @@ pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
     if super::super::is_plugin_panel_window_label(window.label()) {
         observe_panel(window, panel, &mut tokens)?;
     }
+    // Native live-resize notifications exclude programmatic content fits and DPI changes.
+    for (name, begin) in unsafe {
+        [
+            (objc2_app_kit::NSWindowWillStartLiveResizeNotification, true),
+            (objc2_app_kit::NSWindowDidEndLiveResizeNotification, false),
+        ]
+    } {
+        let target = window.clone();
+        let callback = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+            if begin {
+                super::super::toolbar_resize::begin(&target);
+            } else {
+                super::super::toolbar_resize::end(&target);
+            }
+        });
+        tokens.notifications.push(unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(name),
+                Some(panel),
+                None,
+                &callback,
+            )
+        });
+    }
+
     for (name, active) in unsafe {
         [
             (NSWindowDidBecomeKeyNotification, true),

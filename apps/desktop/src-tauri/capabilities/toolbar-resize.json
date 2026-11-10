@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "toolbar-resize",
+  "description": "Only toolbar palettes may configure/query their native user size or fit their content.",
+  "windows": [
+    "toolset-*"
+  ],
+  "permissions": [
+    "allow-configure-toolset-resize",
+    "allow-current-toolset-user-size",
+    "allow-fit-toolset-window"
+  ]
+}

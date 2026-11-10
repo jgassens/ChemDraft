@@ -1,3 +1,4 @@
+import { TOOLBAR_RESIZE_STORAGE_KEY, loadResizableFloatingToolbars, type ResizableToolbarsChange } from "../toolbarResizeSettings";
 import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportPreviewSettings";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
@@ -862,14 +863,15 @@ export async function setToolbarsMenu(
   // items; pass their current state so the rebuild preserves the checkmarks instead of forcing them on.
   rulersVisible: boolean,
   crosshairsVisible: boolean,
-  hasMultipleDocumentTabs = false
+  hasMultipleDocumentTabs = false,
+  resizableToolbars = false
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
+  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs, resizableToolbars }).catch(() => undefined);
 }
 
 /**
@@ -1105,7 +1107,12 @@ export async function listenForCurrentWindowWorkAreaChanges(handler: () => void)
 }
 
 /** Preserve the top-left across macOS content resizes, then keep the whole palette on its monitor. */
-export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<void> {
+export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds, resizableToolbars = false): Promise<void> {
+  if (resizableToolbars && isDesktopRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("fit_toolset_window", { width: size.width, height: size.height });
+    return;
+  }
   const position = await currentWindowLogicalPosition();
   const height = Math.min(size.height, area.bottom - area.top);
   await setCurrentWindowLogicalSize({ width: size.width, height });
@@ -1799,6 +1806,54 @@ export async function listenForDrawingSettings(handler: (settings: DrawingSettin
     if (isDrawingSettings(event.payload)) handler(event.payload);
   });
   return () => { removeStorage(); unlistenDom(); unlistenTauri(); };
+}
+
+export const TOOLBAR_RESIZE_SETTINGS_EVENT = "chemdraft://toolbar-resize-settings";
+
+export async function resetToolbarSizes(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("reset_toolbar_sizes");
+}
+
+export async function configurePaletteResize(minWidth: number, minHeight: number): Promise<ToolsetWindowSize | null> {
+  if (!isDesktopRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ToolsetWindowSize | null>("configure_toolset_resize", { minWidth, minHeight });
+}
+
+export async function listenForPaletteUserSize(handler: (event: { toolsetId: string; size: ToolsetWindowSize | null }) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<{ toolsetId: string; size: ToolsetWindowSize | null }>("chemdraft://toolbar-user-size", event => handler(event.payload));
+}
+
+/** Native state is shared by palettes; callers outside the palette directory cannot resize windows. */
+export async function setResizableToolbarsNative(enabled: boolean): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("set_resizable_toolbars", { enabled });
+}
+
+export async function broadcastResizableToolbars(enabled: ResizableToolbarsChange): Promise<void> {
+  dispatchDomToolsetEvent(TOOLBAR_RESIZE_SETTINGS_EVENT, enabled);
+  if (!isDesktopRuntime()) return;
+  await setResizableToolbarsNative(enabled);
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<ResizableToolbarsChange>(TOOLBAR_RESIZE_SETTINGS_EVENT, enabled);
+}
+
+export async function listenForResizableToolbars(handler: (enabled: ResizableToolbarsChange) => void): Promise<Unlisten> {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === TOOLBAR_RESIZE_STORAGE_KEY || event.key === null) handler(loadResizableFloatingToolbars());
+  };
+  globalThis.addEventListener?.("storage", onStorage);
+  const unlistenDom = listenForDomToolsetEvent(TOOLBAR_RESIZE_SETTINGS_EVENT, event => {
+    if (typeof event.detail === "boolean") handler(event.detail);
+  });
+  const unlistenTauri = isDesktopRuntime() ? await listenTauriEvent<ResizableToolbarsChange>(TOOLBAR_RESIZE_SETTINGS_EVENT, event => {
+    if (typeof event.payload === "boolean") handler(event.payload);
+  }) : undefined;
+  return () => { globalThis.removeEventListener?.("storage", onStorage); unlistenDom(); unlistenTauri?.(); };
 }
 
 export const ELECTRON_MARK_EDITING_SETTINGS_EVENT = "chemdraft://electron-mark-editing-settings";

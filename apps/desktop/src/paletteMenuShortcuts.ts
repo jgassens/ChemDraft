@@ -35,6 +35,7 @@ export const NATIVE_MENU_COMMAND_IDS: ReadonlySet<string> = new Set([
   "view.toggleRulers",
   "view.toggleCrosshairs",
   "view.customizeToolbars",
+  "view.toolbars.resetSizes",
   "view.customizeMainToolbar",
   "layout.group",
   "layout.ungroup",

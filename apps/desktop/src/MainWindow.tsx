@@ -183,6 +183,7 @@ import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
+import { useResizableToolbarsSetting } from "./useResizableToolbarsSetting";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
 import { emptyLayoutState } from "./toolbars/CustomizeToolbars/layoutStateEdits";
 import { applyToolsetLayoutEdit } from "./toolbars/CustomizeMainToolbar/applyLayoutEdit";
@@ -440,6 +441,7 @@ import {
   copyAsMenuItems,
   textToolbarActions,
   toolbarCustomizationActions,
+  resetToolbarSizesAction,
   viewActions,
   createOpenWarningsAction,
   pageCustomSizeAction,
@@ -835,6 +837,7 @@ import {
   openToolsetWindow,
   setMenuChecked,
   setToolbarsMenu,
+  resetToolbarSizes,
   toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
   listenForKeybindingSettings,
@@ -1772,7 +1775,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.16.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.17.22-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3423,6 +3426,7 @@ export function MainWindow({
   const hasSearchableStructure = useMemo(() => structureSearchDocument(
     document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
   ) !== undefined, [document, selectedNativeMoleculeParts]);
+  const resizableToolbars = useResizableToolbarsSetting();
   const customSwatches = useCustomSwatches();
   const customSwatchActions = useMemo(() => createCustomSwatchActions(customSwatches,
     document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0 || activeTextEditObjectId !== undefined),
@@ -3439,11 +3443,12 @@ export function MainWindow({
         registry: toolsetRegistry,
         compoundLayoutsEnabled, compoundLayoutSettings,
         structureSearchEnabled,
+        resizableToolbars,
         hasSearchableStructure
       }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
-    [customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
+    [customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, resizableToolbars, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -4500,8 +4505,8 @@ export function MainWindow({
     // macOS Close Tab routing uses has_multiple_document_tabs from this async menu push.
     // Cmd+N then immediate Cmd+W can hide the window before it arrives, with two tabs still live;
     // autosave keeps both tabs, so nothing is lost.
-    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1).catch(() => undefined);
-  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds]);
+    void setToolbarsMenu(entries, rulersVisible, crosshairsVisible, documentTabs.length > 1, resizableToolbars).catch(() => undefined);
+  }, [crosshairsVisible, documentTabs.length, nativePalette, rulersVisible, toolsetRegistry, visibleToolsetIds, resizableToolbars]);
 
   const deleteHoveredNativeTarget = useCallback(() => {
     const currentDocument = documentRef.current;
@@ -12250,6 +12255,10 @@ export function MainWindow({
       openCustomPageSizeDialog();
     });
 
+    register(resetToolbarSizesAction(resizableToolbars), async () => {
+      try { await resetToolbarSizes(); } catch (error) { setStatus(`Could not reset toolbar sizes: ${String(error)}`); }
+    });
+
     toolbarCustomizationActions.forEach((action) => {
       register(action, () => {
         setStatus(action.disabledReason ?? "Toolbar customization UI is not implemented yet");
@@ -12266,7 +12275,7 @@ export function MainWindow({
 
     return bindings;
   }, [
-    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    resizableToolbars, isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -21799,6 +21808,7 @@ export function MainWindow({
         hasSearchableStructure,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
+        resizableToolbars,
         pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
         keybindingScheme
@@ -21806,6 +21816,7 @@ export function MainWindow({
     [
       rulersVisible,
       crosshairsVisible,
+      resizableToolbars,
       canUndo,
       canRedo,
       document.selection.objectIds.length,

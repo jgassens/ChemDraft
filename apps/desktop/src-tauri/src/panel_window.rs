@@ -588,7 +588,10 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     macos::install_resize_hit_test(window)?;
-    install_input_focus(window)
+    if super::toolset_id_for_window_label(window.app_handle(), window.label()).is_none() {
+        install_input_focus(window)?;
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -696,14 +699,26 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
-    install_input_focus(window)?;
+    if super::toolset_id_for_window_label(window.app_handle(), window.label()).is_none() {
+        install_input_focus(window)?;
+    }
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let parent = hwnd as usize;
     let hide_panel = window.clone();
+    let resize_target = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
+        resize: std::rc::Rc::new(move |action| match action {
+            ResizeAction::Begin => super::toolbar_resize::begin(&resize_target),
+            ResizeAction::End => super::toolbar_resize::end(&resize_target),
+            ResizeAction::Cancel => super::toolbar_resize::cancel(resize_target.label()),
+        }),
         will_hide: std::rc::Rc::new(move || {
-            let webview: &tauri::Webview<R> = hide_panel.as_ref();
-            super::panel_full_size::will_hide(&webview.window());
+            if super::is_plugin_panel_window_label(hide_panel.label()) {
+                let webview: &tauri::Webview<R> = hide_panel.as_ref();
+                super::panel_full_size::will_hide(&webview.window());
+            } else {
+                super::toolbar_resize::cancel(hide_panel.label());
+            }
         }),
     }));
     unsafe {
@@ -733,9 +748,34 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Recompute the adapted input band after a palette preference changes. Keep Tauri's
+/// child alive: set_resizable(false) destroys it and would discard its subclass on Windows.
+#[cfg(windows)]
+pub(crate) fn refresh_resize_hit_test<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0;
+    unsafe { update_resize_overlay(hwnd) }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn refresh_resize_hit_test<R: tauri::Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(windows)]
 struct PanelSubclass {
     will_hide: std::rc::Rc<dyn Fn()>,
+    resize: std::rc::Rc<dyn Fn(ResizeAction)>,
+}
+
+#[cfg(windows)]
+enum ResizeAction {
+    Begin,
+    End,
+    Cancel,
 }
 
 #[cfg(windows)]
@@ -811,7 +851,7 @@ unsafe fn update_resize_overlay(
     let border = resize_border(parent);
     let width = client_rect.right - client_rect.left;
     let height = client_rect.bottom - client_rect.top;
-    let cutout = geometry::overlay_cutout(
+    let mut cutout = geometry::overlay_cutout(
         geometry::Rect {
             left: 0,
             top: 0,
@@ -820,6 +860,21 @@ unsafe fn update_resize_overlay(
         },
         border,
     );
+    match super::toolbar_resize::mode(parent as usize) {
+        Some(super::toolbar_resize::Mode::Off) => {
+            cutout = geometry::Rect {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
+        }
+        Some(super::toolbar_resize::Mode::Horizontal) => {
+            cutout.top = 0;
+            cutout.bottom = height;
+        }
+        _ => {}
+    }
     let desired = CreateRectRgn(0, 0, width, height);
     let current = CreateRectRgn(0, 0, 0, 0);
     let interior = CreateRectRgn(cutout.left, cutout.top, cutout.right, cutout.bottom);
@@ -869,11 +924,21 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_ACTIVATE, SWP_HIDEWINDOW, WINDOWPOS, WM_DPICHANGED, WM_MOUSEACTIVATE,
-            WM_NCDESTROY, WM_NCHITTEST, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE,
-            WM_WINDOWPOSCHANGING,
+            HTCLIENT, MA_ACTIVATE, MA_NOACTIVATE, SWP_HIDEWINDOW, WINDOWPOS, WM_DPICHANGED,
+            WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+            WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGING,
         },
     };
+    if message == WM_DPICHANGED {
+        let notify = (*(data as *const PanelSubclass)).resize.clone();
+        notify(ResizeAction::Cancel);
+    }
+    if message == WM_NCLBUTTONDOWN && panel_resize_hit(hwnd, lparam).is_some() {
+        let notify = (*(data as *const PanelSubclass)).resize.clone();
+        notify(ResizeAction::Begin);
+    }
+    let resize_ended =
+        (message == WM_EXITSIZEMOVE).then(|| (*(data as *const PanelSubclass)).resize.clone());
     // This also covers core:window hide calls from the panel or document webview. Restore before
     // the native hide; no DOM cleanup or queued WindowEvent is required.
     if (message == WM_SHOWWINDOW && wparam == 0)
@@ -887,6 +952,10 @@ unsafe extern "system" fn resize_subclass(
     if message == WM_MOUSEACTIVATE {
         // Explicit mouse activation does not change WS_EX_NOACTIVATE or the lifetime
         // focused(false) show mode. The click, including native resize edges, keeps focus.
+        let hit = (lparam & 0xffff) as u32;
+        if super::toolbar_resize::mode(hwnd as usize).is_some() && (10..=17).contains(&hit) {
+            return MA_NOACTIVATE as isize;
+        }
         return MA_ACTIVATE as isize;
     }
     if message == WM_NCHITTEST {
@@ -900,6 +969,9 @@ unsafe extern "system" fn resize_subclass(
         return result;
     }
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if let Some(notify) = resize_ended {
+        notify(ResizeAction::End);
+    }
     // Run after Tauri's WM_SIZE handler rewrites the overlay region. DPI/settings
     // changes also refresh the zone width even if the client size has not changed.
     if matches!(message, WM_SIZE | WM_DPICHANGED | WM_SETTINGCHANGE) {
@@ -969,12 +1041,39 @@ unsafe fn panel_resize_hit(
     lparam: isize,
 ) -> Option<geometry::ResizeHit> {
     let rect = panel_content_rect(hwnd)?;
-    geometry::resize_hit(
+    let hit = geometry::resize_hit(
         (lparam as u16 as i16) as i32,
         ((lparam >> 16) as u16 as i16) as i32,
         rect,
         resize_border(hwnd),
-    )
+    )?;
+    let mode = super::toolbar_resize::mode(hwnd as usize);
+    let horizontal = matches!(
+        hit,
+        geometry::ResizeHit::Left
+            | geometry::ResizeHit::Right
+            | geometry::ResizeHit::TopLeft
+            | geometry::ResizeHit::TopRight
+            | geometry::ResizeHit::BottomLeft
+            | geometry::ResizeHit::BottomRight
+    );
+    let vertical = !matches!(hit, geometry::ResizeHit::Left | geometry::ResizeHit::Right);
+    if !super::toolbar_resize::permits_edge(mode, horizontal, vertical) {
+        return None;
+    }
+    match mode {
+        Some(super::toolbar_resize::Mode::Off) => None,
+        Some(super::toolbar_resize::Mode::Horizontal) => match hit {
+            geometry::ResizeHit::Left
+            | geometry::ResizeHit::TopLeft
+            | geometry::ResizeHit::BottomLeft => Some(geometry::ResizeHit::Left),
+            geometry::ResizeHit::Right
+            | geometry::ResizeHit::TopRight
+            | geometry::ResizeHit::BottomRight => Some(geometry::ResizeHit::Right),
+            _ => None,
+        },
+        _ => Some(hit),
+    }
 }
 
 #[cfg(test)]

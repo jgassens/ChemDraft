@@ -7,6 +7,19 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Resizable floating toolbars (macOS and Windows): with Preferences ▸ Toolbars ▸ Resizable floating
+toolbars off, confirm there are no resize handles and each toolbar fits its content as before. Turn
+the preference on and resize each edge and corner; verify the Main toolbar resizes horizontally only.
+Check the per-toolbar minimum and the destination monitor's maximum work area. Resize a toolbar,
+quit and relaunch, and confirm its size is remembered. Move it to a monitor with a different scale
+(on Windows, use mixed DPI) and check that its size and placement remain usable. Unplug the monitor
+where a sized toolbar was located and confirm it restores on an available monitor. Minimize the
+document window and restore it; the toolbar size must remain unchanged. Use View ▸ Toolbars ▸ Reset
+Toolbar Sizes and confirm saved sizes clear and palettes fit their content. Turn the preference off
+and confirm toolbars refit while saved sizes are kept; turn it on again and confirm those sizes
+return. Finally, open `toolbar-state.json` written by this build with a 1.2 build: it must show the
+toolbars without an error.
+
 Native drawing presets (macOS and Windows): apply each Structure ▸ Drawing style item to selected molecules/text and to an unselected multi-page document; check new-object defaults, retained chemistry, wedge/hash and double-bond spacing, changed-object selection, save/reopen, and exactly one named Undo/Redo entry. Reapplying a matching preset adds no entry.
 
 Invalid structure exports (macOS and Windows): draw/import a carbon with five single bonds;
