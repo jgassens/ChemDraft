@@ -48,6 +48,15 @@ it("uses the untitled document name without a saved path", () => {
   const document = { ...createPhase4Document(), title: "Untitled" };
   expect(createDefaultExportDialogState(document).filename).toBe("Untitled.pdf");
 });
+it.each([
+  ["Reaction 1/2", "Reaction-1-2.pdf"],
+  ["x.cdxml ", "x.pdf"],
+  ["x.", "x.pdf"],
+  ["x.cdxml.  ", "x.pdf"]
+])("sanitizes the unsaved title %s as %s", (title, expected) => {
+  const document = { ...createPhase4Document(), title };
+  expect(createDefaultExportDialogState(document).filename).toBe(expected);
+});
 const createUrl = vi.fn(() => "blob:preview");
 beforeEach(() => {
   vi.stubGlobal("localStorage", new MemoryStorage());
