@@ -3,9 +3,10 @@ import {
   sendToolsetFlyoutKey, toolsetPopoverTimestamp, type ToolsetFlyoutSession
 } from "./window-manager";
 
-/** Nonactivating flyouts cannot receive DOM keys. Route them before toolbar buttons,
- * canvas shortcuts and browser defaults, without transferring window or DOM focus. */
-export function installMainWindowFlyoutKeyboard(): () => void {
+/** Install in the document and standalone palette windows: nonactivating flyouts
+ * preserve either window's focus. Route keys before toolbar buttons, canvas
+ * shortcuts and browser defaults, without transferring window or DOM focus. */
+export function installNativeFlyoutKeyboard(): () => void {
   let session: ToolsetFlyoutSession | undefined;
   let closedThrough = -Infinity;
   let latestOpenAt = -Infinity;

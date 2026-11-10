@@ -452,7 +452,7 @@ export async function listenForToolsetPopoverContentRequests(
   );
 }
 
-/** Navigation stays in the focused document; identify the open so delayed keys cannot
+/** Navigation stays in the focused document or palette; identify the open so delayed keys cannot
  * activate a different flyout in the reused popover window. */
 export interface ToolsetFlyoutSession {
   toolsetId: string;

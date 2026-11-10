@@ -12,7 +12,7 @@ import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clip
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
-import { installMainWindowFlyoutKeyboard } from "./nativeFlyoutKeyboard";
+import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
@@ -2022,7 +2022,7 @@ export function MainWindow({
   shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
-  useEffect(() => installMainWindowFlyoutKeyboard(), []);
+  useEffect(() => installNativeFlyoutKeyboard(), []);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
