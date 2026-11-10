@@ -1,4 +1,4 @@
-import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { isEngineDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
@@ -60,8 +60,8 @@ export function pluginFacingStructure(
 }
 
 /**
- * A coordinate-free fallback for molecules whose stored structure cannot represent their live
- * graph (for example, an unknown-order bond). Moving such a molecule must not stale a report,
+ * A coordinate-free key for the live graph that supplies the plugin's structure, including edits
+ * the stored structure may not reflect (for example, isotopes). Moving a molecule must not stale a report,
  * while changes to its chemistry, atoms, bonds, superatoms, or R-groups must.
  */
 function moleculeGraphKey(molecule: MoleculeObject): string {
@@ -74,27 +74,41 @@ function moleculeGraphKey(molecule: MoleculeObject): string {
   });
 }
 
+// Engine documents own immutable objects: applyPatches shares untouched molecules and replaces
+// edited ones through updateObject/mergeObjectChanges; adoptDerivedDocument validates replacements.
+// MainWindow admits initial/opened documents through toEngineDocument/admitParsedDocument. Cache
+// only that ownership contract, since callers can still mutate non-engine documents in place.
+// Weak keys also let discarded molecules and their graph-sized hash inputs be collected.
+const sourceFingerprints = new WeakMap<MoleculeObject, {
+  documentId: string;
+  pageId: string;
+  fingerprint: string;
+}>();
+
 /** Keep selection snapshots and open-panel staleness checks on precisely the same source key. */
 function moleculeSourceFingerprint(
-  documentId: string,
+  document: ChemDraftDocument,
   pageId: string,
   molecule: MoleculeObject
 ): string {
-  // A label's recorded bond side decides what a cyano label means, and the stored string need not
-  // show it, so it is keyed alongside. Only molecules that have one gain the suffix: every other
-  // payload stays byte-for-byte what it was.
-  const sides = (molecule.atoms ?? []).flatMap((atom) => (atom.labelBondSide ? [[atom.id, atom.labelBondSide]] : []));
-  const sideKey = sides.length > 0 ? `\nlabelBondSide:${JSON.stringify(sides)}` : "";
-  return createStructureSourceFingerprint({
-    documentId,
+  const cacheable = isEngineDocument(document);
+  const cached = cacheable ? sourceFingerprints.get(molecule) : undefined;
+  if (cached?.documentId === document.id && cached.pageId === pageId) {
+    return cached.fingerprint;
+  }
+  const fingerprint = createStructureSourceFingerprint({
+    documentId: document.id,
     pageId,
     objectId: molecule.id,
     structureFormat: molecule.structureFormat,
-    // Retain the existing payload byte-for-byte whenever it is available. Empty stored structures
-    // occur when a graph cannot be written safely as SMILES, so key that graph instead (it already
-    // carries every atom field but the coordinates, the recorded sides included).
-    structure: molecule.structure === "" ? moleculeGraphKey(molecule) : `${molecule.structure}${sideKey}`
+    // Match pluginFacingStructure's live-graph preference: stored text can miss isotope, charge,
+    // radical and label-side edits. Keep the stored-text key only when there is no live graph.
+    structure: molecule.atoms?.length > 0 || molecule.structure === "" ? moleculeGraphKey(molecule) : molecule.structure
   });
+  if (cacheable) {
+    sourceFingerprints.set(molecule, { documentId: document.id, pageId, fingerprint });
+  }
+  return fingerprint;
 }
 
 /**
@@ -129,9 +143,8 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
       pageId: hit.pageId,
       structureFormat: facing.structureFormat,
       structure: facing.structure,
-      // Fingerprint stays keyed on the object's own coordinate-free structure string (not the
-      // emitted molfile) so a pure move never reads as a content change / staleness.
-      sourceFingerprint: moleculeSourceFingerprint(document.id, hit.pageId, hit.molecule)
+      // Key the source without coordinates so a pure move never stales the report.
+      sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
     });
   }
 
@@ -139,7 +152,7 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
 }
 
 /**
- * Recompute the source fingerprint for a specific molecule in the current document (independent of
+ * Read the source fingerprint for a specific molecule in the current document (independent of
  * selection), for staleness detection (D-09): a panel report carries the fingerprint it was computed
  * against; if this no longer matches — or the object is gone — the report is stale. Returns undefined
  * when the object no longer exists or is not a molecule.
@@ -148,7 +161,7 @@ export function computeObjectFingerprint(document: ChemDraftDocument, objectId: 
   for (const page of document.pages) {
     for (const object of page.objects) {
       if (object.type === "molecule" && object.id === objectId) {
-        return moleculeSourceFingerprint(document.id, page.id, object);
+        return moleculeSourceFingerprint(document, page.id, object);
       }
     }
   }
