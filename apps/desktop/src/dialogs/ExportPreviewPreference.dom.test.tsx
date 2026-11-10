@@ -17,7 +17,8 @@ import { parseDialogMessage } from "./dialogProtocol";
 import { PerfProbe } from "../perf/probe";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), channels: [] as { onmessage(value: unknown): void }[] }));
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(),
   invoke: ipc.invoke,
   Channel: class { onmessage = (_value: unknown) => {}; constructor() { ipc.channels.push(this); } }
 }));

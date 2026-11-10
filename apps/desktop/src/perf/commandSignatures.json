@@ -902,5 +902,21 @@
     "generics": "",
     "parameters": "app: AppHandle",
     "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "set_structure_search_enabled",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "open_structure_search",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, site: String, smiles: String,",
+    "returnType": "Result<(), String>"
   }
 ]

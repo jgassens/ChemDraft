@@ -1,5 +1,7 @@
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
+import { structureSearchCommands } from "./structureSearch";
+import { STRUCTURE_SEARCH_DEFAULT_ENABLED } from "./structureSearchSettings";
 import { convertTextToAtomLabelCommandId } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
@@ -91,6 +93,8 @@ export interface PluginAppMenuItem {
 }
 
 export interface AppMenuContext {
+  structureSearchEnabled?: boolean;
+  hasSearchableStructure?: boolean;
   /** Explicit in tests so both desktop conventions can be checked from one host. */
   platform?: ShortcutPlatform;
   /** Number of installed plugins with a cached update offer. */
@@ -333,6 +337,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         command("structure.openInteractive3d", "Interactive 3D Workspace…")
       ]
     },
+    { id: "tools", label: "Tools", items: [] },
     {
       id: "analyze",
       label: "Analyze",
@@ -373,11 +378,25 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     item.shortcut = formatMenuShortcut(item.accelerator, platform);
   }
   appendPluginMenuItems(sections, [
+    ...structureSearchMenuItems(
+      context.structureSearchEnabled ?? STRUCTURE_SEARCH_DEFAULT_ENABLED,
+      context.hasSearchableStructure ?? context.hasSelectedMolecule
+    ),
     ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
     ...(context.pluginMenuItems ?? [])
   ]);
 
   return sections;
+}
+
+/** Shared dynamic native/web items: the preference controls visibility, selection controls enablement. */
+export function structureSearchMenuItems(enabled: boolean, searchable: boolean): PluginAppMenuItem[] {
+  if (!enabled) return [];
+  return structureSearchCommands(enabled, searchable).map(spec => ({
+    location: "tools",
+    command: { kind: "command", id: spec.id, commandId: spec.id, label: spec.title,
+      enabled: spec.enabled !== false, coreRouted: true }
+  }));
 }
 
 const SECTION_LABELS: Readonly<Record<string, string>> = {

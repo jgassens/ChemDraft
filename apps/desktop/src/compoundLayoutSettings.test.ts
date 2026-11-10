@@ -8,6 +8,13 @@ import { PreferencesWindow } from "./PreferencesWindow";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+function compoundLayoutMarkup(): string {
+  const markup = renderToStaticMarkup(createElement(PreferencesWindow));
+  const section = markup.match(/<section[^>]*aria-labelledby="compound-layout-tools"[\s\S]*?<\/section>/)?.[0];
+  expect(section).toBeDefined();
+  return section!;
+}
+
 afterEach(() => vi.unstubAllGlobals());
 describe("opt-in compound layouts", () => {
   it("defaults off for missing, malformed and invalid storage; persists explicit choices", () => {
@@ -17,9 +24,9 @@ describe("opt-in compound layouts", () => {
       expect(loadCompoundLayoutSettings()).toEqual({ enabled: false });
     }
     saveCompoundLayoutSettings({ enabled: true }); expect(loadCompoundLayoutSettings().enabled).toBe(true);
-    expect(renderToStaticMarkup(createElement(PreferencesWindow))).toContain('type="checkbox" checked=""');
+    expect(compoundLayoutMarkup()).toContain('type="checkbox" checked=""');
     saveCompoundLayoutSettings({ enabled: false }); expect(loadCompoundLayoutSettings().enabled).toBe(false);
-    expect(renderToStaticMarkup(createElement(PreferencesWindow))).not.toContain('type="checkbox" checked=""');
+    expect(compoundLayoutMarkup()).not.toContain('type="checkbox" checked=""');
   });
   it("filters custom layout entries without losing the stored toolbar definition", () => {
     const registry=createDesktopToolsetRegistry(undefined,undefined,[{id:"custom.layouts",title:"Layouts",source:"user",defaultVisible:true,defaultMode:"floating",groups:[{id:"custom.group",items:[

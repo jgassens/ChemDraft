@@ -21,6 +21,8 @@ import {
 } from "@chemdraft/art-engine";
 import { ArrangementLayouts, ArrangementGridAlignments, type ArrangementLayout, type ArrangementGridAlignment } from "@chemdraft/layout-engine";
 import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { structureSearchCommands, structureSearchDocument } from "./structureSearch";
+import { loadStructureSearchEnabled } from "./structureSearchSettings";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
@@ -62,6 +64,8 @@ export interface CommandAvailability {
 }
 
 export interface ShellCommandOptions {
+  structureSearchEnabled?: boolean;
+  hasSearchableStructure?: boolean;
   activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
   availability?: CommandAvailability;
@@ -2358,6 +2362,10 @@ export function allShellCommands(
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),
+    ...structureSearchCommands(
+      options.structureSearchEnabled ?? loadStructureSearchEnabled(),
+      options.hasSearchableStructure ?? structureSearchDocument(document) !== undefined
+    ),
     ...allPaletteCommands(registry),
     ...copyAsActions,
     ...editActions,

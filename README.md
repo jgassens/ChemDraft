@@ -14,6 +14,7 @@ Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDr
 - Add editable tables and pictures, and use structure templates.
 - Inspect molecular properties and analysis results, and explore structures with Spin 3D.
 - Convert chemical names to structures with OPSIN.
+- Search a selected structure in PubChem or Reaxys through your browser, with first-use consent per site; turn it off under Preferences ▸ Online structure search.
 - Extend the app with plugins, including the optional official NMR predictor and MolScribe structure-recognition plugins.
 - Use the headless CLI, MCP server and [agent skill](skills/chemdraft/SKILL.md) from scripts or coding assistants.
 
