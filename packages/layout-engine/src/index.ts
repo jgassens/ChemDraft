@@ -7,6 +7,7 @@ export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
 } from "./table";
 export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
+export { planTextObjectPlacement, planTextObjectEditorPlacement, cssTextFirstBaseline, type NativeTextCssMetrics } from "./textPlacement";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
@@ -86,6 +87,7 @@ import {
 } from "./valence";
 import { planTableObjectSvg } from "./table";
 import { textAdvanceEm } from "./textMetrics";
+import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -3834,17 +3836,10 @@ function projectionDistanceAlongSegment(
   };
 }
 
-function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
-  const textStyle = nativeTextStyleFromObjectStyle(object.style);
+/** @internal Shared by canvas, export and the live text-edit preview. */
+export function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const lines = textObjectSpanLines(object);
-  const textAnchor = textStyle.textAlign === "center"
-    ? "middle"
-    : textStyle.textAlign === "right" ? "end" : "start";
-  const x = textStyle.textAlign === "center"
-    ? object.x + object.width / 2
-    : textStyle.textAlign === "right" ? object.x + object.width : object.x;
-  const y = object.y + textStyle.fontSizePx;
-  const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
   const hasScripts = lines.some(line => line.some(span => span.script !== "normal"));
