@@ -15,7 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createSpectrumEnvelope, LinkedFigureView, restoreLinkedFigureWindowFrame, sampleStyledEnvelope } from "./LinkedFigureView";
-import { exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
+import { copySpectrumToClipboard, exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
 import { installPluginPanelInputFocus, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 
 const nativePanel = vi.hoisted(() => ({
@@ -919,6 +919,62 @@ describe("LinkedFigureView", () => {
     expect(document.activeElement).toBe(owner);
     expect(owner.getAttribute("aria-expanded")).toBe("false");
     expect(document.getElementById(menu.id)).toBeNull();
+  });
+
+  it.each([
+    { action: "export", delay: 1800, status: "Exported" },
+    { action: "copy", delay: 1400, status: "Copied" }
+  ])("clears the $action status timer when unmounted", async ({ action, delay, status }) => {
+    // Track the status timer specifically; other code may also schedule timeouts.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const resetStatus = vi.fn();
+    let statusTimer: number | undefined;
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const schedule = window.setTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+      if (timeout !== delay) return schedule(handler, timeout, ...args);
+      statusTimer = schedule(() => {
+        resetStatus();
+        if (typeof handler === "function") handler(...args);
+      }, timeout);
+      return statusTimer;
+    });
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      let button: HTMLButtonElement;
+      if (action === "export") {
+        button = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+        click(button);
+        await act(async () => container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click());
+      } else {
+        vi.mocked(copySpectrumToClipboard).mockResolvedValueOnce("image");
+        button = [...container!.querySelectorAll("button")].find((candidate) => candidate.textContent === "Copy")!;
+        await act(async () => button.click());
+      }
+      expect(button.textContent).toBe(status);
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), delay);
+      expect(statusTimer).toBeDefined();
+      expect(clearTimeoutSpy).not.toHaveBeenCalledWith(statusTimer);
+      await act(async () => {
+        root!.unmount();
+        root = undefined;
+      });
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(statusTimer);
+      await act(async () => {
+        vi.advanceTimersByTime(delay + 1);
+      });
+      // React silently ignores setters after unmount, so check that the callback containing
+      // the state update never executes rather than relying on warnings or thrown errors.
+      expect(resetStatus).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      timeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it.each(["jdx", "png", "svg", "pdf"] as const)("discloses rule estimates through the %s export action", async (format) => {

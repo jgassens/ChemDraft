@@ -269,6 +269,18 @@ export function LinkedFigureView({
   const exportButtonRef = useRef<HTMLButtonElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const exportWasBusyRef = useRef(false);
+  const copiedTimerRef = useRef<number | null>(null);
+  const exportStatusTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) {
+      window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = null;
+    }
+    if (exportStatusTimerRef.current !== null) {
+      window.clearTimeout(exportStatusTimerRef.current);
+      exportStatusTimerRef.current = null;
+    }
+  }, []);
   useEffect(() => {
     if (!exportBusy && exportWasBusyRef.current) exportButtonRef.current?.focus();
     exportWasBusyRef.current = exportBusy;
@@ -287,7 +299,11 @@ export function LinkedFigureView({
     ).then((result) => {
       if (result !== "none") {
         setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
+        if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = window.setTimeout(() => {
+          copiedTimerRef.current = null;
+          setCopied(false);
+        }, 1400);
       }
     });
   };
@@ -317,7 +333,11 @@ export function LinkedFigureView({
       setExportStatus("failed");
     } finally {
       setExportBusy(false);
-      window.setTimeout(() => setExportStatus(null), 1800);
+      if (exportStatusTimerRef.current !== null) window.clearTimeout(exportStatusTimerRef.current);
+      exportStatusTimerRef.current = window.setTimeout(() => {
+        exportStatusTimerRef.current = null;
+        setExportStatus(null);
+      }, 1800);
     }
   };
 
