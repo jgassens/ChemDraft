@@ -2656,7 +2656,11 @@ fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Va
     let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
     // The side file is optional metadata. Missing, unreadable or invalid metadata must never
     // discard the user's otherwise valid layout (main-file errors still propagate above).
-    let extensions = read_optional_file(&side_path)
+    let side_contents = read_optional_file(&side_path);
+    // No side file is the normal v1.1.1 upgrade path: JS must still migrate its old defaults.
+    // Only a present/unreadable side file can indicate lost metadata from a newer build.
+    let side_missing = matches!(&side_contents, Ok(None));
+    let extensions = side_contents
         .ok()
         .flatten()
         .and_then(|text| serde_json::from_str::<ToolsetCustomizationExtensions>(&text).ok())
@@ -2680,7 +2684,7 @@ fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Va
     // Earlier 1.2 builds wrote extensions inline. They take precedence until the next save
     // moves them to the side file and repairs the legacy file for a downgrade.
     fields.extend(inline.fields);
-    if !fields.contains_key("mainToolbarDefaultsRevision") {
+    if !side_missing && !fields.contains_key("mainToolbarDefaultsRevision") {
         fields.insert(
             TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY.into(),
             serde_json::Value::Bool(true),
@@ -2861,14 +2865,21 @@ mod toolbar_customization_persistence_tests {
     }
 
     #[test]
-    fn missing_corrupt_or_unreadable_side_file_preserves_legacy_layout() {
+    fn legacy_layout_without_side_file_loads_without_metadata_hint() {
         let files = Files::new();
         let (legacy, _) = fixture();
         fs::write(files.main(), legacy.to_string()).unwrap();
         assert_eq!(
             read_toolset_customization_state(&files.main()).unwrap(),
-            Some(without_metadata(legacy.clone()))
+            Some(legacy)
         );
+    }
+
+    #[test]
+    fn present_but_corrupt_or_unreadable_side_file_sets_metadata_hint() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
         let valid = json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}});
         let mut corrupt = vec![
             "{".to_string(),

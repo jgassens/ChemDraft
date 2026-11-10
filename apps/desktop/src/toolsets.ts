@@ -152,12 +152,11 @@ export function migrateMainToolbarDefaultsLayoutState(state: unknown): unknown {
   if (typeof state === "object" && state !== null &&
       (state as { mainToolbarDefaultsMetadataUnavailable?: unknown }).mainToolbarDefaultsMetadataUnavailable === true) {
     const { mainToolbarDefaultsMetadataUnavailable: _, ...loaded } = state as Record<string, unknown>;
-    // Native could not recover a revision. Do not guess that this is an unmigrated layout:
+    // Native found a side file but could not recover a revision. Do not guess this is unmigrated:
     // adding Chain/hiding multiple bonds here would be persisted by startup's visibility save.
     // A genuine pre-#340 1.2 file carries its revision inline, so native honours it and never
-    // sets this hint. A revisionless older file with no side file ever written is indistinguishable
-    // from lost metadata; keep its loaded choices too. Unambiguous historical inputs below still
-    // get the original migration. Consume the IPC-only hint before parsing/broadcasting/saving.
+    // sets this hint. A v1.1.1 file with no side file has no hint and gets the original migration
+    // below. Consume the IPC-only hint before parsing/broadcasting/saving.
     return withCurrentMainToolbarDefaults(parseToolsetLayoutState(
       migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(loaded))
     ));

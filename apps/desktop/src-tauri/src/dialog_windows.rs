@@ -1507,7 +1507,12 @@ pub(crate) async fn dialog_send(
         }
     } else if let Some(fit) = reveal.1 {
         let target = window.clone();
-        super::run_on_main_thread_blocking(&window, move || refit_custom_color(&target, fit))??;
+        if let Err(error) =
+            super::run_on_main_thread_blocking(&window, move || refit_custom_color(&target, fit))
+                .and_then(|result| result)
+        {
+            eprintln!("Could not refit custom color dialog: {error}");
+        }
     }
     Ok(())
 }

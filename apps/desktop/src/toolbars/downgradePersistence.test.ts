@@ -31,8 +31,33 @@ describe("v1.1.1 toolbar layout downgrade contract", () => {
     });
   });
 
-  it("never persists a destructive fallback when native metadata is missing, corrupt or unmatched", () => {
-    // This is the exact IPC state returned by Rust's missing/corrupt/unmatched side-file tests.
+  it("migrates a customised v1.1.1 Main toolbar on first upgrade without a side file", () => {
+    // Rust returns the unchanged legacy file with no hint when the side file is NotFound.
+    const loaded = ReleasedLayoutSchema.parse({
+      ...fixture.legacyState,
+      toolsetOverrides: [{
+        toolsetId: "core.main",
+        itemOrder: { "core.main.items": ["tool.benzene", "tool.chain", "tool.bond"] },
+        hiddenCommandIds: ["tool.eraser"]
+      }, ...fixture.legacyState.toolsetOverrides.slice(1)]
+    });
+    const migrated = parseToolsetLayoutState(migrateMainToolbarDefaultsLayoutState(loaded));
+    expect(migrated.mainToolbarDefaultsRevision).toBe(1);
+    const ids = getToolsetItemGroups("core.main", createDesktopToolsetRegistry(migrated)).flat().map(item => item.id);
+    expect(ids.slice(0, 3)).toEqual(["tool.benzene", "tool.chain", "tool.bond"]);
+    expect(ids).not.toContain("tool.doubleBond");
+    expect(ids).not.toContain("tool.tripleBond");
+    expect(ids).not.toContain("tool.eraser");
+    // The startup visibility save must retain the migrated toolbar on the next launch.
+    const saved = mergeVisibilityIntoLayoutState(migrated, ["core.main"], new Set(["core.main"]));
+    const reloaded = migrateMainToolbarDefaultsLayoutState(JSON.parse(JSON.stringify(saved)));
+    expect(createDesktopToolsetRegistry(reloaded).get("core.main"))
+      .toEqual(createDesktopToolsetRegistry(migrated).get("core.main"));
+    expect(loaded).not.toHaveProperty("mainToolbarDefaultsRevision");
+  });
+
+  it("never persists a destructive fallback when a present side file is unreadable, corrupt or unmatched", () => {
+    // This is the exact IPC state returned by Rust's present-but-unusable side-file tests.
     const loaded = { ...fixture.legacyState, mainToolbarDefaultsMetadataUnavailable: true };
     const migrated = parseToolsetLayoutState(migrateMainToolbarDefaultsLayoutState(loaded));
     expect(migrated).toEqual(current);
