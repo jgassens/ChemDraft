@@ -952,7 +952,7 @@ describe("LinkedFigureView", () => {
       const items = container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
       await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
       expect(container!.querySelector('[aria-haspopup="menu"]')!.textContent).toBe(outcome === "cancelled" ? "Export" : "Export failed");
-      expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export cancelled." : "Spectrum export failed.");
+      expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export canceled." : "Spectrum export failed.");
     }
   });
 

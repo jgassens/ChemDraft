@@ -1222,7 +1222,8 @@ describe("canvas ring-fill layers", () => {
     const visible = objectVisual(object.id)!;
     if (type === "reaction-arrow") {
       expect(visible.querySelector("line")!.getAttribute("x1")).toBe("130");
-      expect(visible.querySelector("line")!.getAttribute("x2")).toBe("190");
+      expect(visible.querySelector("line")!.getAttribute("x2")).toBe("187.75");
+      expect(visible.querySelector("polygon")!.getAttribute("points")!.split(" ")[0]!.split(",")[0]).toBe("190");
     } else {
       expect(visible.querySelector("path")!.getAttribute("transform")).toBeNull();
       expect(visible.querySelector("path")!.getAttribute("d")).toBe("M 189.5 100 L 130 100 L 130 123 L 189.5 123");

@@ -63,8 +63,39 @@ describe("named step-link loss diagnostics", () => {
 describe("object-specific bracket loss diagnostics", () => {
   const bracket = (id: number, kind = "Square") => `<graphic id="${id}" GraphicType="Bracket" BracketType="${kind}" BoundingBox="${id * 5} 30 ${id * 5 + 8} 90"/>`;
   const group = (id: number, graphics: number[], children = "") => `<bracketedgroup id="${id}" RepeatCount="3">${graphics.map((graphic, index) => `<bracketattachment id="${id * 10 + index}" GraphicID="${graphic}"/>`).join("")}${children}</bracketedgroup>`;
+  it.each(["cdxml", "cdx"] as const)("imports native curly and square glyphs through %s without loss", async format => {
+    const xml = wrap(bracket(10, "Curly") + bracket(11));
+    const bytes = format === "cdx" ? writeCdx(parseSourceXml(xml)) : Buffer.from(xml);
+    const source = sourceSurvival(bytes), imported = await open(bytes);
+    expect(imported.document!.pages[0].objects).toMatchObject([
+      { type: "bracket", bracketKind: "curly" },
+      { type: "bracket", bracketKind: "square" }
+    ]);
+    expect(source.display["graphic.Bracket"]).toBe(2);
+    expect(source.display.bracketedgroup ?? 0).toBe(0);
+    expect(compareSurvival(source, nativeSurvival(imported.document!), imported.warnings))
+      .toMatchObject({ verdict: "PASS", differences: [] });
+  });
+
+  it.each(["cdxml", "cdx"] as const)("requires the removed curly object's own warning through %s", async format => {
+    const xml = wrap(bracket(10, "Curly") + bracket(11));
+    const bytes = format === "cdx" ? writeCdx(parseSourceXml(xml)) : Buffer.from(xml);
+    const source = sourceSurvival(bytes), imported = await open(bytes);
+    const page = imported.document!.pages[0];
+    const curly = page.objects.find(object => object.type === "bracket" && object.bracketKind === "curly")!;
+    expect(curly.compatibility?.originalId).toBe("10");
+    page.objects = page.objects.filter(object => object !== curly);
+    const native = nativeSurvival(imported.document!);
+    const named = warning({ code: "cdxml.bracket_type_preserved", sourceObjectId: "10",
+      message: "Curly bracket 10 was not imported natively; source data is preserved." });
+    expect(compareSurvival(source, native, [named])).toMatchObject({ verdict: "WARNED", differences: [
+      { feature: "display-object", before: { kind: "graphic.Bracket", count: 2 }, after: { kind: "graphic.Bracket", count: 1 }, warned: true }
+    ] });
+    expect(compareSurvival(source, native, imported.warnings).verdict).toBe("DRAWN-DIFFERENTLY");
+    expect(compareSurvival(source, native, [warning({ code: "cdxml.object_import_unsupported", sourceObjectId: "999", message: "Bracket group 999 was not imported" })]).verdict).toBe("DRAWN-DIFFERENTLY");
+  });
+
   it.each([
-    ["curly", bracket(10, "Curly") + bracket(11), 2, 0],
     ["four attachments", [10, 11, 12, 13].map(id => bracket(id, "Round")).join("") + group(20, [10, 11, 12, 13]), 4, 1],
     ["nested", [10, 11, 12, 13, 14, 15].map(id => bracket(id)).join("") + group(20, [10, 11], group(21, [12, 13], group(22, [14, 15]))), 6, 3]
   ] as const)("requires each missing %s object's own warning in both formats", async (_shape, content, glyphs, groups) => {
