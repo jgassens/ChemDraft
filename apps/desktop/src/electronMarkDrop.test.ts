@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, deserializeDocument, serializeDocument, type ChemDraftDocument, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
-import { atomDisplayLabel } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, moleculeLayoutLabelBoxes } from "@chemdraft/layout-engine";
 import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp,
   stereoPerceptionMolfile, type PagePoint } from "@chemdraft/document-workflow-core";
 import * as workflow from "./documentWorkflow";
@@ -85,6 +85,40 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
       expect(workflow.normalizeCommittedDocument(document)).toBe(document);
     }
     expect(canonical(document)).toBe(startCanonical);
+  });
+
+  it.each([false, true])("places a dropped charge beside the reconciled label, including reversed H labels (%s)", mirrored => {
+    const fixture = electronMarkDropFixture();
+    let document = fixture.document;
+    if (mirrored) {
+      const molecule = dropMolecule(document);
+      document = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: {
+        x: 600 - molecule.x - molecule.width,
+        atoms: molecule.atoms.map(atom => ({ ...atom, x: 600 - atom.x }))
+      } }, { now: phase4Timestamp });
+    }
+    // N -> carbonyl O -> N proves both ends use their changed H count; OH then grows to OH2.
+    for (const targetId of [fixture.carbonylOxygen.id, fixture.nitrogen.id, fixture.hydroxylOxygen.id, fixture.nitrogen.id]) {
+      const beforeMark = dropMark(document), beforeMolecule = dropMolecule(document);
+      const target = beforeMolecule.atoms.find(atom => atom.id === targetId)!;
+      const result = drop(document, target);
+      expect(result.refused).toBeUndefined();
+      document = result.document;
+      const mark = dropMark(document), molecule = dropMolecule(document), page = document.pages[0];
+      const sourceId = beforeMark.anchor.atomId;
+      const labels = moleculeLayoutLabelBoxes(molecule);
+      for (const atomId of [sourceId, targetId]) {
+        const label = labels.find(label => molecule.atoms[label.atom].id === atomId)!;
+        expect(mark.x < label.x + label.width && mark.x + mark.width > label.x &&
+          mark.y < label.y + label.height && mark.y + mark.height > label.y).toBe(false);
+      }
+      expect(workflow.nativeChargeMarkCenter(mark)).toEqual(workflow.nativeChargePlacementPointForAtom(
+        molecule, targetId, page.objects.filter(object => object.id !== mark.id), page.width, page.height, mark));
+      expect(mark).toMatchObject({ id: beforeMark.id, width: beforeMark.width, height: beforeMark.height,
+        atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: targetId } });
+      expect(workflow.normalizeCommittedDocument(document)).toBe(document);
+      expect(workflow.normalizeCommittedDocument(deserializeDocument(serializeDocument(document))).pages).toEqual(document.pages);
+    }
   });
 
   it.each(associationSpecs)("keeps the source atom and chemistry in empty space for %j, including after save and normalize", spec => {
