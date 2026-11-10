@@ -1297,12 +1297,9 @@ describe("Phase 4 document workflow", () => {
     expect(payload.warnings).toEqual([]);
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
-    expect(reopened.document).toEqual({
-      ...document,
-      formatVersion: "1.2.0",
-      minAppVersion: "1.2.0",
-      ignorableFields: ["pages.*.objects.*[type=molecule].style.stylePresetId"]
-    });
+    // JSON omits the unanalyzed fallback's chemistry: undefined; compare all serialized content.
+    // Molecule preset IDs are preserved by 1.1.1 and require no compatibility header.
+    expect(reopened.document).toEqual(JSON.parse(JSON.stringify(document)));
   });
 
   it("hashes the embedded native document, not the whole envelope", () => {
