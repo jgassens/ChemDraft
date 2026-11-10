@@ -174,7 +174,16 @@ scrolls (`overflow: auto`) above a pinned `.cd-dialog-fit-footer` button row, so
 reachable even when the window is shorter than the content. The form measures its natural height
 once after fonts are ready, with a bounded wait, lifting the column's height and the body's clip
 while it measures, and sends `contentHeight` (CSS px) and `pixelRatio` in its `ready` message.
-Both sides accept only a finite `contentHeight` of at most 4096 and a `pixelRatio` from 0.5 to 8;
+The measurement also checks the live body's `scrollHeight - clientHeight` before changing the
+layout. A temporary intrinsic grid can be shorter than the restored flex/grid layout, particularly
+with native controls and font metrics; the root's height alone does not include a nested body's
+clipped content. When the live body overflows, the full client height plus that overflow is a
+second content minimum. This includes Custom Page Size's wrapped fields and Export's final
+**Include page guides** option. A live viewport without overflow never becomes a content minimum,
+so an oversized remembered frame is not mistaken for intrinsic content.
+Horizontal overflow similarly supplies an optional `contentWidth`; it does not impose the initial
+spec width on a user size that fits with wrapping. Both sides accept only finite positive
+`contentHeight` and optional `contentWidth` values of at most 4096 and a `pixelRatio` from 0.5 to 8;
 the form sends an empty `ready` otherwise, so the initial spec size applies. The native host
 rejects a malformed nonempty payload. When `ready` arrives the host records the window's native scale factor with it, and
 at reveal converts the measurement through that scale (physical height ÷ scale at measurement),
@@ -193,11 +202,16 @@ edge. Every initial/reopened client is capped to that area minus the *measured* 
 borders. Placement re-centres the final outer frame on first open and restores normalized offsets
 on subsequent opens. The resize minimum is bounded by the resulting client, so small screens and
 short forms remain usable. Later content growth (fields wrapping in a narrow window, a long
-message) scrolls the body above the pinned actions rather than resizing a user's window.
+message) re-fits from the live origin without taking focus. Screen-capped content scrolls above
+the pinned actions.
+Measured content minima win over smaller remembered/live dimensions independently; larger user
+dimensions remain intact. The shared native placement caps the result to the work area after
+subtracting decorations, including when the content itself exceeds the screen.
 `dialog-positions.json` remembers logical client `size` alongside position, monitor identity and
 normalized work-area offsets per kind. Old position-only records remain readable. A genuine resize
-records the client size; subsequent moves preserve it. A remembered size takes precedence over
-natural content and the initial spec, then is capped to the current destination screen. Retained
+records the client size; subsequent moves preserve it. A larger remembered size is retained, then
+is capped to the current destination screen. Custom Page Size is nonresizable and ignores persisted
+sizes on a fresh open; its retained live frame still uses the same content minimum. Retained
 windows also re-clamp their live frame on reopen, without replacing the draft. Removed monitors
 recover onto the owner's monitor. Genuine frame changes are debounced; hidden, minimized,
 maximized, fullscreen, initial, restoration and quit frames are excluded. One bounded-notification worker debounces movement bursts, takes pending

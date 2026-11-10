@@ -4,7 +4,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { InsertTableForm } from "./InsertTableForm";
-import { measureDialogContent } from "./dialogContentFit";
+import { PageSizeForm } from "./PageSizeForm";
+import { ExportForm } from "./ExportForm";
+import { exportFixture } from "./exportTestFixtures";
+import { saveExportPreviewEnabled } from "../exportPreviewSettings";
+import { MemoryStorage } from "../testSupport/memoryStorage";
+import { measureDialogContent, validDialogContentFit } from "./dialogContentFit";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -61,4 +66,84 @@ describe.each(["macos", "windows"] as const)("content sizing on %s", platform =>
       }
     });
   });
+});
+
+// Layout metrics model the two layouts independently: the temporary intrinsic grid can be
+// shorter than the live form. Mocking both to the same natural height hid this regression.
+function layoutWithOverflow(form: HTMLElement, viewport: number, intrinsic: number, required: number) {
+  const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+  const chrome = 66; // Outer padding plus the pinned action row, outside the scrollport.
+  form.getBoundingClientRect = () => ({ top: 0, height: form.style.height === "auto" ? intrinsic : viewport } as DOMRect);
+  Object.defineProperty(form, "scrollHeight", { configurable: true, get: () => form.style.height === "auto" ? intrinsic : viewport });
+  Object.defineProperty(body, "clientHeight", { configurable: true, get: () => Math.max(0, viewport - chrome) });
+  Object.defineProperty(body, "scrollHeight", { configurable: true, get: () => Math.max(required, viewport) - chrome });
+  return { chrome, body };
+}
+
+describe.each(["macos", "windows"] as const)("live content minimum on %s", platform => {
+  it("reports horizontal overflow independently of a larger saved height", () => {
+    const form = document.createElement("section");
+    form.innerHTML = '<div class="cd-dialog-fit-body"></div>';
+    document.body.append(form);
+    try {
+      const { body } = layoutWithOverflow(form, 800, 334, 334);
+      form.getBoundingClientRect = () => ({ top: 0, width: 380, height: form.style.height === "auto" ? 334 : 800 } as DOMRect);
+      Object.defineProperty(body, "clientWidth", { value: 344 });
+      Object.defineProperty(body, "scrollWidth", { value: 384 });
+      expect(measureDialogContent(form)).toEqual({ contentHeight: 334, contentWidth: 420, pixelRatio: 1 });
+    } finally { form.remove(); }
+  });
+
+  it.each([300, 800])("includes Page Size's clipped fields with a saved 420×%s frame", savedHeight => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("devicePixelRatio", platform === "macos" ? 2 : 1.5);
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      act(() => root.render(createElement(PageSizeForm, { title: "Drawing", platform,
+        state: { width: "8.5", height: "11", unit: "inch" }, onChange: vi.fn(), onCancel: vi.fn(), onApply: vi.fn() })));
+      const form = container.querySelector<HTMLElement>("section")!;
+      const required = platform === "macos" ? 334 : 286;
+      const { chrome, body } = layoutWithOverflow(form, savedHeight, 286, required);
+      const fit = measureDialogContent(form)!;
+      expect(fit.contentHeight).toBe(savedHeight < required ? required : 286);
+      // The reported minimum reserves all body content plus actions/padding: a native client
+      // at least this high has no overlap. Rust's placement tests cover saved-size and screen caps.
+      expect(Math.max(savedHeight, fit.contentHeight) - chrome).toBeGreaterThanOrEqual(required - chrome);
+      expect(form.getAttribute("style")).toBeNull();
+      expect(body.getAttribute("style")).toBeNull();
+      expect(form.querySelector(".cd-dialog-fit-footer")?.textContent).toBe("CancelApply");
+    } finally { act(() => root.unmount()); container.remove(); }
+  });
+
+  it.each([false, true])("counts Export's final page-guides option (preview %s)", previewEnabled => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("localStorage", new MemoryStorage());
+    saveExportPreviewEnabled(previewEnabled);
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), busy: false }, platform,
+        onChange: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn(), onSubmit: vi.fn() })));
+      const form = container.querySelector("form")!;
+      const viewport = previewEnabled ? 1000 : 620;
+      const required = viewport + 30;
+      const { body } = layoutWithOverflow(form, viewport, viewport, required);
+      const guides = Array.from(body.querySelectorAll("label")).find(label => label.textContent?.includes("Include page guides"))!;
+      expect(guides).toBeDefined();
+      const before = form.getAttribute("style");
+      expect(measureDialogContent(form)?.contentHeight).toBe(required);
+      expect(form.getAttribute("style")).toBe(before);
+    } finally { act(() => root.unmount()); container.remove(); }
+  });
+});
+
+it("accepts bounded width measurements without weakening ready validation", () => {
+  const fit = { contentHeight: 334, contentWidth: 420, pixelRatio: 2 };
+  expect(validDialogContentFit(fit)).toBe(true);
+  expect(validDialogContentFit({ contentHeight: 334, pixelRatio: 2 })).toBe(true);
+  for (const contentWidth of [null, 0, -1, 4097, Infinity, NaN, "420"]) {
+    expect(validDialogContentFit({ ...fit, contentWidth })).toBe(false);
+  }
+  expect(validDialogContentFit({ ...fit, path: "private" })).toBe(false);
 });
