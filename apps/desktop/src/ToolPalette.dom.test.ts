@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import { createPhase4Document, insertNativeArtGraphicObject, applyChargeToolAtPoint } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { toolbarAsset } from "./toolbarAssets";
@@ -494,6 +494,36 @@ describe("ToolPalette art color popover", () => {
       throw new Error("Expected restored fill paint type selector.");
     }
     expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
+  });
+
+  it("previews and commits electron mark size and thickness sliders", () => {
+    const doc = applyChargeToolAtPoint(createPhase4Document("Mark sliders"), { kind: "lone-pair" }, { x: 200, y: 200 });
+    const model = createArtInspectorModel({ document: doc, selectedGraphicObjects: [] });
+    const onCancel = vi.fn();
+    const { onCommit, onPreview } = renderPalette({ currentArtStyle: model, onCancel });
+    for (const property of ["size", "thickness"]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Electron mark ${property}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.disabled).toBe(false);
+      setSliderRect(slider);
+      act(() => {
+        slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+        slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 60, buttons: 0 }));
+      });
+      expect(onPreview).toHaveBeenCalledWith(`object.electronMark.${property}:50`);
+      expect(onCommit).toHaveBeenCalledWith(`object.electronMark.${property}:50`);
+      act(() => slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+      expect(onCommit).toHaveBeenLastCalledWith(`object.electronMark.${property}:100`);
+      act(() => slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
+      expect(onCommit).toHaveBeenLastCalledWith(`object.electronMark.${property}:0`);
+      const committedCount = onCommit.mock.calls.length;
+      act(() => {
+        slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 90, buttons: 1 }));
+        slider.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+      });
+      expect(onCancel).toHaveBeenCalled();
+      expect(onCommit).toHaveBeenCalledTimes(committedCount);
+    }
   });
 
   it("invokes native effect commands from buttons and visible effect controls", () => {

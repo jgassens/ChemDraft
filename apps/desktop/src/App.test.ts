@@ -2606,7 +2606,7 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("labelBondSide: state.initialLabelBondSide");
     expect(mainWindowSource).toContain("applyNativeAtomLabelDraft(current,");
     expect(mainWindowSource).toContain("finishNativeAtomLabelEdit(baseline,");
-    expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
+    expect(mainWindowSource).toContain("const clean = stripped === current ? current : normalizeCommittedDocument(stripped);");
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
     expect(mainWindowSource).toContain("const savedDocument = active ? documentForFlush() : savingDocument;");
@@ -4629,7 +4629,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage)");
+    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage, { directElectronMarkEditing })");
     expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");

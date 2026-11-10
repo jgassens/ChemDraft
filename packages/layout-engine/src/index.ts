@@ -18,6 +18,7 @@ export {
 } from "./textMetrics";
 
 import {
+  ChemDraftSyntheticStylePreset,
   DefaultNativeDrawingStyle,
   DocumentStylePreset,
   drawnLabelBondSide,
@@ -1707,6 +1708,8 @@ export function planPageSvgRender(
      * atom must look the atom up in the unfiltered page.
      */
     anchorResolutionPage?: DocumentPage;
+    /** Opt-in rendering for default-sized electron marks; stored custom styling always renders. */
+    directElectronMarkEditing?: boolean;
   } = {}
 ): PageSvgRenderPlan {
   const warnings: PageSvgRenderWarning[] = [];
@@ -1726,7 +1729,7 @@ export function planPageSvgRender(
       if (object.type === "molecule") {
         return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
       }
-      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page, options.directElectronMarkEditing);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
@@ -1840,7 +1843,8 @@ function planDocumentObjectSvg(
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
-  page?: DocumentPage
+  page?: DocumentPage,
+  directElectronMarkEditing = false
 ): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
@@ -1857,10 +1861,10 @@ function planDocumentObjectSvg(
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "electron-mark":
       if (object.markKind === "charge") {
-        return chargeMarkFragment(object, layerIndex);
+        return chargeMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       if (object.markKind === "lone-pair" || object.markKind === "radical-dot") {
-        return electronDotMarkFragment(object, layerIndex);
+        return electronDotMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
@@ -3940,12 +3944,130 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
 }
 
 /**
+ * Shared charge-tool/drop placement. The caller supplies its chain-growth slot, if any;
+ * Drops clear the mark's whole rotated frame from the current atom-label ink; the charge tool
+ * keeps its original placement and association radius by disabling label clearance.
+ * Call after chemistry reconciliation when transferring a mark: charge changes implicit H.
+ */
+export function electronMarkPlacementPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  options: {
+    growthPoint?: LayoutPoint;
+    mark?: Pick<ElectronMarkObject, "width" | "height" | "rotation">;
+    avoidLabelOverlap?: boolean;
+  } = {}
+): LayoutPoint | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
+  const avoidLabelOverlap = options.avoidLabelOverlap !== false;
+  // Tool placements must use the growth slot verbatim, even at a page edge.
+  if (!avoidLabelOverlap && options.growthPoint) return options.growthPoint;
+  const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
+  const radians = degreesToRadians(mark.rotation);
+  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
+  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atomId) : undefined;
+  const glyph = plan && atomLabelGlyphBounds(plan);
+  const clearance = 2;
+  const exclusion = plan && glyph ? {
+    left: plan.anchor.x + glyph.x - halfWidth - clearance,
+    right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
+    top: plan.anchor.y + glyph.y - halfHeight - clearance,
+    bottom: plan.anchor.y + glyph.y + glyph.height + halfHeight + clearance
+  } : undefined;
+  const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
+    point.y > exclusion.top && point.y < exclusion.bottom;
+  const clearPoint = (point: LayoutPoint): LayoutPoint | undefined => {
+    if (exclusion && insideLabel(point)) {
+      const length = distance(atom, point);
+      const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
+      const dy = length > 0.0001 ? (point.y - atom.y) / length : -Math.SQRT1_2;
+      const exitX = Math.abs(dx) < 0.0001 ? Infinity : ((dx > 0 ? exclusion.right : exclusion.left) - atom.x) / dx;
+      const exitY = Math.abs(dy) < 0.0001 ? Infinity : ((dy > 0 ? exclusion.bottom : exclusion.top) - atom.y) / dy;
+      const radius = Math.min(exitX, exitY) + 0.001;
+      point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
+    }
+    const bounded = {
+      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+    };
+    return insideLabel(bounded) ? undefined : bounded;
+  };
+  // The natural home is the same open slot the bond tool would use.
+  if (options.growthPoint) {
+    const point = clearPoint(options.growthPoint);
+    if (point) return point;
+  }
+  const bondLength = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+  const placementRadius = Math.max(18 * 1.35, bondLength * 0.55);
+  const neighborAngles = molecule.bonds
+    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map(bond => molecule.atoms.find(candidate => candidate.id === (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
+    .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  // Preserve the tool's exact angle arithmetic and tie-breaking. The growth planner's
+  // largestGapBisectors treats nearly equal gaps as tied and uses different rounding.
+  const normalizePlacementAngle = (angle: number) => {
+    let normalized = angle % (Math.PI * 2);
+    if (normalized < 0) normalized += Math.PI * 2;
+    return normalized;
+  };
+  const placementAngularDistance = (left: number, right: number) => {
+    const delta = Math.abs(normalizePlacementAngle(left) - normalizePlacementAngle(right));
+    return Math.min(delta, Math.PI * 2 - delta);
+  };
+  const normalizedAngles = neighborAngles.map(normalizePlacementAngle).sort((left, right) => left - right);
+  const preferredOpenAngle = normalizedAngles.map((angle, index) => {
+    const nextAngle = normalizedAngles[(index + 1) % normalizedAngles.length] ?? angle;
+    const wrappedNext = index === normalizedAngles.length - 1 ? nextAngle + Math.PI * 2 : nextAngle;
+    const gap = wrappedNext - angle;
+    return { gap, midpoint: normalizePlacementAngle(angle + gap / 2) };
+  }).sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint)[0]?.midpoint ?? -Math.PI / 4;
+  const otherAtoms = molecule.atoms.filter(candidate => candidate.id !== atomId);
+  const chargeCenters = objects
+    .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
+    .map(mark => ({ x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
+  const candidates = Array.from({ length: 16 }, (_, index) => {
+    const angle = -Math.PI + index * Math.PI / 8;
+    const point = { x: atom.x + Math.cos(angle) * placementRadius, y: atom.y + Math.sin(angle) * placementRadius };
+    const placed = clearPoint(point);
+    if (!placed) return [];
+    const boundaryPenalty = distance(point, placed);
+    const bondSeparation = neighborAngles.length === 0 ? Math.PI
+      : Math.min(...neighborAngles.map(neighborAngle => placementAngularDistance(angle, neighborAngle)));
+    const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) => sum + Math.min(1, distance(placed, otherAtom) / (bondLength * 1.5)), 0);
+    const chargeDistanceScore = chargeCenters.reduce((sum, center) => sum + Math.min(1, distance(placed, center) / (bondLength * 1.5)), 0);
+    const preferredScore = 1 - placementAngularDistance(angle, preferredOpenAngle) / Math.PI;
+    return [{ point: placed,
+      score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10 }];
+  }).flat();
+  return candidates.sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]?.point;
+}
+
+/** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */
+export function electronMarkHitCatcherAttributes(object: ElectronMarkObject) {
+  return {
+    x: object.x, y: object.y, width: object.width, height: object.height,
+    transform: rotationTransform(object)
+  };
+}
+
+function electronMarkUsesScaledGeometry(object: ElectronMarkObject, directEditing = false): boolean {
+  return directEditing || object.width !== 18 || object.height !== 18 ||
+    (typeof object.style.strokeWidth === "number" && Number.isFinite(object.style.strokeWidth) && object.style.strokeWidth !== 1.5);
+}
+
+/**
  * Single charge and electron symbols use vector strokes so their circled forms stay crisp at any
  * zoom, while multi-magnitude marks use a text glyph such as "2+" or "3−". The default single
  * charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant — and a `radical`
  * charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
-function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
     ? object.charge
     : 1;
@@ -3955,9 +4077,12 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
   const centerY = object.y + object.height / 2;
   const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
-  const strokeWidth = 1.5;
+  const strokeWidth = scaled ? electronMarkStrokeWidth(object) : 1.5;
+  const sizeScale = Math.min(object.width, object.height) / 18;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
   const children: PageSvgElementFragment[] = [];
+  let radicalDotRadius = scaled ? (1.35 + strokeWidth * 0.5) * sizeScale : 2.1;
+  let radicalDotX = centerX - radius * 0.75;
 
   if (circled) {
     children.push(elementFragment("circle", `charge-circle-${object.id}`, {
@@ -3972,6 +4097,10 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 
   if (magnitude > 1) {
     // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    // Below the legacy thickness use the regular face, then add a small positive outline.
+    // Numeric weights between regular/bold can resolve to the same face on non-variable fonts.
+    const thin = scaled && strokeWidth < 1.5;
+    const textStrokeWidth = thin ? Math.max(0, strokeWidth - 0.5) * 0.4 : Math.max(0, strokeWidth - 1.5) * 0.4;
     children.push(elementFragment("text", `charge-count-${object.id}`, {
       x: centerX,
       y: centerY,
@@ -3979,12 +4108,23 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
       "dominant-baseline": "central",
       "font-family": "Arial, Helvetica, sans-serif",
       "font-size": radius * 1.35,
-      "font-weight": 700,
-      fill: "#111111"
+      "font-weight": thin ? 400 : 700,
+      fill: "#111111",
+      ...(scaled ? { stroke: "#111111", "stroke-width": textStrokeWidth } : {})
     }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
   } else {
-    const signHalf = circled ? barHalf : radius * 0.85;
-    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    let signHalf = circled ? barHalf : radius * 0.85;
+    let signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    if (object.radical === true && scaled) {
+      // Keep the dot separate from the sign's round cap, even at maximum thickness.
+      const gap = 0.5 * sizeScale;
+      const fit = Math.max(0, Math.min(1, (object.width - strokeWidth - gap) / (2 * radicalDotRadius + 2 * signHalf)));
+      radicalDotRadius *= fit;
+      signHalf *= fit;
+      const totalWidth = 2 * radicalDotRadius + 2 * signHalf + strokeWidth + gap;
+      radicalDotX = centerX - totalWidth / 2 + radicalDotRadius;
+      signX = centerX + totalWidth / 2 - signHalf - strokeWidth / 2;
+    }
     children.push(elementFragment("line", `charge-bar-${object.id}`, {
       x1: signX - signHalf,
       y1: centerY,
@@ -4007,15 +4147,15 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }
   }
   if (object.radical === true) {
-    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
-    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
-    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
-    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
-    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
+    if (magnitude > 1) {
+      radicalDotX = scaled
+        ? centerX - radius * 1.35 * 0.6 - radicalDotRadius - sizeScale
+        : centerX - (radius * 1.35 * 0.6 + 3.1);
+    }
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radicalDotOffset,
+      cx: radicalDotX,
       cy: centerY,
-      r: 2.1,
+      r: radicalDotRadius,
       fill: "#111111"
     }));
   }
@@ -4183,12 +4323,19 @@ function mechanismArrowFragment(
 }
 
 /** A lone pair (two dots) or a single unpaired-electron dot. */
-function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function electronMarkStrokeWidth(object: ElectronMarkObject): number {
+  const width = object.style.strokeWidth;
+  return typeof width === "number" && Number.isFinite(width) ? Math.max(0.5, Math.min(5.5, width)) : 1.5;
+}
+
+function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const dotRadius = 2.1;
+  const sizeScale = Math.min(object.width, object.height) / 18;
+  const dotRadius = scaled ? (1.35 + electronMarkStrokeWidth(object) * 0.5) * sizeScale : 2.1;
+  const spacing = scaled ? Math.max(2.1 * 1.6 * sizeScale, dotRadius * 1.1) : dotRadius * 1.6;
   const dots = object.markKind === "lone-pair"
-    ? [centerX - dotRadius * 1.6, centerX + dotRadius * 1.6]
+    ? [centerX - spacing, centerX + spacing]
     : [centerX];
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
