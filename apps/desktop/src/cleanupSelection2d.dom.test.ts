@@ -79,6 +79,36 @@ describe("Clean Up Selection command", () => {
     return { bond, wrapper };
   }
 
+  it("explains when selected atoms in different molecules are not connected", async () => {
+    await render(fixture(2));
+    for (const [i, molecule] of objects().entries()) {
+      const atom = molecule.atoms[9]!;
+      const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+      await act(async () => {
+        for (const type of ["pointerdown", "pointerup"]) {
+          const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+            buttons: type === "pointerdown" ? 1 : 0, shiftKey: i > 0, clientX: atom.x, clientY: atom.y });
+          Object.defineProperties(event, { isPrimary: { value: true }, pointerId: { value: 700 + i }, pointerType: { value: "mouse" } });
+          wrapper.dispatchEvent(event);
+        }
+      });
+      expect(container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!.dataset.selectedNativeAtomId).toBe(atom.id);
+    }
+    const before = structuredClone(current());
+    await command("structure.cleanup2d");
+    await vi.waitFor(() => expect(status()).toBe("Nothing to clean up: the selected atoms aren't connected to each other. Select a bond or neighboring atoms."));
+    expect(current()).toEqual(before);
+  });
+
+  it("keeps the already clean status for connected selected atoms", async () => {
+    await render(fixture());
+    await selectLastBond(objects()[0]!, 710);
+    await command("structure.cleanup2d");
+    await vi.waitFor(() => expect(status()).toMatch(/^Cleaned up selected structure/));
+    await command("structure.cleanup2d");
+    await vi.waitFor(() => expect(status()).toBe("Selected structure already clean"));
+  }, 20_000);
+
   it.each([1, 2])("cleans partial selections across %i molecule(s) in one labelled undo entry and keeps the selection", async count => {
     await render(fixture(count));
     const selections = [];

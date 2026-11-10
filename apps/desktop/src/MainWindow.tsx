@@ -5026,8 +5026,18 @@ export function MainWindow({
       setObjectContextMenu(undefined);
     };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
+    const onlyDisconnectedAtoms = fragments.length > 0 && targetObjectIds.every(id =>
+      fragments.some(fragment => fragment.objectId === id)) && fragments.every(fragment => {
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && !target.bonds.some(bond =>
+        selected.has(bond.fromAtomId) && selected.has(bond.toAtomId));
+    });
     const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
-      cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+      !changed && onlyDisconnectedAtoms
+        ? "Nothing to clean up: the selected atoms aren't connected to each other. Select a bond or neighboring atoms."
+        : cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
     const partialSelections = fragments.filter(fragment => {
       // The legacy store may include a part's host in objectIds. The part defines its scope;
       // a true whole-molecule pick clears that molecule's part in the selection policy.
