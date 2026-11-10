@@ -12,7 +12,7 @@ import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clip
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
-import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
+import { cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.14.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3495,7 +3495,8 @@ export function MainWindow({
   }, []);
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    undoLabel?: string
+    undoLabel?: string,
+    assertFinalDocument?: (document: ChemDraftDocument) => void
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Record typing before the command, retaining main's editor lifetime in its callers.
@@ -3509,6 +3510,7 @@ export function MainWindow({
         if (nextDocument === currentHistory.present) return currentHistory;
 
         const present = prepareDocumentCommit(nextDocument, undoLabel);
+        assertFinalDocument?.(present);
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -4773,10 +4775,12 @@ export function MainWindow({
 
   const cleanUpSelectedStructure = useCallback(() => {
     const currentDocument = documentRef.current;
+    const selectedParts = selectedNativeMoleculePartsRef.current;
+    const fragments = nativeMoleculeFragmentSelections(selectedParts);
     const targetObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...fragments.map(fragment => fragment.objectId)
       ])
     ];
     if (targetObjectIds.length === 0) {
@@ -4789,7 +4793,6 @@ export function MainWindow({
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
@@ -4798,6 +4801,15 @@ export function MainWindow({
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
     const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
       cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+    const partialSelections = fragments.filter(fragment => {
+      // The legacy store may include a part's host in objectIds. The part defines its scope;
+      // a true whole-molecule pick clears that molecule's part in the selection policy.
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && selected.size < target.atoms.length;
+    });
+    const partialIds = new Set(partialSelections.map(selection => selection.objectId));
 
     // The polygon+tree pass idealises single-ring components in place. Anything with more than
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
@@ -4808,11 +4820,12 @@ export function MainWindow({
     // halves land in ONE history
     // entry, and the engine's lazy load only happens when such a target exists.
     const engineTargetIds = targetObjectIds.filter((targetId) => {
+      if (partialIds.has(targetId)) return false;
       const target = findDocumentObject(currentDocument, targetId);
       return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
     });
-    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
-    if (engineTargetIds.length === 0) {
+    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId) && !partialIds.has(targetId));
+    if (engineTargetIds.length === 0 && partialSelections.length === 0) {
       const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
       resetCleanupChrome();
       setStatus(cleanedStatus(changed));
@@ -4823,7 +4836,7 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile, assertConstrainedLayoutIdentity } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         let alternatePromise: Promise<readonly NativeMoleculeRelayoutEngine[]> | undefined;
         const loadAlternates = () => alternatePromise ??= (async () => {
@@ -4833,6 +4846,9 @@ export function MainWindow({
           return createRdkit2DRelayouts();
         })();
         let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds);
+        prepared = cleanUpMoleculeSelections2d(prepared, partialSelections, {
+          relayout: relayoutMolfile2D, assertIdentity: assertConstrainedLayoutIdentity
+        });
         for (const objectId of engineTargetIds) {
           // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
           // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
@@ -4850,17 +4866,40 @@ export function MainWindow({
         }
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
-        if (documentRef.current !== currentDocument) {
+        if (documentRef.current !== currentDocument || selectedNativeMoleculePartsRef.current !== selectedParts) {
           setStatus("Clean up cancelled because the document changed");
           return;
         }
-        const changed = commitDocumentChange(() => prepared);
+        const changed = commitDocumentChange(() => prepared, partialSelections.length ? "Clean Up Selection" : undefined,
+          partialSelections.length ? (finalDocument) => {
+            // Normalization can reassociate electron marks, including to a structure outside
+            // the selection. Validate every native molecule in the exact document that will
+            // enter history, after all normalization and before any document/history write.
+            const finalObjects = new Map(finalDocument.pages.flatMap(page => page.objects).map(object => [object.id, object]));
+            for (const before of currentDocument.pages.flatMap(page => page.objects)) {
+              if (before.type !== "molecule" || !isNativeMoleculeGraph(before)) continue;
+              const after = finalObjects.get(before.id);
+              if (after === before) continue;
+              try {
+                if (after?.type !== "molecule" || before.atoms.some((atom, i) => {
+                  const next = after.atoms[i];
+                  return !next || atom.id !== next.id || atom.element !== next.element ||
+                    atom.isotope !== next.isotope || atom.formalCharge !== next.formalCharge ||
+                    (atom.markRadicals ?? 0) !== (next.markRadicals ?? 0);
+                })) throw new Error("Native atom identity changed.");
+                assertConstrainedLayoutIdentity(stereoPerceptionMolfile(before), stereoPerceptionMolfile(after));
+              } catch {
+                throw new Error(`Clean Up Selection refused: final commit normalization would change chemistry in structure ${before.id}. The drawing was kept unchanged.`);
+              }
+            }
+          } : undefined);
         setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
-        setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(message.startsWith("Clean Up Selection:") ? message : `Clean up failed: ${message}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
