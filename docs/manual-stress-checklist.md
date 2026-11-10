@@ -1401,6 +1401,21 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
   arrow key and Undo: the status names `Updated wave smoothness`, `Updated wave height` or
   `Updated wave width` respectively, and the shape is restored. Redo restores the edit.
   (Commit 37f2049e.)
+- In a development build, choose Check for Updates: the message says “Updates are off in development
+  builds. Install the released ChemDraft to get updates.” Check the released app too: its usual
+  update path remains available. (Branch review/devbuild-updates, commits 312162bf, 180f09f7.)
+- Draw a single bond, choose the selection tool and click one atom. Shift-click its adjacent atom
+  where the compact selection frame's resize handle overlaps it: both atoms are selected as molecule
+  parts, without resizing or changing the drawing. (Branch fix/shift-click-small-selection, commit 210ad20c.)
+- Minimize the document window, then choose Settings… or press Cmd+, on macOS / Ctrl+, on Windows:
+  the document is restored and shown before Preferences opens or is raised. A visible document is
+  not restored, and no restore occurs during quit. On failure the status says `Preferences unavailable:
+  <reason>`. (Commit 67d5d7b4.)
+- Open a CDXML whole-molecule structural repeat unit (SRU), then drag a Single Bond from another
+  molecule onto a member atom. Copy As MOL V3000 writes no SRU and shows the edit warning. Delete
+  the whole member molecule and Copy As MOL: no SRU is written and the warning appears. Delete one
+  member atom of an atom-level SRU: no SRU is written and the warning appears.
+  (fix pending in Toolbar groups 1.2; verify against its commit)
 
 ### Clean Up Structure 2D on a selection
 
