@@ -841,6 +841,8 @@ and Art toolbars open, including at 125%/150% display scale:
 
 ## Compound layout tools (opt-in)
 
+On macOS and Windows, enable Formatted Reaction Conditions under Compound layout tools (both off by default), right-click an ordinary arrow, insert symbols and sub/superscripts in the movable native editor, Save/Undo/Redo, Cancel and blank Save, then double-click its label to reopen. Move/rotate/scale/flip/duplicate/copy-paste/delete the arrow, save/reopen and compare SVG/PDF; disable authoring and confirm existing labels still render and follow the arrow. Save while its original tab is inactive during an assistant request, then verify later assistant writes preserve the user Save as its own undo entry.
+
 On macOS and Windows, verify that a fresh Settings/Preferences has Compound layout tools off and
 no layout button/flyout/context/gallery entry is visible. Enable it with a native palette open;
 Main, Art and Layout should update live. Select unequal-size compounds, optionally grouped captions,

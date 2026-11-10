@@ -54,3 +54,9 @@ Unknown bond orders write as CTfile type 8 (any) in both formats, with one warni
 affected bond ids. This preserves the native unknown order on reimport, but readers treat it as a
 query bond with no chemical order. Chemistry and 3D engine callers pass `unknownBondOrders: "refuse"`; this
 throws the exported `UnknownBondOrderError` with `bondIds` before any output or warnings are emitted.
+
+Native conditions labels carry an optional strict conditions-only attachment:
+{ kind: "conditions", parentObjectId, side: "above" | "below", frame: { origin, tangent, normal,
+length? }, offset, placement?: "auto" | "manual" }. Frame axes are perpendicular unit vectors;
+offset is the label centre in that frame. Native serialization retains the attachment without
+a schema-version migration.

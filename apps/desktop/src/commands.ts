@@ -22,7 +22,8 @@ import {
   SHAFT_MARK_SIZE_MIN_PX
 } from "@chemdraft/art-engine";
 import { ArrangementLayouts, ArrangementGridAlignments, type ArrangementLayout, type ArrangementGridAlignment } from "@chemdraft/layout-engine";
-import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
+import { compoundLayoutCommandDisabledReason, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { structureSearchCommands, structureSearchDocument } from "./structureSearch";
 import { loadStructureSearchEnabled } from "./structureSearchSettings";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
@@ -71,6 +72,7 @@ export interface ShellCommandOptions {
   hasSearchableStructure?: boolean;
   activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
+  compoundLayoutSettings?: CompoundLayoutSettings;
   availability?: CommandAvailability;
   registry?: DesktopToolsetRegistry;
 }
@@ -2069,7 +2071,13 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
   };
 }
 
-export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
+export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled,
+  settings: CompoundLayoutSettings = loadCompoundLayoutSettings()): CommandSpec[] {
+  const arrowPage = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
+  const arrow = document.selection.objectIds.length === 1 ? arrowPage.objects.find(object => object.id === document.selection.objectIds[0]) : undefined;
+  const parent = arrow?.type === "text" && arrow.arrowAttachment?.kind === "conditions"
+    ? arrowPage.objects.find(object => object.id === arrow.arrowAttachment!.parentObjectId) : arrow;
+  const hasArrow = !!parent && !!arrowAttachmentFrame(arrowPage, parent);
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
@@ -2077,6 +2085,9 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    { id: "arrow.conditions", title: "Reaction conditions…", icon: "export", source: "core", category: "layout",
+      enabled: hasArrow && !compoundLayoutCommandDisabledReason("arrow.conditions", { ...settings, enabled: layoutsEnabled }),
+      disabledReason: compoundLayoutCommandDisabledReason("arrow.conditions", { ...settings, enabled: layoutsEnabled }) ?? (hasArrow ? undefined : "Select one arrow") },
     { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
       enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({
@@ -2404,7 +2415,7 @@ export function allShellCommands(
     ...atomProblemCommands(document).map(command => command.spec),
     ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
-    ...createLayerActions(document, options.compoundLayoutsEnabled),
+    ...createLayerActions(document, options.compoundLayoutsEnabled, options.compoundLayoutSettings),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),

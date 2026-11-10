@@ -22,6 +22,7 @@ export * from "./molecule";
 export * from "./pageConstraint";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";
+export * from "./reactionArrowAttachments";
 export * from "./reactionScheme";
 export * from "./reactionLabels";
 export * from "./shared";

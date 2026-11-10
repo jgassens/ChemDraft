@@ -5,6 +5,8 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
 import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
 import { performFocusedFieldSelectAll } from "../editHistoryRouting";
+import { ReactionConditionsForm } from "./ReactionConditionsForm";
+import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { ArrangementSpacingForm } from "./ArrangementSpacingForm";
 import { formatPageSizeFieldValue, PageSizeForm, type PageSizeDraft } from "./PageSizeForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./exportOptions";
@@ -34,6 +36,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   const [snapshot, setSnapshot] = useState<Extract<DialogMessage, { type: "snapshot" }>>();
   const [frame, setFrame] = useState<ExportFrame>();
   const [draft, setDraft] = useState<PageSizeDraft>();
+  const [conditions, setConditions] = useState<ReactionConditionsDraft>();
   const [percent, setPercent] = useState(100);
   const currentPercent = useRef(percent);
   currentPercent.current = percent;
@@ -92,6 +95,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
           }
           if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit });
           else if (message.dialogKind === "arrangementSpacing") { setPercent(100); setPreview(undefined); }
+          else if (message.dialogKind === "reactionConditions") setConditions(message.data.draft);
           else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;
         }
@@ -168,7 +172,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
   }, [hostId, snapshot, percent]);
   // Other forms report readiness after measuring their committed content.
-  useEffect(() => { if (snapshot?.dialogKind === "atomProblem") reportReady(); }, [snapshot, reportReady]);
+  useEffect(() => { if (snapshot?.dialogKind === "atomProblem" || snapshot?.dialogKind === "reactionConditions") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -207,6 +211,9 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}
       onInsert={templateId => sendAction({ action: "insert", templateId })} onClose={() => sendAction({ action: "cancel" })} />
   </Suspense>;
+  if (snapshot.dialogKind === "reactionConditions" && conditions) return <ReactionConditionsForm title={snapshot.data.title}
+    draft={conditions} onChange={setConditions} busy={busy} error={error} onCancel={() => sendAction({ action: "cancel" })}
+    onSave={() => sendAction({ action: "apply", draft: conditions })} />;
   if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm onReady={reportReady} {...snapshot.data} percent={percent}
     preview={preview} busy={busy} error={error} onChange={value => {
       previewRequestId.current = undefined; previewParts.current = undefined;

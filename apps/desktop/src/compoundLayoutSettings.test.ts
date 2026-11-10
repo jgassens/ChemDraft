@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { MemoryStorage } from "./testSupport/memoryStorage";
-import { COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, saveCompoundLayoutSettings, isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, saveCompoundLayoutSettings, isCompoundLayoutCommand, compoundLayoutCommandDisabledReason, isCompoundLayoutCommandHidden } from "./compoundLayoutSettings";
 import { createLayerActions } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { getToolsetPaletteGroups, compoundLayoutRegistry, desktopToolsetRegistry, createDesktopToolsetRegistry } from "./toolsets";
@@ -50,4 +50,23 @@ describe("opt-in compound layouts", () => {
     expect(commands).toHaveLength(8);
     for (const command of commands) expect(command).toMatchObject({ enabled: false, disabledReason: "Enable Compound layout tools in Settings" });
   });
+});
+
+it("keeps formatted conditions independently opt-in and filters saved custom entries when off",()=>{
+  vi.stubGlobal("localStorage",new MemoryStorage());
+  expect(loadCompoundLayoutSettings().formattedReactionConditions).toBeUndefined();
+  for(const settings of [{enabled:false,formattedReactionConditions:true},{enabled:true,formattedReactionConditions:false},{enabled:true}]) {
+    expect(isCompoundLayoutCommandHidden("arrow.conditions",settings)).toBe(true);
+    expect(compoundLayoutCommandDisabledReason("arrow.conditions",settings)).toBeDefined();
+  }
+  expect(isCompoundLayoutCommandHidden("arrow.conditions",{enabled:true,formattedReactionConditions:true})).toBe(false);
+  expect(isCompoundLayoutCommandHidden("arrow.conditions",{enabled:true,formattedReactionConditions:true},false)).toBe(true);
+  saveCompoundLayoutSettings({enabled:true,formattedReactionConditions:true});
+  expect(loadCompoundLayoutSettings()).toEqual({enabled:true,formattedReactionConditions:true});
+  const registry=createDesktopToolsetRegistry(undefined,undefined,[{id:"custom.conditions",title:"Conditions",source:"user",defaultVisible:true,defaultMode:"floating",groups:[{id:"custom.conditions.group",items:[
+    {id:"custom.condition",commandId:"arrow.conditions",title:"Conditions"}
+  ]}]}]);
+  expect(compoundLayoutRegistry(registry,true,{enabled:true}).require("custom.conditions").groups[0].items).toHaveLength(0);
+  expect(compoundLayoutRegistry(registry,true,{enabled:true,formattedReactionConditions:true}).require("custom.conditions").groups[0].items).toHaveLength(1);
+  expect(compoundLayoutRegistry(registry,true,{enabled:true,formattedReactionConditions:true},false).require("custom.conditions").groups[0].items).toHaveLength(0);
 });

@@ -4,6 +4,10 @@ export { MAX_IMAGE_SIDE, MAX_IMAGE_DECODED_BYTES, imagePixelLimitError, validate
 
 export {
   AnchorSchema,
+  ArrowAttachmentSchema,
+  ArrowAttachmentFrameSchema,
+  type ArrowAttachment,
+  type ArrowAttachmentFrame,
   AnnotationObjectSchema,
   ArrowObjectSchema,
   BracketObjectSchema,

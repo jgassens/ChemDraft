@@ -23,6 +23,43 @@ function host(options: { timeout?: number } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("keeps conditions tied to their original tab and arrow, deduplicates Save and refuses another arrow", async () => {
+    const h = host();
+    const apply = vi.fn(), settled = vi.fn();
+    const coordinator = new DialogCoordinator(h.transport, { applyPageSize: vi.fn(), applyReactionConditions: apply, onConditionsSettled: settled, onError: vi.fn() });
+    const draft = { side: "above" as const, spans: [{ text: "80 °C", script: "normal" as const }] };
+    await coordinator.openReactionConditions("tab-2", { title: "Other drawing", arrowId: "arrow-2", draft });
+    const snapshot = vi.mocked(h.transport.open).mock.calls[0][0];
+    const deliver = (type: string, data: unknown, requestId = "request-2", sender = "dialog-main-pageSize-1") => coordinator.receive({
+      senderWindowId: sender, windowLabel: "dialog-main-pageSize-1", message: { ...dialogEnvelope(snapshot), type, data, requestId } });
+    await deliver("ready", {});
+    await expect(coordinator.openReactionConditions("tab-2", { title: "Other", arrowId: "another-arrow", draft })).rejects.toThrow("Finish the open");
+    await deliver("action", { action: "apply", draft }, "forged", "wrong-window");
+    expect(apply).not.toHaveBeenCalled();
+    await Promise.all([deliver("action", { action: "apply", draft }), deliver("action", { action: "apply", draft })]);
+    expect(apply).toHaveBeenCalledExactlyOnceWith("tab-2", "arrow-2", draft);
+    expect(settled).toHaveBeenCalledExactlyOnceWith("tab-2");
+    await coordinator.dispose();
+  });
+  it('cancels native conditions when disabled without touching another dialog or accepting late Save',async()=>{
+    const h=host(),apply=vi.fn();
+    vi.mocked(h.transport.open).mockImplementation(async snapshot=>({hostId:snapshot.dialogKind,windowLabel:`dialog-main-${snapshot.dialogKind}-1`}));
+    const coordinator=new DialogCoordinator(h.transport,{...h.owner,applyReactionConditions:apply});
+    const draft={side:'above' as const,spans:[{text:'THF',script:'normal' as const}]};
+    await coordinator.openPageSize('tab-1',{title:'Drawing',width:8.5,height:11,unit:'inch'});
+    await coordinator.openReactionConditions('tab-1',{title:'Drawing',arrowId:'arrow-1',draft});
+    const snapshot=vi.mocked(h.transport.open).mock.calls.at(-1)![0];
+    await coordinator.closeReactionConditions();
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith('reactionConditions','cancel');
+    expect(coordinator.reactionConditionsArrowId('tab-1')).toBeUndefined();
+    await coordinator.receive({senderWindowId:'dialog-main-reactionConditions-1',windowLabel:'dialog-main-reactionConditions-1',
+      message:{...dialogEnvelope(snapshot),requestId:'late',type:'action',data:{action:'apply',draft}}});
+    expect(apply).not.toHaveBeenCalled();
+    await coordinator.dispose();
+    expect(h.transport.close).toHaveBeenCalledWith('pageSize','ownerClose');
+    await h.coordinator.dispose();
+  });
+
   it("reopens the same guide and dispatches its save action", async () => {
     const h = host(); await h.coordinator.openVibeCodeGuide();
     const retained = vi.mocked(h.transport.open).mock.calls[0]![0];

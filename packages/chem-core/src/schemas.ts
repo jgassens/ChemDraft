@@ -151,6 +151,21 @@ const ObjectStyleMetadataSchema = z.object({
   stylePresetId: z.string().optional()
 });
 
+export const ArrowAttachmentFrameSchema = z.object({
+  origin: PointSchema, tangent: PointSchema, normal: PointSchema,
+  length: z.number().finite().positive().optional()
+}).strict().refine(frame => Math.abs(Math.hypot(frame.tangent.x, frame.tangent.y) - 1) < 1e-6 &&
+  Math.abs(Math.hypot(frame.normal.x, frame.normal.y) - 1) < 1e-6 &&
+  Math.abs(frame.tangent.x * frame.normal.x + frame.tangent.y * frame.normal.y) < 1e-6,
+  "Arrow attachment axes must be perpendicular unit vectors");
+export const ArrowAttachmentSchema = z.object({
+  kind: z.literal("conditions"), parentObjectId: IdSchema,
+  side: z.enum(["above", "below"]), frame: ArrowAttachmentFrameSchema, offset: PointSchema,
+  placement: z.enum(["auto", "manual"]).optional()
+}).strict();
+export type ArrowAttachment = z.infer<typeof ArrowAttachmentSchema>;
+export type ArrowAttachmentFrame = z.infer<typeof ArrowAttachmentFrameSchema>;
+
 const BaseObjectSchema = z
   .object({
     id: IdSchema,
@@ -537,7 +552,8 @@ export const TextSpanSchema = z
 export const TextObjectSchema = BaseObjectSchema.extend({
   type: z.literal("text"),
   text: z.string(),
-  spans: z.array(TextSpanSchema).default([])
+  spans: z.array(TextSpanSchema).default([]),
+  arrowAttachment: ArrowAttachmentSchema.optional()
 }).strict();
 
 export const TABLE_LIMITS = {

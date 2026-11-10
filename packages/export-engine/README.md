@@ -103,3 +103,7 @@ ASCII molecule from the app and CLI/MCP. Inspect μ, ₆, ⁻, Greek letters and
 all four font styles, label halos, centered labels and mixed styled spans. Select
 and copy text into a plain text editor, and search the PDF for the original Unicode
 string. Compare label alignment with the canvas, especially at small sizes.
+
+Attached reaction conditions render through the same resolved page plan as the canvas. SVG keeps
+formatted runs contiguous and PDF uses the shared script positions. Native files retain attachments;
+CDXML keeps its existing best-effort text export contract.

@@ -2596,7 +2596,8 @@ describe("ChemDraft desktop shell", () => {
     // The atom-problem fix path also normalizes commits into inactive tabs.
     // Inactive-tab spacing keeps its original direct normalization; insertion tab commits
     // share preparation, and plugin/proposal preflight also normalizes before checking fit.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(13);
+    // The conditions editor also commits to its original tab while it is inactive.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(14);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(
@@ -7038,4 +7039,11 @@ describe("ChemDraft desktop shell", () => {
     expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
     expect(resized.selection).toEqual(document.selection);
   });
+});
+
+it("registers a customizable ordinary-arrow conditions command behind the opt-in gate",()=>{
+  const doc=createPhase4Document();
+  const command=allShellCommands(doc).find(command=>command.id==="arrow.conditions");
+  expect(command).toMatchObject({title:"Reaction conditions…",enabled:false,disabledReason:"Enable Compound layout tools in Settings"});
+  expect(isValidToolsetCommandId("arrow.conditions")).toBe(true);
 });

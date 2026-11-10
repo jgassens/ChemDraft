@@ -47,7 +47,11 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+export * from "./arrowAttachments";
+export * from "./reactionConditionsLayout";
+import { resolveArrowAttachments } from "./arrowAttachments";
 import {
+  svgPathSamplePoints,
   planNativeArtVisual as planNativeArtVisualFromArtEngine,
   visualEffectPlansForStyle,
   visualEffectsForStyle
@@ -1698,6 +1702,7 @@ export function planPageSvgRender(
     anchorResolutionPage?: DocumentPage;
   } = {}
 ): PageSvgRenderPlan {
+  if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {
@@ -3823,8 +3828,92 @@ function projectionDistanceAlongSegment(
   };
 }
 
+function planConditionsTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  const textStyle = nativeTextStyleFromObjectStyle(object.style);
+  const layout = nativeTextObjectLineMetrics(object);
+  const scripted=layout.lines.some(line=>line.spans.some(span=>span.script!=='normal' ||
+    nativeTextSpanMetrics(span,object.style).fontSize!==textStyle.fontSizePx));
+  const textAnchor = textStyle.textAlign === "center"
+    ? "middle"
+    : textStyle.textAlign === "right" ? "end" : "start";
+  const x = textStyle.textAlign === "center"
+    ? object.x + object.width / 2
+    : textStyle.textAlign === "right" ? object.x + object.width : object.x;
+  const y = object.y + (scripted?layout.lines[0].baseline:textStyle.fontSizePx);
+  const lineFragments = layout.lines.length > 0
+    ? layout.lines.flatMap((line, lineIndex) => conditionsTextSpanLineFragments(line.spans, lineIndex, x, object.y+line.baseline, object.style,scripted))
+    : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
+
+  return elementFragment("text", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    x,
+    y,
+    "font-family": textStyle.fontFamily,
+    "font-size": textStyle.fontSizePx,
+    "font-weight": textStyle.fontWeight,
+    "font-style": textStyle.fontStyle,
+    "text-decoration": textStyle.textDecoration,
+    "letter-spacing": textStyle.letterSpacingPx,
+    "text-anchor": textAnchor,
+    fill: textStyle.color,
+    transform: rotationTransform(object)
+  }), lineFragments);
+}
+
+function conditionsTextSpanLineFragments(
+  line: TextSpan[],
+  lineIndex: number,
+  x: number,
+  baseline: number,
+  objectStyle: TextObject['style'],
+  scripted: boolean
+): PageSvgElementFragment[] {
+  const style=nativeTextStyleFromObjectStyle(objectStyle);
+  const lineAdvance=style.fontSizePx*style.lineHeight+style.paragraphSpacingPx;
+  if(scripted) {
+    let previousOffset=0;
+    const runs=line.map((span,index)=>{
+      const metrics=nativeTextSpanMetrics(span,objectStyle),dy=metrics.offset-previousOffset;
+      previousOffset=metrics.offset;
+      return elementFragment('tspan',`text-run-${lineIndex}-${index}`,{
+        dy:dy||undefined,'font-size':metrics.fontSize,fill:metadataString(span.style.color),
+        'font-family':metadataString(span.style.fontFamily),'font-weight':metadataNumber(span.style.fontWeight),
+        'font-style':metadataFontStyle(span.style.fontStyle),'text-decoration':metadataString(span.style.textDecoration),
+        'letter-spacing':metadataNumber(span.style.letterSpacingPx)
+      },[textFragment(`text-run-content-${lineIndex}-${index}`,span.text)]);
+    });
+    // One absolute anchor per line keeps natural horizontal advance and centered alignment.
+    // Run offsets are explicit deltas; the next line resets y independently of its last run.
+    return [elementFragment('tspan',`text-line-${lineIndex}`,{x,y:baseline},runs)];
+  }
+  if (line.length === 0) {
+    return [
+      elementFragment("tspan", `text-line-empty-${lineIndex}`, {
+        x,
+        y: scripted?baseline:undefined,
+        dy: !scripted && lineIndex>0?lineAdvance:undefined
+      })
+    ];
+  }
+
+  return line.map((span, spanIndex) =>
+    elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
+      x: spanIndex === 0 ? x : undefined,
+      y: scripted?baseline + nativeTextSpanMetrics(span,objectStyle).offset:undefined,
+      dy: !scripted && spanIndex===0 && lineIndex>0?lineAdvance:undefined,
+      "font-size": scripted?nativeTextSpanMetrics(span,objectStyle).fontSize:metadataNumber(span.style.fontSizePx),
+      fill: metadataString(span.style.color),
+      "font-family": metadataString(span.style.fontFamily),
+      "font-weight": metadataNumber(span.style.fontWeight),
+      "font-style": metadataFontStyle(span.style.fontStyle),
+      "text-decoration": metadataString(span.style.textDecoration),
+      "letter-spacing": metadataNumber(span.style.letterSpacingPx)
+    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)])
+  );
+}
+
 /** @internal Shared by canvas, export and the live text-edit preview. */
 export function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  if (object.arrowAttachment?.kind === "conditions") return planConditionsTextObjectSvg(object, layerIndex);
   const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const lines = textObjectSpanLines(object);
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
@@ -3894,6 +3983,31 @@ export function textSpanLineFragments(
       "letter-spacing": metadataNumber(span.style.letterSpacingPx)
     }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)]);
   });
+}
+
+/** Explicit baselines prevent a script run from shifting the following run or line.
+ * Reserve each line's actual script ascent/descent before laying out its neighbor. */
+export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject['style']): {fontSize:number;offset:number;ascent:number;descent:number} {
+  const size=nativeTextStyleFromObjectStyle({...objectStyle,...span.style}).fontSizePx;
+  const fontSize=Number((size*(span.script==='normal'?1:.72)).toFixed(6));
+  const offset=Number((span.script==='subscript'?size*.22:span.script==='superscript'?-size*.4:0).toFixed(6));
+  return {fontSize,offset,ascent:fontSize*.8-offset,descent:fontSize*.2+offset};
+}
+export function nativeTextObjectLineMetrics(object: Pick<TextObject,'text'|'spans'|'style'>): {
+  lines:{spans:TextSpan[];baseline:number;ascent:number;descent:number}[];height:number
+} {
+  const style=nativeTextStyleFromObjectStyle(object.style),lines=textObjectSpanLines(object);
+  let previousBaseline=0,previousDescent=0;
+  const measured=lines.map((spans,index)=>{
+    const metrics=spans.map(span=>nativeTextSpanMetrics(span,object.style));
+    const ascent=Math.max(style.fontSizePx*.8,...metrics.map(m=>m.ascent));
+    const descent=Math.max(style.fontSizePx*.2,...metrics.map(m=>m.descent));
+    const baseline=index===0?Math.max(style.fontSizePx,ascent+2):previousBaseline+
+      Math.max(style.fontSizePx*style.lineHeight,previousDescent+ascent+style.fontSizePx*.18)+style.paragraphSpacingPx;
+    previousBaseline=baseline;previousDescent=descent;
+    return {spans,baseline,ascent,descent};
+  });
+  return {lines:measured,height:previousBaseline+previousDescent+2};
 }
 
 export function textObjectSpanLines(object: Pick<TextObject, "text" | "spans">): TextSpan[][] {
@@ -5912,6 +6026,43 @@ export function moleculeVisualBoundsForArrangement(object: MoleculeObject): Layo
     width: Math.max(...points.map(p=>p.x)) - x,
     height: Math.max(...points.map(p=>p.y)) - y
   };
+}
+
+const arrangementMoleculeOutlines = new WeakMap<MoleculeObject, LayoutPoint[]>();
+/** Tight outer ink envelope. Uses the renderer's bond, wedge/hash and label plans, never the
+ * molecule's padded storage box. A hull keeps arrows out of ring interiors and empty cavities. */
+export function moleculeOutlineForArrangement(object: MoleculeObject): LayoutPoint[] {
+  const cached=arrangementMoleculeOutlines.get(object);if(cached) return cached;
+  const resolution=nativeBondOrderResolution(object.atoms,object.bonds);
+  const labels=planMoleculeAtomLabels(object,resolution), byLabel=new Map(labels.map(p=>[p.atom.id,p]));
+  const atoms=new Map(object.atoms.map(a=>[a.id,a])), style=nativeDrawingStyleFromObjectStyle(object.style);
+  const points: LayoutPoint[]=[];
+  const add=(p:LayoutPoint,r=0)=>{for(const dx of [-r,r]) for(const dy of [-r,r]) points.push({x:p.x+dx,y:p.y+dy});};
+  labels.forEach(p=>{const b=p.layout.bounds;add({x:p.anchor.x+b.x,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y+b.height});
+    add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x,y:p.anchor.y+b.y+b.height});});
+  const collect=(fragment:PageSvgElementFragment)=>{
+    const a=fragment.attrs,r=a.stroke==='none' ? 0 : Number(a['stroke-width']??style.bondStrokeWidthPx)/2;
+    if(fragment.tag==='line') {add({x:Number(a.x1),y:Number(a.y1)},r);add({x:Number(a.x2),y:Number(a.y2)},r);}
+    else if(fragment.tag==='polygon' && typeof a.points==='string') a.points.trim().split(/\s+/).forEach(pair=>{const [x,y]=pair.split(',').map(Number);add({x,y},r);});
+    else if(fragment.tag==='path' && typeof a.d==='string') svgPathSamplePoints(a.d).forEach(p=>add(p,r));
+    fragment.children.forEach(c=>{if(c.kind==='element') collect(c);});
+  };
+  const sides=ringInteriorDoubleBondSides(object);
+  for(const bond of object.bonds) {
+    const from=atoms.get(bond.fromAtomId),to=atoms.get(bond.toAtomId);if(!from||!to)continue;
+    const f=byLabel.get(from.id),t=byLabel.get(to.id),drawing=nativeMoleculeBondDrawingStyle(object,bond.id,style);
+    bondLineSegments(from,to,object,bond,drawing,f?.label,t?.label,f?.drawingStyle,t?.drawingStyle,sides.get(bond.id),f?.layout,t?.layout)
+      .forEach((segment,i)=>nativeBondSegmentFragments(object,{...segment,bond,key:`${bond.id}-${i}`},drawing,1,[],resolution).forEach(collect));
+  }
+  if(!points.length) object.atoms.forEach(p=>add(p,style.bondStrokeWidthPx/2));
+  if(!points.length) [object,{x:object.x+object.width,y:object.y},
+    {x:object.x+object.width,y:object.y+object.height},{x:object.x,y:object.y+object.height}].forEach(p=>add(p));
+  const sorted=points.filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)).map(p=>transformPointForObject(object,p)).sort((a,b)=>a.x-b.x||a.y-b.y);
+  const cross=(a:LayoutPoint,b:LayoutPoint,c:LayoutPoint)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const half=(list:LayoutPoint[])=>{const out:LayoutPoint[]=[];for(const p of list){while(out.length>1&&cross(out[out.length-2],out[out.length-1],p)<=0)out.pop();out.push(p);}return out;};
+  const lower=half(sorted),upper=half([...sorted].reverse());
+  const outline=sorted.length<3 ? sorted : [...lower.slice(0,-1),...upper.slice(0,-1)];
+  arrangementMoleculeOutlines.set(object,outline);return outline;
 }
 
 export function planAtomLabel(

@@ -162,3 +162,9 @@ compatibility metadata.
 lookup. Callers inject OPSIN and decompressed text loading, so the module has no filesystem,
 DOM or engine-loading dependency. The app uses DecompressionStream; Node uses node:zlib.
 See data/names/README.md for the data contract and bundling.
+
+Reaction conditions use the pure reactionArrowAttachments module: reactionConditionsDraft reads
+the existing label, setReactionArrowConditions creates/updates/removes formatted native text on an
+ordinary arrow, and reconcileReactionArrowAttachments follows geometry changes. Callers own the
+authoring preference and history transaction. nativeFormattedTextObjectSize measures the explicit
+formatted lines using layout-engine metrics; no chemistry is changed.
