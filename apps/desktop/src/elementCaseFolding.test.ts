@@ -1,6 +1,7 @@
 // Element case folding on the desktop's relabel paths: the inline label editor and hotkeys
-// (applyNativeAtomElementTarget), text converted to an atom, and reopening a saved file. "NH" used to
-// become nihonium and "CO" cobalt; the folding rule itself is tested in layout-engine.
+// (applyNativeAtomElementTarget) and reopening a saved file. Text converts to an atom only when an
+// element symbol has exact capitalization. "NH" used to become nihonium and "CO" cobalt; the
+// folding rule itself is tested in layout-engine.
 
 import { describe, expect, it } from "vitest";
 import type { ChemDraftDocument, MoleculeObject, TextObject } from "@chemdraft/chem-core";
@@ -76,8 +77,16 @@ describe("text converted to an atom", () => {
     }
   });
 
-  it("still converts an element symbol in any unambiguous case", () => {
-    for (const [text, element] of [["Cl", "Cl"], ["cl", "Cl"], ["Co", "Co"], ["n", "N"]] as const) {
+  it("leaves lowercase element symbols as text", () => {
+    for (const text of ["cl", "n"]) {
+      const objects = textConverted(text).pages[0]!.objects;
+      expect(objects.some((object) => object.type === "molecule"), text).toBe(false);
+      expect(objects.some((object) => object.type === "text"), text).toBe(true);
+    }
+  });
+
+  it("converts element symbols with exact capitalization", () => {
+    for (const [text, element] of [["Cl", "Cl"], ["Co", "Co"], ["N", "N"], ["Fe", "Fe"]] as const) {
       const molecule = textConverted(text).pages[0]!.objects.find((object): object is MoleculeObject => object.type === "molecule");
       expect(molecule?.atoms[0]?.element, text).toBe(element);
     }

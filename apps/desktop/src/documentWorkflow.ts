@@ -4838,6 +4838,14 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
     : result;
 }
 
+/** Exact elements and case-sensitive groups may auto-convert; groups need an atom target. */
+export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
+  const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
+  if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
+  return nativeElementFromAtomLabel(object.text) === object.text ||
+    nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
+}
+
 /**
  * Text anchored on an atom uses the literal label editor's path. In open space, keep the
  * existing exact-element conversion: a one-atom molecule at the text box's center. Other text
@@ -4848,6 +4856,9 @@ export function convertNativeTextObjectToAtom(
   objectId: string,
   options: { skipAtomLabel?: boolean } = {}
 ): ChemDraftDocument {
+  if (!canAutoConvertNativeTextObjectToAtom(document, objectId)) {
+    return document;
+  }
   if (!options.skipAtomLabel) {
     const labelResult = convertNativeTextObjectToAtomLabel(document, objectId);
     if (labelResult.target) {
@@ -4858,15 +4869,12 @@ export function convertNativeTextObjectToAtom(
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
-  if (!object) {
+  // A group belongs on an existing atom; only an exact element can become a naked atom.
+  if (!object || nativeElementFromAtomLabel(object.text) !== object.text) {
     return document;
   }
 
-  const raw = object.text.trim();
-  const normalized = normalizeNativeAtomElementLabel(raw);
-  if (raw.length === 0 || nativeElementFromAtomLabel(normalized) === undefined) {
-    return document;
-  }
+  const normalized = object.text;
 
   const center = { x: object.x + object.width / 2, y: object.y + object.height / 2 };
   const atom: MoleculeAtom = {
