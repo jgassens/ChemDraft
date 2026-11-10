@@ -81,6 +81,66 @@ function layoutWithOverflow(form: HTMLElement, viewport: number, intrinsic: numb
 }
 
 describe.each(["macos", "windows"] as const)("live content minimum on %s", platform => {
+  it.each(["hidden", "clip"])("does not size Insert Table to an ellipsized title (%s)", overflow => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const styles = document.createElement("style");
+    styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
+    document.head.append(styles);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      const render = (title: string) => act(() => root.render(createElement(InsertTableForm, {
+        title, initial: { rows: 2, columns: 2, headerRows: 1, preset: "three-line" },
+        platform, onSubmit: vi.fn(), onCancel: vi.fn()
+      })));
+      render("Short");
+      const form = container.querySelector("form")!;
+      const title = form.querySelector<HTMLElement>(".cd-insert-table-drawing")!;
+      title.style.overflow = overflow;
+      // jsdom does not expand the overflow shorthand into its computed axes.
+      title.style.overflowX = overflow;
+      // Model CSS intrinsic sizing: a definite width replaces the text's min-content width,
+      // but the declared min-width still wins. A visible wide sibling must still count.
+      const wide = document.createElement("div");
+      form.querySelector(".cd-dialog-fit-body")!.append(wide);
+      form.getBoundingClientRect = () => {
+        const css = getComputedStyle(title);
+        const textWidth = title.textContent!.length * 8;
+        const titleWidth = Math.max(Number.parseFloat(css.minWidth) || 0,
+          Number.parseFloat(css.width) || (css.width === "0px" ? 0 : textWidth));
+        const intrinsic = Math.max(300, titleWidth + 36, Number.parseFloat(wide.style.width) || 0);
+        return { top: 0, height: 334,
+          width: form.style.width === "min-content" ? intrinsic : 480 } as DOMRect;
+      };
+      const short = measureDialogContent(form)!;
+      expect(short.contentWidth).toBe(300);
+      render("W".repeat(300));
+      const savedStyle = title.getAttribute("style");
+      expect(measureDialogContent(form)).toEqual(short);
+      expect(title.getAttribute("style")).toBe(savedStyle);
+      title.style.minWidth = "620px";
+      expect(measureDialogContent(form)?.contentWidth).toBe(656);
+      title.style.minWidth = "0px";
+      wide.style.width = "900px";
+      expect(measureDialogContent(form)?.contentWidth).toBe(900);
+    } finally {
+      act(() => root.unmount()); container.remove(); styles.remove();
+    }
+  });
+
+  it("caps an over-wide measurement without dropping its height or pixel ratio", () => {
+    const form = document.createElement("section");
+    document.body.append(form);
+    vi.stubGlobal("devicePixelRatio", platform === "macos" ? 2 : 1.5);
+    form.getBoundingClientRect = () => ({ top: 0, height: 334, width: 5000 } as DOMRect);
+    try {
+      expect(measureDialogContent(form)).toEqual({
+        contentHeight: 334, contentWidth: 4096, pixelRatio: devicePixelRatio
+      });
+    } finally { form.remove(); }
+  });
+
   it("keeps measuring minimum width after a fit removes overflow, and when content shrinks", () => {
     const form = document.createElement("section");
     form.innerHTML = '<div class="cd-dialog-fit-body"></div>';

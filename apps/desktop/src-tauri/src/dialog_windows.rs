@@ -4383,6 +4383,47 @@ mod tests {
         }
     }
     #[test]
+    fn windows_odd_physical_origin_survives_three_save_reopen_cycles() {
+        for scale in [1.5_f64, 1.75_f64] {
+            let work = WorkArea {
+                id: "screen".into(),
+                x: 0.0_f64,
+                y: 0.0_f64,
+                width: 2000.0_f64,
+                height: 1600.0_f64,
+                scale,
+            };
+            let expected = (61_i32, 115_i32);
+            let outer = (823_u32, 561_u32);
+            let mut saved = saved_frame(&work, expected, outer, None);
+            for open in 0..3 {
+                let position = position_for(
+                    Some(&saved),
+                    std::slice::from_ref(&work),
+                    &work,
+                    (0.0_f64, 0.0_f64, 1000.0_f64, 800.0_f64),
+                    (f64::from(outer.0) / scale, f64::from(outer.1) / scale),
+                );
+                // 61 / 1.75 * 1.75 is just below 61: truncation loses a physical pixel.
+                // Use the actual Windows move callback, not LogicalPosition::to_physical,
+                // whose own rounding could conceal a regression in move_dialog.
+                let mut physical = None;
+                move_dialog(
+                    false,
+                    position,
+                    |_| panic!("Windows must move in physical coordinates"),
+                    |position| {
+                        physical = Some((position.x, position.y));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert_eq!(physical, Some(expected), "{scale}x open {open}");
+                saved = saved_frame(&work, physical.unwrap(), outer, None);
+            }
+        }
+    }
+    #[test]
     fn dialog_placement_and_minimum_have_correct_final_sizes_on_both_platforms() {
         use std::cell::RefCell;
 
