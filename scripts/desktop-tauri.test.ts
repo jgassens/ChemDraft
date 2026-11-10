@@ -16,8 +16,9 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function build(platform = "win32", stable = true) {
+async function build(platform = "win32", stable = true, hostArch?: string) {
   vi.spyOn(process, "platform", "get").mockReturnValue(platform as NodeJS.Platform);
+  if (hostArch) vi.spyOn(process, "arch", "get").mockReturnValue(hostArch as NodeJS.Architecture);
   vi.spyOn(process, "argv", "get").mockReturnValue(["node", "desktop-tauri.mjs", "--package-build", "--bundles", "nsis"]);
   vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("test exit"); });
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -68,9 +69,16 @@ describe("desktop updater signing", () => {
 
   it("does not change the macOS package build path", async () => {
     vi.stubEnv("CHEMDRAFT_SKIP_UPDATER_SIGNING", "1");
-    const { args } = await build("darwin");
+    const { args } = await build("darwin", true, "arm64");
     expect(args).toContain("pnpm prepare:sparkle && pnpm sign:opsin-runtime && PATH=\"$HOME/.cargo/bin:$PATH\" tauri \"$@\"");
     expect(args).not.toContain("--config");
+  });
+
+  it("selects the Intel plist for a host-native Intel macOS package build", async () => {
+    const { args } = await build("darwin", true, "x64");
+    expect(args).toContain("--config");
+    expect(args[args.indexOf("--config") + 1]).toMatch(/tauri\.intel\.conf\.json$/);
+    expect(args).not.toContain("--target");
   });
 });
 

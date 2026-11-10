@@ -113,6 +113,9 @@ jobs:
       - name: Verify stable bundle identity and stage unsigned installer
         id: bundle
         run: |
+          # tauri-build copies resource targets beside the release executable, which NSIS bundles.
+          node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release
+          if ($LASTEXITCODE -ne 0) { throw 'Required bundled licences are missing from the release resource staging directory.' }
           $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $windows = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
           $identifier = if ($windows.identifier) { $windows.identifier } else { $config.identifier }

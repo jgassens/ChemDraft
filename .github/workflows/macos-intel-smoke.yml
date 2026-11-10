@@ -1,0 +1,86 @@
+name: macOS Intel smoke (unsigned)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - native/**
+      - apps/desktop/**
+      - packages/**
+      - scripts/**
+      - tools/release/**
+      - run-app
+      - rust-toolchain.toml
+      - .github/workflows/macos-intel-smoke.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-intel-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+# Advisory smoke job; do not add it to branch protection's required checks.
+# No release credentials or signing secrets. The fresh runner has no Developer ID identity.
+jobs:
+  intel-smoke:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      APPLE_SIGNING_IDENTITY: ''
+      CHEMDRAFT_ENGINE3D_SIDECAR: apps/desktop/src-tauri/binaries/avogadro3d-sidecar-x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert native Intel host
+        run: test "$(uname -m)" = x86_64
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the repository-pinned Rust toolchain and Intel target
+        run: |
+          rustup show
+          rustup target add x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+          shared-key: macos-intel-smoke-x86_64
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          architecture: x64
+      - run: pnpm install --frozen-lockfile
+      - name: Tooling unit tests (no native compilation)
+        env:
+          # The .test.ts suites use Vitest; this command runs the Node .test.mjs suites.
+          NODE_OPTIONS: --no-experimental-strip-types
+        run: node --test scripts/ tools/release/
+      - name: Build Intel OPSIN runtime and smoke test benzene
+        run: node scripts/build-opsin-runtime.mjs --arch x86_64
+      - name: Inspect committed Intel sidecar
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { assertMachOArchitecture } from "./tools/release/macos-mach-o.mjs";
+            assertMachOArchitecture(readFileSync(process.env.CHEMDRAFT_ENGINE3D_SIDECAR), "x86_64");
+          '
+      - name: Smoke committed Intel sidecar (never rebuild it here)
+        run: |
+          pnpm smoke:engine3d-real-structure
+          pnpm smoke:engine3d-hold-steady
+          pnpm smoke:engine3d-anneal-energy
+      - name: Build unsigned Intel app only (no DMG)
+        env:
+          # Stable resource/product layout for inspection; no stable app is installed or launched.
+          CHEMDRAFT_STABLE_BUILD: '1'
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: pnpm --filter @chemdraft/desktop build --target x86_64-apple-darwin --bundles app --ci
+      - name: Inspect Intel app architecture, minimum OS, runtime and feed
+        shell: bash
+        run: |
+          node tools/release/verify-macos-app.mjs \
+            apps/desktop/src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ChemDraft.app \
+            --target x86_64-apple-darwin
