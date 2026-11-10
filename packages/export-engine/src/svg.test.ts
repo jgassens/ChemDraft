@@ -15,6 +15,14 @@ import { exportDocumentToSvg } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
+it("uses a clean document title for the SVG accessible name", () => {
+  const imported = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: timestamp });
+  expect(exportDocumentToSvg(imported, { title: "scheme" }).contents).toContain('aria-label="scheme"');
+  expect(exportDocumentToSvg(imported).contents).toContain('aria-label="Untitled"');
+  expect(exportDocumentToSvg({ ...imported, title: "Saved.chemdraft" }).contents).toContain('aria-label="Saved"');
+  expect(exportDocumentToSvg({ ...imported, title: "Untitled" }).contents).toContain('aria-label="Untitled"');
+});
+
 it("matches electron-mark rendering options and keeps authored styling across opt-out", () => {
   const document = createEmptyDocument({ title: "Electron mark SVG", now: timestamp });
   const mark: ElectronMarkObject = { id: "mark", type: "electron-mark", x: 100, y: 100,

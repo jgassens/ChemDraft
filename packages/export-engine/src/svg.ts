@@ -16,6 +16,8 @@ import type { ExportWarning } from "./results";
 import { ensureHandwritingFontLoaded, requireHandwritingFontFaceCss } from "./handwritingFont";
 
 export interface SvgExportOptions {
+  /** User-visible document title, when it differs from the stored model title. */
+  title?: string;
   /** Match the editor's opt-in electron-mark rendering; custom stored styling always renders. */
   directElectronMarkEditing?: boolean;
   pageIndex?: number;
@@ -37,6 +39,11 @@ export interface SvgExportResult {
   format: "svg";
   contents: string;
   warnings: ExportWarning[];
+}
+
+function svgTitle(title: string, isStoredTitle: boolean): string {
+  const clean = title.replace(/\.chemdraft$/i, "");
+  return !clean || (isStoredTitle && /^Imported CDX(?:ML)?$/i.test(clean)) ? "Untitled" : clean;
 }
 
 /** Give cropped native SVG geometry its natural physical size, with one user unit = one pt.
@@ -151,7 +158,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   return {
     format: "svg",
     contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(svgTitle(options.title ?? document.title, options.title === undefined))}">`,
       fontMarkup,
       backgroundMarkup,
       pageGuideMarkup,
