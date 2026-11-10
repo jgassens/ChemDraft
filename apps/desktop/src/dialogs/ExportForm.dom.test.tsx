@@ -239,3 +239,15 @@ it("restores valid visual settings when switching from an invalid size draft to 
   act(() => container.querySelector("form")!.requestSubmit());
   expect(submitted).toHaveBeenCalledTimes(1);
 });
+it("describes invalid export dimensions without marking valid fields", () => {
+  saveExportPreviewEnabled(true);
+  act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), busy: false, presentation: { width: 9000, height: 600, linked: false, dpi: 96, crop: "page", background: "white" } }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
+  const field = (name: string) => [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith(name))!.querySelector("input")!;
+  const width = field("Width (px)"), height = field("Height (px)");
+  const status = [...container.querySelectorAll('[role="alert"]')].find(node => node.textContent?.startsWith("Export dimensions"))!;
+  expect(width.getAttribute("aria-invalid")).toBe("true");
+  expect(width.getAttribute("aria-describedby")).toBe(status.id);
+  expect(status.id).not.toBe("");
+  expect(height.hasAttribute("aria-invalid")).toBe(false);
+  expect(height.hasAttribute("aria-describedby")).toBe(false);
+});

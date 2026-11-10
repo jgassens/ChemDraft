@@ -368,3 +368,18 @@ it("reports ready once with its own form element", () => {
     vi.unstubAllGlobals();
   }
 });
+it("describes invalid table fields and leaves valid fields unmarked", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  try {
+  act(() => root.render(createElement(InsertTableForm, { title: "Drawing", initial: { rows: 0, columns: 2, headerRows: 0, preset: "grid" }, onSubmit: vi.fn(), onCancel: vi.fn() })));
+  const [rows, columns] = container.querySelectorAll("input");
+  const status = container.querySelector('[role="status"]')!;
+  expect(rows.getAttribute("aria-invalid")).toBe("true");
+  expect(rows.getAttribute("aria-describedby")).toBe(status.id);
+  expect(status.id).not.toBe("");
+  expect(columns.hasAttribute("aria-invalid")).toBe(false);
+  expect(columns.hasAttribute("aria-describedby")).toBe(false);
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});

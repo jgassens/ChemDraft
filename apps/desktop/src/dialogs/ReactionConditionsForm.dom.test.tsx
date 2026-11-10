@@ -155,3 +155,14 @@ it("dispatches symbol and script buttons through registered value-encoded comman
     expect(invoke).toHaveBeenLastCalledWith(conditionsSymbolCommandId("Δ"));
   } finally {invoke.mockRestore();}
 });
+it("describes invalid conditions and clears the attributes when valid", () => {
+  const render = (draft: ReactionConditionsDraft) => act(() => root.render(createElement(ReactionConditionsForm, { title: "Drawing", draft, onChange: vi.fn(), onSave: vi.fn(), onCancel: vi.fn() })));
+  render({ ...initial, spans: [{ text: "Δ".repeat(1400), script: "normal" }] });
+  const field = container.querySelector("textarea")!, status = container.querySelector('[role="status"]')!;
+  expect(field.getAttribute("aria-invalid")).toBe("true");
+  expect(field.getAttribute("aria-describedby")).toBe(status.id);
+  expect(status.id).not.toBe("");
+  render(initial);
+  expect(field.hasAttribute("aria-invalid")).toBe(false);
+  expect(field.hasAttribute("aria-describedby")).toBe(false);
+});

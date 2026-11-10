@@ -95,7 +95,7 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
         {value === "normal" ? "Normal" : value === "subscript" ? <>X<sub>2</sub></> : <>X<sup>2</sup></>}
       </button>)}
     </div>
-    <textarea id={`${id}-text`} ref={textarea} autoFocus rows={5} maxLength={2000} value={text} disabled={busy}
+    <textarea id={`${id}-text`} ref={textarea} autoFocus rows={5} maxLength={2000} value={text} disabled={busy} aria-invalid={!valid || undefined} aria-describedby={!valid ? `${id}-error` : undefined}
       placeholder={"e.g. K₂CO₃, THF\n80 °C, 2 h\n85% yield"}
       onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
       onChange={event => {
@@ -116,7 +116,7 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
       <option value="above">Top / inside</option><option value="below">Bottom / outside</option>
     </select>
     <p>Labels follow their arrow. Top uses the inside of a curve; Bottom uses the outside. Straight arrows use page top and bottom. Drag a label to adjust crowded positions, or double-click to edit. Clear the text to remove it.</p>
-    <p role="status">{error ?? (!valid ? "Shorten the conditions or use fewer formatting changes to save." : "")}</p>
+    <p id={`${id}-error`} role="status">{error ?? (!valid ? "Shorten the conditions or use fewer formatting changes to save." : "")}</p>
     <footer><button type="button" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" disabled={busy || !valid}>Save</button></footer>
   </form>;
 }

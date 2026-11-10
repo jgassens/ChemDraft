@@ -1,5 +1,5 @@
 import { useDialogContentReady } from "./dialogContentFit";
-import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
 import { type ExportFormatId, type ExportFormatGroup } from "@chemdraft/export-engine";
 import { replaceExportFileExtension } from "../exportFilename";
 import { desktopExportFormatDescriptors as exportFormatDescriptors, getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "../desktopExportFormats";
@@ -86,6 +86,14 @@ function ExportFormBody({
   const width = presentation.width;
   const height = exportDialogHeight(presentation, ratio);
   const dpi = presentation.dpi;
+  const sizeErrorId = useId();
+  const dimensionInvalid = (value: number) => !Number.isInteger(value) || value < 1 || value > 8192;
+  const dimensionsInvalid = dimensionInvalid(width) || dimensionInvalid(height);
+  const pdfSizeInvalid = !!sizeError && !dimensionsInvalid && Number.isFinite(dpi) && dpi >= 36 && dpi <= 1200;
+  const widthInvalid = !!sizeError && (dimensionInvalid(width) || pdfSizeInvalid && width / dpi * 72 > 14400);
+  const heightInvalid = !!sizeError && (dimensionInvalid(height) || pdfSizeInvalid && height / dpi * 72 > 14400);
+  const dpiInvalid = !!sizeError && !dimensionsInvalid && (!Number.isFinite(dpi) || dpi < 36 || dpi > 1200 || pdfSizeInvalid);
+  const sizeAria = (invalid: boolean) => ({ "aria-invalid": invalid || undefined, "aria-describedby": invalid ? sizeErrorId : undefined });
   const [pendingPreset, setPendingPreset] = useState<string | undefined>();
   const [physicalDraft, setPhysicalDraft] = useState<{ axis: "width" | "height"; value: string } | undefined>();
   const keyboardPreset = useRef(false);
@@ -237,21 +245,21 @@ function ExportFormBody({
             <select className="native-dialog-panel-select" disabled={state.busy} value={presentation.crop} onChange={(event) => changePresentation({ crop: event.currentTarget.value as "page" | "content" })}><option value="page">Page</option><option value="content">Content with padding</option></select>
           </label>
           <label style={exportDialogLabelStyle}><input type="checkbox" disabled={state.busy} checked={presentation.linked !== false} onChange={(event) => changePresentation({ linked: event.currentTarget.checked, height: event.currentTarget.checked ? undefined : height })} />Link width and height</label>
-          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(width)} onChange={(event) => changePresentation({ width: readNumber(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Height (px){presentation.linked !== false ? " (aspect ratio linked)" : ""}<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(height)} onChange={(event) => changePresentation(presentation.linked === false ? { height: readNumber(event.currentTarget.value) } : { height: readNumber(event.currentTarget.value), width: Math.round(readNumber(event.currentTarget.value) / ratio) })} /></label>
-          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} step="any" value={numberValue(dpi)} onChange={(event) => changePresentation({ dpi: readNumber(event.currentTarget.value) })} /></label>
-          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "width" ? physicalDraft.value : numberValue(Number((width / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
+          <label style={exportDialogLabelStyle}>Width (px)<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(width)} {...sizeAria(widthInvalid)} onChange={(event) => changePresentation({ width: readNumber(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Height (px){presentation.linked !== false ? " (aspect ratio linked)" : ""}<input disabled={state.busy} type="number" min={1} max={8192} value={numberValue(height)} {...sizeAria(heightInvalid)} onChange={(event) => changePresentation(presentation.linked === false ? { height: readNumber(event.currentTarget.value) } : { height: readNumber(event.currentTarget.value), width: Math.round(readNumber(event.currentTarget.value) / ratio) })} /></label>
+          <label style={exportDialogLabelStyle}>DPI<input disabled={state.busy} type="number" min={36} max={1200} step="any" value={numberValue(dpi)} {...sizeAria(dpiInvalid)} onChange={(event) => changePresentation({ dpi: readNumber(event.currentTarget.value) })} /></label>
+          <label style={exportDialogLabelStyle}>Physical width (mm)<input disabled={state.busy} type="text" inputMode="decimal" {...sizeAria(widthInvalid)} value={physicalDraft?.axis === "width" ? physicalDraft.value : numberValue(Number((width / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
             const value = event.currentTarget.value;
             setPhysicalDraft({ axis: "width", value });
             changePresentation({ width: Math.round(readNumber(value) / 25.4 * dpi) });
           }} /></label>
-          <label style={exportDialogLabelStyle}>Physical height (mm)<input disabled={state.busy} type="text" inputMode="decimal" value={physicalDraft?.axis === "height" ? physicalDraft.value : numberValue(Number((height / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
+          <label style={exportDialogLabelStyle}>Physical height (mm)<input disabled={state.busy} type="text" inputMode="decimal" {...sizeAria(heightInvalid)} value={physicalDraft?.axis === "height" ? physicalDraft.value : numberValue(Number((height / dpi * 25.4).toFixed(2)))} onBlur={() => setPhysicalDraft(undefined)} onChange={(event) => {
             const value = event.currentTarget.value;
             const pixels = Math.round(readNumber(value) / 25.4 * dpi);
             setPhysicalDraft({ axis: "height", value });
             changePresentation(presentation.linked === false ? { height: pixels } : { height: pixels, width: Math.round(pixels / ratio) });
           }} /></label>
-          {sizeError ? <p role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
+          {sizeError ? <p id={sizeErrorId} role="alert" style={exportDialogWarningStyle}>{sizeError}</p> : null}
           <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" && state.presentation ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
           {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select className="native-dialog-panel-select" disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
           {state.format === "pdf" ? <p style={exportDialogHintStyle}>Preview of the PDF page layout</p> : null}
