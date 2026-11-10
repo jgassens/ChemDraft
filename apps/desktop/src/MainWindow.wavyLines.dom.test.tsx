@@ -132,7 +132,8 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     await act(async () => {
       slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     });
-    const value = waves()[0].data[{ smoothness: "waveSmoothness", height: "waveHeight", width: "waveWidth" }[setting]];
+    const dataKey = ({ smoothness: "waveSmoothness", height: "waveHeight", width: "waveWidth" } as const)[setting];
+    const value = waves()[0].data[dataKey];
     expect(container.querySelector('[role="status"]')?.textContent).toBe(`Wave ${setting} set to ${value}${setting === "smoothness" ? "%" : " px"}`);
     await command("edit.undo");
     expect(container.textContent).toContain(`Undid Updated wave ${setting}`);
