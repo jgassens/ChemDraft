@@ -1,5 +1,112 @@
 # Shipped slices
 
+## Custom colours and bond tools (2026-11-10)
+
+PR #340 adds persistent custom colour swatches to the Main toolbar's customization gallery and
+applies their colours to selected objects. Double and Triple Bond join the default Main toolbar;
+Chain moves to the gallery. Used object colours also round-trip through the CDXML colour table.
+See the [manual checklist](../manual-stress-checklist.md).
+
+## CDXML and CDX fidelity (2026-11-10)
+
+PRs #324, #325, #326, #328, #329, #335, #338 and #339 improve crossed double bonds,
+isotope labels, unsupported bond orders, wavy bonds, curves, reaction schemes and bracketed
+groups. Unsupported or lossy details are preserved where possible or reported in warnings;
+compatibility remains fixture-limited. See the [manual checklist](../manual-stress-checklist.md).
+
+## Forward-compatible native files (2026-11-10)
+
+PR #334 opens newer native files with a version notice and preserves future data and the minimum
+version when saving. Unknown chemistry values are not guessed; some newer features may not show.
+The notice also appears on session restore. See the [manual checklist](../manual-stress-checklist.md).
+
+## Electron-mark drops and editing (2026-11-10)
+
+PR #333 adds moving, resizing and styling electron marks behind Direct electron-mark editing,
+off by default. Dropped charges and radicals can associate with the atom they land on; charges
+are placed beside its label. Undo and Redo restore edits. See the [manual checklist](../manual-stress-checklist.md).
+
+## Reaction conditions (2026-11-10)
+
+PR #331 adds formatted text attached to ordinary reaction arrows, edited in a movable native
+window and retained through arrow transformations and export. Authoring requires Compound layout
+tools and Formatted Reaction Conditions, both off by default; existing labels remain visible when
+authoring is disabled. See the [manual checklist](../manual-stress-checklist.md).
+
+## Wavy single bonds (2026-11-10)
+
+PR #327 adds a native wavy single bond for unspecified stereochemistry, available from the bond
+flyout and by converting a single bond. Undo, Redo and MOL export retain the unknown stereo;
+CDXML mapping is covered by PR #328. See the [manual checklist](../manual-stress-checklist.md).
+
+## Round brackets and repeat units (2026-11-10)
+
+PR #297 adds paired round brackets and editable repeat-unit labels. MOL exports represent eligible
+units as SRU groups; SMILES warns when repeat information is omitted, and CDXML has limitations
+for labels and connectivity. See the [manual checklist](../manual-stress-checklist.md).
+
+## Drawing style presets (2026-11-10)
+
+PR #322 adds native drawing style presets including ACS 1996-style, RSC journal-style and Sketch.
+Sketch uses uneven strokes and a bundled handwriting font. Applied styles persist and leave
+chemistry unchanged; see the [manual checklist](../manual-stress-checklist.md).
+
+## Page-enlarge question (2026-11-10)
+
+PR #323 asks before enlarging a page when inserted or changed content will not fit. Enlarge may
+shift content to make room; Keep Page Size retains the page dimensions. An unanswered or expired
+question does not authorize enlargement. See the [manual checklist](../manual-stress-checklist.md).
+
+## Online structure search (2026-11-10)
+
+PR #317 adds Tools searches for selected chemistry in PubChem and Reaxys, opening the system
+browser after per-site consent. The preference is enabled by default and can disable both commands;
+Reaxys requires the user's own access. See the [manual checklist](../manual-stress-checklist.md).
+
+## Name dictionary (2026-11-10)
+
+PR #318 adds a Wikidata name dictionary fallback to name-to-structure, with match provenance.
+It requires the name-to-structure plugin and its local engine; an unrecognized name reports failure
+instead of inserting a guessed structure. See the [manual checklist](../manual-stress-checklist.md).
+
+## Binary CDX files (2026-11-10)
+
+PR #316 adds binary CDX open, save and export through the compatibility layer. Reading is
+best-effort and reports unsupported or lossy content; malformed files fail. Windows does not
+register CDX as a file association. See the [manual checklist](../manual-stress-checklist.md).
+
+## Default double-bond placement (2026-11-10)
+
+PR #280 adds a persistent Offset or Centred preference for newly drawn double bonds. Existing
+bonds and explicit placement in ring and structure templates retain their display. See the
+[manual checklist](../manual-stress-checklist.md).
+
+## Atom problem warnings (2026-11-10)
+
+PR #320 makes atom-label diagnostics accessible through a movable problem window with explicit
+fixes, and keeps the list current as problems are resolved. Export warnings retain the diagnostic;
+the window closes when no problems remain. See the [manual checklist](../manual-stress-checklist.md).
+
+## Plugin chemistry and assistant tools (2026-11-10)
+
+PR #310 adds plugin chemistry properties and plugin-contributed assistant tools to the versioned
+plugin contract. These capabilities follow the host's declared-permission and command boundaries;
+they do not install or enable a plugin by themselves.
+
+## Intel Mac releases (2026-11-10)
+
+PR #315 adds an Intel Mac build alongside Apple silicon and Windows, with architecture-specific
+update feeds and release checks that require all three builds from the same commit. The optional
+Orthonym naming engine remains unsupported on Intel Macs.
+
+## Drawing and editing fixes (2026-11-10)
+
+PRs #278, #279, #282, #288, #289, #296 and #330 fix hover-label cancellation and re-hit,
+wedge keys and abbreviations, quitting with a label draft, Text-tool Escape, keyboard nudging,
+flyout navigation and dialog sizing. PRs #283–#286, #291, #295 and #308 fix table paste, picture
+opacity, text placement, Windows controls, NMR labels, Preferences/flyouts and export details.
+PR #332 adds adjustable wavy art lines; PR #274 hardens tests. See the [manual checklist](../manual-stress-checklist.md).
+
 ## Adjustable wavy art lines (2026-11-09)
 
 PR #209 adds smoothness, peak-to-trough height and wavelength sliders in Object Settings.
