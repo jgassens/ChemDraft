@@ -2,7 +2,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CanvasContextMenu } from "./CanvasContextMenu";
+import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { pageCanvasMenu } from "./canvasContextMenuModel";
 import { popupNativeCanvasMenu } from "./nativeCanvasContextMenu";
 import { isDesktopRuntime } from "./window-manager";
@@ -25,6 +25,18 @@ async function mount() {
 }
 
 describe("native popup lifecycle and HTML fallback", () => {
+  it.each([true, false])("resets native pointer tracking after popup closure (chosen=%s)", async chosen => {
+    let finish!: (value: { select(invoke: (id: string) => void): boolean }) => void;
+    vi.mocked(popupNativeCanvasMenu).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const closed = vi.fn();
+    window.addEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, closed);
+    try {
+      await mount();
+      expect(closed).not.toHaveBeenCalled();
+      await act(async () => finish({ select: invoke => { if (chosen) invoke("clipboard.paste"); return chosen; } }));
+      expect(closed).toHaveBeenCalledOnce();
+    } finally { window.removeEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, closed); }
+  });
   it("opens once under StrictMode and routes the choice once", async () => {
     vi.mocked(popupNativeCanvasMenu).mockResolvedValue({ select: invoke => { invoke("clipboard.paste"); return true; } });
     const { onInvoke, onDismiss } = await mount();

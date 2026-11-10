@@ -16,6 +16,8 @@ export interface FileWarningsSnapshot {
 }
 export type FileWarningsAction = { sessionId: string; revision: number } & (
   { kind: "close" } | { kind: "show"; reportIndex: number; warningIndex: number }
+  | { kind: "command"; commandId: "edit.undo" | "edit.redo" | "edit.selectAll" }
+  | { kind: "unavailable"; message: string }
 );
 export interface FileWarningsChunk {
   sessionId: string;
@@ -42,6 +44,7 @@ export function routeFileWarningsAction(action: FileWarningsAction, snapshot: Fi
   show: (selection: OpenWarningSelection, label: string) => void, close: () => void): void {
   if (action.sessionId !== snapshot.sessionId) return;
   if (action.kind === "close") { close(); return; }
+  if (action.kind === "command" || action.kind === "unavailable") return;
   if (action.revision !== snapshot.revision) return;
   if (!Number.isInteger(action.reportIndex) || !Number.isInteger(action.warningIndex)) return;
   const warning = reports[action.reportIndex]?.warnings[action.warningIndex];

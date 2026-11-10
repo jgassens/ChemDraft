@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { fileWarningsAssembler, type FileWarningsAction, type FileWarningsChunk, type FileWarningsSnapshot } from "./fileWarningsProtocol";
+import { installSecondaryWindowEditHistory, stripForcedDocumentHistorySuffix } from "./editHistoryRouting";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 export function FileWarningsWindow({ platform = detectShortcutPlatform() }: { platform?: ShortcutPlatform }) {
   const [snapshot, setSnapshot] = useState<FileWarningsSnapshot>();
@@ -9,7 +11,7 @@ export function FileWarningsWindow({ platform = detectShortcutPlatform() }: { pl
   const focusedSession = useRef<string | undefined>(undefined);
   const current = useRef(snapshot);
   current.current = snapshot;
-  const send = (action: { kind: "close" } | { kind: "show"; reportIndex: number; warningIndex: number }) => {
+  const send = (action: { kind: "close" } | { kind: "show"; reportIndex: number; warningIndex: number } | { kind: "command"; commandId: "edit.undo" | "edit.redo" | "edit.selectAll" }) => {
     const value = current.current;
     if (value) void invoke("file_warnings_action", { action: { sessionId: value.sessionId, revision: value.revision, ...action } satisfies FileWarningsAction });
   };
@@ -21,6 +23,13 @@ export function FileWarningsWindow({ platform = detectShortcutPlatform() }: { pl
     return () => { onSnapshot.onmessage = () => {}; window.document.body.classList.remove("file-warnings-window"); };
   }, []);
   useEffect(() => {
+    // Use the same forced-document history routing as palettes, including native Edit menu clicks.
+    return installSecondaryWindowEditHistory({ forwardToMain: forwarded => {
+      const commandId = stripForcedDocumentHistorySuffix(forwarded);
+      if (commandId === "edit.undo" || commandId === "edit.redo" || commandId === "edit.selectAll") send({ kind: "command", commandId });
+    } });
+  }, []);
+  useEffect(() => {
     const preventReload = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -29,20 +38,32 @@ export function FileWarningsWindow({ platform = detectShortcutPlatform() }: { pl
       }
       const modifier = platform === "macos" ? event.metaKey : event.ctrlKey;
       if (event.key === "F5" || event.key === "BrowserRefresh" || (modifier && event.key.toLowerCase() === "r")) event.preventDefault();
+      if (event.defaultPrevented || event.isComposing || !modifier || event.altKey ||
+        (platform === "macos" ? event.ctrlKey : event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      const commandId = key === "z" ? (event.shiftKey ? "edit.redo" : "edit.undo")
+        : !event.shiftKey && key === "a" ? "edit.selectAll"
+        : platform !== "macos" && !event.shiftKey && key === "y" ? "edit.redo" : undefined;
+      if (commandId) {
+        event.preventDefault(); // Suppress a second delivery through the native menu accelerator.
+        window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+      }
     };
     window.addEventListener("keydown", preventReload);
     return () => window.removeEventListener("keydown", preventReload);
   }, [platform]);
   useEffect(() => {
     if (!snapshot) return;
-    const frame = requestAnimationFrame(() => {
-      if (focusedSession.current !== snapshot.sessionId) {
-        closeButton.current?.focus();
-        focusedSession.current = snapshot.sessionId;
-      }
-      void invoke("file_warnings_ready", { sessionId: snapshot.sessionId, revision: snapshot.revision });
+    // Like PalettePopoverWindow, reveal after commit without rAF: hidden reused webviews suspend it.
+    if (focusedSession.current !== snapshot.sessionId) {
+      closeButton.current?.focus();
+      focusedSession.current = snapshot.sessionId;
+    }
+    void invoke("file_warnings_ready", { sessionId: snapshot.sessionId, revision: snapshot.revision }).catch(reason => {
+      // Creation can succeed while native reveal is refused or fails. Let the owner show HTML.
+      void invoke("file_warnings_action", { action: { kind: "unavailable", sessionId: snapshot.sessionId,
+        revision: snapshot.revision, message: String(reason) } satisfies FileWarningsAction }).catch(() => undefined);
     });
-    return () => cancelAnimationFrame(frame);
   }, [snapshot]);
   if (!snapshot) return null;
   return <div className="open-warnings-list" data-open-warnings-list role="dialog" aria-label="File warnings">

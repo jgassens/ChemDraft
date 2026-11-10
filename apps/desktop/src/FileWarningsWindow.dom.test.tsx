@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { FileWarningsWindow } from "./FileWarningsWindow";
 import type { FileWarningsChunk, FileWarningsSnapshot } from "./fileWarningsProtocol";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?: unknown) => {}), channels: [] as { onmessage: (value: FileWarningsChunk) => void }[] }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -17,7 +18,7 @@ let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  vi.clearAllMocks(); ipc.channels.length = 0;
+  vi.clearAllMocks(); ipc.invoke.mockResolvedValue(undefined); ipc.channels.length = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -60,6 +61,55 @@ it("retains keyboard focus when live targets refresh and makes Close operable", 
   expect(document.activeElement).toBe(show);
   act(() => container.querySelector<HTMLButtonElement>("[aria-label='Close the warnings list']")!.click());
   expect(ipc.invoke).toHaveBeenLastCalledWith("file_warnings_action", { action: { kind: "close", sessionId: "opening-1", revision: 2 } });
+});
+
+it("reveals a second opening after hide while animation frames are suspended", async () => {
+  const raf = vi.fn(); // A hidden reused webview never calls these callbacks.
+  vi.stubGlobal("requestAnimationFrame", raf);
+  await act(async () => root.render(<FileWarningsWindow />));
+  receive(snapshot);
+  act(() => container.querySelector<HTMLButtonElement>("[aria-label='Close the warnings list']")!.click());
+  ipc.invoke.mockClear();
+  receive({ ...snapshot, sessionId: "opening-2" });
+  expect(ipc.invoke).toHaveBeenCalledExactlyOnceWith("file_warnings_ready", { sessionId: "opening-2", revision: 1 });
+  expect(raf).not.toHaveBeenCalled();
+});
+
+it("reports a refused native reveal to the owner for HTML fallback", async () => {
+  ipc.invoke.mockImplementation(async command => {
+    if (command === "file_warnings_ready") throw new Error("Reveal refused");
+  });
+  await act(async () => root.render(<FileWarningsWindow />));
+  await act(async () => receive(snapshot));
+  expect(ipc.invoke).toHaveBeenCalledWith("file_warnings_action", { action: {
+    kind: "unavailable", sessionId: snapshot.sessionId, revision: snapshot.revision, message: "Error: Reveal refused"
+  } });
+});
+
+it.each(["macos", "windows"] as const)("forwards focused keyboard and native menu history commands once on %s", async platform => {
+  await act(async () => root.render(<FileWarningsWindow platform={platform} />));
+  receive(snapshot);
+  const modifier = platform === "macos" ? { metaKey: true } : { ctrlKey: true };
+  const chords = [
+    { key: "z", commandId: "edit.undo" },
+    { key: "z", shiftKey: true, commandId: "edit.redo" },
+    { key: "a", commandId: "edit.selectAll" },
+    ...(platform === "windows" ? [{ key: "y", commandId: "edit.redo" }] : [])
+  ];
+  for (const { commandId, ...chord } of chords) {
+    ipc.invoke.mockClear();
+    const event = new KeyboardEvent("keydown", { ...modifier, ...chord, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(ipc.invoke).toHaveBeenCalledExactlyOnceWith("file_warnings_action", {
+      action: { kind: "command", sessionId: snapshot.sessionId, revision: 1, commandId }
+    });
+    ipc.invoke.mockClear();
+    window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+    expect(ipc.invoke).toHaveBeenCalledExactlyOnceWith("file_warnings_action", {
+      action: { kind: "command", sessionId: snapshot.sessionId, revision: 1, commandId }
+    });
+  }
 });
 
 it.each(["macos", "windows"] as const)("blocks webview reload chords on %s", async platform => {

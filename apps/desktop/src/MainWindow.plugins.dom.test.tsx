@@ -20,6 +20,7 @@ import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
@@ -305,10 +306,10 @@ async function typeAtFocus(text: string): Promise<void> {
 /** Dispatch through the actual DOM path without supplying the focus handoff under test.
  * In particular, do not call canvas.focus(): page tools can cancel browser focus defaults. */
 async function canvasPointer(target: Element, type: "pointerdown" | "pointerup",
-  options: MouseEventInit & { pointerType?: string; isPrimary?: boolean } = {}): Promise<MouseEvent> {
+  options: MouseEventInit & { pointerType?: string; isPrimary?: boolean; pointerId?: number } = {}): Promise<MouseEvent> {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500, ...options });
   await act(async () => {
-    Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: options.pointerType ?? "mouse" },
+    Object.defineProperties(event, { pointerId: { value: options.pointerId ?? 1 }, pointerType: { value: options.pointerType ?? "mouse" },
       isPrimary: { value: options.isPrimary ?? true } });
     target.dispatchEvent(event);
   });
@@ -889,6 +890,20 @@ describe("MainWindow canvas overlays", () => {
     await canvasPointer(canvas, "pointerup"); expect(widget.hidden).toBe(false);
     await act(async () => widget.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(widget.dataset.expanded).toBe("false"); expect(document.activeElement).toBe(canvas);
+  });
+
+  it("clears swallowed native popup releases and the tracked pointer IDs", async () => {
+    const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+    const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    await canvasPointer(canvas, "pointerdown", { button: 2, pointerId: 7 });
+    expect(widget.hidden).toBe(true);
+    // AppKit consumes the right-button release while tracking a popup.
+    await act(async () => window.dispatchEvent(new Event(NATIVE_CANVAS_MENU_CLOSED_EVENT)));
+    expect(widget.hidden).toBe(false);
+    await canvasPointer(canvas, "pointerdown", { pointerId: 8 });
+    expect(widget.hidden).toBe(true);
+    await canvasPointer(canvas, "pointerup", { pointerId: 8 });
+    expect(widget.hidden).toBe(false); // No stale right pointer remains in the set.
   });
 
   it("acknowledges a long request immediately so the next draft remains editable", async () => {

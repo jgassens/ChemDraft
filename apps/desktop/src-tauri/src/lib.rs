@@ -1261,6 +1261,7 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             panel_window::observe_document_pointer_release(app);
+            file_warnings_window::observe_document(app)?;
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
             // messages that clear the report and notify the host of a panel's close control.

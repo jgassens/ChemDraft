@@ -92,7 +92,7 @@ describe("native file warnings", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  it("publishes updates after open and surfaces native failures without HTML fallback", async () => {
+  it("publishes updates after open and reports native failures to the presentation owner", async () => {
     const { snapshot } = fixture();
     const transport = { open: vi.fn().mockResolvedValue(undefined), publish: vi.fn().mockRejectedValue(new Error("native failure")), close: vi.fn().mockResolvedValue(undefined) };
     const error = vi.fn();
@@ -131,8 +131,8 @@ describe("warnings presentation source guards", () => {
   const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
   it("keeps desktop warning presentation native and the toggle command-backed", () => {
     const main = source("./MainWindow.tsx");
-    expect(main).toContain("!isDesktopRuntime() && openWarningsListShown && openWarnings");
-    expect(main).toContain("aria-controls={!isDesktopRuntime() && openWarningsListShown");
+    expect(main).toContain("useHtmlFileWarnings && openWarningsListShown && openWarnings");
+    expect(main).toContain("aria-controls={useHtmlFileWarnings && openWarningsListShown");
     expect(main).toContain("invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID)");
     expect(main).toContain("useNativeFileWarnings(openWarningsListShown, activeDocumentTabId");
     expect(source("./App.tsx")).toContain('get("window") === "fileWarnings"');

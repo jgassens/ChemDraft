@@ -1,4 +1,4 @@
-import { CanvasContextMenu } from "./CanvasContextMenu";
+import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
 import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor } from "./BracketLabelEditor";
@@ -1767,7 +1767,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.15.20-codex";
+const CURRENT_BUILD_STAMP = "11.10.16.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2202,6 +2202,7 @@ export function MainWindow({
     window.addEventListener("pointercancel", up, true);
     window.addEventListener("lostpointercapture", up, true);
     window.addEventListener("blur", clear);
+    window.addEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     return () => {
       releaseFocus();
       globalThis.document.removeEventListener("focusin", restoreOverlayFocus, true);
@@ -2214,6 +2215,7 @@ export function MainWindow({
       window.removeEventListener("pointercancel", up, true);
       window.removeEventListener("lostpointercapture", up, true);
       window.removeEventListener("blur", clear);
+      window.removeEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     };
   }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -6670,7 +6672,7 @@ export function MainWindow({
     setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
 
-  useNativeFileWarnings(openWarningsListShown, activeDocumentTabId, warningReports, document,
+  const useHtmlFileWarnings = useNativeFileWarnings(openWarningsListShown, activeDocumentTabId, warningReports, document,
     showOpenWarningTarget, () => setOpenWarningsListOpen(false), setStatus);
 
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
@@ -22890,7 +22892,7 @@ export function MainWindow({
                 data-open-warnings-button
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
-                aria-controls={!isDesktopRuntime() && openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                aria-controls={useHtmlFileWarnings && openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
@@ -22909,7 +22911,7 @@ export function MainWindow({
             Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
           </div>
         </div>
-        {!isDesktopRuntime() && openWarningsListShown && openWarnings ? (
+        {useHtmlFileWarnings && openWarningsListShown && openWarnings ? (
           <FileWarningsList
             reports={warningReports}
             document={document}

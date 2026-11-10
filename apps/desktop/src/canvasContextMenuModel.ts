@@ -42,7 +42,7 @@ export function buildObjectCanvasMenu(input: ObjectCanvasMenuInput): readonly Ca
     ...tableActions.filter(action => rowColumnIds.includes(action.id)).map(action => actionItem(action))
   ];
   if (align.length) items.push(submenu("table-align", "Align Column", "Align Column", align.map(action => actionItem(action,
-    ({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as Record<string, string>)[action.id.split(".").at(-1)!] ?? action.title))), separator);
+    ({ left: "Left", center: "Center", right: "Right", decimal: "Decimal" } as Record<string, string>)[action.id.split(".").at(-1)!] ?? action.title))), separator);
   items.push(...arrowActions.map(action => actionItem(action)));
   if (arrowActions.length) items.push(separator);
   if (layoutActions.length) {

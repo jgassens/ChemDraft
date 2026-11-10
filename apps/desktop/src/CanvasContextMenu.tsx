@@ -3,6 +3,8 @@ import type { CanvasMenuItem } from "./canvasContextMenuModel";
 import { popupNativeCanvasMenu } from "./nativeCanvasContextMenu";
 import { isDesktopRuntime } from "./window-manager";
 
+export const NATIVE_CANVAS_MENU_CLOSED_EVENT = "chemdraft:native-canvas-menu-closed";
+
 export interface CanvasContextMenuProps {
   items: readonly CanvasMenuItem[];
   position: { x: number; y: number };
@@ -27,6 +29,8 @@ export function CanvasContextMenu(props: CanvasContextMenuProps) {
     void Promise.resolve().then(async () => {
       if (!active) return;
       const result = await popupNativeCanvasMenu(props.items, props.position);
+      // Native tracking can consume the right-button release, even on cancellation.
+      window.dispatchEvent(new Event(NATIVE_CANVAS_MENU_CLOSED_EVENT));
       if (!active) return;
       if (!result) { setFallback(true); return; }
       if (!result.select(latest.current.onInvoke)) latest.current.onDismiss();

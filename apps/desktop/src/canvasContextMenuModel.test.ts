@@ -8,14 +8,14 @@ const action = (id: string, title: string, extra: Partial<CommandSpec> = {}): Co
 describe("canvas context-menu presentation model", () => {
   it("converts titles, separators, disabled reasons, checks and submenus without adding shortcuts", () => {
     const items = buildObjectCanvasMenu({ objectIndex: 1, objectCount: 4, targetKind: "bond",
-      tableActions: [action("table.row.insertAbove", "Insert Row Above"), action("table.column.align.center", "Align Centre")],
+      tableActions: [action("table.row.insertAbove", "Insert Row Above"), action("table.column.align.center", "Align Center")],
       layoutActions: [action("layout.arrange.row", "Arrange in a Row", { enabled: false, disabledReason: "Select two objects", shortcut: "CmdOrCtrl+R" }),
         action("layout.adjustArrangementSpacing", "Adjust spacing", { enabled: true })],
       bondStereoActions: [action("stereo.either", "Mark E/Z as unspecified", { enabled: false, disabledReason: "No double bond" })] });
     const native = toNativeCanvasMenu(items, "test");
     expect(native.items[0]).toMatchObject({ kind: "item", label: "Insert Row Above", enabled: true });
     expect(native.items[1]).toMatchObject({ kind: "submenu", label: "Align Column", items: [
-      { kind: "item", label: "Centre", enabled: true }
+      { kind: "item", label: "Center", enabled: true }
     ] });
     expect(native.items[2]).toEqual({ kind: "separator" });
     expect(native.items[3]).toMatchObject({ kind: "submenu", label: "Arrange", items: [

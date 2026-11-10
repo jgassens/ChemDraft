@@ -62,6 +62,20 @@ Canvas context menus (macOS and Windows): open the page and object menus with th
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
 
+Native canvas context menus (macOS and Windows):
+
+- Move a floating palette over the canvas, right-click a page and then an object beside it so the
+  popup overlaps the palette: the native menu and its submenus stay above the palette. Open Arrange,
+  Copy As and table alignment submenus; check enabled items and disabled items with their reasons.
+  Click a disabled item: no command runs. Choose an enabled edit: exactly one edit/Undo entry occurs.
+- Open again and cancel with Escape, then reopen and click outside. Both close without an edit;
+  canvas focus and drawing shortcuts return. With a plugin canvas prompt visible, right-click and
+  choose an item, then repeat and cancel: the prompt reappears after tracking ends, and a subsequent
+  canvas drag hides/shows it normally. Repeat mouse opens and keyboard activation rapidly.
+- On Windows, run `pnpm smoke:windows-menu-churn`; churn the main menu, context submenus, palettes,
+  flyouts and warnings together, then quit and relaunch. No startup/quit crash or duplicate action;
+  utility windows never gain a document menu, taskbar button or separate Alt-Tab entry.
+
 Selection nudging (macOS and Windows): select a molecule, an atom/bond fragment, text, arrow,
 graphic, and a mixed selection in turn. Arrow keys move by 1 document unit (one CSS pixel);
 Shift+arrow moves by 10, and Down increases document y. Check at several zoom levels and page edges.
@@ -716,6 +730,26 @@ molecule or atom with the Select tool; tool shortcuts work straight after any cl
 the list without cancelling a drag or leaving the eyedropper, and with the list closed does what it
 always did; File ▸ New or a cleanly opening file removes the count; and on Windows the list fits and
 scrolls in a small window at 125% and 150% display scale.
+
+Native file warnings (macOS and Windows):
+
+- Open either warning fixture above. Move a palette over the status button, click the warning count,
+  and verify the list appears above all palettes. Click Show on molecule and atom rows: the correct
+  target is selected and centered; missing/whole-file rows offer no invalid Show action. Scroll long
+  lists and repeat at mixed display scales. The warnings window cannot be dragged.
+- Close with ×; wait with it hidden, then reopen repeatedly. Repeat with keyboard focus on the
+  count and Enter/Space. Escape, outside clicks in the document or a palette, and switching apps
+  dismiss the list and clear the count button's expanded state. Reopen after each dismissal.
+- Open warnings and minimize the document (yellow button on macOS, taskbar/minimize on Windows):
+  no warning window remains visible. Restore the document: the transient stays dismissed, the count
+  button is collapsed, and clicking it opens the list again above palettes. Closing/hiding the
+  document also leaves no orphan warnings window.
+- Click inside warnings to give it keyboard focus; press Cmd+Z / Shift+Cmd+Z / Cmd+A on macOS or
+  Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+A on Windows. Undo, Redo and Select All affect the drawing
+  exactly once, return focus to the document and leave no stuck canvas pointer state. Repeat through
+  the native Edit menu on macOS; F5 and Cmd/Ctrl+R never reload the warnings webview.
+- On Windows, verify warnings have no taskbar button or Alt-Tab entry; repeatedly open/dismiss them
+  while using context menus and palettes, including `pnpm smoke:windows-menu-churn`.
 
 Status row: at the 900×640 minimum window, open a file with warnings under a long name; the status text ends
 in an ellipsis, "N warnings" stays whole and clickable, and the build stamp at the right never overlaps either,

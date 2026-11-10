@@ -35,8 +35,39 @@ pub(crate) struct Anchor {
     y: f64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) enum DocumentCommand {
+    #[serde(rename = "edit.undo")]
+    Undo,
+    #[serde(rename = "edit.redo")]
+    Redo,
+    #[serde(rename = "edit.selectAll")]
+    SelectAll,
+}
+impl DocumentCommand {
+    fn forwarded_id(&self) -> &'static str {
+        match self {
+            Self::Undo => "edit.undo:forceDocumentHistory",
+            Self::Redo => "edit.redo:forceDocumentHistory",
+            Self::SelectAll => "edit.selectAll:forceDocumentHistory",
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum Action {
+    Unavailable {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        revision: u32,
+        message: String,
+    },
+    Command {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        revision: u32,
+        #[serde(rename = "commandId")]
+        command_id: DocumentCommand,
+    },
     Close {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -75,6 +106,35 @@ static STATE: Mutex<State> = Mutex::new(State {
     session: None,
     host: None,
 });
+
+/// Other utilities are AppKit children and hide with their document. Warnings must keep their
+/// higher floating level, so observe the owner instead of adding a child (which resets that level).
+/// Like owner movement/close, minimization dismisses this transient and clears the owner's toggle.
+#[cfg(target_os = "macos")]
+pub(crate) fn observe_document<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    use objc2_app_kit::NSWindowWillMiniaturizeNotification;
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    use std::ptr::NonNull;
+    let main = super::main_ns_window(app).ok_or("Document window is unavailable")?;
+    let app = app.clone();
+    let callback = block2::RcBlock::new(move |_: NonNull<NSNotification>| dismiss(&app));
+    // Process lifetime, matching the document's app-hide observer. Main is never recreated.
+    std::mem::forget(unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowWillMiniaturizeNotification),
+            Some(main),
+            None,
+            &callback,
+        )
+    });
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn observe_document<R: Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
+    // HWND ownership hides warnings with the owner; its resize event dismisses the session.
+    Ok(())
+}
 
 fn authorize(label: &str, expected: &str) -> Result<(), String> {
     if label == expected {
@@ -343,11 +403,22 @@ fn accepts(snapshot: &Snapshot, action: &Action) -> bool {
             session_id,
             revision,
             ..
+        }
+        | Action::Command {
+            session_id,
+            revision,
+            ..
+        }
+        | Action::Unavailable {
+            session_id,
+            revision,
+            ..
         } => (session_id, revision),
     };
     session_id == &snapshot.session_id
         && match action {
             Action::Close { .. } => true,
+            Action::Command { .. } | Action::Unavailable { .. } => *revision == snapshot.revision,
             Action::Show {
                 report_index,
                 warning_index,
@@ -377,16 +448,24 @@ pub(crate) fn file_warnings_action(
         if !accepts(&session.snapshot, &action) {
             return Ok(());
         }
-        if !matches!(action, Action::Close { .. }) {
+        if matches!(action, Action::Show { .. } | Action::Unavailable { .. }) {
             return session.owner.send(action).map_err(|e| e.to_string());
         }
+    }
+    if let Action::Command { command_id, .. } = action {
+        let app = window.app_handle();
+        if !super::utility_windows_suspended() {
+            super::emit_command_to_main(app, command_id.forwarded_id())?;
+            super::focus_main_document_window_impl(app, super::MainWindowFocusMode::Force)?;
+        }
+        return Ok(());
     }
     dismiss(window.app_handle());
     Ok(())
 }
 
-pub(crate) fn dismiss<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let session = STATE
+fn dismiss_session(state: &Mutex<State>) -> bool {
+    let session = state
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .session
@@ -396,6 +475,14 @@ pub(crate) fn dismiss<R: Runtime>(app: &tauri::AppHandle<R>) {
             session_id: session.snapshot.session_id,
             revision: session.snapshot.revision,
         });
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn dismiss<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if dismiss_session(&STATE) {
         if let Some(window) = app.get_webview_window(LABEL) {
             let _ = window.hide();
         }
@@ -501,6 +588,61 @@ mod tests {
                 }],
             }],
         }
+    }
+    #[test]
+    fn owner_minimize_dismisses_once_and_restore_cannot_resurrect_a_transient() {
+        let deliveries = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let received = deliveries.clone();
+        let state = Mutex::new(State {
+            session: Some(Session {
+                snapshot: snapshot(),
+                owner: Channel::new(move |message| {
+                    received.lock().unwrap().push(format!("{message:?}"));
+                    Ok(())
+                }),
+                focus: false,
+                revealed: true,
+            }),
+            host: None,
+        });
+        assert!(dismiss_session(&state)); // WillMiniaturize hides and clears the document toggle.
+        assert!(state.lock().unwrap().session.is_none());
+        assert!(!dismiss_session(&state)); // Subsequent blur/resize/restore events are harmless.
+        let messages = deliveries.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("close"));
+        assert!(messages[0].contains("session-1"));
+
+        let source = include_str!("file_warnings_window.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(source.contains("Some(NSWindowWillMiniaturizeNotification)"));
+        assert!(source.contains("Some(main),"));
+        assert!(include_str!("lib.rs").contains("file_warnings_window::observe_document(app)?"));
+    }
+    #[test]
+    fn document_shortcuts_are_narrow_and_require_the_current_session_and_revision() {
+        for (command_id, forwarded) in [
+            ("edit.undo", "edit.undo:forceDocumentHistory"),
+            ("edit.redo", "edit.redo:forceDocumentHistory"),
+            ("edit.selectAll", "edit.selectAll:forceDocumentHistory"),
+        ] {
+            let command: DocumentCommand =
+                serde_json::from_value(serde_json::json!(command_id)).unwrap();
+            assert_eq!(command.forwarded_id(), forwarded);
+            let action = |session_id: &str, revision| Action::Command {
+                session_id: session_id.into(),
+                revision,
+                command_id: command.clone(),
+            };
+            assert!(accepts(&snapshot(), &action("session-1", 1)));
+            assert!(!accepts(&snapshot(), &action("old", 1)));
+            assert!(!accepts(&snapshot(), &action("session-1", 2)));
+        }
+        assert!(
+            serde_json::from_value::<DocumentCommand>(serde_json::json!("document.save")).is_err()
+        );
     }
     #[test]
     fn config_is_owned_only_on_windows_and_never_activates_on_show() {

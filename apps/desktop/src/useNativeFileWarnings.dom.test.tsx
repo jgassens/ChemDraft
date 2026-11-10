@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FileWarningsAction, FileWarningsSnapshot } from "./fileWarningsProtocol";
 import type { OpenWarningsReport } from "./openWarnings";
 import { useNativeFileWarnings } from "./useNativeFileWarnings";
+import { OpenWarningsList } from "./OpenWarningsList";
 
 const native = vi.hoisted(() => ({ desktop: true, invoke: vi.fn(async (_command: string, _args?: unknown) => {}) }));
 vi.mock("./window-manager", () => ({ isDesktopRuntime: () => native.desktop, currentWindowLogicalPosition: async () => ({ x: 100, y: 200 }) }));
@@ -16,13 +17,14 @@ const object = drawing.pages[0].objects[0]!;
 const reports: OpenWarningsReport[] = [{ displayName: "import.cdxml", sourceLabel: "CDXML", warnings: [{ code: "warning", message: "Preserved warning", sourceObjectId: object.id }] }];
 const show = vi.fn(), close = vi.fn(), error = vi.fn();
 function Harness({ shown = true, tabId = "first", document = drawing }) {
-  useNativeFileWarnings(shown, tabId, reports, document, show, close, error);
-  return null;
+  const fallback = useNativeFileWarnings(shown, tabId, reports, document, show, close, error);
+  return shown && fallback ? <OpenWarningsList report={reports[0]!} document={document} onShow={show} onClose={close} /> : null;
 }
 let root: Root, container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks(); native.desktop = true;
+  native.invoke.mockResolvedValue(undefined);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
@@ -64,4 +66,31 @@ it("does not create a native window for the browser fallback", async () => {
   native.desktop = false;
   await act(async () => root.render(<Harness />));
   expect(native.invoke).not.toHaveBeenCalled();
+  expect(container.querySelector("[data-open-warnings-list]")).not.toBeNull();
+});
+
+it.each(["refused", "unavailable", "publish", "reveal"])("keeps a usable HTML list after native warnings are %s", async failure => {
+  native.invoke.mockImplementation(async command => {
+    if (failure !== "reveal" && command === (failure === "publish" ? "file_warnings_publish" : "file_warnings_open")) throw new Error(failure);
+  });
+  await act(async () => root.render(<Harness />));
+  if (failure === "publish") await act(async () => root.render(<Harness document={{ ...drawing }} />));
+  if (failure === "reveal") {
+    const session = opening();
+    await act(async () => session.onAction.onmessage({ kind: "unavailable", sessionId: session.snapshot.sessionId,
+      revision: session.snapshot.revision, message: "reveal" }));
+  }
+  expect(container.querySelector("[data-open-warnings-list]")).not.toBeNull();
+  expect(container.textContent).toContain("Preserved warning");
+  expect(close).not.toHaveBeenCalled();
+  expect(error).toHaveBeenCalledWith(expect.stringContaining(failure));
+  expect(native.invoke).toHaveBeenCalledWith("file_warnings_close", expect.anything());
+  act(() => container.querySelector<HTMLButtonElement>("[data-open-warning-show]")!.click());
+  expect(show).toHaveBeenCalledWith({ objectId: object.id, atomIds: [], bondIds: [] }, expect.any(String));
+  act(() => container.querySelector<HTMLButtonElement>("[aria-label='Close the warnings list']")!.click());
+  expect(close).toHaveBeenCalledOnce();
+  await act(async () => root.render(<Harness shown={false} />));
+  native.invoke.mockResolvedValue(undefined);
+  await act(async () => root.render(<Harness />));
+  expect(container.querySelector("[data-open-warnings-list]")).toBeNull();
 });
