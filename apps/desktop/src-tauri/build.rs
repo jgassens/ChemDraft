@@ -18,6 +18,7 @@ fn main() {
             "assistant_mcp_respond",
             "assistant_mcp_status",
             "diagnose_download_host",
+            "plugin_starter_computer",
             "external_tool_status",
             "external_tool_install",
             "external_tool_cancel_install",
