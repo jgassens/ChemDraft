@@ -1,5 +1,5 @@
-import { elementSymbolForAtomicNumber, normalizeAtomIsotope, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
-import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { atomicNumberForElementSymbol, ChemDraftSyntheticStylePreset, elementSymbolForAtomicNumber, normalizeAtomIsotope, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import { bondedElementLabelMeaning, schemeSodiumHydroxideAbbreviation } from "@chemdraft/template-library";
 import type { CompatibilityConversionWarning } from "./index";
 import { cdxElementFromOrderedTree, type CdxElement } from "./cdxBinary";
 
@@ -295,6 +295,33 @@ export function restoreCdxmlAbbreviations(
     nodes.forEach(([node]) => nodeMembers.delete(node));
     nodeMembers.set(wrapper, members);
     members.forEach(id => displayIds.set(id, wrapperId));
+  }
+  // Scheme NaOH has explicit ion-pair semantics that a text-only node cannot carry. Apply this
+  // after source restoration too: an imported sodium atom may still have an old node snapshot.
+  for (const atom of molecule.atoms) {
+    if (atom.schemeAbbreviation !== "NaOH" || atom.element.trim() !== "NaOH" || atom.labelLiteral) continue;
+    const findNode = (node: CdxElement): CdxElement | undefined =>
+      node.name === "n" && node.attrs.id === atomIds.get(atom.id) ? node
+        : node.kids.map(findNode).find(child => child !== undefined);
+    const node = findNode(fragment);
+    if (!node || atom.formalCharge !== 0 || atom.isotope !== undefined || atom.markRadicals ||
+        molecule.bonds.some(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)) {
+      warnings.push({ code: "cdxml.scheme_abbreviation_not_expanded", sourceObjectId: molecule.id, atomIds: [atom.id],
+        message: `Scheme abbreviation NaOH on atom ${atom.id} in molecule ${molecule.id} cannot be written as its ion pair with its current annotations or bonds. The visible CDXML may re-import as a placeholder and lose its chemistry.` });
+      continue;
+    }
+    const definition = schemeSodiumHydroxideAbbreviation;
+    const bondLength = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+    const body = element("fragment", { id: nextId() }, definition.atoms.map(part => element("n", {
+      id: nextId(), Element: String(atomicNumberForElementSymbol(part.element)),
+      Charge: String(part.charge ?? 0), NumHydrogens: String(part.hydrogens),
+      p: `${atom.x + part.x * bondLength} ${atom.y + part.y * bondLength}`
+    })));
+    const { id, p, color } = node.attrs;
+    node.attrs = { id, p, NodeType: "Nickname", ...(color ? { color } : {}) };
+    node.kids = [element("t", {}, [element("s", {}, [], definition.label)]), body];
+    node.text = "";
+    restoredAtoms.add(atom.id);
   }
   return restoredAtoms;
 }
