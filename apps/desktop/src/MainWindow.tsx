@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.08.12.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10626,7 +10626,7 @@ export function MainWindow({
   }, []);
   const openExportDialog = useCallback(() => {
     const tabId = activeDocumentTabIdRef.current;
-    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current);
+    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current, fileStateRef.current.path);
     if (isDesktopRuntime()) {
       const coordinator = dialogCoordinatorRef.current;
       if (!coordinator) { setStatus("Export could not open: the dialog host is unavailable."); return; }
@@ -22525,10 +22525,11 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
 
 export function createDefaultExportDialogState(
   document: ChemDraftDocument,
-  destinationDirectory?: string
+  destinationDirectory?: string,
+  savedDocumentPath?: string
 ): ExportDialogState {
   const descriptor = getExportFormatDescriptor("pdf");
-  const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
+  const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id, savedDocumentPath);
   return {
     format: descriptor.id,
     filename,
@@ -32937,8 +32938,9 @@ function downloadBlob(filename: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function createExportFilename(document: ChemDraftDocument, extension: string): string {
-  const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
+function createExportFilename(document: ChemDraftDocument, extension: string, savedDocumentPath?: string): string {
+  const title = savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title;
+  const baseName = title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
   // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
   // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
   return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;

@@ -499,7 +499,8 @@ export function ExportForm({ state: ownerState, onChange: publish, onReady, ...p
   useEffect(() => { onReady?.(); }, [onReady]);
   return <ExportFormBody {...props} state={state} previewEnabled={previewEnabled}
     onPresentationChange={presentation => onChange({ ...state, presentation: { ...(state.presentation ?? defaultExportPresentation(props.frame?.page ?? { width: 800, height: 600 })), ...presentation }, ...(presentation.preset && presentation.preset !== "custom" ? { raster: { ...state.raster, background: "white", maxDimensionPx: 8192, jpegQuality: 90 } } : {}) })}
-    onFilenameChange={filename => onChange({ ...state, filename, destinationPath: undefined })}
+    onFilenameChange={filename => onChange({ ...state, filename,
+      destinationPath: exportPathWithFilename(state.destinationPath, filename) })}
     onFormatChange={format => {
       const visual = format === "svg" || format === "pdf" || rasterExportFormatForDialogFormat(format) !== undefined;
       // Hidden size fields must not leave a chemistry export trapped in an invalid draft.
@@ -519,12 +520,21 @@ export function updateExportDialogFormat(state: ExportDialogState, format: Expor
     ...state,
     format,
     filename,
-    destinationPath: undefined,
+    destinationPath: exportPathWithFilename(state.destinationPath, filename),
     raster: {
       ...state.raster,
       background: rasterFormat === "png" ? state.raster.background : "white"
     }
   };
+}
+
+function exportPathWithFilename(path: string | undefined, filename: string): string | undefined {
+  // This is only a picker hint; the document window checks the exact native grant before writing.
+  if (!path) return undefined;
+  // An invalid filename must not become part of the folder used by a later valid edit.
+  if (filename.includes("/") || filename.includes("\\")) return path;
+  const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return `${path.slice(0, separator + 1)}${filename}`;
 }
 
 export function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {

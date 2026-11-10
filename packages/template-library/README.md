@@ -49,8 +49,7 @@ peptide abbreviation for Cbz.
 
 Insert > Templates… opens the desktop's modeless, document-owned picker (the browser preview has
 an in-page fallback). It is also available in Customize Main Toolbar, with an original ring/grid
-glyph, and is not on the default toolbar. Search matches normalized substrings of names and
-synonyms, including Greek or spelled-out `beta`, `β-CD`, `crown`, `cucurbit[7]` and `pillar`.
+glyph, and is not on the default toolbar. Search matches normalized substrings of names, synonyms, and family headings, including Greek or spelled-out `beta`, `β-CD`, `crown`, `cucurbit[7]`, `pillar`, and `cyclophane`.
 Families follow this package's order; pillararenes sit beside their matching dimethoxy variants.
 Tiles show shared-renderer SVG drawings, with synonyms/formula in their accessible description.
 Arrow keys navigate; click, Enter or Space inserts and keeps the picker open. Escape closes it.

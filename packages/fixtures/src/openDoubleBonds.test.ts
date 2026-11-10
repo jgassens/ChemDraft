@@ -252,3 +252,49 @@ it("CLI reports explicit either double bonds as unspecified, preserving specifie
   expect(await perceiveDoubleBondStereo(read("e.v2000.mol"))).toEqual([{ bondIndex: 1, descriptor: "E" }]);
   expect(await perceiveDoubleBondStereo(read("z.v2000.mol"))).toEqual([{ bondIndex: 1, descriptor: "Z" }]);
 });
+
+// A fixed seed makes failures repeatable while changing graph order enough to expose
+// serializers that accidentally depend on the fixture's original atom/bond order.
+function shuffled<T>(values: readonly T[], seed: number): T[] {
+  const output = [...values];
+  let state = seed >>> 0;
+  for (let index = output.length - 1; index > 0; index--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const other = state % (index + 1);
+    [output[index], output[other]] = [output[other]!, output[index]!];
+  }
+  return output;
+}
+
+it.each(cases)("keeps $id identity when atom and bond order changes across native, CDXML, V2000 and V3000", entry => {
+  const source = deserializeDocument(read(`${entry.id}.json`));
+  const original = source.pages[0]!.objects[0] as MoleculeObject;
+  const expected = (({ canonical, formula, charge, atomCount, bondCount }) =>
+    ({ canonical, formula, charge, atomCount, bondCount }))(chemistry(molfile(original)));
+  for (const seed of [1, 7, 31]) {
+    const molecule = { ...original,
+      atoms: shuffled(original.atoms, seed),
+      bonds: shuffled(original.bonds, seed * 97)
+    };
+    const document = { ...source, pages: source.pages.map((page, index) => index === 0
+      ? { ...page, objects: [molecule] } : page) };
+    const nativeRoundTrip = deserializeDocument(serializeDocument(document));
+    const nativeMolecule = nativeRoundTrip.pages[0]!.objects[0] as MoleculeObject;
+    expect(nativeMolecule.atoms.map(atom => atom.id)).toEqual(molecule.atoms.map(atom => atom.id));
+    expect(nativeMolecule.bonds.map(bond => bond.id)).toEqual(molecule.bonds.map(bond => bond.id));
+    const cdxml = exportDocumentToCdxml(nativeRoundTrip);
+    const reopened = openChemDraftPayload(cdxml.contents);
+    expect(reopened.document, `${entry.id} seed ${seed} CDXML`).toBeDefined();
+    const restored = reopened.document!.pages[0]!.objects[0] as MoleculeObject;
+    expect(restored.atoms.map(atom => atom.id)).toEqual(molecule.atoms.map(atom => atom.id));
+    expect(restored.bonds.map(bond => bond.id)).toEqual(molecule.bonds.map(bond => bond.id));
+    for (const [format, contents] of [
+      ["V2000", molfile(restored)],
+      ["V3000", moleculeToMolfileV3000(restored, options).contents]
+    ] as const) {
+      const { canonical, formula, charge, atomCount, bondCount } = chemistry(contents);
+      expect({ canonical, formula, charge, atomCount, bondCount }, `${entry.id} seed ${seed} ${format}`)
+        .toEqual(expected);
+    }
+  }
+});
