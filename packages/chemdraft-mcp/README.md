@@ -5,13 +5,13 @@
 ## Register with Claude Code
 
 ```bash
-claude mcp add chemdraft -- pnpm -s --dir <path-to-chemdraw-checkout> chemdraft-mcp
+claude mcp add chemdraft -- pnpm -s --dir <path-to-your-ChemDraft-checkout> chemdraft-mcp
 ```
 
 For Claude Desktop, add this stanza to `claude_desktop_config.json`:
 
 ```json
-{"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<path-to-chemdraw-checkout>","chemdraft-mcp"]}}}
+{"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<path-to-your-ChemDraft-checkout>","chemdraft-mcp"]}}}
 ```
 
 ## Document style
