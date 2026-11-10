@@ -120,6 +120,7 @@ import {
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
+  importCdx,
   type ChemDraftOpenResult,
   type CompatibilityConversionWarning
 } from "@chemdraft/cdx-compat";
@@ -1433,6 +1434,8 @@ export function nativeBondStyleForToolCommand(commandId: string): NativeBondTool
       return "wedge";
     case "tool.hashedBond":
       return "hashed";
+    case "tool.wavyBond":
+      return "wavy";
     case "tool.dashedBond":
       return "dashed";
     case "tool.boldBond":
@@ -7444,6 +7447,7 @@ export function applyNativeBondDisplayStyleTarget(
   if (!bond) {
     return document;
   }
+  if (bondStyle === "wavy" && bond.order !== "single") return document;
   if (bond.display?.bondStyle === bondStyle) {
     return nativeBondDisplayStyleReverses(bond, bondStyle)
       ? applyPatch(
@@ -7481,12 +7485,12 @@ export function applyNativeBondDisplayStyleTarget(
 
 /**
  * Whether applying `bondStyle` to a bond already drawn that way reverses it rather than doing
- * nothing: a wedge or hashed wedge clicked again with its own tool swaps its narrow end to the
+ * nothing: a wedge, hashed wedge or wavy bond clicked again with its own tool swaps its stereo end to the
  * other atom. The narrow end marks the stereocentre, so this is a stereo edit the user asked for
  * by clicking, and its undo restores the bond exactly. Every other style is direction-free.
  */
 export function nativeBondDisplayStyleReverses(bond: MoleculeBond, bondStyle: NativeBondDisplayStyle): boolean {
-  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed");
+  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed" || bondStyle === "wavy");
 }
 
 /** The same bond drawn from its other end; a left/right double-bond side is mirrored to stay put. */
@@ -14565,6 +14569,7 @@ export function duplicateSelectedDocumentObjects(
 
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
+  remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId);
   const selectionIds = [
     ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
@@ -14834,9 +14839,64 @@ export function pasteSelectionClipboardPayload(
   const fallbackSelectionIds = selectedIds.length > 0
     ? selectedIds
     : [...idBySourceId.values()];
+  remapCopiedReactionReferences(document, patches, idBySourceId);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+/** A copied step refers to the copied drawables, including forward references and shared intermediates. */
+function remapCopiedReactionReferences(document: ChemDraftDocument, patches: DocumentPatch[], ids: ReadonlyMap<string, string>): void {
+  const remap = (references: readonly string[]) => references.flatMap(id => {
+    const copiedId = ids.get(id);
+    return copiedId === undefined ? [] : [copiedId];
+  });
+  const copiedSchemeKeys = new Map<string, string>();
+  const schemeKeys = new Set<string>();
+  for (const object of [
+    ...document.pages.flatMap(page => page.objects),
+    ...patches.flatMap(patch => patch.op === "addObject" ? [patch.object] : [])
+  ]) {
+    const key = object.type === "reaction" ? object.compatibility?.unknown.cdxmlSchemeKey : undefined;
+    if (typeof key === "string") schemeKeys.add(key);
+  }
+  for (const patch of patches) {
+    if (patch.op !== "addObject" || patch.object.type !== "reaction") continue;
+    const reaction = patch.object;
+    const source = reaction.compatibility?.unknown;
+    let compatibility = reaction.compatibility;
+    if (source && compatibility) {
+      const unknown = { ...source };
+      if (typeof source.cdxmlSchemeKey === "string") {
+        let key = copiedSchemeKeys.get(source.cdxmlSchemeKey);
+        if (key === undefined) {
+          key = `copied_scheme_${reaction.id}`;
+          const prefix = key;
+          let suffix = 1;
+          while (schemeKeys.has(key)) key = `${prefix}_${suffix++}`;
+          schemeKeys.add(key);
+          copiedSchemeKeys.set(source.cdxmlSchemeKey, key);
+        }
+        unknown.cdxmlSchemeKey = key;
+        delete unknown.cdxmlSchemeId;
+      }
+      const references = source.cdxmlStepReferences;
+      if (references && typeof references === "object" && !Array.isArray(references)) {
+        unknown.cdxmlStepReferences = Object.fromEntries(Object.entries(references).map(([attribute, value]) => [
+          attribute, Array.isArray(value) ? remap(value.filter((id): id is string => typeof id === "string")) : []
+        ]));
+      }
+      compatibility = { ...compatibility, unknown };
+    }
+    patch.object = {
+      ...reaction,
+      ...(compatibility === undefined ? {} : { compatibility }),
+      components: reaction.components.flatMap(component => remap([component.objectId]).map(objectId => ({ ...component, objectId }))),
+      conditionsTextObjectIds: remap(reaction.conditionsTextObjectIds),
+      ...(reaction.arrowObjectIds === undefined ? {} : { arrowObjectIds: remap(reaction.arrowObjectIds) }),
+      ...(reaction.plusObjectIds === undefined ? {} : { plusObjectIds: remap(reaction.plusObjectIds) })
+    };
+  }
 }
 
 export function rotateSelectedDocumentObjects90(document: ChemDraftDocument): ChemDraftDocument {
@@ -16065,6 +16125,7 @@ function buildNativeMoleculeEngineRelayout(
   const engineBondByPair = new Map(
     engineBonds.map((bond) => [atomPairKey(`${Math.min(bond.from, bond.to)}`, `${Math.max(bond.from, bond.to)}`), bond])
   );
+  const unknownStereoAtomIds = new Set(molecule.bonds.filter(bond => bond.display?.bondStyle === "wavy").map(bond => bond.fromAtomId));
   const baseBonds: MoleculeBond[] = molecule.bonds.map((bond) => {
     const fromIndex = atomIndexById.get(bond.fromAtomId);
     const toIndex = atomIndexById.get(bond.toAtomId);
@@ -16073,7 +16134,11 @@ function buildNativeMoleculeEngineRelayout(
         ? atomPairKey(`${Math.min(fromIndex, toIndex)}`, `${Math.max(fromIndex, toIndex)}`)
         : undefined;
     const engineBond = pairKey !== undefined ? engineBondByPair.get(pairKey) : undefined;
-    const wedge = engineBond?.wedge ?? null;
+    const proposedStereoAtomId = engineBond && molecule.atoms[engineBond.from]?.id;
+    // An explicit unknown centre and its directed marker survive every depictor, even one
+    // that proposes a new wedge from the same centre on the new coordinates.
+    const wedge = bond.display?.bondStyle === "wavy" ? "wavy"
+      : proposedStereoAtomId && unknownStereoAtomIds.has(proposedStereoAtomId) ? null : engineBond?.wedge ?? null;
     const {
       bondStyle: previousStyle,
       depthWeight: _depthWeight,
@@ -16088,8 +16153,8 @@ function buildNativeMoleculeEngineRelayout(
     // A wedge/hash is narrow at `from`. OCL may move the stereo marker to a different adjacent bond
     // and may orient that bond opposite to ChemDraft's pre-existing endpoint order. Preserve the
     // engine's directed narrow end; an unordered-pair-only transfer can turn R/S into unspecified.
-    const engineFromAtomId = wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
-    const engineToAtomId = wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
+    const engineFromAtomId = previousStyle === "wavy" ? bond.fromAtomId : wedge && engineBond ? molecule.atoms[engineBond.from]?.id : undefined;
+    const engineToAtomId = previousStyle === "wavy" ? bond.toAtomId : wedge && engineBond ? molecule.atoms[engineBond.to]?.id : undefined;
     const directedBond = engineFromAtomId && engineToAtomId
       ? { ...bond, fromAtomId: engineFromAtomId, toAtomId: engineToAtomId }
       : bond;
@@ -18072,6 +18137,7 @@ function relocateRepeatedStereoMarkers(
 
       for (const candidate of source) {
         if (candidate.order !== "single") continue;
+        if (candidate.display?.bondStyle === "wavy") continue;
         const neighborId = candidate.fromAtomId === centerId
           ? candidate.toAtomId
           : candidate.toAtomId === centerId
@@ -18229,6 +18295,7 @@ function relocateRepeatedStereoMarkers(
 
     for (const candidate of depthAligned) {
       if (candidate.order !== "single") continue;
+      if (candidate.display?.bondStyle === "wavy") continue;
       const neighborId = candidate.fromAtomId === centerId
         ? candidate.toAtomId
         : candidate.toAtomId === centerId
@@ -18571,6 +18638,20 @@ export function flattenNativeMolecule3d(
     };
   }
   mark("flatten.reconcile-stereo");
+
+  // Explicit unknown intent belongs to the wave's original directed bond, even when
+  // the reader cannot perceive that atom as stereogenic. Never lose or redirect it.
+  const committedBondById = new Map(committedBonds.map(bond => [bond.id, bond]));
+  const lostWaves = molecule.bonds.filter(bond => {
+    if (bond.display?.bondStyle !== "wavy") return false;
+    const actual = committedBondById.get(bond.id);
+    return actual?.display?.bondStyle !== "wavy" || actual.order !== "single" ||
+      actual.fromAtomId !== bond.fromAtomId || actual.toAtomId !== bond.toAtomId;
+  });
+  if (lostWaves.length) return {
+    status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+    refusalReasons: [`flatten would lose or redirect explicit unknown stereo at ${lostWaves.length} bond(s); re-orient and try again`]
+  };
 
   const stagedMolecule: MoleculeObject = {
     ...molecule,
@@ -19313,8 +19394,8 @@ export function exportPhase4Cdxml(
  * bond side (an imported CDXML, a file from before the record existed) gets the side its drawing
  * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
  */
-export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  const result = openChemDraftPayload(contents);
+export function openNativeDocument(contents: string | Uint8Array): ChemDraftOpenResult {
+  const result = typeof contents === "string" ? openChemDraftPayload(contents) : importCdx(contents);
   const { conflict } = result;
   return {
     ...result,
@@ -20586,10 +20667,11 @@ function nativeBondWithOrderAndDisplay(
   bond: MoleculeBond,
   order: MoleculeBond["order"]
 ): MoleculeBond {
-  const bondStyle = bond.display?.bondStyle;
+  const bondStyle = bond.display?.bondStyle === "wavy" && order !== "single" ? undefined : bond.display?.bondStyle;
   if (order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
     const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    if (restDisplay.bondStyle === "wavy") delete restDisplay.bondStyle;
     const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,

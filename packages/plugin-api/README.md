@@ -4,6 +4,10 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.23 adds bondStyle 'wavy' (single-bond either stereo), exposed through the public
+`MoleculeBond` / `MoleculeBondDisplay` types. Set `display.bondStyle: "wavy"` only on a single bond;
+its `fromAtomId` is the explicitly unknown stereocentre. Preserve its direction when copying.
+
 API 0.1.19 bounds panel reports with `PluginPanelReportLimits`: finite numbers, bounded strings,
 collections and aggregate counts, and at most 128 MiB of UTF-8 JSON. Structure atoms/bonds and
 spectrum peaks are capped per figure; their combined size is bounded by the report envelope.

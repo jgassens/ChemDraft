@@ -244,7 +244,8 @@ describe("desktop toolset mapping", () => {
       "tool.wedgeBond",
       "tool.hashedBond",
       "tool.dashedBond",
-      "tool.boldBond"
+      "tool.boldBond",
+      "tool.wavyBond"
     ]);
     const wedge = item?.submenu?.items.find((command) => command.id === "tool.wedgeBond");
     expect(wedge).toMatchObject({

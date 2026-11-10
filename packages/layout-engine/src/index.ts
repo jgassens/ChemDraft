@@ -1598,7 +1598,8 @@ function crossingClearancePx(
   }
 
   const frontFootprint = nativeBondFootprintPx(front.bond, front.drawingStyle);
-  const backStroke = nativeBondStrokeWidth(back.bond, back.drawingStyle);
+  const backStroke = nativeBondDisplayStyle(back.bond) === "wavy"
+    ? nativeBondFootprintPx(back.bond, back.drawingStyle) : nativeBondStrokeWidth(back.bond, back.drawingStyle);
   const angleFactor = Math.max(minimumCrossingAngleSin, Math.abs(angleSin));
   return clamp(
     (frontFootprint + backStroke + back.drawingStyle.bondOverlapClearancePx * 0.75) / angleFactor,
@@ -1611,6 +1612,9 @@ function nativeBondFootprintPx(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
   const bondStyle = nativeBondDisplayStyle(bond);
   if (bondStyle === "wedge" || bondStyle === "hashed") {
     return nativeWedgeWidth(drawingStyle);
+  }
+  if (bondStyle === "wavy") {
+    return nativeWavyBondAmplitude(drawingStyle, drawingStyle.bondLengthPx) * 2 + nativeBondStrokeWidth(bond, drawingStyle);
   }
   const gap = nativeMultipleBondGapPx(drawingStyle);
   if (bond.order === "triple") {
@@ -1870,6 +1874,8 @@ function planDocumentObjectSvg(
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     case "group":
+    case "reaction":
+      // Containers reference the page's drawables; painting them adds geometry absent from the source.
       return undefined;
     default:
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
@@ -2912,6 +2918,14 @@ function moleculeBondEffectSourceFragments(
   resolution: NativeBondOrderResolution
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
+      elementFragment("path", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+        d, fill: "none", stroke: "#000000", "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+        "stroke-linecap": drawingStyle.bondLineCap
+      })
+    );
+  }
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
@@ -3024,6 +3038,9 @@ function moleculeBondSketchPathParts(
   resolution: NativeBondOrderResolution
 ): MoleculeSketchPathPart[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d) => ({ d }));
+  }
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment) =>
@@ -3226,6 +3243,17 @@ function nativeBondSegmentFragments(
     "data-double-bond-side": segment.doubleBondSide
   };
   const stroke = nativeMoleculeBondColor(object, segment.bond, drawingStyle);
+
+  if (bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
+      elementFragment("path", `bond-${object.id}-${segment.key}-${index}`, {
+        ...commonAttrs, d, fill: "none", stroke,
+        "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+        "stroke-linecap": drawingStyle.bondLineCap
+      })
+    );
+  }
 
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
@@ -5496,7 +5524,7 @@ function joinCenteredDoubleBondSegments(
       const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
       if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
         const style = nativeBondDisplayStyle(bond);
-        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed";
+        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed" || style === "wavy";
       })) {
         continue;
       }
@@ -6654,6 +6682,51 @@ function chargeLabelSuffix(charge: number): string {
 
 function nativeBondDisplayStyle(bond: CoreMoleculeBond): BondDisplayStyle | undefined {
   return bond.display?.bondStyle;
+}
+
+function nativeWavyBondAmplitude(drawingStyle: NativeDrawingStyle, length: number): number {
+  return Math.min(drawingStyle.bondStrokeWidthPx * 1.6, drawingStyle.bondLengthPx * 0.075, length * 0.12);
+}
+
+/** Smooth quarter-wave Hermite cubics on the label-trimmed bond axis. Crossing gaps keep the
+ * original phase and taper, so all normal/effect/sketch consumers trace exactly the same ink.
+ * The smaller amplitude starts at fromAtomId, the explicitly unknown stereo end. */
+function nativeWavyBondPaths(
+  segment: PageBondLineSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[]
+): string[] {
+  const geometry = nativeSegmentVectorGeometry(segment);
+  if (!geometry) return [];
+  const { length, unit, normal } = geometry;
+  const amplitude = nativeWavyBondAmplitude(drawingStyle, length);
+  const cycles = clamp(Math.round(length / Math.max(drawingStyle.bondLengthPx / 4, drawingStyle.bondStrokeWidthPx * 5)), 1, 128);
+  const frequency = 2 * Math.PI * cycles;
+  const point = (t: number): LayoutPoint => {
+    const offset = amplitude * (0.4 + 0.6 * t) * Math.sin(frequency * t);
+    return { x: segment.x1 + unit.x * length * t + normal.x * offset,
+      y: segment.y1 + unit.y * length * t + normal.y * offset };
+  };
+  const tangent = (t: number): LayoutPoint => {
+    const slope = amplitude * (0.6 * Math.sin(frequency * t) + (0.4 + 0.6 * t) * frequency * Math.cos(frequency * t));
+    return { x: unit.x * length + normal.x * slope, y: unit.y * length + normal.y * slope };
+  };
+  const xy = (p: LayoutPoint) => `${p.x} ${p.y}`;
+  return splitSegmentByCrossingGaps(segment, crossingGaps).map((visible) => {
+    const parameter = (x: number, y: number) => clamp(((x - segment.x1) * unit.x + (y - segment.y1) * unit.y) / length, 0, 1);
+    const start = parameter(visible.x1, visible.y1);
+    const end = parameter(visible.x2, visible.y2);
+    let d = `M ${xy(point(start))}`;
+    let t = start;
+    while (t < end - 1e-10) {
+      const next = Math.min(end, (Math.floor(t * cycles * 4 + 1e-8) + 1) / (cycles * 4));
+      const dt = (next - t) / 3;
+      const a = point(t), b = point(next), da = tangent(t), db = tangent(next);
+      d += ` C ${xy({ x: a.x + da.x * dt, y: a.y + da.y * dt })} ${xy({ x: b.x - db.x * dt, y: b.y - db.y * dt })} ${xy(b)}`;
+      t = next;
+    }
+    return d;
+  });
 }
 
 function nativeBondStrokeWidth(bond: CoreMoleculeBond, drawingStyle: NativeDrawingStyle): number {

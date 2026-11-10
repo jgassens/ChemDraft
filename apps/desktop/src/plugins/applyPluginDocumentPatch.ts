@@ -143,7 +143,8 @@ function referencesExistingObject(object: DocumentObject, existingIds: ReadonlyS
       break;
     case "electron-mark": references.push(object.anchor.objectId); break;
     case "reaction":
-      references.push(...object.components.map(component => component.objectId), ...object.conditionsTextObjectIds);
+      references.push(...object.components.map(component => component.objectId), ...object.conditionsTextObjectIds,
+        ...(object.arrowObjectIds ?? []), ...(object.plusObjectIds ?? []));
       break;
     case "bracket": references.push(...object.containedObjectIds); break;
     case "group": references.push(...object.childObjectIds); break;
@@ -310,6 +311,8 @@ function remapObjectReferences(object: Partial<DocumentObject>, remap: (id: stri
   if ("rGroups" in next && next.rGroups) next.rGroups = next.rGroups.map(attachments);
   if ("components" in next && next.components) next.components = next.components.map((c) => ({ ...c, objectId: remap(c.objectId) }));
   if ("conditionsTextObjectIds" in next && next.conditionsTextObjectIds) next.conditionsTextObjectIds = next.conditionsTextObjectIds.map(remap);
+  if ("arrowObjectIds" in next && next.arrowObjectIds) next.arrowObjectIds = next.arrowObjectIds.map(remap);
+  if ("plusObjectIds" in next && next.plusObjectIds) next.plusObjectIds = next.plusObjectIds.map(remap);
   if ("containedObjectIds" in next && next.containedObjectIds) next.containedObjectIds = next.containedObjectIds.map(remap);
   if ("childObjectIds" in next && next.childObjectIds) next.childObjectIds = next.childObjectIds.map(remap);
   if ("targetObjectIds" in next && next.targetObjectIds) next.targetObjectIds = next.targetObjectIds.map(remap);

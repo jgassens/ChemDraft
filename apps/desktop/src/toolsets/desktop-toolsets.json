@@ -181,6 +181,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"
@@ -1931,6 +1936,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"

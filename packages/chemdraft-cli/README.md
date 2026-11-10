@@ -132,7 +132,7 @@ and no H objects. This command does not force hydrogens into the depiction.
 
 Render a styled native JSON document or a desktop `.chemdraft` envelope through the same native
 loader and SVG exporter as the app. It supports ring interiors, ring letters supplied as text
-objects, bold/hashed/wedge bond displays, per-bond/per-atom style maps, sketch visual effects,
+objects, bold/hashed/wedge/wavy bond displays, per-bond/per-atom style maps, sketch visual effects,
 text, and art objects to the extent supported by the existing exporter.
 
 ~~~bash

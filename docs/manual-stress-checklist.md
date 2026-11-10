@@ -1,5 +1,10 @@
 # Manual stress checklist
 
+- Wavy bond: choose it from the bond flyout and Customize gallery; draw, convert a single bond,
+  click again to reverse its unknown stereo end, and convert back to wedge/plain. Each edit is one
+  Undo/Redo step. Check label clearance and canvas/SVG/PDF/PNG parity, no R/S at the wave's `from`
+  atom, SMILES without `@` there, MOL V2000 stereo 4 and V3000 CFG=2, on macOS and Windows.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -394,9 +399,22 @@ updater — an older signed build offered the newer one by the launch check and 
 Updates…, the document saved before the passive installer runs and restored after it relaunches, and
 a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`); an update
 accepted while autosave is off (the last session unreadable) refusing to install over unsaved work; and
-opening from Explorer a `.cdx` (the app says it is a ChemDraw binary, including at a cold start that
+opening from Explorer a `.cdx` (binary import, including at a cold start that
 then restores the last session), a UTF-16 `.cdxml`, and a CDXML file whose molecules sit inside `<group>`
 elements (they open grouped).
+
+Binary CDX file IO, on **macOS and Windows**:
+
+- Open a `.cdx` through File > Open, shell Open With (cold and warm start), and drag/drop. Repeat
+  with CDX renamed `.cdxml` and `.data`: header detection must preserve the binary bytes. Open
+  UTF-16 CDXML and a `.chemdraft` beside it to check the existing text path.
+- Save As `.cdx`, reopen, edit and Save again, then restart with that saved tab and Save. Verify
+  native objects, styles, atom/bond counts, isotopes, charge, stereo and coordinates survive;
+  cancelled Save As leaves the document dirty. Check the normal warning list for unsupported data.
+- Export CDX and reopen it: verify the supported visible drawing and chemistry with compatibility
+  warnings. Export must omit native metadata. A truncated CDX gives a specific import failure.
+- On macOS, confirm CDX is an Alternate handler. On Windows, install the CI-built installer and
+  confirm neither `.cdx` nor `.cdxml` is associated; `.chemdraft` is the only registered extension.
 
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a

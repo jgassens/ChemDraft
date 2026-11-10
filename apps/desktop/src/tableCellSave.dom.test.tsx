@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deserializeDocument, type ChemDraftDocument, type TableObject } from "@chemdraft/chem-core";
-import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import { importCdx, openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { planTableLayout } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -20,7 +20,9 @@ const native = vi.hoisted(() => ({
   loadSession: vi.fn<() => Promise<unknown>>(),
   open: undefined as undefined | ((payload: { path: string; displayName: string; contents: string }) => void),
   saveSession: vi.fn<(value: DocumentSessionEnvelope) => Promise<void>>(),
+  savePath: vi.fn<() => Promise<string>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
+  writeBytes: vi.fn<(path: string, bytes: Uint8Array) => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
   promptQuit: undefined as undefined | ((id: number) => Promise<void>),
   quit: vi.fn()
@@ -58,9 +60,9 @@ vi.mock("./window-manager/tauriEvents", async original => ({
     return () => { native.open = undefined; };
   }
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ save: async () => "/tmp/table.chemdraft" }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ save: native.savePath }));
 vi.mock("@tauri-apps/plugin-fs", async original => ({
-  ...await original<typeof import("@tauri-apps/plugin-fs")>(), writeTextFile: native.writeFile
+  ...await original<typeof import("@tauri-apps/plugin-fs")>(), writeTextFile: native.writeFile, writeFile: native.writeBytes
 }));
 vi.mock("./clipboard", async original => ({
   ...await original<typeof import("./clipboard")>(),
@@ -133,6 +135,7 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     restorePrompt = setNativePromptProvider(prompt => new Promise(resolve => { pendingPrompt = { prompt, resolve }; }));
     saveAskToSaveBeforeQuit(true);
     native.saveSession.mockResolvedValue(); native.writeFile.mockResolvedValue();
+    native.savePath.mockResolvedValue("/tmp/table.chemdraft"); native.writeBytes.mockResolvedValue();
     native.loadSession.mockResolvedValue(undefined);
     vi.mocked(writeClipboardTextItems).mockResolvedValue(true);
     vi.mocked(writeClipboardImage).mockResolvedValue(true);
@@ -448,6 +451,33 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
       await act(async () => vi.advanceTimersByTimeAsync(DOCUMENT_SESSION_SAVE_DEBOUNCE_MS + 100));
       expect(value(persistedTable(native.saveSession.mock.calls.at(-1)![0].contents), target).text).toBe("Hello again!");
     });
+  });
+  it.each(["save", "quit"] as const)("writes the open table draft as CDX bytes on %s", async route => {
+    native.savePath.mockResolvedValueOnce("/tmp/table.cdx");
+    await command("document.saveAs");
+    native.writeBytes.mockClear(); native.writeFile.mockClear();
+    const original = value(currentTable(), "cell").text;
+    await open("cell", "Draft saved as binary");
+    if (route === "quit") {
+      await act(async () => { await native.promptQuit!(1); });
+      expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+      await act(async () => { pendingPrompt!.resolve("save"); });
+      expect(native.quit).toHaveBeenCalled();
+    } else {
+      const textarea = editor(); textarea.setSelectionRange(3, 3);
+      await command("document.save");
+      expect(editor()).toBe(textarea); expect(document.activeElement).toBe(textarea);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 3]);
+      expect(value(currentTable(), "cell").text).toBe(original);
+      expect(snapshot().file.dirty).toBe(false);
+    }
+    expect(native.writeFile).not.toHaveBeenCalled();
+    expect(native.writeBytes).toHaveBeenCalledTimes(1);
+    const [path, bytes] = native.writeBytes.mock.calls[0];
+    expect(path).toBe("/tmp/table.cdx");
+    const reopened = importCdx(bytes);
+    expect(reopened.source).toBe("native-payload");
+    expect(value(reopened.document!.pages[0].objects[0] as TableObject, "cell").text).toBe("Draft saved as binary");
   });
   it("does not mark newer typing clean when an earlier save finishes", async () => {
     await open("cell");
