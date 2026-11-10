@@ -129,7 +129,7 @@ export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
 
 /** Native → the existing CDXML writer → binary CDX. No separate chemistry conversion. */
 export function exportDocumentToCdx(document: ChemDraftDocument, options: CdxExportOptions = {}): CdxExportResult {
-  const cdxml = exportDocumentToCdxml(document, options);
+  const cdxml = exportCdxml(document, options, options.embedNativePayload === true, "cdx");
   const warnings = [...cdxml.warnings];
   const root = cdxElementFromOrderedTree(parseCdxml(cdxml.contents));
   const tags: [string, string][] = [];
@@ -280,6 +280,13 @@ interface VisibleExportContext {
   crossingFrontKeysByRefKey: Map<string, { front: number; back: number }>;
 }
 
+interface UnknownObjectExportDiagnostics {
+  embedNativePayload: boolean;
+  format: "cdxml" | "cdx";
+  droppedOriginalIds: string[];
+  hasDroppedNativeObjects: boolean;
+}
+
 interface CdxmlColorTable {
   colorByIndex: Map<number, string>;
 }
@@ -308,6 +315,16 @@ type CdxmlImportTransform = "none" | "transpose-legacy-v1";
 export function exportDocumentToCdxml(
   document: ChemDraftDocument,
   options: CdxmlExportOptions = {}
+): CdxmlExportResult {
+  return exportCdxml(document, options, true);
+}
+
+// CDX reuses the CDXML envelope, but warnings must describe the final file's payload choice.
+function exportCdxml(
+  document: ChemDraftDocument,
+  options: CdxmlExportOptions,
+  embedNativePayload: boolean,
+  format: "cdxml" | "cdx" = "cdxml"
 ): CdxmlExportResult {
   // A document the patch engine produced is validated and normalized already; re-parsing it cost a
   // full schema pass over every object on each save, and autosave runs after every pause in editing.
@@ -352,8 +369,19 @@ export function exportDocumentToCdxml(
   }
   const reactionAllocator = createIdAllocator(0, reactionIds);
   for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
+  const unknownObjects: UnknownObjectExportDiagnostics = { embedNativePayload, format, droppedOriginalIds: [], hasDroppedNativeObjects: false };
   const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, fonts, curveColors,
-    hasReactions ? reactionAllocator : createIdAllocator(pageIndex)));
+    hasReactions ? reactionAllocator : createIdAllocator(pageIndex), unknownObjects));
+  const droppedIds = unknownObjects.droppedOriginalIds;
+  if (droppedIds.length) {
+    const uniqueIds = [...new Set(droppedIds)];
+    const idList = uniqueIds.slice(0, 20).join(", ")
+      + (uniqueIds.length > 20 ? ` … and ${uniqueIds.length - 20} more` : "");
+    const description = unknownObjects.hasDroppedNativeObjects ? "" : "unrecognised ";
+    const origin = unknownObjects.hasDroppedNativeObjects ? "" : " from the original file";
+    warnings.push(warning("cdxml.unknown_objects_not_saved",
+      `${droppedIds.length} ${description}${droppedIds.length === 1 ? "object" : "objects"}${origin} ${droppedIds.length === 1 ? "was" : "were"} not saved (ids ${idList}).`));
+  }
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
   const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
@@ -702,7 +730,7 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator, unknownObjects: UnknownObjectExportDiagnostics): string {
   const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(object => object.type === "reaction");
@@ -726,7 +754,7 @@ function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityCon
   const emit = (object: DocumentObject): string => {
     if (emitted.has(object.id)) return "";
     emitted.add(object.id);
-    if (object.type !== "group") return exportVisibleObject(object, context, allocator, warnings, objectsById, fonts);
+    if (object.type !== "group") return exportVisibleObject(object, context, allocator, warnings, objectsById, fonts, unknownObjects);
     const attributes = preservedCurveAttributes(object.compatibility?.unknown.attributes);
     attributes.id = idFor(context.ids, object.id, allocator);
     const children = object.childObjectIds.flatMap(id => {
@@ -980,7 +1008,8 @@ function exportVisibleObject(
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
   objectsById: ReadonlyMap<string, DocumentObject>,
-  fonts: readonly string[]
+  fonts: readonly string[],
+  unknownObjects: UnknownObjectExportDiagnostics
 ): string {
   if (object.type === "unknown-compatibility-object" && object.sourceObjectType === "curve") {
     const sourceAttributes = object.compatibility?.unknown.cdxmlCurveAttributes;
@@ -1012,9 +1041,24 @@ function exportVisibleObject(
     return exportGraphicObject(object, context.ids, allocator, warnings, context.curveColors);
   }
   if (object.type === "bracket") {
+    const binary = unknownObjects.format === "cdx";
+    if (binary) {
+      warnings.push({
+        code: "cdxml.bracket_payload_only",
+        message: `Native ${object.bracketKind} bracket object ${object.compatibility?.originalId ?? object.id} was not saved in this CDX file; ${unknownObjects.embedNativePayload
+          ? "it is kept in the embedded ChemDraft data."
+          : "this file has no embedded ChemDraft data."}`,
+        sourceObjectId: object.id
+      });
+      if (!unknownObjects.embedNativePayload) {
+        unknownObjects.droppedOriginalIds.push(object.compatibility?.originalId ?? object.id);
+        unknownObjects.hasDroppedNativeObjects = true;
+      }
+      return "";
+    }
     warnings.push({
       code: "cdxml.bracket_payload_only",
-      message: `Native ${object.bracketKind} brackets have no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `Native ${object.bracketKind} bracket object ${object.compatibility?.originalId ?? object.id} has no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: object.id
     });
     return exportGraphicObject({
@@ -1037,16 +1081,41 @@ function exportVisibleObject(
   if (object.type === "mechanism-arrow" || object.type === "electron-mark") {
     warnings.push({
       code: "cdxml.mechanism_payload_only",
-      message: "Editable mechanism annotations remain in the ChemDraft payload until CDXML mapping is implemented.",
+      message: `Editable ${object.type} object ${object.compatibility?.originalId ?? object.id} ${unknownObjects.embedNativePayload
+        ? `remains in the embedded ChemDraft payload until ${unknownObjects.format === "cdx" ? "CDX" : "CDXML"} mapping is implemented.`
+        : "was not saved: this file has no embedded ChemDraft data."}`,
       sourceObjectId: object.id
     });
+    if (!unknownObjects.embedNativePayload) {
+      unknownObjects.droppedOriginalIds.push(object.compatibility?.originalId ?? object.id);
+      unknownObjects.hasDroppedNativeObjects = true;
+    }
+    return "";
+  }
+  if (object.type === "unknown-compatibility-object") {
+    const originalId = object.compatibility?.originalId ?? object.id;
+    const outcome = unknownObjects.embedNativePayload
+      ? "is kept in the embedded ChemDraft data but is not drawn in this file."
+      : "was not saved: this file has no embedded ChemDraft data.";
+    warnings.push({
+      code: "cdxml.object_export_unsupported",
+      message: `Unrecognised <${object.sourceObjectType}> object ${originalId} from the original file ${outcome}`,
+      sourceObjectId: object.id
+    });
+    if (!unknownObjects.embedNativePayload) unknownObjects.droppedOriginalIds.push(originalId);
     return "";
   }
   warnings.push({
     code: "cdxml.object_export_unsupported",
-    message: `Object type "${object.type}" remains available through the embedded ChemDraft payload but is not yet visible CDXML.`,
+    message: `Object ${object.compatibility?.originalId ?? object.id} of type "${object.type}" ${unknownObjects.embedNativePayload
+      ? `remains available through the embedded ChemDraft payload but is not yet visible ${unknownObjects.format === "cdx" ? "CDX" : "CDXML"}.`
+      : "was not saved: this file has no embedded ChemDraft data."}`,
     sourceObjectId: object.id
   });
+  if (!unknownObjects.embedNativePayload) {
+    unknownObjects.droppedOriginalIds.push(object.compatibility?.originalId ?? object.id);
+    unknownObjects.hasDroppedNativeObjects = true;
+  }
   return "";
 }
 

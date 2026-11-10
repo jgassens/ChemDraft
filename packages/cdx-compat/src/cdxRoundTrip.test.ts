@@ -118,7 +118,7 @@ describe("chemical and drawing round trips", () => {
     });
   }
 
-  it("preserves crossing bonds and warns about payload-only unknown objects", () => {
+  it("preserves crossing bonds and warns about omitted unknown objects", () => {
     const original = requireDocument(openChemDraftPayload(cdxmlFixtures["crossing-bonds.cdxml"]));
     const exported = exportDocumentToCdx(original);
     expect(exported.warnings.some((w) => w.code === "cdxml.object_export_unsupported")).toBe(true);
