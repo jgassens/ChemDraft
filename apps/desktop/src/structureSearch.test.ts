@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
+import { applySingleBondToolAtNativeAtom, createPhase4Document, insertNativeBracket,
+  insertNativeSingleBondMolecule } from "./documentWorkflow";
+import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { allShellCommands } from "./commands";
 import { buildAppMenuModel, flattenAppMenuCommands, structureSearchMenuItems } from "./appMenu";
 import { nativePromptButtons } from "./nativePrompt";
@@ -12,6 +14,11 @@ import { loadStructureSearchEnabled, saveStructureSearchEnabled, STRUCTURE_SEARC
   STRUCTURE_SEARCH_STORAGE_KEY } from "./structureSearchSettings";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined), isTauri: vi.fn(() => true) }));
+// Exercise the real clipboard/SMILES pipeline with its native writer, without loading WASM.
+vi.mock("./moleculeSmiles", async importOriginal => ({
+  ...await importOriginal<typeof import("./moleculeSmiles")>(),
+  loadStructureIdentifiers: async () => undefined
+}));
 
 let storage: MemoryStorage;
 beforeEach(() => {
@@ -24,6 +31,13 @@ afterEach(() => vi.unstubAllGlobals());
 
 function drawing() {
   return insertNativeSingleBondMolecule(createPhase4Document("Search test"), { x: 300, y: 300 });
+}
+function propane(source = drawing()) {
+  const molecule = source.pages[0]!.objects.filter(object => object.type === "molecule")
+    .find(object => source.selection.objectIds.includes(object.id))!;
+  return applySingleBondToolAtNativeAtom(source, {
+    objectId: molecule.id, kind: "atom", atomId: molecule.atoms[1]!.id, distanceToPointer: 0
+  });
 }
 function setup(answer = "continue") {
   let time = 1000;
@@ -70,6 +84,151 @@ describe("online structure search", () => {
     expect(fragment.type).toBe("molecule");
     if (fragment.type === "molecule") { expect(fragment.atoms).toHaveLength(1); expect(fragment.bonds).toHaveLength(0); }
     expect(molecule.atoms).toHaveLength(2);
+  });
+
+  it("searches only a click-selected single atom", async () => {
+    const source = drawing();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const scoped = structureSearchDocument(source, [{
+      objectId: molecule.id, atomIds: [molecule.atoms[0]!.id], bondIds: []
+    }]);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "C" });
+  });
+
+  it("searches only the selected parts of two separate molecules", async () => {
+    const first = propane();
+    const second = insertNativeSingleBondMolecule(first, { x: 600, y: 300 });
+    const molecules = second.pages[0]!.objects.filter(object => object.type === "molecule");
+    expect(molecules).toHaveLength(2);
+    const scoped = structureSearchDocument({ ...second,
+      selection: { ...second.selection, objectIds: [] }
+    }, molecules.map(molecule => ({ objectId: molecule.id,
+      atomIds: [molecule.atoms[0]!.id], bondIds: [] })));
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "C.C" });
+  });
+
+  it("keeps a whole molecule and only the clicked bond fragment of another", async () => {
+    const first = propane();
+    const second = propane(insertNativeSingleBondMolecule(first, { x: 600, y: 300 }));
+    const molecules = second.pages[0]!.objects.filter(object => object.type === "molecule");
+    const [whole, fragment] = molecules;
+    expect(fragment!.atoms).toHaveLength(3);
+    // A clicked bond highlights its host ID too, but must send only its two endpoints.
+    const scoped = structureSearchDocument({ ...second,
+      selection: { ...second.selection, objectIds: [whole!.id, fragment!.id] }
+    }, [{ objectId: fragment!.id, atomIds: [], bondIds: [fragment!.bonds[0]!.id] }]);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CCC.CC" });
+  });
+
+  it("searches only CC for a click-selected terminal bond of propane even when its host ID is selected", async () => {
+    const source = propane();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    expect(molecule.atoms).toHaveLength(3);
+    expect(source.selection.objectIds).toEqual([molecule.id]);
+    const original = structuredClone(source);
+    const scoped = structureSearchDocument(source, [{
+      objectId: molecule.id, atomIds: [], bondIds: [molecule.bonds[0]!.id]
+    }]);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CC" });
+    expect(source).toEqual(original);
+  });
+
+  it.each([true, false])("preserves propane search with whole-molecule selection = %s", async wholeMolecule => {
+    const source = propane();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const document = { ...source, selection: { ...source.selection, objectIds: wholeMolecule ? [molecule.id] : [] } };
+    const scoped = structureSearchDocument(document, wholeMolecule ? [] : [{
+      objectId: molecule.id, atomIds: [], bondIds: [molecule.bonds[0]!.id]
+    }]);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", scoped)).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", {
+      site: "pubchem", smiles: wholeMolecule ? "CCC" : "CC"
+    });
+  });
+
+  it("refuses a bond-midpoint fragment inside a repeat unit before prompting or opening PubChem", async () => {
+    const bracketed = toggleBracketRepeatUnit(insertNativeBracket(
+      drawing(), { x: 250, y: 250 }, "square", { x: 350, y: 350 }
+    ));
+    const molecule = bracketed.pages[0]!.objects.find(object => object.type === "molecule")!;
+    expect(molecule.chemistry?.warnings.some(warning => warning.code === "chemistry.bracket_multiplier")).toBe(true);
+    // A lasso covering only the midpoint selects the bond, with no atoms or whole objects.
+    const document = { ...bracketed, selection: { ...bracketed.selection, objectIds: [] } };
+    const original = structuredClone(document);
+    const scoped = structureSearchDocument(document, [{
+      objectId: molecule.id, atomIds: [], bondIds: [molecule.bonds[0]!.id]
+    }]);
+    const prompt = vi.fn(async () => "continue");
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt });
+
+    await expect(search("pubchem", scoped)).rejects.toThrow(
+      /Structure search refused: SMILES cannot hold the repeat unit n around 2 atoms/
+    );
+    expect(prompt).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(document).toEqual(original);
+  });
+
+  it.each([false, true])("refuses a whole bracketed repeat-unit molecule with its warning once (brackets selected = %s)", async selectBrackets => {
+    const bracketed = toggleBracketRepeatUnit(insertNativeBracket(
+      drawing(), { x: 250, y: 250 }, "square", { x: 350, y: 350 }
+    ));
+    const molecule = bracketed.pages[0]!.objects.find(object => object.type === "molecule")!;
+    // Creating/marking the brackets selects only the pair; explicitly select the whole molecule.
+    expect(bracketed.selection.objectIds).not.toContain(molecule.id);
+    const document = { ...bracketed, selection: { ...bracketed.selection,
+      objectIds: [molecule.id, ...(selectBrackets ? bracketed.selection.objectIds : [])]
+    } };
+    const prompt = vi.fn(async () => "continue");
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt });
+
+    let message = "";
+    try { await search("pubchem", structureSearchDocument(document)); }
+    catch (error) { message = error instanceof Error ? error.message : String(error); }
+    const warning = "SMILES cannot hold the repeat unit n around 2 atoms";
+    expect(message).toContain(`Structure search refused: ${warning}`);
+    expect(message.split(warning)).toHaveLength(2);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])("limits repeat-unit diagnostics to selected atoms when searching propane bond %i", async bondIndex => {
+    const source = propane();
+    const molecule = source.pages[0]!.objects.find(object => object.type === "molecule")!;
+    const terminal = molecule.atoms[0]!;
+    // The repeat unit contains just the first atom; the rest of the same molecule is outside.
+    const bracketed = toggleBracketRepeatUnit(insertNativeBracket(source,
+      { x: terminal.x - 5, y: terminal.y - 5 }, "square", { x: terminal.x + 5, y: terminal.y + 5 }
+    ));
+    const document = { ...bracketed, selection: { ...bracketed.selection, objectIds: [] } };
+    const scoped = structureSearchDocument(document, [{
+      objectId: molecule.id, atomIds: [], bondIds: [molecule.bonds[bondIndex]!.id]
+    }]);
+    const prompt = vi.fn(async () => "continue");
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt });
+
+    if (bondIndex === 0) {
+      await expect(search("pubchem", scoped)).rejects.toThrow("SMILES cannot hold the repeat unit n around 1 atoms");
+      expect(prompt).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
+    } else {
+      await expect(search("pubchem", scoped)).resolves.toBe(true);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CC" });
+    }
   });
 
   it("disables molfile-only selections with the selection reason", () => {

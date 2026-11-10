@@ -2,6 +2,7 @@
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { repeatUnitExportWarnings, repeatUnits } from "@chemdraft/export-engine";
 import type { CommandSpec } from "./commands";
 import { copyAsScopeMolecules, copyAsSmiles, createSelectionClipboardPayload, type NativeMoleculeFragmentSelection } from "./documentWorkflow";
 import type { NativePromptOptions } from "./nativePrompt";
@@ -28,12 +29,35 @@ export function structureSearchCommands(enabled: boolean, searchable: boolean): 
 export function structureSearchDocument(
   document: ChemDraftDocument, fragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftDocument | undefined {
-  const payload = createSelectionClipboardPayload(document, fragments);
+  // A click also highlights the host object; explicit fragments take precedence for search.
+  const fragmentHostIds = new Set(fragments.map(fragment => fragment.objectId));
+  const payload = createSelectionClipboardPayload({ ...document, selection: {
+    ...document.selection, objectIds: document.selection.objectIds.filter(id => !fragmentHostIds.has(id))
+  } }, fragments);
   const molecules = payload?.objects.filter(object => object.type === "molecule");
   if (!molecules?.length) return undefined;
+  // Read membership from the original graph and brackets, before discarding either. Only
+  // selected member atoms carry the warning into the graph-only serializer's existing channel.
+  const units = repeatUnits(document, molecules);
+  const repeatWarnings = repeatUnitExportWarnings(document, "SMILES", { molecules });
+  const searchMolecules = molecules.map(molecule => {
+    const atomIds = new Set(molecule.atoms.map(atom => atom.id));
+    const bracketIds = new Set(units.filter(unit => !unit.members.length || unit.members.some(member =>
+      member.molecule.id === molecule.id &&
+      (!member.atomIds.length || member.atomIds.some(id => atomIds.has(id)))
+    )).map(unit => unit.objectId));
+    const warnings = repeatWarnings.filter(warning => warning.objectId !== undefined && bracketIds.has(warning.objectId))
+      .map(warning => ({ code: "chemistry.bracket_multiplier", objectId: molecule.id, message: warning.message }));
+    return warnings.length ? { ...molecule, chemistry: {
+      isotopeLabels: [], stereochemistry: [], ...molecule.chemistry,
+      warnings: [...warnings, ...(molecule.chemistry?.warnings ?? []).filter(existing =>
+        !warnings.some(warning => warning.message === existing.message)
+      )]
+    } } : molecule;
+  });
   const page = document.pages[0]!;
   const scoped = {
-    ...document, pages: [{ ...page, objects: molecules }],
+    ...document, pages: [{ ...page, objects: searchMolecules }],
     selection: { ...document.selection, pageId: page.id, objectIds: molecules.map(object => object.id) }
   };
   return copyAsScopeMolecules(scoped).length ? scoped : undefined;
