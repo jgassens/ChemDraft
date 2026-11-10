@@ -115,10 +115,10 @@ fn intel_input_keeps_the_original_pins_except_for_the_rdkit_source() {
 #[test]
 fn intel_bundled_lock_matches_pin_and_wheel_provenance() {
     let profile = requirements::RequirementsProfile::for_target(EngineTarget::MacosX86_64);
-    // Deliberately a runtime read: the absent release/lock must fail this gate without
-    // preventing the other naming tests from compiling and running on the original targets.
+    // Deliberately a runtime read: if the Intel lock changes, re-lock with the command in
+    // requirements-macos-x86_64.in and update the pinned hash below.
     let lock = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(profile.path))
-        .expect("publish the Intel RDKit wheel, generate requirements-macos-x86_64.txt, then set REQUIREMENTS_LOCK_SHA256_MACOS_X86_64");
+        .expect("Intel RDKit lock is missing; re-lock with the command in requirements-macos-x86_64.in and update REQUIREMENTS_LOCK_SHA256_MACOS_X86_64");
     assert_ne!(
         profile.sha256,
         "0".repeat(64),
