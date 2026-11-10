@@ -1383,6 +1383,25 @@ Windows utility windows have no menu. Native prompts and file choosers use the o
 controls. For Undo use Cmd+Z on macOS or Ctrl+Z on Windows; for Redo use Cmd+Shift+Z on macOS
 or Ctrl+Shift+Z or Ctrl+Y on Windows.
 
+### Recent 1.2 fixes (macOS and Windows)
+
+- Open `compound.v2.cdxml` and export to each available format. The suggested filename in both
+  the Export dialog and native save box has one format extension and keeps `compound.v2`; changing
+  format replaces the extension. For an unsaved document titled `Reaction 1/2`, check the suggestion
+  is `Reaction-1-2.<ext>`. The format list has no `(planned)` or `(deferred)` rows or developer
+  notes. Export CDX with a warning: the warning says CDX. (Commits 6f976878, 5e8bb2ce, a6a76c1c.)
+- Move and resize Preferences, minimize it (using an external window tool if needed), then close it
+  while minimized. Reopen and restart: its last valid position and size return, not minimized
+  coordinates or a tiny frame. (Commit 2863755b.)
+- Add a Custom Color Swatch to the Main toolbar, set a slot to `#123456`, and hover it in the
+  floating palette: its tooltip shows `#123456`. Right-click an empty slot: one colour dialog opens.
+  Apply a stored colour to a selection and Undo/Redo: the status names the applied colour.
+  (Commit 0be2429a.)
+- Select a Wavy Line and focus each Wave smoothness, height and width slider in turn. Press an
+  arrow key and Undo: the status names `Updated wave smoothness`, `Updated wave height` or
+  `Updated wave width` respectively, and the shape is restored. Redo restores the edit.
+  (Commit 37f2049e.)
+
 ### Clean Up Structure 2D on a selection
 
 Draw a ring with a distorted side chain, select only
