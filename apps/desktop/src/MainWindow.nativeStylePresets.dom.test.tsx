@@ -35,6 +35,32 @@ describe.each(["macos", "windows"] as const)("MainWindow native style presets (%
   }
   const read = () => getAssistantHistoryPort().read("initial")!;
 
+  it("shows the chemistry refusal and leaves the molecule and mark unchanged", async () => {
+    const initial = createEmptyDocument();
+    const molecule = createSmilesMolecule(initial, { x: 180, y: 180 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: -1 }, { element: "C", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "[CH2-]C", undefined, { bondLengthPx: 10 });
+    molecule.style.bondLengthPx = 40;
+    const atom = molecule.atoms[0]!;
+    atom.markCharge = -1;
+    initial.pages[0]!.objects.push(molecule, {
+      id: "negative", type: "electron-mark", x: atom.x - 46, y: atom.y - 6,
+      width: 12, height: 12, rotation: 0, style: {}, markKind: "charge", charge: -1,
+      anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id }
+    });
+    initial.selection.objectIds = [molecule.id];
+    await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} shortcutPlatform={platform} />));
+    const before = structuredClone(read());
+    await command(nativeStylePresetCommandId(Acs1996StylePreset.id));
+    expect(read()).toEqual(before);
+    const status = container.querySelector('[role="status"]')?.textContent;
+    expect(status).toContain(`was not applied to molecule "${molecule.id}"`);
+    expect(status).toContain(`atom "${atom.id}"`);
+    expect(status).toContain("formalCharge: -1 → 0");
+  });
+
   it.each([Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset])("applies $name in one labelled entry and restores exact undo/redo snapshots", async preset => {
     const initial = createEmptyDocument();
     initial.pages[0]!.objects.push(createSmilesMolecule(initial, { x: 180, y: 180 }, {

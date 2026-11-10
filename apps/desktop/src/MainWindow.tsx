@@ -113,6 +113,7 @@ import {
   type ArrowObject,
   type BracketObject,
   type ChemDraftDocument,
+  type CompatibilityWarning,
   type DocumentHistory,
   type DocumentObject,
   type DocumentPage,
@@ -1720,7 +1721,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.09.58-codex";
+const CURRENT_BUILD_STAMP = "11.10.11.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10914,16 +10915,18 @@ export function MainWindow({
 
     nativeStylePresetActions.forEach(action => register(action, () => {
       const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const warnings: CompatibilityWarning[] = [];
       const changed = commitDocumentChange(current => {
         const patch = nativeStylePresetPatchForSelection(current, presetId,
-          selectedNativeMoleculePartsRef.current.map(part => part.objectId));
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId), warnings);
         // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
         // while a native document-wide edit may contain more objects. Both paths are atomic.
         return applyPatches(current, patch.patches);
       }, action.title);
       if (changed) setSelectedNativeMoleculeParts([]);
       setActiveEditorObjectId(undefined);
-      setStatus(changed ? `Applied ${action.title}` : `${action.title} already matches`);
+      setStatus(warnings.length ? warnings.map(warning => warning.message).join(" ")
+        : changed ? `Applied ${action.title}` : `${action.title} already matches`);
     }));
 
     templateInsertActions.forEach(action => register(action, () => {

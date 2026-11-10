@@ -31,4 +31,5 @@ export * from "./documentStyle";
 export * from "./sourceBondSemantics";
 export * from "./drawingDefaults";
 export * from "./nativeStylePresets";
+export * from "./electronMarks";
 export * from "./tables";
