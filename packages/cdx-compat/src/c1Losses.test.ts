@@ -10,6 +10,10 @@ const page = (content: string) => `<CDXML><page id="1">${content}</page></CDXML>
 const all = (node: CdxElement, name: string): CdxElement[] => [
   ...(node.name === name ? [node] : []), ...node.kids.flatMap(child => all(child, name))
 ];
+const withoutIds = (node: CdxElement): CdxElement => ({
+  ...node, attrs: Object.fromEntries(Object.entries(node.attrs).filter(([key]) => key !== "id")),
+  kids: node.kids.map(withoutIds)
+});
 const molecule = '<fragment id="2"><n id="3" p="60 60" Element="6"/><n id="4" p="90 60" Element="8"/><b id="5" B="3" E="4" Order="1"/></fragment>';
 const glyph = (id: number, kind = "Round", usage = "") => `<graphic id="${id}" GraphicType="Bracket" BracketType="${kind}" BoundingBox="${id * 5} 40 ${id * 5 + 8} 80" LipSize="60" Z="1" ${usage}/>`;
 const attachment = (id: number, graphic: number) => `<bracketattachment id="${id}" GraphicID="${graphic}"><crossingbond id="${id + 1}" BondID="5" InnerAtomID="3"/></bracketattachment>`;
@@ -59,6 +63,9 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
       code: "cdxml.bracket_nested_group_preserved", sourceObjectId: id,
       message: expect.stringMatching(new RegExp(`bracket group ${id}.*not imported.*repeat count.*crossing bonds`, "i"))
     }));
+    const nestedWarnings = exportWarnings(imported.document!).filter(warning => warning.code === "cdxml.bracket_nested_group_preserved");
+    expect(nestedWarnings.map(warning => warning.sourceObjectId).sort()).toEqual(["21", "22"]);
+    for (const warning of nestedWarnings) expect(warning.message).toMatch(/native.*repeat count.*crossing bonds.*source compatibility data/i);
     // The outer pair exports its opaque hierarchy; reopening must still name both unsupported
     // native groups rather than silently treating those raw children as native pairs.
     const exported = output(imported.document!);
@@ -112,6 +119,44 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
       expect(molecule.superatoms).toHaveLength(0);
       const exported = all(output(imported.document!), "n")[0];
       expect(exported.attrs).toMatchObject({ NodeType: "Unspecified", Charge: String(charge), AS: "R", NeedsClean: "yes", Warning: "synthetic" });
+      imported = roundTrip(imported.document!);
+    }
+  });
+
+  it.each([[2, "D"], [3, "T"]] as const)("keeps an unedited isotopic H source node for mass %s with native %s", (isotope, symbol) => {
+    const xml = page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" AS="R" NeedsClean="yes" Warning="synthetic" Z="1" p="60 60"><t id="4" p="60 60"><s face="1">H</s></t></n></fragment>`);
+    const source = format === "CDX" ? readCdx(writeCdx(tree(xml))) : tree(xml);
+    const sourceNode = withoutIds(all(source, "n")[0]);
+    let imported = open(xml);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const molecule = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
+      expect(molecule.atoms).toMatchObject([{ element: symbol, labelLiteral: true, formalCharge: 0 }]);
+      expect(molecule.atoms[0].isotope).toBeUndefined();
+      expect(exportWarnings(imported.document!).filter(warning => warning.code === "cdxml.superatom_not_collapsed")).toEqual([]);
+      // Visible ids may be reassigned; every other source attribute and label run stays intact.
+      expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(sourceNode);
+      imported = roundTrip(imported.document!);
+    }
+  });
+
+  it.each([2, 3])("warns when an isotopic H source label of mass %s is edited", isotope => {
+    for (const element of ["Qq", "H", isotope === 2 ? "T" : "D"]) {
+      const imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" AS="R" p="60 60"><t id="4"><s>H</s></t></n></fragment>`));
+      const molecule = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
+      molecule.atoms[0].element = element;
+      expect(exportWarnings(imported.document!).filter(warning => warning.code === "cdxml.superatom_not_collapsed")).toEqual([
+        expect.objectContaining({ message: expect.stringContaining("original literal label was edited") })
+      ]);
+      expect(all(output(imported.document!), "n")[0].attrs.NodeType).not.toBe("Unspecified");
+    }
+  });
+
+  it.each([0, 1, 2])("imports a label-only node's explicit hydrogen count %s into its native atom", hydrogenCount => {
+    let imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" NumHydrogens="${hydrogenCount}" p="60 60"><t id="4"><s>Qq</s></t></n></fragment>`));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const molecule = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
+      expect(molecule.atoms).toMatchObject([{ element: "Qq", labelLiteral: true, hydrogenCount }]);
+      expect(all(output(imported.document!), "n")[0].attrs.NumHydrogens).toBe(String(hydrogenCount));
       imported = roundTrip(imported.document!);
     }
   });

@@ -1472,6 +1472,12 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
       }
       return `<bracketattachment ${xmlAttributes(attachmentAttrs)}>${crossings.join("")}${isRecord(source) ? preservedBracketChildren(source.children, ["crossingbond"]) : ""}</bracketattachment>`;
     });
+    if (isRecord(raw) && Array.isArray(raw.children)) {
+      for (const nested of findElements(raw.children, "bracketedgroup")) {
+        warnings.push({ code: "cdxml.bracket_nested_group_preserved", sourceObjectId: nested.attributes.id,
+          message: `Nested bracket group ${nested.attributes.id ?? "(unknown)"} is not a native bracket group: bracket usage, repeat count, bracket members and crossing bonds remain source compatibility data only, written as raw children of the outer group.` });
+      }
+    }
     groups.push(`<bracketedgroup ${xmlAttributes(attrs)}>${attachments.join("")}${isRecord(raw) ? preservedBracketChildren(raw.children, ["bracketattachment"]) : ""}</bracketedgroup>`);
   }
   return groups;
@@ -3671,12 +3677,13 @@ function importFragment(
   }
   const normalizedBonds = refreshImportedCyclicDoubleBondSides(atoms, joinedBonds);
   // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
-  // can, so it is kept on exactly those atoms for the Kekulé resolution to honour.
+  // can, so it is kept for the Kekulé resolution to honour. Literal labels also retain an explicit
+  // count: their text supplies no implicit hydrogens and cannot replace the source constraint.
   const aromaticAtomIds = new Set(normalizedBonds.flatMap((bond) =>
     bond.order === "aromatic" ? [bond.fromAtomId, bond.toAtomId] : []));
   for (const atom of atoms) {
     const stated = statedHydrogensByAtomId.get(atom.id);
-    if (stated !== undefined && aromaticAtomIds.has(atom.id)) {
+    if (stated !== undefined && (atom.labelLiteral || aromaticAtomIds.has(atom.id))) {
       atom.hydrogenCount = stated;
     }
   }

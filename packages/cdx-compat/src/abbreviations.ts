@@ -1,4 +1,4 @@
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { normalizeAtomIsotope, type MoleculeObject } from "@chemdraft/chem-core";
 import type { CompatibilityConversionWarning } from "./index";
 import type { CdxElement } from "./cdxBinary";
 
@@ -93,8 +93,12 @@ export function restoreCdxmlAbbreviations(
     if (index < 0) continue;
     const nativeAtom = molecule.atoms.find(atom => atom.id === record.atomIds[0]);
     const label = abbreviationLabel(record.source);
+    // Import normalizes H with mass 2/3 to D/T. Compare the same native spelling so an
+    // untouched isotopic label keeps its source node, while edits still invalidate it.
+    const nativeLabel = label && normalizeAtomIsotope({ element: label,
+      ...(record.source.attrs.Isotope === undefined ? {} : { isotope: Number(record.source.attrs.Isotope) }) }).element;
     // An edited label must not resurrect a stale unrepresentable expansion.
-    if (label && nativeAtom?.element !== label) { warn(label, "its original literal label was edited."); continue; }
+    if (label && nativeAtom?.element !== nativeLabel) { warn(label, "its original literal label was edited."); continue; }
     const copy = cloneSource(record.source, id!);
     copy.attrs.p = fragment.kids[index].attrs.p;
     fragment.kids[index] = copy;
