@@ -124,6 +124,24 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     }
   }
 
+  it.each([["w", "wedge"], ["W", "hashed"]] as const)("sets a hovered bond with %s and undoes it once", async (key, style) => {
+    const original = await hoverBond();
+    await press(key, window);
+    expect(molecule().bonds[0]).toMatchObject({ fromAtomId: original.fromAtomId, toAtomId: original.toAtomId, display: { bondStyle: style } });
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule().bonds[0]).toEqual(original);
+  });
+
+  it("leaves an atom unchanged with w and keeps e as the eraser over a bond", async () => {
+    await hoverAtom(0);
+    const before = molecule();
+    await press("w", window);
+    expect(molecule()).toEqual(before);
+    await hoverBond();
+    await press("e", window);
+    expect(snapshot().activeToolCommandId).toBe("tool.eraser");
+  });
+
   async function typeLabel(label: string) {
     for (const key of label) await press(key);
     expect(editor()?.value).toBe(label);

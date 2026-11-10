@@ -23869,6 +23869,8 @@ export function hoveredNativeTargetShortcutCommand(
   }
 
   if (target?.kind === "bond") {
+    if (key === "w") return "bond.setHoveredBondDisplay.wedge";
+    if (key === "W") return "bond.setHoveredBondDisplay.hashed";
     return Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)
       ? numericBondDrawingHotkeys[key]
       : undefined;
