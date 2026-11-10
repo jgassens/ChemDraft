@@ -133,17 +133,21 @@ are none. This workflow supplies the Windows artifacts only.
    successful verification. The boolean input `allow_unsigned_upload` defaults to false. Setting it
    to true explicitly permits an upload with missing signatures and prints a loud workflow warning;
    use it only for draft dry runs. Only this job has
-   `contents: write`; the build/signing and final asset-check jobs have read access. Leave the release draft while testing.
+   `contents: write`; the build/signing job retains read access. Leave the release draft while testing.
    If uploading manually, upload the same final artifacts, without rebuilding or re-signing.
-7. The final workflow job downloads all attached release assets and runs the
+7. After uploading, the same upload job uses its draft-visible token to download all attached release assets and run the
    [asset checker](three-builds.md#last-step-before-un-drafting). If all three builds and their
-   records are present, hashes, sizes and tag/commit identity must pass. Otherwise it lists the
-   missing files and leaves the Windows-only upload successful; INCOMPLETE is not a publishing pass.
+   records are present, hashes, sizes and tag/commit identity must pass. Wholly missing build pairs
+   are listed, while every supplied build is fully checked; partial pairs fail. The Windows-only
+   result is INCOMPLETE, not a publishing pass. Windows passes `--skip-dmg-provenance` explicitly
+   because it cannot mount DMGs; the final Mac gate must check their embedded commits.
 8. Collect both DMGs and the installer with all three `.build.json` files, then pass the
    [joint release body check](three-builds.md) with the tag and explicit gaps or `--no-gaps`.
-   After all three artifacts pass review, **as the last step before un-drafting** run
-   `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` against GitHub.
-   It must report PASS without `--allow-incomplete`; then publish the joint release. Only **after** the installer
+   After all three artifacts pass review, **as the last step before un-drafting on a Mac** run both
+   `verify-macos-app.mjs --release --dmg` checks and
+   `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` against GitHub,
+   as listed in [the final checklist](three-builds.md#last-step-before-un-drafting).
+   It must report PASS without skip or incomplete flags; then publish the joint release. Only **after** the installer
    URL is publicly downloadable, commit the generated `latest.json` to `main` through the normal PR
    path. This workflow neither publishes the release nor updates the feed on `main`.
 

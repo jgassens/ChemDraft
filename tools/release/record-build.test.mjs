@@ -1,11 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { artifactDigest, BUILD_TARGETS, recordBuild } from "./record-build.mjs";
 import { macosReleasePlist } from "./macos-build-plist.mjs";
+import { fakeReleaseRunner } from "./release-test-fixtures.mjs";
+
+const recordRunner = (options) => {
+  const native = fakeReleaseRunner(options);
+  return (command, args, config) => command === "git" ? spawnSync(command, args, config) : native(command, args, config);
+};
 
 function fixture(t) {
   const rootDir = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".build-record-test-"));
@@ -34,10 +40,29 @@ test("all three release artifacts record the checked-out full commit, version, t
   for (const [target, suffix] of Object.entries(BUILD_TARGETS)) {
     const artifact = join(rootDir, "assets", `ChemDraft_1.2.3_${suffix}`);
     writeFileSync(artifact, "fixture");
-    recordBuild({ artifact, target, rootDir });
+    const calls = [];
+    recordBuild({ artifact, target, rootDir }, { run: recordRunner({ embeddedCommit: commit, calls }) });
+    assert.equal(calls.filter(({ args }) => args[0] === "attach").length, artifact.endsWith(".dmg") ? 1 : 0);
     assert.deepEqual(JSON.parse(readFileSync(`${artifact}.build.json`, "utf8")), { commit, version: "1.2.3", target, clean: true, ...artifactDigest(artifact) });
   }
 });
+
+for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+  test(`recording ${target} checks the DMG's embedded commit before writing a record`, (t) => {
+    const { rootDir, commit } = fixture(t);
+    const artifact = join(rootDir, "assets", `ChemDraft_1.2.3_${BUILD_TARGETS[target]}`);
+    writeFileSync(artifact, "synthetic DMG");
+    for (const embeddedCommit of [undefined, "short", "b".repeat(40)]) {
+      const calls = [];
+      assert.throws(() => recordBuild({ artifact, target, rootDir }, {
+        run: recordRunner({ embeddedCommit: embeddedCommit ?? null, calls })
+      }), /ChemDraftSourceCommit: (missing|expected)/);
+      assert.equal(existsSync(`${artifact}.build.json`), false);
+      assert.deepEqual(calls.filter(({ command }) => command === "/usr/bin/hdiutil").map(({ args }) => args[0]), ["attach", "detach"]);
+    }
+    assert.equal(recordBuild({ artifact, target, rootDir }, { run: recordRunner({ embeddedCommit: commit }) }).commit, commit);
+  });
+}
 
 for (const dirty of ["tracked", "untracked", "staged"]) {
   test(`recording refuses a ${dirty} dirty tree`, (t) => {

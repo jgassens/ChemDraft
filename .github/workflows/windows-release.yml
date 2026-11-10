@@ -280,7 +280,7 @@ jobs:
     if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
     runs-on: windows-latest
     permissions:
-      contents: write # Only this job can upload release assets; no source code executes here.
+      contents: write # Upload and validate draft assets here; all other jobs stay read-only.
       actions: read
     steps:
       - uses: actions/checkout@v4
@@ -328,26 +328,17 @@ jobs:
           gh release upload $env:RELEASE_TAG @assets --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
 
-  release-assets:
-    needs: [build, upload]
-    if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build.outputs.commit }}
-          fetch-depth: 0
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Check all attached release builds when complete
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.upload_to_release }}
           BUILD_COMMIT: ${{ needs.build.outputs.commit }}
-        # A Windows-only upload reports missing Mac assets; it is never a publishing pass.
-        run: node tools/release/check-release-assets.mjs --tag "$RELEASE_TAG" --commit "$BUILD_COMMIT" --allow-incomplete
+        # Draft assets need this upload job's token. A Windows-only result is not a publishing pass.
+        run: |
+          node tools/release/check-release-assets.mjs --tag "$env:RELEASE_TAG" --commit "$env:BUILD_COMMIT" --allow-incomplete --skip-dmg-provenance
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset validation failed.' }

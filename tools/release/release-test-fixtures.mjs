@@ -24,9 +24,16 @@ export function releaseFixture(t) {
 }
 
 export function fakeReleaseRunner({ taggedCommit = commit, embeddedCommit = commit, calls = [], downloadFrom } = {}) {
-  return (command, args) => {
+  return (command, args, options) => {
     calls.push({ command, args });
-    if (command === "git") return { status: 0, stdout: `${taggedCommit}\n` };
+    assert.equal(options.encoding, "utf8");
+    if (command === "git") {
+      assert.ok([
+        ["fetch", "origin", "tag", `v${version}`, "--no-tags"],
+        ["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]
+      ].some((expected) => JSON.stringify(args) === JSON.stringify(expected)), `Unexpected git arguments: ${args}`);
+      return { status: 0, stdout: args[0] === "fetch" ? "" : `${taggedCommit}\n` };
+    }
     if (command === "gh") {
       assert.deepEqual(args.slice(0, 3), ["release", "download", `v${version}`]);
       assert.equal(args[3], "--dir");
@@ -35,14 +42,19 @@ export function fakeReleaseRunner({ taggedCommit = commit, embeddedCommit = comm
     }
     if (command === "/usr/bin/hdiutil") {
       if (args[0] === "attach") {
-        assert.ok(args.includes("-readonly"));
-        const app = join(args[args.indexOf("-mountpoint") + 1], "ChemDraft.app", "Contents");
+        assert.deepEqual(args.slice(0, 4), ["attach", "-readonly", "-nobrowse", "-mountpoint"]);
+        assert.equal(args.length, 6);
+        const app = join(args[4], "ChemDraft.app", "Contents");
         mkdirSync(app, { recursive: true });
-        writeFileSync(join(app, "Info.plist"), JSON.stringify({ ChemDraftSourceCommit: embeddedCommit }));
-      }
+        writeFileSync(join(app, "Info.plist"), JSON.stringify({ ChemDraftSourceCommit: typeof embeddedCommit === "function" ? embeddedCommit(args[5]) : embeddedCommit }));
+      } else assert.deepEqual(args, ["detach", args[1]]);
       return { status: 0 };
     }
-    if (command === "/usr/bin/plutil") return { status: 0, stdout: readFileSync(args.at(-1), "utf8") };
+    if (command === "/usr/bin/plutil") {
+      assert.deepEqual(args.slice(0, 5), ["-convert", "json", "-o", "-", args[4]]);
+      assert.equal(args.length, 5);
+      return { status: 0, stdout: readFileSync(args[4], "utf8") };
+    }
     assert.fail(`Unexpected native command: ${command} ${args.join(" ")}`);
   };
 }

@@ -7,17 +7,17 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { isMachO, machOSlices, packedVersion, targetArchitecture, versionString } from "./macos-mach-o.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
-import { COMMIT_PATTERN, gitOutput } from "./record-build.mjs";
+import { gitOutput } from "./record-build.mjs";
+import { readAppPlist, withDmgApps } from "./macos-dmg.mjs";
+import { verifySourceCommit } from "./source-commit.mjs";
+
+export { readAppPlist } from "./macos-dmg.mjs";
+export { verifySourceCommit } from "./source-commit.mjs";
 
 const requiredLicensePaths = new Set(requiredLicenseFiles.map(({ target }) => `Contents/Resources/${target}`));
 
 export function feedForTarget(target) {
   return `https://raw.githubusercontent.com/jgassens/ChemDraft/main/appcast${targetArchitecture(target) === "x86_64" ? "-intel" : ""}.xml`;
-}
-
-export function verifySourceCommit(plist, commit) {
-  if (!COMMIT_PATTERN.test(plist.ChemDraftSourceCommit ?? "")) throw new Error("ChemDraftSourceCommit: missing or invalid full source commit");
-  if (commit !== undefined && plist.ChemDraftSourceCommit !== commit) throw new Error(`ChemDraftSourceCommit: expected ${commit}, found ${plist.ChemDraftSourceCommit}`);
 }
 
 // Records contain bundle-relative POSIX paths and parsed slices; no filesystem needed by this gate.
@@ -87,12 +87,6 @@ export function inventoryApp(app) {
   return records;
 }
 
-export function readAppPlist(app, run = spawnSync) {
-  const plistResult = run("/usr/bin/plutil", ["-convert", "json", "-o", "-", join(app, "Contents", "Info.plist")], { encoding: "utf8" });
-  if (plistResult.status !== 0) throw new Error(`Cannot read bundle Info.plist: ${plistResult.stderr || plistResult.error?.message}`);
-  return JSON.parse(plistResult.stdout);
-}
-
 export function verifyReleaseTrust(app, dmg, { run = spawnSync, teamId = process.env.APPLE_TEAM_ID } = {}) {
   if (!teamId || !/^[A-Z0-9]{10}$/.test(teamId)) throw new Error("Release verification requires --team-id or APPLE_TEAM_ID (10-character Apple team ID)");
   if (!dmg || !dmg.endsWith(".dmg")) throw new Error("Release verification requires --dmg <final.dmg>");
@@ -101,36 +95,41 @@ export function verifyReleaseTrust(app, dmg, { run = spawnSync, teamId = process
     if (result.status !== 0) throw new Error(`${command} ${args.join(" ")}: ${result.stderr || result.error?.message || "verification failed"}`);
     return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   };
-  check("codesign", ["--verify", "--deep", "--strict", app]);
-  const signature = check("codesign", ["--display", "--verbose=4", app]);
+  check("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]);
+  const signature = check("/usr/bin/codesign", ["--display", "--verbose=4", app]);
   if (!/^Authority=Developer ID Application: .+$/m.test(signature)) throw new Error("Release app requires a Developer ID Application signature");
   const actualTeam = /^TeamIdentifier=(.+)$/m.exec(signature)?.[1].trim();
   if (actualTeam !== teamId) throw new Error(`Release app team ID: expected ${teamId}, found ${actualTeam ?? "missing"}`);
-  for (const path of [app, dmg]) check("xcrun", ["stapler", "validate", path]);
-  check("spctl", ["--assess", "--type", "execute", app]);
-  check("spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", dmg]);
+  check("/usr/sbin/spctl", ["--assess", "--type", "execute", app]);
+  check("/usr/bin/xcrun", ["stapler", "validate", dmg]);
+  check("/usr/sbin/spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", dmg]);
 }
 
-export function verifyApp(app, target, { run = spawnSync, inventory = inventoryApp, commit, allowSidecarPlaceholder = false, release = false, dmg, teamId } = {}) {
+export function verifyApp(app, target, { run = spawnSync, inventory = inventoryApp, commit, allowSidecarPlaceholder = false, release = false, dmg, teamId, ...mountOptions } = {}) {
   if (release && allowSidecarPlaceholder) throw new Error("Release verification cannot allow a sidecar placeholder");
-  const plist = readAppPlist(app, run);
-  if (release) verifySourceCommit(plist, commit);
-  if (commit === undefined && plist.ChemDraftSourceCommit !== undefined) {
-    commit = gitOutput(fileURLToPath(new URL("../../", import.meta.url)), ["rev-parse", "HEAD"]);
-  }
-  const count = verifyInventory({ target, plist, records: inventory(app), commit, allowSidecarPlaceholder });
-  if (release) verifyReleaseTrust(app, dmg, { run, teamId });
-  return count;
+  if (release && (!dmg || !dmg.endsWith(".dmg"))) throw new Error("Release verification requires --dmg <final.dmg> to check the shipped app");
+  const checkApp = (payload) => {
+    const plist = readAppPlist(payload, run);
+    if (release) verifySourceCommit(plist, commit);
+    if (commit === undefined && plist.ChemDraftSourceCommit !== undefined) {
+      commit = gitOutput(fileURLToPath(new URL("../../", import.meta.url)), ["rev-parse", "HEAD"], run);
+    }
+    const count = verifyInventory({ target, plist, records: inventory(payload), commit, allowSidecarPlaceholder });
+    if (release) verifyReleaseTrust(payload, dmg, { run, teamId });
+    return count;
+  };
+  return release ? withDmgApps(dmg, checkApp, { ...mountOptions, run }).reduce((sum, count) => sum + count, 0) : checkApp(app);
 }
 
 function main() {
   const { values, positionals } = parseArgs({ options: { target: { type: "string" }, commit: { type: "string" }, release: { type: "boolean", default: false }, dmg: { type: "string" }, "team-id": { type: "string" }, "allow-sidecar-placeholder": { type: "boolean", default: false } }, allowPositionals: true });
-  if (positionals.length !== 1 || !values.target || !positionals[0].endsWith(".app")) throw new Error("Usage: node tools/release/verify-macos-app.mjs <built.app> --target <triple> [--commit <full-sha>] [--release --dmg <final.dmg> --team-id <team-id>] [--allow-sidecar-placeholder (smoke CI only)]");
+  if (values.release && !values.dmg) throw new Error("Release verification requires --dmg <final.dmg> to check the shipped app");
+  if (!values.target || (values.release ? positionals.length > 1 : positionals.length !== 1) || (positionals.length && !positionals[0].endsWith(".app"))) throw new Error("Usage: node tools/release/verify-macos-app.mjs [<built.app>] --target <triple> [--commit <full-sha>] [--release --dmg <final.dmg> --team-id <team-id>] [--allow-sidecar-placeholder (smoke CI only)]; <built.app> is required except with --release");
   targetArchitecture(values.target);
-  const app = resolve(positionals[0]);
+  const app = positionals[0] && resolve(positionals[0]);
   const count = verifyApp(app, values.target, { commit: values.commit, allowSidecarPlaceholder: values["allow-sidecar-placeholder"], release: values.release, dmg: values.dmg && resolve(values.dmg), teamId: values["team-id"] });
   if (values["allow-sidecar-placeholder"]) console.warn("Smoke CI only: sidecar placeholder permitted; this is not release acceptance.");
-  console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS, Sparkle feed and bundled licences (${app})`);
+  console.log(`Verified ${count} Mach-O files: ${values.target}, minimum macOS, Sparkle feed and bundled licences (${values.release ? `apps inside ${resolve(values.dmg)}` : app})`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

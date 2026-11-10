@@ -10,13 +10,11 @@ export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSyn
   if (!tag) return commit;
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error("Expected release --tag vX.Y.Z");
   const git = (args) => run("git", args, { cwd: rootDir, encoding: "utf8" });
-  const ref = `refs/tags/${tag}`;
-  let result = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-  if (result.status !== 0) {
-    const fetched = git(["fetch", "--no-tags", "origin", `${ref}:${ref}`]);
-    if (fetched.status !== 0) throw new Error(`Expected --commit or a resolvable release tag: cannot fetch ${tag}: ${fetched.stderr || fetched.error?.message || "git fetch failed"}`);
-    result = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-  }
+  // Always refresh, including an existing local tag. A conflicting local tag fails closed.
+  const fetched = git(["fetch", "origin", "tag", tag, "--no-tags"]);
+  if (fetched.status !== 0) throw new Error(`Expected --commit or a resolvable release tag: cannot fetch ${tag}: ${fetched.stderr || fetched.error?.message || "git fetch failed"}`);
+  // FETCH_HEAD is the fetched origin value, rather than a pre-existing local ref.
+  const result = git(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]);
   const taggedCommit = result.stdout?.trim();
   if (result.status !== 0 || !COMMIT_PATTERN.test(taggedCommit ?? "")) throw new Error(`Cannot resolve release tag ${tag} to a full commit`);
   if (commit && commit !== taggedCommit) throw new Error(`--commit ${commit} disagrees with tag ${tag} (${taggedCommit})`);
@@ -34,20 +32,27 @@ export function missingBuildFiles(assets, version) {
   });
 }
 
-export function verifyBuildAssets({ assets, version, expectedCommit }, { checkDmgCommit } = {}) {
+export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomplete = false }, { checkDmgCommit } = {}) {
   if (!COMMIT_PATTERN.test(expectedCommit ?? "")) throw new Error("An expected full source commit is mandatory");
   const builds = releaseBuildFiles(version);
   const allowed = new Set(builds.flatMap(({ name }) => [name, `${name}.build.json`]));
+  allowed.add(`ChemDraft_${version}_x64-setup.exe.sig`);
+  allowed.add("latest.json");
   const errors = [];
-  // Feeds, signatures, checksums and notes are allowed; extra builds/records are not.
-  for (const name of readdirSync(assets)) {
-    if (/\.(?:dmg|exe|build\.json)$/i.test(name) && !allowed.has(name)) errors.push(`Unexpected release build: ${name}`);
+  // Feeds, checksums and notes are allowed; unexpected packages/signatures/records are not.
+  const present = new Set(readdirSync(assets));
+  for (const name of present) {
+    if (/\.(?:dmg|exe|build\.json|sig|msi|zip|pkg|tar\.gz)$/i.test(name) && !allowed.has(name)) errors.push(`Unexpected release build: ${name}`);
   }
   let commonCommit;
   let commonBuild;
+  const checked = [];
   for (const { target, name } of builds) {
     const file = join(assets, name);
     const recordName = `${name}.build.json`;
+    // Only wholly absent builds may be deferred. Partial pairs cannot be fully verified.
+    if (allowIncomplete && !present.has(name) && !present.has(recordName)) continue;
+    checked.push(name);
     let record;
     try { record = JSON.parse(readFileSync(`${file}.build.json`, "utf8")); }
     catch (error) { errors.push(`${recordName}: ${error.code === "ENOENT" ? "missing build record" : error.message}`); }
@@ -66,9 +71,9 @@ export function verifyBuildAssets({ assets, version, expectedCommit }, { checkDm
       const digest = artifactDigest(file);
       if (!/^[0-9a-f]{64}$/.test(record?.sha256 ?? "") || digest.sha256 !== record.sha256) errors.push(`${recordName}: SHA-256 mismatch for ${name}`);
       if (!Number.isSafeInteger(record?.size) || digest.size !== record.size) errors.push(`${recordName}: size mismatch for ${name}`);
-      if (name.endsWith(".dmg") && checkDmgCommit) checkDmgCommit(file, target, expectedCommit);
+      if (name.endsWith(".dmg") && checkDmgCommit) checkDmgCommit(file, target, expectedCommit, record?.commit);
     } catch (error) { errors.push(`${name}: ${error.code === "ENOENT" ? "missing release file" : error.message}`); }
   }
   if (errors.length) throw new Error(errors.join("\n"));
-  return builds.map(({ name }) => name);
+  return checked;
 }

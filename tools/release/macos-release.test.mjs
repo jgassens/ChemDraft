@@ -69,25 +69,24 @@ function trustRunner(calls, { failure, signature = "Authority=Developer ID Appli
   return (command, args) => {
     calls.push({ command, args });
     if (failure?.(command, args)) return { status: 1, stderr: "rejected by fake native gate" };
-    return { status: 0, stderr: command === "codesign" && args[0] === "--display" ? signature : "" };
+    return { status: 0, stderr: command === "/usr/bin/codesign" && args[0] === "--display" ? signature : "" };
   };
 }
 
-test("production gate requires Developer ID, correct team, both staples and both Gatekeeper assessments", () => {
+test("production gate requires Developer ID, correct team, a DMG staple and both Gatekeeper assessments", () => {
   const calls = [];
   verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "ABCDEFGHIJ", run: trustRunner(calls) });
   assert.deepEqual(calls, [
-    { command: "codesign", args: ["--verify", "--deep", "--strict", "ChemDraft.app"] },
-    { command: "codesign", args: ["--display", "--verbose=4", "ChemDraft.app"] },
-    { command: "xcrun", args: ["stapler", "validate", "ChemDraft.app"] },
-    { command: "xcrun", args: ["stapler", "validate", "ChemDraft.dmg"] },
-    { command: "spctl", args: ["--assess", "--type", "execute", "ChemDraft.app"] },
-    { command: "spctl", args: ["--assess", "--type", "open", "--context", "context:primary-signature", "ChemDraft.dmg"] }
+    { command: "/usr/bin/codesign", args: ["--verify", "--deep", "--strict", "ChemDraft.app"] },
+    { command: "/usr/bin/codesign", args: ["--display", "--verbose=4", "ChemDraft.app"] },
+    { command: "/usr/sbin/spctl", args: ["--assess", "--type", "execute", "ChemDraft.app"] },
+    { command: "/usr/bin/xcrun", args: ["stapler", "validate", "ChemDraft.dmg"] },
+    { command: "/usr/sbin/spctl", args: ["--assess", "--type", "open", "--context", "context:primary-signature", "ChemDraft.dmg"] }
   ]);
 });
 
-test("production rejects missing signatures, app/DMG staples, Gatekeeper failures and wrong team", () => {
-  for (let failed = 0; failed < 6; failed++) {
+test("production rejects missing signatures, DMG staples, Gatekeeper failures and wrong team", () => {
+  for (let failed = 0; failed < 5; failed++) {
     const calls = [];
     const run = trustRunner(calls, { failure: () => calls.length === failed + 1 });
     assert.throws(() => verifyReleaseTrust("ChemDraft.app", "ChemDraft.dmg", { teamId: "ABCDEFGHIJ", run }), /rejected by fake native gate/);
@@ -101,19 +100,54 @@ test("production rejects missing signatures, app/DMG staples, Gatekeeper failure
 
 test("release app verification requires embedded commit and cannot exempt sidecars; unsigned smoke still works", () => {
   const bundle = validBundle();
-  const run = () => ({ status: 0, stdout: JSON.stringify(bundle.plist) });
-  assert.throws(() => verifyApp("ChemDraft.app", bundle.target, { run, release: true, inventory: () => bundle.records }), /ChemDraftSourceCommit.*missing/);
-  assert.throws(() => verifyApp("ChemDraft.app", bundle.target, { run, release: true, allowSidecarPlaceholder: true }), /cannot allow/);
-  assert.equal(verifyApp("ChemDraft.app", bundle.target, { run, inventory: () => bundle.records }), 4);
-  const commit = "a".repeat(40);
-  bundle.plist.ChemDraftSourceCommit = commit;
   const calls = [];
   const trust = trustRunner(calls);
-  assert.equal(verifyApp("ChemDraft.app", bundle.target, {
-    run: (command, args) => command === "/usr/bin/plutil" ? run() : trust(command, args),
-    release: true, dmg: "ChemDraft.dmg", teamId: "ABCDEFGHIJ", commit, inventory: () => bundle.records
-  }), 4);
-  assert.equal(calls.length, 6);
+  const mounted = join("virtual-mount", "ChemDraft.app");
+  const run = (command, args, options) => {
+    assert.equal(options.encoding, "utf8");
+    if (command === "/usr/bin/plutil") {
+      assert.deepEqual(args, ["-convert", "json", "-o", "-", join(mounted, "Contents", "Info.plist")]);
+      return { status: 0, stdout: JSON.stringify(bundle.plist) };
+    }
+    if (command === "/usr/bin/hdiutil") {
+      calls.push({ command, args });
+      assert.deepEqual(args, args[0] === "attach"
+        ? ["attach", "-readonly", "-nobrowse", "-mountpoint", "virtual-mount", "ChemDraft.dmg"]
+        : ["detach", "virtual-mount"]);
+      return { status: 0 };
+    }
+    return trust(command, args);
+  };
+  const options = {
+    run, release: true, dmg: "ChemDraft.dmg", teamId: "ABCDEFGHIJ", commit: "a".repeat(40),
+    makeTemp: () => "virtual-mount", entries: () => ["ChemDraft.app", "Applications"], cleanup: () => {},
+    inventory: (app) => { assert.equal(app, mounted); return bundle.records; }
+  };
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, options), /ChemDraftSourceCommit.*missing/);
+  assert.equal(calls.at(-1).args[0], "detach");
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, { ...options, dmg: undefined }), /requires --dmg/);
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, { ...options, allowSidecarPlaceholder: true }), /cannot allow/);
+  assert.equal(verifyApp(mounted, bundle.target, { run, inventory: () => bundle.records }), 4);
+  bundle.plist.ChemDraftSourceCommit = options.commit;
+  calls.length = 0;
+  assert.equal(verifyApp("build-folder.app", bundle.target, options), 4);
+  assert.deepEqual(calls.map(({ args }) => args[0]), ["attach", "--verify", "--display", "--assess", "stapler", "--assess", "detach"]);
+  for (const { command, args } of calls) {
+    if (command === "/usr/bin/codesign" || (command === "/usr/sbin/spctl" && args.includes("execute"))) assert.equal(args.at(-1), mounted);
+    if (command === "/usr/bin/xcrun") assert.deepEqual(args, ["stapler", "validate", "ChemDraft.dmg"]);
+  }
+  assert.equal(verifyApp(undefined, bundle.target, options), 4);
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, {
+    ...options, run: (command, args, config) => command === "/usr/bin/codesign"
+      ? { status: 1, stderr: "invalid shipped signature" } : run(command, args, config)
+  }), /invalid shipped signature/);
+  assert.equal(calls.at(-1).args[0], "detach");
+  // A valid local build cannot hide a wrong payload architecture or commit.
+  bundle.records[0].slices = machOSlices(thinMachO("arm64"));
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, options), /missing x86_64 slice/);
+  assert.equal(calls.at(-1).args[0], "detach");
+  bundle.plist.ChemDraftSourceCommit = "b".repeat(40);
+  assert.throws(() => verifyApp("build-folder.app", bundle.target, options), /ChemDraftSourceCommit.*expected/);
 });
 
 test("wrong feed, missing runtime, wrong JVM, wrong helpers and high minos fail closed", () => {

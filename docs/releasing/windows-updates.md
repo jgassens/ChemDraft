@@ -79,10 +79,13 @@ contains the installer, `.exe.build.json`, `.exe.sig`, `latest.json`, and checks
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
 publishes a release or commits the feed. Collect all three artifacts and their `.build.json` records
 and run the [joint release body check](three-builds.md) against the release tag, declaring gaps or
-`--no-gaps`. As the last step before un-drafting, require
+`--no-gaps`. As the last step before un-drafting on a Mac, run both DMG verifiers with
+`--release --dmg` as listed in [the final checklist](three-builds.md#last-step-before-un-drafting), and require
 `node tools/release/check-release-assets.mjs --tag vX.Y.Z --commit <full-sha>` to report PASS
-over the attached GitHub assets. The workflow's final job runs it automatically when complete;
-a Windows-only upload reports missing platforms without failing, and is not a publishing pass.
+over the attached GitHub assets without skip or incomplete flags. The workflow runs the asset
+checker after upload inside the same draft-visible job, explicitly skipping mounted DMG provenance
+on Windows. Wholly missing build pairs produce INCOMPLETE; every supplied build is still checked.
+A Windows-only upload is not a publishing pass.
 Publish the joint release only after the strict gate passes, then commit the generated feed to
 `main` only after its installer URL works. Build records bind SHA-256 and size to the final signed bytes.
 

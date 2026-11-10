@@ -5,9 +5,12 @@ import { closeSync, openSync, readFileSync, readSync, statSync, writeFileSync } 
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { verifyDmgSourceCommit } from "./macos-dmg.mjs";
+import { COMMIT_PATTERN } from "./source-commit.mjs";
+
+export { COMMIT_PATTERN } from "./source-commit.mjs";
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-export const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 export const BUILD_TARGETS = {
   "aarch64-apple-darwin": "aarch64.dmg",
   "x86_64-apple-darwin": "x86_64.dmg",
@@ -31,16 +34,16 @@ export function artifactDigest(artifact) {
   } finally { closeSync(fd); }
 }
 
-export function gitOutput(rootDir, args) {
-  const result = spawnSync("git", args, { cwd: rootDir, encoding: "utf8" });
+export function gitOutput(rootDir, args, run = spawnSync) {
+  const result = run("git", args, { cwd: rootDir, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr || result.error?.message}`);
   return result.stdout.trim();
 }
 
-export function buildSource(rootDir = ROOT) {
-  const commit = gitOutput(rootDir, ["rev-parse", "HEAD"]);
+export function buildSource(rootDir = ROOT, { run = spawnSync } = {}) {
+  const commit = gitOutput(rootDir, ["rev-parse", "HEAD"], run);
   if (!COMMIT_PATTERN.test(commit)) throw new Error("Expected a full 40-character source commit");
-  if (gitOutput(rootDir, ["status", "--porcelain", "--untracked-files=normal"])) {
+  if (gitOutput(rootDir, ["status", "--porcelain", "--untracked-files=normal"], run)) {
     throw new Error("Refusing release build record: source tree is dirty");
   }
   const { version } = JSON.parse(readFileSync(join(rootDir, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8"));
@@ -48,11 +51,12 @@ export function buildSource(rootDir = ROOT) {
   return { commit, version, clean: true };
 }
 
-export function recordBuild({ artifact, target, rootDir = ROOT }) {
+export function recordBuild({ artifact, target, rootDir = ROOT }, { run = spawnSync } = {}) {
   if (!Object.hasOwn(BUILD_TARGETS, target)) throw new Error(`Unsupported release target: ${target}`);
-  const source = buildSource(rootDir);
+  const source = buildSource(rootDir, { run });
   const expected = `ChemDraft_${source.version}_${BUILD_TARGETS[target]}`;
   if (basename(artifact) !== expected || !statSync(artifact).isFile()) throw new Error(`Expected release artifact ${expected}`);
+  if (artifact.endsWith(".dmg")) verifyDmgSourceCommit(artifact, source.commit, { run });
   const record = { ...source, target, ...artifactDigest(artifact) };
   writeFileSync(`${artifact}.build.json`, `${JSON.stringify(record, null, 2)}\n`);
   return record;
