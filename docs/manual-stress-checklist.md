@@ -1412,10 +1412,18 @@ or Ctrl+Shift+Z or Ctrl+Y on Windows.
   not restored, and no restore occurs during quit. On failure the status says `Preferences unavailable:
   <reason>`. (Commit 67d5d7b4.)
 - Open a CDXML whole-molecule structural repeat unit (SRU), then drag a Single Bond from another
-  molecule onto a member atom. Copy As MOL V3000 writes no SRU and shows the edit warning. Delete
-  the whole member molecule and Copy As MOL: no SRU is written and the warning appears. Delete one
-  member atom of an atom-level SRU: no SRU is written and the warning appears.
-  (fix pending in Toolbar groups 1.2; verify against its commit)
+  molecule onto a member atom. Copy As MOL V3000 writes no SRU and warns `MOL cannot represent repeat
+  unit <label> (bracket <id>): its imported whole-molecule membership has new atom "<atom id>" after
+  an edit to member "<member id>"; only the bare structure is written.` when the member is the host,
+  or warns `MOL cannot represent repeat unit <label> (bracket <id>): its imported whole-molecule
+  membership changed after an edit and no longer resolves to the original member molecules; only the
+  bare structure is written.` when the member is absorbed. Delete the whole member molecule and Copy
+  As MOL: no SRU is written and the warning says `its edited native membership is empty`. Delete one
+  member atom of an atom-level SRU: no SRU is written and the warning identifies the unresolved
+  `BracketedObjectIDs` member. For a document imported before whole-molecule identity snapshots
+  existed, no SRU is written and the warning says `its imported whole-molecule membership cannot
+  rule out edits to member "<member id>" without an import-time atom and incident-bond snapshot`.
+  (Commit 78a81a70.)
 
 ### Clean Up Structure 2D on a selection
 
