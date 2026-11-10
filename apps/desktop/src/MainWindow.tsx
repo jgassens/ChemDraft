@@ -12053,6 +12053,7 @@ export function MainWindow({
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
       return gate.run(async () => {
+        signal?.throwIfAborted();
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");

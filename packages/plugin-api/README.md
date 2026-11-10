@@ -87,3 +87,8 @@ Native molecule objects and document patches preserve isotope masses; hydrogen-2
 
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em.
+
+API 0.1.21 adds optional `chemistry.properties` (RDKit source composition and masses, gated by
+`chemistry.compute`) and `extraTools` on `assistant.createToolSession`. A worker registers
+`onAssistantToolCall(context, call, signal)` to handle its own session's tools. See
+`docs/plugin-architecture/AUTHORING.md` for validation, cancellation, and result limits.

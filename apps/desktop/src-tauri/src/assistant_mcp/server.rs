@@ -458,7 +458,7 @@ async fn forward(
         }
         Ok(Ok(Err(error))) => protocol::error(id, -32000, &error),
         Ok(Err(_)) => protocol::error(id, -32000, "ChemDraft session closed"),
-        Err(_) => protocol::error(id, -32000, "ChemDraft did not answer in time"),
+        Err(_) => protocol::deadline_response(id, method),
     };
     if serde_json::to_vec(&value).unwrap().len() > protocol::RESULT_LIMIT {
         rpc(protocol::error(

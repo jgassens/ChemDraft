@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, runPluginWorker, parsePluginManifest, type PluginWorkerHandle,
+  type PluginCommandContext, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
@@ -13,8 +14,10 @@ import { commitWithPageFit } from "../pageEnlargement";
 import { objectRect } from "./placement";
 import { buildMoveObjects, translateObject } from "./writeBuilder";
 import { applyChargeToolAtPoint } from "../documentWorkflow";
+import { PluginWorkerBridge } from "../plugins/PluginWorkerBridge";
+import { createWorkerRoutedOptions } from "../plugins/registerBundledPlugins";
 
-function setup(platform?: "macos" | "windows") {
+function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = false, workerRouted = false, platform?: "macos" | "windows") {
   const fixture = testContext();
   const { context, replace } = fixture;
   replace(toEngineDocument(context.getDocument()!));
@@ -34,6 +37,7 @@ function setup(platform?: "macos" | "windows") {
     onUserEdit: listener => { userEdits.add(listener); return () => { userEdits.delete(listener); }; }, undo: () => false
   };
   const transactions = new AssistantTransactions(port);
+  const writeSignals: AbortSignal[] = [];
   const listeners = new Map<string, (message: McpBridgeRequest) => void>();
   const engine = {
     open: vi.fn(async (_plugin, listener: (message: McpBridgeRequest) => void) => {
@@ -46,13 +50,45 @@ function setup(platform?: "macos" | "windows") {
   const controller = new AssistantToolsController({ platform, host: (): PluginHost => host, engine,
     getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
     readDocument: port.read, transactions: () => transactions, createContext: () => context });
-  const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }) });
+  const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }),
+    ...(directWrites ? { getActiveDocument: context.getDocument, applyDocumentPatch: (application: import("@chemdraft/plugin-host").PluginPatchApplicationRequest) => gate.run(() => {
+      writeSignals.push(application.signal!);
+      application.signal?.throwIfAborted();
+      const applied = applyPluginDocumentPatch(context.getDocument()!, application.patch);
+      const tx = transactions.activeTransactionForPlugin(context.plugin.id, context.tabId)!;
+      transactions.writeAssistantTransaction(tx, applied.document, applied.receipt.objectIds);
+      return applied.receipt;
+    }) } : {})
+  });
   const plugin = { id: context.plugin.id, name: context.plugin.name };
   let commandContext!: PluginCommandContext;
   let release!: () => void;
-  host.registerPlugin({ ...plugin, version: "0", apiVersion: "^0.1.9", entry: "worker.js",
+  const manifest = parsePluginManifest({ ...plugin, version: "0", apiVersion: "^0.1.21", entry: "worker.js",
     permissions: [...AssistantCapabilityPermissions], contributes: { commands: [{ id: "plugin.assistant.submit", title: "Submit" }] }
-  }, { commandHandlers: { "plugin.assistant.submit": ctx => { commandContext = ctx; return new Promise<void>(resolve => { release = resolve; }); } } });
+  });
+  const registration = { manifest, onAssistantToolCall, commandHandlers: {
+    "plugin.assistant.submit": (ctx: PluginCommandContext) => { commandContext = ctx; return new Promise<void>(resolve => { release = resolve; }); }
+  } };
+  const workerBridge = workerRouted ? new PluginWorkerBridge({ pluginId: plugin.id, createWorker: () => {
+    // Clone and deliver asynchronously in both directions, like a browser Worker.
+    let mainListener: (event: { data: unknown }) => void;
+    let workerListener: (event: { data: unknown }) => void;
+    let terminated = false;
+    const deliver = (listener: () => (event: { data: unknown }) => void, message: unknown) => {
+      const data = structuredClone(message);
+      queueMicrotask(() => { if (!terminated) listener()({ data }); });
+    };
+    runPluginWorker(registration, {
+      postMessage: message => deliver(() => mainListener, message),
+      addEventListener: (_type, listener) => { workerListener = listener; }
+    });
+    return {
+      postMessage: message => deliver(() => workerListener, message),
+      addEventListener: (type, listener) => { if (type === "message") mainListener = listener; },
+      terminate: () => { terminated = true; }
+    } as PluginWorkerHandle;
+  } }) : undefined;
+  host.registerPlugin(manifest, workerBridge ? createWorkerRoutedOptions(manifest, workerBridge) : registration);
   const command = host.invokeCommand("plugin.assistant.submit");
   let sequence = 0;
   const bridge = async (sessionId: string, name: string, input: unknown) => {
@@ -62,10 +98,11 @@ function setup(platform?: "macos" | "windows") {
     return engine.respond.mock.calls.find(call => call[0] === sessionId && call[1] === requestId)![2];
   };
   return { ...fixture, host, controller, engine, plugin, context, listeners, history, port, commandContext, bridge,
-    gesture, gate, getSelectionIds, userEdits, transactions,
+    gesture, gate, getSelectionIds, userEdits, transactions, workerBridge, writeSignals,
     select: (ids: string[]) => { selection = ids; }, activate: (tabId: string) => { activeTabId = tabId; },
     finishCommand: async () => { release(); await command; },
-    finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command; transactions.dispose(); } };
+    finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command;
+      workerBridge?.terminate(); transactions.dispose(); } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -144,7 +181,7 @@ describe("assistant write structural sharing", () => {
 });
 
 function placementSetup(platform?: "macos" | "windows") {
-  const s = setup(platform);
+  const s = setup(undefined, false, false, platform);
   const document = s.context.getDocument()!;
   const page = document.pages[0]!;
   s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [] }] }, {
@@ -165,7 +202,7 @@ function placementSetup(platform?: "macos" | "windows") {
 
 describe.each(["macos", "windows"] as const)("assistant host page enlargement on %s", platform => {
   it("shifts unselected content with the page after scoped verification, keeping only request insertions selected", async () => {
-    const s = setup(platform);
+    const s = setup(undefined, false, false, platform);
     const document = s.context.getDocument()!, page = document.pages[0]!;
     const molecule = translateObject(s.molecule, -24 - s.molecule.x, -32 - s.molecule.y);
     s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [molecule, s.text] },
@@ -862,5 +899,298 @@ describe("assistant requests and MCP bridge", () => {
       expect(s.history).toHaveLength(0);
       await s.controller.endRequest(s.plugin, { requestId });
     } finally { await s.finish(); }
+  });
+});
+
+
+const EXTRA_TOOL = { name: "plugin_lookup", description: "Look up a plugin-owned record", inputSchema: { type: "object", properties: { key: { type: "string" } } } };
+const TOOL_OK = { content: [{ type: "text" as const, text: "plugin result" }] };
+
+describe("session-scoped plugin assistant tools", () => {
+  it.each(["settle", "cancel", "unregister"])("keeps one write lifetime per assistant tool and aborts it on %s", async action => {
+    let release!: () => void;
+    const s = setup(async context => {
+      for (const id of ["first-note", "second-note"]) {
+        await context.documents.applyPatch!({ reason: "Insert record", patch: {
+          op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: { ...s.text, id }
+        } });
+      }
+      await new Promise<void>(resolve => { release = resolve; });
+      return TOOL_OK;
+    }, true);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const pending = s.bridge(session.sessionId, EXTRA_TOOL.name, {});
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(s.writeSignals).toHaveLength(2);
+      expect(s.writeSignals[0]).toBe(s.writeSignals[1]);
+      expect(s.writeSignals[0]!.aborted).toBe(false);
+      if (action === "cancel") await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      else if (action === "unregister") s.host.unregisterPlugin(s.plugin.id);
+      else release();
+      await pending;
+      expect(s.writeSignals[0]!.aborted).toBe(true);
+    } finally { release?.(); await s.finish(); }
+  });
+
+  it("lists the session's tools and routes calls to its owning handler with declared capabilities", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>(async (context, call) => {
+      expect(context.plugin.id).toBe(s.plugin.id);
+      expect(context.chemistry).toBeDefined();
+      expect(context.storage).toBeUndefined(); // no plugin.storage permission
+      expect(call.input).toEqual({ key: "record" });
+      return TOOL_OK;
+    });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "look up a record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(session.tools).toContain(EXTRA_TOOL.name);
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "list", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "list",
+        { result: { tools: expect.arrayContaining([EXTRA_TOOL, expect.objectContaining({ name: "get_document" })]) } }));
+      expect(await s.controller.listTools(s.plugin)).not.toContainEqual(EXTRA_TOOL);
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, { key: "record" })).toEqual({ result: TOOL_OK });
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0]![1]).toEqual({ sessionId: session.sessionId, name: EXTRA_TOOL.name, input: { key: "record" } });
+      expect(await s.bridge(session.sessionId, "get_document", {})).toHaveProperty("result");
+    } finally { await s.finish(); }
+  });
+
+  it("keeps direct handler patches in the request scope and history for later host tools", async () => {
+    const s = setup(async context => {
+      const receipt = await context.documents.applyPatch!({ reason: "Insert record", patch: {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id,
+        object: { ...s.text, id: "plugin-note", text: "Record" }
+      } });
+      return { content: [{ type: "text", text: "Inserted" }], structuredContent: receipt };
+    }, true);
+    try {
+      s.select([]);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { structuredContent: { applied: true } } });
+      expect(await s.bridge(session.sessionId, "style_objects", { objectIds: ["plugin-note"], style: { color: "#123456" } }))
+        .toMatchObject({ result: { structuredContent: { objectIds: ["plugin-note"] } } });
+      expect(s.history).toHaveLength(1);
+      expect(await s.controller.endRequest(s.plugin, { requestId })).toMatchObject({ touchedIds: ["plugin-note"], summary: "1 object(s) changed." });
+    } finally { await s.finish(); }
+  });
+
+  it("refuses a deferred handler patch after its session closes", async () => {
+    const s = setup(async context => {
+      await context.documents.applyPatch!({ reason: "Insert record", patch: {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: { ...s.text, id: "cancelled-note" }
+      } });
+      return TOOL_OK;
+    }, true);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.gesture.active = true;
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "deferred", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      s.gesture.active = false; s.gate.flush();
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "deferred", expect.objectContaining({ result: expect.objectContaining({ isError: true }) })));
+      expect(s.history).toHaveLength(0);
+      expect(s.context.getDocument()!.pages[0]!.objects.some(object => object.id === "cancelled-note")).toBe(false);
+    } finally { await s.finish(); }
+  });
+
+  it.each([
+    [{ ...EXTRA_TOOL, name: "BadName" }, "name"],
+    [{ ...EXTRA_TOOL, name: "a".repeat(49) }, "name"],
+    [{ ...EXTRA_TOOL, description: "a".repeat(1001) }, "description"],
+    [{ ...EXTRA_TOOL, inputSchema: [] }, "inputSchema"],
+    [{ ...EXTRA_TOOL, inputSchema: { description: "x".repeat(16_384) } }, "inputSchema"],
+    [{ ...EXTRA_TOOL, inputSchema: { description: "é".repeat(8192) } }, "inputSchema"],
+    [{ ...EXTRA_TOOL, name: "get_document" }, "collides"]
+  ])("refuses the whole session for invalid extra tool %#", async (tool, message) => {
+    const s = setup(async () => TOOL_OK);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [tool] } as never)).rejects.toThrow(message);
+      expect(s.engine.open).not.toHaveBeenCalled();
+    } finally { await s.finish(); }
+  });
+
+  it("refuses more than eight tools, duplicates, and a missing handler", async () => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: Array.from({ length: 9 }, (_, i) => ({ ...EXTRA_TOOL, name: `extra_${i}` })) })).rejects.toThrow("8");
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL, EXTRA_TOOL] })).rejects.toThrow("collides");
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] })).rejects.toThrow("no assistant tool handler");
+      expect(s.engine.open).not.toHaveBeenCalled();
+    } finally { await s.finish(); }
+  });
+
+  it("refuses extra tools up front when the worker registered no handler", async () => {
+    const s = setup(undefined, false, true);
+    try {
+      await s.workerBridge!.whenReady();
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(s.host.hasAssistantToolHandler(s.plugin.id)).toBe(false);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] }))
+        .rejects.toThrow("no assistant tool handler");
+      expect(s.engine.open).not.toHaveBeenCalled();
+      // A worker without an extra-tool handler can still use the host's tools.
+      await expect(s.controller.createToolSession(s.plugin, { requestId })).resolves.toHaveProperty("sessionId");
+    } finally { await s.finish(); }
+  });
+
+  it("allows eight tools and snapshots their schemas before asynchronous session opening", async () => {
+    const s = setup(async () => TOOL_OK);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      const tools = Array.from({ length: 8 }, (_, i) => ({ ...EXTRA_TOOL, name: `extra_${i}`, inputSchema: { type: "object" } }));
+      const opening = s.controller.createToolSession(s.plugin, { requestId, extraTools: tools });
+      tools[0]!.inputSchema.type = "changed";
+      const session = await opening;
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "list", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "list",
+        { result: { tools: expect.arrayContaining([expect.objectContaining({ name: "extra_0", inputSchema: { type: "object" } })]) } }));
+    } finally { await s.finish(); }
+  });
+
+  it("turns thrown errors, invalid results, and oversized results into model-visible tool errors", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>()
+      .mockRejectedValueOnce(new Error("lookup failed"))
+      .mockResolvedValueOnce({ noContent: true } as never)
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true, content: [{ text: "lookup failed" }] } });
+      for (let i = 0; i < 2; i++) expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true } });
+    } finally { await s.finish(); }
+  });
+
+  it("times out after 120 seconds and aborts the handler", async () => {
+    vi.useFakeTimers();
+    let signal!: AbortSignal;
+    const s = setup((_ctx, _call, abort) => { signal = abort; return new Promise(() => {}); });
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "timeout", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(signal.aborted).toBe(true);
+      expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "timeout",
+        { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("deadline") }] } });
+    } finally { await s.finish(); }
+  });
+
+  it.each([false, true])("holds slots across repeated timeouts until abort-ignoring handlers settle (worker: %s)", async worker => {
+    vi.useFakeTimers();
+    let running = 0;
+    let maximumRunning = 0;
+    const pending: { resolve(): void; reject(): void; signal: AbortSignal }[] = [];
+    const handler = vi.fn<PluginAssistantToolHandler>(async (_context, _call, signal) => {
+      maximumRunning = Math.max(maximumRunning, ++running);
+      try {
+        await new Promise<void>((resolve, reject) => pending.push({ resolve,
+          reject: () => reject(new Error("late failure")), signal }));
+        return TOOL_OK;
+      } finally { running--; }
+    });
+    const s = setup(handler, false, worker);
+    try {
+      await s.workerBridge?.whenReady();
+      await vi.advanceTimersByTimeAsync(0);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const send = (requestId: string) => s.listeners.get(session.sessionId)!({ sessionId: session.sessionId,
+        requestId, method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      for (let i = 0; i < 4; i++) {
+        send(`timeout${i}`);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, `timeout${i}`,
+          { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("deadline") }] } });
+        expect(pending[i]!.signal.aborted).toBe(true);
+        expect(running).toBe(i + 1);
+      }
+      for (let i = 0; i < 3; i++) {
+        send(`blocked${i}`);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, `blocked${i}`,
+          { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("four") }] } });
+      }
+      expect(handler).toHaveBeenCalledTimes(4);
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("four");
+      // Both fulfillment and rejection of abandoned work must release the slot.
+      pending[0]!.resolve();
+      pending[1]!.reject();
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 2; i++) send(`replacement${i}`);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handler).toHaveBeenCalledTimes(6);
+      expect(running).toBe(4);
+      expect(maximumRunning).toBe(4);
+      pending.slice(2).forEach(call => call.resolve());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(running).toBe(0);
+      expect(s.engine.respond.mock.calls.filter(([, id]) => id.startsWith("timeout"))).toHaveLength(4);
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).resolves.toHaveProperty("content");
+    } finally {
+      pending.forEach(call => call.resolve());
+      await vi.advanceTimersByTimeAsync(0);
+      await s.finish();
+    }
+  });
+
+  it.each(["close", "unregister", "end"] as const)("%s cancels pending calls and refuses late calls", async action => {
+    let signal!: AbortSignal;
+    const handler = vi.fn<PluginAssistantToolHandler>((_ctx, _call, abort) => { signal = abort; return new Promise(() => {}); });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "pending", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      if (action === "close") await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      else if (action === "end") await s.controller.endRequest(s.plugin, { requestId });
+      else s.host.unregisterPlugin(s.plugin.id);
+      expect(signal.aborted).toBe(true);
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "pending", expect.objectContaining({ result: expect.objectContaining({ isError: true }) })));
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toHaveProperty("error");
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally { await s.finish(); }
+  });
+
+  it("shares the four-call limit with host tools", async () => {
+    const s = setup(() => new Promise(() => {}));
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      for (let i = 0; i < 4; i++) s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: `busy${i}`, method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("four") }] } });
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("four");
+    } finally { await s.finish(); }
+  });
+
+  it("isolates tool lists and calls by session and plugin", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>(async () => TOOL_OK);
+    const s = setup(handler);
+    const other = { id: "org.test.other", name: "Other" };
+    s.host.registerPlugin({ ...other, version: "0", apiVersion: "^0.1.21", entry: "worker.js", permissions: [...AssistantCapabilityPermissions] },
+      { onAssistantToolCall: handler });
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const own = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const plain = await s.controller.createToolSession(s.plugin, { requestId });
+      expect(plain.tools).not.toContain(EXTRA_TOOL.name);
+      expect(await s.bridge(plain.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true } });
+      await expect(s.controller.closeToolSession(other, { sessionId: own.sessionId })).rejects.toThrow("does not belong");
+      await expect(s.controller.createToolSession(other, { requestId, extraTools: [EXTRA_TOOL] })).rejects.toThrow("does not belong");
+      // A native message injected into another session's listener cannot cross session ownership.
+      s.listeners.get(own.sessionId)!({ sessionId: plain.sessionId, requestId: "plain", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(plain.sessionId, "plain",
+        { result: { tools: expect.not.arrayContaining([EXTRA_TOOL]) } }));
+      expect(handler).not.toHaveBeenCalled();
+    } finally { await s.finish(); s.host.unregisterPlugin(other.id); }
   });
 });

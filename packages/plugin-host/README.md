@@ -72,3 +72,9 @@ text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique a
 prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
 `ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
 focus defaults to false. Embedding hosts resolve action metadata from their current content store.
+
+
+API 0.1.21 forwards `chemistry.properties` through the permission-checked `computeProperties`
+embedding callback, validates its response, and supports `onAssistantToolCall` registrations.
+The assistant controller owns session validation and lifetime; `invokeAssistantTool` supplies a
+declared-only capability context for the callback and invalidates it when the call is cancelled.

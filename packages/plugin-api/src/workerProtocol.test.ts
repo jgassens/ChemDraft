@@ -146,6 +146,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.19", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.20", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.21", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.21", "0.1.20")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.20", "0.1.19")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.22", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.22", "0.1.21")).toBe(false);
@@ -158,7 +160,7 @@ describe("chemistry worker capability allowlist", () => {
   });
   it("includes all optional API 0.1.15 methods", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
-      "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"
+      "properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"
     ]);
   });
   it("includes structureToName", () => {
@@ -287,7 +289,37 @@ describe("runPluginWorker", () => {
   it("announces readiness with the protocol version and the plugin's apiVersion", () => {
     const endpoint = new ControlledEndpoint();
     runPluginWorker({ manifest: manifest(["selection.read"]), commandHandlers: {} }, endpoint);
-    expect(endpoint.sent).toEqual([{ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: "^0.1.0" }]);
+    expect(endpoint.sent).toEqual([{ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: "^0.1.0",
+      hasAssistantToolHandler: false }]);
+  });
+
+  it("announces a registered assistant tool handler", () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest([...AssistantCapabilityPermissions]), commandHandlers: {},
+      onAssistantToolCall: async () => ({ content: [] }) }, endpoint);
+    expect(endpoint.sent[0]).toMatchObject({ kind: "ready", hasAssistantToolHandler: true });
+  });
+
+  it.each([false, true])("acknowledges an aborted assistant tool only when its handler settles (reject: %s)", async reject => {
+    const endpoint = new ControlledEndpoint();
+    let settle!: () => void;
+    let signal!: AbortSignal;
+    runPluginWorker({ manifest: manifest([...AssistantCapabilityPermissions]), commandHandlers: {},
+      onAssistantToolCall: (_context, _call, abort) => {
+        signal = abort;
+        return new Promise((resolve, fail) => { settle = () => reject ? fail(new Error("late failure")) : resolve({ content: [] }); });
+      } }, endpoint);
+    endpoint.deliver({ kind: "invokeAssistantTool", commandRequestId: 1, sessionId: "session", name: "lookup", input: {} });
+    await flush();
+    endpoint.deliver({ kind: "abort", commandRequestId: 1 });
+    await flush();
+    expect(signal.aborted).toBe(true);
+    expect(endpoint.sent.filter(message => message.kind === "commandSettled")).toEqual([]);
+    settle();
+    await flush();
+    expect(endpoint.sent.filter(message => message.kind === "commandSettled")).toEqual([
+      expect.objectContaining({ kind: "commandSettled", commandRequestId: 1, ok: false })
+    ]);
   });
 
   it("runs a command against capability stubs that request/await across the boundary", async () => {
