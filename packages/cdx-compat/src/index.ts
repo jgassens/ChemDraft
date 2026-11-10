@@ -239,7 +239,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
       warnings: [
         warning(
           "cdx.binary_not_supported",
-          "This is a ChemDraw binary (.cdx) file, which ChemDraft cannot read yet. In ChemDraw, use File ▸ Save As and choose CDXML, then open that file."
+          "This is a binary CDX file, which ChemDraft cannot read yet. Save it as CDXML in a compatible application, then open that file."
         )
       ]
     };
@@ -273,7 +273,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
       warnings: [
         warning(
           "cdxml.not_cdxml_xml",
-          `This XML file is not ChemDraw CDXML: its top-level element is <${rootName}>, not <CDXML>.`
+          `This XML file is not CDXML: its top-level element is <${rootName}>, not <CDXML>.`
         )
       ]
     };
@@ -1041,7 +1041,7 @@ function warnForGraphicCdxmlLimitations(
   if (typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
     warnings.push({
       code: "cdxml.graphic_color_approximation",
-      message: `Native graphic color "${color}" is not in the standard ChemDraw color table and is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `Native graphic color "${color}" is not in the standard CDXML color table and is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }

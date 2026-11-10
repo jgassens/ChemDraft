@@ -46,9 +46,9 @@ const KEYBINDING_SCHEMES: RadioOption<KeybindingScheme>[] = [
   },
   {
     value: "chemdraw",
-    title: "ChemDraw-compatible",
+    title: "Classic desktop-compatible",
     description:
-      "Shortcuts and hover hotkeys that mirror ChemDraw's defaults (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, \"l\" for Cl, \"b\" for Br…). Case matters for element keys: B = boron, b = Br. For users transitioning from ChemDraw."
+      "Classic desktop shortcuts and hover hotkeys (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, \"l\" for Cl, \"b\" for Br…). Case matters for element keys: B = boron, b = Br."
   }
 ];
 
