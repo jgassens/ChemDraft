@@ -124,6 +124,8 @@ export {
 export {
   type AtomLabelAnchor,
   nativeAtomLabelReading,
+  nativeHoverAtomLabelCanContinue,
+  nativeHoverAtomLabelCompletion,
   type NativeAtomLabelContext,
   type NativeAtomLabelReading,
   nativeAtomMaxValence,

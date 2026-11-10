@@ -744,18 +744,22 @@ describe("hover label typing", () => {
     expectIntact();
   });
 
-  it.each(["OM", "OMe", "NMe"])("Escape cancels hover %s on a ring including the first instant assignment", async label => {
+  it.each(["OM", "OMe", "NMe"])("Escape cancels hover %s on a ring while retaining the first committed key", async label => {
     const before = snapshot().document;
     await hover(0);
-    for (const key of label) await press(key);
+    await press(label[0]!);
+    const committed = snapshot().document;
+    for (const key of label.slice(1)) await press(key);
     await press("Escape");
     expect(editor()).toBeNull();
-    expect(snapshot().document).toEqual(before);
+    expect(snapshot().document).toEqual(committed);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Atom label unchanged");
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
-    expect(snapshot().document).toEqual(before);
+    expect(snapshot().document).toEqual(committed);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to redo");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(snapshot().document).toEqual(before);
     expectIntact();
   });
 
