@@ -57,10 +57,13 @@ export function applyPluginDocumentPatch(
       const occupied = page.objects.filter(object => !inserted.has(object.id)).map(objectRect);
       const visibleBounds = unionRects([bounds, ...objects.map(objectRect)]);
       if (occupied.some(other => boundsOverlap(visibleBounds, other))) {
-        // Reuse the app's inserted-object placement, including its page-growth fallback.
+        // Reuse placement search, but keep the original position when only page growth fits.
         // Translate the complete patch group once; never rebuild or rescale its chemistry.
-        const placement = choosePagePlacements({ page, sizes: [visibleBounds], occupied,
-          preferred: visibleBounds, gap: RELATIVE_GAP }).rects[0]!;
+        const placements = choosePagePlacements({ page, sizes: [visibleBounds], occupied,
+          preferred: visibleBounds, gap: RELATIVE_GAP });
+        const placement = placements.rects[0]!;
+        if (placements.nonFitting.length || placement.x < 0 || placement.y < 0 ||
+          placement.x + placement.width > page.width || placement.y + placement.height > page.height) continue;
         patched = translateInsertedDocumentObjects(patched, objects.map(object => object.id),
           placement.x - visibleBounds.x, placement.y - visibleBounds.y);
         continue;

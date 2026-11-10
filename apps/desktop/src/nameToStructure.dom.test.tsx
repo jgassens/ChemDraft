@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, DocumentObjectSchema, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { createSmilesMolecule, type PastedStructureDepiction } from "@chemdraft/document-workflow-core";
 import type { PluginNameToStructureResult } from "@chemdraft/plugin-api";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -11,6 +11,7 @@ import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { setNativePromptProvider } from "./nativePrompt";
 
 const harness = vi.hoisted(() => ({
   runtime: undefined as DesktopPluginRuntime | undefined,
@@ -146,5 +147,28 @@ describe("Name to Structure insertion placement", () => {
     expect(page.objects).toEqual([harness.built]);
     expect(inserted.x + inserted.width / 2).toBeCloseTo(page.width / 2);
     expect(inserted.y + inserted.height / 2).toBeCloseTo(page.height / 2);
+  });
+
+  it.each(["filled molecule frame", "page border"])("keeps the original position without asking to enlarge a page occupied by %s", async kind => {
+    harness.opsin.mockResolvedValue({ smiles: "CCO" });
+    const drawing = createEmptyDocument();
+    const page = drawing.pages[0]!;
+    page.objects = [kind === "filled molecule frame"
+      ? { ...createSmilesMolecule(drawing, { x: page.width / 2, y: page.height / 2 }, benzene, "c1ccccc1"),
+        x: 0, y: 0, width: page.width, height: page.height }
+      : DocumentObjectSchema.parse({ id: "border", type: "graphic", graphicKind: "rect",
+        x: 0, y: 0, width: page.width, height: page.height })];
+    const prompt = vi.fn(async () => "keep");
+    const restorePrompt = setNativePromptProvider(prompt);
+    try {
+      const port = await mount(drawing, "ethanol");
+      const before = port.read("initial")!;
+      await act(async () => { await harness.runtime!.invokeCommand(commandId); });
+      const after = port.read("initial")!;
+      expect(after.pages[0]!.objects).toEqual([...before.pages[0]!.objects, harness.built]);
+      expect(after.pages[0]!.width).toBe(page.width);
+      expect(after.pages[0]!.height).toBe(page.height);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restorePrompt(); }
   });
 });
