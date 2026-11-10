@@ -10,7 +10,7 @@ import {
   estimateAnnotationTextWidth,
   type AnnotationLabelBox
 } from "@chemdraft/layout-engine";
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -86,6 +86,16 @@ function click(element: Element): void {
   act(() => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 async function enlargeNativeFigure(): Promise<void> {
@@ -922,6 +932,160 @@ describe("LinkedFigureView", () => {
   });
 
   it.each([
+    { action: "copy", rejects: false },
+    { action: "png", rejects: false },
+    { action: "jdx", rejects: false },
+    { action: "png", rejects: true },
+    { action: "jdx", rejects: true }
+  ])("ignores $action completion after unmount (rejects: $rejects)", async ({ action, rejects }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copy = deferred<Awaited<ReturnType<typeof copySpectrumToClipboard>>>();
+    const save = deferred<Awaited<ReturnType<typeof exportSpectrumFigure>>>();
+    if (action === "copy") vi.mocked(copySpectrumToClipboard).mockReturnValueOnce(copy.promise);
+    else if (action === "jdx") vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
+    else vi.mocked(exportSpectrumFigure).mockReturnValueOnce(save.promise);
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const resetStatus = vi.fn();
+    const schedule = window.setTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, delay, ...args) => {
+      if (delay !== 1400 && delay !== 1800) return schedule(handler, delay, ...args);
+      return schedule(() => {
+        resetStatus();
+        if (typeof handler === "function") handler(...args);
+      }, delay);
+    });
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      if (action === "copy") {
+        click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Copy")!);
+        expect(copySpectrumToClipboard).toHaveBeenCalledOnce();
+      } else {
+        click(container!.querySelector('[aria-haspopup="menu"]')!);
+        click(container!.querySelectorAll('[role="menuitem"]')[action === "jdx" ? 0 : 1]);
+        expect(action === "jdx" ? saveTextFile : exportSpectrumFigure).toHaveBeenCalledOnce();
+      }
+      if (action !== "copy") {
+        const button = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+        expect(button.textContent).toBe("Exporting…");
+        expect(button.disabled).toBe(true);
+      }
+      expect(timeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 1400);
+      expect(timeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 1800);
+      await act(async () => {
+        root!.unmount();
+        root = undefined;
+      });
+      expect(container!.childElementCount).toBe(0);
+      const timersAfterUnmount = vi.getTimerCount();
+      timeoutSpy.mockClear();
+      await act(async () => {
+        if (action === "copy") copy.resolve("image");
+        else if (rejects) save.reject(new Error("Save failed"));
+        else save.resolve("saved");
+        await (action === "copy" ? copy.promise : save.promise).catch(() => {});
+      });
+      expect(timeoutSpy).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timersAfterUnmount);
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(resetStatus).not.toHaveBeenCalled();
+      expect(container!.childElementCount).toBe(0);
+      // React may silently ignore a setter after unmount. Check observable effects as well
+      // as diagnostics: no feedback DOM, scheduled timer, or reset callback may survive.
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      consoleError.mockRestore();
+      timeoutSpy.mockRestore();
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(exportSpectrumFigure).mockReset();
+      vi.mocked(saveTextFile).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { action: "export", delay: 1800, status: "Exported", idle: "Export" },
+    { action: "copy", delay: 1400, status: "Copied", idle: "Copy" }
+  ])("resets mounted $action feedback and replaces its timer on repeat", async ({ action, delay, status, idle }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Count feedback timers specifically; DOM focus handling may schedule other timeouts.
+    const liveTimers = new Set<number>();
+    const schedule = window.setTimeout.bind(window);
+    const cancel = window.clearTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+      if (timeout !== delay) return schedule(handler, timeout, ...args);
+      const timer = schedule(() => {
+        liveTimers.delete(timer);
+        if (typeof handler === "function") handler(...args);
+      }, timeout);
+      liveTimers.add(timer);
+      return timer;
+    });
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout").mockImplementation((timer) => {
+      if (timer !== undefined) liveTimers.delete(timer);
+      cancel(timer);
+    });
+    try {
+      // Strict Mode replays effect setup/cleanup; the mounted guard must be restored on setup.
+      mount(createElement(StrictMode, null, createElement(LinkedFigureView, { spectrum })));
+      const button = action === "export"
+        ? container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!
+        : [...container!.querySelectorAll("button")].find((candidate) => candidate.textContent === "Copy")!;
+      const perform = async (): Promise<void> => {
+        const copy = deferred<Awaited<ReturnType<typeof copySpectrumToClipboard>>>();
+        const save = deferred<Awaited<ReturnType<typeof saveTextFile>>>();
+        if (action === "export") vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
+        else vi.mocked(copySpectrumToClipboard).mockReturnValueOnce(copy.promise);
+        click(button);
+        if (action === "export") {
+          click(container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!);
+          expect(button.textContent).toBe("Exporting…");
+        }
+        await act(async () => {
+          if (action === "export") save.resolve("saved");
+          else copy.resolve("image");
+          await (action === "export" ? save.promise : copy.promise);
+        });
+        expect(button.textContent).toBe(status);
+        expect(liveTimers.size).toBe(1);
+      };
+      await perform();
+      act(() => { vi.advanceTimersByTime(delay - 1); });
+      expect(button.textContent).toBe(status);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(button.textContent).toBe(idle);
+      expect(liveTimers.size).toBe(0);
+      if (action === "export") expect(container!.querySelector('[role="status"]')).toBeNull();
+
+      await perform();
+      act(() => { vi.advanceTimersByTime(delay / 2); });
+      await perform();
+      // The original deadline passes, but the replacement timer retains the feedback.
+      act(() => { vi.advanceTimersByTime(delay - 1); });
+      expect(button.textContent).toBe(status);
+      expect(liveTimers.size).toBe(1);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(button.textContent).toBe(idle);
+      expect(liveTimers.size).toBe(0);
+      if (action === "export") expect(container!.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(saveTextFile).mockReset();
+      timeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
     { action: "export", delay: 1800, status: "Exported" },
     { action: "copy", delay: 1400, status: "Copied" }
   ])("clears the $action status timer when unmounted", async ({ action, delay, status }) => {
@@ -943,9 +1107,16 @@ describe("LinkedFigureView", () => {
       mount(createElement(LinkedFigureView, { spectrum }));
       let button: HTMLButtonElement;
       if (action === "export") {
+        const save = deferred<Awaited<ReturnType<typeof saveTextFile>>>();
+        vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
         button = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
         click(button);
-        await act(async () => container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click());
+        click(container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!);
+        expect(button.textContent).toBe("Exporting…");
+        await act(async () => {
+          save.resolve("saved");
+          await save.promise;
+        });
       } else {
         vi.mocked(copySpectrumToClipboard).mockResolvedValueOnce("image");
         button = [...container!.querySelectorAll("button")].find((candidate) => candidate.textContent === "Copy")!;
@@ -973,6 +1144,8 @@ describe("LinkedFigureView", () => {
       });
       timeoutSpy.mockRestore();
       clearTimeoutSpy.mockRestore();
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(saveTextFile).mockReset();
       vi.useRealTimers();
     }
   });
