@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic fixture; reversed BoundingBox orientation and repeat-label association are unverified against an independent reader. -->
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="p1" BoundingBox="0 0 612 792">
+    <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="75 90 87 138" LineWidth="1.125"/>
+    <graphic id="b2" GraphicType="Bracket" BracketType="Square" BoundingBox="195 90 183 138" LineWidth="1.125"/>
+    <bracketedgroup id="pair1" BracketUsage="SRU">
+      <bracketattachment id="a1" GraphicID="b1"/>
+      <bracketattachment id="a2" GraphicID="b2"/>
+    </bracketedgroup>
+    <t id="n" p="196.5 141"><s size="8.64">n</s></t>
+    <graphic id="b3" GraphicType="Bracket" BracketType="Round" BoundingBox="75 240 87 288" LineWidth="1.125"/>
+    <graphic id="b4" GraphicType="Bracket" BracketType="Round" BoundingBox="195 240 183 288" LineWidth="1.125"/>
+    <bracketedgroup id="pair2" BracketUsage="SRU">
+      <bracketattachment id="a3" GraphicID="b3"/>
+      <bracketattachment id="a4" GraphicID="b4"/>
+    </bracketedgroup>
+    <t id="m" p="196.5 291"><s size="8.64">m</s></t>
+  </page>
+</CDXML>

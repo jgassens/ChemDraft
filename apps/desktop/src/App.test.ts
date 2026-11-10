@@ -2901,6 +2901,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.sOrbital",
       "tool.bracket",
       "tool.squareBracket",
+      "tool.roundBracket",
       "tool.chain",
       "style.formulaText",
       "layout.bringToFront",
@@ -6043,7 +6044,7 @@ describe("ChemDraft desktop shell", () => {
     // with the graphic arrowhead marker. Its chemical identity is preserved for CDXML re-export.
     expect(markup).toContain("graphic-marker-end-");
     expect(markup).toContain("graphic-object");
-    expect(markup).toContain('data-graphic-kind="unknown"');
+    expect(markup).toContain('data-bracket-kind="round"');
     expect(markup).toContain("generic-object");
     expect(markup).toContain('data-atom-count="5"');
   });

@@ -1,0 +1,88 @@
+# Brackets and repeat units
+
+Square and round tools create two native `BracketObject` glyphs around the drag rectangle, in one
+patch batch, one labelled history entry, with both selected. A click places an 80 × 64 pair. The
+round icon is original 24-unit line art from ui-kit. Both default palettes place its registered
+`tool.roundBracket` command beside `tool.squareBracket`.
+Completed placement returns to Select so both members' selection chrome is visible. Older saved
+Main-toolbar orders that omit Round Bracket insert it immediately after Square Bracket; an explicit
+saved placement is retained.
+
+The optional v1 `side`, `pairId`, and `repeatUnit` fields extend the existing object rather than
+introducing another bracket type. Missing fields preserve legacy documents and their original
+single glyph appearance, including the old `polymer` kind. Duplicate and native paste remint pair
+identities so editing a copied pair cannot change the original.
+Membership travels only with copied objects: uncopied member IDs are dropped. Copying one glyph
+removes its pair identity, repeat mark and label. Deleting or cutting one glyph clears those fields
+on the survivor in the same patch batch; undo restores both original glyphs exactly. Native loading
+also clears orphaned pair metadata and records a warning naming each affected bracket.
+
+UI choice for coordinator review: the object context menu offers **Mark as Repeat Unit** /
+**Remove Repeat Unit** and **Edit Repeat Label**. Both are registered commands. Marking applies to
+the pair even when only one member is selected. The closing glyph defaults to `n`. Label editing
+uses in-place annotation input, consistent with atom labels and table captions: Enter or blur commits
+one labelled undo entry; Escape cancels. This avoids a new dialog or palette for a single label.
+Double-clicking the painted repeat label invokes the same Edit Repeat Label command. As with
+existing text objects, a single click with Select selects without opening the editor.
+The original pair shape remains independent of its repeat-unit status. Removing the mark hides the
+label and retains its text for a subsequent mark.
+
+`bracketLabelPlan` in layout-engine supplies lower-right placement, script font size and measured
+bounds. The page SVG render plan, canvas overlay, label input and SVG/PDF exports consume it.
+Copy-scope bounds include custom labels. Molecular graph data is never rewritten by these tools.
+SMILES export reports `export.repeat_unit_not_represented` once per repeat pair associated with
+exported atoms, including when only the molecule is selected. The warning names the repeat label,
+atom count and bracket id. Copy uses the normal warning sink and shows the warning in its status;
+file exports carry it in their report. SDF also warns for its graph-only SMILES property.
+
+MOL V2000/V3000 and SDF connection tables write SRU SGroups with atom membership, crossing bonds,
+repeat label and default EU connectivity. Explicit whole-molecule membership is retained; otherwise
+atoms inside untransformed brackets determine membership, even when their molecule extends outside
+the pair. Merged molecule ids and abbreviation expansions preserve that mapping. Missing membership,
+partially exported units, transformed brackets and unrepresentable labels warn naming the bracket
+instead of asserting an SRU. Pairs unrelated to the exported molecules remain quiet. Plain brackets
+do not change the graph output. The CLI exporter accepts SMILES input only, so repeat-bracket
+documents do not reach that path.
+
+## CDXML coverage and remaining work
+
+Square/round `graphic` brackets and pair `bracketattachment` membership are covered by synthetic
+`packages/fixtures/cdxml/brackets-square.cdxml` and `brackets-round.cdxml`. Native document envelope
+round trips preserve square, round and repeat pairs (labels `n` and `m`) exactly. Plain square/round
+pairs also round-trip through the visible layer with all native metadata removed.
+
+Repeat pairs write `BracketUsage="SRU"` and independent visible text at the shared label location.
+The repeat-label association is **not mapped**: the existing fixtures document bracket attachments
+and crossing bonds but no label association. The external specification could not be fetched in
+the restricted environment. No `RepeatPattern` or other guessed attribute is written. Export warns
+with `cdxml.repeat_label_payload_only`; external label text stays independent on import, with
+`cdxml.repeat_label_unassociated`. A native payload is required for exact editable `n`/`m` round trips.
+On visible-only import, no extra default `n` is painted over the independently retained text.
+
+The native model carries whole-object membership, not polymer atom subsets, crossing-bond
+attachments or head-to-tail connectivity. Export reports `cdxml.repeat_connectivity_not_represented`.
+Imported `crossingbond` and unsupported bracket-group data remain unknown compatibility objects,
+with a warning, instead of being asserted as native polymer chemistry. Curly/unknown/legacy-polymer
+glyphs and transformed brackets retain `cdxml.bracket_payload_only` until covered by a verified
+mapping. No general Tier B polymer-compatibility claim is made.
+
+A foreign group becomes a native pair only when all its group data can be represented: two
+opposite glyphs, whole-molecule membership, no crossing attachments or extra group data, and no
+usage other than SRU (an absent usage remains an ordinary pair). Unsupported groups retain their
+original unknown compatibility object, with a warning naming the group and unsupported data or
+usage value. Re-export keeps that object unchanged in the embedded payload, following the existing
+unknown-object path; it does not write a cleaned-up visible `bracketedgroup`.
+
+The orientation mapping is **UNVERIFIED against an independent reader**. The current mapping uses
+reversed `BoundingBox` x coordinates for a closing glyph. A repo search of fixtures, cdx-compat
+tests/docs and architecture notes found no vendored CDXML schema or specification documenting this
+orientation rule or an alternative attribute. These synthetic fixtures test internal consistency
+only; no new orientation attributes are invented and no independent-reader compatibility is claimed.
+
+Recommended next task: obtain authoritative CDXML repeat-label/connectivity fixtures and complete
+the standard repeat-label association plus atom-level attachment mapping. Verify the synthetic
+single-glyph orientation and pair representation in an independent CDXML reader as well.
+
+Automated verification is scoped to this task. GUI launch, builds and the full gauntlet were
+excluded by the worker instructions. Run the bracket entry in the shared manual stress checklist
+on macOS and Windows before integration; neither platform's interactive behavior is verified here.

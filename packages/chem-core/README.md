@@ -4,6 +4,12 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Each `BracketObject` is one glyph. Optional `side` (`open`/`close`), `pairId`, and `repeatUnit`
+fields extend the existing v1 schema additively, like image payloads. Old documents need no
+migration: an absent side keeps the original opening glyph, and no repeat label is added.
+Pairs share an opaque `pairId`; the closing member's existing `label` field carries the repeat
+subscript. Drawing and label placement belong to layout-engine.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,
@@ -27,6 +33,12 @@ The MOL writers require an explicit `kekuleBondOrders` map and return `{ content
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial
 map preserves unmapped aromatic bonds as type 4 and returns one warning per ring system, naming its
 atoms. Every consumer must surface those warnings through its operation's warning path.
+
+Document exporters can pass `repeatUnitGroups` to both MOL writers. Each group carries its
+source bracket id, repeat label and complete atom membership; crossing bonds are derived from
+that membership. V2000 writes SRU STY/SAL/SBL/SMT/SCN records, and V3000 writes an SRU SGroup.
+Connectivity defaults to EU (unspecified/either), with explicit HT/HH supported by the writer.
+Invalid membership or an unrepresentable label produces a warning naming the source bracket.
 
 Unknown bond orders write as CTfile type 8 (any) in both formats, with one warning naming all
 affected bond ids. This preserves the native unknown order on reimport, but readers treat it as a

@@ -3,7 +3,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
+import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { writeClipboardText } from "./clipboard";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
@@ -32,6 +33,25 @@ describe("Copy As SMILES status line", () => {
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+  it.each(["macos", "windows"])("warns on %s when copying only a repeat unit's molecule", async platform => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform === "macos" ? "MacIntel" : "Win32");
+    let doc = structuredClone(insertNativeSingleBondMolecule(createPhase4Document("Ethylene repeat unit"), { x: 160, y: 140 }));
+    const molecule = doc.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    molecule.bonds[0].order = "double";
+    molecule.structure = "C=C";
+    doc = toggleBracketRepeatUnit(insertNativeBracket(doc, { x: 100, y: 90 }, "square", { x: 260, y: 200 }));
+    doc = selectDocumentObjects(doc, doc.pages[0].id, [molecule.id]);
+    vi.mocked(computeStructureIdentifiers).mockResolvedValue({ smiles: "C=C" });
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: doc, initialActiveToolCommandId: "tool.select", initialCrosshairsVisible: false,
+      initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: true
+    })));
+    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT,
+      { detail: { commandId: "clipboard.copyAs.smiles" } })));
+    expect(writeClipboardText).toHaveBeenCalledExactlyOnceWith("C=C");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("SMILES cannot hold the repeat unit n around 2 atoms");
+    vi.restoreAllMocks();
   });
   it.each(["success", "empty", "clipboard unavailable", "clipboard rejection", "unknown order", "second molecule refusal"])("shows specific SMILES status for %s", async (path) => {
     let doc = createPhase4Document("Copy SMILES");

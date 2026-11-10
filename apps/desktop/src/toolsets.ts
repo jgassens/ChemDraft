@@ -195,6 +195,7 @@ function legacyMainAddition(value: unknown): value is ToolsetItemAddition<string
  * idempotent — safe to run on every load.
  */
 export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
+  state = migrateBracketToolbarOrder(state);
   if (typeof state !== "object" || state === null) {
     return state;
   }
@@ -268,6 +269,29 @@ export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
     next.itemOrder = { ...remainingItemOrder, [MAIN_ITEMS_GROUP_ID]: flattenedOrder };
     delete next.groupOrder;
     return next;
+  });
+  return changed ? { ...record, toolsetOverrides } : state;
+}
+
+/** New tools otherwise append after every saved item. Keep the new bracket by its sibling. */
+export function migrateBracketToolbarOrder(state: unknown): unknown {
+  if (typeof state !== "object" || state === null) return state;
+  const record = state as { toolsetOverrides?: unknown };
+  if (!Array.isArray(record.toolsetOverrides)) return state;
+  let changed = false;
+  const toolsetOverrides = record.toolsetOverrides.map(entry => {
+    if (typeof entry !== "object" || entry === null) return entry;
+    const override = entry as { toolsetId?: unknown; itemOrder?: Record<string, unknown> };
+    if (override.toolsetId !== "core.main" || !override.itemOrder) return entry;
+    let orderChanged = false;
+    const itemOrder = Object.fromEntries(Object.entries(override.itemOrder).map(([group, value]) => {
+      if (!Array.isArray(value) || value.includes("tool.roundBracket") || !value.includes("tool.squareBracket")) return [group, value];
+      const order = [...value];
+      order.splice(order.indexOf("tool.squareBracket") + 1, 0, "tool.roundBracket");
+      orderChanged = changed = true;
+      return [group, order];
+    }));
+    return orderChanged ? { ...override, itemOrder } : entry;
   });
   return changed ? { ...record, toolsetOverrides } : state;
 }

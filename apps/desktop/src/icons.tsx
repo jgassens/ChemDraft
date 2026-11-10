@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { roundBracketIconPath } from "../../../packages/ui-kit/src";
 
 export type IconName =
   | "templates"
@@ -19,6 +20,7 @@ export type IconName =
   | "doubleBond"
   | "tripleBond"
   | "bracket"
+  | "roundBracket"
   | "charge"
   | "chain"
   | "chainFlexible"
@@ -139,6 +141,8 @@ export function Icon({ name, ...props }: IconProps) {
           <circle cx="19" cy="7" r="1.4" fill="currentColor" stroke="none" />
         </svg>
       );
+    case "roundBracket":
+      return <svg {...common}><path d={roundBracketIconPath} /></svg>;
     case "bracket":
       return (
         <svg {...common}>
