@@ -307,7 +307,10 @@ describe("page layout presets and migration", () => {
       cdxmlPageAttributes: { BoundingBox: "0 0 1080 1440", WidthPages: "2", HeightPages: "2" },
       cdxmlRootPageAttributes: { PrintMargins: "36 36 36 36" }, cdxmlPageNativeSetup: "source setup snapshot"
     } };
-    expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+    // Page compatibility is absent from the released strict 1.1.1 page schema.
+    expect(deserializeDocument(serializeDocument(document))).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
     const edited = applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0].id, layout: createPageLayout("a4") }, { now: timestamp });
     expect(edited.pages[0].compatibility).toEqual(document.pages[0].compatibility);
   });

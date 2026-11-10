@@ -158,7 +158,8 @@ describe("CDXML E/Z-unspecified double bonds", () => {
     const document = openDocument();
     const reopened = openChemDraftPayload(exportDocumentToCdxml(document).contents);
     expect(reopened.source).toBe("native-payload");
-    expect(reopened.document).toEqual(document);
+    // 1.1.1 already supports stereo: "either", but rejects the imported page compatibility.
+    expect(reopened.document).toEqual({ ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0" });
     const molecule = reopened.document!.pages[0].objects[0] as MoleculeObject;
     expect(molecule.bonds.filter(bond => bond.stereo === "either")).toHaveLength(1);
   });

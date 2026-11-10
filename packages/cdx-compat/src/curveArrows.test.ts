@@ -47,7 +47,10 @@ function roundTrip(contents: string) {
   expect(exported.contents).toContain("<curve ");
   expect(exported.contents).not.toContain("<arrow ");
   expect(exported.warnings).toEqual([]);
-  expect(openChemDraftPayload(exported.contents).document).toEqual(before.document);
+  // Curves use baseline fields; imported page compatibility requires the 1.2 envelope.
+  expect(openChemDraftPayload(exported.contents).document).toEqual({
+    ...before.document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+  });
   // Strip the native payload: prove that standard CDXML, by itself, retains editable geometry.
   const after = importedCurve(canonicalVisibleCdxml(exported.contents));
   expect(after.curve.data).toEqual(before.curve.data);
@@ -226,7 +229,10 @@ describe("CDXML Bezier mechanism curves", () => {
     const after = importedCurve(canonicalVisibleCdxml(exported.contents));
     expect(after.curve.data.markerEnd?.kind).toBe(head);
     expect(after.curve.data.markerStart?.kind).toBe(visibleTail);
-    expect(openChemDraftPayload(exported.contents).document).toEqual(document);
+    // The page compatibility metadata remains present after editing the baseline markers.
+    expect(openChemDraftPayload(exported.contents).document).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
   });
 
   it("round-trips an edited closed three-node Bezier including both closing controls", () => {

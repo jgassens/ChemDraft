@@ -268,7 +268,8 @@ describe("labelled source expansions remain native superatoms", () => {
       expect(original.superatoms.map(group => group.atomIds!.length)).toEqual(
         labels.map((_, depth) => differingMembers ? levels - depth : 1));
       let document = deserializeDocument(serializeDocument(opened.document!));
-      expect(document).toEqual(opened.document);
+      // Both page compatibility and superatom atomIds are rejected by the strict 1.1.1 schemas.
+      expect(document).toEqual({ ...opened.document!, formatVersion: "1.2.0", minAppVersion: "1.2.0" });
       for (let cycle = 0; cycle < 2; cycle++) {
         if (cycle === 1) {
           // Released native payloads retain source preorder but have no explicit association/depth.
@@ -288,7 +289,8 @@ describe("labelled source expansions remain native superatoms", () => {
         const saved = binary ? importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes)
           : openChemDraftPayload(exportDocumentToCdxml(document).contents);
         expect(saved.source).toBe("native-payload");
-        expect(saved.document).toEqual(document);
+        // A visible reimport has no envelope until saved, but still has both 1.2 features.
+        expect(saved.document).toEqual({ ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0" });
         document = reopened.document!;
       }
     });
@@ -336,7 +338,8 @@ describe("labelled source expansions remain native superatoms", () => {
         expect((await computeStructureIdentifiers(molfile))!.smiles).toBe(await canonical(control));
       }
       const payload = deserializeDocument(serializeDocument(opened.document!));
-      expect(payload).toEqual(opened.document);
+      // Preserve page compatibility and live superatom membership, both new strict fields in 1.2.
+      expect(payload).toEqual({ ...opened.document!, formatVersion: "1.2.0", minAppVersion: "1.2.0" });
       const exported = binary ? exportDocumentToCdx(payload) : exportDocumentToCdxml(payload, { embedNativePayload: false });
       const visibleTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(new XMLParser({
         preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
@@ -600,7 +603,10 @@ describe("standard binary nickname nodes and fragment attachment points", () => 
     const records = original.compatibility!.unknown.cdxmlAbbreviations as { source: ReturnType<typeof readCdx> }[];
     expect(records[0].source.attrs.NodeType).toBe("Fragment");
     expect(records[0].source.kids.find(node => node.name === "fragment")!.kids.filter(node => node.name === "n")).toHaveLength(4);
-    expect(deserializeDocument(serializeDocument(imported.document!))).toEqual(imported.document);
+    // Unexpanded source records remain baseline metadata; page compatibility requires 1.2.
+    expect(deserializeDocument(serializeDocument(imported.document!))).toEqual({
+      ...imported.document!, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
     for (const binary of [false, true]) {
       const visible = binary ? readCdx(exportDocumentToCdx(imported.document!).bytes)
         : cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true, ignoreAttributes: false,

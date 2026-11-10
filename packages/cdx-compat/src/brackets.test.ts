@@ -363,10 +363,16 @@ describe("CDXML bracket graphics", () => {
     expect(bracket.repeatUnit).toBeUndefined();
     expect(bracket.label).toBeUndefined();
     const exported = exportDocumentToCdxml(imported.document!);
-    expect(openChemDraftPayload(exported.contents).document).toEqual(imported.document);
+    // The glyph is baseline-compatible; its page's imported compatibility metadata is not.
+    const expected = { ...imported.document!, formatVersion: "1.2.0", minAppVersion: "1.2.0" };
+    expect(openChemDraftPayload(exported.contents).document).toEqual(expected);
     const saved = JSON.parse(serializeDocument(imported.document!));
-    expect(saved).toEqual(imported.document);
-    expect(Released111DocumentSchema.parse(saved)).toEqual(imported.document);
+    expect(saved).toEqual(expected);
+    expect(Released111DocumentSchema.safeParse(imported.document).success).toBe(false);
+    const baseline = structuredClone(imported.document!);
+    delete baseline.pages[0].compatibility;
+    expect(JSON.parse(serializeDocument(baseline))).toEqual(baseline);
+    expect(Released111DocumentSchema.parse(baseline)).toEqual(baseline);
     expect(exported.contents).toContain('GraphicType="Bracket"');
     expect(exported.contents).not.toContain("<bracketedgroup");
     expect(exported.warnings).toEqual([]);
