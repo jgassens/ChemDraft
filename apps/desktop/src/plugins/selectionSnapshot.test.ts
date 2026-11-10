@@ -290,7 +290,7 @@ describe("computeObjectFingerprint", () => {
     ["R-group", () => ({ rGroups: [{ label: "R1", querySemantics: "query", attachmentPoints: [], warnings: [] }] })],
     ["label", m => ({ atoms: m.atoms.map(a => ({ ...a, element: "OMe" })) })],
     ["label bond side", m => ({ atoms: m.atoms.map(a => ({ ...a, labelBondSide: { side: "right", atomId: "a1" } })) })],
-    ["chemistry", () => ({ chemistry: { formula: "CH4", warnings: [] } })]
+    ["chemistry", () => ({ chemistry: { formula: "CH4", isotopeLabels: [], stereochemistry: [], warnings: [] } })]
   ])("invalidates the cache after an immutable %s patch", (_name, changes) => {
     const document = engineDocumentWith();
     const molecule = document.pages[0]!.objects[0] as MoleculeObject;
