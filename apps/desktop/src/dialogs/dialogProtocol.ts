@@ -116,6 +116,8 @@ export type DialogSnapshot = DialogEnvelope & (
 );
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request"; data: Record<string, never> }
+  /** Native host only: explicitly repeat a measurement, even if it has not changed. */
+  | { type: "remeasure"; data: Record<string, never> }
   | { type: "ready"; data: Record<string, never> | DialogContentFit }
   | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply"; hex: string } | { action: "clear" } | { action: "apply"; draft: ReactionConditionsDraft } | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
@@ -188,6 +190,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
           value.dialogKind === "reactionConditions" ? keys(d, ["title", "arrowId", "draft"]) && typeof d.arrowId === "string" && d.arrowId.length > 0 && d.arrowId.length <= 128 && validConditionsDraft(d.draft) :
           keys(d, ["title", "options"], ["frame"]) && validExportOptions(d.options) && (d.frame === undefined || validExportFrame(d.frame))); break;
       case "request": valid = keys(d, []); break;
+      case "remeasure": valid = keys(d, []); break;
       case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
       case "action": valid = value.dialogKind === "customColor" ? d.action === "apply" ? keys(d, ["action", "hex"]) && validCustomHex(d.hex) : keys(d, ["action"]) && ["clear", "cancel"].includes(String(d.action)) : value.dialogKind === "vibeCodeGuide" ? keys(d, ["action"]) && ["cancel", "saveStarter", "openPluginManager"].includes(String(d.action)) : value.dialogKind === "engineInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "cancelInstall", "close"].includes(d.action) : value.dialogKind === "toolInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "allow", "cancelInstall", "close"].includes(d.action) : d.action === "cancel" ? keys(d, ["action"]) : value.dialogKind === "pageSize"
         ? d.action === "apply" && keys(d, ["action", "width", "height", "unit"]) && validPageSize(d)
@@ -218,7 +221,7 @@ export function sameDialog(message: DialogEnvelope, snapshot: DialogEnvelope): b
 export function validateDialogDelivery(value: unknown, sender: string, snapshot: DialogEnvelope, label: string): DialogMessage | undefined {
   const message = parseDialogMessage(value);
   if (!message || !sameDialog(message, snapshot)) return undefined;
-  const expected = message.type === "snapshot" || message.type === "preview" || message.type === "result" || message.type === "closed" ? snapshot.ownerWindowId : label;
+  const expected = message.type === "snapshot" || message.type === "preview" || message.type === "result" || message.type === "closed" || message.type === "remeasure" ? snapshot.ownerWindowId : label;
   return sender === expected ? message : undefined;
 }
 export function detectDialogPlatform(): DialogPlatform {

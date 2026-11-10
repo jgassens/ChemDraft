@@ -318,6 +318,159 @@ impl MeasuredContent {
             .map(|width| (width * self.fit.pixel_ratio / self.scale_at_ready).ceil())
     }
 }
+// A lifetime budget per session: content/resize notifications cannot restart an endless loop.
+const CONTENT_FIT_RETRY_LIMIT: u8 = 3;
+const CONTENT_FIT_RETRY_DELAY_MS: u64 = 150;
+#[derive(Default)]
+struct ContentFitRetry {
+    attempts: u8,
+    active: bool,
+    generation: u64,
+}
+#[derive(Debug, PartialEq)]
+enum FitRetryStep {
+    Stop,
+    Request(u8),
+    GiveUp,
+}
+impl ContentFitRetry {
+    fn report(&mut self, usable: bool) -> Option<u64> {
+        if usable {
+            self.active = false;
+        } else if !self.active && self.attempts < CONTENT_FIT_RETRY_LIMIT {
+            self.active = true;
+            self.generation += 1;
+            return Some(self.generation);
+        }
+        None
+    }
+    fn tick(&mut self, generation: u64) -> FitRetryStep {
+        if !self.active || self.generation != generation {
+            return FitRetryStep::Stop;
+        }
+        if self.attempts == CONTENT_FIT_RETRY_LIMIT {
+            self.active = false;
+            return FitRetryStep::GiveUp;
+        }
+        self.attempts += 1;
+        FitRetryStep::Request(self.attempts)
+    }
+}
+struct FitAssessment {
+    measured: Option<MeasuredContent>,
+    reason: &'static str,
+}
+impl FitAssessment {
+    fn new(data: &Value, scale: &Result<f64, String>) -> Self {
+        let fit = ContentFit::from_ready(data);
+        let measured = MeasuredContent::new(fit, scale.as_ref().ok().copied());
+        let reason = if data.as_object().is_some_and(|d| d.is_empty()) {
+            if scale.is_err() {
+                "no fit; scale read failed"
+            } else {
+                "no fit"
+            }
+        } else if fit.is_none() {
+            if scale.is_err() {
+                "invalid fit; scale read failed"
+            } else {
+                "invalid fit"
+            }
+        } else if scale.is_err() {
+            "scale read failed"
+        } else if measured.is_none() {
+            "invalid native scale"
+        } else {
+            "none"
+        };
+        Self { measured, reason }
+    }
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FitPlacementLog {
+    requested_logical_size: (f64, f64),
+    work_area_logical: WorkArea,
+}
+struct FitDiagnostic<'a> {
+    kind: &'a str,
+    session: &'a str,
+    phase: &'a str,
+    data: &'a Value,
+    scale: &'a Result<f64, String>,
+    reason: &'a str,
+    warning: bool,
+    retry: &'a str,
+}
+impl FitDiagnostic<'_> {
+    fn line(
+        &self,
+        placement: Option<&FitPlacementLog>,
+        physical_client: Result<(u32, u32), String>,
+        work: Result<Option<WorkArea>, String>,
+    ) -> String {
+        let clamped = placement.is_some_and(|p| {
+            physical_client.as_ref().is_ok_and(|(width, height)| {
+                f64::from(*width) + 1.0 < p.requested_logical_size.0 * p.work_area_logical.scale
+                    || f64::from(*height) + 1.0
+                        < p.requested_logical_size.1 * p.work_area_logical.scale
+            })
+        });
+        let reason = if clamped {
+            if self.reason == "none" {
+                "clamped".to_string()
+            } else {
+                format!("{}; clamped", self.reason)
+            }
+        } else {
+            self.reason.to_string()
+        };
+        format!(
+            "[dialog-fit] {}",
+            json!({
+                "level": if self.warning { "warn" } else { "info" },
+                "kind": self.kind, "session": self.session, "phase": self.phase,
+                "fitPresent": !self.data.as_object().is_some_and(|d| d.is_empty()),
+                "contentHeight": self.data.get("contentHeight"),
+                "contentWidth": self.data.get("contentWidth"),
+                "pixelRatio": self.data.get("pixelRatio"),
+                "nativeScaleFactor": self.scale,
+                "requestedLogicalSize": placement.map(|p| p.requested_logical_size),
+                "physicalClientSize": physical_client,
+                "workAreaLogical": placement.map(|p| &p.work_area_logical),
+                "currentWorkAreaLogical": work,
+                "fallbackReason": reason, "clamped": clamped, "retry": self.retry,
+                "placementApplied": placement.is_some()
+            })
+        )
+    }
+}
+fn log_dialog_fit<R: Runtime>(window: &tauri::WebviewWindow<R>, diagnostic: FitDiagnostic<'_>) {
+    let placement = {
+        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        if diagnostic.kind == "preferences" {
+            registry
+                .preferences
+                .as_ref()
+                .and_then(|p| p.fit_placement.clone())
+        } else {
+            registry
+                .sessions
+                .values()
+                .find(|s| s.registration.window_label == window.label())
+                .and_then(|s| s.fit_placement.clone())
+        }
+    };
+    let physical = window
+        .inner_size()
+        .map(|s| (s.width, s.height))
+        .map_err(|e| e.to_string());
+    let work = window
+        .current_monitor()
+        .map(|m| m.map(|m| WorkArea::from_monitor(&m).inset(12.0)))
+        .map_err(|e| e.to_string());
+    eprintln!("{}", diagnostic.line(placement.as_ref(), physical, work));
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InsertTableSnapshot {
@@ -1195,7 +1348,7 @@ impl Message {
                             })
                     })
             }
-            "request" => self.data.as_object().is_some_and(|d| d.is_empty()),
+            "request" | "remeasure" => self.data.as_object().is_some_and(|d| d.is_empty()),
             "ready" => {
                 self.data.as_object().is_some_and(|d| d.is_empty())
                     || ContentFit::from_ready(&self.data).is_some()
@@ -1247,6 +1400,103 @@ struct Session {
     programmatic_position: Option<(i32, i32)>,
     pending_move: Option<(Instant, SavedPosition)>,
     content_fit: Option<MeasuredContent>,
+    fit_retry: ContentFitRetry,
+    fit_placement: Option<FitPlacementLog>,
+}
+impl Session {
+    fn report_content_fit(&mut self, assessment: &FitAssessment) -> Option<u64> {
+        self.fit_placement = None;
+        if !self.ready || assessment.measured.is_some() {
+            self.content_fit = assessment.measured;
+        }
+        self.fit_retry.report(assessment.measured.is_some())
+    }
+}
+fn fit_retry_message(snapshot: &Message, attempt: u8) -> Message {
+    Message {
+        message_type: "remeasure".into(),
+        request_id: format!("fit-retry-{attempt}"),
+        data: json!({}),
+        ..snapshot.clone()
+    }
+}
+fn request_content_fit_retry(session: &mut Session, generation: u64) -> FitRetryStep {
+    let step = session.fit_retry.tick(generation);
+    match step {
+        FitRetryStep::Stop => {}
+        FitRetryStep::GiveUp => {
+            eprintln!(
+                "[dialog-fit] warn kind={} session={} gave up after {} measurement requests; keeping current fallback/frame",
+                session.snapshot.dialog_kind, session.snapshot.session_id, CONTENT_FIT_RETRY_LIMIT
+            );
+        }
+        FitRetryStep::Request(attempt) => {
+            let request = fit_retry_message(&session.snapshot, attempt);
+            let result = send_host(session, &request);
+            eprintln!(
+                "[dialog-fit] warn kind={} session={} measurement retry requested attempt={}/{} delivery={result:?}",
+                session.snapshot.dialog_kind, session.snapshot.session_id, attempt, CONTENT_FIT_RETRY_LIMIT
+            );
+        }
+    }
+    step
+}
+fn start_content_fit_retry(host_id: String, generation: u64) {
+    std::thread::spawn(move || {
+        let mut delay = CONTENT_FIT_RETRY_DELAY_MS;
+        loop {
+            // Timer work never holds the registry, window-creation lock or the UI thread.
+            std::thread::sleep(Duration::from_millis(delay));
+            let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(session) = registry.sessions.get_mut(&host_id) else {
+                return;
+            };
+            match request_content_fit_retry(session, generation) {
+                FitRetryStep::Request(attempt) => {
+                    // Give the last response time to finish the frontend's bounded font wait.
+                    delay = if attempt == CONTENT_FIT_RETRY_LIMIT {
+                        1200
+                    } else {
+                        CONTENT_FIT_RETRY_DELAY_MS
+                    };
+                }
+                FitRetryStep::Stop | FitRetryStep::GiveUp => return,
+            }
+        }
+    });
+}
+// Keep strict wire validation. A bounded ready with a bad measurement may recover as empty ready,
+// but only after its complete envelope and allowed measurement keys have been checked.
+fn ready_delivery(message: &Message) -> Result<Message, String> {
+    match message.validate() {
+        Ok(()) => Ok(message.clone()),
+        Err(error) => {
+            if message.message_type != "ready"
+                || serde_json::to_vec(message)
+                    .map_err(|e| e.to_string())?
+                    .len()
+                    > if matches!(
+                        message.dialog_kind.as_str(),
+                        "engineInstall" | "toolInstall" | "atomProblem"
+                    ) {
+                        3400
+                    } else {
+                        MAX_BYTES
+                    }
+                || !message.data.as_object().is_some_and(|data| {
+                    data.keys().all(|k| {
+                        matches!(k.as_str(), "contentHeight" | "contentWidth" | "pixelRatio")
+                    })
+                })
+            {
+                return Err(error);
+            }
+            let mut normalized = message.clone();
+            normalized.data = json!({});
+            normalized.validate()?;
+            Ok(normalized)
+        }
+    }
 }
 #[derive(Default)]
 struct Registry {
@@ -1255,6 +1505,7 @@ struct Registry {
     next_slot: u64,
 }
 struct PreferencesLayout {
+    fit_placement: Option<FitPlacementLog>,
     applied_position: Option<(i32, i32)>,
     ready: bool,
     content_fit: Option<MeasuredContent>,
@@ -1269,6 +1520,7 @@ impl Default for PreferencesLayout {
     fn default() -> Self {
         Self {
             ready: false,
+            fit_placement: None,
             content_fit: None,
             transient_until: Instant::now(),
             applied_position: None,
@@ -1582,6 +1834,8 @@ fn register(
             programmatic_position: None,
             pending_move: None,
             content_fit: None,
+            fit_retry: ContentFitRetry::default(),
+            fit_placement: None,
         },
     );
     Ok((registration, true))
@@ -1739,18 +1993,20 @@ pub(crate) async fn dialog_send(
     host_id: String,
     message: Message,
 ) -> Result<(), String> {
-    message.validate()?;
+    let owner_message = ready_delivery(&message)?;
     if !matches!(message.message_type.as_str(), "ready" | "action") {
         return Err("Dialog can send only ready or a typed action".into());
     }
     let _creation = super::lock_window_creation()?;
     // The form measured at this window's current scale; read it before taking the registry lock.
     let scale_at_ready = if message.message_type == "ready" {
-        window.scale_factor().ok()
+        window.scale_factor().map_err(|e| e.to_string())
     } else {
-        None
+        Err("not a ready report".into())
     };
-    let (reveal, refit) = {
+    let assessment = FitAssessment::new(&message.data, &scale_at_ready);
+    let fit_enabled = kind_spec(&message.dialog_kind)?.fit_content;
+    let (reveal, refit, retry_generation, retry_status) = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let session = registry
             .sessions
@@ -1771,20 +2027,38 @@ pub(crate) async fn dialog_send(
         }
         let refit = message.message_type == "ready"
             && session.ready
-            && kind_spec(&session.snapshot.dialog_kind)?.fit_content
-            && ContentFit::from_ready(&message.data).is_some();
-        if reveal || refit {
-            session.content_fit =
-                MeasuredContent::new(ContentFit::from_ready(&message.data), scale_at_ready);
-        }
+            && fit_enabled
+            && assessment.measured.is_some();
+        let retry_generation = if message.message_type == "ready" {
+            session.fit_placement = None;
+            if fit_enabled {
+                session.report_content_fit(&assessment)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let retry_status = if retry_generation.is_some() {
+            "scheduled"
+        } else if session.fit_retry.active {
+            "pending"
+        } else if fit_enabled
+            && assessment.measured.is_none()
+            && session.fit_retry.attempts == CONTENT_FIT_RETRY_LIMIT
+        {
+            "exhausted; keeping current fallback/frame"
+        } else {
+            "none"
+        };
         session.ready |= reveal;
         // Only this Rust-validated path can write the owner's private channel.
         // Later fit reports are host-local; replaying ready to an install owner would republish
         // its snapshot and create a content/ready feedback loop.
-        if !refit {
-            send_owner(session, window.label(), &message)?;
+        if message.message_type == "action" || reveal {
+            send_owner(session, window.label(), &owner_message)?;
         }
-        (reveal, refit)
+        (reveal, refit, retry_generation, retry_status)
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
     if reveal {
@@ -1793,6 +2067,19 @@ pub(crate) async fn dialog_send(
             super::run_on_main_thread_blocking(&window, move || reveal_on_main(&target))
                 .and_then(|result| result)
         {
+            log_dialog_fit(
+                &window,
+                FitDiagnostic {
+                    kind: &message.dialog_kind,
+                    session: &message.session_id,
+                    phase: "ready",
+                    data: &message.data,
+                    scale: &scale_at_ready,
+                    reason: assessment.reason,
+                    warning: true,
+                    retry: "cancelled: reveal failed",
+                },
+            );
             eprintln!("Could not reveal native dialog: {error}");
             close_session(&app, &host_id, "error");
             return Err(error);
@@ -1813,11 +2100,47 @@ pub(crate) async fn dialog_send(
         })
         .and_then(|result| result)
         {
+            log_dialog_fit(
+                &window,
+                FitDiagnostic {
+                    kind: &message.dialog_kind,
+                    session: &message.session_id,
+                    phase: "refit failed",
+                    data: &message.data,
+                    scale: &scale_at_ready,
+                    reason: assessment.reason,
+                    warning: true,
+                    retry: "placement failed",
+                },
+            );
             if message.dialog_kind != "customColor" {
                 return Err(error);
             }
             // A mode/error change already reached the form; placement must not mask validation.
             eprintln!("Could not refit custom color dialog: {error}");
+        }
+    }
+    if message.message_type == "ready" {
+        let warning = fit_enabled && assessment.measured.is_none();
+        log_dialog_fit(
+            &window,
+            FitDiagnostic {
+                kind: &message.dialog_kind,
+                session: &message.session_id,
+                phase: if reveal { "ready" } else { "refit" },
+                data: &message.data,
+                scale: &scale_at_ready,
+                reason: if fit_enabled {
+                    assessment.reason
+                } else {
+                    "content fit disabled"
+                },
+                warning,
+                retry: retry_status,
+            },
+        );
+        if let Some(generation) = retry_generation {
+            start_content_fit_retry(host_id, generation);
         }
     }
     Ok(())
@@ -1954,6 +2277,7 @@ pub(crate) fn prepare_preferences() {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .preferences = Some(PreferencesLayout {
+        fit_placement: None,
         applied_position: None,
         content_fit: None,
         ready: false,
@@ -1974,8 +2298,31 @@ pub(crate) async fn preferences_ready(
         return Err("Only Preferences can report its content size".into());
     }
     let _creation = super::lock_window_creation()?;
-    let measured = MeasuredContent::new(ContentFit::from_ready(&data), window.scale_factor().ok());
+    if let Some(state) = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .preferences
+        .as_mut()
+    {
+        state.fit_placement = None;
+    }
+    let scale_at_ready = window.scale_factor().map_err(|e| e.to_string());
+    let assessment = FitAssessment::new(&data, &scale_at_ready);
+    let measured = assessment.measured;
     if measured.is_none() && !data.as_object().is_some_and(|object| object.is_empty()) {
+        log_dialog_fit(
+            &window,
+            FitDiagnostic {
+                kind: "preferences",
+                session: window.label(),
+                phase: "ready rejected",
+                data: &data,
+                scale: &scale_at_ready,
+                reason: assessment.reason,
+                warning: true,
+                retry: "Preferences uses its separate readiness protocol",
+            },
+        );
         return Err("Invalid Preferences content measurement".into());
     }
     let reveal = {
@@ -1988,16 +2335,35 @@ pub(crate) async fn preferences_ready(
     };
     // Preferences has a scrolling body. Subsequent observers are metadata only, including
     // reports while hidden, suspended or iconic: no placement or minimum-size setters.
-    if !reveal {
-        return Ok(());
-    }
-    let target = window.clone();
-    super::run_on_main_thread_blocking(&window, move || {
-        place_content_window(&target, "preferences", measured, false)?;
-        show_on_main(&target)?;
+    let result = if reveal {
+        let target = window.clone();
+        super::run_on_main_thread_blocking(&window, move || {
+            place_content_window(&target, "preferences", measured, false)?;
+            show_on_main(&target)?;
+            Ok(())
+        })
+        .and_then(|result| result)
+    } else {
         Ok(())
-    })
-    .and_then(|result| result)
+    };
+    log_dialog_fit(
+        &window,
+        FitDiagnostic {
+            kind: "preferences",
+            session: window.label(),
+            phase: if reveal {
+                "ready"
+            } else {
+                "metadata only; user frame preserved"
+            },
+            data: &data,
+            scale: &scale_at_ready,
+            reason: assessment.reason,
+            warning: measured.is_none() || result.is_err(),
+            retry: "none; separate Preferences protocol",
+        },
+    );
+    result
 }
 pub(crate) fn show_preferences<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let ready = REGISTRY
@@ -2496,7 +2862,7 @@ fn stable_normal_frame(
     }
     NormalFrame::validated(work, before)
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct WorkArea {
     id: String,
     x: f64,
@@ -2965,6 +3331,24 @@ fn place_content_window_from_frame<R: Runtime>(
     mark_transient(window.label());
     let client = window.inner_size().map_err(|e| e.to_string())?;
     remember_programmatic_client(window.label(), (client.width, client.height));
+    {
+        let placement = FitPlacementLog {
+            requested_logical_size: client_size,
+            work_area_logical: destination.clone(),
+        };
+        let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        if kind == "preferences" {
+            if let Some(state) = registry.preferences.as_mut() {
+                state.fit_placement = Some(placement);
+            }
+        } else if let Some(session) = registry
+            .sessions
+            .values_mut()
+            .find(|s| s.registration.window_label == window.label())
+        {
+            session.fit_placement = Some(placement);
+        }
+    }
     let position = window.outer_position().map_err(|e| e.to_string())?;
     remember_programmatic_position(window.label(), (position.x, position.y));
     if kind == "preferences" {
@@ -6700,6 +7084,269 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn missing_invalid_fit_and_failed_scale_warn_and_request_a_private_retry() {
+        for (data, scale, reason) in [
+            (json!({}), Ok(2.0), "no fit"),
+            (
+                json!({"contentHeight":334,"contentWidth":420,"pixelRatio":2}),
+                Err("display not ready".into()),
+                "scale read failed",
+            ),
+            (
+                json!({"contentHeight":0,"pixelRatio":2}),
+                Ok(2.0),
+                "invalid fit",
+            ),
+            (
+                json!({"contentHeight":334,"pixelRatio":2}),
+                Ok(0.0),
+                "invalid native scale",
+            ),
+        ] {
+            let mut registry = Registry::default();
+            let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+            let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+            let deliveries = std::sync::Arc::new(Mutex::new(Vec::new()));
+            let captured = deliveries.clone();
+            session.host_channel = Some(Channel::new(move |body| {
+                let tauri::ipc::InvokeResponseBody::Json(bytes) = body else {
+                    panic!("expected a private JSON delivery");
+                };
+                captured.lock().unwrap().push(bytes);
+                Ok(())
+            }));
+            let assessment = FitAssessment::new(&data, &scale);
+            assert_eq!(assessment.reason, reason);
+            assert!(assessment.measured.is_none());
+            let generation = session.report_content_fit(&assessment).unwrap();
+            let diagnostic = FitDiagnostic {
+                kind: "pageSize",
+                session: "session-1",
+                phase: "ready",
+                data: &data,
+                scale: &scale,
+                reason: assessment.reason,
+                warning: assessment.measured.is_none(),
+                retry: "scheduled",
+            };
+            let spec = kind_spec("pageSize").unwrap();
+            let work = WorkArea {
+                id: "5K".into(),
+                x: 12.0,
+                y: 12.0,
+                width: 2536.0,
+                height: 1416.0,
+                scale: 2.0,
+            };
+            let placement = FitPlacementLog {
+                requested_logical_size: dialog_client_size(&spec, session.content_fit, None, false),
+                work_area_logical: work.clone(),
+            };
+            assert_eq!(placement.requested_logical_size, (420.0, 300.0));
+            let line = diagnostic.line(Some(&placement), Ok((840, 600)), Ok(Some(work)));
+            let log: Value =
+                serde_json::from_str(line.strip_prefix("[dialog-fit] ").unwrap()).unwrap();
+            assert_eq!(log["level"], "warn");
+            assert_eq!(log["fallbackReason"], reason);
+            assert_eq!(log["retry"], "scheduled");
+            assert_eq!(log["kind"], "pageSize");
+            assert_eq!(log["session"], "session-1");
+            assert_eq!(
+                log["contentHeight"],
+                data.get("contentHeight").cloned().unwrap_or(Value::Null)
+            );
+            assert_eq!(
+                log["nativeScaleFactor"],
+                serde_json::to_value(scale).unwrap()
+            );
+            assert_eq!(log["requestedLogicalSize"], json!([420.0, 300.0]));
+            assert_eq!(log["physicalClientSize"]["Ok"], json!([840, 600]));
+            assert_eq!(
+                request_content_fit_retry(session, generation),
+                FitRetryStep::Request(1)
+            );
+            let deliveries = deliveries.lock().unwrap();
+            assert_eq!(deliveries.len(), 1);
+            let delivery: Value = serde_json::from_str(&deliveries[0]).unwrap();
+            assert_eq!(delivery["senderWindowId"], "main");
+            let request: Message = serde_json::from_value(delivery["message"].clone()).unwrap();
+            request.validate().unwrap();
+            assert!(request.same_session(&session.snapshot));
+            assert_eq!(request.message_type, "remeasure");
+            assert_eq!(request.data, json!({}));
+        }
+    }
+
+    #[test]
+    fn measurement_retries_stop_after_the_lifetime_budget_even_without_responses() {
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let assessment = FitAssessment::new(&json!({}), &Ok(2.0));
+        let generation = session.report_content_fit(&assessment).unwrap();
+        for attempt in 1..=CONTENT_FIT_RETRY_LIMIT {
+            // A failed/missing channel response still consumes the budget.
+            assert_eq!(
+                request_content_fit_retry(session, generation),
+                FitRetryStep::Request(attempt)
+            );
+            assert_eq!(session.report_content_fit(&assessment), None);
+        }
+        assert_eq!(
+            request_content_fit_retry(session, generation),
+            FitRetryStep::GiveUp
+        );
+        for _ in 0..10 {
+            assert_eq!(
+                request_content_fit_retry(session, generation),
+                FitRetryStep::Stop
+            );
+            assert_eq!(session.report_content_fit(&assessment), None);
+        }
+        assert_eq!(session.fit_retry.attempts, CONTENT_FIT_RETRY_LIMIT);
+        assert!(session.content_fit.is_none());
+    }
+
+    #[test]
+    fn a_successful_retry_applies_the_measured_client_on_both_platforms() {
+        use std::cell::RefCell;
+        for macos in [false, true] {
+            for scale in [1.0, 1.5, 2.0] {
+                for kind in ["pageSize", "vibeCodeGuide", "export"] {
+                    let mut registry = Registry::default();
+                    let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+                    let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+                    let missing = FitAssessment::new(&json!({}), &Ok(scale));
+                    let generation = session.report_content_fit(&missing).unwrap();
+                    assert_eq!(
+                        request_content_fit_retry(session, generation),
+                        FitRetryStep::Request(1)
+                    );
+                    session.ready = true;
+                    let measured = FitAssessment::new(
+                        &json!({"contentHeight":740,"contentWidth":700,"pixelRatio":scale}),
+                        &Ok(scale),
+                    );
+                    assert_eq!(session.report_content_fit(&measured), None);
+                    assert_eq!(
+                        request_content_fit_retry(session, generation),
+                        FitRetryStep::Stop
+                    );
+                    let spec = kind_spec(kind).unwrap();
+                    let work = WorkArea {
+                        id: "screen".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        width: 2000.0,
+                        height: 1400.0,
+                        scale,
+                    };
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(
+                            if macos { 0.0 } else { 16.0 },
+                            if macos { 28.0 } else { 40.0 },
+                        ),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size: dialog_client_size(&spec, session.content_fit, None, true),
+                            content: session.content_fit,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    assert_eq!(
+                        dialog.borrow().frame().client,
+                        ((700.0 * scale) as u32, (740.0 * scale) as u32)
+                    );
+                    // Success cancels the pending timer; a later failure cannot revive an old worker.
+                    let new_generation = session.report_content_fit(&missing).unwrap();
+                    assert_ne!(generation, new_generation);
+                    assert_eq!(
+                        request_content_fit_retry(session, generation),
+                        FitRetryStep::Stop
+                    );
+                    assert_eq!(session.content_fit, measured.measured);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fit_diagnostics_explain_work_area_clamping_and_escape_scale_errors() {
+        let data = json!({"contentHeight":2000,"contentWidth":700,"pixelRatio":2});
+        let scale = Ok(2.0);
+        let work = WorkArea {
+            id: "small".into(),
+            x: -1200.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+            scale: 2.0,
+        };
+        let placement = FitPlacementLog {
+            requested_logical_size: (700.0, 2000.0),
+            work_area_logical: work.clone(),
+        };
+        let diagnostic = FitDiagnostic {
+            kind: "export",
+            session: "session-1",
+            phase: "refit",
+            data: &data,
+            scale: &scale,
+            reason: "none",
+            warning: false,
+            retry: "none",
+        };
+        let line = diagnostic.line(Some(&placement), Ok((1400, 1544)), Ok(Some(work)));
+        let log: Value = serde_json::from_str(line.strip_prefix("[dialog-fit] ").unwrap()).unwrap();
+        assert_eq!(log["fallbackReason"], "clamped");
+        assert_eq!(log["clamped"], true);
+        assert_eq!(log["workAreaLogical"]["x"], -1200.0);
+        let scale = Err("display\nnot ready".into());
+        let diagnostic = FitDiagnostic {
+            scale: &scale,
+            reason: "scale read failed",
+            warning: true,
+            ..diagnostic
+        };
+        assert_eq!(
+            diagnostic
+                .line(None, Err("unavailable".into()), Ok(None))
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn invalid_ready_recovers_only_with_a_valid_bounded_envelope() {
+        let mut message = snapshot();
+        message.message_type = "ready".into();
+        message.data = json!({"contentHeight":0,"pixelRatio":2});
+        assert!(message.validate().is_err()); // Wire validation remains strict.
+        assert_eq!(ready_delivery(&message).unwrap().data, json!({}));
+        message.owner_window_id = "forged".into();
+        assert!(ready_delivery(&message).is_err());
+        message.owner_window_id = "main".into();
+        message.data = json!({"contentHeight":0,"pixelRatio":2,"unknown":true});
+        assert!(ready_delivery(&message).is_err());
+        message.data = json!({"contentHeight":"x".repeat(MAX_BYTES),"pixelRatio":2});
+        assert!(ready_delivery(&message).is_err());
+    }
+
     #[test]
     fn ready_content_fit_is_typed_bounded_and_converted_through_the_pixel_ratio() {
         let mut ready = snapshot();

@@ -172,18 +172,41 @@ it("accepts only a bounded content fit on ready, on both sides of the protocol",
   expect(parseDialogMessage({ ...ready, data: { contentHeight: 263, pixelRatio: 1.5 } })).toBeDefined();
   expect(parseDialogMessage({ ...ready, data: { contentHeight: 4096, pixelRatio: 8 } })).toBeDefined();
   expect(parseDialogMessage({ ...ready, data: { contentHeight: 263, pixelRatio: 0.5 } })).toBeDefined();
+  expect(parseDialogMessage({ ...ready, data: { contentHeight: 263, contentWidth: 4096, pixelRatio: 1 } })).toBeDefined();
   // The same caps as the native ContentFit: 4096 CSS px, a ratio of 0.5 to 8.
   for (const data of [{ contentHeight: 263 }, { contentHeight: 0, pixelRatio: 1 }, { contentHeight: 4097, pixelRatio: 1 },
     { contentHeight: 16384, pixelRatio: 16 }, { contentHeight: 263, pixelRatio: 0.49 }, { contentHeight: 263, pixelRatio: 8.01 },
-    { contentHeight: 263, pixelRatio: 0 }, { contentHeight: 263, pixelRatio: 1, width: 480 }, { contentHeight: "263", pixelRatio: 1 }]) {
+    { contentHeight: 263, pixelRatio: 0 }, { contentHeight: 263, pixelRatio: 1, width: 480 }, { contentHeight: "263", pixelRatio: 1 },
+    { contentHeight: Number.NaN, pixelRatio: 1 }, { contentHeight: Infinity, pixelRatio: 1 }, { contentHeight: 263, pixelRatio: Infinity },
+    ...[0, 4097, Number.NaN, Infinity, null].map(contentWidth => ({ contentHeight: 263, contentWidth, pixelRatio: 1 }))]) {
     expect(parseDialogMessage({ ...ready, data })).toBeUndefined();
   }
   expect(parseDialogMessage({ ...ready, type: "request", data: { contentHeight: 263, pixelRatio: 1 } })).toBeUndefined();
   const native = readFileSync("apps/desktop/src-tauri/src/dialog_windows.rs", "utf8");
   expect(native).toContain("const CONTENT_FIT_MAX_HEIGHT: f64 = 4096.0;");
+  expect(native).toContain("const CONTENT_FIT_MAX_WIDTH: f64 = 4096.0;");
   expect(native).toContain("const CONTENT_FIT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;");
-  // The native side records the window's scale with the measurement, not at reveal.
-  expect(native).toMatch(/session\.content_fit =\s+MeasuredContent::new\(ContentFit::from_ready\(&message\.data\), scale_at_ready\);/);
+  const validation = native.slice(native.indexOf("impl ContentFit {"), native.indexOf("struct MeasuredContent {"));
+  expect(validation).toContain("serde_json::from_value::<Self>(data.clone())");
+  expect(validation).toMatch(/\.ok\(\)\s+\.filter\(\|f\|/);
+  expect(validation).toContain('!data.get("contentWidth").is_some_and(Value::is_null)');
+  expect(validation).toMatch(/f\.content_height\.is_finite\(\)\s+&& f\.content_height > 0\.0\s+&& f\.content_height <= CONTENT_FIT_MAX_HEIGHT/);
+  expect(validation).toMatch(/f\.content_width\.is_none_or\(\|width\| \{\s+width\.is_finite\(\) && width > 0\.0 && width <= CONTENT_FIT_MAX_WIDTH/);
+  expect(validation).toMatch(/f\.pixel_ratio\.is_finite\(\)\s+&& CONTENT_FIT_SCALE_RANGE\.contains\(&f\.pixel_ratio\)/);
+  // Old: ready assigned MeasuredContent directly. New: FitAssessment validates it first,
+  // then report_content_fit stores that measurement, still using the scale read on ready.
+  const assessment = native.slice(native.indexOf("impl FitAssessment {"), native.indexOf("struct FitPlacementLog {"));
+  expect(assessment).toMatch(/let fit = ContentFit::from_ready\(data\);\s+let measured = MeasuredContent::new\(fit, scale\.as_ref\(\)\.ok\(\)\.copied\(\)\);/);
+  expect(assessment).toContain("Self { measured, reason }");
+  const measured = native.slice(native.indexOf("impl MeasuredContent {"), native.indexOf("struct ContentFitRetry {"));
+  expect(measured).toContain("scale_at_ready.filter(|s| s.is_finite() && CONTENT_FIT_SCALE_RANGE.contains(s))?");
+  expect(measured).toContain("fit: fit?");
+  const send = native.slice(native.indexOf("pub(crate) async fn dialog_send("), native.indexOf("// Deliver ready before showing"));
+  expect(send).toMatch(/let scale_at_ready = if message\.message_type == "ready" \{\s+window\.scale_factor\(\)/);
+  expect(send).toContain("let assessment = FitAssessment::new(&message.data, &scale_at_ready);");
+  expect(send).toMatch(/if message\.message_type == "ready" \{\s+session\.fit_placement = None;\s+if fit_enabled \{\s+session\.report_content_fit\(&assessment\)/);
+  const session = native.slice(native.indexOf("impl Session {"), native.indexOf("fn fit_retry_message("));
+  expect(session).toMatch(/if !self\.ready \|\| assessment\.measured\.is_some\(\) \{\s+self\.content_fit = assessment\.measured;/);
 });
 
 it("falls back to an empty ready, so the spec size, when the measurement is out of range", () => {

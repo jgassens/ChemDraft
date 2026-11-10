@@ -4,7 +4,7 @@ import { MemoryStorage } from "../testSupport/memoryStorage";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { DialogMessage } from "./dialogProtocol";
+import { parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
 import { installSecondaryWindowEditHistory } from "../editHistoryRouting";
 import { DOM_COMMAND_EVENT } from "../window-manager";
 vi.mock("../window-manager", async original => ({ ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true }));
@@ -27,6 +27,75 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it.each(["macos", "windows"] as const)("re-measures an unchanged fit on explicit native retry on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  vi.stubGlobal("devicePixelRatio", platform === "macos" ? 2 : 1.5);
+  let resized: (() => void) | undefined;
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resized = callback; }
+    observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn();
+  });
+  const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ top: 0, height: 334, width: 420 } as DOMRect);
+  try {
+    act(() => root.unmount()); root = createRoot(container);
+    host.send.mockClear();
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
+    await act(async () => host.receive!(snapshot));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const fits = () => host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready");
+    const fit = { contentHeight: 334, contentWidth: 420, pixelRatio: devicePixelRatio };
+    expect(fits().map(message => message.data)).toEqual([fit]);
+    await act(async () => { resized!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fits()).toHaveLength(1); // Ordinary resize notifications still deduplicate.
+    const retry = parseDialogMessage({ ...snapshot, type: "remeasure", data: {} })!;
+    expect(retry).toBeDefined();
+    expect(validateDialogDelivery(retry, "main", snapshot, "dialog-main-pageSize-1")).toEqual(retry);
+    expect(validateDialogDelivery(retry, "dialog-main-pageSize-1", snapshot, "dialog-main-pageSize-1")).toBeUndefined();
+    expect(parseDialogMessage({ ...retry, data: { contentHeight: 334 } })).toBeUndefined();
+    await act(async () => host.receive!({ ...retry, sessionId: "stale-session" }));
+    expect(fits()).toHaveLength(1);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await act(async () => host.receive!(retry));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fits().map(message => message.data)).toEqual(Array(attempt + 1).fill(fit));
+      expect(new Set(fits().map(message => message.requestId)).size).toBe(attempt + 1);
+    }
+    await act(async () => { resized!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(fits()).toHaveLength(4);
+  } finally { layout.mockRestore(); }
+});
+it("logs why a ready measurement is undefined and recovers on explicit retry", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    host.send.mockClear();
+    const retry = { ...snapshot, type: "remeasure" as const, data: {} };
+    await act(async () => host.receive!(retry));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("measureDialogContent returned undefined: contentHeight"));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("kind=pageSize session=session ready without fit"));
+    expect(host.send.mock.calls.at(-1)?.[1]).toMatchObject({ type: "ready", data: {} });
+    const form = container.querySelector<HTMLElement>("section")!;
+    form.getBoundingClientRect = () => ({ top: 0, height: 334, width: 420 } as DOMRect);
+    await act(async () => host.receive!(retry));
+    expect(host.send.mock.calls.at(-1)?.[1]).toMatchObject({ type: "ready", data: { contentHeight: 334, contentWidth: 420, pixelRatio: 1 } });
+  } finally { warning.mockRestore(); }
+});
+it("bypasses install readiness guards and uses the latest snapshot revision on retry", async () => {
+  act(() => root.unmount()); root = createRoot(container);
+  host.send.mockClear();
+  const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ top: 0, height: 480, width: 520 } as DOMRect);
+  try {
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "tool-host" })));
+    const tool: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "toolInstall", data: toolInstallFixture() };
+    await act(async () => host.receive!(tool));
+    const fits = () => host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready");
+    expect(fits()).toHaveLength(1);
+    const updated = { ...tool, snapshotRevision: 2 };
+    await act(async () => host.receive!(updated));
+    await act(async () => host.receive!({ ...updated, type: "remeasure", data: {} }));
+    expect(fits()).toHaveLength(2);
+    expect(fits()[1]).toMatchObject({ snapshotRevision: 2, data: fits()[0].data });
+  } finally { layout.mockRestore(); }
+});
 it.each(["macos", "windows"] as const)("requests a new content fit after Choose → Cancel on %s, then disconnects on close", async platform => {
   vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
   const disconnect = vi.fn();

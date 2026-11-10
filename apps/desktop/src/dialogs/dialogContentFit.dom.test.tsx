@@ -9,9 +9,35 @@ import { ExportForm } from "./ExportForm";
 import { exportFixture } from "./exportTestFixtures";
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
-import { measureDialogContent, validDialogContentFit } from "./dialogContentFit";
+import { measureDialogContent, measureDialogContentWhenFontsReady, validDialogContentFit } from "./dialogContentFit";
 
 afterEach(() => vi.unstubAllGlobals());
+
+it.each([
+  { height: 0, ratio: 2, reason: "contentHeight" },
+  { height: 4097, ratio: 2, reason: "contentHeight" },
+  { height: 300, ratio: 9, reason: "pixelRatio" }
+])("logs why measurement is undefined at height $height and ratio $ratio", ({ height, ratio, reason }) => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const element = document.createElement("section");
+  document.body.append(element);
+  vi.stubGlobal("devicePixelRatio", ratio);
+  element.getBoundingClientRect = () => ({ top: 0, height, width: 420 } as DOMRect);
+  try {
+    expect(measureDialogContent(element)).toBeUndefined();
+    expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(`measureDialogContent returned undefined: ${reason}`));
+    expect(element.getAttribute("style")).toBeNull();
+  } finally { element.remove(); warning.mockRestore(); }
+});
+
+it("logs when the content element disconnects while fonts settle", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const element = document.createElement("section");
+  try {
+    expect(await measureDialogContentWhenFontsReady(element, { ready: Promise.resolve() })).toBeUndefined();
+    expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("content element disconnected while waiting for fonts"));
+  } finally { warning.mockRestore(); }
+});
 
 // Native placement owns the work-area cap (tested by Rust's DialogPlacement matrix).
 // The frontend must report natural content, including overflow, independently of that cap

@@ -59,11 +59,12 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   const pendingRequestId = useRef<string | undefined>(undefined);
   const readySession = useRef<string | undefined>(undefined);
   const contentObservation = useRef<(() => void) | undefined>(undefined);
+  const remeasureContent = useRef<((request: DialogMessage) => void) | undefined>(undefined);
   const contentGeneration = useRef(0);
   const contentHost = useRef<string | undefined>(hostId);
   useEffect(() => {
     contentHost.current = hostId;
-    return () => { contentHost.current = undefined; contentObservation.current?.(); };
+    return () => { contentHost.current = undefined; contentObservation.current?.(); remeasureContent.current = undefined; };
   }, [hostId]);
   const startAcceptanceDeadline = () => {
     clearTimeout(actionTimer.current);
@@ -107,6 +108,8 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
           else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;
         }
+      } else if (latest && sameDialog(message, latest) && message.type === "remeasure") {
+        remeasureContent.current?.(message);
       } else if (latest && sameDialog(message, latest) && message.type === "preview" && message.requestId === previewRequestId.current && message.data.percent === currentPercent.current && !actionPending.current) {
         if (message.data.error) { clearTimeout(previewTimer.current); setError(message.data.error); setPreview(undefined); return; }
         const { index, count, chunk } = message.data;
@@ -158,16 +161,19 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   }, [hostId]);
   // React committed the form, including first-field focus. Hidden webviews suspend rAF: never wait for it.
   // All content-fit forms use this path, including later notices and installation progress.
-  const reportReady = useCallback((fitElement?: HTMLElement) => {
+  const reportReady = useCallback((fitElement?: HTMLElement, force = false, request?: DialogMessage): void => {
     if (!snapshot) return;
-    if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall" || snapshot.dialogKind === "atomProblem") && readySession.current === snapshot.sessionId) return;
+    if (!force && (snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall" || snapshot.dialogKind === "atomProblem") && readySession.current === snapshot.sessionId) return;
+    // An explicit native retry sends ready directly, outside the observer's unchanged-fit dedup.
+    remeasureContent.current = retry => reportReady(fitElement, true, retry);
     readySession.current = snapshot.sessionId;
     contentObservation.current?.();
     const generation = ++contentGeneration.current;
     const sendFit = (fit: DialogContentFit | undefined) =>
-      sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: fit ?? {} });
+      sendDialogMessage(hostId, { ...dialogEnvelope(request ?? snapshot), requestId: crypto.randomUUID(), type: "ready", data: fit ?? {} });
     const sending = (fitElement ? measureDialogContentWhenFontsReady(fitElement) : Promise.resolve(undefined)).then(async fit => {
       if (generation !== contentGeneration.current || contentHost.current !== hostId) return;
+      if (!fit) console.warn(`[dialog-fit] kind=${snapshot.dialogKind} session=${snapshot.sessionId} ready without fit: ${fitElement ? "measurement unavailable (see measurement diagnostic)" : "no content element supplied"}`);
       await sendFit(fit);
       if (fitElement && generation === contentGeneration.current && contentHost.current === hostId && fitElement.isConnected) {
         contentObservation.current = observeDialogContent(fitElement, fit, next => {

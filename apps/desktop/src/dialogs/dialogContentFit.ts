@@ -101,8 +101,16 @@ export function measureDialogContent(element: HTMLElement): DialogContentFit | u
     // Keep valid height/DPI data even when unwrapped content exceeds the protocol bound.
     // Native placement further caps this width to the destination work area and decorations.
     const contentWidth = width > 0 ? Math.min(width, DIALOG_CONTENT_MAX_WIDTH) : undefined;
-    const fit = { contentHeight, ...(contentWidth === undefined ? {} : { contentWidth }), pixelRatio: view?.devicePixelRatio || 1 };
-    return validDialogContentFit(fit) ? fit : undefined;
+    const pixelRatio = view?.devicePixelRatio || 1;
+    const fit = { contentHeight, ...(contentWidth === undefined ? {} : { contentWidth }), pixelRatio };
+    if (validDialogContentFit(fit)) return fit;
+    const reason = !Number.isFinite(contentHeight) || contentHeight <= 0 || contentHeight > DIALOG_CONTENT_MAX_HEIGHT
+      ? `contentHeight must be finite and in (0, ${DIALOG_CONTENT_MAX_HEIGHT}]`
+      : contentWidth !== undefined && !Number.isFinite(contentWidth)
+        ? "contentWidth must be finite"
+        : `pixelRatio must be finite and in [${DIALOG_PIXEL_RATIO_MIN}, ${DIALOG_PIXEL_RATIO_MAX}]`;
+    console.warn(`[dialog-fit] measureDialogContent returned undefined: ${reason}; contentHeight=${contentHeight} contentWidth=${contentWidth} pixelRatio=${pixelRatio} connected=${element.isConnected}`);
+    return undefined;
   } finally {
     for (const restore of restores.reverse()) restore();
   }
@@ -123,7 +131,9 @@ export async function measureDialogContentWhenFontsReady(
   } finally {
     clearTimeout(timer);
   }
-  return element.isConnected ? measureDialogContent(element) : undefined;
+  if (element.isConnected) return measureDialogContent(element);
+  console.warn("[dialog-fit] measureDialogContentWhenFontsReady returned undefined: content element disconnected while waiting for fonts");
+  return undefined;
 }
 
 /** Watch descendants too: the root and scrolling body can stay viewport-sized as text grows. */
