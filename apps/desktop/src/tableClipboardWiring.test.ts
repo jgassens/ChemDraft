@@ -167,7 +167,10 @@ describe("paste precedence and table building", () => {
     expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
     if (!parsed?.ok) throw new Error("Expected Excel-shaped table");
     expect(parsed.source).toBe("html");
-    expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    // The Excel fixture bolds only the caption prefix; the nested font resets the rest to regular.
+    expect(parsed.spec.caption).toEqual({ text: "Table S2. Sharpless reagent plan (synthetic).", spans: [
+      { text: "Table S2.", bold: true }, { text: " Sharpless reagent plan (synthetic)." }
+    ] });
     expect(parsed.spec.headerRows).toHaveLength(1);
     expect(parsed.spec.headerRows?.[0]).toHaveLength(7);
     expect(parsed.spec.columns).toHaveLength(7);
@@ -231,7 +234,10 @@ describe("paste precedence and table building", () => {
     const parsed = readTableClipboardPaste(raw, parseHtml);
     expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
     if (!parsed?.ok) throw new Error("Expected Windows Excel-shaped table");
-    expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    // The Excel fixture bolds only the caption prefix; the nested font resets the rest to regular.
+    expect(parsed.spec.caption).toEqual({ text: "Table S2. Sharpless reagent plan (synthetic).", spans: [
+      { text: "Table S2.", bold: true }, { text: " Sharpless reagent plan (synthetic)." }
+    ] });
     expect(parsed.spec.headerRows).toHaveLength(1);
     expect(parsed.spec.columns).toHaveLength(7);
     expect(parsed.spec.rows).toHaveLength(5);
