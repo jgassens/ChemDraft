@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { Acs1996StylePreset, RscJournalStylePreset, createEmptyDocument,
+  readDocument, readSerializedDocument, serializeDocument,
   stylePresetToObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeMultipleBondGapPx, planPageSvgRender } from "./index";
 import { elementFragments } from "./testing";
 
 describe.each([Acs1996StylePreset, RscJournalStylePreset])("$name geometry", preset => {
-  function render(bondStyle: "wedge" | "hashed" | undefined, order: "single" | "double" = "single") {
+  function render(bondStyle: "wedge" | "hashed" | undefined, order: "single" | "double" = "single",
+    forwardCompatibleRoundTrip = false) {
     const document = createEmptyDocument();
     const molecule: MoleculeObject = {
       id: "m", type: "molecule", x: 100, y: 100, width: preset.drawing.bondLengthPx, height: 10, rotation: 0,
@@ -16,11 +18,26 @@ describe.each([Acs1996StylePreset, RscJournalStylePreset])("$name geometry", pre
         display: { ...(bondStyle ? { bondStyle } : {}), ...(order === "double" ? { doubleBondSide: "center" as const } : {}) } }]
     };
     document.pages[0]!.objects = [molecule];
+    if (forwardCompatibleRoundTrip) {
+      const opened = readDocument({ ...document, formatVersion: "1.3.0", minAppVersion: "1.3.0",
+        futureSettings: { kept: true } }).document;
+      const reopened = readSerializedDocument(serializeDocument(opened));
+      expect(reopened.formatVersion).toBe("1.3.0");
+      return planPageSvgRender(reopened.document.pages[0]!).fragments.flatMap(elementFragments);
+    }
     return planPageSvgRender(document.pages[0]!).fragments.flatMap(elementFragments);
   }
 
   it("draws the broad wedge end at the explicit publisher bold width", () => {
     const wedge = render("wedge").find(fragment => fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "ab")!;
+    const points = String(wedge.attrs.points).split(/\s+/).map(point => point.split(",").map(Number));
+    expect(Math.hypot(points[1]![0]! - points[2]![0]!, points[1]![1]! - points[2]![1]!))
+      .toBeCloseTo(preset.drawing.bondBoldWidthPx, 2);
+  });
+
+  it("keeps the publisher wedge width after a forward-compatible round trip", () => {
+    const wedge = render("wedge", "single", true)
+      .find(fragment => fragment.tag === "polygon" && fragment.attrs["data-bond-id"] === "ab")!;
     const points = String(wedge.attrs.points).split(/\s+/).map(point => point.split(",").map(Number));
     expect(Math.hypot(points[1]![0]! - points[2]![0]!, points[1]![1]! - points[2]![1]!))
       .toBeCloseTo(preset.drawing.bondBoldWidthPx, 2);
