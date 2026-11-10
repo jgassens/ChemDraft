@@ -39,17 +39,20 @@ describe("locally bundled Sketch handwriting", () => {
     expect(createHash("sha256").update(exportDocumentToSvg(document).contents).digest("hex"))
       .toBe("c03581b17ad784bc597569220342194a314b1b467512a59cf2286319ce125d42");
   });
-  it("uses the reviewed 1.003 TTF and OFL verbatim for canvas and exports", () => {
+  it("uses the reviewed 1.003 TTF and OFL verbatim for canvas and exports", async () => {
     expect(readFileSync(appFont)).toEqual(font);
     expect(createHash("sha256").update(font).digest("hex"))
       .toBe("0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc");
     expect(sfntName(font, 5)).toContain("1.003");
     const ofl = readFileSync(new URL("./fonts/LICENSE_PATRICK_HAND.txt", import.meta.url), "utf8");
-    expect(ofl).toBe(readFileSync(new URL("../../../apps/desktop/src/assets/fonts/OFL.txt", import.meta.url), "utf8"));
-    const packaged = new URL("../../../apps/desktop/src-tauri/resources/fonts/PatrickHand-OFL.txt", import.meta.url);
-    expect(readFileSync(packaged, "utf8")).toBe(ofl);
+    expect(ofl).toBe(`Patrick Hand Regular 1.003\n\n${readFileSync(new URL("../../../apps/desktop/src/assets/fonts/OFL.txt", import.meta.url), "utf8")}`);
+    expect(ofl).toContain("SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007");
+    expect(ofl).toContain("PERMISSION & CONDITIONS");
+    expect(ofl).toContain("OTHER DEALINGS IN THE FONT SOFTWARE.");
+    const { requiredLicenseFiles } = await import("../../../tools/release/required-license-files.mjs");
+    expect(requiredLicenseFiles).toContainEqual({ source: "packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt", target: "licenses/LICENSE_PATRICK_HAND.txt" });
     const config = JSON.parse(readFileSync(new URL("../../../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"));
-    expect(config.bundle.resources).toContain("resources/fonts/PatrickHand-OFL.txt");
+    expect(config.bundle.resources["../../../packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt"]).toBe("licenses/LICENSE_PATRICK_HAND.txt");
     expect(ofl).toContain("Copyright (c) 2010-2012 Patrick Wagesreiter");
     const css = readFileSync(new URL("../../../apps/desktop/src/App.css", import.meta.url), "utf8");
     expect(css).toContain("url('./assets/fonts/PatrickHand-Regular.ttf')");

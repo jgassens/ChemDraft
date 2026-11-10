@@ -5,10 +5,10 @@ The owner supplied the unmodified `PatrickHand-Regular.ttf` and accompanying `OF
 from the local `a-drawing/sketch-font/` staging directory; nothing was downloaded for
 this change. Copyright (c) 2010-2012 Patrick Wagesreiter (mail@patrickwagesreiter.at).
 SIL OFL 1.1, with **no Reserved Font Name**. Full terms are preserved verbatim in
-[LICENSE_PATRICK_HAND.txt](LICENSE_PATRICK_HAND.txt) and beside the app's TTF in
-`apps/desktop/src/assets/fonts/OFL.txt` (the source of truth). The generator also copies it to
-the installed macOS/Windows resource `resources/fonts/PatrickHand-OFL.txt`; tests verify every
-copy byte-for-byte. Documents do not acquire the font licence.
+[LICENSE_PATRICK_HAND.txt](LICENSE_PATRICK_HAND.txt), preceded by a font identifier, and beside the app's TTF in
+`apps/desktop/src/assets/fonts/OFL.txt` (the source of truth). The generator maintains the export
+copy, which Tauri bundles for macOS and Windows at `licenses/LICENSE_PATRICK_HAND.txt`; tests verify
+the licence text and bundle mapping. Documents do not acquire the font licence.
 
 The 214,772-byte TTF's SHA-256 is
 `0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc`.
