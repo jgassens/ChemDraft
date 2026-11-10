@@ -4,6 +4,8 @@
 // document type — not a second, structurally-identical copy inlined here.
 import type { ApplyPatchOptions, DocumentPatch } from "@chemdraft/chem-core";
 import { applyPatch, pruneReactionObjectReferences } from "@chemdraft/chem-core";
+import { rebasePluginPatch } from "./rebasePluginPatch";
+export { rebasePluginPatch } from "./rebasePluginPatch";
 import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
@@ -1164,7 +1166,7 @@ export class PluginHost {
           typeof op.pageId !== "string" || !op.pageId.trim()) {
           throw new PluginHostError(`Invalid ${op.op} patch: provide a valid ${op.op === "addObject" ? "object" : "annotation"} and pageId.`);
         }
-        scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
+        scope.add(object.id);
       } else {
         const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
         for (const id of ids) {
@@ -1189,34 +1191,43 @@ export class PluginHost {
     if (!apply) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
     }
-    const lastRemoval = ops.map(op => op.op).lastIndexOf("removeObject");
-    if (lastRemoval !== -1) {
-      let document = await (requestScope ? requestScope.getDocument() : this.getActiveDocument?.());
+    if (ops.some(op => op.op === "removeObject")) {
+      const document = await (requestScope ? requestScope.getDocument() : this.getActiveDocument?.());
       if (!document) {
         throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check reaction removal scope.`);
       }
-      // Preview in order so insertions and edits earlier in a batch use the same removal rule as
-      // the patch engine. Nothing reaches the embedding host until the entire patch is authorized.
-      const removalScope = new Set(requestScope?.objectIds ?? invocation.writeScope);
-      for (let index = 0; index <= lastRemoval; index++) {
-        const op = ops[index]!;
-        if (op.op === "addObject") removalScope.add(op.object.id);
-        if (op.op === "addAnnotation") removalScope.add(op.annotation.id);
-        if (op.op === "removeObject") {
-          const page = document.pages.find(page => page.objects.some(object => object.id === op.objectId));
-          const target = page?.objects.find(object => object.id === op.objectId);
-          const removed = new Set([op.objectId]);
-          for (const object of page?.objects ?? []) {
-            if (object !== target && object.type === "reaction" && !removalScope.has(object.id)
-              && pruneReactionObjectReferences(object, removed) !== object) {
+      // Keep the authored patch for the embedding host, which rebases against its commit-time
+      // document after gesture gating. Preflight uses that same allocator and reference mapping.
+      const preflight = rebasePluginPatch(document, parsedPatch);
+      scope.clear();
+      for (const id of requestScope?.objectIds ?? invocation.writeScope) scope.add(id);
+      for (const op of writePatchOps(preflight.patch)) {
+        if (op.op === "addObject") scope.add(op.object.id);
+        else if (op.op === "addAnnotation") scope.add(op.annotation.id);
+        else {
+          const ids = op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : [];
+          for (const id of ids) {
+            if (!scope.has(id)) throw new PluginHostError(`${id} was not selected when the command started`);
+          }
+        }
+      }
+      // Inspect the actual atomic draft. Applying leaves separately normalizes incomplete bracket
+      // pairs and forward references between operations, unlike the desktop's one batch commit.
+      applyPatch(document, preflight.patch, { beforeRemoveObjects: (draft, objectIds) => {
+        const removed = new Set(objectIds);
+        for (const page of draft.pages) {
+          for (const object of page.objects) {
+            if (object.type === "reaction" && !removed.has(object.id) && !scope.has(object.id)
+              && pruneReactionObjectReferences(object, removed) !== object
+              && page.objects.some(candidate => removed.has(candidate.id))) {
+              const id = objectIds.find(id => pruneReactionObjectReferences(object, new Set([id])) !== object)!;
               throw new PluginHostError(
-                `Plugin patch refused: removing ${op.objectId} would change reaction ${object.id}, which this command may not modify.`
+                `Plugin patch refused: removing ${id} would change reaction ${object.id}, which this command may not modify.`
               );
             }
           }
         }
-        if (index < lastRemoval) document = applyPatch(document, op);
-      }
+      } });
     }
     if (!requestScope && this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
       throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");

@@ -55,7 +55,26 @@ export function setReactionArrowConditions(document: ChemDraftDocument, arrowId:
 export function reconcileReactionArrowAttachments(document: ChemDraftDocument, options: ArrowAttachmentResolutionOptions = {}): ChemDraftDocument {
   const patches: DocumentPatch[] = [];
   for (const page of document.pages) {
-    const resolved = resolveArrowAttachments(page, options);
+    // A pure translation carries the saved local placement with the arrow. Do not ask the
+    // automatic collision solver to lay out the label again beside an overlapping copied group.
+    const byId = new Map(page.objects.map(object => [object.id, object]));
+    const objects = page.objects.map(object => {
+      if (object.type !== "text" || !object.arrowAttachment) return object;
+      const attachment = object.arrowAttachment;
+      if (options.scale?.objectIds.has(attachment.parentObjectId)) return object;
+      const parent = byId.get(attachment.parentObjectId);
+      const frame = parent && reactionConditionsFrame(page, parent);
+      const old = attachment.frame;
+      if (!frame || Math.hypot(frame.origin.x - old.origin.x, frame.origin.y - old.origin.y) < 1e-7 ||
+          Math.hypot(frame.tangent.x - old.tangent.x, frame.tangent.y - old.tangent.y) >= 1e-7 ||
+          Math.hypot(frame.normal.x - old.normal.x, frame.normal.y - old.normal.y) >= 1e-7 ||
+          Math.abs((frame.length ?? 0) - (old.length ?? 0)) >= 1e-7) return object;
+      const center = arrowAttachmentPoint(frame, attachment.offset);
+      return { ...object, x: center.x - object.width / 2, y: center.y - object.height / 2,
+        arrowAttachment: { ...attachment, frame } };
+    });
+    const translated = objects.some((object, index) => object !== page.objects[index]) ? { ...page, objects } : page;
+    const resolved = resolveArrowAttachments(translated, options);
     if (resolved === page) continue;
     resolved.objects.forEach((object, index) => {
       const original = page.objects[index];

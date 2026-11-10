@@ -50,6 +50,9 @@ export const BatchDocumentPatchSchema = z.object({
 
 export interface ApplyPatchOptions {
   now?: Date | string;
+  /** Trusted host preflight, before a removal run in the atomic draft. Throw to refuse the batch.
+   * The draft is borrowed for inspection only; do not mutate or retain it. */
+  beforeRemoveObjects?: (document: ChemDraftDocument, objectIds: readonly string[]) => void;
 }
 
 export class DocumentPatchError extends Error {
@@ -110,6 +113,8 @@ export function applyPatches(
       while (end < patches.length && patches[end]!.op === "removeObject") {
         end += 1;
       }
+      options.beforeRemoveObjects?.(draft, patches.slice(index, end).map(entry =>
+        (entry as Extract<DocumentPatch, { op: "removeObject" }>).objectId));
       if (end - index > 1) {
         removeObjects(draft, patches.slice(index, end).map((entry) => (entry as { objectId: string }).objectId));
         index = end;
