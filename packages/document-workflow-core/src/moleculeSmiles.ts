@@ -1,6 +1,6 @@
 // SMILES for one native molecule on export: RDKit's identifiers when the caller supplies them, the
 // native graph writer otherwise, with every approximation reported as an export warning.
-// Moved verbatim from apps/desktop/src/moleculeSmiles.ts; loading the engine stays in the desktop.
+// Callers own engine loading; this shared writer also serves headless exports.
 
 import { isDativeBond, moleculeToMolfileV2000, moleculeBracketWarningMessages, rGroupNumberFromLabel, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";

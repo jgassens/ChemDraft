@@ -20029,7 +20029,7 @@ export async function copyAsMolfileForExport(
   if (contents === undefined) return undefined;
   const source = copyAsMolfile(document, flavor, undefined, { coordinateUnits: "raw" })!;
   const engine = computeStructureIdentifiers ?? await (await import("./moleculeSmiles")).loadStructureIdentifiers();
-  await assertMolfileExportIdentity(source, contents, engine, flavor === "v2000" ? "Copy As MOL V2000" : "Copy As MOL");
+  await assertMolfileExportIdentity(source, contents, engine, flavor === "v2000" ? "Copy as MOL V2000" : "Copy as MOL");
   return contents;
 }
 

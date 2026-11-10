@@ -7666,7 +7666,9 @@ export function MainWindow({
         try {
           await writeText(await copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
         } catch (error) {
-          setStatus(`Copy As MOL failed: ${error instanceof Error ? error.message : String(error)}`);
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL refused:") ? message : `Copy as MOL failed: ${message}`}${warningSuffix}`);
         }
         return;
       }
@@ -7675,7 +7677,9 @@ export function MainWindow({
         try {
           await writeText(await copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
         } catch (error) {
-          setStatus(`Copy As MOL V2000 failed: ${error instanceof Error ? error.message : String(error)}`);
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL V2000 refused:") ? message : `Copy as MOL V2000 failed: ${message}`}${warningSuffix}`);
         }
         return;
       }

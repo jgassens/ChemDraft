@@ -19,12 +19,6 @@ import { chargeSeparationCases } from "../../../packages/document-workflow-core/
 
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-// These format/SMILES-property tests deliberately make identifiers unavailable; exercise the
-// mandatory export guard with real and failing engines in molfileExportIdentity.test.ts instead.
-vi.mock("@chemdraft/document-workflow-core", async importOriginal => ({
-  ...await importOriginal<typeof import("@chemdraft/document-workflow-core")>(),
-  assertMolfileExportIdentity: vi.fn().mockResolvedValue(undefined)
-}));
 
 beforeEach(() => {
   vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined);
@@ -110,7 +104,7 @@ describe.each(["engine", "fallback"])("radical list export with real RDKit: %s",
   });
 });
 
-it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses its SMILES without calling the engine", async () => {
+it("imports the unsupported-order fixture, guards type 8 in SDF, and refuses its SMILES before requesting atom states", async () => {
   const input = readFileSync(new URL("../../../packages/fixtures/molfile/unsupported-bond-order.mol", import.meta.url), "utf8");
   const document = insertNativeMolfileMolecule(createPhase4Document("Unknown bond fixture"), { x: 50, y: 50 }, input, "molfile-v2000");
   const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
@@ -123,7 +117,9 @@ it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses it
     expect.objectContaining({ code: "export.smiles_write_failed", message: `Cannot write SMILES: bond ${id} has an unknown bond order.` })
   ]);
   expect(result.contents).not.toContain("> <SMILES>");
-  expect(computeStructureIdentifiers).not.toHaveBeenCalled();
+  // The real export guard attempts both identifiers, then verifies the CTAB graph instead.
+  expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(computeStructureIdentifiers).mock.calls.every(call => call[1] === undefined)).toBe(true);
 });
 
 function moleculeAt(id: string, x: number, y: number, width = 100, height = 100): MoleculeObject {
@@ -236,22 +232,26 @@ describe("structure list export", () => {
     const other = moleculeAt("other", 220, 30);
     const document = documentWith([other, molecule]);
     const before = structuredClone(document);
-    vi.mocked(computeStructureIdentifiers)
-      .mockResolvedValueOnce(mockEthaneIdentifiers("C[C@H](F)Cl"))
-      .mockResolvedValueOnce(mockEthaneIdentifiers("F/C=C/F"));
+    const smiles = ["C[C@H](F)Cl", "F/C=C/F"];
+    vi.mocked(computeStructureIdentifiers).mockImplementation(async (_contents, options) => {
+      // Sentinel SMILES test property wiring only; let the real guard compare the CTABs.
+      return options?.includeAtomStates ? mockEthaneIdentifiers(smiles.shift()!) : undefined;
+    });
 
     const result = await exportList(document);
     expect(result.contents).toContain("C[C@H](F)Cl");
     expect(result.contents).toContain("F/C=C/F");
     expect(result.warnings).toEqual([]);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
-    expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, (format === "SDF"
+    expect(computeStructureIdentifiers).toHaveBeenCalledTimes(format === "SDF" ? 6 : 2);
+    const propertyCalls = vi.mocked(computeStructureIdentifiers).mock.calls.filter(call => call[1]?.includeAtomStates);
+    expect(propertyCalls).toHaveLength(2);
+    expect(propertyCalls[0]).toEqual([(format === "SDF"
       ? moleculeToInteropMolfile(molecule, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
-      : moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true });
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, (format === "SDF"
+      : moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true }]);
+    expect(propertyCalls[1]).toEqual([(format === "SDF"
       ? moleculeToInteropMolfile(other, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
-      : moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true });
+      : moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true }]);
     expect(document).toEqual(before);
   });
 
