@@ -300,7 +300,7 @@ export const exportFormatDescriptors = [
   },
   {
     id: "cdxml",
-    label: "ChemDraw XML (CDXML)",
+    label: "CDXML",
     menuLabel: "CDXML",
     group: "compatibility",
     extensions: ["cdxml"],
@@ -313,7 +313,7 @@ export const exportFormatDescriptors = [
   },
   {
     id: "cdx",
-    label: "ChemDraw Binary (CDX)",
+    label: "CDX binary",
     menuLabel: "CDX",
     group: "compatibility",
     extensions: ["cdx"],
@@ -326,8 +326,8 @@ export const exportFormatDescriptors = [
   },
   {
     id: "chemdraw-stationery",
-    label: "ChemDraw Stationery",
-    menuLabel: "ChemDraw Stationery",
+    label: "Stationery (.cds)",
+    menuLabel: "Stationery (.cds)",
     group: "legacy",
     extensions: ["cds"],
     mimeType: "application/octet-stream",
@@ -339,8 +339,8 @@ export const exportFormatDescriptors = [
   },
   {
     id: "chemdraw-3x",
-    label: "ChemDraw 3.x",
-    menuLabel: "ChemDraw 3.x",
+    label: "Legacy 3.x (.chm)",
+    menuLabel: "Legacy 3.x (.chm)",
     group: "legacy",
     extensions: ["chm"],
     mimeType: "application/octet-stream",
@@ -348,7 +348,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: true,
-    warningSummary: "Legacy ChemDraw 3.x export needs clean-room format research before implementation."
+    warningSummary: "Legacy 3.x (.chm) export needs clean-room format research before implementation."
   },
   {
     id: "tgf",

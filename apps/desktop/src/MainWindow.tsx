@@ -33684,7 +33684,7 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
     fileAccessMode: "scoped",
     filters: [
       { name: "Drawn Structure Settings Templates", extensions: ["template", "cds"] },
-      { name: "ChemDraw Style Sheets", extensions: ["cds"] },
+      { name: "Style Sheets (.cds)", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
   });

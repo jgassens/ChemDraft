@@ -31,7 +31,7 @@ Noto Sans 2.015 is the primary embedded font, with real regular, bold, italic
 and bold-italic faces. The unmodified TTFs come from the local LibreOffice bundle:
 `/Users/jeremiahgassensmith/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/Resources/fonts/truetype/`.
 The measured files were staged at
-`/Users/jeremiahgassensmith/programming/chemdraw-wt/_master-scratch/fonts-noto/`.
+`<path-to-your-ChemDraft-checkout>/_master-scratch/fonts-noto/`.
 Upstream: https://github.com/notofonts/latin-greek-cyrillic.
 
 Copyright from each font's name table: Copyright 2022 The Noto Project Authors
