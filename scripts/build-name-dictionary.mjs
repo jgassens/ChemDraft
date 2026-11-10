@@ -9,6 +9,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { gzipSync, gunzipSync } from "node:zlib";
+import { nameKey } from "../packages/document-workflow-core/src/nameDictionaryKey.mjs";
+export { nameKey } from "../packages/document-workflow-core/src/nameDictionaryKey.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const AGENT = "ChemDraftNameDictionaryBuilder/1.0 (https://github.com/jgassens/ChemDraft; offline chemical name dictionary)";
@@ -17,7 +19,23 @@ export const WIKIS = ["en", "de", "fr", "ja", "es", "it", "ru", "zh", "pl", "nl"
 const KEY = /^[A-Z]{14}-[A-Z]{10}-[A-Z]$/;
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const unique = values => [...new Set(values)].sort(compare);
-export const nameKey = name => name.toLowerCase().replace(/[\s‐-―'’ʼ-]/g, "").replace(/[.•∙⋅]/g, "·");
+// Frozen normalization of the application that searched column 2 only. Used only
+// to establish which baseline names were previously unambiguous/searchable.
+export const legacyNameKey = name => name.toLowerCase().replace(/[\s‐-―'’ʼ-]/g, "").replace(/[.•∙⋅]/g, "·");
+
+// Reviewed changes to previously searchable column-2 assignments. Exceptions
+// pin BOTH identities: an unrelated future remap or disappearance still fails.
+export const LEGACY_NAME_CHANGES = [{
+  name: "ethylformate",
+  from: "XBDQKXXYIPTUBI-UHFFFAOYSA-M",
+  to: "WBJINCZRORDGAQ-UHFFFAOYSA-N",
+  reason: "Legacy CCC(=O)[O-] is propionate (net -1), not ethyl formate. Ethyl formate is neutral CCOC=O; the baseline already assigns its spaced spelling to that identity."
+}, {
+  name: "Β-Pinen",
+  from: "GRWFGVWFFZKLTI-RKDXNWHRSA-N",
+  to: "WTARULDDTDQWMU-UHFFFAOYSA-N",
+  reason: "Greek Β/β specifies beta-pinene (exocyclic C=C), already present as β-Pinen in baseline column 5. The legacy CC1=CC[C@@H]2C[C@H]1C2(C)C is (+)-alpha-pinene (endocyclic C=C), a different constitutional isomer."
+}];
 const qid = uri => /^https?:\/\/www\.wikidata\.org\/entity\/(Q\d+)$/.exec(uri)?.[1];
 const byId = (a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1));
 const PREFIXES = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
@@ -145,6 +163,7 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
   const prior = new Map(baseline.map(e => [e.key, e]));
   const priorNames = new Map(baseline.map(e => [e.key, new Set([...e.names, ...e.suggest].map(n => nameKey(n.replace(/^!/, ""))))]));
   const priorSmiles = new Map(baseline.map(e => [e.smiles, e]));
+  const legacyOwners = new Map(legacySearchableNames(baseline).map(e => [nameKey(e.name), e.key]));
   audit.accuracy = { label: 0, opsin: 0, pubchem: 0, unverifiable: 0, contradicted: 0 };
   audit.nameDecisions = [];
   audit.structures = [];
@@ -194,6 +213,7 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
     const kept = [];
     for (const raw of e[field]) {
       const name = raw.replace(/^!/, "");
+      if (LEGACY_NAME_CHANGES.some(change => nameKey(change.name) === nameKey(name) && change.from === e.key)) continue;
       if (priorNames.get(e.key)?.has(nameKey(name))) { kept.push(raw); continue; }
       const decisionKey = `${e.key}\t${name}`;
       let decision = decisions.get(decisionKey);
@@ -209,7 +229,8 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
     e[field] = kept;
   }
   // Apply collision checks to BOTH exact-name columns. New collisions require
-  // matching connectivity AND stereo. Existing unique ownership is preserved.
+  // matching connectivity AND stereo. Previously searchable column-2 ownership
+  // takes priority over historical column-5 names that the old app never searched.
   for (const field of ["names", "cas"]) {
     const index = new Map();
     for (const e of entries) for (const name of field === "names" ? [...e.names, ...e.suggest] : e.cas) {
@@ -221,7 +242,11 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
       if (new Set(options.map(e => e.key)).size <= 1) continue;
       const name = field === "names" ? [...options[0].names, ...options[0].suggest].find(n => nameKey(n.replace(/^!/, "")) === k) : k;
       // Use the index key for removal, not a display spelling's case or punctuation.
-      const historical = options.filter(e => field === "names" ? priorNames.get(e.key)?.has(k) : prior.get(e.key)?.cas.includes(k));
+      const owner = field === "names" ? legacyOwners.get(k) : undefined;
+      const historical = options.filter(e => {
+        if (field === "cas") return prior.get(e.key)?.cas.includes(k);
+        return owner ? e.key === owner : priorNames.get(e.key)?.has(k);
+      });
       const historicalKeys = new Set(historical.map(e => e.key));
       const answer = historicalKeys.size === 1 || !pubchemAvailable(name.replace(/^!/, "")) ? undefined : await pubchem(name.replace(/^!/, ""));
       const winner = historicalKeys.size === 1 ? historical[0]
@@ -246,15 +271,25 @@ export const serializeRows = rows => rows.map(e => [e.smiles, e.names.join("|"),
 // Node gzip has a zero mtime and no filename; pin the OS byte as well for cross-host reproducibility.
 export function compressRows(rows) { const bytes = gzipSync(serializeRows(rows), { level: 9 }); bytes[9] = 255; return bytes; }
 
-export function searchableNames(rows, fields = ["names", "suggest"]) {
+export function searchableNames(rows, fields = ["names", "suggest"], normalize = nameKey) {
   const index = new Map(), ambiguous = new Set();
   for (const e of rows) for (const field of fields) for (const name of e[field]) {
-    const k = nameKey(name.replace(/^!/, ""));
+    const k = normalize(name.replace(/^!/, ""));
     if (index.has(k) && index.get(k) !== e.key) ambiguous.add(k);
     else index.set(k, e.key);
   }
   for (const k of ambiguous) index.delete(k);
   return index;
+}
+
+export function legacySearchableNames(baseline) {
+  const searchable = searchableNames(baseline, ["names"], legacyNameKey);
+  const names = new Map();
+  for (const e of baseline) for (const raw of e.names) {
+    const name = raw.replace(/^!/, "");
+    if (searchable.get(legacyNameKey(name)) === e.key) names.set(name, { name, key: e.key });
+  }
+  return [...names.values()];
 }
 
 export function snapshotCounts(rows, baseline) {
@@ -266,18 +301,41 @@ export function snapshotCounts(rows, baseline) {
   const oldAny = new Set(baseline.flatMap(e => [...e.names, ...e.suggest].map(n => nameKey(n.replace(/^!/, "")))));
   const newlySearchable = [...names.keys()].filter(k => !oldColumn2.has(k));
   const assignments = new Map(rows.map(e => [e.key, new Set(e.cas)]));
+  const spellings = rows.flatMap(e => [...e.names, ...e.suggest]).map(n => n.replace(/^!/, ""));
+  const distinctSpellings = unique(spellings);
+  const legacyNormalized = searchableNames(rows, ["names", "suggest"], legacyNameKey);
+  const changes = legacySearchableNames(baseline).flatMap(({ name, key }) => {
+    const actual = names.get(nameKey(name));
+    return actual === key ? [] : [{ name, from: key, to: actual ?? null }];
+  });
+  const allowed = change => LEGACY_NAME_CHANGES.find(e => nameKey(e.name) === nameKey(change.name)
+    && e.from === change.from && e.to === change.to);
   return { compounds: rows.length, names: rows.reduce((n, e) => n + e.names.length, 0),
     cas: rows.reduce((n, e) => n + e.cas.length, 0), column5Names: rows.reduce((n, e) => n + e.suggest.length, 0),
     compoundsLost: [...oldKeys].filter(k => !keys.has(k)), compoundsGained: [...keys].filter(k => !oldKeys.has(k)).length,
     casLost: [...oldCas].filter(c => !cas.has(c)),
     casAssignmentsLost: baseline.flatMap(e => e.cas.filter(c => !assignments.get(e.key)?.has(c)).map(c => ({ key: e.key, cas: c }))),
     searchableNames: names.size, oldColumn2DistinctNames: oldColumn2.size,
-    oldColumn2UnambiguousNames: searchableNames(baseline, ["names"]).size, oldBothColumnsSearchable: oldNames.size,
+    normalization: {
+      changedKeyOccurrences: spellings.filter(n => nameKey(n) !== legacyNameKey(n)).length,
+      distinctSpellingsWithChangedKeys: distinctSpellings.filter(n => nameKey(n) !== legacyNameKey(n)).length,
+      changedLookupAssignments: distinctSpellings.filter(n => names.get(nameKey(n)) !== legacyNormalized.get(legacyNameKey(n))).length
+    },
+    oldColumn2UnambiguousNames: searchableNames(baseline, ["names"], legacyNameKey).size, oldBothColumnsSearchable: oldNames.size,
     newlySearchableVsOldColumn2: { total: newlySearchable.length,
       oldColumn5Only: newlySearchable.filter(k => oldColumn5.has(k)).length,
       absentFromOldFile: newlySearchable.filter(k => !oldAny.has(k)).length },
     newlySearchableVsOldBothColumns: [...names.keys()].filter(k => !oldNames.has(k)).length,
-    searchableNamesLost: [...oldNames.keys()].filter(k => !names.has(k)).length };
+    searchableNamesLost: changes.filter(e => e.to === null).length,
+    searchableNamesRemapped: changes.filter(e => e.to !== null).length,
+    legacyNameChanges: changes,
+    allowlistedNameChanges: changes.filter(allowed).map(e => ({ ...e, reason: allowed(e).reason })),
+    unreviewedNameChanges: changes.filter(e => !allowed(e)) };
+}
+
+export function assertBaselineCoverage(counts) {
+  if (counts.compoundsLost.length || counts.casAssignmentsLost.length || counts.unreviewedNameChanges.length)
+    throw new Error(`Baseline coverage regression: ${JSON.stringify(counts)}`);
 }
 
 const pause = ms => new Promise(done => setTimeout(done, ms));
@@ -429,7 +487,7 @@ export async function main(args = process.argv.slice(2)) {
   });
   // Every old compound and CAS assignment must survive. A future deliberate removal
   // needs a reviewed, explicit exception rather than silently shortening the file.
-  if (counts.compoundsLost.length || counts.casAssignmentsLost.length || counts.searchableNamesLost) throw new Error(`Baseline coverage regression: ${JSON.stringify(counts)}`);
+  assertBaselineCoverage(counts);
   const bytes = compressRows(rows); mkdirSync(dirname(out), { recursive: true }); writeFileSync(out, bytes);
   const summary = { ...counts, accuracyGate: audit.accuracy, legacyRestorations: audit.legacyRestorations.length,
     uncachedPubchemEvidence: unavailable.size, gzipBytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };

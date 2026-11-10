@@ -240,7 +240,7 @@
         },
         "v": {
           "type": "literal",
-          "value": "shared-name",
+          "value": "Shared Name",
           "xml:lang": "en"
         }
       },

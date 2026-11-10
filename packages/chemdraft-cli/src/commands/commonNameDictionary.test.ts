@@ -33,6 +33,30 @@ const commonNames = [
 ] as const;
 
 describe("common names in the committed offline dictionary", () => {
+  // The conductor stages the new asset separately until integration. Exercise
+  // reviewed legacy assignments against that candidate when explicitly supplied.
+  it.runIf(!!process.env.CHEMDRAFT_NAME_DICTIONARY_CANDIDATE).each([
+    ["Β-Pinen", "WTARULDDTDQWMU-UHFFFAOYSA-N"],
+    ["tropanol", "CYHOMWAPJJPNMW-JIGDXULJSA-N"],
+    ["ethylformate", "WBJINCZRORDGAQ-UHFFFAOYSA-N"],
+    ["ethyl formate", "WBJINCZRORDGAQ-UHFFFAOYSA-N"],
+    ["N'-Methylnicotinamide", "LDHMAVIPBRSVRG-UHFFFAOYSA-O"],
+    ["N’-methylnicotinamide", "LDHMAVIPBRSVRG-UHFFFAOYSA-O"],
+    ["N-methylnicotinamide", "ZYVXHFWBYUDDBM-UHFFFAOYSA-N"],
+    ["Phenyl-Propanol", "VAJVDSVGBWFCLW-UHFFFAOYSA-N"],
+    ["phenylpropanol", "VAJVDSVGBWFCLW-UHFFFAOYSA-N"]
+  ])("preserves the reviewed candidate assignment for %s", async (name, inchiKey) => {
+    const result = await resolveChemicalName(name, async () => ({ failureReason: "Synthetic OPSIN parse miss" }), dictionary);
+    expect(result).toMatchObject({ source: "dictionary", smiles: expect.any(String) });
+    expect((await computeStructureIdentifiers(result.smiles!))?.inchiKey).toBe(inchiKey);
+  });
+
+  it.each(["beta-carotene", "betacarotene", "beta–carotene"])("folds the beta-carotene spelling %s", async name => {
+    const match = await dictionary(name);
+    expect(match).toMatchObject({ smiles: expect.any(String) });
+    expect((await computeStructureIdentifiers(match!.smiles))?.inchiKey).toBe("OENHQHLEOONYIE-JLTXGRSLSA-N");
+  });
+
   it.each(["glucose", "D-glucose"])("refuses %s: the selected source has no stereochemically supported representative", async name => {
     // The 2026-11-09 cached SMILES+Wikipedia selection has neither name, nor
     // WQZGKKKJIJFFOK-GASJEMHNSA-N (D-glucopyranose, no anomeric stereo), nor

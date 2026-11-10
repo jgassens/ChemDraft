@@ -1,5 +1,7 @@
 // Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw), Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Modified for ChemDraft: injected lazy loading and OPSIN-first resolution with provenance.
 
+import { nameKey } from "./nameDictionaryKey.mjs";
+
 export const nameDictionaryUrl = new URL("../../../data/names/dictionary.tsv.gz", import.meta.url);
 
 export interface DictionaryMatch {
@@ -8,7 +10,6 @@ export interface DictionaryMatch {
   matchedCas?: string;
 }
 
-const nameKey = (name: string) => name.toLowerCase().replace(/[\s‐-―'’ʼ-]/g, "").replace(/[.•∙⋅]/g, "·");
 const casPattern = /^(?:CAS(?:\s*(?:RN|No\.?|number|registry number))?\s*[:#]?\s*)?\[?(\d{2,7})-(\d{2})-(\d)\]?$/i;
 
 /** Parse once on first fallback; concurrent callers share loading. A failed load may be retried. */

@@ -23,7 +23,7 @@ describe("offline name resolution", () => {
   it("rejects cross-compound name collisions in either column, in either row order", async () => {
     const rows = [
       "CCO\tethanol|shared name\t64-17-5\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\tcolumn five collision|alcohol",
-      "O\twater|column five collision\t7732-18-5\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tShared-name|alcohol",
+      "O\twater|column five collision\t7732-18-5\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tShared name|alcohol",
       "CCO\tSHARED NAME\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\t"
     ];
     for (const ordered of [rows, [...rows].reverse()]) {
@@ -56,6 +56,7 @@ describe("offline name resolution", () => {
       .toMatchObject({ source: "dictionary", matchedCas: "64-17-5", smiles: "CCO" });
     expect(load).toHaveBeenCalledTimes(1);
     expect(await dictionary("64-17-6")).toBeUndefined();
+    expect(await dictionary("p r o z a c")).toMatchObject({ matchedName: "Prozac" });
     expect(await dictionary("p r o-z a c")).toMatchObject({ matchedName: "Prozac" });
     expect(await resolveChemicalName("no-such-chemical-name-xyz", miss, dictionary)).toMatchObject({
       failureReason: expect.stringContaining("OPSIN and the offline Wikidata dictionary could not interpret chemical name")
@@ -67,5 +68,60 @@ describe("offline name resolution", () => {
     await expect(resolveChemicalName("Prozac", async () => { throw new Error("JVM failed"); }, createNameDictionary(load)))
       .rejects.toThrow("JVM failed");
     expect(load).not.toHaveBeenCalled();
+  });
+
+  it("keeps primed locants separate while folding case, whitespace and dashes", async () => {
+    const names = ["N'-Methylnicotinamide", "N-methylnicotinamide", "N''-methyl", "N'-methyl",
+      "1'-methyl", "1-methyl", "2'-methyl", "2-methyl", "alpha-name", "beta-name", "α-name", "β-name",
+      "(+)-name", "(-)-name"];
+    const dictionary = createNameDictionary(async () => names.map((name, i) =>
+      `synthetic-${i}\t${name}\t\tidentity-${i}\t`).join("\n"));
+    for (const [i, name] of names.entries()) {
+      expect(await dictionary(name)).toMatchObject({ smiles: `synthetic-${i}` });
+      expect(await dictionary(` ${name.toUpperCase().replace(/-/g, " - ")} `)).toMatchObject({ smiles: `synthetic-${i}` });
+    }
+  });
+
+  it("folds dash, prime and dot typography without dropping primed locants", async () => {
+    const dictionary = createNameDictionary(async () => [
+      "beta\tbeta-carotene\t\tidentity-beta\t",
+      "primed\tN'-methylnicotinamide\t\tidentity-primed\t",
+      "unprimed\tN-methylnicotinamide\t\tidentity-unprimed\t",
+      "one-prime\t1'-\t\tidentity-one-prime\t",
+      "one\t1-\t\tidentity-one\t",
+      "double-prime\t1''-\t\tidentity-double-prime\t",
+      "dot\tname·hydrate\t\tidentity-dot\t"
+    ].join("\n"));
+    for (const name of ["beta-carotene", "betacarotene", "beta–carotene"]) {
+      expect(await dictionary(name)).toMatchObject({ smiles: "beta" });
+    }
+    for (const dash of ["-", "‐", "‑", "‒", "–", "—", "―", "−", "﹣", "－"]) {
+      expect(await dictionary(`N${dash}methyl nicotinamide`)).toMatchObject({ smiles: "unprimed" });
+    }
+    for (const prime of ["'", "’", "ʼ", "′", "‘", "\u0060"]) {
+      expect(await dictionary(`N${prime}-methylnicotinamide`)).toMatchObject({ smiles: "primed" });
+      expect(await dictionary(`1${prime}-`)).toMatchObject({ smiles: "one-prime" });
+      for (const second of ["'", "’", "ʼ", "′", "‘", "\u0060"]) {
+        expect(await dictionary(`1${prime}${second}-`)).toMatchObject({ smiles: "double-prime" });
+      }
+    }
+    expect(await dictionary("1-")).toMatchObject({ smiles: "one" });
+    expect(await dictionary("1″-")).toMatchObject({ smiles: "double-prime" });
+    for (const dot of [".", "•", "∙", "⋅", "·"]) {
+      expect(await dictionary(`name${dot}hydrate`)).toMatchObject({ smiles: "dot" });
+    }
+  });
+
+  it("refuses collisions created by deleting hyphens, across columns and row orders", async () => {
+    const rows = [
+      "CCO\tfirst-name\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\t",
+      "O\twater\t\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tfirstname",
+      "OCC\tFIRST–NAME\t\tLFQSCWFLJHTTHZ-UHFFFAOYSA-N\t"
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const dictionary = createNameDictionary(async () => ordered.join("\n"));
+      for (const name of ["first-name", "firstname", "first–name"]) expect(await dictionary(name)).toBeUndefined();
+      expect(await dictionary("water")).toMatchObject({ smiles: "O" });
+    }
   });
 });

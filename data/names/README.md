@@ -2,10 +2,11 @@
 
 # Offline chemical name dictionary
 
-`dictionary.tsv.gz` is the regenerated Wikidata snapshot from the 9 November 2026
-response cache: 28,933 compounds, 108,035 column-2 names, 23,220 column-5 names,
-and 27,073 CAS registry numbers. Its gzip size is 1,881,239 bytes and its SHA-256 is
-`fc5b1476ce817de20b1b61774892156da4773393e4a2c10f9a8eb1b58ef642fc`.
+The rebuilt candidate (`tmp/dictionary.tsv.gz`, awaiting integration as
+`dictionary.tsv.gz`) is the Wikidata snapshot from the 9 November 2026 response
+cache: 28,933 compounds, 108,023 column-2 names, 23,217 column-5 names,
+and 27,073 CAS registry numbers. Its gzip size is 1,881,198 bytes and its SHA-256 is
+`1afd4b4cf7b828a3e4cf9669e5328838d9d840f6392fb1681761b018c1ae1c11`.
 Wikidata data is CC0 1.0; its upstream `NOTICE.txt` is copied verbatim beside the data.
 
 The source selected compounds with SMILES and an article in one of ten Wikipedias.
@@ -27,6 +28,22 @@ different InChIKeys are refused by the reader, including collisions between colu
 but are not themselves searchable. No fuzzy search, condensed-formula parser or
 network lookup is added to the application.
 
+Exact-name normalization has one shared definition in
+`packages/document-workflow-core/src/nameDictionaryKey.mjs`, imported by both builder
+and reader. It lowercases and deletes whitespace and hyphens/dashes (U+002D,
+U+2010–U+2015, U+2212, U+FE63, U+FF0D), so `beta-carotene`, `betacarotene` and
+`beta–carotene` match. Apostrophe/prime variants U+0027, U+2019, U+02BC, U+2032,
+U+2018 and U+0060 become a retained `′` (U+2032); each pair becomes `″` (U+2033),
+also matching an existing double prime. Thus `N'-Methylnicotinamide` and
+`N’-Methylnicotinamide` match, while `N-methylnicotinamide` stays distinct;
+`1'-` and `1-` also stay distinct. Dot variants `.`, `•`, `∙` and `⋅` fold to `·`.
+Other characters remain unchanged, including Greek letters. Compared with the
+original normalizer that deleted apostrophes, this candidate changes keys for 2,231
+distinct source spellings (2,411 column occurrences, covering 2,098 resulting keys).
+Twenty spellings gain a previously ambiguous lookup; no unique assignment changes
+when comparing the two normalizers on this candidate. The reader refuses any key
+shared by different full InChIKeys.
+
 ChemDraft keeps existing built-in template resolution, then asks OPSIN, then consults
 the dictionary only for a parse miss. Engine failures do not trigger fallback.
 Dictionary SMILES enter the same depiction/validation path as OPSIN SMILES.
@@ -43,8 +60,8 @@ moves OPSIN-readable names to column 5 or drops them, which explains names such 
 
 Column 5 is documented at `scripts/build-dictionary.ts:305–307`. Octet Draw's reader
 adds it to its suggestion index (`src/dictionary.ts:38–48`) but its exact dictionary
-lookup uses `byName` from column 2 (`src/dictionary.ts:99–106`). The read-only reference
-is `/Users/jeremiahgassensmith/programming/octet-draw-ref`.
+lookup uses `byName` from column 2 (`src/dictionary.ts:99–106`). The public reference
+is [Octet Draw](https://github.com/SamChemMan/Octet-Draw).
 
 ChemDraft's builder considers all usable English/German labels and aliases, including
 brands with exactly one active ingredient. It never subtracts another runtime's built-in
@@ -74,7 +91,8 @@ The explicit word-list input and its printed checksum remain for rebuild provena
 Baseline names keep their existing treatment for the **same full compound identity**,
 using the application's exact-name normalization, including names formerly in column 5.
 A name present for one stereoisomer is still new for every other stereoisomer.
-Unique baseline name/CAS ownership wins over new collisions; other collisions require
+Previously searchable column-2 ownership wins over column-5 and new collisions.
+Otherwise unique baseline name/CAS ownership wins over new collisions; other collisions require
 matching full stereo (names) or full InChIKey (CAS), or are removed. Both name columns
 participate. Names appearing on one compound still need the gate.
 
@@ -106,8 +124,42 @@ prefers the exact baseline SMILES/key pair when it still occurs in source candid
 This restores all 182 compounds and the 145 CAS numbers missing from the first rebuild.
 No legacy compound or CAS is intentionally dropped. Preservation is **not** a claim that
 RDKit can depict every legacy structure, or that legacy aliases have been revalidated.
-The build fails if any baseline compound, CAS assignment or previously unambiguous
-searchable name disappears.
+The build fails if any baseline compound or CAS assignment disappears. For names,
+the gate first indexes **only baseline column 2 with the old application's exact
+normalization**, identifying its 66,343 previously unambiguous searchable keys.
+Every original spelling belonging to those keys must resolve through the candidate's
+two-column reader normalization to the **same full InChIKey**. Disappearances and
+remaps both fail unless listed in the script's `LEGACY_NAME_CHANGES`, with an explicit
+reason and exact old/new identities. An old column-5 collision cannot hide a loss.
+
+There are two reviewed exceptions. The first is `!ethylformate` (the `!` is a source marker):
+`XBDQKXXYIPTUBI-UHFFFAOYSA-M` → `WBJINCZRORDGAQ-UHFFFAOYSA-N`. The legacy
+SMILES `CCC(=O)[O-]` is propionate, a net −1 species, whereas ethyl formate is
+neutral `CCOC=O`. The baseline already assigned `ethyl formate` to that neutral
+identity. Only the erroneous alias is removed; the charged compound remains.
+
+The second is `Β-Pinen`: `GRWFGVWFFZKLTI-RKDXNWHRSA-N` →
+`WTARULDDTDQWMU-UHFFFAOYSA-N`. Greek uppercase `Β` and lowercase `β` both specify
+beta-pinene. The legacy `CC1=CC[C@@H]2C[C@H]1C2(C)C` is (+)-alpha-pinene, with
+an endocyclic double bond. Beta-pinene instead has an exocyclic double bond; its
+baseline SMILES is `CC1(C2CCC(=C)C1C2)C`, already named `β-Pinen` in column 5.
+The corrected lookup returns this beta-pinene identity without specifying stereo.
+The alpha-pinene compound remains, with its other legacy names intact.
+
+The other three reviewed names retain their legacy assignments:
+
+| Name | Preserved full InChIKey |
+| --- | --- |
+| `tropanol` | `CYHOMWAPJJPNMW-JIGDXULJSA-N` |
+| `N'-Methylnicotinamide` | `LDHMAVIPBRSVRG-UHFFFAOYSA-O` |
+| `Phenyl-Propanol` | `VAJVDSVGBWFCLW-UHFFFAOYSA-N` |
+
+These preserve historical behavior, not a new chemical validation claim.
+`N-methylnicotinamide` remains a separate name for its separate identity, because
+the prime is retained. Hyphen deletion makes `phenylpropanol` share the legacy
+`Phenyl-Propanol` key again. The builder's existing column-2 ownership rule retains
+`VAJVDSVGBWFCLW-UHFFFAOYSA-N` for that key and removes the conflicting column-5
+alias from `DYUQAZSOFZSPHD-UHFFFAOYSA-N`; both compound rows remain.
 
 The candidate's `.report.json` records every restored identity with original SMILES,
 names, CAS, matching QIDs, source candidates/computed keys, engine diagnostic and
@@ -130,16 +182,29 @@ new source evidence establishing the D ring stereo without assigning an alpha/be
 anomer. The common-name regression explicitly checks this absence; all other identity
 assertions remain full InChIKey comparisons.
 
-### Committed build audit
+### Candidate build audit
 
-Rebuilt on macOS from the supplied 2026-11-09 response cache, using the committed
-baseline, OPSIN 2.9.0 and repository RDKit. The build gained 53 compounds and restored
-182 legacy rows; no previous compounds, CAS numbers or searchable names were lost.
-It contains 102,915 searchable names, including 36,574 newly searchable versus old
-column 2: 18,883 formerly present only in column 5 and 17,691 absent from the old file.
-The accuracy gate approved 884 name/identity pairs by label, 17,172 by OPSIN and 461
-by PubChem; it excluded 1,712 as unverifiable and 5,006 as contradicted. These gate
+Rebuilt offline on macOS from the supplied 2026-11-09 response cache, using baseline
+commit `44791b5e`, OPSIN 2.9.0 and repository RDKit. The build gained 53 compounds and
+restored 182 legacy rows. No baseline compounds or CAS assignments were lost. All
+66,343 previously unambiguous column-2 name keys remain searchable, with the two
+allowlisted identity corrections above and no unreviewed remaps or disappearances.
+It contains 102,950 searchable name keys. Under the corrected normalization, 36,615
+are absent from baseline column 2: 18,893 were present only in column 5 and 17,722
+were absent from the entire old file. This compares file coverage under the corrected
+normalization, separately from the old-application regression guarantee above.
+The accuracy gate approved 884 name/identity pairs by label, 17,200 by OPSIN and 461
+by PubChem; it excluded 1,739 as unverifiable and 5,009 as contradicted. PubChem evidence
+was uncached for 61 names; no requests were made for them. These gate
 counts are not an accuracy percentage or an external validation benchmark.
+
+Applying the new normalization to the previous whitespace-only candidate creates
+nine cross-identity collision keys. The rebuilt candidate refuses one entirely
+(`5-MeO-PiPT` / `5-MeO-pip-T`); eight retain only the owner established by the
+existing legacy/evidence rules. No cross-identity collision remains in the output.
+None of these nine collisions is new relative to the original apostrophe-deleting
+normalizer. The comparison, full identities and spellings are recorded in
+`tmp/name-normalization-audit.json`, generated by `tmp/audit-name-normalization.mjs`.
 
 English word-list SHA-256 (macOS `/usr/share/dict/words`):
 `be41ad97963bf8dabedd5871d5d691596175269d540956b0f9965a885c2bbab9`.
@@ -216,7 +281,7 @@ are cached on first fallback, with parsing yielded in slices. No new dependency 
 
 ## Distribution size
 
-The **committed** compressed file is **1,881,239 bytes** (1.88 MB / 1.79 MiB). It is referenced by a
+The **rebuilt candidate** compressed file is **1,881,198 bytes** (1.88 MB / 1.79 MiB). The dictionary is referenced by a
 literal `new URL` from the shared package so Vite emits one hashed
 `apps/desktop/dist/assets/dictionary-<hash>.tsv.gz` asset. Tauri embeds it with the
 frontend assets in the desktop application on both platforms; no extra native resource

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { buildRows, cachedJson, casValid, collectItems, compressRows, hasStereoDescriptor, nameAccuracy, nameKey, parseRows, risky, serializeRows, snapshotCounts, usableNames } from "./build-name-dictionary.mjs";
+import { assertBaselineCoverage, buildRows, cachedJson, casValid, collectItems, compressRows, hasStereoDescriptor, LEGACY_NAME_CHANGES, nameAccuracy, nameKey, parseRows, risky, searchableNames, serializeRows, snapshotCounts, usableNames } from "./build-name-dictionary.mjs";
 
 // Synthetic SPARQL response: real aspirin/paracetamol identities, invented collisions.
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/name-dictionary.sparql.json", import.meta.url), "utf8"));
@@ -44,7 +44,7 @@ test("ambiguous names in either exact-name column are dropped when PubChem has n
     ...services,
     baseline: [
       { id: "Q18216", smiles: aspirinSmiles, key: ASPIRIN, names: ["shared name", "second collision"], cas: [], suggest: ["same short name"] },
-      { id: "Q57055", smiles: paracetamolSmiles, key: PARACETAMOL, names: ["shared-name", "second collision"], cas: [], suggest: ["same short name"] }
+      { id: "Q57055", smiles: paracetamolSmiles, key: PARACETAMOL, names: ["SHARED NAME", "second collision"], cas: [], suggest: ["same short name"] }
     ],
     opsinSmiles: name => name === "same short name" ? aspirinSmiles : undefined
   });
@@ -120,6 +120,80 @@ test("searchability counts split old column-five names from names absent from th
     { total: 2, oldColumn5Only: 1, absentFromOldFile: 1 });
 });
 
+test("column-five collisions cannot hide a legacy column-two disappearance or remap", async () => {
+  const baseline = parseRows(`${aspirinSmiles}\tlegacy alias\t\t${ASPIRIN}\t\n${paracetamolSmiles}\tother alias\t\t${PARACETAMOL}\tLegacy Alias\n`);
+  for (const names of [[], ["legacy alias"]]) {
+    const candidate = [{ ...baseline[0], names: [] }, { ...baseline[1], names: ["other alias", ...names], suggest: [] }];
+    const counts = snapshotCounts(candidate, baseline);
+    assert.equal(counts.oldColumn2UnambiguousNames, 2);
+    assert.equal(counts.oldBothColumnsSearchable, 1);
+    assert.deepEqual(counts.unreviewedNameChanges, [{ name: "legacy alias", from: ASPIRIN, to: names.length ? PARACETAMOL : null }]);
+    assert.throws(() => assertBaselineCoverage(counts), /Baseline coverage regression/);
+  }
+  const restored = await buildRows([], { ...services, baseline });
+  assert.equal(searchableNames(restored).get(nameKey("legacy alias")), ASPIRIN);
+  assert.doesNotThrow(() => assertBaselineCoverage(snapshotCounts(restored, baseline)));
+});
+
+test("normalization folds dash, prime and dot variants but preserves primed locants", () => {
+  for (const [a, b] of [["N'-Methylnicotinamide", "N-methylnicotinamide"], ["N''-methyl", "N'-methyl"],
+    ["1'-", "1-"], ["1'-methyl", "1-methyl"], ["2'-methyl", "2-methyl"],
+    ["alpha-name", "beta-name"], ["α-name", "β-name"], ["(+)-name", "(-)-name"]]) assert.notEqual(nameKey(a), nameKey(b));
+  assert.equal(nameKey(" N' - METHYL \t name "), nameKey("n'-methylname"));
+  for (const name of ["beta-carotene", "betacarotene", "beta–carotene"]) assert.equal(nameKey(name), "betacarotene");
+  for (const dash of ["-", "‐", "‑", "‒", "–", "—", "―", "−", "﹣", "－"]) {
+    assert.equal(nameKey(`N${dash}methyl`), "nmethyl");
+  }
+  const primes = ["'", "’", "ʼ", "′", "‘", "\u0060"];
+  for (const prime of primes) {
+    assert.equal(nameKey(`N${prime}-methylnicotinamide`), nameKey("N'-methylnicotinamide"));
+    assert.equal(nameKey(`1${prime}-`), "1′");
+    for (const second of primes) assert.equal(nameKey(`1${prime}${second}-`), "1″");
+  }
+  assert.equal(nameKey("1″-"), "1″");
+  for (const dot of [".", "•", "∙", "⋅", "·"]) assert.equal(nameKey(`name${dot}hydrate`), "name·hydrate");
+});
+
+test("hyphen deletion collisions are refused across full identities and exact-name columns", async () => {
+  const baseline = parseRows(`${aspirinSmiles}\taspirin\t\t${ASPIRIN}\tfirst-name\n${paracetamolSmiles}\tparacetamol\t\t${PARACETAMOL}\tfirstname\n`);
+  for (const ordered of [baseline, [...baseline].reverse()]) {
+    assert.equal(searchableNames(ordered).get(nameKey("first-name")), undefined);
+    const rows = await buildRows([], { ...services, baseline: ordered });
+    assert.ok(rows.every(e => !e.suggest.some(n => nameKey(n) === "firstname")));
+    assert.equal(searchableNames(rows).get("firstname"), undefined);
+    assert.doesNotThrow(() => assertBaselineCoverage(snapshotCounts(rows, baseline)));
+  }
+});
+
+test("five reviewed legacy names retain three assignments and explicitly correct two wrong identities", async () => {
+  // Actual rows from commit 44791b5e, including each conflicting column-five name.
+  const baseline = parseRows(readFileSync(new URL("./fixtures/name-dictionary-legacy.tsv", import.meta.url), "utf8"));
+  const rows = await buildRows([], { ...services, baseline });
+  const index = searchableNames(rows);
+  for (const [name, key] of [
+    ["Β-Pinen", "WTARULDDTDQWMU-UHFFFAOYSA-N"],
+    ["tropanol", "CYHOMWAPJJPNMW-JIGDXULJSA-N"],
+    ["ethylformate", "WBJINCZRORDGAQ-UHFFFAOYSA-N"],
+    ["N'-Methylnicotinamide", "LDHMAVIPBRSVRG-UHFFFAOYSA-O"],
+    ["Phenyl-Propanol", "VAJVDSVGBWFCLW-UHFFFAOYSA-N"],
+    ["N-methylnicotinamide", "ZYVXHFWBYUDDBM-UHFFFAOYSA-N"],
+    ["phenylpropanol", "VAJVDSVGBWFCLW-UHFFFAOYSA-N"]
+  ]) assert.equal(index.get(nameKey(name)), key, name);
+  const counts = snapshotCounts(rows, baseline);
+  assert.doesNotThrow(() => assertBaselineCoverage(counts));
+  assert.equal(counts.allowlistedNameChanges.length, 2);
+  for (const change of LEGACY_NAME_CHANGES) assert.ok(counts.allowlistedNameChanges.some(e =>
+    e.name === change.name && e.from === change.from && e.to === change.to && e.reason === change.reason));
+  const missing = snapshotCounts(rows.map(e => ({ ...e, names: e.names.filter(n => n !== "!tropanol") })), baseline);
+  assert.throws(() => assertBaselineCoverage(missing), /tropanol/);
+  const wrongCorrection = snapshotCounts(rows.map(e => e.key === LEGACY_NAME_CHANGES[0].to ? { ...e, key: ASPIRIN } : e), baseline);
+  assert.ok(wrongCorrection.unreviewedNameChanges.some(e => e.name === "ethylformate" && e.to === ASPIRIN));
+  assert.throws(() => assertBaselineCoverage(wrongCorrection), /ethylformate/);
+  const missingCorrection = snapshotCounts(rows.map(e => e.key === LEGACY_NAME_CHANGES[0].to ? { ...e, suggest: [] } : e), baseline);
+  assert.ok(missingCorrection.unreviewedNameChanges.some(e => e.name === "ethylformate" && e.to === null));
+  assert.throws(() => assertBaselineCoverage(missingCorrection), /ethylformate/);
+});
+
 test("legacy compounds, CAS and exact names survive engine rejection or changed InChIKey", async () => {
   const baseline = parseRows(`${aspirinSmiles}\tlegacy alias\t50-78-2\t${ASPIRIN}\tlegacy stereo name\n`);
   const [item] = collectItems(fixture);
@@ -152,7 +226,7 @@ test("PubChem resolves each name collision independently and keeps only its comp
     if (name === "second collision") return { key: PARACETAMOL, smiles: paracetamolSmiles };
   } });
   assert.ok(rows.find(row => row.key === ASPIRIN).names.includes("shared name"));
-  assert.ok(!rows.find(row => row.key === PARACETAMOL).names.includes("shared-name"));
+  assert.ok(!rows.find(row => row.key === PARACETAMOL).names.includes("Shared Name"));
   assert.ok(rows.find(row => row.key === PARACETAMOL).names.includes("second collision"));
   assert.ok(!rows.find(row => row.key === ASPIRIN).names.includes("second collision"));
 });
