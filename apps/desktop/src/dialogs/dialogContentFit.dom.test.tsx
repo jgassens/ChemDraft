@@ -54,7 +54,7 @@ describe.each(["macos", "windows"] as const)("content sizing on %s", platform =>
         Object.defineProperty(form, "scrollHeight", { get: () => measuring() ? natural : Math.max(natural, viewport) });
 
         expect(ready).toHaveBeenCalledExactlyOnceWith(form);
-        expect(measureDialogContent(form)).toEqual({ contentHeight: natural, pixelRatio });
+        expect(measureDialogContent(form)).toEqual({ contentHeight: natural, contentWidth: 480, pixelRatio });
         expect(form.getAttribute("style")).toBe(savedStyle);
         expect(body.getAttribute("style")).toBe(savedBodyStyle);
         expect(getComputedStyle(body).overflow).toBe("auto");
@@ -81,6 +81,29 @@ function layoutWithOverflow(form: HTMLElement, viewport: number, intrinsic: numb
 }
 
 describe.each(["macos", "windows"] as const)("live content minimum on %s", platform => {
+  it("keeps measuring minimum width after a fit removes overflow, and when content shrinks", () => {
+    const form = document.createElement("section");
+    form.innerHTML = '<div class="cd-dialog-fit-body"></div>';
+    document.body.append(form);
+    const body = form.firstElementChild as HTMLElement;
+    vi.stubGlobal("devicePixelRatio", platform === "macos" ? 2 : 1.5);
+    let viewport = 380;
+    let minimumWidth = 548;
+    Object.defineProperty(form, "clientWidth", { get: () => viewport });
+    Object.defineProperty(form, "scrollWidth", { get: () => Math.max(viewport, minimumWidth) });
+    form.getBoundingClientRect = () => ({ top: 0, height: 334,
+      width: form.style.width === "min-content" ? minimumWidth : viewport } as DOMRect);
+    const before = [form.getAttribute("style"), body.getAttribute("style")];
+    try {
+      expect(measureDialogContent(form)?.contentWidth).toBe(548);
+      viewport = 900; // A fitted/larger user window has no overflow.
+      expect(measureDialogContent(form)?.contentWidth).toBe(548);
+      minimumWidth = 460; // Removed content must reduce the minimum too.
+      expect(measureDialogContent(form)?.contentWidth).toBe(460);
+      expect([form.getAttribute("style"), body.getAttribute("style")]).toEqual(before);
+    } finally { form.remove(); }
+  });
+
   it("reports horizontal overflow independently of a larger saved height", () => {
     const form = document.createElement("section");
     form.innerHTML = '<div class="cd-dialog-fit-body"></div>';
