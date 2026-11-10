@@ -10045,7 +10045,7 @@ export function MainWindow({
     if (active) {
       commitDocumentChange(result.document, result.label);
       setSelectedNativeMoleculePart({ kind: "atom", ...target.target });
-      setStatus(result.label);
+      setStatus(result.status);
     } else if (snapshot) {
       const present = normalizeCommittedDocument(result.document);
       documentUndoLabelsRef.current.set(present, result.label);
@@ -10053,7 +10053,7 @@ export function MainWindow({
       documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
         history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
         parts: [{ kind: "atom", ...target.target }],
-        file: { ...snapshot.file, dirty: true }, status: result.label });
+        file: { ...snapshot.file, dirty: true }, status: result.status });
       nonPristineTabsRef.current.add(tabId);
       setDocumentTabs([...documentTabsRef.current]);
     }
@@ -11358,7 +11358,7 @@ export function MainWindow({
         if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
         commitDocumentChange(result.document, result.label);
         setSelectedNativeMoleculePart({ kind: "atom", ...target });
-        setStatus(result.label);
+        setStatus(result.status);
       }
     }));
 
