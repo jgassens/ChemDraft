@@ -2713,8 +2713,14 @@ fn write_toolset_customization_state_with_main_writer(
     // An explicit replacement can recover malformed JSON: there is no usable previous binding
     // to preserve. Genuine read failures still abort before either file is written; LOAD remains
     // strict so it can never turn corrupt saved data into defaults and overwrite it silently.
-    let previous = read_optional_file(path)?
-        .and_then(|contents| serde_json::from_str(&contents).ok())
+    let contents = match fs::read(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let previous = contents
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .filter(serde_json::Value::is_object)
         .map(|state| restore_toolset_customization_extensions(path, state))
         .transpose()?;
     // Read back whichever binding matches the CURRENT main file, including a previous binding
@@ -2886,6 +2892,33 @@ mod toolbar_customization_persistence_tests {
     #[test]
     fn explicit_save_recovers_corrupt_main_file_with_valid_side_file() {
         assert_explicit_save_recovers_corrupt_main_file(true);
+    }
+
+    fn assert_explicit_save_recovers_invalid_main_bytes(contents: &[u8]) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), contents).unwrap();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_null_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"null");
+    }
+
+    #[test]
+    fn explicit_save_recovers_array_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"[]");
+    }
+
+    #[test]
+    fn explicit_save_recovers_non_utf8_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(&[0xff, 0xfe]);
     }
 
     #[test]
