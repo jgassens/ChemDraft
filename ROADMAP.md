@@ -38,6 +38,7 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Plugins can use chemical properties and offer assistant tools, subject to their permissions.
 
 ## 1.2.1
+- A Windows installer that installs for all users (Program Files, all-users Start Menu, silent install), deferred from 1.2.
 - MOL/SDF coordinates are written in standard units.
 - A native right-click menu.
 - The warnings window stays above floating palettes.
@@ -55,7 +56,7 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Industry-standard keyboard shortcuts as the default.
 - Short typed shortcuts for common groups (for example c1 methyl, ph phenyl, cn nitrile), shared with Avogadro.
 - Optional resizable floating toolbars.
-- A Windows offline installer and installation for all users.
+- A Windows offline installer.
 - Windows code signing, as soon as the signing service approves the project.
 
 ## 2.0 — early 2027
