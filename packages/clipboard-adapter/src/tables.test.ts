@@ -78,11 +78,81 @@ describe("limits", () => {
 });
 
 describe("HTML table fixtures", () => {
+  it("keeps partial and nested Word formatting through native table construction", () => {
+    const result = expectOk(readHtml(cfHtml(`<html><body><!--StartFragment-->
+      <table class="MsoTableGrid"><tr><td><p class="MsoNormal">plain <b>B<i>BI</i>B</b>
+      <span style="font-weight:700">W<em>WI</em></span><span style="font-weight:600">S</span>
+      <strong><span style="font-weight:normal;font-style:italic">I</span></strong>
+      H<sub>2</sub>O<sup>+</sup></p></td><td>other</td></tr></table>
+      <!--EndFragment--></body></html>`), "HTML Format"));
+    const cell = { text: "plain BBIB WWIS I H2O+", spans: [
+      { text: "plain " }, { text: "B", bold: true }, { text: "BI", bold: true, italic: true },
+      { text: "B", bold: true }, { text: " " }, { text: "W", bold: true },
+      { text: "WI", bold: true, italic: true }, { text: "S", bold: true }, { text: " " },
+      { text: "I", italic: true }, { text: " H" }, { text: "2", script: "subscript" },
+      { text: "O" }, { text: "+", script: "superscript" }
+    ] };
+    expect(result.spec.rows).toEqual([[cell, "other"]]);
+    let id = 0;
+    const native = buildTableObject(result.spec, { id: "table", x: 0, y: 0, newId: () => `word-${++id}` }).object;
+    expect(native.rows[0].cells[0]).toMatchObject({ text: cell.text, spans: cell.spans.map(span => ({
+      text: span.text, script: span.script ?? "normal", style: {
+        ...("bold" in span ? { fontWeight: 700 } : {}), ...("italic" in span ? { fontStyle: "italic" } : {})
+      }
+    })) });
+    expect(native.rows[0].cells[0].spans.map(span => span.text).join("")).toBe(cell.text);
+  });
+
+  it.each([false, true])("resolves Excel class formatting outside the table fragment (CF_HTML: %s)", wrapped => {
+    const html = `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><style><!--
+      td {font-weight:400} .xl65 {font-weight:700} .xl66 {font-style:italic}
+      td.xl65 {font-style:italic} .xl67 {vertical-align:super}
+      --></style></head><body><p>Unselected text</p><!--StartFragment-->
+      <table><tr><td class="xl65">A<span style="font-style:normal">B</span></td>
+      <td class="xl66">C<span class="xl65">D</span><span class="xl67">2</span></td></tr></table>
+      <!--EndFragment--><p>Also unselected</p></body></html>`;
+    const result = expectOk(readHtml(wrapped ? cfHtml(html) : html, wrapped ? "HTML Format" : "text/html"));
+    expect(result.spec.rows).toEqual([[
+      { text: "AB", spans: [{ text: "A", bold: true, italic: true }, { text: "B", bold: true }] },
+      { text: "CD2", spans: [{ text: "C", italic: true }, { text: "D", bold: true, italic: true },
+        { text: "2", script: "superscript", italic: true }] }
+    ]]);
+    expect(result.spec.caption).toBeUndefined();
+    expect(result.spec.footnotes).toBeUndefined();
+  });
+
+  it("inherits table, row and cell styles and permits explicit normal resets", () => {
+    const result = expectOk(readHtml(`<div style="font-weight:bold"><table><tbody style="font-style:italic">
+      <tr><td>both<span style="font-weight:normal">italic</span></td>
+      <td style="font-weight:normal;font-style:normal">plain<b>bold</b></td></tr></tbody></table></div>`));
+    expect(result.spec.rows).toEqual([[
+      { text: "bothitalic", spans: [{ text: "both", bold: true, italic: true }, { text: "italic", italic: true }] },
+      { text: "plainbold", spans: [{ text: "plain" }, { text: "bold", bold: true }] }
+    ]]);
+  });
+
+  it("resolves class specificity, source order, inline styles and important resets", () => {
+    const result = expectOk(readHtml(`<style>
+      td.xl1 {font-weight:700} .xl1 {font-weight:400} .xl2 {font-style:italic}
+      .xl2 {font-style:normal} .xl3 {font-weight:normal !important}
+    </style><table><tr><td class="xl1 xl2">bold</td>
+      <td class="xl1 xl3" style="font-weight:bold">plain</td></tr></table>`));
+    expect(result.spec.rows).toEqual([[bold("bold"), "plain"]]);
+  });
+
+  it("keeps text when CSS needs external styles, complex selectors or at-rules", () => {
+    const result = expectOk(readHtml(`<link rel="stylesheet" href="https://example.invalid/style.css">
+      <style>table .complex {font-weight:bold} @media screen {.media {font-style:italic}}</style>
+      <table><tr><td class="complex">all text</td><td class="media">remains</td></tr></table>`));
+    expect(result.spec.rows).toEqual([["all text", "remains"]]);
+  });
+
   it.each(["windows-word.html", "windows-excel.html"])("detects one header in Windows CF_HTML (%s)", name => {
     const result = expectOk(readHtml(cfHtml(fixture(name)), "HTML Format"));
-    expect(result.spec.headerRows).toEqual([[
+    const header = [
       "Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"
-    ]]);
+    ];
+    expect(result.spec.headerRows).toEqual([name === "windows-excel.html" ? header.map(bold) : header]);
     expect(result.spec.rows).toHaveLength(2);
     let id = 0;
     expect(buildTableObject(result.spec, { id: "table", x: 0, y: 0, newId: () => `win-${++id}` }).object.headerRowCount).toBe(1);
@@ -96,7 +166,7 @@ describe("HTML table fixtures", () => {
     expect(result.spec).toEqual({
       columns: [left, ...Array.from({ length: 6 }, () => ({ align: "decimal" }))],
       // excel-like.html starts with Material and six property labels above numeric columns.
-      headerRows: [["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"]],
+      headerRows: [["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"].map(bold)],
       rows: [
         ["allyl alcohol", "58.08", "0.854", "1.00", "17.22", "1.00", "1.17"],
         ["Ti(OiPr)4", "284.22", "0.96", "0.05", "0.861", "0.245", "0.255"],
@@ -170,7 +240,7 @@ describe("HTML table fixtures", () => {
     expect(result.spec).toEqual({
       columns: [left, { align: "decimal" }, { align: "decimal" }],
       // google-sheets-like.html starts with Material, MW and mmol labels above numeric columns.
-      headerRows: [["Material", "MW (g/mol)", "mmol"]],
+      headerRows: [["Material", "MW (g/mol)", "mmol"].map(bold)],
       rows: [
         ["allyl alcohol", "58.08", "17.22"],
         ["TBHP", "90.12", "34.44"],
@@ -277,6 +347,9 @@ describe("real Windows Office 16 clipboard captures (2026-10-30)", () => {
 
 describe("Excel overflow recovery", () => {
   const excelHeaders = ["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"];
+  const excelCaption = { text: "Table S2. Sharpless reagent plan (synthetic).", spans: [
+    { text: "Table S2.", bold: true }, { text: " Sharpless reagent plan (synthetic)." }
+  ] };
   const textOf = (cell: string | { text: string }) => typeof cell === "string" ? cell : cell.text;
 
   it.each([
@@ -294,7 +367,7 @@ describe("Excel overflow recovery", () => {
     const payload: ClipboardReadPayload = { types: textItems.map(item => item.type), textItems };
     const result = expectOk(readClipboardHtmlTable(payload, parseHtml));
     expect(result.source).toBe("html");
-    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(result.spec.caption).toEqual(excelCaption);
     expect(result.spec.headerRows).toEqual([excelHeaders]);
     expect(result.spec.columns).toHaveLength(7);
     expect(result.spec.rows).toHaveLength(5);
@@ -326,7 +399,7 @@ describe("Excel overflow recovery", () => {
 
   it("extracts colspan caption and short colspan footnote without a merged-cells warning, even without TSV", () => {
     const result = expectOk(readHtml(fixture("excel-overflow-notes.html")));
-    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(result.spec.caption).toEqual(excelCaption);
     expect(result.spec.footnotes).toEqual([{ text: "a TBHP stock solution; synthetic example.", spans: [
       { text: "a", script: "superscript" }, { text: " TBHP stock solution; synthetic example." }
     ] }]);

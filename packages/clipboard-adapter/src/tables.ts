@@ -198,8 +198,60 @@ function isBoldWeight(value: string): boolean {
   return Number.isFinite(weight) && weight >= 600;
 }
 
+type FormatProperty = (element: Element, name: string) => string | undefined;
+
+/** Resolve flat tag/class rules from pasted style blocks, never external CSS or host styles.
+ * Office commonly puts .xlNN and p.MsoNormal rules outside the copied fragment.
+ * Complex selectors, at-rules and shorthands are deliberately outside this small reader.
+ */
+function htmlFormatProperty(document: Document): FormatProperty {
+  const rules: Array<{ selector: string; specificity: number; declarations: string }> = [];
+  for (const style of Array.from(document.querySelectorAll("style"))) {
+    const css = (style.textContent ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--|-->/g, "");
+    let depth = 0, start = 0, open = 0;
+    for (const match of css.matchAll(/[{}]/g)) {
+      if (match[0] === "{") {
+        if (depth === 0) open = match.index;
+        depth += 1;
+      } else if (depth > 0 && --depth === 0) {
+        const declarations = css.slice(open + 1, match.index);
+        if (!declarations.includes("{")) {
+          for (const selector of css.slice(start, open).trim().split(",").map(value => value.trim())) {
+            if (!/^(?:[a-z][\w-]*)?(?:\.[a-z_][\w-]*)*$/i.test(selector) || selector === "") continue;
+            rules.push({ selector, specificity: (selector.match(/\./g)?.length ?? 0) * 10
+              + (/^[a-z]/i.test(selector) ? 1 : 0), declarations });
+          }
+        }
+        start = match.index + 1;
+      }
+    }
+  }
+  return (element, name) => {
+    let result: string | undefined;
+    let priority = -1;
+    const apply = (declarations: string, specificity: number) => {
+      for (const part of declarations.split(";")) {
+        const colon = part.indexOf(":");
+        if (part.slice(0, colon).trim().toLowerCase() !== name) continue;
+        const value = part.slice(colon + 1).trim().toLowerCase();
+        const important = /\s*!important\s*$/.test(value);
+        const nextPriority = specificity + (important ? 10000 : 0);
+        if (nextPriority >= priority) {
+          result = value.replace(/\s*!important\s*$/, "");
+          priority = nextPriority;
+        }
+      }
+    };
+    for (const rule of rules) {
+      if (element.matches(rule.selector)) apply(rule.declarations, rule.specificity);
+    }
+    apply(element.getAttribute("style") ?? "", 1000);
+    return result;
+  };
+}
+
 /** The format an element gives its content; inline styles override the element's own meaning. */
-function childFormat(element: Element, inherited: Format): Format {
+function childFormat(element: Element, inherited: Format, property: FormatProperty): Format {
   const tag = tagOf(element);
   let { script, bold, italic } = inherited;
   if (tag === "b" || tag === "strong") {
@@ -213,15 +265,16 @@ function childFormat(element: Element, inherited: Format): Format {
   } else if (tag === "sup") {
     script = "superscript";
   }
-  const weight = styleProperty(element, "font-weight");
+  const weight = property(element, "font-weight");
   if (weight !== undefined) {
-    bold = isBoldWeight(weight);
+    bold = weight === "inherit" || weight === "unset" ? inherited.bold : isBoldWeight(weight);
   }
-  const fontStyle = styleProperty(element, "font-style");
+  const fontStyle = property(element, "font-style");
   if (fontStyle !== undefined) {
-    italic = fontStyle === "italic" || fontStyle === "oblique";
+    italic = fontStyle === "inherit" || fontStyle === "unset" ? inherited.italic
+      : fontStyle === "italic" || fontStyle === "oblique";
   }
-  const vertical = styleProperty(element, "vertical-align");
+  const vertical = property(element, "vertical-align");
   if (vertical === "sub") {
     script = "subscript";
   } else if (vertical === "super") {
@@ -245,6 +298,8 @@ class CellCollector {
   private pieces: Piece[] = [];
   nested = false;
   images = false;
+
+  constructor(private readonly formatProperty: FormatProperty) {}
 
   private lastChar(): string {
     for (let index = this.pieces.length - 1; index >= 0; index -= 1) {
@@ -311,7 +366,7 @@ class CellCollector {
     if (tag === "table") {
       this.nested = true;
     }
-    const format = childFormat(element, inherited);
+    const format = childFormat(element, inherited, this.formatProperty);
     const block = BLOCK_TAGS.has(tag);
     if (block) {
       this.newline(false);
@@ -408,7 +463,7 @@ function hasTableAncestor(element: Element): boolean {
 }
 
 /** Only paragraphs around the table can be represented as a caption and footnotes. */
-function tableNotes(root: Element, table: Element): {
+function tableNotes(root: Element, table: Element, property: FormatProperty): {
   leading: ClipboardTableCell[]; trailing: ClipboardTableCell[]; unsafe: boolean;
 } {
   const leading: ClipboardTableCell[] = [];
@@ -428,9 +483,9 @@ function tableNotes(root: Element, table: Element): {
     const element = node as Element;
     const tag = tagOf(element);
     if (SKIP_TAGS.has(tag) || styleProperty(element, "display") === "none") return;
-    const inherited = childFormat(element, format);
+    const inherited = childFormat(element, format, property);
     if (tag === "p" || (tag === "div" && !element.querySelector("p, div, table"))) {
-      const collector = new CellCollector();
+      const collector = new CellCollector(property);
       for (const child of Array.from(element.childNodes)) collector.walk(child, inherited);
       const note = collector.finish();
       unsafe ||= collector.images || collector.nested;
@@ -443,8 +498,8 @@ function tableNotes(root: Element, table: Element): {
   walk(root, PLAIN);
   const caption = Array.from(table.children).find((child) => tagOf(child) === "caption");
   if (caption) {
-    const collector = new CellCollector();
-    for (const child of Array.from(caption.childNodes)) collector.walk(child, childFormat(caption, PLAIN));
+    const collector = new CellCollector(property);
+    for (const child of Array.from(caption.childNodes)) collector.walk(child, childFormat(caption, PLAIN, property));
     const note = collector.finish();
     unsafe ||= collector.images || collector.nested;
     if (cellText(note) !== "") leading.push(note);
@@ -622,7 +677,7 @@ function specFromGrid(
 }
 
 function convertTable(
-  table: Element, payload: ClipboardReadPayload, notes: ReturnType<typeof tableNotes>
+  table: Element, payload: ClipboardReadPayload, notes: ReturnType<typeof tableNotes>, property: FormatProperty
 ): ClipboardTableResult | undefined {
   const { rows, headCount } = collectRows(table);
   if (rows.length === 0) {
@@ -673,9 +728,13 @@ function convertTable(
       if (rowspan > 1) {
         for (let dr = 0; dr < rowspan; dr += 1) rowspanRows.add(r + dr);
       }
-      const collector = new CellCollector();
+      const collector = new CellCollector(property);
+      // Start at the cell, including table/row/wrapper styles inherited by its text.
+      const ancestors: Element[] = [];
+      for (let ancestor: Element | null = cell; ancestor; ancestor = ancestor.parentElement) ancestors.push(ancestor);
+      const inherited = ancestors.reverse().reduce((format, element) => childFormat(element, format, property), PLAIN);
       for (const child of Array.from(cell.childNodes)) {
-        collector.walk(child, PLAIN);
+        collector.walk(child, inherited);
       }
       nested ||= collector.nested;
       images ||= collector.images;
@@ -849,11 +908,13 @@ export function readClipboardHtmlTable(
     return fail("The clipboard HTML could not be parsed safely as a table.");
   }
   let root: Element = document.body ?? document.documentElement;
+  let parsedFullDocument = fragment === html;
   let tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
   if (tables.length === 0 && fragment !== html) {
     // Excel marks the rows inside the table, so the fragment alone has no table wrapper.
     try {
       document = parseHtml(html);
+      parsedFullDocument = true;
     } catch {
       return fail("The clipboard HTML could not be parsed safely as a table.");
     }
@@ -877,8 +938,19 @@ export function readClipboardHtmlTable(
   if (tables.length > 1) {
     return fail("The clipboard contains multiple HTML tables; copy one table at a time.");
   }
-  const notes = tableNotes(root, tables[0]);
-  const result = convertTable(tables[0], payload, notes);
+  // The table/notes still come only from the selected fragment. Read the surrounding
+  // document solely for CSS, so head styles survive without importing unrelated text.
+  let styleDocument = document;
+  if (!parsedFullDocument) {
+    try {
+      styleDocument = parseHtml(html);
+    } catch {
+      // Inline formatting is still readable when the surrounding document is not.
+    }
+  }
+  const property = htmlFormatProperty(styleDocument);
+  const notes = tableNotes(root, tables[0], property);
+  const result = convertTable(tables[0], payload, notes, property);
   if (!result?.ok) return result;
   if (notes.unsafe) {
     return fail("The content around the HTML table cannot be read safely as caption and footnote paragraphs; copy just the table and its paragraphs.");
