@@ -88,3 +88,5 @@ plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, 
 
 API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
 Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.
+
+API 0.1.25 additively exposes native bracketUsage, repeatCount and molecule-scoped crossingBondIds through DocumentObject and ChemDraftDocument. Legacy repeatUnit remains supported.\n

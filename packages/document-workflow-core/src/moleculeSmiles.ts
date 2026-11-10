@@ -2,7 +2,7 @@
 // native graph writer otherwise, with every approximation reported as an export warning.
 // Moved verbatim from apps/desktop/src/moleculeSmiles.ts; loading the engine stays in the desktop.
 
-import { isDativeBond, moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
+import { isDativeBond, moleculeToMolfileV2000, moleculeBracketWarningMessages, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import {
   nativeAtomChargeIsExpressible,
@@ -64,8 +64,11 @@ export async function moleculeSmiles(
   warnings: ExportWarning[],
   computeStructureIdentifiers: ComputeStructureIdentifiers | undefined,
   molfile?: string,
-  options: { requireEngineAtomStates?: boolean } = {}
+  options: { requireEngineAtomStates?: boolean; document?: ChemDraftDocument } = {}
 ): Promise<string> {
+  for (const message of moleculeBracketWarningMessages(molecule, options.document)) {
+    if (!warnings.some(warning => warning.message.includes(message))) warnings.push({ code: "export.repeat_unit_not_represented", severity: "warning", objectId: molecule.id, message });
+  }
   const requireEngineAtomStates = options.requireEngineAtomStates ?? false;
   // Both the V2000 input to RDKit and the native fallback approximate these features.
   const dativeBondCount = molecule.bonds.filter(isDativeBond).length;

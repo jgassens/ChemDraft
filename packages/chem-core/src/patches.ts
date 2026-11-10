@@ -18,6 +18,7 @@ import { cloneDocument, toIsoTimestamp } from "./document";
 import { engineDocuments } from "./engineDocuments";
 import { pageMarginFromLayout } from "./page-layout";
 import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydrogenHints";
+import { bracketPairs, withoutBracketPairMetadata, withBracketChemistryWarnings } from "./brackets";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -246,6 +247,22 @@ function validateDraft(
   draft: ChemDraftDocument,
   unvalidated: { compatibility?: boolean; styles?: boolean; plugins?: boolean } = {}
 ): ChemDraftDocument {
+  for (const page of draft.pages) {
+    if (!page.objects.some(object => object.type === "bracket")) continue;
+    const pairs = bracketPairs(page.objects);
+    const objects = new Map(page.objects.map(object => [object.id, object]));
+    page.objects = page.objects.map(object => {
+      if (object.type !== "bracket") return object;
+      if (object.pairId && !pairs.has(object.pairId)) return withoutBracketPairMetadata(object);
+      const containedObjectIds = object.containedObjectIds.filter(id => objects.has(id));
+      const crossingBondIds = object.crossingBondIds?.filter(ref => {
+        const molecule = objects.get(ref.objectId);
+        return molecule?.type === "molecule" && molecule.bonds.some(bond => bond.id === ref.bondId);
+      });
+      return containedObjectIds.length === object.containedObjectIds.length && crossingBondIds?.length === object.crossingBondIds?.length
+        ? object : { ...object, containedObjectIds, ...(crossingBondIds ? { crossingBondIds } : {}) };
+    });
+  }
   // No patch writes the compatibility warnings, styles, or plugin data, and the base had them
   // validated, so they pass through by reference. Re-parsing them re-created every warning object
   // on every edit — an imported page can carry thousands — and each undo step kept its own copy.
@@ -259,13 +276,13 @@ function validateDraft(
     plugins: unvalidated.plugins ? draft.plugins : {},
     pages: draft.pages.map((page) => ({ ...page, objects: [] }))
   });
-  return {
+  return withBracketChemistryWarnings({
     ...shell,
     compatibility: unvalidated.compatibility ? shell.compatibility : draft.compatibility,
     styles: unvalidated.styles ? shell.styles : draft.styles,
     plugins: unvalidated.plugins ? shell.plugins : draft.plugins,
     pages: shell.pages.map((page, index) => ({ ...page, objects: draft.pages[index]!.objects }))
-  };
+  });
 }
 
 const freezeResults =

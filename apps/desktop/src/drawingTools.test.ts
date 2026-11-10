@@ -26,6 +26,8 @@ describe("Phase 7 drawing tool activation", () => {
     expect(commandsForKind("ring")).toContain("tool.cyclopentane");
     expect(commandsForKind("text")).toContain("tool.text");
     expect(commandsForKind("arrow")).toContain("tool.reactionArrow");
+    expect(commandsForKind("bracket")).toContain("tool.roundBracket");
+    expect(getToolsetCommandSpecs().find(command => command.id === "tool.roundBracket")).toMatchObject({ icon: "roundBracket" });
     expect(commandsForKind("art")).toContain("tool.art.circle");
     expect(commandsForKind("art")).toContain("tool.art.arc90Dashed");
   });

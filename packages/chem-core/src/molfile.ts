@@ -43,9 +43,12 @@
 
 import { bridgeBondIndices } from "./bondGraph";
 import { elementSymbols, isMetalSymbol } from "./elements";
-import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
+import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
+import { moleculeBracketWarningMessages } from "./brackets";
 
 export interface MolfileWriteOptions {
+  /** Live bracket context when available; cached chemistry warnings are used otherwise. */
+  document?: ChemDraftDocument;
   /** Preserve unknown orders as query type 8 (default), or refuse before writing engine input. */
   unknownBondOrders?: "any" | "refuse";
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
@@ -516,8 +519,9 @@ function mdlRadicalCode(markRadicals: number | undefined, atomId: string, option
  * (`fromAtomId`); nonzero formal charges become `M  CHG` lines.
  */
 export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const bracketWarnings = moleculeBracketWarningMessages(mol, options.document);
   const warningsOut = options.warnings;
-  const warnings: string[] = [];
+  const warnings: string[] = [...bracketWarnings];
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
@@ -643,8 +647,9 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
  * "MOL Text" flavor Copy As offers alongside the classic V2000 form.
  */
 export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const bracketWarnings = moleculeBracketWarningMessages(mol, options.document);
   const warningsOut = options.warnings;
-  const warnings: string[] = [];
+  const warnings: string[] = [...bracketWarnings];
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;

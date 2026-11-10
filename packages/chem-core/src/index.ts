@@ -1,4 +1,5 @@
 export { normalizeAtomIsotope } from "./isotopes";
+export { bracketPairs, withoutBracketPairMetadata, bracketChemistryWarnings, withBracketChemistryWarnings, moleculeBracketWarningMessages } from "./brackets";
 export { MAX_IMAGE_OBJECT_BYTES } from "./imageBytes";
 export { MAX_IMAGE_SIDE, MAX_IMAGE_DECODED_BYTES, imagePixelLimitError, validatePngImage, validateSvgImage, isSvgImageSource, createImageGraphicObject, readPngInfo, readSvgInfo, type CreateImageGraphicObjectOptions, type ImagePixelInfo } from "./image";
 

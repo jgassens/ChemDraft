@@ -1893,7 +1893,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.document?.pages[0].objects.map((object) => object.type)).toEqual([
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect(opened.document?.pages[0].crossings).toEqual([{
@@ -1905,7 +1905,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     }]);
     expect(opened.warnings.map((item) => item.code)).toEqual(
       expect.arrayContaining([
-        "cdxml.object_import_unsupported"
+        "cdxml.bracket_group_preserved"
       ])
     );
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
@@ -1920,14 +1920,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "molecule",
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
     // The FullHead reaction arrow imports as an editable art arrow tagged with its chemical identity.
     expect((opened.document?.pages[0].objects[1] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
-    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.bracket_group_preserved");
   });
 
   it("exports native crossing overrides as visible reciprocal CrossingBonds and coherent Z values", () => {
@@ -1990,15 +1990,23 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       {
         id: "bracket_001",
         type: "bracket",
-        x: 144, y: 126, width: 16, height: 64, rotation: 0, style: {},
-        bracketKind: "curly",
+        x: 144, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "open", pairId: "bracket_pair",
+        containedObjectIds: []
+      },
+      {
+        id: "bracket_002",
+        type: "bracket",
+        x: 244, y: 126, width: 16, height: 64, rotation: 30, style: {},
+        bracketKind: "square", side: "close", pairId: "bracket_pair",
         containedObjectIds: []
       }
     ]), { creationProgram: "T" });
 
-    // The bracket still exports as a placeholder, but no longer silently.
-    expect(bracket.contents).toContain('GraphicType="Unknown"');
-    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_payload_only");
+    // Rotated pairs retain their group with an axis-aligned glyph approximation.
+    expect(bracket.contents).toContain("<bracketedgroup");
+    expect(bracket.contents).toContain('GraphicType="Bracket"');
+    expect(bracket.warnings.map((warning) => warning.code)).toContain("cdxml.bracket_geometry_approximated");
 
     const orbital = exportDocumentToCdxml(documentWithObjects([
       {

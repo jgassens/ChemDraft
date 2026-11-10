@@ -7,7 +7,7 @@ import {
   moleculeToMolfileV3000,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
+import { exportDocumentToCdxml, repeatUnitExportWarnings, type ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { moleculeSmiles } from "@chemdraft/document-workflow-core";
@@ -317,7 +317,8 @@ export async function exportPerJobFormat(
     return { contents: result.bytes, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message)] };
   }
   await assertCanonicalIdentity(sourceCanonicalSmiles, built.identityMolfile);
-  return { contents: built.identityMolfile, warnings: identityWarnings };
+  return { contents: built.identityMolfile, warnings: [...identityWarnings,
+    ...repeatUnitExportWarnings(built.document, "MOL").map(warning => warning.message)] };
 }
 
 async function runPerJobExport(
@@ -371,7 +372,7 @@ async function combinedRecord(
   index: number
 ): Promise<CombinedRecord> {
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
-  const warnings = [...built.warnings];
+  const warnings = [...built.warnings, ...repeatUnitExportWarnings(built.document, format === "sdf" ? "SDF" : "SMILES").map(warning => warning.message)];
   const molfile = built.identityMolfile;
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built);
   await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
