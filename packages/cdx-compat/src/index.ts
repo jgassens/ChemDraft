@@ -6,12 +6,10 @@ import {
   createEmptyDocument,
   deserializeDocument,
   drawnLabelBondSide,
-  elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
   moleculeToMolfileV3000,
   nativeTextStyleFromObjectStyle,
-  normalizeAtomIsotope,
   parseDocument,
   withBracketChemistryWarnings,
   type Anchor,
@@ -51,7 +49,7 @@ import {
   writeCdx,
   type CdxElement
 } from "./cdxBinary";
-import { abbreviationExpansionIssue, restoreCdxmlAbbreviations } from "./abbreviations";
+import { abbreviationExpansionIssue, cdxmlAtomChemistry, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -1561,6 +1559,7 @@ function exportMoleculeObject(
     const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
     const elementNumber = heavyHydrogen ? 1
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
+    const literalLabel = elementNumber === undefined && atom.labelLiteral === true;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`
@@ -1617,7 +1616,10 @@ function exportMoleculeObject(
     if (atom.hydrogenCount !== undefined) {
       attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
     }
-    if (rGroupLabel) {
+    if (rGroupLabel || literalLabel) {
+      // A regenerated literal node must retain its label semantics too, including any explicit
+      // NumHydrogens. Element text alone does not identify a literal label to a CDXML reader.
+      if (literalLabel && !rGroupLabel) attributes.push('NodeType="GenericNickname"', `GenericNickname="${escapeXmlAttribute(atom.element)}"`);
       return `<n ${attributes.join(" ")}><t><s>${escapeXmlText(atom.element)}</s></t></n>`;
     }
     if (isotope !== undefined) {
@@ -3521,27 +3523,13 @@ function importFragment(
         ...(geometry ? { geometry } : {})
       };
     }
-    // A label written as text in Element ("Ar", "Ts" — how a bonded aryl or tosyl label is exported)
-    // is a typed label, so it keeps the group meaning a bonded one carries. A numeric Element is an
-    // element of the structure and stays one: Element="89" bonded to Cl is actinium, never acetyl.
-    const rawElement = atomElement.attributes.Element?.trim();
-    const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
-      bondedElementLabelMeaning(element) !== undefined;
-    return normalizeAtomIsotope({
+    return {
       id: atomId,
-      element: literalLabel ?? element,
-      ...(atomElement.attributes.Isotope === undefined ? {}
-        : { isotope: Number(atomElement.attributes.Isotope) }),
+      ...cdxmlAtomChemistry(atomElement.attributes, literalLabel),
       x: point.x,
       y: point.y,
-      formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
-      ...(["Doublet", "2"].includes(atomElement.attributes.Radical) ? { markRadicals: 1 }
-        : ["Triplet", "3"].includes(atomElement.attributes.Radical) ? { markRadicals: 2 } : {}),
-      // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
-      // no implicit hydrogens are invented for a label like "SO3".
-      ...(literalLabel || textLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
-    });
+    };
   });
   // A bond drawn to an abbreviation now lands on the atom its connection point marked — the sulfur
   // of an expanded SO3, not the vanished node.
@@ -5400,30 +5388,6 @@ function cdxmlAtomStereoAssignment(value: string | undefined): "R" | "S" | undef
 
 function atomicNumberForElement(element: string): number | undefined {
   return atomicNumberForElementSymbol(element);
-}
-
-/**
- * The element or label a CDXML node's `Element` attribute names, or undefined when it names none.
- *
- * CDXML writes an atomic number: plain digits only, so "1e1", "0x1A" and "+6" are not 10, 26 and
- * 6. An absent attribute is carbon, the format's default. Text that is not a number is taken as
- * written, as it always was: an element symbol, D, T, "*", or a label such as "Ph" or "OMe", which
- * this package's exporter writes as text for any atom without an atomic number. What names nothing
- * is a number outside 1–118, anything else number-like (26.5, −6, "+6", "1e1", "0x1A"), or an empty
- * value: the caller imports an unknown atom and warns, never carbon (AGENTS.md §7).
- */
-function elementFromCdxmlAtom(element: string | undefined): string | undefined {
-  if (element === undefined) {
-    return "C";
-  }
-  const trimmed = element.trim();
-  if (/^\d+$/.test(trimmed)) {
-    return elementSymbolForAtomicNumber(Number(trimmed));
-  }
-  if (trimmed === "" || /^[+-]?\.?\d/.test(trimmed)) {
-    return undefined;
-  }
-  return trimmed;
 }
 
 /** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our

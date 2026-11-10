@@ -1,4 +1,5 @@
-import { normalizeAtomIsotope, type MoleculeObject } from "@chemdraft/chem-core";
+import { elementSymbolForAtomicNumber, normalizeAtomIsotope, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
+import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import type { CompatibilityConversionWarning } from "./index";
 import type { CdxElement } from "./cdxBinary";
 
@@ -49,8 +50,50 @@ const sameMembers = (left: readonly string[], right: readonly string[]) =>
 const elementText = (node: CdxElement): string => node.text + node.kids.map(elementText).join("");
 const abbreviationLabel = (source: CdxElement): string | undefined => {
   const label = source.kids.find(child => child.name === "t");
-  return label ? elementText(label).trim() : source.attrs.GenericNickname;
+  return (label ? elementText(label).trim() : "") || source.attrs.GenericNickname?.trim() || undefined;
 };
+
+/** Missing Element defaults to carbon; numeric-looking invalid values never do. */
+export function elementFromCdxmlAtom(element: string | undefined): string | undefined {
+  if (element === undefined) return "C";
+  const trimmed = element.trim();
+  if (/^\d+$/.test(trimmed)) return elementSymbolForAtomicNumber(Number(trimmed));
+  if (trimmed === "" || /^[+-]?\.?\d/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+/** Use the same source interpretation on import and before restoring a literal source node. */
+export function cdxmlAtomChemistry(attributes: Record<string, string>, literalLabel?: string) {
+  const element = elementFromCdxmlAtom(attributes.Element) ?? "*";
+  const rawElement = attributes.Element?.trim();
+  const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
+    bondedElementLabelMeaning(element) !== undefined;
+  const charge = Number(attributes.Charge);
+  return normalizeAtomIsotope({
+    element: literalLabel ?? element,
+    ...(attributes.Isotope === undefined ? {} : { isotope: Number(attributes.Isotope) }),
+    formalCharge: Number.isInteger(charge) ? charge : 0,
+    ...(["Doublet", "2"].includes(attributes.Radical) ? { markRadicals: 1 }
+      : ["Triplet", "3"].includes(attributes.Radical) ? { markRadicals: 2 } : {}),
+    ...(literalLabel || textLabel ? { labelLiteral: true } : {})
+  });
+}
+
+function sourceAtomIsUnedited(atom: MoleculeAtom, source: CdxElement, molecule: MoleculeObject): boolean {
+  const original = cdxmlAtomChemistry(source.attrs, abbreviationLabel(source));
+  const hydrogenCount = source.attrs.NumHydrogens === undefined ? undefined : Number(source.attrs.NumHydrogens);
+  const originalHydrogens = hydrogenCount !== undefined && Number.isInteger(hydrogenCount) && hydrogenCount >= 0
+    ? hydrogenCount : undefined;
+  const sourceStereo = source.attrs.AS?.trim().toUpperCase();
+  const expectedStereo = sourceStereo === "R" || sourceStereo === "S" ? [`${atom.id}:${sourceStereo}`] : [];
+  const liveStereo = molecule.chemistry?.stereochemistry.filter(value => value.startsWith(`${atom.id}:`)) ?? [];
+  return atom.element === original.element && atom.isotope === original.isotope &&
+    atom.formalCharge === original.formalCharge && (atom.markRadicals ?? 0) === (original.markRadicals ?? 0) &&
+    atom.hydrogenCount === originalHydrogens && !!atom.labelLiteral === !!original.labelLiteral &&
+    // Source import does not assign a side-dependent label reading. Restoring its text after
+    // such a native edit would discard that new chemical interpretation.
+    atom.labelBondSide === undefined && sameMembers(liveStereo, expectedStereo);
+}
 
 /** Restore grouping around the live graph. Chemistry always reads the graph, never this snapshot. */
 export function restoreCdxmlAbbreviations(
@@ -93,12 +136,15 @@ export function restoreCdxmlAbbreviations(
     if (index < 0) continue;
     const nativeAtom = molecule.atoms.find(atom => atom.id === record.atomIds[0]);
     const label = abbreviationLabel(record.source);
-    // Import normalizes H with mass 2/3 to D/T. Compare the same native spelling so an
-    // untouched isotopic label keeps its source node, while edits still invalidate it.
-    const nativeLabel = label && normalizeAtomIsotope({ element: label,
-      ...(record.source.attrs.Isotope === undefined ? {} : { isotope: Number(record.source.attrs.Isotope) }) }).element;
-    // An edited label must not resurrect a stale unrepresentable expansion.
-    if (label && nativeAtom?.element !== nativeLabel) { warn(label, "its original literal label was edited."); continue; }
+    // Replacing the entire generated node also replaces every chemical attribute. Check them
+    // all, including absent source values (neutral charge, natural isotope, no H constraint).
+    if (!nativeAtom || !sourceAtomIsUnedited(nativeAtom, record.source, molecule)) {
+      const original = cdxmlAtomChemistry(record.source.attrs, label);
+      warn(label ?? original.element, nativeAtom?.element !== original.element
+        ? "its original literal label was edited."
+        : "its atom chemistry was edited; source formatting was not kept.");
+      continue;
+    }
     const copy = cloneSource(record.source, id!);
     copy.attrs.p = fragment.kids[index].attrs.p;
     fragment.kids[index] = copy;
