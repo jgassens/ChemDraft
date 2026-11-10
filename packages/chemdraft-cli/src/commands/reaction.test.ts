@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { canonicalSmiles } from "../document";
 
 import {
   renderReactionScheme,
@@ -14,6 +16,44 @@ import {
 } from "./reaction";
 
 vi.setConfig({ testTimeout: 60_000 });
+
+it("draws NaOH, H2O and BrMg without changing any canonical molecular identity", async () => {
+  const inputs = ["[Na+].[OH-]", "O", "Br[Mg]c1ccccc1"];
+  for (const [index, smiles] of inputs.entries()) {
+    const rendered = await renderReactionScheme({ reactants: [smiles], products: [smiles], agents: [] }, { style: "document" });
+    const molecules = rendered.document.pages[0]!.objects.filter(object => object.type === "molecule");
+    for (const molecule of molecules) {
+      const before = JSON.stringify(molecule);
+      const labels = planMoleculeAtomLabels(molecule);
+      const texts = labels.map(plan => plan.label);
+      expect(texts).toContain(["NaOH", "H2O", "BrMg"][index]);
+      if (index === 0) expect(texts).toEqual(["NaOH"]);
+      if (index === 2) {
+        expect(texts).not.toContain("Br");
+        expect(rendered.svg).not.toMatch(/data-bond-id="b0"/);
+      }
+      expect(JSON.stringify(molecule)).toBe(before);
+      expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "rendered graph"))
+        .toBe(await canonicalSmiles(smiles, "original input"));
+    }
+  }
+});
+
+it("keeps the NaOH agent above the arrow with exactly two drawn reactants and one plus", async () => {
+  const reactants = ["O=Cc1ccccc1", "CC(C)=O"];
+  const products = ["CC(=O)/C=C/c1ccccc1"];
+  const rendered = await renderReactionScheme({ reactants, products, agents: ["[Na+].[OH-]"] });
+  expect(rendered.reactants).toEqual(reactants);
+  expect(rendered.agentTexts).toEqual([expect.objectContaining({ text: "NaOH" })]);
+  const objects = rendered.document.pages[0]!.objects;
+  expect(objects.filter(object => object.type === "text" && object.text === "+")).toHaveLength(1);
+  const molecules = objects.filter(object => object.type === "molecule");
+  expect(molecules).toHaveLength(3);
+  for (const [index, molecule] of molecules.entries()) {
+    expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "scheme graph"))
+      .toBe(await canonicalSmiles([...reactants, ...products][index]!, "input"));
+  }
+});
 
 let outputDirectory: string;
 

@@ -99,7 +99,8 @@ import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTe
 import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
-import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
+import { nativeGroupLabelDisplay, nativeFreeHydrideLabel, nativeInorganicDisplayLabel,
+  nativeMagnesiumHalideDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
 export {
@@ -5700,6 +5701,7 @@ function bondLineSegments(
   fromLabelLayout?: AtomLabelLayout,
   toLabelLayout?: AtomLabelLayout
 ): PageBondLineSegment[] {
+  if (condensedInorganicLabels(object).hiddenBondIds.has(bond.id)) return [];
   const dx = toAtom.x - fromAtom.x;
   const dy = toAtom.y - fromAtom.y;
   const length = Math.hypot(dx, dy);
@@ -6085,7 +6087,9 @@ export function planMoleculeAtomLabels(
   resolution: NativeBondOrderResolution = nativeBondOrderResolution(object.atoms, object.bonds)
 ): AtomLabelPlan[] {
   const drawingStyle = nativeDrawingStyleFromObjectStyle(object.style);
+  const condensed = condensedInorganicLabels(object);
   return object.atoms.flatMap((atom) => {
+    if (condensed.hiddenAtomIds.has(atom.id)) return [];
     const atomLabelStyle = nativeMoleculeAtomLabelStyle(object, atom.id, drawingStyle);
     const plan = planAtomLabel(
       atom,
@@ -6095,8 +6099,65 @@ export function planMoleculeAtomLabels(
       object.atoms,
       resolution
     );
+    const display = condensed.labels.get(atom.id);
+    if (plan && display) {
+      const layout = atomLabelLayout(display.label, atomLabelStyle, display.anchor);
+      return [{ ...plan, label: display.label, layout, labelAnchor: display.anchor }];
+    }
     return plan ? [plan] : [];
   });
+}
+
+const inorganicLabelPlans = new WeakMap<MoleculeObject, {
+  hiddenAtomIds: Set<string>; hiddenBondIds: Set<string>;
+  labels: Map<string, AtomDisplayLabelPlacement>;
+}>();
+
+/** Typography only: retain every atom, charge, bond and coordinate in the native molecule. */
+function condensedInorganicLabels(object: MoleculeObject) {
+  const cached = inorganicLabelPlans.get(object);
+  if (cached) return cached;
+  const result = { hiddenAtomIds: new Set<string>(), hiddenBondIds: new Set<string>(),
+    labels: new Map<string, AtomDisplayLabelPlacement>() };
+  inorganicLabelPlans.set(object, result);
+  const eligible = (atom: MoleculeAtom) => atom.isotope === undefined && atom.labelLiteral !== true &&
+    !atom.markRadicals && !atom.markCharge && atom.labelVisible !== false;
+  if (!object.bonds.length && object.atoms.length === 2 && object.atoms.every(eligible)) {
+    const parts = object.atoms.map(atom => atom.element === "O" && atom.formalCharge === -1 &&
+      (atom.hydrogenCount === undefined || atom.hydrogenCount === 1) ? "OH-"
+      : atom.element === "Na" && atom.formalCharge === 1 ? "Na+" : "");
+    const label = nativeInorganicDisplayLabel(parts);
+    if (label) {
+      const sodium = object.atoms.find(atom => atom.element === "Na")!;
+      result.labels.set(sodium.id, { label });
+      object.atoms.filter(atom => atom !== sodium).forEach(atom => result.hiddenAtomIds.add(atom.id));
+    }
+  }
+  // Only turn a straight, unadorned terminal Mg-halide bond into adjacent text. Angled,
+  // isotopic, charged and stereo-bearing drawings retain their explicit bonds and labels.
+  const style = nativeDrawingStyleFromObjectStyle(object.style);
+  if (style.atomLabelAlignment !== "automatic") return result;
+  for (const metal of object.atoms.filter(atom => atom.element === "Mg" && atom.formalCharge === 0 && eligible(atom))) {
+    const incident = object.bonds.filter(bond => bond.fromAtomId === metal.id || bond.toAtomId === metal.id);
+    if (incident.length !== 2) continue;
+    for (const bond of incident) {
+      if (bond.order !== "single" || bond.stereo !== undefined || bond.display?.bondStyle) continue;
+      const halide = object.atoms.find(atom => atom.id === (bond.fromAtomId === metal.id ? bond.toAtomId : bond.fromAtomId))!;
+      if (!halide || !eligible(halide) || halide.formalCharge !== 0 ||
+        object.bonds.filter(b => b.fromAtomId === halide.id || b.toAtomId === halide.id).length !== 1) continue;
+      const otherBond = incident.find(b => b !== bond)!;
+      const other = object.atoms.find(atom => atom.id === (otherBond.fromAtomId === metal.id ? otherBond.toAtomId : otherBond.fromAtomId))!;
+      if (!other || (halide.x - metal.x) * (other.x - metal.x) >= 0 ||
+        Math.abs(halide.y - metal.y) > Math.abs(halide.x - metal.x) * 0.1) continue;
+      const display = nativeMagnesiumHalideDisplay(halide.element, other.x > metal.x ? "right" : "left");
+      if (!display) continue;
+      result.labels.set(metal.id, display);
+      result.hiddenAtomIds.add(halide.id);
+      result.hiddenBondIds.add(bond.id);
+      break;
+    }
+  }
+  return result;
 }
 
 const sansSerifLabelFamilies: ReadonlySet<string> = new Set(["arial", "helvetica", "sans-serif"]);
@@ -6850,7 +6911,8 @@ export function atomDisplayLabelPlacement(
   return {
     label: hydrogenBeforeElement
       ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
-      : `${atom.isotope ?? ""}${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
+      : `${atom.isotope ?? ""}${incidentBonds.length === 0 && atom.isotope === undefined
+        ? nativeFreeHydrideLabel(element, implicitHydrogens) : `${element}${implicitHydrogens}`}${chargeLabelSuffix(labelCharge)}`
   };
 }
 

@@ -170,7 +170,9 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
   };
   const result: TextSpan[] = [];
   let offset = 0, changed = false;
-  for (const match of text.matchAll(/\S+/g)) {
+  // A solvent mixture separates formula tokens too: toluene/H2O, CH2Cl2/Et2O.
+  // Keep separators in the source slices so their text and styling survive unchanged.
+  for (const match of text.matchAll(/[^\s/,;:]+/g)) {
     const start = match.index;
     result.push(...slice(offset, start));
     const token = match[0].replace(/[,;:.!?*†‡]+$/, "");

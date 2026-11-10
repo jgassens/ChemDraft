@@ -101,6 +101,12 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+Inorganic display spellings live in the atom-label grammar too: free water is `H2O`,
+the isolated `[Na+].[OH-]` pair can display as `NaOH`, and a straight terminal Mg-halide
+fragment uses an attached `BrMg`/`MgBr` label instead of overlapping atom halos.
+The shared label and bond plans only change ink; native atoms, charges, bonds and coordinates
+remain intact. Isotopic or annotated fragments retain their explicit labels.
+
 Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavelength tied to the
 stroke width and bond length. The shared SVG plan owns label trimming and crossing gaps, including
 effect/sketch paths; canvas, SVG, PDF and resvg PNG all consume that geometry.
