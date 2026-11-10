@@ -1497,11 +1497,26 @@ pub fn run() {
         });
 }
 
+// Must match appUpdateChannelNotice in apps/desktop/src/appUpdates.ts.
 const DEVELOPMENT_UPDATES_MESSAGE: &str =
     "Updates are off in development builds. Install the released ChemDraft to get updates.";
 
 fn update_channel_available(identifier: &str, feed_url: Option<&str>) -> bool {
     identifier == "org.chemdraft.desktop" && feed_url.is_some_and(|url| !url.trim().is_empty())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCheckRoute {
+    DevelopmentNotice,
+    RunUpdater,
+}
+
+fn update_check_route(identifier: &str, feed_url: Option<&str>) -> UpdateCheckRoute {
+    if update_channel_available(identifier, feed_url) {
+        UpdateCheckRoute::RunUpdater
+    } else {
+        UpdateCheckRoute::DevelopmentNotice
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1528,7 +1543,9 @@ fn update_feed_url<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
 
 fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
     let feed_url = update_feed_url(app);
-    if !update_channel_available(&app.config().identifier, feed_url.as_deref()) {
+    if update_check_route(&app.config().identifier, feed_url.as_deref())
+        == UpdateCheckRoute::DevelopmentNotice
+    {
         let mut message = app
             .dialog()
             .message(DEVELOPMENT_UPDATES_MESSAGE)
@@ -9851,6 +9868,59 @@ mod tests {
             );
             assert!(!continued.get());
         }
+    }
+
+    #[test]
+    fn released_update_configurations_route_to_updater_and_dev_to_notice() {
+        let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.conf.json"))
+                .expect("read tauri.conf.json"),
+        )
+        .expect("parse tauri.conf.json");
+        let identifier = config["identifier"]
+            .as_str()
+            .expect("tauri.conf.json identifier must be a string");
+        assert_eq!(identifier, "org.chemdraft.desktop");
+
+        let assert_routes = |file: &str, feed: &str| {
+            assert_eq!(
+                update_check_route(identifier, Some(feed)),
+                UpdateCheckRoute::RunUpdater,
+                "released app must reach the updater with {file}"
+            );
+            assert_eq!(
+                update_check_route("org.chemdraft.desktop.dev", Some(feed)),
+                UpdateCheckRoute::DevelopmentNotice,
+                "development app must show the notice with {file}"
+            );
+        };
+
+        for file in ["Info.plist", "Info.intel.plist"] {
+            let plist = std::fs::read_to_string(config_dir.join(file))
+                .unwrap_or_else(|error| panic!("read {file}: {error}"));
+            let feed = plist
+                .split_once("<key>SUFeedURL</key>")
+                .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
+                .and_then(|value| value.split_once("</string>"))
+                .map(|(feed, _)| feed)
+                .unwrap_or_else(|| panic!("{file} must contain an SUFeedURL string"));
+            assert_routes(file, feed);
+        }
+
+        let windows_config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.windows.conf.json"))
+                .expect("read tauri.windows.conf.json"),
+        )
+        .expect("parse tauri.windows.conf.json");
+        let feed = windows_config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri.windows.conf.json plugins.updater.endpoints must be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .find(|url| !url.trim().is_empty())
+            .expect("tauri.windows.conf.json must contain a non-empty updater endpoint");
+        assert_routes("tauri.windows.conf.json", feed);
     }
 
     #[test]
