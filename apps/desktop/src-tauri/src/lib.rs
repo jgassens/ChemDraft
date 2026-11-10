@@ -585,6 +585,7 @@ async fn confirm_prompted_quit(
 
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+const TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME: &str = "toolbar-layout-state.v2.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "table.insertDialog",
@@ -2577,17 +2578,97 @@ fn load_toolset_customization_state(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, String> {
     let path = toolset_customization_state_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
-        return Ok(None);
-    };
-
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
+    read_toolset_customization_state(&path)
 }
 
-/// JS owns toolbar customization now (visibility, layout, user toolsets). It serializes the whole
-/// `ToolsetLayoutState` and persists it here; Rust just writes the opaque JSON to disk.
+// Frozen v1.1.1 top-level contract. New layout fields belong ONLY in the side file: the released
+// app uses a strict Zod schema and cannot ignore unknown fields in toolbar-layout-state.json.
+const LEGACY_TOOLSET_CUSTOMIZATION_KEYS: &[&str] = &[
+    "version",
+    "toolsetOrder",
+    "toolsetOverrides",
+    "userToolsets",
+];
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolsetCustomizationExtensions {
+    version: u32,
+    // Bind metadata to its layout. An older app may rewrite the main file without touching this
+    // one, and an interrupted two-file save must not apply a revision to the wrong layout.
+    legacy_state: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+fn split_toolset_customization_state(
+    state: serde_json::Value,
+) -> Result<(serde_json::Value, ToolsetCustomizationExtensions), String> {
+    let serde_json::Value::Object(fields) = state else {
+        return Err("Toolbar customization state must be an object".into());
+    };
+    let (legacy, fields) = fields
+        .into_iter()
+        .partition(|(key, _)| LEGACY_TOOLSET_CUSTOMIZATION_KEYS.contains(&key.as_str()));
+    let legacy = serde_json::Value::Object(legacy);
+    let extensions = ToolsetCustomizationExtensions {
+        version: 1,
+        legacy_state: legacy.clone(),
+        fields,
+    };
+    Ok((legacy, extensions))
+}
+
+fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    let Some(contents) = read_optional_file(path)? else {
+        return Ok(None);
+    };
+    let state = serde_json::from_str(&contents)
+        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))?;
+    let (mut legacy, inline) = split_toolset_customization_state(state)?;
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    // The side file is optional metadata. Missing, unreadable or invalid metadata must never
+    // discard the user's otherwise valid layout (main-file errors still propagate above).
+    let extensions = read_optional_file(&side_path)
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<ToolsetCustomizationExtensions>(&text).ok())
+        .filter(|side| {
+            side.version == 1
+                && side.legacy_state == legacy
+                && side
+                    .fields
+                    .keys()
+                    // Keep this list aligned with the in-memory ToolsetLayoutState schema.
+                    // Unrecognised side-file fields are corrupt/unsupported metadata, not layout.
+                    .all(|key| key == "mainToolbarDefaultsRevision")
+                && side
+                    .fields
+                    .get("mainToolbarDefaultsRevision")
+                    .is_none_or(|value| value.as_u64().is_some_and(|revision| revision > 0))
+        });
+    let fields = legacy.as_object_mut().expect("split returns an object");
+    if let Some(side) = extensions {
+        fields.extend(side.fields);
+    }
+    // Earlier 1.2 builds wrote extensions inline. They take precedence until the next save
+    // moves them to the side file and repairs the legacy file for a downgrade.
+    fields.extend(inline.fields);
+    Ok(Some(legacy))
+}
+
+fn write_toolset_customization_state(path: &Path, state: serde_json::Value) -> Result<(), String> {
+    let (legacy, extensions) = split_toolset_customization_state(state)?;
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    let side_contents =
+        serde_json::to_string_pretty(&extensions).map_err(|error| error.to_string())?;
+    let contents = serde_json::to_string_pretty(&legacy).map_err(|error| error.to_string())?;
+    // Publish metadata first. If the second write fails, the old main file is still intact;
+    // the layout binding above prevents metadata for a different layout being used on restart.
+    write_file_atomic(&side_path, &side_contents)?;
+    write_file_atomic(path, &contents)
+}
+
+/// JS owns toolbar customization. Rust separates its extensions from the strict v1.1.1 file.
 #[tauri::command]
 fn save_toolset_customization_state(
     app: tauri::AppHandle,
@@ -2600,8 +2681,211 @@ fn save_toolset_customization_state(
         return Ok(());
     }
     let path = toolset_customization_state_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    write_toolset_customization_state(&path, state)
+}
+
+#[cfg(test)]
+mod toolbar_customization_persistence_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    struct Files(PathBuf);
+
+    impl Files {
+        fn new() -> Self {
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "chemdraft-toolbar-downgrade-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+
+        fn main(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_STATE_FILENAME)
+        }
+
+        fn side(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME)
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> (Value, Value) {
+        // The Vitest downgrade contract parses this exact expected on-disk main file with a
+        // frozen copy of tag v1.1.1's COMPLETE Zod schema, including strict nested objects.
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/__fixtures__/toolbarLayoutDowngrade.json"
+        ))
+        .unwrap();
+        let legacy = fixture["legacyState"].clone();
+        let mut current = legacy.clone();
+        current
+            .as_object_mut()
+            .unwrap()
+            .extend(fixture["extensions"].as_object().unwrap().clone());
+        (legacy, current)
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn saves_released_file_shape_and_round_trips_extensions() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+        // Saving a state without extensions must clear any previously stored revision.
+        write_toolset_customization_state(&files.main(), legacy.clone()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy)
+        );
+    }
+
+    #[test]
+    fn migrates_inline_prerelease_revision_and_repairs_on_next_save() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), current.to_string()).unwrap();
+        // Test with no side file and with an older conflicting side-file revision.
+        for side in [
+            None,
+            Some(json!({
+                "version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 2}
+            })),
+        ] {
+            if let Some(side) = side {
+                fs::write(files.side(), side.to_string()).unwrap();
+            }
+            let loaded = read_toolset_customization_state(&files.main())
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, current);
+        }
+        let loaded = read_toolset_customization_state(&files.main())
+            .unwrap()
+            .unwrap();
+        write_toolset_customization_state(&files.main(), loaded).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"],
+            json!({"mainToolbarDefaultsRevision": 1})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn missing_corrupt_or_unreadable_side_file_preserves_legacy_layout() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy.clone())
+        );
+        let valid = json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}});
+        let mut corrupt = vec![
+            "{".to_string(),
+            "null".to_string(),
+            "[]".to_string(),
+            "{}".to_string(),
+        ];
+        for revision in [json!(0), json!(-1), json!(1.5), json!("1"), Value::Null] {
+            let mut side = valid.clone();
+            side["fields"]["mainToolbarDefaultsRevision"] = revision;
+            corrupt.push(side.to_string());
+        }
+        for (key, value) in [
+            ("version", json!(2)),
+            ("legacyState", json!({})),
+            ("fields", json!([])),
+            ("fields", json!({"version": 1})),
+            ("fields", json!({"unknown": true})),
+            ("unknown", json!(true)),
+        ] {
+            let mut side = valid.clone();
+            side[key] = value;
+            corrupt.push(side.to_string());
+        }
+        for side in corrupt {
+            fs::write(files.side(), &side).unwrap();
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(legacy.clone()),
+                "side file: {side}"
+            );
+        }
+        fs::remove_file(files.side()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy)
+        );
+    }
+
+    #[test]
+    fn older_app_edits_and_interrupted_saves_do_not_reuse_stale_revision() {
+        let files = Files::new();
+        let (mut legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        legacy["toolsetOverrides"][0]["visible"] = json!(false);
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy)
+        );
+        // An orphan side file must never resurrect a layout when the main file is absent.
+        fs::remove_file(files.main()).unwrap();
+        assert!(read_toolset_customization_state(&files.main())
+            .unwrap()
+            .is_none());
+        fs::write(files.main(), "{").unwrap();
+        assert!(read_toolset_customization_state(&files.main()).is_err());
+    }
+
+    #[test]
+    fn future_top_level_fields_cannot_leak_into_released_file() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        current["futureExtension"] = json!({"value": true});
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"]["futureExtension"],
+            json!({"value": true})
+        );
+    }
+
+    #[test]
+    fn side_write_failure_is_reported_and_leaves_existing_layout_intact() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert!(write_toolset_customization_state(&files.main(), current).is_err());
+        assert_eq!(read_json(&files.main()), legacy);
+    }
 }
 
 #[tauri::command]

@@ -1,0 +1,37 @@
+{
+  "legacyState": {
+    "version": 1,
+    "toolsetOrder": ["core.main", "plugin.example", "user.colors"],
+    "toolsetOverrides": [
+      { "toolsetId": "core.main", "title": "My Main", "visible": true, "mode": "floating" },
+      {
+        "toolsetId": "core.structure",
+        "hiddenCommandIds": ["tool.eraser"],
+        "itemOrder": { "core.structure.draw": ["tool.bond", "tool.chain"] },
+        "itemAdditions": [
+          { "groupId": "core.structure.draw", "index": 1, "item": { "id": "user.space.1", "kind": "spacer", "primary": { "type": "none" } } }
+        ]
+      },
+      { "toolsetId": "plugin.example", "visible": true, "preferredWindowSize": { "width": 300, "height": 80 } }
+    ],
+    "userToolsets": [
+      {
+        "id": "user.colors",
+        "title": "My Colors",
+        "source": "user",
+        "defaultVisible": true,
+        "defaultMode": "floating",
+        "groups": [
+          {
+            "id": "user.colors.items",
+            "items": [
+              { "commandId": "tool.doubleBond" },
+              { "id": "widget.customSwatch1", "kind": "control", "primary": { "type": "control", "controlId": "widget.customSwatch1" } }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "extensions": { "mainToolbarDefaultsRevision": 1 }
+}
