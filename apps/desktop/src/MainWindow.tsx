@@ -54,6 +54,7 @@ import { reactionConditionsDraft, setReactionArrowConditions, type ReactionCondi
 import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
 import { lastExportDirectory } from "./exportDirectory";
+import { ImportedPageFitGate } from "./importedPageFitGate";
 import {
   projectGraphicVisualPagePoint,
   rotatePointAroundCenter,
@@ -1609,6 +1610,8 @@ type LayerContextMenuItem = {
 };
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
+  /** Identifies this open operation even when consecutive files have the same basename. */
+  requestId: string;
 };
 type SelectionClipboardSourceAction = "copy" | "cut" | "external";
 
@@ -2484,10 +2487,7 @@ export function MainWindow({
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
-  const pendingDocumentOpensRef = useRef<Array<{
-    contents: DocumentContents; displayName: string; path?: string;
-    options?: { dirty?: boolean; statusOverride?: string };
-  }>>([]);
+  const pendingDocumentOpensRef = useRef<Array<() => void>>([]);
   const documentTabSnapshotsRef = useRef(new Map<string, {
     history: DocumentHistory;
     file: NativeFileState;
@@ -2826,6 +2826,7 @@ export function MainWindow({
   const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
+  const importedPageFitGateRef = useRef(new ImportedPageFitGate());
   const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
@@ -9686,6 +9687,7 @@ export function MainWindow({
       if (!snapshotDocumentTab()) return;
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
+    importedPageFitGateRef.current.dismiss(id);
     documentTabSnapshotsRef.current.delete(id);
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
@@ -9732,15 +9734,19 @@ export function MainWindow({
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions,
-    reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
+    reportOutcome?: (outcome: "queued" | "resumed" | "already-open" | "installed") => void
   ) => {
     assertDocumentSize(contents.length);
-    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
-      // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
+    const waitUntilReady = async () => {
+      while (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+        // Keep this open's original queue slot while a prompt or startup restore blocks it.
+        // Releasing the slot and re-enqueuing would put later batch members ahead of it.
+        perfHook(() => reportOutcome?.("queued"));
+        await new Promise<void>(resolve => pendingDocumentOpensRef.current.push(resolve));
+        perfHook(() => reportOutcome?.("resumed"));
+      }
+    };
+    await waitUntilReady();
     const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
     const existing = documentTabsRef.current.find((tab) =>
       path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
@@ -9755,11 +9761,7 @@ export function MainWindow({
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
-    if (quitInteractionRef.current) {
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
+    await waitUntilReady();
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -9783,7 +9785,8 @@ export function MainWindow({
     if (browserKey) browserFileKeysRef.current.set(id, browserKey);
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
+    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName, requestId: crypto.randomUUID() } : undefined;
+    const pageFitSettled = fitRecommendation ? importedPageFitGateRef.current.wait(id) : undefined;
     setPageFitPrompt(tabPageFitRef.current);
     const sourceLabel = typeof contents === "string"
       ? openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel)
@@ -9797,6 +9800,7 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
     perfHook(() => reportOutcome?.("installed"));
+    await pageFitSettled;
     await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
@@ -9806,15 +9810,21 @@ export function MainWindow({
   // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
   // file must wait and then find the tab the first one made, not add a second tab for one path.
   const openDocumentContents = useCallback((
-    contents: DocumentContents,
+    contents: DocumentContents | (() => Promise<DocumentContents>),
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions
   ): Promise<void> => {
-    const timing = perfHook(() => perfProbe?.documentOpenStarted());
-    const run = documentOpenQueueRef.current.then(() =>
-      openDocumentContentsNowRef.current(contents, displayName, path, options, outcome => {
+    let timing = perfHook(() => perfProbe?.documentOpenStarted());
+    // A deferred read reserves its place immediately, so every file in a drop can be enqueued
+    // before reading the first file or waiting for its page-size prompt.
+    const run = documentOpenQueueRef.current.then(async () =>
+      openDocumentContentsNowRef.current(typeof contents === "function" ? await contents() : contents, displayName, path, options, outcome => {
         perfHook(() => {
+          if (outcome === "resumed") {
+            timing = perfProbe?.documentOpenStarted();
+            return;
+          }
           if (!timing) return;
           if (outcome === "installed") return perfProbe?.documentOpenCommitted(timing);
           return perfProbe?.documentOpenSkipped(timing, outcome);
@@ -9827,21 +9837,9 @@ export function MainWindow({
     return run;
   }, []);
 
-  const openDocumentContentsRef = useRef(openDocumentContents);
-  openDocumentContentsRef.current = openDocumentContents;
-
   useEffect(() => {
     if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
-    const opens = pendingDocumentOpensRef.current.splice(0);
-    void (async () => {
-      for (const request of opens) {
-        try {
-          await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-        } catch (error) {
-          setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    })();
+    for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
   }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
 
   const acceptPageFitRecommendation = useCallback(() => {
@@ -9850,7 +9848,9 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
+    tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(changed
       ? `Page changed to ${pageFitRecommendedLabel(pageFitPrompt)}`
       : "Page already fits imported content");
@@ -9861,7 +9861,9 @@ export function MainWindow({
       return;
     }
 
+    tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
 
@@ -10135,13 +10137,9 @@ export function MainWindow({
   }, []);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
-    for (const path of paths) {
-      try {
-        await openDocumentContents(await readNativeDocumentFile(path), nativePathBasename(path), path);
-      } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    await Promise.all(paths.map(path =>
+      openDocumentContents(() => readNativeDocumentFile(path), nativePathBasename(path), path)
+        .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
   }, [openDocumentContents]);
 
   useEffect(() => {
@@ -10396,14 +10394,7 @@ export function MainWindow({
             setKeptDrawingsPrompt("notice");
             return;
           }
-          const opens = pendingDocumentOpensRef.current.splice(0);
-          for (const request of opens) {
-            try {
-              await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-            } catch (error) {
-              setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          }
+          for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
         }
       });
 
@@ -22275,12 +22266,9 @@ export function MainWindow({
             event.preventDefault();
             if (closeTabPromptRef.current) return;
             const files = Array.from(event.dataTransfer.files);
-            void (async () => {
-              for (const file of files) {
-                try { await openDocumentContents(await readBrowserDocumentFile(file), file.name); }
-                catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
-              }
-            })();
+            void Promise.all(files.map(file =>
+              openDocumentContents(() => readBrowserDocumentFile(file), file.name)
+                .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
           }}
           data-zoom-surface="document"
           // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
@@ -23269,7 +23257,7 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
       { id: "resize", label: `Use ${recommendedLabel} Page` },
       { id: "keep", label: "Cancel", cancel: true }
     ]
-  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.displayName);
+  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.requestId);
   if (!prompt.visible) return null;
 
   return (

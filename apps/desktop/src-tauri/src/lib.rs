@@ -6506,7 +6506,7 @@ async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), Stri
     ensure_spin3d_debugger_window(&app).map(|_| ())
 }
 
-/// Whether a Preferences / 3D Debugger toggle should hide its window (otherwise it is shown and
+/// Whether the 3D Debugger toggle should hide its window (otherwise it is shown and
 /// brought forward).
 ///
 /// macOS and Linux keep the original rule: a visible window is hidden. On Windows a visible window
@@ -6642,13 +6642,6 @@ fn spin3d_debugger_window_route() -> &'static str {
 #[tauri::command]
 async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        if toggle_should_hide(&window) {
-            dialog_windows::flush_preferences(&app, dialog_windows::PreferencesClose::Hide);
-            return window.hide().map_err(|error| error.to_string());
-        }
-    }
-
     ensure_preferences_window(&app).map(|_| ())
 }
 

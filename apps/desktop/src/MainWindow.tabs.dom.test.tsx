@@ -1293,6 +1293,154 @@ describe("documents in one window", () => {
     expect(active()).toBe(0);
   });
 
+  describe("imported page-size prompt queue", () => {
+    // Real external CDXML: the second atom extends past the declared Letter page.
+    const oversized = `<?xml version="1.0"?><CDXML><page id="p1" BoundingBox="0 0 612 792">
+      <fragment id="f1"><n id="a1" p="75 75"/><n id="a2" p="975 75"/>
+      <b id="b1" B="a1" E="a2" Order="1"/></fragment></page></CDXML>`;
+    async function osOpen(path: string, contents = oversized) {
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path, displayName: path.split("/").at(-1)!, contents
+      }));
+    }
+    // Match the binary-capable browser reader, including its pre-read size check.
+    function browserFile(name: string, contents: string) {
+      const bytes = new TextEncoder().encode(contents);
+      return { name, size: bytes.length, arrayBuffer: async () => bytes.buffer };
+    }
+    async function browserDrop(files: Pick<File, "name" | "size" | "arrayBuffer">[]) {
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: { files } });
+      await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
+    }
+    function expectPageFit(name: string) {
+      expect(pendingPrompt?.prompt.title).toBe("Imported Content Exceeds Page");
+      expect(pendingPrompt?.prompt.message).toMatch(new RegExp(`^${name.replaceAll(".", "\\.")} extends beyond`));
+    }
+    async function dismissPageFit(choice: "keep" | "resize") {
+      const label = pendingPrompt!.prompt.choices.find(candidate => candidate.id === choice)!.label;
+      await modalButton(label);
+    }
+
+    it("keeps a delayed batch read ahead of later files after cancelling a close", async () => {
+      let finishB!: (contents: Uint8Array) => void;
+      let finishC!: (contents: Uint8Array) => void;
+      const delayedB = new Promise<Uint8Array>(resolve => { finishB = resolve; });
+      const delayedC = new Promise<Uint8Array>(resolve => { finishC = resolve; });
+      native.readFile.mockResolvedValueOnce(new TextEncoder().encode(oversized))
+        .mockReturnValueOnce(delayedB)
+        .mockReturnValueOnce(delayedC);
+      await act(async () => native.events.get("tauri://drag-drop")!({
+        paths: ["/drawings/A.cdxml", "/drawings/B.cdxml", "/drawings/C.cdxml"]
+      }));
+      expectPageFit("A.cdxml");
+      await dismissPageFit("resize");
+      expect(native.readFile).toHaveBeenCalledWith("/drawings/B.cdxml");
+      await closeTab();
+      const closePrompt = pendingPrompt;
+      expect(closePrompt?.prompt.title).toContain("Save");
+      await act(async () => finishB(new TextEncoder().encode(oversized)));
+      expect(pendingPrompt).toBe(closePrompt);
+      expect(tabs()).toHaveLength(1);
+      await modalButton("Cancel");
+      // Complete C's delayed read after Cancel. If B was re-appended at the tail,
+      // C will prompt first; holding B's original slot keeps the prompt order intact.
+      await act(async () => finishC(new TextEncoder().encode(oversized)));
+      expectPageFit("B.cdxml");
+      await dismissPageFit("keep");
+      expectPageFit("C.cdxml");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      expect(tabs().map(tab => tab.textContent)).toEqual(["A.cdxml •", "B.cdxml", "C.cdxml"]);
+    });
+
+    it("prompts for consecutive same-basename paths and releases the queue when the second tab closes", async () => {
+      await osOpen("/first/drawing.cdxml");
+      expectPageFit("drawing.cdxml");
+      const firstPrompt = pendingPrompt;
+      await osOpen("/second/drawing.cdxml");
+      await osOpen("/third/after.chemdraft", fileContents("After closing the prompt"));
+      expect(pendingPrompt).toBe(firstPrompt);
+      expect(tabs()).toHaveLength(1);
+      await dismissPageFit("keep");
+      expectPageFit("drawing.cdxml");
+      expect(pendingPrompt).not.toBe(firstPrompt);
+      expect(bridge().snapshot().file.path).toBe("/second/drawing.cdxml");
+      const closedPrompt = pendingPrompt!;
+      pendingPrompt = undefined;
+      await closeTab();
+      expect(bridge().snapshot().file.path).toBe("/third/after.chemdraft");
+      expect(tabs()).toHaveLength(2);
+      // A late native answer for the closed tab cannot resize the newly active drawing.
+      const after = bridge().snapshot().document;
+      await act(async () => closedPrompt.resolve("resize"));
+      expect(bridge().snapshot().document).toEqual(after);
+      expect(pendingPrompt).toBeUndefined();
+    });
+
+    it.each(["keep", "resize"] as const)("does not re-ask after %s when returning to the previous tab", async choice => {
+      await osOpen("/drawings/A.cdxml");
+      expectPageFit("A.cdxml");
+      await osOpen("/drawings/B.cdxml");
+      await dismissPageFit(choice);
+      expectPageFit("B.cdxml");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      await activate(0);
+      expect(bridge().snapshot().file.path).toBe("/drawings/A.cdxml");
+      expect(pendingPrompt).toBeUndefined();
+      expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe(choice === "resize" ? "custom" : "letter");
+    });
+
+    it.each(["native drop", "browser drop", "startup restore", "close cancellation"])(
+      "reserves A and B before C arrives during A's prompt (%s)", async source => {
+        if (source === "native drop") {
+          native.readFile.mockRejectedValueOnce(new Error("File read refused"))
+            .mockResolvedValueOnce(new TextEncoder().encode("invalid document"))
+            .mockResolvedValueOnce(new TextEncoder().encode(oversized))
+            .mockResolvedValueOnce(new TextEncoder().encode(oversized));
+          await act(async () => native.events.get("tauri://drag-drop")!({
+            paths: ["/drawings/unreadable.cdxml", "/drawings/invalid.cdxml", "/drawings/A.cdxml", "/drawings/B.cdxml"]
+          }));
+        } else if (source === "browser drop") {
+          native.desktop = false;
+          await remount();
+          await browserDrop([
+            { ...browserFile("unreadable.cdxml", oversized), arrayBuffer: async () => { throw new Error("File read refused"); } },
+            browserFile("invalid.cdxml", "invalid document"),
+            ...["A.cdxml", "B.cdxml"].map(name => browserFile(name, oversized))
+          ]);
+        } else {
+          let finishRestore: ((value: unknown) => void) | undefined;
+          if (source === "startup restore") {
+            native.load.mockImplementationOnce(() => new Promise(resolve => { finishRestore = resolve; }));
+            await remount();
+          } else {
+            await paste("Drawing retained by Cancel");
+            await closeTab();
+          }
+          await osOpen("/drawings/A.cdxml");
+          await osOpen("/drawings/B.cdxml");
+          if (finishRestore) await act(async () => finishRestore!(undefined));
+          else await modalButton("Cancel");
+        }
+        expectPageFit("A.cdxml");
+        // A later request must follow every member of the earlier batch.
+        if (source === "browser drop") await browserDrop([browserFile("C.cdxml", oversized)]);
+        else await osOpen("/drawings/C.cdxml");
+        expectPageFit("A.cdxml");
+        await dismissPageFit("keep");
+        expectPageFit("B.cdxml");
+        await dismissPageFit("keep");
+        expectPageFit("C.cdxml");
+        await dismissPageFit("keep");
+        expect(pendingPrompt).toBeUndefined();
+        const titles = tabs().map(tab => tab.textContent);
+        expect(titles.slice(-3)).toEqual(["A.cdxml", "B.cdxml", "C.cdxml"]);
+      }
+    );
+  });
+
   it("recognizes Windows file identity across separator and case differences", () => {
     expect(documentTabPathKey("C:\\Drawings\\A.chemdraft", "windows"))
       .toBe(documentTabPathKey("c:/drawings/a.chemdraft", "windows"));
