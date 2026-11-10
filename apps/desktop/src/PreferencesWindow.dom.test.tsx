@@ -4,9 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
-const host = vi.hoisted(() => ({ desktop: true, invoke: vi.fn(), measure: vi.fn() }));
+const host = vi.hoisted(() => ({ desktop: true, invoke: vi.fn(), measure: vi.fn(), observe: vi.fn(), stopObserving: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: host.invoke }));
-vi.mock("./dialogs/dialogContentFit", () => ({ measureDialogContentWhenFontsReady: host.measure }));
+vi.mock("./dialogs/dialogContentFit", () => ({ measureDialogContentWhenFontsReady: host.measure, observeDialogContent: host.observe }));
 vi.mock("./window-manager", () => ({
   isDesktopRuntime: () => host.desktop,
   broadcastCompoundLayoutSettings: vi.fn(), broadcastKeybindingSettings: vi.fn(),
@@ -22,6 +22,8 @@ beforeEach(() => {
   host.desktop = true;
   host.invoke.mockReset().mockResolvedValue(undefined);
   host.measure.mockReset().mockResolvedValue({ contentHeight: 1655, pixelRatio: 1.5 });
+  host.observe.mockReset().mockReturnValue(host.stopObserving);
+  host.stopObserving.mockReset();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -45,6 +47,16 @@ it("uses the native fallback size when content cannot be measured", async () => 
   host.measure.mockResolvedValue(undefined);
   await act(async () => root.render(createElement(PreferencesWindow)));
   expect(host.invoke).toHaveBeenCalledExactlyOnceWith("preferences_ready", { data: {} });
+});
+
+it("shares live content fitting without revealing again and tears down its observer", async () => {
+  await act(async () => root.render(createElement(PreferencesWindow)));
+  expect(host.observe).toHaveBeenCalledWith(container.querySelector(".preferences-shell"),
+    { contentHeight: 1655, pixelRatio: 1.5 }, expect.any(Function));
+  await act(async () => host.observe.mock.calls[0][2]({ contentHeight: 1680, pixelRatio: 1.5 }));
+  expect(host.invoke).toHaveBeenLastCalledWith("preferences_ready", { data: { contentHeight: 1680, pixelRatio: 1.5 } });
+  act(() => root.unmount());
+  expect(host.stopObserving).toHaveBeenCalledOnce();
 });
 
 it("keeps browser Preferences free of native sizing calls", async () => {

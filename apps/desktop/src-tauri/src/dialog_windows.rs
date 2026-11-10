@@ -1437,7 +1437,7 @@ pub(crate) async fn dialog_send(
     } else {
         None
     };
-    let reveal = {
+    let (reveal, refit) = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let session = registry
             .sessions
@@ -1456,14 +1456,22 @@ pub(crate) async fn dialog_send(
                 return Ok(());
             }
         }
-        if reveal {
-            session.ready = true;
+        let refit = message.message_type == "ready"
+            && session.ready
+            && kind_spec(&session.snapshot.dialog_kind)?.fit_content
+            && ContentFit::from_ready(&message.data).is_some();
+        if reveal || refit {
             session.content_fit =
                 MeasuredContent::new(ContentFit::from_ready(&message.data), scale_at_ready);
         }
+        session.ready |= reveal;
         // Only this Rust-validated path can write the owner's private channel.
-        send_owner(session, window.label(), &message)?;
-        reveal
+        // Later fit reports are host-local; replaying ready to an install owner would republish
+        // its snapshot and create a content/ready feedback loop.
+        if !refit {
+            send_owner(session, window.label(), &message)?;
+        }
+        (reveal, refit)
     };
     // Deliver ready before showing so the owner's listener is authoritative even on a fast click.
     if reveal {
@@ -1476,6 +1484,21 @@ pub(crate) async fn dialog_send(
             close_session(&app, &host_id, "error");
             return Err(error);
         }
+    } else if refit {
+        let target = window.clone();
+        super::run_on_main_thread_blocking(&window, move || {
+            let (kind, content_fit) = REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .sessions
+                .values()
+                .find(|s| s.registration.window_label == target.label())
+                .map(|s| (s.snapshot.dialog_kind.clone(), s.content_fit))
+                .ok_or("Unknown dialog window")?;
+            // No reveal/focus: a status update must not activate a hidden/suspended dialog.
+            place_content_window(&target, &kind, content_fit, true)
+        })
+        .and_then(|result| result)?;
     }
     Ok(())
 }
@@ -1633,21 +1656,23 @@ pub(crate) async fn preferences_ready(
     if measured.is_none() && !data.as_object().is_some_and(|object| object.is_empty()) {
         return Err("Invalid Preferences content measurement".into());
     }
-    {
+    let reveal = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let state = registry
             .preferences
             .as_mut()
             .ok_or("Preferences is not open")?;
-        if state.ready {
-            return Ok(());
-        }
+        let reveal = !state.ready;
         state.ready = true;
-    }
+        reveal
+    };
     let target = window.clone();
     super::run_on_main_thread_blocking(&window, move || {
-        place_content_window(&target, "preferences", measured, false)?;
-        show_on_main(&target)
+        place_content_window(&target, "preferences", measured, !reveal)?;
+        if reveal {
+            show_on_main(&target)?;
+        }
+        Ok(())
     })
     .and_then(|result| result)
 }
@@ -1937,15 +1962,14 @@ fn dialog_client_size(
     saved: Option<&SavedPosition>,
     current_frame: bool,
 ) -> (f64, f64) {
-    remembered_client_size(saved, spec.resizable || current_frame).unwrap_or_else(|| {
-        (
-            spec.size.0,
-            content
-                .filter(|_| spec.fit_content)
-                .map(|fit| fit.logical_height(1.0))
-                .unwrap_or(spec.size.1),
-        )
-    })
+    let content_height = content
+        .filter(|_| spec.fit_content)
+        .map(|fit| fit.logical_height(1.0));
+    let (width, height) = remembered_client_size(saved, spec.resizable || current_frame)
+        .unwrap_or((spec.size.0, content_height.unwrap_or(spec.size.1)));
+    // Keep a larger user size, but a remembered/live size cannot clip newly added content.
+    // The shared placement path subsequently caps this to the destination work area.
+    (width, height.max(content_height.unwrap_or(1.0)))
 }
 fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Option<(f64, f64)> {
     saved.filter(|_| resizable)?.size.filter(|(width, height)| {
@@ -2065,7 +2089,7 @@ fn place_content_window<R: Runtime>(
         client_size.0 + f64::from(frame.width.saturating_sub(client.width)) / scale,
         client_size.1 + f64::from(frame.height.saturating_sub(client.height)) / scale,
     );
-    let (x, y, destination_scale) = position_for(
+    let (mut x, mut y, destination_scale) = position_for(
         saved,
         &monitors,
         &work,
@@ -2080,7 +2104,12 @@ fn place_content_window<R: Runtime>(
     let destination = saved
         .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
         .unwrap_or(&work);
-    let template_placement = Some(TemplatePlacement {
+    // Content changes grow from the live origin, only moving to stay inside the work area.
+    if let Some(live) = live_frame.as_ref() {
+        x = live.x * destination_scale;
+        y = live.y * destination_scale;
+    }
+    let template_placement = (!current_frame).then_some(TemplatePlacement {
         saved,
         owner_rect: (
             f64::from(position.x) / destination.scale,
@@ -2097,7 +2126,7 @@ fn place_content_window<R: Runtime>(
         client_size,
         work: destination,
         spec: &spec,
-        fit_content: spec.fit_content && content_fit.is_some(),
+        fit_content: current_frame || (spec.fit_content && content_fit.is_some()),
         template: template_placement,
     }
     .apply(
@@ -4398,6 +4427,107 @@ mod tests {
             dialog_client_size(&page, None, Some(&saved), true),
             (600.0, 200.0)
         );
+    }
+    #[test]
+    fn content_refits_preserve_user_sizes_and_cap_to_work_area() {
+        use std::cell::Cell;
+        for (macos, border, title_bar) in [(true, 0, 28), (false, 16, 40)] {
+            for scale in [1.0, 1.5, 2.0] {
+                for kind in ["pageSize", "export"] {
+                    for user_height in [180.0_f64, 800.0] {
+                        let spec = kind_spec(kind).unwrap();
+                        let work = WorkArea {
+                            id: "screen".into(),
+                            x: -1000.0,
+                            y: 0.0,
+                            width: 700.0,
+                            height: 900.0,
+                            scale,
+                        }
+                        .inset(12.0);
+                        let mut saved = SavedPosition {
+                            size: Some((spec.size.0, user_height)),
+                            monitor: work.id.clone(),
+                            x: -900.0,
+                            y: 100.0,
+                            offset_x: 0.0,
+                            offset_y: 0.0,
+                        };
+                        // Initial full form, extra cancellation line, removed line, huge report.
+                        for height in [334.0, 358.0, 334.0, 4096.0] {
+                            let measured = MeasuredContent::new(
+                                ContentFit::from_ready(
+                                    &json!({"contentHeight":height,"pixelRatio":scale}),
+                                ),
+                                Some(scale),
+                            );
+                            let desired = dialog_client_size(&spec, measured, Some(&saved), true);
+                            assert!(desired.1 >= height);
+                            assert!(desired.1 >= saved.size.unwrap().1);
+                            let initial = dialog_client_size(&spec, measured, Some(&saved), false);
+                            assert!(initial.1 >= height);
+                            let client = Cell::new((1_u32, 1_u32));
+                            let position = Cell::new((0.0, 0.0));
+                            finish_placement(
+                                ((saved.x * scale, saved.y * scale, scale), desired),
+                                &work,
+                                true,
+                                None,
+                                |x, y| {
+                                    position.set((x, y));
+                                    Ok(())
+                                },
+                                |width, height| {
+                                    resize_dialog_client(
+                                        macos,
+                                        tauri::PhysicalSize::new(width, height),
+                                        scale,
+                                        |logical| {
+                                            let physical = logical.to_physical::<u32>(scale);
+                                            client.set((physical.width, physical.height));
+                                            Ok(())
+                                        },
+                                        |physical| {
+                                            client.set((physical.width, physical.height));
+                                            Ok(())
+                                        },
+                                    )
+                                },
+                                || {
+                                    Ok(DialogFrame {
+                                        client: client.get(),
+                                        outer: (
+                                            client.get().0 + border,
+                                            client.get().1 + title_bar,
+                                        ),
+                                    })
+                                },
+                            )
+                            .unwrap();
+                            let maximum = (work.height * scale) as u32 - title_bar;
+                            assert_eq!(
+                                client.get().1,
+                                ((desired.1 * scale).ceil() as u32).min(maximum)
+                            );
+                            assert!(position.get().1 >= work.y * scale);
+                            assert!(position.get().0 >= work.x * scale);
+                            assert!(
+                                position.get().0 + f64::from(client.get().0 + border)
+                                    <= (work.x + work.width) * scale
+                            );
+                            assert!(
+                                position.get().1 + f64::from(client.get().1 + title_bar)
+                                    <= (work.y + work.height) * scale
+                            );
+                            saved.size = Some((
+                                f64::from(client.get().0) / scale,
+                                f64::from(client.get().1) / scale,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn immediate_user_resizes_are_saved_but_programmatic_frames_are_not() {

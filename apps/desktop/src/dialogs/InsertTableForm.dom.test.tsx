@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { InsertTableForm } from "./InsertTableForm";
+import { PageSizeForm } from "./PageSizeForm";
 import { readFileSync } from "node:fs";
 import type { DialogMessage } from "./dialogProtocol";
 import { parseDialogMessage } from "./dialogProtocol";
@@ -279,6 +280,35 @@ it("measures a scrolling body at its natural height, then restores the layout", 
     expect(body.getAttribute("style") ?? "").toBe("");
   } finally {
     form.remove();
+  }
+});
+
+it.each(["macos", "windows"] as const)("includes Page Size's wrapped labels, closed popup, actions and padding on %s", platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(createElement(PageSizeForm, { title: "Drawing", platform,
+      state: { width: "8.5", height: "11", unit: "inch" }, onChange: vi.fn(), onCancel: vi.fn(), onApply: vi.fn() })));
+    const form = container.querySelector<HTMLElement>("section")!;
+    const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+    expect(form.querySelectorAll("input")).toHaveLength(2);
+    expect(form.querySelector("select")!.value).toBe("inch");
+    // jsdom has no layout. Model WebKit's constrained flex measurement versus intrinsic rows.
+    // Content: heading/prose 142 + labelled fields 50 + wrapped closed popup 50 + status 26;
+    // actions 30 and outer padding 36 are additional, rather than overlapping the body.
+    const content = 142 + 50 + 50 + 26 + 30 + 36;
+    form.getBoundingClientRect = () => {
+      const intrinsic = form.style.display === "grid" && form.style.gridAutoRows === "max-content" && body.style.height === "max-content";
+      const height = intrinsic ? content : 249;
+      return { top: 0, height } as DOMRect;
+    };
+    const saved = [form.getAttribute("style"), body.getAttribute("style")];
+    expect(measureDialogContent(form)?.contentHeight).toBeGreaterThanOrEqual(content);
+    expect([form.getAttribute("style"), body.getAttribute("style")]).toEqual(saved);
+  } finally {
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
   }
 });
 
