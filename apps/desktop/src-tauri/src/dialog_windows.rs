@@ -2105,9 +2105,30 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         recover_preferences_frame(window)?;
     }
     configure_on_main(window)?;
+    if preferences {
+        activate_preferences_application_on_main()?;
+    }
     window.set_focus().map_err(|e| e.to_string())?;
     bring_to_front_on_main(window)
 }
+
+#[cfg(target_os = "macos")]
+fn activate_preferences_application_on_main() -> Result<(), String> {
+    // A menu action can reveal Preferences while Finder is active. Ordering a window
+    // alone does not activate its application; activate before requesting keyboard focus.
+    let marker =
+        objc2::MainThreadMarker::new().ok_or("Preferences must open on the main thread")?;
+    #[allow(deprecated)] // Supports activation on the older macOS versions we ship for.
+    objc2_app_kit::NSApplication::sharedApplication(marker).activateIgnoringOtherApps(true);
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_preferences_application_on_main() -> Result<(), String> {
+    // Other platforms retain the existing show/set_focus path.
+    Ok(())
+}
+
 /// Called by reveal and by the existing relative-order utility restore (already on main).
 pub(crate) fn configure_on_main<R: Runtime>(
     window: &tauri::WebviewWindow<R>,

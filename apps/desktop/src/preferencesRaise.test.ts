@@ -1,6 +1,18 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
+it("activates ChemDraft on macOS when the menu reveals Preferences before focusing it", () => {
+  const dialogs = readFileSync(new URL("../src-tauri/src/dialog_windows.rs", import.meta.url), "utf8");
+  const show = dialogs.split("fn show_on_main<R: Runtime>")[1]!.split("pub(crate) fn configure_on_main")[0]!;
+  // First-ready and retained-window opens both reach show_on_main (covered below).
+  // Activation must be after the quit/suspension/owner guards and restricted to Preferences.
+  expect(show).toMatch(/window\.show\(\)[\s\S]*?configure_on_main\(window\)\?;\s*if preferences \{\s*activate_preferences_application_on_main\(\)\?;\s*\}\s*window\.set_focus\(\)/);
+  expect(dialogs).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*fn activate_preferences_application_on_main\(\)[\s\S]*?NSApplication::sharedApplication\(marker\)\.activateIgnoringOtherApps\(true\)/);
+  expect(dialogs).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*fn activate_preferences_application_on_main\(\) -> Result<\(\), String> \{\s*\/\/[^\n]*\n\s*Ok\(\(\)\)\s*\}/);
+  const ready = dialogs.split("pub(crate) async fn preferences_ready")[1]!.split("pub(crate) fn show_preferences")[0]!;
+  expect(ready).toContain("show_on_main(&target)?");
+});
+
 it("restores the document before creating or raising Preferences on either platform", () => {
   const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const command = source.split("async fn toggle_preferences_window")[1]!.split("fn ensure_preferences_window")[0]!;
