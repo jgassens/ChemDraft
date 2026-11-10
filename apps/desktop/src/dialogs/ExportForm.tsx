@@ -24,7 +24,8 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
   legacy: "Legacy",
   model3d: "3D"
 };
-const exportFormatOptionExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
+const implementedExportFormats = exportFormatDescriptors.filter((descriptor) => descriptor.status === "implemented");
+const exportFormatOptionExtensions = [...new Set(implementedExportFormats.flatMap((descriptor) => descriptor.extensions))];
 interface ExportDialogProps {
   state: ExportDialogState;
   previewEnabled: boolean;
@@ -190,9 +191,9 @@ function ExportFormBody({
             onFormatChange(event.currentTarget.value as ExportDialogFormat);
           }}
         >
-          {exportFormatGroups.map((group) => (
+          {exportFormatGroups.filter((group) => implementedExportFormats.some((candidate) => candidate.group === group)).map((group) => (
             <optgroup key={group} label={exportFormatGroupLabels[group]}>
-              {exportFormatDescriptors
+              {implementedExportFormats
                 .filter((candidate) => candidate.group === group)
                 .map((candidate) => {
                   const rasterOnly = rasterExportFormatForDialogFormat(candidate.id) !== undefined;
@@ -200,7 +201,6 @@ function ExportFormBody({
                   return (
                     <option key={candidate.id} value={candidate.id} disabled={unavailableInBrowser}>
                       {candidate.label}
-                      {candidate.status === "implemented" ? "" : ` (${candidate.status})`}
                       {unavailableInBrowser ? " (desktop only)" : ""}
                     </option>
                   );

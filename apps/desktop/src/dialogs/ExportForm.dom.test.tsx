@@ -55,6 +55,17 @@ describe.each(["macos", "windows"] as const)("Export keyboard on %s", platform =
     expect(cancel).toHaveBeenCalledTimes(2);
   });
 });
+it("lists every implemented desktop export format without deferred formats", () => {
+  act(() => root.render(createElement(ExportForm, { state: exportFixture(), onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
+  const select = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+  const options = Array.from(select.options);
+  expect(options.map(option => option.value)).toEqual([
+    "svg", "pdf", "png", "jpeg", "bmp", "gif", "tiff",
+    "sdf", "smiles", "cdxml", "cdx"
+  ]);
+  expect(select.textContent).not.toMatch(/deferred|\.cds|\.chm/i);
+});
+
 it("updates the old picker path hint when filename or format changes and keeps all option controls", () => {
   const state = { ...exportFixture(), destinationPath: "C:\\Drawing.pdf", busy: false };
   const change = vi.fn();
