@@ -446,8 +446,6 @@ it.each(["svg", "pdf"].flatMap(format => ["throw", "reject"].map(failure => ({ f
     const send = async (type: "ready" | "action", data: unknown) => act(async () => {
       native.receive!({ senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1",
         message: { ...native.snapshot!, type, requestId: crypto.randomUUID(), data } });
-      // receive is an async user action callback; drain its ordinary IPC/write microtasks.
-      for (let i = 0; i < 80; i++) await Promise.resolve();
     });
     await send("ready", {});
     let reject!: (error: Error) => void;
@@ -460,9 +458,17 @@ it.each(["svg", "pdf"].flatMap(format => ["throw", "reject"].map(failure => ({ f
     const { exportFixture } = await import("../dialogs/exportTestFixtures");
     // Preload optional exporters just as the normal user path may; no probe promise is awaited.
     if (format === "pdf") await import("@chemdraft/export-engine/pdf");
-    await send("action", { action: "export", options: { ...exportFixture(), format, filename: `drawing.${format}` } });
-    // Dynamic exporter imports are allowed; native write completion must not depend on diagnostics.
-    for (let i = 0; i < 20 && !fault.mock.calls.length; i++) await act(async () => { await import("../MainWindow"); });
+    // The host emits a terminal receipt after the write and its perf hook. Wait for that
+    // event, with the diagnostic promise still pending and the fake clock untouched.
+    const receipt = new Promise<void>(resolve => {
+      native.publish.mockImplementation(async (_host: string, message: import("../dialogs/dialogProtocol").DialogMessage) => {
+        if (message.type === "result" && (message.data.status === "exported" || message.data.status === "error")) resolve();
+      });
+    });
+    await act(async () => {
+      await send("action", { action: "export", options: { ...exportFixture(), format, filename: `drawing.${format}` } });
+      await receipt;
+    });
     expect(fault).toHaveBeenCalledWith("export-written");
     if (format === "svg") expect(native.writeText).toHaveBeenCalledWith("/exports/drawing.svg", expect.stringContaining("<svg"));
     else {
@@ -478,7 +484,7 @@ it.each(["svg", "pdf"].flatMap(format => ["throw", "reject"].map(failure => ({ f
     await act(async () => { await vi.advanceTimersByTimeAsync(120_001); });
     expect(fault).toHaveBeenCalledTimes(calls);
     expect(localStorage.getItem("chemdraft.perfLog")).toBe(rows);
-  });
+  }, 30_000);
 
 it.each((["documentOpenStarted", "documentOpenCommitted", "documentOpenSkipped", "documentOpenFailed"] as const)
   .flatMap(method => ["throw", "reject"].map(failure => ({ method, failure }))))
@@ -497,7 +503,14 @@ it.each((["documentOpenStarted", "documentOpenCommitted", "documentOpenSkipped",
     });
     const start = Date.now();
     await command("document.open");
-    for (let i = 0; i < 20 && !fault.mock.calls.length; i++) await act(async () => { await import("../MainWindow"); });
+    // Native command delivery is fire-and-forget. Observe the completed app action,
+    // allowing imports/IO to finish without advancing diagnostics' fake clock.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(fault).toHaveBeenCalled();
+      if (method === "documentOpenFailed") expect(container.textContent).toMatch(/failed|invalid|Unexpected/i);
+      else expect(container.textContent).toContain("Opened opened.chemdraft");
+    }, { interval: 0, timeout: 15_000 });
     expect(fault).toHaveBeenCalled(); expect(Date.now()).toBe(start);
     if (method === "documentOpenFailed") expect(container.textContent).toMatch(/failed|invalid|Unexpected/i);
     else {
@@ -512,4 +525,4 @@ it.each((["documentOpenStarted", "documentOpenCommitted", "documentOpenSkipped",
     await act(async () => { await vi.advanceTimersByTimeAsync(120_001); });
     expect(fault).toHaveBeenCalledTimes(calls);
     expect(localStorage.getItem("chemdraft.perfLog")).toBe(rows);
-  });
+  }, 30_000);
