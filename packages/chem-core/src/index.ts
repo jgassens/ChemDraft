@@ -160,7 +160,12 @@ export {
   migrateDocument,
   migrateLegacyTableObjects,
   parseDocument,
+  prepareNativeDocumentForSerialization,
+  prepareNativeDocumentForSerializationWithWarnings,
+  readDocument,
+  readSerializedDocument,
   serializeDocument,
+  serializeDocumentWithWarnings,
   toIsoTimestamp,
   validateDocument,
   validateDocumentObject,
@@ -168,6 +173,22 @@ export {
   type DocumentValidationIssue,
   type DocumentValidationResult
 } from "./document";
+
+export {
+  minimumAppVersionForDocument,
+  NativeDocumentBaselineAppVersion,
+  NativeDocumentFeatureVersions,
+  NativeDocumentFormatVersion,
+  NativeDocumentReaderVersion,
+  type NativeDocumentFeatureVersion
+} from "./documentFeatures";
+export {
+  NativeDocumentReadError,
+  type NativeDocumentReadResult,
+  type NativeDocumentReadWarning,
+  type NativeDocumentWarningCode
+} from "./documentRead";
+export { compareNativeVersions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
 
 export {
   DocumentPatchError,

@@ -110,3 +110,11 @@ suppressed badges (`export.invalid_structure`, e.g. `C1 has unsupported valence 
 An unparseable molecule returns `chemistryStatus: "unverified"`, with `canonicalSmiles` and
 all stereo counts set to `null`. Treat this as an unverified drawing, never as verified
 chemistry. `export_structure` retains its SMILES-input identity checks.
+
+`render_document` uses the app's tolerant native reader for both `documentJson` and `documentPath`.
+The first JSON text block includes `minAppVersion` (effective minimum; `1.1.1` for legacy files)
+and structured `documentWarnings` with `code`, `message`, and native-warning `path`/`originalValue`.
+These fields remain available on rendering failures after a successful read. Existing `warnings`
+and `exportWarnings` also include the open warnings. Newer visual content may use a preview fallback;
+`format: "chemdraft"` preserves its unknown data and source minimum on save. Unsupported chemistry
+still fails. Compatibility notices are machine-readable results, with no interactive prompt.

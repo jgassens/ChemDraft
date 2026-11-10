@@ -1,4 +1,4 @@
-import { atomProblem, formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
@@ -19326,21 +19326,7 @@ export function exportPhase4Cdxml(
  * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
  */
 export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  const result = openChemDraftPayload(contents);
-  const { conflict } = result;
-  return {
-    ...result,
-    ...(result.document ? { document: withNativeDocumentLabelBondSides(result.document) } : {}),
-    ...(conflict
-      ? {
-        conflict: {
-          ...conflict,
-          embeddedDocument: withNativeDocumentLabelBondSides(conflict.embeddedDocument),
-          ...(conflict.visibleDocument ? { visibleDocument: withNativeDocumentLabelBondSides(conflict.visibleDocument) } : {})
-        }
-      }
-      : {})
-  };
+  return readNativeDocumentContents(contents, openChemDraftPayload);
 }
 
 const importedPageFitPaddingPx = 24;

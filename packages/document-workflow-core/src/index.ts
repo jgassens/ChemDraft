@@ -4,6 +4,7 @@ export * from "./exportWarnings";
 export * from "./formulaText";
 export * from "./atoms";
 export * from "./documentInventory";
+export * from "./nativeDocument";
 export * from "./gridLayout";
 // Named, not `export *`: graph.ts also exports a test-only work counter, served from ./testing.
 export {

@@ -1016,6 +1016,96 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().file.dirty).toBe(true);
   });
 
+  function futureFileContents(name: string) {
+    return JSON.stringify({ ...createPhase4Document(name), formatVersion: "1.10.0", minAppVersion: "1.10.2",
+      conditionsLabel: { text: "keep future content" }, styles: { drawing: { stylePresetId: "future-preset" } } });
+  }
+
+  it.each(["picker", "os/recent", "native drop", "browser drop", "browser picker"])(
+    "native compatibility: %s opens with one notice and preserves future data on save", async path => {
+      const prompts: NativePromptOptions[] = [];
+      const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const contents = futureFileContents("Future drawing");
+      try {
+        if (path === "picker") {
+          native.picker.mockResolvedValueOnce("C:\\Drawings\\future.chemdraft");
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await command("document.open");
+        } else if (path === "os/recent") {
+          const payload = { path: "C:\\Drawings\\future.chemdraft", displayName: "future.chemdraft", contents };
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+          // Activating an already-open file is not another open and must not show another box.
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+        } else if (path === "native drop") {
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await act(async () => native.events.get("tauri://drag-drop")!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
+        } else {
+          native.desktop = false;
+          const file = { name: "future.chemdraft", text: async () => contents };
+          if (path === "browser drop") {
+            const event = new Event("drop", { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
+            await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
+          } else {
+            const input = container.querySelector<HTMLInputElement>('input[type="file"][accept*="chemdraft"]')!;
+            Object.defineProperty(input, "files", { value: [file], configurable: true });
+            await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+          }
+        }
+        expect(bridge().snapshot().document.title).toBe("Future drawing");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ owner: "document",
+          message: "This file was made with a newer ChemDraft (1.10.2). Some features may not show. Update to keep them." });
+        // Exercise app history admission and the Save path, including edits made after opening.
+        native.desktop = true;
+        await paste("An edit");
+        native.savePicker.mockResolvedValueOnce("C:\\Drawings\\saved.chemdraft");
+        await command("document.saveAs");
+        const saved = native.writeFile.mock.calls.at(-1)![1];
+        const reopened = openNativeDocument(saved);
+        expect(reopened.nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+        expect(reopened.warnings.map(warning => warning.code)).toEqual(expect.arrayContaining([
+          "NATIVE_UNKNOWN_FIELD_PRESERVED", "NATIVE_STYLE_PRESET_FALLBACK"
+        ]));
+        expect(prompts).toHaveLength(1);
+      } finally { restore(); }
+    });
+
+  it("native compatibility: session restore shows once per installed file, including StrictMode", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const future = buildDocumentSessionEnvelope({ contents: futureFileContents("Restored future"), payloadHash: "future", filename: "future.chemdraft" },
+        { dirty: true }, "future.chemdraft", false);
+      native.session = future;
+      act(() => root!.unmount());
+      container.innerHTML = "";
+      await mount(createPhase4Document("Untitled"), true);
+      expect(bridge().snapshot().document.title).toBe("Restored future");
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]!.message).toContain("(1.10.2)");
+      const saved = await flush();
+      expect(openNativeDocument(saved.tabs![0]!.contents).nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+    } finally { restore(); }
+  });
+
+  it("native compatibility: older and same-version opens and session restores remain quiet", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    try {
+      for (const minimum of [undefined, "1.1.1", "1.2.0"]) {
+        const contents = JSON.stringify({ ...createPhase4Document(`Minimum ${minimum}`), minAppVersion: minimum });
+        await act(async () => native.events.get("chemdraft://open-document")!({
+          contents, displayName: `${minimum}.chemdraft`, path: `/tmp/${minimum}.chemdraft`
+        }));
+      }
+      await flush(); await remount();
+      expect(prompts).toEqual([]);
+    } finally { restore(); }
+  });
+
   it("Open adds a tab for an edited Untitled, including after undo and after Save", async () => {
     await paste("Never replace this drawing");
     await command("edit.undo");

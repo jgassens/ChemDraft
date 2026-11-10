@@ -1297,7 +1297,12 @@ describe("Phase 4 document workflow", () => {
     expect(payload.warnings).toEqual([]);
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
-    expect(reopened.document).toEqual(document);
+    expect(reopened.document).toEqual({
+      ...document,
+      formatVersion: "1.2.0",
+      minAppVersion: "1.2.0",
+      ignorableFields: ["pages.*.objects.*[type=molecule].style.stylePresetId"]
+    });
   });
 
   it("hashes the embedded native document, not the whole envelope", () => {

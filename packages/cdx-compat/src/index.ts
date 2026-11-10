@@ -4,7 +4,7 @@ import {
   DocumentSchemaVersion,
   atomicNumberForElementSymbol,
   createEmptyDocument,
-  deserializeDocument,
+  readSerializedDocument,
   drawnLabelBondSide,
   elementSymbolForAtomicNumber,
   isDativeBond,
@@ -12,6 +12,7 @@ import {
   nativeTextStyleFromObjectStyle,
   normalizeAtomIsotope,
   parseDocument,
+  prepareNativeDocumentForSerializationWithWarnings,
   type Anchor,
   type ArrowObject,
   type BondRef,
@@ -26,6 +27,7 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
+  type NativeDocumentReadResult,
   type Point,
   type TextObject,
   type TableObject
@@ -43,6 +45,9 @@ export interface CompatibilityConversionWarning {
   atomIds?: string[];
   /** Native bonds of `sourceObjectId` the warning is about, when it is about particular bonds. */
   bondIds?: string[];
+  /** Present for a native forward-reading warning. */
+  path?: (string | number)[];
+  originalValue?: unknown;
 }
 
 export interface CdxmlExportOptions {
@@ -70,6 +75,8 @@ export interface ChemDraftOpenResult {
   source: ChemDraftOpenSource;
   warnings: CompatibilityConversionWarning[];
   conflict?: ChemDraftOpenConflict;
+  /** Present when a native payload carries an explicit version envelope. */
+  nativeDocumentVersions?: Pick<NativeDocumentReadResult, "formatVersion" | "minAppVersion">;
 }
 
 /** The codec version ChemDraft wrote while its 2D CDXML attributes were y-first. Still READ (the
@@ -181,12 +188,33 @@ export function exportDocumentToCdxml(
   const parsedDocument = isEngineDocument(document) ? document : parseDocument(document);
   const warnings: CompatibilityConversionWarning[] = [];
   const creationProgram = options.creationProgram ?? "ChemDraft";
-  // Compact, not serializeDocument's indented form: the JSON is base64-encoded into an attribute
-  // nobody reads by eye, and indentation grew a large drawing's file ~1.8x. `parsedDocument` is
-  // validated already, so stringifying it directly also skips serializeDocument's second parse of
-  // a document that was not an engine document. Older, indented payloads still open — the reader
-  // hashes and parses whatever JSON bytes the envelope carries.
-  const nativeJson = JSON.stringify(parsedDocument);
+  // Keep the payload compact and reuse core's version/preservation writer on the validated
+  // document. Directly stringifying the active model would save degraded enum values and its
+  // internal preservation sidecar, losing the original future fields on the next open.
+  const nativeSave = prepareNativeDocumentForSerializationWithWarnings(parsedDocument);
+  warnings.push(...nativeSave.warnings);
+  // CDXML has no vocabulary for future native enum values. The payload retains them exactly;
+  // explicitly report that limitation instead of claiming the visible approximation is chemistry.
+  for (const extension of parsedDocument.compatibility.nativeExtensions ?? []) {
+    if (extension.kind !== "enum" || extension.fallbackValue !== "unknown") continue;
+    const key = extension.path.at(-1);
+    if (!["order", "structureFormat", "expandedStructureFormat", "mappingState", "arrowKind", "markKind"].includes(String(key))) continue;
+    // The preserving writer has already checked all identity/array guards. Warn only if the
+    // original actually survived; an explicit edit must not produce an obsolete export warning.
+    const restoredValue = extension.path.reduce<unknown>((value, segment) => {
+      if (typeof segment === "object") {
+        if (!Array.isArray(value)) return undefined;
+        return "id" in segment ? value.find(item => item?.id === segment.id) : value[segment.index];
+      }
+      return typeof value === "object" && value !== null && Object.hasOwn(value, segment)
+        ? (value as Record<string | number, unknown>)[segment] : undefined;
+    }, nativeSave.value);
+    if (restoredValue !== extension.originalValue) continue;
+    const path = extension.path.map(segment => typeof segment !== "object" ? segment : "id" in segment ? segment.id : segment.index);
+    warnings.push({ code: "cdxml.native_enum_payload_only", path, originalValue: extension.originalValue,
+      message: `Native value ${JSON.stringify(extension.originalValue)} at ${path.join(".")} has no known CDXML equivalent; its original value is preserved only in the embedded ChemDraft payload.` });
+  }
+  const nativeJson = JSON.stringify(nativeSave.value);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
   const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
     .filter((object): object is TableObject => object.type === "table")
@@ -356,15 +384,19 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     };
   }
 
-  let embeddedDocument: ChemDraftDocument;
+  let nativeRead: NativeDocumentReadResult;
   try {
-    embeddedDocument = deserializeDocument(nativeJson);
+    nativeRead = readSerializedDocument(nativeJson);
   } catch (error) {
     return {
       source: "native-payload",
       warnings: [warning("cdxml.native_payload_invalid", `The embedded ChemDraft document is invalid: ${errorMessage(error)}`)]
     };
   }
+  const embeddedDocument = nativeRead.document;
+  const nativeVersions = nativeRead.formatVersion !== undefined || embeddedDocument.minAppVersion !== undefined
+    ? { nativeDocumentVersions: { formatVersion: nativeRead.formatVersion, minAppVersion: nativeRead.minAppVersion } }
+    : {};
 
   const expectedVisibleHash = tags[ChemDraftObjectTags.visibleCdxmlHash];
   const actualVisibleHash = visibleHashForParsedTree(tree);
@@ -372,12 +404,14 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     const visibleImport = importVisibleCdxmlFromTree(tree);
     return {
       source: "external-cdxml",
+      ...nativeVersions,
       warnings: [
         warning(
           "cdxml.visible_layer_modified",
           "The visible CDXML layer was modified outside ChemDraft; choose whether to trust the embedded native payload or import the edited visible subset."
         ),
-        ...visibleImport.warnings
+        ...visibleImport.warnings,
+        ...nativeRead.warnings
       ],
       conflict: {
         kind: "visible-layer-modified",
@@ -390,7 +424,8 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   return {
     document: embeddedDocument,
     source: "native-payload",
-    warnings: []
+    warnings: nativeRead.warnings,
+    ...nativeVersions
   };
 }
 
@@ -416,10 +451,14 @@ export function decodeBase64UrlUtf8(value: string): string {
 
 function openLegacyJsonDocument(contents: string): ChemDraftOpenResult {
   try {
+    const nativeRead = readSerializedDocument(contents);
     return {
-      document: deserializeDocument(contents),
+      document: nativeRead.document,
       source: "legacy-json",
-      warnings: []
+      warnings: nativeRead.warnings,
+      ...(nativeRead.formatVersion !== undefined || nativeRead.document.minAppVersion !== undefined
+        ? { nativeDocumentVersions: { formatVersion: nativeRead.formatVersion, minAppVersion: nativeRead.minAppVersion } }
+        : {})
     };
   } catch (error) {
     const unsupportedSchemaWarning = unsupportedSchemaWarningFromJson(contents);
@@ -3534,10 +3573,10 @@ function cdxmlBondOrder(
   }
   warnings.push({
     code: "cdxml.unknown_bond_order",
-    message: "Unknown bond order was exported as CDXML Order=\"1\" with a compatibility warning.",
+    message: "Unknown bond order was exported as CDXML Order=\"any\" (a query bond); the original native value is preserved in the embedded ChemDraft payload.",
     sourceObjectId
   });
-  return "1";
+  return "any";
 }
 
 function isCdxmlDativeOrder(order: string | undefined): boolean {

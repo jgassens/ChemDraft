@@ -9,6 +9,9 @@ import {
 } from "./schemas";
 import { engineDocuments } from "./engineDocuments";
 import { DefaultPageLayout, createPageLayout, pageMarginFromLayout } from "./page-layout";
+import { ignorableFieldsForNativeFeatures, minimumAppVersionForDocument, NativeDocumentBaselineAppVersion, NativeDocumentFormatVersion } from "./documentFeatures";
+import { compareNativeVersions, restoreNativeExtensions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
+import { readNativeDocument, type NativeDocumentReadResult } from "./documentRead";
 
 export interface CreateEmptyDocumentOptions {
   id?: string;
@@ -82,12 +85,58 @@ export function validateDocumentObject(candidate: unknown): DocumentObject {
 }
 
 export function serializeDocument(document: ChemDraftDocument): string {
+  return serializeDocumentWithWarnings(document).contents;
+}
+
+/** Save result for callers that present compatibility warnings in addition to the log. */
+export function serializeDocumentWithWarnings(document: ChemDraftDocument): { contents: string; warnings: NativeDocumentWriteWarning[] } {
   // An engine document is validated and normalized already; re-parsing it on every save was a full
   // schema pass over every object.
-  return JSON.stringify(engineDocuments.has(document) ? document : parseDocument(document), null, 2);
+  const validated = engineDocuments.has(document) ? document : parseDocument(document);
+  const { value, warnings } = prepareNativeDocumentForSerializationWithWarnings(validated);
+  return { contents: JSON.stringify(value, null, 2), warnings };
+}
+
+/**
+ * Native JSON value for an already validated document. Container writers (the CDXML envelope)
+ * validate once for their visible layer, then use this to share version/preservation behavior
+ * without repeating the schema pass. The returned file data may contain unknown future values;
+ * it is deliberately not typed as the active ChemDraftDocument model.
+ */
+export function prepareNativeDocumentForSerialization(validated: ChemDraftDocument): unknown {
+  return prepareNativeDocumentForSerializationWithWarnings(validated).value;
+}
+
+export function prepareNativeDocumentForSerializationWithWarnings(validated: ChemDraftDocument): { value: unknown; warnings: NativeDocumentWriteWarning[] } {
+  const minAppVersion = minimumAppVersionForDocument(validated);
+  const extensions = validated.compatibility.nativeExtensions;
+  const output = { ...validated, compatibility: { ...validated.compatibility } };
+  delete output.compatibility.nativeExtensions;
+  delete output.formatVersion;
+  delete output.minAppVersion;
+  delete output.ignorableFields;
+  // Clone only when reconstruction will mutate nested objects. Ordinary saves keep the engine's
+  // fast, already-validated path and retain the released writer's property order and defaults.
+  const restored = extensions?.length ? JSON.parse(JSON.stringify(output)) as ChemDraftDocument : output;
+  const { restored: restoredCount, warnings } = extensions?.length ? restoreNativeExtensions(restored, extensions) : { restored: 0, warnings: [] };
+  for (const warning of warnings) console.warn("Native document compatibility", warning);
+  if (compareNativeVersions(minAppVersion, NativeDocumentBaselineAppVersion) > 0) {
+    restored.formatVersion = restoredCount && validated.formatVersion
+      && compareNativeVersions(validated.formatVersion, NativeDocumentFormatVersion) > 0
+      ? validated.formatVersion : NativeDocumentFormatVersion;
+    restored.minAppVersion = minAppVersion;
+    const ignorableFields = ignorableFieldsForNativeFeatures(restored, undefined, validated.ignorableFields);
+    if (ignorableFields.length) restored.ignorableFields = ignorableFields;
+  }
+  return { value: restored, warnings };
 }
 
 export function deserializeDocument(serialized: string): ChemDraftDocument {
+  return readSerializedDocument(serialized).document;
+}
+
+/** Native file reader with named warnings and the file's version envelope. */
+export function readSerializedDocument(serialized: string): NativeDocumentReadResult {
   let parsed: unknown;
 
   try {
@@ -96,7 +145,12 @@ export function deserializeDocument(serialized: string): ChemDraftDocument {
     throw new Error(`Native document parse failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  return migrateDocument(parsed);
+  return readDocument(parsed);
+}
+
+/** Read an already-decoded native file. parseDocument remains the strict in-memory validator. */
+export function readDocument(candidate: unknown): NativeDocumentReadResult {
+  return readNativeDocument(candidate, migrateDocument);
 }
 
 export function migrateDocument(candidate: unknown): ChemDraftDocument {

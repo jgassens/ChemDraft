@@ -35,6 +35,7 @@ import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -9706,6 +9707,7 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
     perfHook(() => reportOutcome?.("installed"));
+    await notifyNativeDocumentCompatibility(opened, resolvedOpen.document);
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
@@ -10267,6 +10269,10 @@ export function MainWindow({
             const selected = restored.find(({ candidateIndex }) => candidateIndex === (envelope.activeTabIndex ?? 0)) ?? restored[0]!;
             installDocumentTab(selected.id);
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
+          for (const { opened, resolved } of restored) {
+            if (!active) break;
+            await notifyNativeDocumentCompatibility(opened, resolved.document);
+          }
         };
         await restore();
         if (!active) return;
