@@ -73,7 +73,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "Vector PDF export uses the SVG export path and propagates SVG compatibility warnings.",
+    warningSummary: "PDF exports the drawing at the selected page size. Review compatibility warnings.",
     dependency: "svg2pdf.js + jspdf"
   },
   {
@@ -87,7 +87,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "Desktop raster export renders the SVG page through the native resvg pipeline.",
+    warningSummary: "PNG preserves transparency when a transparent background is selected.",
     dependency: "resvg + image"
   },
   {
@@ -129,7 +129,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "GIF export flattens transparency onto a white background before palette encoding.",
+    warningSummary: "GIF uses a limited color palette and flattens transparency onto a white background.",
     dependency: "resvg + image"
   },
   {
@@ -195,7 +195,7 @@ export const exportFormatDescriptors = [
     targetScope: "multiRecord",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right)."
+    warningSummary: "Exports selected editable molecules, or all editable molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right)."
   },
   {
     id: "sdf-v2000",
@@ -257,7 +257,7 @@ export const exportFormatDescriptors = [
     targetScope: "multiRecord",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right), one SMILES per line."
+    warningSummary: "Exports selected editable molecules, or all editable molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right), one SMILES per line."
   },
   {
     id: "connection-table",
@@ -309,7 +309,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "CDXML export delegates through cdx-compat and may include compatibility warnings for unsupported visible objects."
+    warningSummary: "CDXML exports supported visible objects with embedded ChemDraft data. Review compatibility warnings."
   },
   {
     id: "cdx",

@@ -893,7 +893,8 @@ import {
 } from "./keyboardShortcuts";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
-import { desktopExportFormatDescriptors, getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
+import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
+import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
@@ -1767,7 +1768,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.10.50-codex";
+const CURRENT_BUILD_STAMP = "11.10.11.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11119,7 +11120,7 @@ export function MainWindow({
       if (!exportPreviewEnabledRef.current) options = { ...options, presentation: undefined };
       const result = await createDialogExportResult(source, { ...options, busy: false });
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
-      const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
+      const filename = exportDefaultPath(options.filename, descriptor.extensions);
       if (!isDesktopRuntime()) downloadExportResult(filename, result);
       else {
         const grant = exportGrantsRef.current.get(tabId);
@@ -33664,7 +33665,7 @@ async function pickNativeExportPath(
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
-    defaultPath,
+    defaultPath: exportDefaultPath(defaultPath, extensions),
     filters: [{ name: formatLabel, extensions: [...extensions] }]
   }, focusExportSessionId);
   return selected ?? undefined;
@@ -33812,13 +33813,7 @@ function downloadBlob(filename: string, blob: Blob): void {
 }
 
 function createExportFilename(document: ChemDraftDocument, extension: string, savedDocumentPath?: string): string {
-  const title = (savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title).replace(/[\s.]+$/, "");
-  const knownExtensions = new Set([
-    "chemdraft", "cdxml", "cdx", "mol", "sdf", "smi", "smiles", "rxn",
-    ...desktopExportFormatDescriptors.flatMap(descriptor => descriptor.extensions.map(value => value.toLowerCase()))
-  ]);
-  const dot = title.lastIndexOf(".");
-  const stem = dot >= 0 && knownExtensions.has(title.slice(dot + 1).toLowerCase()) ? title.slice(0, dot) : title;
+  const stem = stripExportFileExtension(savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title);
   const baseName = stem.trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
   // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
   // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.

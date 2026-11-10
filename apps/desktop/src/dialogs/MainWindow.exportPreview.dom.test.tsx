@@ -2,7 +2,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MainWindow } from "../MainWindow";
+import { MainWindow, createDefaultExportDialogState } from "../MainWindow";
+import { desktopExportFormatDescriptors } from "../desktopExportFormats";
+import { updateExportDialogFormat } from "./ExportForm";
 import { applyNativeChainTool, createPhase4Document, selectDocumentObjects } from "../documentWorkflow";
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
@@ -192,6 +194,37 @@ it("renders preview from the same pending atom-label flush as export without clo
   const source = svg.mock.calls.at(-1)![0];
   expect(source.pages[0].objects.find(object => object.type === "molecule")).toEqual(bridge().snapshot().document.pages[0].objects.find(object => object.type === "molecule"));
   expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe("NMe");
+});
+
+it.each(["macos", "windows"] as const)("passes a single extension to the native save box for every format on %s", async platform => {
+  const folder = platform === "macos" ? "/Users/me/Figures/" : "C:\\Figures\\";
+  native.save.mockResolvedValue(null);
+  await command("export.open"); await send("ready", {});
+  const snapshot = native.snapshot!;
+  if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+  for (const descriptor of desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented")) {
+    const expected = `colours.${descriptor.extensions[0]}`;
+    for (const savedPath of [undefined, `${folder}colours.CDXML`]) {
+      const initial = createDefaultExportDialogState(createPhase4Document("colours.cdxml"), folder, savedPath);
+      expect(initial.filename).toBe("colours.pdf");
+      expect(updateExportDialogFormat(initial, descriptor.id).filename).toBe(expected);
+    }
+    // Exercise the real destination handler, including an old source suffix in a picker hint.
+    for (const destinationPath of [undefined, `${folder}colours.cdxml`]) {
+      lastExportDirectory.current = folder;
+      await send("action", { action: "chooseDestination", options: { ...snapshot.data.options, format: descriptor.id, filename: "colours.cdxml", destinationPath } });
+      expect(native.save).toHaveBeenLastCalledWith({
+        title: `Export ${descriptor.menuLabel}`,
+        defaultPath: `${destinationPath ? folder : `${folder.slice(0, -1)}/`}colours.${descriptor.extensions[0]}`,
+        filters: [{ name: descriptor.menuLabel, extensions: [...descriptor.extensions] }]
+      }, expect.any(String));
+    }
+  }
+  // Export without a location also proposes a filename before opening the same native box.
+  await send("action", { action: "export", options: { ...snapshot.data.options, format: "svg", filename: "colours.cdxml" } });
+  expect(native.save).toHaveBeenLastCalledWith(expect.objectContaining({
+    defaultPath: `${folder.slice(0, -1)}/colours.svg`
+  }), expect.any(String));
 });
 
 it.each(["failed", "cancelled", "saved"] as const)("updates the shared export folder only after a document write succeeds (%s)", async outcome => {

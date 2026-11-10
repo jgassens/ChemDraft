@@ -1,6 +1,7 @@
 import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
-import { type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { type ExportFormatId, type ExportFormatGroup } from "@chemdraft/export-engine";
+import { replaceExportFileExtension } from "../exportFilename";
 import { desktopExportFormatDescriptors as exportFormatDescriptors, getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "../desktopExportFormats";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { isDesktopRuntime } from "../window-manager";
@@ -25,7 +26,6 @@ const exportFormatGroupLabels: Record<ExportFormatGroup, string> = {
   model3d: "3D"
 };
 const implementedExportFormats = exportFormatDescriptors.filter((descriptor) => descriptor.status === "implemented");
-const registeredExportFormatExtensions = [...new Set(exportFormatDescriptors.flatMap((descriptor) => descriptor.extensions))];
 interface ExportDialogProps {
   state: ExportDialogState;
   previewEnabled: boolean;
@@ -210,7 +210,7 @@ function ExportFormBody({
         </select>
         {descriptor.warningSummary || !implemented ? (
           <p style={implemented ? exportDialogHintStyle : exportDialogWarningStyle}>
-            {descriptor.warningSummary ?? `${descriptor.menuLabel} export is not available yet.`}
+            {implemented ? descriptor.warningSummary : `${descriptor.menuLabel} export is not available yet.`}
           </p>
         ) : null}
 
@@ -517,7 +517,7 @@ export function ExportForm({ state: ownerState, onChange: publish, onReady, ...p
 export function updateExportDialogFormat(state: ExportDialogState, format: ExportDialogFormat): ExportDialogState {
   const descriptor = getExportFormatDescriptor(format);
   const rasterFormat = rasterExportFormatForDialogFormat(format);
-  const filename = replaceExportFileExtension(state.filename, descriptor);
+  const filename = replaceExportFileExtension(state.filename, descriptor.extensions[0] ?? descriptor.id);
   return {
     ...state,
     format,
@@ -541,14 +541,6 @@ function exportPathWithFilename(path: string | undefined, filename: string): str
 
 export function rasterExportFormatForDialogFormat(format: ExportFormatId): NativeRasterExportFormat | undefined {
   return rasterExportFormatsByFormatId[format];
-}
-
-function replaceExportFileExtension(filename: string, descriptor: ExportFormatDescriptor): string {
-  const extension = descriptor.extensions[0] ?? descriptor.id;
-  const trimmed = filename.trim() || "Untitled";
-  const escapedExtensions = registeredExportFormatExtensions.map((candidate) => candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const knownExportExtension = new RegExp(`\\.(${escapedExtensions.join("|")})$`, "i");
-  return `${trimmed.replace(knownExportExtension, "")}.${extension}`;
 }
 
 const exportDialogPanelStyle: CSSProperties = {

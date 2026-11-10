@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExportForm, updateExportDialogFormat } from "./ExportForm";
 import { exportFixture } from "./exportTestFixtures";
 import type { ExportDialogState } from "./exportOptions";
+import { desktopExportFormatDescriptors } from "../desktopExportFormats";
+import { exportDefaultPath, replaceExportFileExtension } from "../exportFilename";
 
 let root: Root; let container: HTMLDivElement;
 beforeEach(() => {
@@ -55,7 +57,7 @@ describe.each(["macos", "windows"] as const)("Export keyboard on %s", platform =
     expect(cancel).toHaveBeenCalledTimes(2);
   });
 });
-it("lists every implemented desktop export format without deferred formats", () => {
+it("lists every implemented desktop export format without planned/deferred rows or developer notes", () => {
   act(() => root.render(createElement(ExportForm, { state: exportFixture(), onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
   const select = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
   const options = Array.from(select.options);
@@ -63,8 +65,36 @@ it("lists every implemented desktop export format without deferred formats", () 
     "svg", "pdf", "png", "jpeg", "bmp", "gif", "tiff",
     "sdf", "smiles", "cdxml", "cdx"
   ]);
-  expect(select.textContent).not.toMatch(/deferred|\.cds|\.chm/i);
+  expect(new Set(options.map(option => option.value))).toEqual(new Set(desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented").map(descriptor => descriptor.id)));
+  expect(select.textContent).not.toMatch(/\(planned\)|\(deferred\)|\.cds|\.chm/i);
+  for (const descriptor of desktopExportFormatDescriptors) {
+    act(() => root.render(createElement(ExportForm, { state: { ...exportFixture(), format: descriptor.id }, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn() })));
+    const visibleText = `${container.textContent} ${[...container.querySelectorAll("[title]")].map(node => node.getAttribute("title")).join(" ")}`;
+    expect(visibleText).not.toContain("Initial MOL export should alias the tested V2000 writer");
+    expect(visibleText).not.toMatch(/\(planned\)|\(deferred\)|should alias|resvg pipeline|delegates through|SVG export path/i);
+    if (descriptor.status !== "implemented" && descriptor.warningSummary) expect(visibleText).not.toContain(descriptor.warningSummary);
+  }
   expect(updateExportDialogFormat({ ...exportFixture(), filename: "compound.mol" }, "pdf").filename).toBe("compound.pdf");
+});
+
+it.each(["macos", "windows"] as const)("suggests one extension for every implemented format on %s", platform => {
+  const folder = platform === "macos" ? "/Users/me/Figures/" : "C:\\Figures\\";
+  const sourceExtensions = new Set(["chemdraft", ...desktopExportFormatDescriptors.flatMap(descriptor => descriptor.extensions)]);
+  for (const descriptor of desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented")) {
+    const expected = `colours.${descriptor.extensions[0]}`;
+    for (const sourceExtension of sourceExtensions) {
+      const state = updateExportDialogFormat({ ...exportFixture(), filename: `colours.${sourceExtension.toUpperCase()}`, destinationPath: `${folder}colours.${sourceExtension}` }, descriptor.id);
+      expect(state).toMatchObject({ filename: expected, destinationPath: `${folder}${expected}` });
+    }
+    const state = updateExportDialogFormat({ ...exportFixture(), filename: "colours.cdxml" }, descriptor.id);
+    act(() => root.render(createElement(ExportForm, { state, onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn(), platform })));
+    expect(container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!.value).toBe(expected);
+  }
+  expect(replaceExportFileExtension("figure.v2.cdxml", "pdf")).toBe("figure.v2.pdf");
+  expect(replaceExportFileExtension("figure.custom", "pdf")).toBe("figure.custom.pdf");
+  expect(replaceExportFileExtension("   ", "pdf")).toBe("Untitled.pdf");
+  expect(exportDefaultPath(`${folder}figure.jpeg`, ["jpg", "jpeg"])).toBe(`${folder}figure.jpeg`);
+  expect(exportDefaultPath(`${folder}figure.tiff`, ["tif", "tiff"])).toBe(`${folder}figure.tiff`);
 });
 
 it("updates the old picker path hint when filename or format changes and keeps all option controls", () => {
