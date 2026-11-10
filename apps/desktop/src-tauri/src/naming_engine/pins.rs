@@ -10,6 +10,11 @@ pub const ORTHONYM_WHEEL_SHA256: &str =
     "ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d";
 pub const REQUIREMENTS_LOCK_SHA256: &str =
     "ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a";
+/// LF-normalized SHA-256 of resources/naming/requirements-macos-x86_64.txt.
+/// Placeholder: the lock-hash test fails until the release exists, the lock is generated,
+/// and this value is set to its actual digest. Never use this as the wheel's hash.
+pub const REQUIREMENTS_LOCK_SHA256_MACOS_X86_64: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
 pub const CENTRES_URL: &str =
     "https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar";
 pub const CENTRES_BYTES: u64 = 2_291_742;

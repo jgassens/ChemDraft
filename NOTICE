@@ -195,6 +195,20 @@ InChI 1.07.5 (inside the Intel Mac naming engine's RDKit wheel)
   The wheel includes the InChI licence text in its licences folder.
   The tbb Apache-2.0 text is included for reference only; tbb is not compiled in.
 
+Boost (compiled into the Intel Mac naming engine's RDKit wheel)
+  BSL-1.0 (Boost Software License 1.0). Source: https://www.boost.org/.
+  Installed only with the Intel wheel from https://github.com/jgassens/ChemDraft-Engines;
+  not bundled with ChemDraft. The wheel carries the Boost licence text.
+
+Eigen (compiled into the Intel Mac naming engine's RDKit wheel)
+  MPL-2.0. Source: https://gitlab.com/libeigen/eigen.
+  Built MPL2-only with EIGEN_MPL2_ONLY, excluding Eigen's LGPL modules. The wheel
+  carries the MPL-2.0 licence text; source for the MPL-2.0 files is available above.
+
+better-enums (compiled into the Intel Mac naming engine's RDKit wheel)
+  BSD-2-Clause. Source: https://github.com/aantron/better-enums.
+  The wheel carries the better-enums licence text. Not bundled with ChemDraft.
+
 Avogadro libraries (avogadrolibs Core + Calc, statically linked into the
 avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
   BSD-3-Clause. Copyright (c) 2011-2020, Kitware, Inc.
@@ -243,7 +257,9 @@ separate program (the Python packages in a private uv environment, the jars on t
 bundled JVM), and nothing is merged into the Apache-2.0 core. The engine install writes
 the licence texts to <engine>/LICENSES/ (the texts for the centres jar's contents ship in
 apps/desktop/src-tauri/resources/naming/licenses/). The versions below are the exact pins
-of resources/naming/requirements.txt (hash-locked, installed with --require-hashes).
+of resources/naming/requirements.txt on Apple silicon and Windows; Intel Macs use
+resources/naming/requirements-macos-x86_64.txt with the same input versions and a direct
+RDKit wheel reference (both locks installed with --require-hashes).
 
 Orthonym 1.0.8
   MIT. Source: https://github.com/Steinbeck-Lab/Orthonym (tag v1.0.8, commit
@@ -251,9 +267,17 @@ Orthonym 1.0.8
   (SHA-256 ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d) is identical,
   file for file, to src/orthonym at that commit.
   Its LICENSE and NOTICE come from the installed wheel's dist-info.
+  On Intel Macs its RDKit dependency comes from the ChemDraft-Engines wheel below;
+  InChI 1.07.5, Boost, Eigen MPL2-only and better-enums notices are listed above.
 
 RDKit 2026.3.5
   BSD-3-Clause. Source: https://github.com/rdkit/rdkit.
+  On Intel Macs the optional naming engine installs the CPython 3.12, macOS 11 wheel
+  built by the public https://github.com/jgassens/ChemDraft-Engines repository:
+  https://github.com/jgassens/ChemDraft-Engines/releases/download/rdkit-2026.3.5-macos-x86_64-1/rdkit-2026.3.5-cp312-cp312-macosx_11_0_x86_64.whl
+  Its release and SHA-256 lock are pending. The wheel contains InChI 1.07.5 (MIT),
+  Boost (BSL-1.0), Eigen (MPL-2.0, MPL2-only) and better-enums (BSD-2-Clause), as
+  listed above. Not bundled with ChemDraft.
 
 JPype1 1.7.1
   Apache-2.0. Source: https://github.com/jpype-project/jpype.
