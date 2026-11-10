@@ -793,13 +793,30 @@ describe("chemical and drawing round trips", () => {
     });
   }
 
-  it("preserves crossing bonds and warns about payload-only unknown objects", () => {
+  it.each(["CDX", "CDXML"] as const)("preserves bond crossings and names the omitted bracket group in %s export", format => {
     const original = requireDocument(openChemDraftPayload(cdxmlFixtures["crossing-bonds.cdxml"]));
-    const exported = exportDocumentToCdx(original);
-    expect(exported.warnings.some((w) => w.code === "cdxml.object_export_unsupported")).toBe(true);
+    const unknown = original.pages[0].objects.filter(object => object.type === "unknown-compatibility-object");
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]).toMatchObject({
+      sourceObjectType: "bracketedgroup",
+      raw: {
+        name: "bracketedgroup", attributes: { id: "bg_crossing", BracketedObjectIDs: "a1 a2" }
+      }
+    });
+    const exported = format === "CDX"
+      ? exportDocumentToCdx(original, { embedNativePayload: false })
+      : exportDocumentToCdxml(original, { embedNativePayload: false });
+    // A single attachment cannot form a native bracket pair. Its group is still omitted;
+    // the specific diagnostic replaces the former generic object_export_unsupported warning.
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.bracket_group_preserved", sourceObjectId: "bg_crossing",
+      message: expect.stringMatching(/Bracket group bg_crossing:.*bracket members and crossing bonds are NOT written to visible export/)
+    }));
     const supported = structuredClone(original);
-    supported.pages[0].objects = supported.pages[0].objects.filter((x) => x.type !== "unknown-compatibility-object");
-    const reopened = requireDocument(importCdx(exported.bytes));
+    supported.pages[0].objects = supported.pages[0].objects.filter(object => object.id !== unknown[0].id);
+    const reopened = requireDocument("bytes" in exported
+      ? importCdx(exported.bytes)
+      : openChemDraftPayload(exported.contents));
     compareDocuments(reopened, supported);
     expect(reopened.pages[0].crossings).toHaveLength(original.pages[0].crossings.length);
   });
