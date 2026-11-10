@@ -23,9 +23,11 @@ const sketch = (object: MoleculeObject) => render(object).filter(fragment => fra
 describe("Sketch preset bond geometry at roughness 1.25", () => {
   it.each([
     { name: "explicit bond", bondColor: "#123456", effectColor: "#654321", override: "#ab1234", expected: "#ab1234" },
+    { name: "explicit black bond", override: "#000000", expected: "#000000" },
     { name: "Sketch effect", bondColor: "#123456", effectColor: "#654321", expected: "#654321" },
+    { name: "black Sketch effect", effectColor: "#000000", expected: "#000000" },
     { name: "molecule bond", bondColor: "#123456", expected: "#123456" },
-    { name: "default bond", expected: SketchStylePreset.drawing.bondColor }
+    { name: "default Sketch ink", expected: "#111111" }
   ])("uses the $name colour for rough ink without changing atom labels", ({ bondColor, effectColor, override, expected }) => {
     for (const bondStyle of [undefined, "wedge", "hashed"] as const) {
       const object = molecule("single", bondStyle);

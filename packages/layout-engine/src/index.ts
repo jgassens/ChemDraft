@@ -3000,7 +3000,10 @@ function moleculeEffectSketchBasePathD(
   paintPaths: (paths: NativeArtSketchPathPlan[]) => NativeArtSketchPathPlan[] } | undefined {
   const effectColor = visualEffectsForStyle(object.style).find(effect => effect.kind === "sketch")?.color;
   const sketchColor = typeof effectColor === "string" && effectColor.trim() ? effectColor.trim() : undefined;
-  const fallbackColor = sketchColor ?? nativeDrawingStyleFromObjectStyle(object.style).bondColor;
+  // Presets store black bonds, but their default Sketch ink has always been #111111.
+  // Keep that appearance while honouring custom molecule, effect and per-bond colours.
+  const sketchBondColor = (color: string) => color === ChemDraftSyntheticStylePreset.drawing.bondColor ? "#111111" : color;
+  const fallbackColor = sketchColor ?? sketchBondColor(nativeDrawingStyleFromObjectStyle(object.style).bondColor);
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
       moleculeBondSketchPathParts(
@@ -3010,7 +3013,7 @@ function moleculeEffectSketchBasePathD(
         gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
         resolution
       ).map(part => ({ ...part, color: depthCuedBondColor(
-        styleColorMapValue(object.style.bondColors, bond.id) ?? sketchColor ?? drawingStyle.bondColor,
+        styleColorMapValue(object.style.bondColors, bond.id) ?? sketchColor ?? sketchBondColor(drawingStyle.bondColor),
         bond.display?.depthWeight
       ) }))
     )
