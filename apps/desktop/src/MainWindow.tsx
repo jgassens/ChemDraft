@@ -1,6 +1,6 @@
 import { BracketLabelEditor } from "./BracketLabelEditor";
-import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel } from "./bracketCommands";
-import { bracketLabelPlan } from "@chemdraft/layout-engine";
+import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
+import { bracketLabelPlan, bracketLabelContainsPoint } from "@chemdraft/layout-engine";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
@@ -1718,7 +1718,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.21.17-codex";
+const CURRENT_BUILD_STAMP = "11.10.09.42-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7723,16 +7723,8 @@ export function MainWindow({
     // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
-    const object = findDocumentObject(documentRef.current, objectId);
-    if (object?.type === "bracket") {
-      if (event.target instanceof Element && event.target.closest(".bracket-repeat-label")) {
-        replacePresentDocument(current => selectDocumentObject(current, objectId));
-        void invokeCommandRef.current("bracket.label.edit");
-      }
-      return;
-    }
     startTextObjectEdit(objectId);
-  }, [activeToolState.activeCommandId, replacePresentDocument, startTextObjectEdit]);
+  }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
   const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableText) => {
     clearScheduledTextEditorFocus();
@@ -7806,17 +7798,32 @@ export function MainWindow({
     else canvasRegionRef.current?.focus({ preventScroll: true });
   }, [clearScheduledTextEditorFocus, commitTableObject, reconcileSavedDocumentDirtyState]);
 
-  const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
+  const handlePageDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || isEditableTarget(event.target) ||
+        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) return;
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const point = pagePointFromRenderedPageRect(rect, viewportRef.current.scale, { x: event.clientX, y: event.clientY });
+    // Select captures the pointer on the object's group when starting a drag. A real
+    // dblclick can therefore target that group (or the canvas), rather than its text.
+    // Resolve the label from the same page-space metrics used to paint it, before
+    // object/group double-click handlers, and use the context menu's registered command.
+    const bracket = [...documentRef.current.pages[0].objects].reverse().find(object =>
+      object.type === "bracket" && bracketLabelContainsPoint(object, point));
+    if (bracket) {
+      event.preventDefault(); event.stopPropagation();
+      flushSync(() => replacePresentDocument(current => selectDocumentObject(current, bracket.id)));
+      void invokeCommandRef.current("bracket.label.edit");
+      return;
+    }
+    if (activeToolState.activeCommandId !== "tool.select") return;
     const owner = (event.target as Element).closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual");
     const table = documentRef.current.pages[0].objects.find(object => object.id === owner);
-    const rect = pageRef.current?.getBoundingClientRect();
-    if (table?.type !== "table" || !rect) return;
-    const cell = tableTextAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
-      y: (event.clientY - rect.top) / viewportRef.current.scale });
+    if (table?.type !== "table") return;
+    const cell = tableTextAtPoint(table, point);
     if (!cell) return;
     event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
-  }, [activeToolState.activeCommandId, startTableCellEdit]);
+  }, [activeToolState.activeCommandId, replacePresentDocument, startTableCellEdit]);
 
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
@@ -10921,8 +10928,9 @@ export function MainWindow({
 
     bracketActions.forEach(action => register(action, () => {
       if (action.id === "bracket.repeatUnit.toggle") {
-        commitDocumentChange(toggleBracketRepeatUnit(documentRef.current), action.title);
-        setStatus(action.title);
+        const result = toggleBracketRepeatUnit(documentRef.current);
+        commitDocumentChange(result, action.title);
+        setStatus(bracketRepeatUnitStatus(result));
       } else {
         const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
         if (closing) {
@@ -21594,7 +21602,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
-                onDoubleClickCapture={handleTableDoubleClick}
+                onDoubleClickCapture={handlePageDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -27693,7 +27701,7 @@ function PageSvgSurfaceContent({
                 onPointerCancel={handlers.onPointerCancel}
                 onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
                 onContextMenu={event => handlers.onContextMenu(object.id, event)}
-                onDoubleClick={object.type === "text" || object.type === "bracket" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
               >
                 {object.type === "graphic" ? (
                   // Keep the existing art renderer and its generous stroke/fill catchers.

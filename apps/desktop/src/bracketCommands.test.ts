@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { applyPatch, undo, redo, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
-import { createBracketCommands, selectedBracketPair, setBracketRepeatLabel, toggleBracketRepeatUnit } from "./bracketCommands";
+import { bracketRepeatUnitStatus, createBracketCommands, selectedBracketPair, setBracketRepeatLabel, toggleBracketRepeatUnit } from "./bracketCommands";
+import { bracketLabelContainsPoint, bracketLabelPlan, transformPointForObject } from "@chemdraft/layout-engine";
 import { applySingleBondToolAtPoint, copyAsMolfile, copyAsSmiles, createPhase4Document,
   createSelectionClipboardPayload, deleteSelectedDocumentObjects, duplicateSelectedDocumentObjects, insertNativeBracket, pasteSelectionClipboardPayload } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
@@ -23,6 +24,35 @@ function expectPlainBracket(object: BracketObject) {
 }
 
 describe("bracket pair annotations", () => {
+  it.each([0, 1, 2, 5])("reports %s enclosed atoms with the actual label and singular/plural wording", count => {
+    const original = repeatAroundMolecule();
+    const molecule = original.pages[0].objects.find(object => object.type === "molecule")!;
+    const repeat = { ...original, pages: [{ ...original.pages[0], objects: original.pages[0].objects.map(object =>
+      object.type === "molecule" ? { ...object, atoms: Array.from({ length: count }, (_, index) =>
+        ({ ...molecule.atoms[0], id: `count_atom_${index}`, x: 140 + index * 5, y: 140 })), bonds: [] } : object) }] };
+    const closing = selectedBracketPair(repeat).find(object => object.side === "close")!;
+    const edited = setBracketRepeatLabel(repeat, closing.id, "m");
+    expect(bracketRepeatUnitStatus(edited)).toBe(`Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "m"`);
+    expect(bracketRepeatUnitStatus(toggleBracketRepeatUnit(edited))).toBe('Removed repeat unit "m"');
+  });
+  it("counts enclosed atoms of a partially bracketed molecule without counting outside atoms", () => {
+    const original = repeatAroundMolecule();
+    const partial = { ...original, pages: [{ ...original.pages[0], objects: original.pages[0].objects.map(object =>
+      object.type === "bracket" ? { ...object, containedObjectIds: [] } : object.type === "molecule"
+        ? { ...object, atoms: object.atoms.map((atom, index) => index ? { ...atom, x: 400 } : atom) } : object) }] };
+    expect(bracketRepeatUnitStatus(partial)).toBe('Marked 1 atom as repeat unit "n"');
+  });
+  it("hits the shared label bounds after rotating a bracket, and excludes its glyph", () => {
+    const closing = selectedBracketPair(repeatAroundMolecule()).find(object => object.side === "close")!;
+    const rotated = { ...closing, rotation: 35 };
+    const bounds = bracketLabelPlan(rotated)!.bounds;
+    const point = transformPointForObject(rotated, { x: rotated.x + bounds.x + bounds.width / 2,
+      y: rotated.y + bounds.y + bounds.height / 2 });
+    expect(bracketLabelContainsPoint(rotated, point)).toBe(true);
+    expect(bracketLabelContainsPoint(rotated, transformPointForObject(rotated,
+      { x: rotated.x + rotated.width / 2, y: rotated.y + rotated.height / 2 }))).toBe(false);
+    expect(bracketLabelContainsPoint({ ...rotated, repeatUnit: false }, point)).toBe(false);
+  });
   it("exposes the repeat-unit command with selection-dependent availability", () => {
     const document = brackets();
     expect(allShellCommands(document).find(command => command.id === "bracket.repeatUnit.toggle")).toMatchObject({ enabled: true });

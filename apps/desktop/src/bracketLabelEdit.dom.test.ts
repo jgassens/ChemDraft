@@ -3,9 +3,10 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
+import { applySingleBondToolAtPoint, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { bracketLabelPlan } from "@chemdraft/layout-engine";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
@@ -118,5 +119,74 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     await key("Escape");
     expect(editor()).toBeNull();
     expect(label().textContent).toBe("n");
+  });
+  it.each([false, true])("edits via the full canvas double-click sequence (initially selected: %s)", async selected => {
+    await mount(selected);
+    await command("view.zoomIn");
+    vi.stubGlobal("devicePixelRatio", 2);
+    const { document: doc, viewport } = snapshot();
+    const scale = (viewport as { scale: number }).scale;
+    const closing = doc.pages[0].objects.find(object => object.id === closingId)!;
+    if (closing.type !== "bracket") throw new Error("Missing closing bracket");
+    const bounds = bracketLabelPlan(closing)!.bounds;
+    const rect = { left: 73, top: 41, width: doc.pages[0].width * scale, height: doc.pages[0].height * scale };
+    container.querySelector(".page")!.getBoundingClientRect = () => ({ ...rect,
+      x: rect.left, y: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height, toJSON: () => ({}) });
+    const point = { x: rect.left + (closing.x + bounds.x + bounds.width / 2) * scale,
+      y: rect.top + (closing.y + bounds.y + bounds.height / 2) * scale };
+    // Dispatch through the canvas, never directly to the SVG text. The browser can target
+    // the canvas/owner after pointer capture; jsdom has no painted SVG hit testing.
+    const canvas = container.querySelector("[data-page-svg-surface]")!;
+    for (const detail of [1, 2]) {
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        await mouse(canvas, type, type.startsWith("pointer") ? 0 : detail, point);
+      }
+      expect(editor()).toBeNull();
+    }
+    await mouse(canvas, "dblclick", 2, point);
+    expect(editor()?.value).toBe("n");
+    expect(document.activeElement).toBe(editor());
+    expect(snapshot().document.pages[0].objects).toEqual(doc.pages[0].objects);
+    await key("Escape");
+    expect(editor()).toBeNull();
+    await command("bracket.label.edit");
+    expect(editor()?.value).toBe("n");
+  });
+  it("edits when Select's pointer capture retargets clicks from the painted label to its owner", async () => {
+    await mount(false);
+    let captured: Element | undefined;
+    Object.defineProperty(Element.prototype, "setPointerCapture", { configurable: true,
+      value(this: Element) { captured = this; } });
+    Object.defineProperty(Element.prototype, "releasePointerCapture", { configurable: true,
+      value() { captured = undefined; } });
+    Object.defineProperty(Element.prototype, "hasPointerCapture", { configurable: true,
+      value(this: Element) { return captured === this; } });
+    let clickTarget: Element;
+    for (const detail of [1, 2]) {
+      const painted = label();
+      await mouse(painted, "pointerdown");
+      clickTarget = captured!;
+      expect(clickTarget).toBe(painted.closest("[data-page-svg-object-visual]"));
+      await mouse(painted, "mousedown", detail);
+      await mouse(clickTarget, "pointerup");
+      await mouse(clickTarget, "mouseup", detail);
+      await mouse(clickTarget, "click", detail);
+      expect(editor()).toBeNull();
+    }
+    await mouse(clickTarget!, "dblclick", 2);
+    expect(editor()?.value).toBe("n");
+    expect(document.activeElement).toBe(editor());
+  });
+  it("reports the marked atom count and repeat label in the command's status", async () => {
+    const doc = insertNativeBracket(applySingleBondToolAtPoint(createPhase4Document("Status"), { x: 140, y: 140 }),
+      { x: 100, y: 100 }, "round", { x: 260, y: 200 });
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: doc, initialPaletteMode: "hidden", initialRulersVisible: false,
+      initialCrosshairsVisible: false, nativePalette: true
+    })));
+    await command("bracket.repeatUnit.toggle");
+    expect(container.querySelector("[data-status-message]")?.textContent).toBe('Marked 2 atoms as repeat unit "n"');
+    await command("bracket.repeatUnit.toggle");
+    expect(container.querySelector("[data-status-message]")?.textContent).toBe('Removed repeat unit "n"');
   });
 });
