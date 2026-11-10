@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { measureDialogContentWhenFontsReady } from "./dialogs/dialogContentFit";
+import { isDesktopRuntime } from "./window-manager";
+import { useEffect, useRef, useState } from "react";
 import { loadStartWithFreshDocument, saveStartWithFreshDocument } from "./startupSettings";
 import { loadExportPreviewEnabled, saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { loadAutomaticPluginUpdates, saveAutomaticPluginUpdates, broadcastPluginUpdateSettings } from "./pluginUpdateSettings";
@@ -104,6 +106,19 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const shell = useRef<HTMLElement>(null);
+  useEffect(() => {
+    let stopped = false;
+    if (isDesktopRuntime() && shell.current) {
+      void measureDialogContentWhenFontsReady(shell.current).then(async data => {
+        if (!stopped) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          if (!stopped) await invoke("preferences_ready", { data: data ?? {} });
+        }
+      }).catch(error => console.error("Could not size Preferences:", error));
+    }
+    return () => { stopped = true; };
+  }, []);
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
   const [drawing, setDrawing] = useState(loadDrawingSettings);
@@ -155,7 +170,8 @@ export function PreferencesWindow() {
   };
 
   return (
-    <main className="preferences-shell">
+    <main ref={shell} className="preferences-shell cd-dialog-fit">
+      <div className="cd-dialog-fit-body">
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
@@ -271,6 +287,7 @@ export function PreferencesWindow() {
         value={settings.forceField}
         onSelect={(forceField) => update({ forceField })}
       />
+      </div>
     </main>
   );
 }

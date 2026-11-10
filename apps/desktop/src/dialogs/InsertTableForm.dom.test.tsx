@@ -43,14 +43,13 @@ it.each(["macos", "windows"] as const)("reserves status space and stable row met
     const form = container.querySelector("form")!;
     expect(form.classList.contains("cd-insert-table-form")).toBe(true);
     expect(getComputedStyle(form).display).toBe("flex");
-    // The form fills the window exactly; 240 is only the native floor, never a CSS overflow.
+    // The form fills the fitted native viewport without imposing an initial height.
     expect(getComputedStyle(form).height).toBe("100vh");
     expect(getComputedStyle(form).minHeight).toBe("0px");
-    // Native minimum width leaves 444px after padding: three 90px inputs, three
-    // 10px gaps and ample room for the native Style select on either platform.
+    // A shorter minimum allows resizing below natural content; fields wrap at narrow widths.
     const spec = nativeSpec();
-    expect(spec).toContain("min_size: (480.0, 240.0)");
-    // The window height comes from the measured content; 240 is only the floor.
+    expect(spec).toContain("min_size: (360.0, 120.0)");
+    // The window height comes from content, including when shorter than the old 240px floor.
     expect(spec).toContain("fit_content: true");
     const status = container.querySelector('[role="status"]')!;
     expect(status.textContent).toBe("");
@@ -243,16 +242,16 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
   }
 });
 
-it("keeps the scrolling layout in the shared dialog CSS without changing other dialogs", () => {
+it("shares the scrolling-body layout with all fixed-form dialogs", () => {
   const css = readFileSync("apps/desktop/src/App.css", "utf8");
   // Shared selectors, not Insert-Table-only ones.
   expect(css).toMatch(/^\.cd-dialog-fit \{[^}]*height: 100vh;[^}]*\}/m);
   expect(css).toMatch(/^\.cd-dialog-fit-body \{[^}]*overflow: auto;[^}]*\}/m);
   expect(css).toMatch(/^\.cd-dialog-fit-footer \{[^}]*flex: none;[^}]*\}/m);
-  // Only content-fit kinds opt in; the other forms keep their look.
-  for (const file of ["PageSizeForm.tsx", "ArrangementSpacingForm.tsx", "ExportForm.tsx", "EngineInstallForm.tsx", "ToolInstallForm.tsx", "StructureTemplatePicker.tsx"]) {
-    expect(readFileSync(`apps/desktop/src/dialogs/${file}`, "utf8")).not.toContain("cd-dialog-fit");
+  for (const file of ["PageSizeForm.tsx", "ArrangementSpacingForm.tsx", "ExportForm.tsx", "EngineInstallForm.tsx", "ToolInstallForm.tsx"]) {
+    expect(readFileSync(`apps/desktop/src/dialogs/${file}`, "utf8")).toContain("cd-dialog-fit-body");
   }
+  expect(readFileSync("apps/desktop/src/dialogs/StructureTemplatePicker.tsx", "utf8")).not.toContain("cd-dialog-fit");
   expect(readFileSync("apps/desktop/src/dialogs/InsertTableForm.tsx", "utf8")).toContain("cd-dialog-fit-body");
 });
 

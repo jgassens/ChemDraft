@@ -137,6 +137,30 @@ it("keeps the action footer outside the scrollable form body", () => {
   expect(footer.querySelector('button[type="submit"]')).not.toBeNull();
 });
 
+it("reserves the final preview height before the content-fit measurement", async () => {
+  vi.useFakeTimers();
+  saveExportPreviewEnabled(true);
+  const ready = vi.fn();
+  const renderPreview = vi.fn().mockResolvedValue({ url: "data:image/png;base64,AA==", kind: "image", width: 800, height: 600, warnings: [] });
+  try {
+    act(() => root.render(createElement(ExportForm, {
+      state: { ...exportFixture(), busy: false }, onReady: ready, renderPreview,
+      frame: { page: { width: 800, height: 600 }, content: { width: 800, height: 600 }, revision: 1 },
+      onChange: vi.fn(), onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+    })));
+    const preview = container.querySelector<HTMLElement>('[aria-label="Preview of the PDF page layout"]')!;
+    expect(preview.style.minHeight).toBe("220px");
+    expect(ready).toHaveBeenCalledExactlyOnceWith(container.querySelector("form"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const image = preview.querySelector("img")!;
+    expect(image.style.height).toBe(preview.style.minHeight);
+    expect(image.style.display).toBe("block"); // No inline-image baseline adds height after ready.
+    expect(ready).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("restores valid visual settings when switching from an invalid size draft to CDXML", () => {
   saveExportPreviewEnabled(true);
   const presentation = { width: 1200, dpi: 300, crop: "content" as const, background: "white" as const, preset: "custom" as const };

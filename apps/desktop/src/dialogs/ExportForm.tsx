@@ -1,3 +1,4 @@
+import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef, useState, useMemo, type CSSProperties, type FormEvent } from "react";
 import { exportFormatDescriptors, getExportFormatDescriptor, type ExportFormatId, type ExportFormatDescriptor, type ExportFormatGroup } from "@chemdraft/export-engine";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
@@ -55,8 +56,9 @@ function ExportFormBody({
   onPdfOptionsChange,
   onRasterOptionsChange,
   onCdxmlOptionsChange,
-  onSubmit, title, error, notice, completed, platform = detectDialogPlatform()
-}: ExportDialogProps) {
+  onSubmit, onReady, title, error, notice, completed, platform = detectDialogPlatform()
+}: ExportDialogProps & { onReady?(element: HTMLFormElement): void }) {
+  const root = useDialogContentReady<HTMLFormElement>(onReady);
   const composing = useRef(false);
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (completed) closeButton.current?.focus(); }, [completed]);
@@ -145,7 +147,7 @@ function ExportFormBody({
           event.preventDefault(); if (!exportDisabled) event.currentTarget.querySelector("form")?.requestSubmit();
         }
       }}>
-      <form style={{ ...exportDialogPanelStyle, height: isDesktopRuntime() ? "100vh" : undefined, maxHeight: isDesktopRuntime() ? "100vh" : "calc(100vh - 64px)" }}
+      <form ref={root} className="cd-export-fit" style={{ ...exportDialogPanelStyle, height: isDesktopRuntime() ? "100vh" : undefined, maxHeight: isDesktopRuntime() ? "100vh" : "calc(100vh - 64px)" }}
         onSubmit={event => { event.preventDefault(); if (!composing.current && !exportDisabled) void onSubmit(event); }}>
         <div style={exportDialogHeaderStyle}>
           <h2 style={exportDialogTitleStyle}>Export</h2>
@@ -159,7 +161,7 @@ function ExportFormBody({
           </button>
         </div>
 
-        <div style={exportDialogBodyStyle}>
+        <div className="cd-dialog-fit-body" style={exportDialogBodyStyle}>
         {title ? <p style={exportDialogHintStyle}>Drawing: <strong>{title}</strong></p> : null}
         {error ? <p ref={feedback} role="alert" style={exportDialogWarningStyle}>{error}</p> : null}
         {notice ? <p ref={error ? undefined : feedback} role="status" style={{ ...exportDialogHintStyle, whiteSpace: "pre-wrap" }}>{notice}</p> : null}
@@ -248,8 +250,8 @@ function ExportFormBody({
           <p style={exportDialogHintStyle}>{numberValue(width)} × {numberValue(height)} px · {Number.isFinite(width / dpi) ? (width / dpi * 25.4).toFixed(1) : "--"} × {Number.isFinite(height / dpi) ? (height / dpi * 25.4).toFixed(1) : "--"} mm{state.format === "png" && state.presentation ? " · PNG density embedded" : " · physical size derived from DPI"}</p>
           {state.format === "svg" ? <label style={exportDialogLabelStyle}>Background<select className="native-dialog-panel-select" disabled={state.busy} value={presentation.background} onChange={(event) => onPresentationChange({ background: event.currentTarget.value as "white" | "transparent" })}><option value="white">White</option><option value="transparent">Transparent</option></select></label> : null}
           {state.format === "pdf" ? <p style={exportDialogHintStyle}>Preview of the PDF page layout</p> : null}
-          <div style={{ background: "#ddd", minHeight: 160, padding: 8 }} aria-label={state.format === "pdf" ? "Preview of the PDF page layout" : "Actual export renderer preview"}>
-            {preview.result ? <img src={preview.result.url} alt={state.format === "pdf" ? "Preview of the PDF page layout" : "Export preview"} style={{ width: "100%", height: 220, objectFit: "contain" }} />
+          <div style={{ background: "#ddd", minHeight: 220, padding: 8 }} aria-label={state.format === "pdf" ? "Preview of the PDF page layout" : "Actual export renderer preview"}>
+            {preview.result ? <img src={preview.result.url} alt={state.format === "pdf" ? "Preview of the PDF page layout" : "Export preview"} style={{ display: "block", width: "100%", height: 220, objectFit: "contain" }} />
               : <p role="status">{preview.error ?? (sizeError ? "Correct the size to render a preview." : renderPreview ? "Rendering preview…" : "Preview unavailable")}</p>}
           </div>
           {(preview.result?.warnings ?? []).map((warning, index) => <p key={index} role="status" style={exportDialogWarningStyle}>{warning}</p>)}
@@ -473,7 +475,7 @@ function ExportFormBody({
 
 
 export function ExportForm({ state: ownerState, onChange: publish, onReady, ...props }: {
-  state: ExportDialogState; onChange(state: ExportDialogState): void; onReady?(): void;
+  state: ExportDialogState; onChange(state: ExportDialogState): void; onReady?(element: HTMLFormElement): void;
 } & Pick<ExportDialogProps, "onCancel" | "onChooseDestination" | "onSubmit" | "title" | "error" | "notice" | "completed" | "platform" | "frame" | "renderPreview">) {
   const previewEnabled = useExportPreviewEnabled();
   const [draft, setDraft] = useState<ExportDialogState>();
@@ -496,8 +498,7 @@ export function ExportForm({ state: ownerState, onChange: publish, onReady, ...p
       publish(next);
     }
   };
-  useEffect(() => { onReady?.(); }, [onReady]);
-  return <ExportFormBody {...props} state={state} previewEnabled={previewEnabled}
+  return <ExportFormBody {...props} onReady={onReady} state={state} previewEnabled={previewEnabled}
     onPresentationChange={presentation => onChange({ ...state, presentation: { ...(state.presentation ?? defaultExportPresentation(props.frame?.page ?? { width: 800, height: 600 })), ...presentation }, ...(presentation.preset && presentation.preset !== "custom" ? { raster: { ...state.raster, background: "white", maxDimensionPx: 8192, jpegQuality: 90 } } : {}) })}
     onFilenameChange={filename => onChange({ ...state, filename,
       destinationPath: exportPathWithFilename(state.destinationPath, filename) })}

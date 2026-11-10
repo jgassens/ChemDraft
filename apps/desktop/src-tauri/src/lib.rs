@@ -1407,6 +1407,7 @@ pub fn run() {
             write_clipboard_image,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
+            dialog_windows::preferences_ready,
             window_logical_position,
             agent_bridge_status,
             palette_focus_diagnostic,
@@ -6214,28 +6215,31 @@ fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        dialog_windows::show_preferences(&window, false)?;
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || dialog_windows::show_preferences(&target))
+            .and_then(|result| result)?;
         return Ok(window);
     }
     let owner = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or("Unknown dialog owner")?;
 
+    dialog_windows::prepare_preferences();
     let builder = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
         WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
     )
     .title("ChemDraft Preferences")
-    .inner_size(460.0, 360.0)
-    .min_inner_size(360.0, 280.0)
+    .inner_size(640.0, 600.0)
+    .min_inner_size(360.0, 180.0)
     .resizable(true)
-    .accept_first_mouse(true)
-    .visible(false)
+    .maximizable(false)
+    .minimizable(false)
     .focused(false)
     .skip_taskbar(true)
-    .maximizable(false)
-    .minimizable(false);
+    .accept_first_mouse(true)
+    .visible(false);
     #[cfg(windows)]
     let builder = builder.parent(&owner).map_err(|error| error.to_string())?;
     #[cfg(not(windows))]
@@ -6245,10 +6249,6 @@ fn ensure_preferences_window<R: Runtime>(
     };
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
-    if let Err(error) = dialog_windows::show_preferences(&window, true) {
-        let _ = window.destroy();
-        return Err(error);
-    }
     Ok(window)
 }
 
@@ -7723,7 +7723,7 @@ enum CloseWindowRoute {
     /// mask, so the panel takes its own hide-and-notify path in `on_window_event`.
     TauriClose,
     /// `performClose:` on the key window: exactly what the predefined item did. Main (which hides
-    /// itself on `CloseRequested`), Preferences, the 3D debugger, and non-Tauri windows such as
+    /// itself on `CloseRequested`), the 3D debugger, and non-Tauri windows such as
     /// the About panel all keep their behaviour.
     PerformClose,
 }
@@ -9239,10 +9239,7 @@ mod tests {
     #[test]
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        for triple in [
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-        ] {
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
             assert!(is_sidecar_placeholder(&placeholder), "{triple}");
             assert!(!is_runnable_sidecar(&placeholder), "{triple}");
