@@ -12,6 +12,7 @@ import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clip
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
+import { installMainWindowFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
@@ -1720,7 +1721,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.14.45-codex";
+const CURRENT_BUILD_STAMP = "11.09.21.19-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2021,6 +2022,7 @@ export function MainWindow({
   shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useEffect(() => installMainWindowFlyoutKeyboard(), []);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
