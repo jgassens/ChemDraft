@@ -7,7 +7,7 @@
       <n id="a2" p="140 110"/>
       <b id="bond1" B="a1" E="a2" Order="1"/>
     </fragment>
-    <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="75 90 87 138" LineWidth="1.125"/>
+    <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="87 138 75 90" LineWidth="1.125"/>
     <graphic id="b2" GraphicType="Bracket" BracketType="Square" BoundingBox="195 90 183 138" LineWidth="1.125"/>
     <bracketedgroup id="atom_membership" BracketUsage="SRU" BracketedObjectIDs="a1 a2 missing">
       <bracketattachment id="attach1" GraphicID="b1"/>

@@ -103,10 +103,10 @@ describe("native object export warnings", () => {
   const base = { x: 60, y: 20, width: 30, height: 40, rotation: 0, style: {} };
   const cases: { object: DocumentObject; code: string; embedded: string; omitted: string; visibleBracket?: boolean }[] = [
     {
-      object: { ...base, id: "bracket_1", type: "bracket", bracketKind: "curly", containedObjectIds: [] },
+      object: { ...base, id: "bracket_1", type: "bracket", bracketKind: "polymer", containedObjectIds: [] },
       code: "cdxml.bracket_geometry_approximated",
-      embedded: "Bracket ID has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
-      omitted: "Bracket ID has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
+      embedded: "Bracket ID has unsupported polymer shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
+      omitted: "Bracket ID has unsupported polymer shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box.",
       visibleBracket: true
     },
     {
@@ -189,15 +189,12 @@ describe("native object export warnings", () => {
     });
   }
 
-  it("reopens payload-less CDX with the molecule intact and a visible square approximation of a curly bracket", () => {
+  it("reopens payload-less CDX with the molecule intact and a real curly bracket without an approximation warning", () => {
     const document = openChemDraftPayload(source).document!;
     document.pages[0].objects = document.pages[0].objects.filter(object => object.type === "molecule");
-    document.pages[0].objects.push(structuredClone(cases[0].object));
+    document.pages[0].objects.push({ ...base, id: "bracket_1", type: "bracket", bracketKind: "curly", containedObjectIds: [] });
     const exported = exportDocumentToCdx(document, { embedNativePayload: false });
-    expect(exported.warnings).toEqual([
-      { code: "cdxml.bracket_geometry_approximated", sourceObjectId: "bracket_1",
-        message: "Bracket bracket_1 has unsupported curly shape, rotation or tilt; its glyph is approximated by an axis-aligned square bounding box." }
-    ]);
+    expect(exported.warnings).toEqual([]);
     const reopened = importCdx(exported.bytes);
     expect(reopened.source).toBe("external-cdxml");
     expect(reopened.warnings.map(warning => warning.code)).toEqual([
@@ -206,7 +203,7 @@ describe("native object export warnings", () => {
     ]);
     expect(reopened.document!.pages[0].objects.map(object => object.type)).toEqual(["molecule", "bracket"]);
     expect(reopened.document!.pages[0].objects[1]).toMatchObject({
-      type: "bracket", bracketKind: "square", x: 60, y: 20, width: 30, height: 40, rotation: 0
+      type: "bracket", bracketKind: "curly", x: 60, y: 20, width: 30, height: 40, rotation: 0
     });
     const molecule = reopened.document!.pages[0].objects[0];
     if (molecule.type !== "molecule") throw new Error("Expected surviving molecule");

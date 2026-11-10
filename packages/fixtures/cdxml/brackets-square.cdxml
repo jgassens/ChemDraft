@@ -2,7 +2,7 @@
 <!-- Synthetic fixture; reversed BoundingBox orientation is unverified against an independent reader. -->
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 612 792">
-    <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="75 90 87 138" LineWidth="1.125"/>
+    <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="87 138 75 90" LineWidth="1.125"/>
     <graphic id="b2" GraphicType="Bracket" BracketType="Square" BoundingBox="195 90 183 138" LineWidth="1.125"/>
     <bracketedgroup id="pair1">
       <bracketattachment id="a1" GraphicID="b1"/>
