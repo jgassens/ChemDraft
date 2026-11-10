@@ -33,6 +33,7 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { lastExportDirectory } from "./exportDirectory";
 import {
   projectGraphicVisualPagePoint,
   rotatePointAroundCenter,
@@ -2769,7 +2770,7 @@ export function MainWindow({
   const unrestoredTabFlowRunningRef = useRef(false);
   const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
-  const lastExportDirectoryRef = useRef<string | undefined>(undefined);
+  const lastExportDirectoryRef = lastExportDirectory;
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
@@ -10691,7 +10692,6 @@ export function MainWindow({
       if (path.length > 1024 || nativePathBasename(path).length > 256 || new TextEncoder().encode(JSON.stringify([path, nativePathBasename(path)])).length > 2400) throw new Error("The chosen export path is too long for the dialog. Choose a shorter path.");
       const filename = nativePathBasename(path);
       exportGrantsRef.current.set(tabId, { path, filename, format: options.format });
-      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
       setExportTabStatus(tabId, `Export location: ${filename}`);
       return { status: "picked", destinationPath: path, filename };
     } catch (error) {
