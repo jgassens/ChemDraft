@@ -7878,7 +7878,7 @@ export function MainWindow({
     // Preserve a newer command's status or another editor's message; conversion below
     // may replace the cleared editing message with its own result.
     if (!activeTextEditObjectIdRef.current) {
-      setStatus((current) => current === "Editing text" ? "" : current);
+      setStatus((current) => current === "Editing text" || current === "Inserted text - type to replace placeholder" ? "" : current);
     }
     convertCommittedText(objectId);
     // New boxes share placement's undo entry; existing boxes have a snapshot from before typing.

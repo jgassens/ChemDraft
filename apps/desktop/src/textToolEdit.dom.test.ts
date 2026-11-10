@@ -119,6 +119,37 @@ describe.each(["macos", "windows"] as const)("Text tool click-away (%s)", platfo
     expect(status()).toBe("");
   });
 
+  it("commits a new text box and clears its placeholder hint after one click away", async () => {
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: createPhase4Document("New text"), initialActiveToolCommandId: "tool.text", initialPaletteMode: "hidden",
+      initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false, shortcutPlatform: platform
+    })));
+    canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) };
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      vi.spyOn(element, "getBoundingClientRect").mockReturnValue(rect);
+    }
+    vi.spyOn(canvas, "clientWidth", "get").mockReturnValue(792);
+    vi.spyOn(canvas, "clientHeight", "get").mockReturnValue(612);
+    const page = container.querySelector<HTMLElement>(".page")!;
+    await click(page, 220, 200);
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(editor()).not.toBeNull();
+    expect(status()).toBe("Inserted text - type to replace placeholder");
+    await act(async () => {
+      const field = editor()!;
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "N", bubbles: true, cancelable: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "New conditions");
+      field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "New conditions" }));
+      field.dispatchEvent(new KeyboardEvent("keyup", { key: "N", bubbles: true }));
+    });
+    await click(page, 500, 400);
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    expect(editor()).toBeNull();
+    expect(snapshot().document.pages[0].objects).toContainEqual(expect.objectContaining({ type: "text", text: "New conditions" }));
+    expect(status()).toBe("");
+  });
+
   it.each(["blur", "Escape", "tool switch"])("clears Editing text on %s", async finish => {
     await startEditing();
     await act(async () => {
