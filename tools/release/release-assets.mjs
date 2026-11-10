@@ -23,7 +23,10 @@ export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSyn
 
 export function releaseBuildFiles(version) {
   if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) throw new Error("Expected --version X.Y.Z");
-  return Object.entries(BUILD_TARGETS).map(([target, suffix]) => ({ target, name: `ChemDraft_${version}_${suffix}` }));
+  return [
+    ...Object.entries(BUILD_TARGETS).map(([target, suffix]) => ({ target, name: `ChemDraft_${version}_${suffix}` })),
+    { target: "x86_64-pc-windows-msvc", name: `ChemDraft_${version}_x64-allusers-setup.exe` }
+  ];
 }
 
 export function missingBuildFiles(assets, version) {
@@ -37,7 +40,9 @@ export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomp
   const builds = releaseBuildFiles(version);
   const allowed = new Set(builds.flatMap(({ name }) => [name, `${name}.build.json`]));
   allowed.add(`ChemDraft_${version}_x64-setup.exe.sig`);
+  allowed.add(`ChemDraft_${version}_x64-allusers-setup.exe.sig`);
   allowed.add("latest.json");
+  allowed.add("latest-allusers.json");
   const errors = [];
   // Feeds, checksums and notes are allowed; unexpected packages/signatures/records are not.
   const present = new Set(readdirSync(assets));

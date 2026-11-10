@@ -5,13 +5,13 @@ import { test } from "node:test";
 import { checkReleaseAssets } from "./check-release-assets.mjs";
 import { artifactDigest } from "./record-build.mjs";
 import { expectedReleaseCommit } from "./release-assets.mjs";
-import { arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
+import { allUsersInstaller, arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
 
 const check = (args, options = {}) => checkReleaseAssets({ tag: `v${version}`, ...args }, { run: fakeReleaseRunner(), platform: "darwin", ...options });
 
-test("folder gate accepts exactly three builds from the tag's commit", (t) => {
+test("folder gate accepts both Windows installer/record pairs and both Mac builds from the tag's commit", (t) => {
   const args = releaseFixture(t);
-  assert.deepEqual(check(args), { complete: true, commit, builds: [arm, intel, installer] });
+  assert.deepEqual(check(args), { complete: true, commit, builds: [arm, intel, installer, allUsersInstaller] });
 });
 
 for (const name of [arm, intel]) {
@@ -27,7 +27,7 @@ for (const name of [arm, intel]) {
   });
 }
 
-for (const name of [arm, intel, installer, ...[arm, intel, installer].map((name) => `${name}.build.json`)]) {
+for (const name of [arm, intel, installer, allUsersInstaller, ...[arm, intel, installer, allUsersInstaller].map((name) => `${name}.build.json`)]) {
   test(`asset checker names missing ${name}; incomplete workflow mode is not a pass`, (t) => {
     const args = releaseFixture(t);
     unlinkSync(join(args.assets, name));
@@ -37,7 +37,7 @@ for (const name of [arm, intel, installer, ...[arm, intel, installer].map((name)
   });
 }
 
-for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "unexpected.exe", "other.dmg.build.json", "other.sig", "old.exe.sig", "other.msi", "other.zip", "other.pkg", "other.tar.gz", "OTHER.TAR.GZ"]) {
+for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "ChemDraft_1.2.3_x64-extra-setup.exe", "unexpected.exe", "other.dmg.build.json", "other.sig", "old.exe.sig", "other.msi", "other.zip", "other.pkg", "other.tar.gz", "OTHER.TAR.GZ"]) {
   test(`extra build ${extra} is refused`, (t) => {
     const args = releaseFixture(t);
     writeFileSync(join(args.assets, extra), "stale build");
@@ -45,11 +45,46 @@ for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "
   });
 }
 
-test("the expected Windows signature and latest.json are allowed", (t) => {
+test("both expected Windows signatures and feeds are allowed", (t) => {
   const args = releaseFixture(t);
-  for (const name of [`${installer}.sig`, "latest.json"]) writeFileSync(join(args.assets, name), "fixture");
+  for (const name of [`${installer}.sig`, `${allUsersInstaller}.sig`, "latest.json", "latest-allusers.json"]) writeFileSync(join(args.assets, name), "fixture");
   assert.equal(check(args).complete, true);
 });
+
+for (const windowsOnly of [false, true]) {
+  test(`per-user-only Windows release fails without --allow-incomplete (Windows only: ${windowsOnly})`, (t) => {
+    const args = releaseFixture(t);
+    const missing = (windowsOnly ? [arm, intel, allUsersInstaller] : [allUsersInstaller]).flatMap((name) => [name, `${name}.build.json`]);
+    for (const name of missing) unlinkSync(join(args.assets, name));
+    assert.throws(() => check(args), (error) => error.message.includes(`${allUsersInstaller}: missing release file`));
+    assert.deepEqual(check({ ...args, allowIncomplete: true }), { complete: false, missing });
+  });
+}
+
+for (const allowIncomplete of [false, true]) {
+  for (const [field, value, message] of [
+    ["commit", "b".repeat(40), /does not match expected commit/],
+    ["target", "aarch64-apple-darwin", /expected target x86_64-pc-windows-msvc/],
+    ["version", "1.2.2", /expected version 1\.2\.3/],
+    ["clean", false, /source tree must be clean/],
+    ["sha256", "0".repeat(64), /SHA-256 mismatch/],
+    ["size", 0, /size mismatch/]
+  ]) {
+    test(`all-users ${field} mismatch fails (allowIncomplete: ${allowIncomplete})`, (t) => {
+      const args = releaseFixture(t);
+      const recordFile = join(args.assets, `${allUsersInstaller}.build.json`);
+      const record = JSON.parse(readFileSync(recordFile, "utf8"));
+      writeFileSync(recordFile, JSON.stringify({ ...record, [field]: value }));
+      assert.throws(() => check({ ...args, allowIncomplete }), (error) => error.message.includes(allUsersInstaller) && message.test(error.message));
+    });
+  }
+
+  test(`changed all-users installer bytes fail (allowIncomplete: ${allowIncomplete})`, (t) => {
+    const args = releaseFixture(t);
+    writeFileSync(join(args.assets, allUsersInstaller), "mutated after signing");
+    assert.throws(() => check({ ...args, allowIncomplete }), (error) => error.message.includes(allUsersInstaller) && /SHA-256 mismatch/.test(error.message) && /size mismatch/.test(error.message));
+  });
+}
 
 test("incomplete mode verifies all supplied builds, records, bytes, DMG commits and extra assets", (t) => {
   const args = releaseFixture(t);

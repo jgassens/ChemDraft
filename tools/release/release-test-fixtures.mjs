@@ -9,13 +9,14 @@ export const commit = "a".repeat(40);
 export const arm = `ChemDraft_${version}_aarch64.dmg`;
 export const intel = `ChemDraft_${version}_x86_64.dmg`;
 export const installer = `ChemDraft_${version}_x64-setup.exe`;
+export const allUsersInstaller = `ChemDraft_${version}_x64-allusers-setup.exe`;
 
 export function releaseFixture(t) {
   const rootDir = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".release-test-"));
   t.after(() => rmSync(rootDir, { recursive: true, force: true }));
   const assets = join(rootDir, "assets");
   mkdirSync(assets);
-  for (const [target, suffix] of Object.entries(BUILD_TARGETS)) {
+  for (const [target, suffix] of [...Object.entries(BUILD_TARGETS), ["x86_64-pc-windows-msvc", "x64-allusers-setup.exe"]]) {
     const file = join(assets, `ChemDraft_${version}_${suffix}`);
     writeFileSync(file, `synthetic ${target}`);
     writeFileSync(`${file}.build.json`, JSON.stringify({ commit, version, target, clean: true, ...artifactDigest(file) }));

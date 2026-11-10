@@ -126,18 +126,30 @@ test("unsigned stable DMGs merge a boolean unsigned stamp alongside the commit f
   }
 });
 
-test("Windows records before staging and carries the record through installer uploads", () => {
+test("Windows records each variant before staging and carries both records through installer uploads", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/windows-release.yml", import.meta.url), "utf8");
+  const loopStart = workflow.indexOf("foreach ($variant in $variants) {");
+  const loopEnd = workflow.indexOf("$artifacts += @{ Installer = $expected; Feed = $variant.Feed }");
   const recording = workflow.indexOf("node tools/release/record-build.mjs --artifact $installers[0].FullName --target x86_64-pc-windows-msvc");
+  assert.ok(loopStart !== -1 && recording > loopStart && loopEnd > recording);
   assert.ok(recording > workflow.indexOf("ref: ${{ inputs.ref }}"));
-  assert.ok(recording < workflow.indexOf("New-Item -ItemType Directory -Path release-assets"));
-  assert.ok(workflow.includes('Copy-Item -LiteralPath "$($installers[0].FullName).build.json" -Destination release-assets'));
+  assert.match(workflow.slice(0, loopStart), /@\{ Suffix = ''; Config = ''; Feed = 'latest\.json' \}/);
+  assert.match(workflow.slice(0, loopStart), /@\{ Suffix = '-allusers'; Config = 'src-tauri\/tauri\.allusers\.conf\.json'; Feed = 'latest-allusers\.json' \}/);
+  assert.match(workflow.slice(0, loopStart), /\$stagingDir = Join-Path \$env:RUNNER_TEMP/);
+  assert.ok(workflow.indexOf("New-Item -ItemType Directory -Path $stagingDir") < loopStart);
+  const stageInstaller = workflow.indexOf("Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path $stagingDir $expected)");
+  const stageRecord = workflow.indexOf('Copy-Item -LiteralPath "$($installers[0].FullName).build.json" -Destination (Join-Path $stagingDir "$expected.build.json")');
+  assert.ok(recording < stageInstaller && stageInstaller < stageRecord && stageRecord < loopEnd);
+  assert.match(workflow.slice(recording, stageInstaller), /\$expected = "ChemDraft_\$\(\$config\.version\)_x64\$\(\$variant\.Suffix\)-setup\.exe"/);
+  const staging = workflow.indexOf("Move-Item -LiteralPath $stagingDir -Destination release-assets");
+  assert.ok(staging > loopEnd && staging < workflow.indexOf("name: Upload unsigned installers for SignPath provenance"));
   assert.match(workflow, /name: windows-nsis-unsigned\n\s+path: \|\n\s+release-assets\/\*\.exe\n\s+release-assets\/\*\.exe\.build\.json/);
   assert.match(workflow, /name: windows-release\n\s+path: release-assets\/\*/);
   assert.match(workflow, /Get-ChildItem release-assets -File[\s\S]+gh release upload \$env:RELEASE_TAG @assets/);
-  const finalRecord = workflow.indexOf("name: Bind build record to final signed installer bytes");
-  assert.ok(finalRecord > workflow.indexOf("name: Verify Authenticode and replace unsigned installer"));
+  const finalRecord = workflow.indexOf("name: Bind build records to final signed installer bytes");
+  assert.ok(finalRecord > workflow.indexOf("name: Verify Authenticode and replace unsigned installers"));
   assert.ok(finalRecord < workflow.indexOf("name: Print SHA-256 and sizes and write checksums"));
+  assert.match(workflow.slice(finalRecord), /foreach \(\$artifact in \(\$env:INSTALLERS \| ConvertFrom-Json\)\) \{\s+\$installer = Join-Path release-assets \$artifact\.Installer\s+\$recordPath = "\$installer\.build\.json"/);
   assert.match(workflow, /\$record\.sha256 = \(Get-FileHash -LiteralPath \$installer -Algorithm SHA256\)/);
   assert.match(workflow, /\$record\.size = \(Get-Item -LiteralPath \$installer\)\.Length/);
 });

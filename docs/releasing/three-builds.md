@@ -1,17 +1,25 @@
 # Check and publish a joint release
 
-Every release ships exactly one Apple-silicon DMG, one Intel DMG and one Windows x64 NSIS
-installer, built from the same commit and version. Keep the GitHub release **draft** throughout
+Every release ships exactly one Apple-silicon DMG, one Intel DMG and two Windows x64 NSIS
+installers (per-user and all-users), built from the same commit and version. Keep the GitHub release **draft** throughout
 verification. Both the release body check and the final attached-asset gate below must pass.
 
 ## Record the final bytes
 
-After signing, notarization and stapling have finished, collect the two DMGs, Windows installer,
-its `.exe.sig`, `latest.json`, and both generated appcasts in one staging directory. Include:
+After signing, notarization and stapling have finished, collect the two DMGs and both generated
+appcasts in one staging directory, along with these Windows release files:
+
+- `ChemDraft_X.Y.Z_x64-setup.exe` and `ChemDraft_X.Y.Z_x64-setup.exe.sig` (per-user)
+- `latest.json` (per-user update feed)
+- `ChemDraft_X.Y.Z_x64-allusers-setup.exe` and `ChemDraft_X.Y.Z_x64-allusers-setup.exe.sig` (all-users for managed machines)
+- `latest-allusers.json` (all-users update feed)
+
+Include all four build records:
 
 - `ChemDraft_X.Y.Z_aarch64.dmg.build.json`
 - `ChemDraft_X.Y.Z_x86_64.dmg.build.json`
 - `ChemDraft_X.Y.Z_x64-setup.exe.build.json`
+- `ChemDraft_X.Y.Z_x64-allusers-setup.exe.build.json`
 
 Every record contains `commit` (full 40-character SHA), `version`, `target` (target triple),
 `clean: true`, `sha256` (lowercase hexadecimal SHA-256 of the artifact), and `size` (byte count).
@@ -44,7 +52,7 @@ more `--gap "macos:feature and reason"`, `--gap "macos-intel:feature and reason"
 Review the resulting body; each platform has its own notes and any declared gaps.
 Without `--assets`, the current directory is checked; without `--out`, the body goes to stdout.
 
-The body command requires all three records to name the same commit, the requested version,
+The body command requires all four records to name the same commit, the requested version,
 `clean: true`, and the appropriate target (`aarch64-apple-darwin`, `x86_64-apple-darwin`, or
 `x86_64-pc-windows-msvc`). It recomputes SHA-256 and byte size for every artifact. It mounts each
 DMG read-only, reads each app's `Info.plist`, and requires `ChemDraftSourceCommit` to match the
@@ -60,7 +68,7 @@ record can substitute for an expected commit. Complete the production signature 
 
 ## Last step before un-drafting
 
-1. Upload the final artifacts, their three records, updater signatures and generated feeds to the
+1. Upload the final artifacts, their four records, updater signatures and generated feeds to the
    existing draft release. Run the platform acceptance checks in the platform guides.
 2. Set the reviewed release body. Immediately before un-drafting, **on a Mac**, from a checkout of
    the release source with `gh` authenticated to read drafts and `APPLE_TEAM_ID` exported, download
@@ -76,9 +84,9 @@ record can substitute for an expected commit. Complete the production signature 
    The two release verifiers mount the downloaded DMGs read-only, verify the apps inside, and check
    each DMG's staple and Gatekeeper assessment. The process staples only the DMG, never requiring
    an app staple. The final asset command downloads all assets again to a temporary directory and cleans it up.
-   It requires exactly the three expected builds and their records, refuses extra builds or records,
+   It requires exactly the four expected builds and their records, refuses extra builds or records,
    including unexpected `.sig`, `.msi`, `.zip`, `.pkg` and `.tar.gz` files (only the expected Windows
-   `.exe.sig` and `latest.json` are allowed updater assets). It recomputes hashes and sizes, mounts
+   `.exe.sig` files, `latest.json` and `latest-allusers.json` are allowed updater assets). It recomputes hashes and sizes, mounts
    every DMG to compare its embedded commit with its record and the expected commit, and checks common
    source identity against the freshly fetched origin tag. It needs macOS, `hdiutil` and `plutil`, but
    no npm dependencies. For an already-downloaded complete folder, add `--assets path/to/downloaded`; without

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { draftReleaseBody } from "./draft-release-body.mjs";
-import { BUILD_TARGETS } from "./record-build.mjs";
-import { arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
+import { releaseBuildFiles } from "./release-assets.mjs";
+import { allUsersInstaller, arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
 
 const feed = (name) => `<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><sparkle:version>${version}</sparkle:version><enclosure url="https://example.com/${name}"/></item></channel></rss>`;
 
@@ -14,7 +14,7 @@ function fixture(t) {
   const args = releaseFixture(t);
   mkdirSync(join(args.rootDir, "release-notes", "macos"), { recursive: true });
   mkdirSync(join(args.rootDir, "release-notes", "macos-intel"), { recursive: true });
-  for (const name of [`${installer}.sig`, "latest.json"]) writeFileSync(join(args.assets, name), "fixture");
+  for (const name of [`${installer}.sig`, "latest.json", `${allUsersInstaller}.sig`, "latest-allusers.json"]) writeFileSync(join(args.assets, name), "fixture");
   writeFileSync(join(args.assets, "appcast.xml"), feed(arm));
   writeFileSync(join(args.assets, "appcast-intel.xml"), feed(intel));
   writeFileSync(join(args.rootDir, "release-notes", "macos", arm.replace(".dmg", ".md")), "Apple notes");
@@ -36,6 +36,7 @@ test("complete release produces ordered sections with explicit gaps or explicit 
   assert.match(sections[2], /Not in this build: Feature A: reason/);
   assert.match(sections[2], /Not in this build: Feature C: reason/);
   assert.match(sections[3], /^Windows\n\nWindows notes/);
+  assert.match(sections[3], /Two Windows installers are available: per-user and all-users for managed machines\./);
   assert.match(sections[3], /Not in this build: Feature B: reason/);
   assert.match(draft(args), /Platform differences: None\./);
 });
@@ -49,7 +50,7 @@ test("neither gap choice is refused, including by the CLI", (t) => {
   assert.match(result.stderr, /--gap.*--no-gaps/);
 });
 
-for (const name of [arm, intel, installer, `${installer}.sig`, "latest.json", "appcast.xml", "appcast-intel.xml", ...[arm, intel, installer].map((name) => `${name}.build.json`)]) {
+for (const name of [arm, intel, installer, `${installer}.sig`, "latest.json", allUsersInstaller, `${allUsersInstaller}.sig`, "latest-allusers.json", "appcast.xml", "appcast-intel.xml", ...[arm, intel, installer, allUsersInstaller].map((name) => `${name}.build.json`)]) {
   test(`missing ${name} is named`, (t) => {
     const args = fixture(t);
     unlinkSync(join(args.assets, name));
@@ -74,26 +75,28 @@ test("invalid gap is rejected", (t) => {
   assert.throws(() => draft({ ...fixture(t), noGaps: false, gaps: ["linux:feature"] }), /Invalid gap/);
 });
 
-for (const [field, value, message] of [
-  ["commit", "b".repeat(40), /commit .* differs/],
-  ["commit", "abc123", /40-character commit/],
-  ["clean", false, /must be clean/],
-  ["clean", "true", /must be clean/],
-  ["target", "aarch64-apple-darwin", /expected target x86_64-pc-windows-msvc/],
-  ["version", "1.2.2", /expected version 1\.2\.3/]
-]) {
-  test(`Windows record with ${field}=${value} fails naming the build`, (t) => {
-    const args = fixture(t);
-    const file = join(args.assets, `${installer}.build.json`);
-    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), [field]: value }));
-    assert.throws(() => draft(args), (error) => error.message.includes(installer) && message.test(error.message));
-  });
+for (const name of [installer, allUsersInstaller]) {
+  for (const [field, value, message] of [
+    ["commit", "b".repeat(40), /commit .* differs/],
+    ["commit", "abc123", /40-character commit/],
+    ["clean", false, /must be clean/],
+    ["clean", "true", /must be clean/],
+    ["target", "aarch64-apple-darwin", /expected target x86_64-pc-windows-msvc/],
+    ["version", "1.2.2", /expected version 1\.2\.3/]
+  ]) {
+    test(`${name} record with ${field}=${value} fails naming the build`, (t) => {
+      const args = fixture(t);
+      const file = join(args.assets, `${name}.build.json`);
+      writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), [field]: value }));
+      assert.throws(() => draft(args), (error) => error.message.includes(name) && message.test(error.message));
+    });
+  }
 }
 
-for (const [target, suffix] of Object.entries(BUILD_TARGETS)) {
-  test(`differing ${target} commit and bytes are refused`, (t) => {
+for (const { name } of releaseBuildFiles(version)) {
+  test(`differing ${name} commit and bytes are refused`, (t) => {
     const args = fixture(t);
-    const file = join(args.assets, `ChemDraft_${version}_${suffix}`);
+    const file = join(args.assets, name);
     writeFileSync(file, "tampered bytes");
     assert.throws(() => draft(args), /SHA-256 mismatch/);
     const recordFile = `${file}.build.json`;

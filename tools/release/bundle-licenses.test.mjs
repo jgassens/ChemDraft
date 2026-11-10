@@ -80,11 +80,19 @@ test("Windows release resource staging requires every licence file at its instal
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Windows release workflow verifies staged licences after NSIS packaging and before signing", () => {
+test("Windows release workflow verifies staged licenses after each variant's NSIS packaging and before signing", () => {
   const workflow = readFileSync(join(root, ".github", "workflows", "windows-release.yml"), "utf8");
-  const build = workflow.indexOf("run: pnpm --filter @chemdraft/desktop build --bundles nsis");
-  const check = workflow.indexOf("node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release");
   const signing = workflow.indexOf("- name: Check signing availability");
-  assert.ok(build !== -1 && check > build && signing > check);
-  assert.match(workflow.slice(check, signing), /if \(\$LASTEXITCODE -ne 0\) \{ throw 'Required bundled licences are missing/);
+  const loopStart = workflow.indexOf("foreach ($variant in $variants) {");
+  const loopEnd = workflow.indexOf("$artifacts += @{ Installer = $expected; Feed = $variant.Feed }");
+  assert.ok(loopStart !== -1 && loopEnd > loopStart && signing > loopEnd);
+  const loop = workflow.slice(loopStart, loopEnd);
+  assert.match(workflow.slice(0, loopStart), /@\{ Suffix = ''; Config = ''; Feed = 'latest\.json' \}/);
+  assert.match(workflow.slice(0, loopStart), /@\{ Suffix = '-allusers'; Config = 'src-tauri\/tauri\.allusers\.conf\.json'; Feed = 'latest-allusers\.json' \}/);
+  const build = loop.indexOf("pnpm @buildArgs");
+  const check = loop.indexOf("node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release");
+  assert.match(loop, /\$buildArgs = @\('--filter', '@chemdraft\/desktop', 'build', '--bundles', 'nsis'\)/);
+  assert.match(loop, /if \(\$variant\.Config\) \{ \$buildArgs \+= @\('--config', \$variant\.Config\) \}/);
+  assert.ok(build !== -1 && check > build);
+  assert.match(loop.slice(check), /if \(\$LASTEXITCODE -ne 0\) \{ throw 'Required bundled licenses are missing/);
 });

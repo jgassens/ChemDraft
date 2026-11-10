@@ -31,9 +31,10 @@ export function draftReleaseBody({ version, commit, tag = `v${version}`, assets 
     gapMap.get(match[1]).push(match[2].trim());
   }
   const installer = `ChemDraft_${version}_x64-setup.exe`;
+  const allUsersInstaller = `ChemDraft_${version}_x64-allusers-setup.exe`;
   try { verifyBuildAssets({ assets, version, expectedCommit }, { checkDmgCommit }); }
   catch (error) { errors.push(error.message); }
-  for (const name of [platforms[0].dmg, platforms[1].dmg, installer, `${installer}.sig`, "latest.json"]) {
+  for (const name of [platforms[0].dmg, platforms[1].dmg, installer, `${installer}.sig`, "latest.json", allUsersInstaller, `${allUsersInstaller}.sig`, "latest-allusers.json"]) {
     try { if (!statSync(join(assets, name)).isFile()) throw new Error(); }
     catch { errors.push(`Missing release file: ${name}`); }
   }
@@ -57,6 +58,7 @@ export function draftReleaseBody({ version, commit, tag = `v${version}`, assets 
   if (errors.length) throw new Error(errors.join("\n"));
   const sections = platforms.map((platform) => {
     const lines = gapMap.get(platform.key).map((gap) => `Not in this build: ${gap}`);
+    if (platform.key === "windows") lines.unshift("Two Windows installers are available: per-user and all-users for managed machines.");
     return [`## ${platform.heading}`, platform.content, ...lines].join("\n\n");
   });
   return `${sections.join("\n\n")}\n\nPlatform differences: ${gaps.length ? "See the feature gaps and reasons above." : "None."}\n`;
