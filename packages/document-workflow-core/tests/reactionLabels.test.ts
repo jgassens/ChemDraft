@@ -19,6 +19,16 @@ const defaults: ReactionLabelsOptions = {
   above, below, caption, bondLength: 22, textStyle: { fontSizePx: 15 }, arrowKind: "forward"
 };
 
+it("subscripts every formula in solvent mixtures while keeping temperatures and durations plain", () => {
+  const text = "toluene/H2O, CH2Cl2/Et2O,K2CO3, Pd(PPh3)4, H2SO4; 90 °C, 2 h, 15 min";
+  const { above } = labels({ above: [text], below: [], textStyle: { fontSizePx: 8 }, bondLength: 100 });
+  expect(above!.text).toBe(text);
+  expect(scripts(above!).map(span => span.text)).toEqual(["2", "2", "2", "2", "2", "3", "3", "4", "2", "4"]);
+  for (const match of text.matchAll(/90|2 h|15/g)) {
+    expect(scripts(above!).some(span => span.offset <= match.index && span.offset + span.text.length > match.index)).toBe(false);
+  }
+});
+
 function labels(options: Partial<ReactionLabelsOptions> = {}) {
   const plan = planReactionLabels({ ...defaults, ...options });
   return {
@@ -243,7 +253,7 @@ describe("reaction label policy", () => {
     expect(result.caption!.y).toBeCloseTo(Math.max(150, result.below!.y + result.below!.height) + 0.8 * 15);
   });
 
-  it.each([{ lines: [], length: 55 }, { lines: ["heat"], length: 57.9 }])("uses the minimum or head-padded arrow for $lines", ({ lines, length }) => {
+  it.each([{ lines: [], length: 66 }, { lines: ["heat"], length: 66 }])("uses the minimum or head-padded arrow for $lines", ({ lines, length }) => {
     const result = labels({ above: lines, below: [], caption: undefined });
     expect(result.plan.arrowLength).toBeCloseTo(length);
     expect(result.below).toBeUndefined();
@@ -488,4 +498,13 @@ describe("reaction label policy", () => {
       }
     }
   });
+});
+it.each(["H2O", "CH2Cl2", "Et2O", "K2CO3", "Pd(PPh3)4"])("subscripts condition formula %s", text => {
+  const result = labels({ above: [text], below: [] });
+  expect(result.above!.spans.some(span => span.script === "subscript")).toBe(true);
+});
+
+it.each(["90 °C", "2 h", "1:1", "10 mol%", "TS1/TS2", "TS1,TS2", "p-TsOH"])("leaves condition prose %s plain", text => {
+  const result = labels({ above: [text], below: [] });
+  expect(result.above!.spans.every(span => span.script === "normal")).toBe(true);
 });

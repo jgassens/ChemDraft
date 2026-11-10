@@ -13,7 +13,8 @@ export function atomProblem(molecule: MoleculeObject, atomId: string) {
   const valid = (candidate: MoleculeAtom) => nativeAtomValidationState(candidate, molecule.bonds,
     candidate.formalCharge, molecule.atoms.map(a => a.id === atomId ? candidate : a)).valid;
   const fixes: AtomProblemFix[] = [];
-  const reading = nativeAtomLabelReading(atom.element, { bonded: molecule.bonds.some(b => b.fromAtomId === atomId || b.toAtomId === atomId), typed: atom.labelLiteral === true });
+  const reading = nativeAtomLabelReading(atom.element, { bonded: molecule.bonds.some(b => b.fromAtomId === atomId || b.toAtomId === atomId),
+    typed: atom.labelLiteral === true, schemeAbbreviation: atom.schemeAbbreviation });
   const composite = reading.kind === "group" && reading.group.kind === "composite" ? reading.group : undefined;
   const element = reading.kind === "element" || reading.kind === "spelled" ? reading.element
     : composite ? nativeElementFromAtomLabel(composite.head) : undefined;

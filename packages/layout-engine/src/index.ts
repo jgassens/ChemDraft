@@ -3895,6 +3895,22 @@ function projectionDistanceAlongSegment(
 }
 
 function planConditionsTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  if (object.text === "+" && object.style.reactionPlus === true) {
+    const strokeWidth = metadataNumber(object.style.strokeWidth) ?? defaultReactionArrowStrokeWidth;
+    const cx = object.x + object.width / 2, cy = object.y + object.height / 2;
+    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      transform: rotationTransform(object), "aria-label": "+"
+    }), [
+      elementFragment("line", `${object.id}-horizontal`, {
+        x1: object.x + strokeWidth / 2, y1: cy, x2: object.x + object.width - strokeWidth / 2, y2: cy,
+        stroke: metadataString(object.style.color) ?? "#172026", "stroke-width": strokeWidth, "stroke-linecap": "round"
+      }),
+      elementFragment("line", `${object.id}-vertical`, {
+        x1: cx, y1: object.y + strokeWidth / 2, x2: cx, y2: object.y + object.height - strokeWidth / 2,
+        stroke: metadataString(object.style.color) ?? "#172026", "stroke-width": strokeWidth, "stroke-linecap": "round"
+      })
+    ]);
+  }
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
   const layout = nativeTextObjectLineMetrics(object);
   const scripted=layout.lines.some(line=>line.spans.some(span=>span.script!=='normal' ||
@@ -3979,7 +3995,9 @@ function conditionsTextSpanLineFragments(
 
 /** @internal Shared by canvas, export and the live text-edit preview. */
 export function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
-  if (object.arrowAttachment?.kind === "conditions") return planConditionsTextObjectSvg(object, layerIndex);
+  if (object.arrowAttachment?.kind === "conditions" || (object.text === "+" && object.style.reactionPlus === true)) {
+    return planConditionsTextObjectSvg(object, layerIndex);
+  }
   const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const lines = textObjectSpanLines(object);
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
@@ -5509,11 +5527,12 @@ export function reactionArrowHeadDepthPx(arrowKind: ArrowObject["arrowKind"]): n
 export function reactionArrowVerticalExtent(
   arrowKind: ArrowObject["arrowKind"],
   length: number,
-  part: "all" | "shafts" = "all"
+  part: "all" | "shafts" = "all",
+  strokeWidth = defaultReactionArrowStrokeWidth
 ): { top: number; bottom: number } {
   const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
   // Keep the default shared with reactionArrowFragment's round-capped shafts.
-  const strokeRadius = defaultReactionArrowStrokeWidth / 2;
+  const strokeRadius = strokeWidth / 2;
   const ranges = [
     ...geometry.lines.filter(({ start, end }) => part === "all" || start.y === end.y).map(({ start, end }) => ({
       top: Math.min(start.y, end.y) - strokeRadius,
@@ -5525,6 +5544,25 @@ export function reactionArrowVerticalExtent(
     }))
   ];
   return { top: Math.min(...ranges.map((range) => range.top)), bottom: Math.max(...ranges.map((range) => range.bottom)) };
+}
+
+/** Horizontal and vertical painted extents, including round shaft caps. */
+export function reactionArrowInkBounds(
+  arrowKind: ArrowObject["arrowKind"], length: number, strokeWidth = defaultReactionArrowStrokeWidth
+): LayoutBounds {
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  const points = [
+    ...geometry.lines.flatMap(line => [line.start, line.end].flatMap(point => [
+      { x: point.x - strokeWidth / 2, y: point.y - strokeWidth / 2 },
+      { x: point.x + strokeWidth / 2, y: point.y + strokeWidth / 2 }
+    ])),
+    ...geometry.heads.flatMap(head => head.points.flatMap(point => {
+      const r = head.filled ? 0 : strokeWidth / 2;
+      return [{ x: point.x - r, y: point.y - r }, { x: point.x + r, y: point.y + r }];
+    }))
+  ];
+  const x = Math.min(...points.map(p => p.x)), y = Math.min(...points.map(p => p.y));
+  return { x, y, width: Math.max(...points.map(p => p.x)) - x, height: Math.max(...points.map(p => p.y)) - y };
 }
 
 /** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
@@ -5549,6 +5587,7 @@ export function planReactionArrowGeometry(
     x: point.x + unit.x * along + normal.x * aside,
     y: point.y + unit.y * along + normal.y * aside
   });
+  const shaftInset = Math.min(reactionArrowHeadLengthPx / 2, length / 3);
   const filledHead = (tip: LayoutPoint, direction: 1 | -1): ReactionArrowGeometry["heads"][number] => {
     const base = offsetPoint(tip, -direction * reactionArrowHeadLengthPx, 0);
     return {
@@ -5566,7 +5605,8 @@ export function planReactionArrowGeometry(
   }
 
   if (arrowKind === "resonance") {
-    return { lines: [{ start, end }], heads: [filledHead(end, 1), filledHead(start, -1)] };
+    return { lines: [{ start: offsetPoint(start, shaftInset, 0),
+      end: offsetPoint(end, -shaftInset, 0) }], heads: [filledHead(end, 1), filledHead(start, -1)] };
   }
 
   if (arrowKind === "equilibrium") {
@@ -5603,7 +5643,8 @@ export function planReactionArrowGeometry(
     };
   }
 
-  return { lines: [{ start, end }], heads: [filledHead(end, 1)] };
+  // End inside the filled head: a round shaft cap at the tip protrudes past the triangle.
+  return { lines: [{ start, end: offsetPoint(end, -shaftInset, 0) }], heads: [filledHead(end, 1)] };
 }
 
 function fallbackObjectFragmentWithWarning(
@@ -6302,6 +6343,21 @@ export function moleculeVisualBoundsForArrangement(object: MoleculeObject): Layo
     width: Math.max(...points.map(p=>p.x)) - x,
     height: Math.max(...points.map(p=>p.y)) - y
   };
+}
+
+/** Reaction spacing measures painted bonds and atom labels, never the padded storage frame. */
+export function moleculeInkBounds(object: MoleculeObject): LayoutBounds {
+  const points = moleculeOutlineForArrangement(object);
+  const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
+  return { x, y, width: Math.max(...points.map(point => point.x)) - x,
+    height: Math.max(...points.map(point => point.y)) - y };
+}
+
+/** Plus glyphs use the same resolved label size and stroke as the structures beside them. */
+export function reactionSchemeDrawingMetrics(object: MoleculeObject) {
+  const style = nativeDrawingStyleFromObjectStyle(object.style);
+  return { fontSizePx: style.atomLabelFontSizePx, strokeWidth: style.bondStrokeWidthPx,
+    plusSize: Math.max(style.atomLabelFontSizePx * 0.9, style.bondStrokeWidthPx * 5) };
 }
 
 const arrangementMoleculeOutlines = new WeakMap<MoleculeObject, LayoutPoint[]>();

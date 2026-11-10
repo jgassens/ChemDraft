@@ -86,6 +86,13 @@ than a batch filename and selects `format` separately.
 
 ## Reaction
 
+Reaction JSON exposes `alignmentWarnings` with `reaction.alignment_skipped` (no qualifying shared
+core or refused alignment) or `reaction.alignment_timeout` (search canceled or budget exhausted).
+`component.role` is `product`; `component.index` is its zero-based input index. Small or unrelated
+products also report skipped alignment. With no reactants no alignment warning is emitted.
+Timeouts may retain an earlier completed alignment. The assistant's insertion tool returns the
+same structured diagnostics; messages also appear in `warnings`.
+
 Provide one input mode: `--rxn`, repeated role flags, or `--batch`.
 Reaction SMILES has exactly two `>` separators: reactants, agents, products.
 `--rxn` splits each role on dots. To keep a salt as one molecule object,
@@ -135,7 +142,7 @@ The formatted reaction-conditions dialog and its editing preference are app-only
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants
-left and products right. Species, plus signs and arrows use 24 px gutters.
+left and products right. Species, plus signs and arrows use equal gaps of 1.25 bond lengths, measured between drawn ink bounds.
 
 Reaction batch shape:
 

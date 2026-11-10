@@ -387,7 +387,8 @@ function nativeAtomDiagnostic(
     const symbol = atom.element.trim() || "(blank)";
     // A cyano label with its bond on the right is the other isomer, so it reads as a bare formula.
     const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], atoms);
-    const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
+    const reading = nativeAtomLabelReading(atom.element, { bondSide, typed: atom.labelLiteral === true,
+      schemeAbbreviation: atom.schemeAbbreviation });
     // An abbreviation ("OMe", "Ph") or a composite of one ("NMe2") spells its whole group,
     // hydrogens included, so the label's bonds must fill exactly the group's free valence —
     // whether the label was typed or placed by a hotkey. "OMe" on a ring carbon is an O with
@@ -588,6 +589,7 @@ export function nativeAtomLabelContext(
   return {
     bonded,
     typed: atom.labelLiteral === true,
+    schemeAbbreviation: atom.schemeAbbreviation,
     ...(bondSide ? { bondSide } : {})
   };
 }
@@ -1012,7 +1014,8 @@ export function nativeSingleBondGraphMetadata(
       // Placeholders, unrecognized text and flagged groups count nothing. Read with the same bond
       // side as the expansion, so a cyano label it declined is counted here as the formula it is.
       const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], countedAtoms);
-      const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
+      const reading = nativeAtomLabelReading(atom.element, { bondSide, typed: atom.labelLiteral === true,
+        schemeAbbreviation: atom.schemeAbbreviation });
       const counts = reading.kind === "formula"
         ? reading.counts
         : reading.kind === "spelled" ? parseCondensedLabelFormula(atom.element) : undefined;

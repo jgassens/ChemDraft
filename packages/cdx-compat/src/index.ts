@@ -1776,7 +1776,8 @@ function exportMoleculeObject(
     ...bondLines.map((line) => indent(line, 2)),
     "</fragment>"
   ].join("\n");
-  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations) {
+  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations &&
+      !molecule.atoms.some(atom => atom.schemeAbbreviation)) {
     warnMetadata();
     return contents;
   }

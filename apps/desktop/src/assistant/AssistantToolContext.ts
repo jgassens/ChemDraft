@@ -1,5 +1,5 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
-import type { ChemicalIdentityFacts } from "@chemdraft/document-workflow-core";
+import type { ChemicalIdentityFacts, ReactionSchemeLayoutOptions } from "@chemdraft/document-workflow-core";
 import type {
   PluginManifest, PluginNameToStructureRequest, PluginNameToStructureResult,
   PluginStructureFromSmilesRequest, PluginStructureFromSmilesResult,
@@ -38,6 +38,8 @@ export interface AssistantToolContext {
   write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void,
     expectedSmiles?: ReadonlyMap<string, string>): Promise<{ objectIds: string[] }>;
   chemistry: {
+    /** Host loads the existing chemistry adapter; tool builders remain engine-independent. */
+    reactionProductAligner?(): Promise<NonNullable<ReactionSchemeLayoutOptions["alignProduct"]>>;
     nameToStructure(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
     /** Host's RDKit -> OCL -> createSmilesMolecule path, bound to the pinned document. */
     structureFromSmiles(request: PluginStructureFromSmilesRequest): Promise<PluginStructureFromSmilesResult>;

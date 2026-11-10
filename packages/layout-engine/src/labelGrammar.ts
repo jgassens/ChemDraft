@@ -9,6 +9,7 @@ import {
   abbreviationBondedSpellings,
   abbreviationForBondedElementLabel,
   abbreviationForLabel,
+  schemeSodiumHydroxideAbbreviation,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
   isBondedGenericAtomLabel,
@@ -128,6 +129,8 @@ export type NativeAtomLabelReading =
 export interface NativeAtomLabelContext {
   /** The atom has at least one bond. Decides "Ar": aryl when bonded, argon when not. */
   bonded?: boolean;
+  /** Explicit scheme-created abbreviation; never inferred from typed text. */
+  schemeAbbreviation?: "NaOH";
   /**
    * The label was entered as text — typed in the label editor or text tool, or a file's text label —
    * rather than stored as an element of a structure. Only a typed "Ar", "Ac", "Pr" or "Ts" means a
@@ -190,7 +193,8 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   if (element) {
     return { kind: "element", element };
   }
-  const definition = abbreviationForLabel(trimmed);
+  const definition = !context.typed && trimmed === context.schemeAbbreviation
+    ? schemeSodiumHydroxideAbbreviation : abbreviationForLabel(trimmed);
   if (definition && !(context.bondSide === "right" && sideDependentSpellings.has(trimmed))) {
     return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition } };
   }

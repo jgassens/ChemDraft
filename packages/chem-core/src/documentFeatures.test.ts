@@ -61,6 +61,18 @@ describe("integrated 1.2 native document features", () => {
     expect(() => readDocument({ ...saved, ignorableFields: [pattern] })).toThrow(/known field .* cannot be declared ignorable/);
   });
 
+  it("persists explicit scheme abbreviation chemistry and requires a supporting reader", () => {
+    const document = documentWithObject({ ...base, type: "molecule", structureFormat: "unknown", structure: "",
+      atoms: [{ id: "salt", element: "NaOH", schemeAbbreviation: "NaOH", x: 0, y: 0, formalCharge: 0 }],
+      bonds: [], superatoms: [], rGroups: [] });
+    const saved = JSON.parse(serializeDocument(document));
+    expect(saved.minAppVersion).toBe("1.2.0");
+    expect(readDocument(saved).document.pages[0]!.objects[0]).toEqual(document.pages[0]!.objects[0]);
+    expect(Released111DocumentSchema.safeParse(document).success).toBe(false);
+    expect(() => readDocument({ ...saved, ignorableFields: ["pages.*.objects.*[type=molecule].atoms.*.schemeAbbreviation"] }))
+      .toThrow(/known field .* cannot be declared ignorable/);
+  });
+
   it.each([
     ["compatibility", {}],
     ["compatibility.sourceFormat", { sourceFormat: "cdxml" }],

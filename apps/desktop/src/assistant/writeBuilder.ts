@@ -3,10 +3,10 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, buildTableObject, createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
+  assertMoleculeMatchesSmiles, chemicalIdentityMolfile, buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
+  nativeTextObjectSizeForText, documentDrawingDefaults,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
-  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
+  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform, type ReactionAlignmentWarning
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
@@ -23,6 +23,7 @@ import { toolSchemas, type ToolInput } from "./tools/schemas";
 
 export interface AssistantWrite {
   patch: DocumentPatch; summary: string; warnings: string[];
+  alignmentWarnings?: ReactionAlignmentWarning[];
   /** Input SMILES keyed by the actual new molecule id, checked again after patch normalization. */
   expectedSmiles?: ReadonlyMap<string, string>;
   /** Captured before preparation; also checked inside the desktop write gate. */
@@ -72,7 +73,7 @@ export async function inspectSmiles(context: AssistantToolContext, smiles: strin
 }
 export async function inspectMolecule(context: AssistantToolContext, molecule: MoleculeObject) {
   const warnings: string[] = [];
-  const molfile = stereoPerceptionMolfile(molecule, warnings);
+  const molfile = chemicalIdentityMolfile(molecule, warnings);
   if (warnings.length) throw new Error(warnings.join(" "));
   const result = await context.chemistry.inspectStructure("molfile", molfile);
   if (!result.valid) throw new Error(result.reason);
@@ -168,6 +169,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
   return { ...result, summary, warnings: built.warnings,
+    ...(built.alignmentWarnings ? { alignmentWarnings: built.alignmentWarnings } : {}),
     ...(declined.length ? { declined, reason: declineReason } : {}) };
 }
 
@@ -329,11 +331,18 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   }
   const molecules: MoleculeObject[] = [];
   for (const smiles of [...input.reactants, ...input.products]) molecules.push(await buildMolecule(context, smiles));
-  const components = molecules.map(molecule => { const rect = objectRect(molecule);
-    return { molecule, bounds: { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height } };
-  });
+  const components = molecules.map(molecule => ({ molecule }));
   const defaults = documentDrawingDefaults(document);
-  const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+  // The host owns engine loading; this tool passes the injected adapter to the shared planner.
+  let alignProduct: Parameters<typeof layoutReactionSchemeAsync>[0]["alignProduct"];
+  const layoutWarnings: string[] = [];
+  try {
+    alignProduct = await context.chemistry.reactionProductAligner?.();
+  } catch (error) {
+    layoutWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const scheme = await layoutReactionSchemeAsync({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+    alignProduct,
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
     above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],
     caption: input.caption, textStyle: defaults.textStyle,
@@ -343,8 +352,9 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+  const plan = insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [...layoutWarnings, ...scheme.warnings], expected),
     placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
+  return { ...plan, alignmentWarnings: scheme.alignmentWarnings };
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);

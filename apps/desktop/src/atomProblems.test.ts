@@ -14,6 +14,12 @@ import type { DialogTransport } from "./dialogs/dialogTransport";
 
 const canonical = (smiles: string) => Molecule.fromSmiles(smiles).toIsomericSmiles();
 describe("atom problem suggestions", () => {
+  it("accepts a scheme NaOH ion pair without suggesting atom fixes", () => {
+    const molecule = problemMolecule("NaOH", []);
+    molecule.atoms[0]!.schemeAbbreviation = "NaOH";
+    expect(nativeAtomValidationState(molecule.atoms[0]!, molecule.bonds, 0, molecule.atoms).valid).toBe(true);
+    expect(atomProblem(molecule, "a0")).toBeUndefined();
+  });
   it.each([
     ["add H", problemMolecule("S", ["O", "C"], ["double", "single"]), "hydrogens", "C[SH]=O", 0, 1],
     ["remove H", problemMolecule("OH2"), "hydrogens", "CO", 0, 1],

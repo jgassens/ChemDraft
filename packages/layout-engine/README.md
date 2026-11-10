@@ -101,6 +101,12 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+Reaction builders may store explicit editable NaOH, MgBr and H2O atom labels.
+The ordinary abbreviation/spelled-label grammar expands them for chemistry; a drawn label is
+one selectable atom, with no invisible atoms or bonds behind it. Only NaOH with explicit
+`schemeAbbreviation: "NaOH"` metadata expands to [Na+].[OH-]; typed NaOH stays a formula placeholder.
+Ordinary expanded molecules keep their individual atom and bond rendering.
+
 Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavelength tied to the
 stroke width and bond length. The shared SVG plan owns label trimming and crossing gaps, including
 effect/sketch paths; canvas, SVG, PDF and resvg PNG all consume that geometry.

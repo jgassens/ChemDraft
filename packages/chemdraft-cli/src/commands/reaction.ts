@@ -4,15 +4,14 @@ import { basename, dirname, extname, join } from "node:path";
 import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
-import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
-import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
+import { analyzeStructureDetailed, createReactionProductAligner } from "@chemdraft/rdkit-adapter";
+import { layoutReactionSchemeAsync, type ReactionAlignmentWarning } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
-  documentVisualBounds,
   renderDefaults,
   svgToPng,
   validateRasterWidth,
@@ -97,6 +96,7 @@ export interface RenderedReactionScheme extends ParsedReactionSmiles {
   conditions: string;
   agentTexts: ReactionAgentText[];
   warnings: string[];
+  alignmentWarnings: ReactionAlignmentWarning[];
 }
 
 export interface ReactionAgentText {
@@ -132,7 +132,7 @@ conventional written order rather than strict Hill order (H2SO4, HCl, NH3); each
 Hill formula is kept in the result's agentTexts[].hillFormula.
 With --arrow retrosynthesis, products (the target) are placed on the left and reactants (the
 precursors) on the right; the arrow therefore reads target ⇒ precursors.
-Species, plus signs, and the arrow use 24 px gutters.
+Species, plus signs, and the arrow use equal ink gaps of 1.25 bond lengths.
 
 Batch input is a JSON array of named jobs containing either "rxn" or the arrays "reactants",
 "agents", and "products". Array entries preserve '.' as one molecule object. Each job may supply
@@ -687,22 +687,18 @@ export async function renderReactionScheme(
   const products = await depictAll(parsed.products);
   const agentResults = await Promise.all(parsed.agents.map(agentText));
   const agentTexts = agentResults;
-  const visible = [...reactants, ...products];
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
-  const boundsByComponent = new Map(visible.map((component) => {
-    const bounds = documentVisualBounds(component.document);
-    return [component, {
-      ...bounds,
-      width: bounds.maxX - bounds.minX,
-      height: bounds.maxY - bounds.minY
-    }] as const;
-  }));
   const componentFor = (component: BuiltSmilesDocument) => ({
-    molecule: component.molecule,
-    bounds: boundsByComponent.get(component)!
+    molecule: component.molecule
   });
-  const { document } = layoutReactionScheme({
+  const orientationWarnings: string[] = [];
+  const alignProduct = await createReactionProductAligner().catch(error => {
+    orientationWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  });
+  const { document, warnings: layoutWarnings, alignmentWarnings } = await layoutReactionSchemeAsync({
+    alignProduct,
     style: options.style,
     reactants: reactants.map(componentFor),
     products: products.map(componentFor),
@@ -739,11 +735,12 @@ export async function renderReactionScheme(
     arrow,
     conditions: conditionText,
     agentTexts,
+    alignmentWarnings,
     warnings: [
       ...reactants,
       ...products
     ].flatMap((component) => component.warnings)
-      .concat(exported.warnings.map((warning) => warning.message))
+      .concat(orientationWarnings, layoutWarnings, exported.warnings.map((warning) => warning.message))
   };
 }
 
@@ -777,7 +774,8 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       arrow: rendered.arrow,
       conditions: rendered.conditions,
       layouts: rendered.layouts,
-      warnings: rendered.warnings
+      warnings: rendered.warnings,
+      alignmentWarnings: rendered.alignmentWarnings
     });
     writeProgress(io, `Wrote ${job.out}`);
     return true;
