@@ -144,7 +144,7 @@ describe("constrained 2D cleanup", () => {
     document.pages[0]!.objects = [distorted(molecule, [8, 9])];
     const marked = normalizeCommittedDocument(applyChargeToolAtNativeAtom(document,
       kind === "charge" ? { kind, charge: -1 } : { kind },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id }));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id, distanceToPointer: 0 }));
     const before = marked;
     const beforeMolecule = before.pages[0]!.objects.find(object => object.id === molecule.id) as MoleculeObject;
     const beforeMark = before.pages[0]!.objects.find(object => object.type === "electron-mark") as ElectronMarkObject;
@@ -186,7 +186,7 @@ describe("constrained 2D cleanup", () => {
     document.pages[0]!.objects = [distorted(molecule, [8, 9])];
     const marked = structuredClone(normalizeCommittedDocument(applyChargeToolAtNativeAtom(document,
       kind === "charge" ? { kind, charge: -1 } : { kind },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id })));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id, distanceToPointer: 0 })));
     const beforeMolecule = marked.pages[0]!.objects.find(object => object.id === molecule.id) as MoleculeObject;
     beforeMolecule.rotation = rotation;
     const before = structuredClone(marked);
@@ -206,7 +206,7 @@ describe("constrained 2D cleanup", () => {
     const { document, molecule } = fixture("c1ccccc1CCCO");
     document.pages[0]!.objects = [distorted(molecule, [8, 9])];
     const marked = structuredClone(normalizeCommittedDocument(applyChargeToolAtNativeAtom(document, { kind: "charge", charge: -1 },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id })));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id, distanceToPointer: 0 })));
     const beforeMolecule = marked.pages[0]!.objects.find(object => object.id === molecule.id) as MoleculeObject;
     beforeMolecule.transform = transform;
     const before = structuredClone(marked);
@@ -219,7 +219,7 @@ describe("constrained 2D cleanup", () => {
     const { document, molecule } = fixture("Oc1ccccc1CCC");
     document.pages[0]!.objects = [distorted(molecule, [8, 9])];
     const marked = structuredClone(normalizeCommittedDocument(applyChargeToolAtNativeAtom(document, { kind: "charge", charge: -1 },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[0]!.id })));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[0]!.id, distanceToPointer: 0 })));
     const beforeMolecule = marked.pages[0]!.objects.find(object => object.id === molecule.id) as MoleculeObject;
     beforeMolecule.rotation = 45;
     const after = cleanUpMoleculeSelections2d(marked,

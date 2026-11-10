@@ -120,7 +120,7 @@ describe("Clean Up Selection command", () => {
     const molecule = document.pages[0]!.objects[0] as MoleculeObject;
     const charged = workflow.normalizeCommittedDocument(workflow.applyChargeToolAtNativeAtom(document,
       kind === "charge" ? { kind, charge: -1 } : { kind },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id }));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id, distanceToPointer: 0 }));
     await render({ ...charged, selection: { pageId: charged.pages[0]!.id, objectIds: [] } });
     await selectLastBond(objects()[0]!, 301);
     const before = structuredClone(current());
@@ -157,7 +157,7 @@ describe("Clean Up Selection command", () => {
     const molecule = document.pages[0]!.objects[0] as MoleculeObject;
     const marked = structuredClone(workflow.normalizeCommittedDocument(workflow.applyChargeToolAtNativeAtom(document,
       kind === "charge" ? { kind, charge: -1 } : { kind },
-      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id })));
+      { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[9]!.id, distanceToPointer: 0 })));
     const rotated = marked.pages[0]!.objects.find(object => object.id === molecule.id) as MoleculeObject;
     rotated.rotation = rotation;
     await render({ ...marked, selection: { pageId: marked.pages[0]!.id, objectIds: [] } });
