@@ -15,6 +15,7 @@ export const cdxmlFixtureDescriptors: FixtureDescriptor[] = [
   { id: "cdxml.brackets-sru-crossing", format: "cdxml", description: "Synthetic SRU bracket group with a crossing bond.", path: "packages/fixtures/cdxml/brackets-sru-crossing.cdxml" },
   { id: "cdxml.brackets-unresolved-membership", format: "cdxml", description: "Synthetic SRU bracket group with unresolved membership.", path: "packages/fixtures/cdxml/brackets-unresolved-membership.cdxml" },
   { id: "cdxml.brackets-unsupported-usage", format: "cdxml", description: "Synthetic bracket group with unsupported component usage.", path: "packages/fixtures/cdxml/brackets-unsupported-usage.cdxml" },
+  { id: "cdxml.scheme-and-sru", format: "cdxml", description: "Synthetic reaction scheme and atom-level polyethylene SRU written for the binary-CDX bracket-reference regression test.", path: "packages/fixtures/cdxml/scheme-and-sru.cdxml" },
   {
     id: "cdxml.empty-page",
     format: "cdxml",

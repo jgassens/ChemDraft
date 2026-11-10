@@ -1,0 +1,267 @@
+import { describe, expect, it } from "vitest";
+import { XMLParser } from "fast-xml-parser";
+import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { cdxElementFromOrderedTree, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
+import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
+
+const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false });
+const binaryFromXml = (xml: string) => writeCdx(cdxElementFromOrderedTree(parser.parse(xml)));
+const page = (contents: string) => `<CDXML><page id="1">${contents}</page></CDXML>`;
+const fragment = (contents: string) => `<fragment id="2"><n id="3" p="30 30" Element="7"><t id="4"><s>N</s></t></n>${contents}</fragment>`;
+
+const styledCaption = '<t id="7" p="30.000 60.000" BoundingBox="25 45 95 65" Justification="Center" LineHeight="14" Z="9" InterpretChemically="no" attrib4a10="|x|010203"><s font="3" size="12.00" face="1" color="4">Styled </s><s font="4" size="14" face="2" color="5">caption</s></t>';
+const styledSource = (placement: "direct" | "grouped" | "page") => `<CDXML>
+  <fonttable><font id="3" charset="iso-8859-1" name="Arial"/><font id="4" charset="iso-8859-1" name="Times New Roman"/></fonttable>
+  <colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="1" g="0" b="0"/><color r="0" g="0" b="1"/></colortable>
+  <page id="1">${placement === "page" ? styledCaption : `<fragment id="2"><n id="3" NodeType="Nickname" Charge="1" p="30 30">
+    <t><s>Me</s></t><fragment id="5"><n id="6" Element="6"/>
+      ${placement === "grouped" ? `<group id="8">${styledCaption}</group>` : styledCaption}
+    </fragment></n></fragment>`}</page></CDXML>`;
+const elementsNamed = (node: CdxElement, name: string): CdxElement[] => [
+  ...(node.name === name ? [node] : []), ...node.kids.flatMap(child => elementsNamed(child, name))
+];
+const elementText = (node: CdxElement): string => node.text + node.kids.map(elementText).join("");
+const captionsIn = (node: CdxElement) => elementsNamed(node, "t").filter(node => elementText(node) === "Styled caption");
+
+function requireDocument(opened: ReturnType<typeof openChemDraftPayload>): ChemDraftDocument {
+  expect(opened.document, JSON.stringify(opened.warnings)).toBeDefined();
+  return opened.document!;
+}
+
+function graph(molecule: MoleculeObject) {
+  return {
+    atoms: molecule.atoms?.map(({ element, x, y, formalCharge, isotope, markRadicals }) => ({ element, x, y, formalCharge, isotope, markRadicals })),
+    bonds: molecule.bonds?.map(({ fromAtomId, toAtomId, order, stereo }) => ({
+      from: molecule.atoms?.findIndex(atom => atom.id === fromAtomId),
+      to: molecule.atoms?.findIndex(atom => atom.id === toAtomId),
+      order,
+      stereo
+    }))
+  };
+}
+
+describe.each(["CDXML", "CDX"] as const)("C1 visible %s regressions", format => {
+  const open = (xml: string) => format === "CDX" ? importCdx(binaryFromXml(xml)) : openChemDraftPayload(xml);
+  const roundTrip = (document: ChemDraftDocument) => format === "CDX"
+    ? importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes)
+    : openChemDraftPayload(exportDocumentToCdxml(document, { embedNativePayload: false }).contents);
+
+  it("keeps an unannotated native R1 label, unknown semantics and graph through visible round trips", () => {
+    const molecule: MoleculeObject = {
+      id: "molecule", type: "molecule", x: 40, y: 40, width: 40, height: 1, rotation: 0, style: {},
+      structure: "", structureFormat: "unknown", superatoms: [], rGroups: [],
+      atoms: [{ id: "r", element: "R1", x: 40, y: 40, formalCharge: 0 }, { id: "c", element: "C", x: 80, y: 40, formalCharge: 0 }],
+      bonds: [{ id: "bond", fromAtomId: "r", toAtomId: "c", order: "single" }]
+    };
+    let document = createEmptyDocument();
+    document.pages[0].objects = [molecule];
+    const expectedGraph = graph(molecule);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const opened = roundTrip(document);
+      document = requireDocument(opened);
+      const imported = document.pages[0].objects.find(object => object.type === "molecule")!;
+      expect(graph(imported)).toEqual(expectedGraph);
+      expect(imported.rGroups).toEqual([expect.objectContaining({ label: "R1", querySemantics: "unknown" })]);
+      expect(imported.rGroups[0].attachmentPoints).toEqual([{ kind: "atom", objectId: imported.id, atomId: imported.atoms![0].id }]);
+      expect(opened.warnings.filter(warning => /r.?group|query/i.test(warning.code))).toEqual([]);
+      expect(document.pages[0].objects.filter(object => object.type === "text")).toEqual([]);
+    }
+  });
+
+  it("imports a direct fragment caption and retains it without a native payload", () => {
+    let document = requireDocument(open(page(fragment('<t id="10" p="30 60"><s>Fragment caption</s></t>'))));
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const texts = document.pages[0].objects.filter(object => object.type === "text");
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatchObject({ text: "Fragment caption", x: 40, y: 80 });
+      document = requireDocument(roundTrip(document));
+    }
+  });
+
+  it.each(["direct", "grouped"])("keeps a %s caption inside an unexpandable snapshot exactly once through three round trips", placement => {
+    const caption = '<t id="7" p="0 30"><s>caption</s></t>';
+    const source = page(`<fragment id="2"><n id="3" NodeType="Nickname" Charge="1" p="0 0">
+      <t><s>Me</s></t><fragment id="5"><n id="6" Element="6"/>
+        ${placement === "grouped" ? `<group id="8">${caption}</group>` : caption}
+      </fragment></n></fragment>`);
+    const textOf = (node: CdxElement): string => node.text + node.kids.map(textOf).join("");
+    const captionsIn = (node: CdxElement): CdxElement[] => [
+      ...(node.name === "t" && textOf(node) === "caption" ? [node] : []),
+      ...node.kids.flatMap(captionsIn)
+    ];
+    const expectOneNativeCaption = (document: ChemDraftDocument) => {
+      const objects = document.pages[0].objects;
+      const texts = objects.filter(object => object.type === "text");
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatchObject({ text: "caption", x: 0, y: 40 });
+      const molecule = objects.find(object => object.type === "molecule")!;
+      expect(molecule.atoms).toHaveLength(1);
+      expect(molecule.atoms[0]).toMatchObject({ element: "Me", formalCharge: 1 });
+      expect(molecule.bonds).toHaveLength(0);
+      expect(molecule.superatoms).toHaveLength(0);
+    };
+    const opened = open(source);
+    expect(opened.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.abbreviation_not_expanded" }));
+    let document = requireDocument(opened);
+    expectOneNativeCaption(document);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      if (format === "CDX") {
+        const { bytes } = exportDocumentToCdx(document, { embedNativePayload: false });
+        expect(captionsIn(readCdx(bytes))).toHaveLength(1);
+        document = requireDocument(importCdx(bytes));
+      } else {
+        const { contents } = exportDocumentToCdxml(document, { embedNativePayload: false });
+        expect(captionsIn(cdxElementFromOrderedTree(parser.parse(contents)))).toHaveLength(1);
+        document = requireDocument(openChemDraftPayload(contents));
+      }
+      expectOneNativeCaption(document);
+    }
+  });
+
+  it.each(["direct", "grouped", "page"] as const)("preserves every styled run and text attribute exactly once for %s text through three round trips", placement => {
+    const source = format === "CDXML" ? styledSource(placement)
+      .replace('<t id="7"', '<t SourceTextAttribute="keep" id="7"')
+      .replace('<s font="3"', '<s font="3" SourceRunAttribute="keep"') : styledSource(placement);
+    const sourceTree = format === "CDX" ? readCdx(binaryFromXml(source)) : cdxElementFromOrderedTree(parser.parse(source));
+    const expectedCaption = captionsIn(sourceTree)[0];
+    expect(expectedCaption.kids).toHaveLength(2);
+    let document = requireDocument(open(source));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const texts = document.pages[0].objects.filter(object => object.type === "text");
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatchObject({ text: "Styled caption", x: 40, y: 80 });
+      expect(texts[0].compatibility?.unknown.cdxmlTextElement).toContain('<s font="3"');
+      // Exercise native persistence too: the preserved source belongs to the native text object.
+      document = JSON.parse(JSON.stringify(document)) as ChemDraftDocument;
+      const exported = format === "CDX"
+        ? exportDocumentToCdx(document, { embedNativePayload: false })
+        : exportDocumentToCdxml(document, { embedNativePayload: false });
+      expect(exported.warnings.filter(warning => warning.code === "cdxml.text_source_formatting_not_kept")).toEqual([]);
+      const outputTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(parser.parse(exported.contents));
+      expect(captionsIn(outputTree)).toEqual([expectedCaption]);
+      expect(elementsNamed(outputTree, "t").filter(node => node.attrs.id === "7")).toHaveLength(1);
+      expect(elementsNamed(outputTree, "font")).toEqual(elementsNamed(sourceTree, "font"));
+      expect(elementsNamed(outputTree, "color").slice(0, 4)).toEqual(elementsNamed(sourceTree, "color"));
+      document = requireDocument("bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents));
+    }
+  });
+
+  it.each(["direct", "page"] as const)("exports edited %s text once and names it in the source-formatting warning", placement => {
+    const document = requireDocument(open(styledSource(placement)));
+    const text = document.pages[0].objects.find(object => object.type === "text")!;
+    text.text = "Edited caption";
+    const exported = format === "CDX"
+      ? exportDocumentToCdx(document, { embedNativePayload: false })
+      : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.text_source_formatting_not_kept", sourceObjectId: text.id,
+      message: expect.stringContaining(`Text ${text.id} (source 7)`)
+    }));
+    expect(exported.warnings.find(warning => warning.code === "cdxml.text_source_formatting_not_kept")?.message).toContain("source formatting was not kept");
+    const outputTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(parser.parse(exported.contents));
+    expect(captionsIn(outputTree)).toEqual([]);
+    expect(elementsNamed(outputTree, "t").filter(node => elementText(node) === "Edited caption")).toHaveLength(1);
+    const reopened = requireDocument("bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents));
+    expect(reopened.pages[0].objects.filter(object => object.type === "text")).toEqual([
+      expect.objectContaining({ text: "Edited caption", x: 40, y: 80 })
+    ]);
+  });
+
+  it("moves preserved text coordinates while retaining its styled runs", () => {
+    const document = requireDocument(open(styledSource("page")));
+    const text = document.pages[0].objects.find(object => object.type === "text")!;
+    text.x += 40;
+    text.y += 20;
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toEqual([]);
+    const output = captionsIn(cdxElementFromOrderedTree(parser.parse(exported.contents)))[0];
+    expect(output.attrs).toMatchObject({ p: "60 75", BoundingBox: "55 60 125 80" });
+    const source = captionsIn(format === "CDX" ? readCdx(binaryFromXml(styledSource("page")))
+      : cdxElementFromOrderedTree(parser.parse(styledSource("page"))))[0];
+    expect(output.kids).toEqual(source.kids);
+  });
+
+  it("imports a fragment-local group with text and graphics exactly once and retains the group", () => {
+    let document = requireDocument(open(page(fragment(`<group id="20">
+      <t id="21" p="30 60"><s>Grouped caption</s></t>
+      <t id="22" p="30 90"><s>Second caption</s></t>
+      <graphic id="23" GraphicType="Oval" BoundingBox="60 60 80 80"/>
+    </group>`))));
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const objects = document.pages[0].objects;
+      const texts = objects.filter(object => object.type === "text");
+      expect(texts.map(text => text.text)).toEqual(["Grouped caption", "Second caption"]);
+      const graphics = objects.filter(object => object.type === "graphic");
+      expect(graphics).toHaveLength(1);
+      const groups = objects.filter(object => object.type === "group");
+      expect(groups).toHaveLength(1);
+      expect(groups[0].childObjectIds).toEqual([...texts, ...graphics].map(object => object.id));
+      document = requireDocument(roundTrip(document));
+    }
+  });
+
+  it("keeps node-label text on its atom without importing standalone text", () => {
+    const document = requireDocument(open(page(fragment(""))));
+    expect(document.pages[0].objects).toHaveLength(1);
+    expect(document.pages[0].objects[0]).toMatchObject({ type: "molecule", atoms: [expect.objectContaining({ element: "N" })] });
+    expect(requireDocument(roundTrip(document)).pages[0].objects.filter(object => object.type === "text")).toEqual([]);
+  });
+
+  it("names the text and source graphic when a graphic caption cannot become native text", () => {
+    const opened = open(page(fragment(`<graphic id="40" GraphicType="Oval" BoundingBox="30 60 80 90">
+      <t id="41" p="30 60"><s>Graphic caption</s></t>
+    </graphic>`)));
+    const document = requireDocument(opened);
+    expect(document.pages[0].objects.filter(object => object.type === "text")).toEqual([]);
+    expect(opened.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.graphic_text_not_imported", sourceObjectId: "40",
+      message: expect.stringMatching(new RegExp(`${format}.*text.*41.*graphic.*40`, "i"))
+    }));
+    expect(document.compatibility.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.graphic_text_not_imported", objectId: "40"
+    }));
+  });
+
+  it("uses the source format in every empty-page refusal without changing warning codes", () => {
+    const opened = open(page(""));
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings).toEqual([
+      { code: "cdxml.external_import_not_implemented", message: `This ${format} file does not contain a ChemDraft payload and no supported visible objects were found.` },
+      { code: "cdxml.no_supported_visible_objects", message: `No supported visible ${format} objects were found.` }
+    ]);
+  });
+
+  it("uses the source format for missing-page diagnostics", () => {
+    const opened = open("<CDXML/>");
+    expect(opened.document).toBeUndefined();
+    expect(opened.warnings).toContainEqual({ code: "cdxml.no_pages", message: `The ${format} file contains no page elements.` });
+  });
+
+  it("preserves quoted source values while labelling shared-path diagnostics", () => {
+    const opened = openChemDraftPayload(page(fragment('<n id="5" p="60 30"/><b id="6" B="3" E="5" Order="CDXML"/>')), format);
+    requireDocument(opened);
+    expect(opened.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.bond_order_import_unsupported",
+      message: `Unsupported ${format} bond order "CDXML" was imported as unknown; the original order value is preserved for ${format} export.`
+    }));
+  });
+
+  it("uses the source format for subset diagnostics and native compatibility messages", () => {
+    const opened = open(page(fragment("") + '<unsupported id="50"/>'));
+    const document = requireDocument(opened);
+    expect(document.title).toBe(`Imported ${format}.chemdraft`);
+    expect(opened.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.external_subset_imported", message: expect.stringContaining(`external ${format} subset`)
+    }));
+    const messages = [
+      ...opened.warnings.map(warning => warning.message),
+      ...document.compatibility.warnings.map(warning => warning.message),
+      ...document.pages[0].objects.flatMap(object => [
+        ...(object.compatibility?.warnings.map(warning => warning.message) ?? []),
+        ...(object.type === "unknown-compatibility-object" ? [object.warning] : [])
+      ])
+    ];
+    expect(messages.every(message => message.includes(format))).toBe(true);
+    if (format === "CDX") expect(messages.some(message => message.includes("CDXML"))).toBe(false);
+  });
+});

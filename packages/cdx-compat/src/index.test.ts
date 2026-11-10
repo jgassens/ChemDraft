@@ -34,6 +34,21 @@ import {
 } from "./index";
 import { sha256Hex, utf8Bytes } from "./sha256";
 
+it("omits empty preserved id lists without changing nonempty source lists", () => {
+  const opened = openChemDraftPayload(`<CDXML><page id="1">
+    <group id="80" BasisObjects="" BondOrdering=" " ConnectionOrder=" 20  30 ">
+      <t id="20" p="0 0"><s>first</s></t><t id="30" p="30 0"><s>second</s></t>
+    </group>
+    <curve id="40" CurvePoints="0 10 10 10 20 10 30 10" BasisObjects=""/>
+  </page></CDXML>`);
+  expect(opened.document).toBeDefined();
+  const exported = exportDocumentToCdxml(opened.document!);
+  expect(exported.contents).not.toMatch(/\b(?:BasisObjects|BondOrdering)="\s*"/);
+  expect(exported.contents).toContain('ConnectionOrder=" 20  30 "');
+  // Visible-list cleanup must not change compatibility data in the embedded native document.
+  expect(openChemDraftPayload(exported.contents).document).toEqual(opened.document);
+});
+
 it("warns when a picture is omitted from visible CDXML and retains the native payload", () => {
   const picture = createImageGraphicObject({ id: "g12", mimeType: "image/svg+xml", center: { x: 30, y: 40 },
     dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"/>') });
@@ -1008,7 +1023,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     });
   });
 
-  it("warns when a native graphic path bend cannot be represented exactly in visible CDXML", () => {
+  it("exports a native graphic path bend as a real CDXML curve", () => {
     const graphic = {
       id: "art_cdxml_bent_line",
       type: "graphic",
@@ -1033,14 +1048,15 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       creationProgram: "Graphic Bend Warning Test"
     });
 
-    expect(result.contents).toContain('GraphicType="Line"');
+    expect(result.contents).toContain('<curve ');
+    expect(result.contents).toContain('CurvePoints="75 127.5 105 47.5 135 47.5 165 127.5"');
     expect(openChemDraftPayload(result.contents).document?.pages[0].objects[0]).toMatchObject({
       type: "graphic",
       data: {
         pathControlPoint: { x: 160, y: 90 }
       }
     });
-    expect(result.warnings.map((item) => item.code)).toContain("cdxml.graphic_path_control_payload_only");
+    expect(result.warnings.map((item) => item.code)).not.toContain("cdxml.graphic_path_control_payload_only");
   });
 
   it("exports circular graphic arcs from native radian sweep metadata", () => {
@@ -1985,7 +2001,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect((reactionArrow.document?.pages[0].objects[0] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
   });
 
-  it("warns when brackets and curved art degrade on the way to CDXML", () => {
+  it("warns for approximated brackets and exports curved art as a real curve", () => {
     const bracket = exportDocumentToCdxml(documentWithObjects([
       {
         id: "bracket_001",
@@ -2027,9 +2043,10 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       }
     ]), { creationProgram: "T" });
 
-    // Bezier curves carry an artPathKind, so the older pathD-only check never fired for them.
-    expect(orbital.contents).toContain('GraphicType="Unknown"');
-    expect(orbital.warnings.map((warning) => warning.code)).toContain("cdxml.graphic_shape_payload_only");
+    expect(orbital.contents).toContain('<curve ');
+    expect(orbital.contents).toContain('Closed="yes"');
+    expect(orbital.contents).not.toContain('GraphicType="Unknown"');
+    expect(orbital.warnings.map((warning) => warning.code)).not.toContain("cdxml.graphic_shape_payload_only");
 
     // A shape CDXML can represent stays quiet.
     const oval = exportDocumentToCdxml(documentWithObjects([
@@ -2593,7 +2610,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       sourceFormat: "cdxml",
       sourceObjectType: "step"
     });
-    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
+    expect(opened.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.reaction_step_preserved", message: expect.stringContaining("step1")
+    }));
   });
 });
 

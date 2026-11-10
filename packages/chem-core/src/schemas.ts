@@ -299,6 +299,8 @@ export const ChemicalMetadataSchema = z
 export const SuperatomMetadataSchema = z
   .object({
     label: z.string().min(1),
+    /** Expanded atoms already present in the owning molecule's graph; never count them twice. */
+    atomIds: z.array(IdSchema).min(1).optional(),
     expandedStructureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]).optional(),
     expandedStructure: z.string().optional(),
     attachmentPoints: z.array(AnchorSchema).default([]),
@@ -768,6 +770,7 @@ export const DocumentPageSchema = z
       .strict()
       .default({ top: 72, right: 72, bottom: 72, left: 72 }),
     layout: PageLayoutSchema,
+    compatibility: CompatibilityMetadataSchema.optional(),
     objects: z.array(DocumentObjectSchema),
     crossings: z.array(CrossingOverrideSchema).default([])
   })

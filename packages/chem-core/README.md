@@ -4,6 +4,22 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+`DocumentPage` optionally carries `compatibility` using the same metadata schema as document objects.
+CDXML/CDX import uses it to retain source page and print settings, including page counts that have
+no native layout field. Native `width`/`height`, `margin`, and `layout` continue to describe one
+physical paper size in CSS pixels; separate entries in `pages` are separate logical pages. The
+optional metadata is additive to v1 and needs no migration or backfill.
+
+`MoleculeObject.superatoms` retains an abbreviation's `label`, `attachmentPoints` and optional
+`expandedStructure`/`expandedStructureFormat`. Additive optional `atomIds` identifies the expanded
+atoms already present in that molecule's live graph. Those atoms and bonds remain authoritative
+for chemistry; the superatom is grouping metadata and never an additional atom or formula term.
+Attachment anchors refer to the group's real atom in the owning molecule. The stored expansion
+is a snapshot of the isolated body; external valence comes from the live crossing bonds. Writers
+use current graph membership rather than the snapshot after edits. Unexpanded typed labels still
+use `MoleculeAtom.element` with `labelLiteral`; expanded group labels do not replace a real element.
+The optional field needs no migration or backfill; older native documents remain valid under v1.
+
 Bond displays are `bold`, `wedge`, `hashed`, `dashed`, and `wavy`. Optional
 `MoleculeBond.display.bondStyle: "wavy"` is valid only with `order: "single"` (schema rejection
 otherwise) and means explicitly unknown stereo at `fromAtomId`. It follows additive v1 conventions:
@@ -59,6 +75,12 @@ The MOL writers require an explicit `kekuleBondOrders` map and return `{ content
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial
 map preserves unmapped aromatic bonds as type 4 and returns one warning per ring system, naming its
 atoms. Every consumer must surface those warnings through its operation's warning path.
+
+Numbered native R-group labels (`R1`–`R99`) write as dummy atoms with their drawn number in the
+atom-map field in both MOL formats. `rGroupNumberFromLabel` reads only that label, never an id or
+attachment anchor; `R`, `R'`, and `R''` remain unnumbered. In `abbreviations: "rgroup"` mode,
+numbered labels keep their numbers and other placeholders receive unused numbers for ranking.
+The native schema is unchanged: the atom's `element` and `RGroupDisplay.label` retain the text.
 
 Unknown bond orders write as CTfile type 8 (any) in both formats, with one warning naming all
 affected bond ids. This preserves the native unknown order on reimport, but readers treat it as a
