@@ -1562,7 +1562,9 @@ function exportMoleculeObject(
     const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
     const elementNumber = heavyHydrogen ? 1
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
-    const literalLabel = atom.labelLiteral === true;
+    // Element/group homonyms already carry their contextual meaning in Element: a bonded typed
+    // Ar is "Ar", while an unbonded Ar is "18". Keep that path rather than making either a nickname.
+    const literalLabel = atom.labelLiteral === true && bondedElementLabelMeaning(atom.element) === undefined;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`
