@@ -278,6 +278,7 @@ import {
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
+  moleculeSelectionBounds,
   recordedLabelBondSide,
   planPageSvgRender,
   electronMarkHitCatcherAttributes,
@@ -27141,21 +27142,17 @@ export function nativeMoleculeObjectAtPoint(
 
 function moleculeTransformFrameForSelection(
   object: MoleculeObject,
-  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined
+  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined,
+  selectedAtomIds?: ReadonlySet<string>
 ): MoleculeTransformFrame {
-  const rawFrame = selectedPartBounds
-    ? {
-        x: selectedPartBounds.x - object.x,
-        y: selectedPartBounds.y - object.y,
-        width: selectedPartBounds.width,
-        height: selectedPartBounds.height
-      }
-    : {
-        x: 0,
-        y: 0,
-        width: object.width,
-        height: object.height
-      };
+  const bounds = moleculeSelectionBounds(object, selectedPartBounds ?? object,
+    selectedPartBounds ? selectedAtomIds : undefined);
+  const rawFrame = {
+    x: bounds.x - object.x,
+    y: bounds.y - object.y,
+    width: bounds.width,
+    height: bounds.height
+  };
   const minSize = 28;
   const width = Math.max(rawFrame.width, minSize);
   const height = Math.max(rawFrame.height, minSize);
@@ -29266,7 +29263,7 @@ function DocumentObjectViewContent({
         ? nativeMoleculePartBounds(object, transformableSelectedPart)
         : undefined;
       const transformFrame = transformHandlesEnabled && !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
-        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
+        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds, selectedAtomIds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
       const canProjectedPlaneTilt = transformFrame !== undefined;

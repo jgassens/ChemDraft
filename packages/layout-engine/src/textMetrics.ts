@@ -1,5 +1,5 @@
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
-import { patrickHandAdvances } from "./patrickHandMetrics.generated";
+import { patrickHandAdvances, patrickHandInkBounds } from "./patrickHandMetrics.generated";
 import {
   helveticaAdvances, helveticaBoldAdvances, timesAdvances, timesBoldAdvances,
   timesItalicAdvances, timesBoldItalicAdvances, courierAdvances
@@ -16,6 +16,25 @@ export function isPatrickHandFont(fontFamily: string): boolean {
 /** Exact advances from the bundled 1.003 face; independent of installed system fonts. */
 export function patrickHandTextAdvanceEm(text: string): number {
   return [...text].reduce((sum, character) => sum + (patrickHandAdvances[character.codePointAt(0)!] ?? textAdvanceEm(character)), 0);
+}
+
+/** Outline envelope relative to the baseline, in em, from the bundled face's glyf boxes.
+ * Advances alone omit overhangs and descenders. Uncovered characters use the fallback
+ * font's conservative envelope, matching the Arial fallback in the handwriting stack. */
+export function patrickHandTextInkBoundsEm(text: string): { x: number; y: number; width: number; height: number } {
+  let cursor = 0, left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+  for (const character of text) {
+    const code = character.codePointAt(0)!;
+    const advance = patrickHandAdvances[code] ?? textAdvanceEm(character);
+    const [xMin, yMin, xMax, yMax] = patrickHandInkBounds[code] ?? [0, -0.3, advance, 0.95];
+    left = Math.min(left, cursor + xMin);
+    right = Math.max(right, cursor + xMax);
+    top = Math.min(top, -yMax);
+    bottom = Math.max(bottom, -yMin);
+    cursor += advance;
+  }
+  return left === Infinity ? { x: 0, y: 0, width: 0, height: 0 }
+    : { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 /** Explicit SVG script metrics. Offsets are in PARENT em, independent of script size.
