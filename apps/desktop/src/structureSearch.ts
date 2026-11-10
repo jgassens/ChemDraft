@@ -50,7 +50,9 @@ export function structureSearchDocument(
       .map(warning => ({ code: "chemistry.bracket_multiplier", objectId: molecule.id, message: warning.message }));
     return warnings.length ? { ...molecule, chemistry: {
       isotopeLabels: [], stereochemistry: [], ...molecule.chemistry,
-      warnings: [...(molecule.chemistry?.warnings ?? []), ...warnings]
+      warnings: [...warnings, ...(molecule.chemistry?.warnings ?? []).filter(existing =>
+        !warnings.some(warning => warning.message === existing.message)
+      )]
     } } : molecule;
   });
   const page = document.pages[0]!;
