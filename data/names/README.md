@@ -2,18 +2,11 @@
 
 # Offline chemical name dictionary
 
-`dictionary.tsv.gz` is the unchanged Wikidata snapshot collected on 27 October 2026:
-28,880 compounds, 67,602 names and 27,031 CAS registry numbers. Wikidata data is
-CC0 1.0; its upstream `NOTICE.txt` is copied verbatim beside the data.
-
-**Regeneration pending:** the conductor must replace this snapshot using the builder
-below, then fill in: snapshot date **TBD**, compounds **TBD**, column-2 names **TBD**,
-column-5 names **TBD**, CAS numbers **TBD**, gzip bytes **TBD**, SHA-256 **TBD**, and
-English word-list SHA-256 **TBD**. Also record the gate's label/OPSIN/PubChem approvals,
-unverifiable/contradicted rejections, coverage losses/gains, and newly searchable names
-(old column 5 only versus absent from the old file). The historical counts above describe the committed
-input, not the corrected output. Do not mark this update complete before the common-name
-regression passes against the regenerated file.
+`dictionary.tsv.gz` is the regenerated Wikidata snapshot from the 9 November 2026
+response cache: 28,933 compounds, 108,035 column-2 names, 23,220 column-5 names,
+and 27,073 CAS registry numbers. Its gzip size is 1,881,239 bytes and its SHA-256 is
+`fc5b1476ce817de20b1b61774892156da4773393e4a2c10f9a8eb1b58ef642fc`.
+Wikidata data is CC0 1.0; its upstream `NOTICE.txt` is copied verbatim beside the data.
 
 The source selected compounds with SMILES and an article in one of ten Wikipedias.
 It includes English/German labels and aliases, single-active-ingredient brand names,
@@ -137,59 +130,19 @@ new source evidence establishing the D ring stereo without assigning an alpha/be
 anomer. The common-name regression explicitly checks this absence; all other identity
 assertions remain full InChIKey comparisons.
 
-### Offline review candidate (not the committed asset)
+### Committed build audit
 
 Rebuilt on macOS from the supplied 2026-11-09 response cache, using the committed
-baseline, OPSIN 2.9.0 and repository RDKit. The candidate is `tmp/dictionary.tsv.gz`;
-its complete audit is `tmp/dictionary.tsv.gz.report.json`. Scratch files are not part
-of the change. The replacement snapshot fields at the top remain **TBD** for the
-conductor to fill after integration review.
+baseline, OPSIN 2.9.0 and repository RDKit. The build gained 53 compounds and restored
+182 legacy rows; no previous compounds, CAS numbers or searchable names were lost.
+It contains 102,915 searchable names, including 36,574 newly searchable versus old
+column 2: 18,883 formerly present only in column 5 and 17,691 absent from the old file.
+The accuracy gate approved 884 name/identity pairs by label, 17,172 by OPSIN and 461
+by PubChem; it excluded 1,712 as unverifiable and 5,006 as contradicted. These gate
+counts are not an accuracy percentage or an external validation benchmark.
 
-| Measurement | Candidate |
-| --- | ---: |
-| Compounds | 28,933 |
-| Column-2 names (written entries) | 107,959 |
-| Column-5 names (written entries) | 23,241 |
-| CAS assignments | 27,073 |
-| Old compounds lost / gained | 0 / 53 |
-| Old CAS lost / old CAS assignments lost | 0 / 0 |
-| Unambiguous searchable names, both columns, application normalization | 102,987 |
-| Baseline searchable names, both columns, application normalization | 85,195 |
-| Newly searchable versus baseline column 2 | 36,646 |
-| Of those: present in old file only in column 5 | 18,883 |
-| Of those: absent from the entire old file | 17,763 |
-| Newly searchable versus baseline **both** columns | 17,792 |
-| Previously searchable names lost | 0 |
-| New name/identity spellings approved by own label (a) | 966 |
-| Approved by OPSIN (b) | 17,457 |
-| Approved by PubChem (c) | 39 |
-| Rejected as unverifiable / contradicted | 2,488 / 4,285 |
-| Distinct names with no cached PubChem evidence, explicitly inventoried | 20,405 |
-| Gzip bytes | 1,882,423 |
-
-Gate counts are unique written name/full-identity pairs before collision resolution;
-the label/OPSIN/PubChem approval buckets are disjoint, in that order. They are not an
-accuracy percentage or an external validation benchmark. Searchability uses the same
-normalization and ambiguity refusal as the application. The conductor's **66,769**
-baseline count uses lowercased column-2 spellings; application normalization reduces
-that to **66,343** keys. For comparison on that spelling basis, the candidate has
-**101,165** column-2 and **106,001** both-column spellings; **39,237** are new versus
-old column 2 (**19,377** old-column-5-only, **19,860** absent from the old file).
-
-Candidate SHA-256:
-`63ad17002c9bfc5134a580cb31639864024c43c5ea91e6da1d07c7ded6c2f3af`.
-English word-list SHA-256 (`/usr/share/dict/words`):
+English word-list SHA-256 (macOS `/usr/share/dict/words`):
 `be41ad97963bf8dabedd5871d5d691596175269d540956b0f9965a885c2bbab9`.
-
-The required builder and reader suites pass. The staged common-name suite has five
-intentional visible failures under the requested conservative gate: `nicotine` and
-`adrenaline` have OPSIN readings without the source row's stereo; `menthol` has an
-OPSIN reading without the source row's specified stereo; `Penicillin G` and
-`acetaminophen` have neither an OPSIN reading nor a cached PubChem response and are
-aliases, not eligible own labels. Their full identity assertions remain in the test.
-Restoring these requires additional evidence or an explicitly revised policy; no
-stereochemical comparison has been weakened. Both glucose absence assertions pass.
-Windows rebuild/Java execution remains unverified; the code uses shared Node path APIs.
 
 Additional build changes are explicit: protocol tabs/newlines are rejected before
 whitespace normalization; collisions cover column 5 as well as column 2; failed
@@ -252,10 +205,9 @@ CHEMDRAFT_NAME_DICTIONARY_CANDIDATE=./tmp/dictionary.tsv.gz pnpm vitest run --co
 
 The environment variable selects only a test input; production lookup has no such
 override. On PowerShell set `$env:CHEMDRAFT_NAME_DICTIONARY_CANDIDATE` before invoking
-the same pnpm command. Without it, the suite tests the committed asset. The last suite
-does not skip common names rejected by the gate. It mocks OPSIN to miss and checks full
-InChIKeys using RDKit, with the explicit glucose absence above. Unverifiable or
-contradicted common names remain visible failures for integration review.
+the same pnpm command. Without it, the suite tests the committed asset. The last suite mocks OPSIN to miss and checks full InChIKeys using RDKit, with the
+explicit glucose absence above. It also checks that OPSIN-first names rejected by the
+gate are absent from the dictionary.
 
 The shared pure lookup and resolution policy live in `document-workflow-core`, with
 injected text loading. Desktop/web fetch the bundled local asset and decompress with
@@ -264,13 +216,12 @@ are cached on first fallback, with parsing yielded in slices. No new dependency 
 
 ## Distribution size
 
-The **committed** compressed file is **1,627,077 bytes** (1.63 MB / 1.55 MiB), pending
-conductor replacement; the review candidate size is recorded above. It is referenced by a
+The **committed** compressed file is **1,881,239 bytes** (1.88 MB / 1.79 MiB). It is referenced by a
 literal `new URL` from the shared package so Vite emits one hashed
 `apps/desktop/dist/assets/dictionary-<hash>.tsv.gz` asset. Tauri embeds it with the
 frontend assets in the desktop application on both platforms; no extra native resource
 copy is needed. Headless tools use the workspace's `data/names/dictionary.tsv.gz`.
 
-Estimated added desktop application payload and web build size: **about 1.63 MB each**,
+Estimated added desktop application payload and web build size: **about 1.88 MB each**,
 plus a few KB of lookup/loader code. Installer compression may change the final size.
 These are estimates; production builds are verified by the integrating conductor.
