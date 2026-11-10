@@ -488,6 +488,9 @@ export const ReactionObjectSchema = BaseObjectSchema.extend({
   type: z.literal("reaction"),
   components: z.array(ReactionComponentSchema),
   conditionsTextObjectIds: z.array(IdSchema).default([]),
+  /** Shared drawable objects; a multi-step intermediate is referenced, never copied. */
+  arrowObjectIds: z.array(IdSchema).optional(),
+  plusObjectIds: z.array(IdSchema).optional(),
   mappingState: degradingEnum(["absent", "partial", "complete", "unknown"]).default("unknown")
 }).strict();
 

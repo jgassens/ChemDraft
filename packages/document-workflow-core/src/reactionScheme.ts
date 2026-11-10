@@ -7,6 +7,7 @@ import {
   type ChemDraftDocument,
   type MoleculeObject,
   type NativeTextStyle,
+  type ReactionObject,
   type TextObject,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
@@ -58,6 +59,25 @@ export interface ReactionSchemeLayoutOptions {
 }
 
 const PLUS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 20, textAlign: "center" };
+
+/** Read the native roles of every step in page order, including shared intermediates. */
+export function documentReactionSummary(document: ChemDraftDocument) {
+  return document.pages.flatMap(page => {
+    const objects = new Map(page.objects.map(object => [object.id, object]));
+    return page.objects.filter((object): object is ReactionObject => object.type === "reaction").map(reaction => ({
+      pageId: page.id,
+      reactionId: reaction.id,
+      components: reaction.components.map(component => ({ ...component })),
+      arrowObjectIds: [...(reaction.arrowObjectIds ?? [])],
+      plusObjectIds: [...(reaction.plusObjectIds ?? [])],
+      conditions: reaction.conditionsTextObjectIds.map(objectId => {
+        const object = objects.get(objectId);
+        return { objectId, text: object?.type === "text" ? object.text : undefined };
+      }),
+      mappingState: reaction.mappingState
+    }));
+  });
+}
 
 /**
  * Positions already-depicted reaction components without loading a chemistry engine. The anchor

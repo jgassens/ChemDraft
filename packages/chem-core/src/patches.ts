@@ -11,7 +11,8 @@ import {
   type DocumentPage,
   type MoleculeBond,
   type MoleculeObject,
-  type PageLayout
+  type PageLayout,
+  type ReactionObject
 } from "./schemas";
 import { cloneDocument, toIsoTimestamp } from "./document";
 import { engineDocuments } from "./engineDocuments";
@@ -358,6 +359,43 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
   forgetShiftedDuplicateLocations(document);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
   pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
+  pruneReactionReferences(location.page, new Set([objectId]));
+}
+
+/** Replace changed reactions rather than mutating objects shared with undo snapshots. */
+function pruneReactionReferences(page: DocumentPage, removed: ReadonlySet<string>): void {
+  page.objects = page.objects.map(object => object.type === "reaction" ? pruneReactionObjectReferences(object, removed) : object);
+}
+
+/** Pure removal rule, shared with write-scope checks. Returns the original object if unchanged. */
+export function pruneReactionObjectReferences(object: ReactionObject, removed: ReadonlySet<string>): ReactionObject {
+  const components = object.components.filter(component => !removed.has(component.objectId));
+  const conditionsTextObjectIds = object.conditionsTextObjectIds.filter(id => !removed.has(id));
+  const arrowObjectIds = object.arrowObjectIds?.filter(id => !removed.has(id));
+  const plusObjectIds = object.plusObjectIds?.filter(id => !removed.has(id));
+  const sourceReferences = object.compatibility?.unknown.cdxmlStepReferences;
+  let compatibility = object.compatibility;
+  if (compatibility && sourceReferences && typeof sourceReferences === "object" && !Array.isArray(sourceReferences)) {
+    let changed = false;
+    const references = Object.fromEntries(Object.entries(sourceReferences).map(([key, value]) => {
+      if (!Array.isArray(value)) return [key, value];
+      const kept = value.filter(id => typeof id !== "string" || !removed.has(id));
+      if (kept.length !== value.length) changed = true;
+      return [key, kept];
+    }));
+    if (changed) {
+      compatibility = { ...compatibility, unknown: { ...compatibility.unknown, cdxmlStepReferences: references } };
+    }
+  }
+  if (components.length === object.components.length && conditionsTextObjectIds.length === object.conditionsTextObjectIds.length
+    && arrowObjectIds?.length === object.arrowObjectIds?.length && plusObjectIds?.length === object.plusObjectIds?.length
+    && compatibility === object.compatibility) return object;
+  return {
+    ...object, components, conditionsTextObjectIds,
+    ...(arrowObjectIds === undefined ? {} : { arrowObjectIds }),
+    ...(plusObjectIds === undefined ? {} : { plusObjectIds }),
+    ...(compatibility === undefined ? {} : { compatibility })
+  };
 }
 
 /**
@@ -413,6 +451,7 @@ function removeObjects(document: ChemDraftDocument, objectIds: readonly string[]
     // into splice would overflow the argument stack on a page of 100,000 objects.
     page.objects = kept;
     pruneCrossings(page, (crossing) => !crossing.bonds.some((ref) => removedHere.has(ref.objectId)));
+    pruneReactionReferences(page, removedHere);
     removedHere.forEach((id) => removed.add(id));
   }
   forgetShiftedDuplicateLocations(document);

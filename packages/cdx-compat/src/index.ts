@@ -28,6 +28,7 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   type Point,
+  type ReactionObject,
   type TextObject,
   type TableObject
 } from "@chemdraft/chem-core";
@@ -141,6 +142,7 @@ interface XmlElementView {
 
 interface IdAllocator {
   next(): string;
+  sourceId(value: string): string;
 }
 
 interface VisibleExportContext {
@@ -169,6 +171,7 @@ interface ImportPageContext {
   crossingHints: CdxmlCrossingImportHint[];
   colorTable: CdxmlColorTable;
   curveLineDefaults: Record<string, string>;
+  preserveReactionIds: boolean;
 }
 
 type DoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
@@ -206,7 +209,24 @@ export function exportDocumentToCdxml(
       if (color && !curveColors.includes(color)) curveColors.push(color);
     }
   }
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts, curveColors));
+  // Source reaction lists use document-wide ids. Reserve them before allocating any new ids,
+  // including atom/bond ids carried by opaque atom-mapping attributes.
+  const hasReactions = parsedDocument.pages.some(page => page.objects.some(object => object.type === "reaction"));
+  const reactionIds = new Set<string>(parsedDocument.pages.map(page => page.id));
+  for (const page of parsedDocument.pages) {
+    for (const object of page.objects) {
+      if (object.compatibility?.originalId) reactionIds.add(object.compatibility.originalId);
+      const source = object.compatibility?.unknown;
+      if (typeof source?.cdxmlSchemeId === "string") reactionIds.add(source.cdxmlSchemeId);
+      for (const key of ["cdxmlAtomIdsByAtomId", "cdxmlBondIdsByBondId"]) {
+        for (const id of Object.values(preservedCurveAttributes(source?.[key]))) reactionIds.add(id);
+      }
+    }
+  }
+  const reactionAllocator = createIdAllocator(0, reactionIds);
+  for (const page of parsedDocument.pages) reactionAllocator.sourceId(page.id);
+  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, fonts, curveColors,
+    hasReactions ? reactionAllocator : createIdAllocator(pageIndex)));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
   const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts, curveColors);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
@@ -501,14 +521,262 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[], curveColors: readonly string[]): string {
-  const allocator = createIdAllocator(pageIndex);
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
   const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
-  const visibleChildren = page.objects
-    .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById, fonts))
-    .filter((child) => child.length > 0);
+  const preserveSourceIds = page.objects.some(object => object.type === "reaction");
+  for (const object of page.objects) {
+    const sourceId = object.compatibility?.originalId;
+    if (preserveSourceIds && sourceId) {
+      const exportedId = allocator.sourceId(sourceId);
+      context.ids.set(object.id, exportedId);
+      if (exportedId !== sourceId) warnings.push({ code: "cdxml.source_id_remapped", sourceObjectId: object.id,
+        message: `CDXML source id "${sourceId}" is duplicated or invalid; exported as "${exportedId}".` });
+    }
+    if (object.type === "molecule") {
+      const sourceBonds = preservedCurveAttributes(object.compatibility?.unknown.cdxmlBondIdsByBondId);
+      for (const bond of object.bonds) {
+        if (sourceBonds[bond.id]) context.bondIdsByRefKey.set(bondRefKey({ objectId: object.id, bondId: bond.id }), allocator.sourceId(sourceBonds[bond.id]));
+      }
+    }
+  }
+  const groupedIds = new Set(page.objects.flatMap(object => object.type === "group" ? object.childObjectIds : []));
+  const emitted = new Set<string>();
+  const emit = (object: DocumentObject): string => {
+    if (emitted.has(object.id)) return "";
+    emitted.add(object.id);
+    if (object.type !== "group") return exportVisibleObject(object, context, allocator, warnings, objectsById, fonts);
+    const attributes = preservedCurveAttributes(object.compatibility?.unknown.attributes);
+    attributes.id = idFor(context.ids, object.id, allocator);
+    const children = object.childObjectIds.flatMap(id => {
+      const child = objectsById.get(id);
+      return child ? [emit(child)] : [];
+    }).join("");
+    return `<group ${xmlAttributes(attributes)}>${children}</group>`;
+  };
+  const visibleChildren = page.objects.filter(object => !groupedIds.has(object.id)).map(emit).filter(Boolean);
+  // Cyclic or multiply-owned native groups still export each drawable at most once.
+  for (const object of page.objects) if (!emitted.has(object.id)) visibleChildren.push(emit(object));
+  visibleChildren.push(...exportReactionSchemes(page, context.ids, allocator, warnings, objectsById));
   return visibleChildren.length > 0 ? `\n${visibleChildren.map((child) => indent(child, 4)).join("\n")}\n  ` : "";
+}
+
+const reactionListAttributes = [
+  "ReactionStepReactants", "ReactionStepProducts", "ReactionStepArrows",
+  "ReactionStepObjectsAboveArrow", "ReactionStepObjectsBelowArrow", "ReactionStepPlusses"
+] as const;
+type ReactionListAttribute = typeof reactionListAttributes[number];
+
+function xmlAttributes(attributes: Record<string, string>): string {
+  return Object.entries(attributes).filter(([name]) => /^[A-Za-z_][\w.:-]*$/.test(name))
+    .map(([name, value]) => `${name}="${escapeXmlAttribute(value)}"`).join(" ");
+}
+
+/** Resolve containers to the same page objects, never clones of a molecule used by another step. */
+function reactionReferenceLeaves(rootIds: readonly string[], objects: ReadonlyMap<string, DocumentObject>): DocumentObject[] {
+  const pending = [...rootIds].reverse();
+  const visited = new Set<string>();
+  const leaves: DocumentObject[] = [];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const object = objects.get(id);
+    if (!object) continue;
+    if (object.type === "group") {
+      for (let index = object.childObjectIds.length - 1; index >= 0; index--) pending.push(object.childObjectIds[index]);
+    } else {
+      leaves.push(object);
+    }
+  }
+  return leaves;
+}
+
+function importReactionStep(
+  scheme: XmlElementView, step: XmlElementView, pageIndex: number, schemeIndex: number, stepIndex: number,
+  rootsBySourceId: ReadonlyMap<string, string[]>, objects: ReadonlyMap<string, DocumentObject>,
+  warnings: CompatibilityConversionWarning[]
+): ReactionObject {
+  const id = `cdxml_reaction_${pageIndex + 1}_${schemeIndex + 1}_${stepIndex + 1}`;
+  const components: ReactionObject["components"] = [];
+  const componentKeys = new Set<string>();
+  const addComponent = (role: ReactionObject["components"][number]["role"], objectId: string) => {
+    const key = `${role}:${objectId}`;
+    if (componentKeys.has(key)) return;
+    componentKeys.add(key);
+    components.push({ role, objectId });
+  };
+  const conditionsTextObjectIds: string[] = [];
+  const arrowObjectIds: string[] = [];
+  const plusObjectIds: string[] = [];
+  const references: Partial<Record<ReactionListAttribute, string[]>> = {};
+  const linkedObjects = new Map<string, DocumentObject>();
+  for (const attribute of reactionListAttributes) {
+    const roots: string[] = [];
+    for (const sourceId of splitCdxmlIdList(step.attributes[attribute])) {
+      const resolved = rootsBySourceId.get(sourceId);
+      if (!resolved?.length) {
+        warnings.push({ code: "cdxml.reaction_reference_unresolved", sourceObjectId: id,
+          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} id "${sourceId}" does not resolve to an imported object; ignored.` });
+        continue;
+      }
+      roots.push(...resolved);
+    }
+    references[attribute] = roots;
+    for (const object of reactionReferenceLeaves(roots, objects)) {
+      linkedObjects.set(object.id, object);
+      if (attribute === "ReactionStepReactants" || attribute === "ReactionStepProducts") {
+        const role = attribute === "ReactionStepReactants" ? "reactant" : "product";
+        addComponent(role, object.id);
+      } else if (attribute === "ReactionStepArrows") {
+        arrowObjectIds.push(object.id);
+      } else if (attribute === "ReactionStepPlusses") {
+        plusObjectIds.push(object.id);
+      } else if (object.type === "molecule") {
+        addComponent("agent", object.id);
+      } else if (object.type === "text") {
+        conditionsTextObjectIds.push(object.id);
+      } else {
+        warnings.push({ code: "cdxml.reaction_object_role_unsupported", sourceObjectId: id,
+          message: `CDXML step ${step.attributes.id ?? id}: ${attribute} object "${object.compatibility?.originalId ?? object.id}" is ${object.type}; its placement is preserved in compatibility metadata without assigning an agent or condition role.` });
+      }
+    }
+  }
+  for (const attribute of Object.keys(step.attributes)) {
+    if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
+      warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: id,
+        message: `CDXML step ${step.attributes.id ?? id}: ${attribute} is preserved as source metadata; its semantics are not interpreted.` });
+    }
+  }
+  const { id: _schemeId, ...schemeAttributes } = scheme.attributes;
+  const { id: _stepId, ...stepAttributes } = step.attributes;
+  const extraSchemeChildren = canonicalizeXmlTree(scheme.children.filter(node => elementView(node)?.name !== "step"));
+  const extraStepChildren = canonicalizeXmlTree(step.children);
+  if (extraStepChildren || (stepIndex === 0 && extraSchemeChildren)) {
+    warnings.push({ code: "cdxml.reaction_children_payload_only", sourceObjectId: id,
+      message: `CDXML step ${step.attributes.id ?? id} or its scheme contains unrecognized child content, preserved only in the native payload.` });
+  }
+  return {
+    id, type: "reaction", ...(unionObjectBounds([...linkedObjects.values()]) ?? { x: 0, y: 0, width: 0, height: 0 }),
+    rotation: 0, style: {}, components,
+    conditionsTextObjectIds: [...new Set(conditionsTextObjectIds)],
+    arrowObjectIds: [...new Set(arrowObjectIds)], plusObjectIds: [...new Set(plusObjectIds)],
+    mappingState: step.attributes.ReactionStepAtomMap ? "unknown" : "absent",
+    compatibility: {
+      sourceFormat: "cdxml", originalId: step.attributes.id, warnings: [], unknown: {
+        cdxmlSchemeKey: `cdxml_scheme_${pageIndex + 1}_${schemeIndex + 1}`,
+        cdxmlSchemeId: scheme.attributes.id,
+        cdxmlSchemeAttributes: schemeAttributes, cdxmlStepIndex: stepIndex,
+        cdxmlStepAttributes: stepAttributes, cdxmlStepReferences: references,
+        ...(extraSchemeChildren ? { cdxmlSchemeExtraChildren: extraSchemeChildren } : {}),
+        ...(extraStepChildren ? { cdxmlStepExtraChildren: extraStepChildren } : {})
+      }
+    }
+  };
+}
+
+function exportReactionSchemes(
+  page: DocumentPage, ids: Map<string, string>, allocator: IdAllocator,
+  warnings: CompatibilityConversionWarning[], objects: ReadonlyMap<string, DocumentObject>
+): string[] {
+  const schemes = new Map<string, { id: string; attributes: Record<string, string>; reactions: ReactionObject[] }>();
+  for (const reaction of page.objects) {
+    if (reaction.type !== "reaction") continue;
+    const source = reaction.compatibility?.unknown;
+    const key = typeof source?.cdxmlSchemeKey === "string" ? source.cdxmlSchemeKey : `native_scheme_${page.id}_${reaction.id}`;
+    let scheme = schemes.get(key);
+    if (!scheme) {
+      scheme = {
+        id: typeof source?.cdxmlSchemeId === "string" ? allocator.sourceId(source.cdxmlSchemeId) : allocator.next(),
+        attributes: preservedCurveAttributes(source?.cdxmlSchemeAttributes), reactions: []
+      };
+      schemes.set(key, scheme);
+    }
+    scheme.reactions.push(reaction);
+  }
+  return [...schemes.values()].map(scheme => {
+    scheme.reactions.sort((left, right) => {
+      const l = left.compatibility?.unknown.cdxmlStepIndex;
+      const r = right.compatibility?.unknown.cdxmlStepIndex;
+      return (typeof l === "number" ? l : 0) - (typeof r === "number" ? r : 0);
+    });
+    const steps = scheme.reactions.map(reaction => {
+      const source = reaction.compatibility?.unknown;
+      const attributes = preservedCurveAttributes(source?.cdxmlStepAttributes);
+      if (source?.cdxmlStepExtraChildren || source?.cdxmlSchemeExtraChildren) {
+        warnings.push({ code: "cdxml.reaction_children_payload_only", sourceObjectId: reaction.id,
+          message: `Reaction ${reaction.id} has unrecognized source child content preserved only in the native payload.` });
+      }
+      if (reaction.mappingState === "absent") delete attributes.ReactionStepAtomMap;
+      for (const attribute of Object.keys(attributes)) {
+        if (attribute.startsWith("ReactionStep") && !reactionListAttributes.some(known => known === attribute)) {
+          warnings.push({ code: "cdxml.reaction_step_attribute_preserved", sourceObjectId: reaction.id,
+            message: `Reaction ${reaction.id}: ${attribute} is exported opaquely from source metadata; it has not been interpreted or updated for native edits.` });
+        }
+      }
+      const references = isRecord(source?.cdxmlStepReferences) ? source.cdxmlStepReferences : {};
+      const sourceRoots = (attribute: ReactionListAttribute): string[] => {
+        const value = references[attribute];
+        return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+      };
+      const aboveIds = new Set(reactionReferenceLeaves(sourceRoots("ReactionStepObjectsAboveArrow"), objects).map(object => object.id));
+      const belowIds = new Set(reactionReferenceLeaves(sourceRoots("ReactionStepObjectsBelowArrow"), objects).map(object => object.id));
+      const auxiliaryIds = [...reaction.components.filter(component => component.role === "agent").map(component => component.objectId), ...reaction.conditionsTextObjectIds];
+      const arrows = reaction.arrowObjectIds ?? [];
+      const arrow = objects.get(arrows[0]);
+      const arrowY = arrow ? arrow.y + arrow.height / 2 : reaction.y + reaction.height / 2;
+      const above: string[] = [], below: string[] = [];
+      // Drawables without a native agent/condition role keep their explicit source placement.
+      for (const [sourceIds, target] of [[aboveIds, above], [belowIds, below]] as const) {
+        for (const id of sourceIds) {
+          const object = objects.get(id);
+          if (object && object.type !== "molecule" && object.type !== "text") target.push(id);
+        }
+      }
+      for (const id of auxiliaryIds) {
+        const object = objects.get(id);
+        if (aboveIds.has(id)) above.push(id);
+        if (belowIds.has(id)) below.push(id);
+        if (!aboveIds.has(id) && !belowIds.has(id)) {
+          (object && object.y + object.height / 2 > arrowY ? below : above).push(id);
+        }
+      }
+      const desired: Record<ReactionListAttribute, string[]> = {
+        ReactionStepReactants: reaction.components.filter(component => component.role === "reactant").map(component => component.objectId),
+        ReactionStepProducts: reaction.components.filter(component => component.role === "product").map(component => component.objectId),
+        ReactionStepArrows: arrows, ReactionStepObjectsAboveArrow: above, ReactionStepObjectsBelowArrow: below,
+        ReactionStepPlusses: reaction.plusObjectIds ?? []
+      };
+      attributes.id = idFor(ids, reaction.id, allocator);
+      for (const attribute of reactionListAttributes) {
+        const remaining = new Set(desired[attribute]);
+        const exported: string[] = [];
+        for (const rootId of sourceRoots(attribute)) {
+          const leaves = reactionReferenceLeaves([rootId], objects);
+          if (!leaves.length || !leaves.every(object => remaining.has(object.id))) continue;
+          exported.push(idFor(ids, rootId, allocator));
+          for (const object of leaves) remaining.delete(object.id);
+        }
+        for (const id of remaining) {
+          if (objects.has(id)) exported.push(idFor(ids, id, allocator));
+          else warnings.push({ code: "cdxml.reaction_reference_unresolved", sourceObjectId: reaction.id,
+            message: `Native reaction ${reaction.id}: ${attribute} object "${id}" is missing; ignored on export.` });
+        }
+        const value = exported.join(" ");
+        if (value || attributes[attribute] !== undefined) {
+          // Keep original list whitespace too when no semantic or id edit requires rewriting it.
+          if (splitCdxmlIdList(attributes[attribute]).join(" ") !== value) attributes[attribute] = value;
+          else attributes[attribute] ??= value;
+        }
+      }
+      if (reaction.mappingState !== "absent" && !attributes.ReactionStepAtomMap) {
+        warnings.push({ code: "cdxml.reaction_mapping_payload_only", sourceObjectId: reaction.id,
+          message: `Reaction ${reaction.id} has mapping state "${reaction.mappingState}" without an atom map; only the native payload preserves this state.` });
+      }
+      return `<step ${xmlAttributes(attributes)}/>`;
+    }).join("");
+    return `<scheme ${xmlAttributes({ ...scheme.attributes, id: scheme.id })}>${steps}</scheme>`;
+  });
 }
 
 function exportVisibleObject(
@@ -569,11 +837,6 @@ function exportVisibleObject(
     }, context.ids, allocator, warnings);
   }
   if (object.type === "reaction") {
-    warnings.push({
-      code: "cdxml.reaction_scheme_export_partial",
-      message: "Reaction scheme CDXML export is partial; visible components are exported independently.",
-      sourceObjectId: object.id
-    });
     return "";
   }
   if (object.type === "mechanism-arrow" || object.type === "electron-mark") {
@@ -638,7 +901,8 @@ function exportMoleculeObject(
   warnings: CompatibilityConversionWarning[]
 ): string {
   const fragmentId = idFor(context.ids, molecule.id, allocator);
-  const atomIds = new Map<string, string>();
+  const atomIds = new Map(Object.entries(preservedCurveAttributes(molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId))
+    .map(([atomId, sourceId]) => [atomId, allocator.sourceId(sourceId)]));
   const bondedAtomIds = new Set(molecule.bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
   const hasIsotopes = molecule.atoms.some((atom) =>
     atom.isotope !== undefined || atom.element === "D" || atom.element === "T");
@@ -1766,8 +2030,13 @@ function importPageObjects(
     displayByRefKey: new Map(),
     crossingHints: [],
     colorTable,
-    curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) }
+    curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) },
+    preserveReactionIds: findElements(pageElement.children, "scheme").length > 0
   };
+  const schemes: XmlElementView[] = [];
+  const rootsBySourceId = new Map<string, string[]>();
+  const stepReferencedIds = new Set(findElements(pageElement.children, "step").flatMap(step =>
+    reactionListAttributes.flatMap(attribute => splitCdxmlIdList(step.attributes[attribute]))));
   let objectIndex = 1;
 
   // One CDXML element → every object it produced (in drawing order) and the ids that stand for it at
@@ -1780,6 +2049,7 @@ function importPageObjects(
         return { objects: [], rootIds: [] };
       }
       objectIndex += 1;
+      if (element.attributes.id) rootsBySourceId.set(element.attributes.id, [object.id]);
       return { objects: [object], rootIds: [object.id] };
     };
     if (element.name === "fragment") {
@@ -1798,7 +2068,18 @@ function importPageObjects(
       return single(importCurveGraphic(element, pageIndex, objectIndex, context));
     }
     if (element.name === "group") {
-      return importGroup(element);
+      const imported = importGroup(element);
+      if (element.attributes.id) rootsBySourceId.set(element.attributes.id, imported.rootIds);
+      return imported;
+    }
+    if (element.name === "scheme") {
+      if (childElements(element, "step").length === 0) {
+        warnings.push({ code: "cdxml.reaction_scheme_without_steps_preserved",
+          message: `CDXML scheme${element.attributes.id ? ` ${element.attributes.id}` : ""} has no steps; preserved as an unknown compatibility object.` });
+        return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex));
+      }
+      schemes.push(element);
+      return { objects: [], rootIds: [] };
     }
     if (element.name === "objecttag") {
       return { objects: [], rootIds: [] };
@@ -1825,7 +2106,9 @@ function importPageObjects(
     // A native group needs two members to mean anything (the app's own Group command requires two);
     // with fewer, the lone member simply stands on the page — said, not done silently (§11).
     const rootIdSet = new Set(memberRootIds);
-    const bounds = memberRootIds.length >= 2 ? unionObjectBounds(members.filter((object) => rootIdSet.has(object.id))) : undefined;
+    // A singleton referenced by a step must retain its id as a real container on export.
+    const keepSingleton = stepReferencedIds.has(groupElement.attributes.id);
+    const bounds = memberRootIds.length >= (keepSingleton ? 1 : 2) ? unionObjectBounds(members.filter((object) => rootIdSet.has(object.id))) : undefined;
     if (!bounds) {
       if (memberRootIds.length > 0) {
         warnings.push({
@@ -1863,6 +2146,13 @@ function importPageObjects(
     }
     objects.push(...importElement(element).objects);
   }
+  const objectsById = new Map(objects.map(object => [object.id, object]));
+  schemes.forEach((scheme, schemeIndex) => {
+    childElements(scheme, "step").forEach((step, stepIndex) => {
+      const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex, rootsBySourceId, objectsById, warnings);
+      objects.push(reaction);
+    });
+  });
   return {
     objects,
     crossings: resolveImportedCrossingOverrides(context, warnings)
@@ -2377,6 +2667,10 @@ function importFragment(
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
       unknown: {
+        ...(context.preserveReactionIds ? {
+          cdxmlAtomIdsByAtomId: Object.fromEntries([...atomIdByCdxmlId].map(([sourceId, atomId]) => [atomId, sourceId])),
+          cdxmlBondIdsByBondId: Object.fromEntries(cdxmlIdByBondId)
+        } : {}),
         ...(Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0 ? { cdxmlAtomStereochemistryByAtomId } : {}),
         ...(Object.keys(cdxmlUnknownBondOrdersByBondId).length > 0 ? { cdxmlUnknownBondOrdersByBondId } : {})
       }
@@ -3736,12 +4030,20 @@ function base64UrlSextet(value: string, index: number): number {
   return sextet;
 }
 
-function createIdAllocator(pageIndex: number): IdAllocator {
+function createIdAllocator(pageIndex: number, reservedIds: ReadonlySet<string> = new Set()): IdAllocator {
   let nextId = pageIndex * 10000 + 1;
+  const claimed = new Set<string>();
   return {
     next() {
+      while (reservedIds.has(String(nextId)) || claimed.has(String(nextId))) nextId += 1;
       const value = String(nextId);
       nextId += 1;
+      claimed.add(value);
+      return value;
+    },
+    sourceId(value) {
+      if (!/^[\w.:-]+$/.test(value) || claimed.has(value)) return this.next();
+      claimed.add(value);
       return value;
     }
   };

@@ -14565,6 +14565,7 @@ export function duplicateSelectedDocumentObjects(
 
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
+  remapCopiedReactionReferences(document, patches, duplicateIdByOriginalId);
   const selectionIds = [
     ...duplicateGroupIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId)),
     ...duplicateIds.filter((duplicateId) => !groupedDuplicateChildIds.has(duplicateId))
@@ -14834,9 +14835,64 @@ export function pasteSelectionClipboardPayload(
   const fallbackSelectionIds = selectedIds.length > 0
     ? selectedIds
     : [...idBySourceId.values()];
+  remapCopiedReactionReferences(document, patches, idBySourceId);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+/** A copied step refers to the copied drawables, including forward references and shared intermediates. */
+function remapCopiedReactionReferences(document: ChemDraftDocument, patches: DocumentPatch[], ids: ReadonlyMap<string, string>): void {
+  const remap = (references: readonly string[]) => references.flatMap(id => {
+    const copiedId = ids.get(id);
+    return copiedId === undefined ? [] : [copiedId];
+  });
+  const copiedSchemeKeys = new Map<string, string>();
+  const schemeKeys = new Set<string>();
+  for (const object of [
+    ...document.pages.flatMap(page => page.objects),
+    ...patches.flatMap(patch => patch.op === "addObject" ? [patch.object] : [])
+  ]) {
+    const key = object.type === "reaction" ? object.compatibility?.unknown.cdxmlSchemeKey : undefined;
+    if (typeof key === "string") schemeKeys.add(key);
+  }
+  for (const patch of patches) {
+    if (patch.op !== "addObject" || patch.object.type !== "reaction") continue;
+    const reaction = patch.object;
+    const source = reaction.compatibility?.unknown;
+    let compatibility = reaction.compatibility;
+    if (source && compatibility) {
+      const unknown = { ...source };
+      if (typeof source.cdxmlSchemeKey === "string") {
+        let key = copiedSchemeKeys.get(source.cdxmlSchemeKey);
+        if (key === undefined) {
+          key = `copied_scheme_${reaction.id}`;
+          const prefix = key;
+          let suffix = 1;
+          while (schemeKeys.has(key)) key = `${prefix}_${suffix++}`;
+          schemeKeys.add(key);
+          copiedSchemeKeys.set(source.cdxmlSchemeKey, key);
+        }
+        unknown.cdxmlSchemeKey = key;
+        delete unknown.cdxmlSchemeId;
+      }
+      const references = source.cdxmlStepReferences;
+      if (references && typeof references === "object" && !Array.isArray(references)) {
+        unknown.cdxmlStepReferences = Object.fromEntries(Object.entries(references).map(([attribute, value]) => [
+          attribute, Array.isArray(value) ? remap(value.filter((id): id is string => typeof id === "string")) : []
+        ]));
+      }
+      compatibility = { ...compatibility, unknown };
+    }
+    patch.object = {
+      ...reaction,
+      ...(compatibility === undefined ? {} : { compatibility }),
+      components: reaction.components.flatMap(component => remap([component.objectId]).map(objectId => ({ ...component, objectId }))),
+      conditionsTextObjectIds: remap(reaction.conditionsTextObjectIds),
+      ...(reaction.arrowObjectIds === undefined ? {} : { arrowObjectIds: remap(reaction.arrowObjectIds) }),
+      ...(reaction.plusObjectIds === undefined ? {} : { plusObjectIds: remap(reaction.plusObjectIds) })
+    };
+  }
 }
 
 export function rotateSelectedDocumentObjects90(document: ChemDraftDocument): ChemDraftDocument {

@@ -174,6 +174,7 @@ export {
   isEngineDocument,
   toEngineDocument,
   applyPatches,
+  pruneReactionObjectReferences,
   type ApplyPatchOptions,
   type DocumentPatch,
   type ObjectReorderPlacement
