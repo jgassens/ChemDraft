@@ -14060,6 +14060,29 @@ export function moveDocumentObjects(
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+/** Keyboard translation shares the object/group and fragment primitives used by canvas dragging. */
+export function moveCanvasSelection(
+  document: ChemDraftDocument,
+  fragments: readonly NativeMoleculeFragmentSelection[],
+  delta: PagePoint
+): ChemDraftDocument {
+  const page = firstPage(document);
+  // A molecule's part selection takes precedence over its object highlight, as in a part drag.
+  const fragmentIds = new Set(fragments.map(fragment => fragment.objectId));
+  const ids = resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds)
+    .filter(id => !fragmentIds.has(id));
+  let moved = document;
+  if (ids.length > 1) moved = moveDocumentObjects(moved, ids, delta.x, delta.y);
+  else if (ids.length === 1) {
+    const object = objectOnPage(page, ids[0]);
+    if (object) moved = moveDocumentObject(moved, object.id, { x: object.x + delta.x, y: object.y + delta.y });
+  }
+  for (const fragment of fragments) {
+    moved = moveNativeMoleculeParts(moved, { ...fragment, kind: "parts" }, delta);
+  }
+  return moved;
+}
+
 /** Translate precisely the new objects in a plugin insertion. Unlike selection dragging,
  * never expand groups/anchors into pre-existing objects outside the write's scope. */
 export function translateInsertedDocumentObjects(

@@ -292,6 +292,8 @@ import {
   type ExportResult
 } from "@chemdraft/export-engine";
 import {
+  createSelectionNudgeActions,
+  isSelectionNudgeCommand,
   atomElementActions,
   atomNicknameLabelActions,
   atomElementCommandId,
@@ -636,6 +638,7 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  moveCanvasSelection,
   documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
@@ -844,6 +847,9 @@ import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
 import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
+  arrowNudgeOffset,
+  arrowNudgeContinuesBurst,
+  isArrowNudgeEditorTarget,
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
   detectDesktopShortcutPlatform,
@@ -2632,6 +2638,22 @@ export function MainWindow({
   // across *different* molecules. `selectedNativeMoleculePart` (the primary) still drives every
   // single-molecule operation — drag, spin, delete, the inspector, dependency arrays — unchanged.
   const [selectedNativeMoleculeParts, setSelectedNativeMoleculeParts] = useState<NativeMoleculeSelectionPart[]>([]);
+  const arrowNudgeBurstRef = useRef<{ history: DocumentHistory; lastPress: number } | undefined>(undefined);
+  useLayoutEffect(() => { arrowNudgeBurstRef.current = undefined; }, [selectedNativeMoleculeParts]);
+  useEffect(() => {
+    const endBurst = () => { arrowNudgeBurstRef.current = undefined; };
+    const onKey = (event: KeyboardEvent) => {
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) return;
+      if (!arrowNudgeOffset(event.key) || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) endBurst();
+    };
+    window.addEventListener("keydown", onKey, true);
+    const events = ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel", "blur", "focusin"] as const;
+    for (const type of events) window.addEventListener(type, endBurst, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      for (const type of events) window.removeEventListener(type, endBurst, true);
+    };
+  }, []);
   const selectedNativeMoleculePart = selectedNativeMoleculeParts.length > 0
     ? selectedNativeMoleculeParts[selectedNativeMoleculeParts.length - 1]
     : undefined;
@@ -3275,13 +3297,14 @@ export function MainWindow({
     () => applyKeybindingSchemeToCommands(
       [...allShellCommands(document, selectedMolecule, {
         activeTableCell,
-        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
+        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined,
+          hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0 },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
       }), vibeCodeStarterCommand],
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -10874,6 +10897,40 @@ export function MainWindow({
     new Map()
   );
 
+  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
+  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
+  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
+  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
+  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
+  const isSnapshotSessionActive = useCallback(
+    (): boolean =>
+      nativeBondDragRef.current !== null ||
+      nativePlacementDragRef.current !== null ||
+      nativeBondEditDragRef.current !== null ||
+      nativePartDragRef.current !== null ||
+      objectDragRef.current !== null ||
+      graphicCornerRadiusDragRef.current !== null ||
+      graphicPathEditDragRef.current !== null ||
+      graphicMarkerDragRef.current !== null ||
+      graphicGradientDragRef.current !== null ||
+      freehandArtDragRef.current !== null ||
+      mechanismArrowDragRef.current !== null ||
+      mechanismHandleDragRef.current !== null ||
+      pathArtDrawRef.current !== null ||
+      bezierArtNodeDragRef.current !== null ||
+      objectRotateDragRef.current !== null ||
+      projectedPlaneTiltDragRef.current !== null ||
+      objectResizeDragRef.current !== null ||
+      groupTransformDragRef.current !== null ||
+      textResizeRef.current !== null ||
+      artStylePreviewRef.current !== null ||
+      moleculeInspectorPreviewRef.current !== null ||
+      rotationInputRef.current !== undefined ||
+      objectResizeInputRef.current !== undefined ||
+      moleculeStyleOverridePromptRef.current !== undefined,
+    []
+  );
+
   // Core command handlers are rebuilt every render (they close over live state), but they
   // now populate a plain Map instead of a fresh CommandRegistry. The registry instance
   // itself is created once (below) and its handlers delegate to this ref, so plugin
@@ -10884,10 +10941,40 @@ export function MainWindow({
       bindings.set(definition.id, {
         spec: definition,
         run: async () => {
+          if (!isSelectionNudgeCommand(definition.id)) arrowNudgeBurstRef.current = undefined;
           await handler?.();
         }
       });
     };
+
+    const nudgeActions = createSelectionNudgeActions(document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0);
+    nudgeActions.forEach(action => register(action, () => {
+      if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current ||
+        isArrowNudgeEditorTarget(globalThis.document.activeElement) || isBlockedByModalDialog(globalThis.document.activeElement) ||
+        isSnapshotSessionActive()) return;
+      const fragments = nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current);
+      const current = documentRef.current;
+      if (!current.selection.objectIds.length && !fragments.length) return;
+      const keys = action.shortcut!.split("+");
+      const delta = arrowNudgeOffset(keys.at(-1)!, keys.length > 1)!;
+      const burst = arrowNudgeBurstRef.current;
+      const now = Date.now();
+      const continuesBurst = burst?.history === documentHistoryRef.current && arrowNudgeContinuesBurst(burst.lastPress, now);
+      const moved = moveCanvasSelection(current, fragments, delta);
+      if (moved === current) {
+        // Repeats against a page edge are still presses, so they renew an existing burst.
+        arrowNudgeBurstRef.current = continuesBurst ? { history: documentHistoryRef.current, lastPress: now } : undefined;
+        return;
+      }
+      // Like assistant-history amendments, retain the first before-snapshot and replace only
+      // the current snapshot. History identity also ends a burst after any intervening edit,
+      // selection change, tab switch or Undo/Redo, even when it arrived outside keyboard routing.
+      if (continuesBurst) {
+        replacePresentDocument(prepareDocumentCommit(moved, "Move"));
+      } else commitDocumentChange(moved, "Move");
+      arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
+      setStatus("Move selection");
+    }));
 
     tableActions.forEach(action => register(action, async () => {
       if (action.id === "table.insertDialog") {
@@ -11630,6 +11717,7 @@ export function MainWindow({
 
     return bindings;
   }, [
+    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
     tableActions, activeTableCell,
     activateDocumentTab,
     newDocumentTab,
@@ -11757,39 +11845,6 @@ export function MainWindow({
     setAnalyzerNotice((current) => (current?.pluginId === pluginId ? undefined : current));
   }, []);
 
-  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
-  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
-  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
-  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
-  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
-  const isSnapshotSessionActive = useCallback(
-    (): boolean =>
-      nativeBondDragRef.current !== null ||
-      nativePlacementDragRef.current !== null ||
-      nativeBondEditDragRef.current !== null ||
-      nativePartDragRef.current !== null ||
-      objectDragRef.current !== null ||
-      graphicCornerRadiusDragRef.current !== null ||
-      graphicPathEditDragRef.current !== null ||
-      graphicMarkerDragRef.current !== null ||
-      graphicGradientDragRef.current !== null ||
-      freehandArtDragRef.current !== null ||
-      mechanismArrowDragRef.current !== null ||
-      mechanismHandleDragRef.current !== null ||
-      pathArtDrawRef.current !== null ||
-      bezierArtNodeDragRef.current !== null ||
-      objectRotateDragRef.current !== null ||
-      projectedPlaneTiltDragRef.current !== null ||
-      objectResizeDragRef.current !== null ||
-      groupTransformDragRef.current !== null ||
-      textResizeRef.current !== null ||
-      artStylePreviewRef.current !== null ||
-      moleculeInspectorPreviewRef.current !== null ||
-      rotationInputRef.current !== undefined ||
-      objectResizeInputRef.current !== undefined ||
-      moleculeStyleOverridePromptRef.current !== undefined,
-    []
-  );
   // A plugin's direct write that lands during such a session waits for it to commit or cancel, then
   // commits as its own undo entry on top — and the plugin's receipt is sent only once it has. Applying it
   // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
@@ -12361,6 +12416,7 @@ export function MainWindow({
   );
 
   const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
+    if (!isSelectionNudgeCommand(commandId)) arrowNudgeBurstRef.current = undefined;
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
@@ -13866,6 +13922,13 @@ export function MainWindow({
       if (!commandId) {
         return;
       }
+      if (isSelectionNudgeCommand(commandId) &&
+        ((!documentRef.current.selection.objectIds.length && !selectedNativeMoleculePartsRef.current.length) ||
+          isArrowNudgeEditorTarget(event.target) || isArrowNudgeEditorTarget(globalThis.document.activeElement) ||
+          activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || isSnapshotSessionActive())) {
+        arrowNudgeBurstRef.current = undefined;
+        return;
+      }
       // Copy/cut/paste fall through to the native clipboard events (handleCopy/handleCut/handlePaste),
       // which read and write event.clipboardData synchronously. On desktop, handlePaste additionally
       // falls back to the native Tauri clipboard read when the WebView paste event has no data.
@@ -13903,6 +13966,7 @@ export function MainWindow({
     selectedNativeMoleculePart,
     assignHoveredNativeDeleteTarget,
     shortcutRegistry,
+    isSnapshotSessionActive,
     activeTableCellState,
     startTableCellEdit,
     startAtomLabelEdit,
