@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Privacy — ChemDraft</title>
+    <meta name="description" content="ChemDraft privacy policy.">
+    <link rel="icon" href="assets/chemdraft-icon.png" type="image/png">
+    <link rel="preconnect" href="https://use.typekit.net">
+    <link rel="preconnect" href="https://p.typekit.net">
+    <link rel="stylesheet" href="https://use.typekit.net/yrs0uxx.css">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="ChemDraft home">
+        <img class="brand-icon" src="assets/chemdraft-icon.png" width="28" height="28" alt="">
+        <span class="brand-name">ChemDraft</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="./#features">Features</a>
+        <a href="./#assistants">AI assistants</a>
+        <a href="./#support">Support</a>
+        <a href="https://github.com/jgassens/ChemDraft">GitHub</a>
+      </nav>
+    </header>
+
+    <main class="project-page chemdraft-signal">
+      <section class="app-hero">
+        <p class="index-number">8 November 2026</p>
+        <h1>Privacy</h1>
+      </section>
+      <section class="product-detail" aria-labelledby="privacy">
+        <p class="index-number">Privacy</p>
+        <div class="copy-stack">
+          <h2 id="privacy">Desktop privacy and network connections</h2>
+          <p>ChemDraft stores drawings locally. The inspected application code does not upload drawings for ordinary drawing, local chemistry analysis, local recognition or local naming. It does make the network connections described below. This policy is based on a source review dated 2 November 2026; it is not a runtime traffic verification.</p>
+          <aside class="download-note" aria-labelledby="privacy-in-short">
+            <h3 id="privacy-in-short">In short</h3>
+            <p><strong>Your drawings and files stay on your computer.</strong> ChemDraft does not send files, drawings or structures anywhere on its own. The exception is the optional AI assistant: after you install it and give consent, it sends your prompts and the content it works with, which can include structures, to your chosen provider, Anthropic or OpenAI.</p>
+            <p><strong>Connections are mainly for updates.</strong> ChemDraft checks for app updates and, if official plugins are installed, their updates; you can turn off plugin update checks in Settings. Downloads of updates, plugins and optional engines happen only when you choose them. Failed plugin requests can also trigger connection checks. The optional AI assistant connects to your provider and can search the web during a request.</p>
+            <p><strong>Plugins work within declared permissions.</strong> Through the plugin API, plugins can do only what those permissions allow. ChemDraft shows them and never grants a permission a plugin did not declare. Network access requires <code>network.fetch</code>; the desktop app currently gives plugins no general way to fetch from the network.</p>
+            <p><strong>As far as we know, no published plugin sends your data anywhere except the optional AI assistant described above.</strong> It declares its assistant access in its permissions, and this page explains what it sends. A plugin that sends data must declare the permissions for that access. Official plugin packages were not independently audited.</p>
+          </aside>
+          <p><strong>Automatic app update checks.</strong> The stable packaged Windows app checks GitHub’s raw content service for <code>jgassens/ChemDraft/main/latest.json</code> after startup when no successful check is recorded within 24 hours; a failed check can retry on a later launch. Packaged macOS builds use Sparkle with automatic checks enabled and a configured 24-hour interval, fetching <code>jgassens/ChemDraft/main/appcast.xml</code> from the same service. Both platforms also offer a manual check. Update notices may fetch release notes from GitHub’s raw content service. Update downloads use GitHub release URLs and its download infrastructure; installation requires user approval.</p>
+          <p><strong>Official plugin checks and downloads.</strong> With official plugins installed, automatic checks are enabled by default after startup and daily while running; you can disable them in Settings. Checks request latest-release metadata from <code>api.github.com</code> for the ChemDraft NMR, OPSIN, MolScribe and Orthonym plugin repositories under <code>jgassens</code>. Installed versions are compared locally. Installing or updating a plugin requests its checksum and ZIP from GitHub and <code>release-assets.githubusercontent.com</code> after user action. A failed plugin network request can automatically trigger a connection-diagnosis HEAD request to the root of one of these three hosts, including after an automatic check.</p>
+          <p><strong>Optional engine downloads.</strong> Installing a local recognition or naming engine requires an explicit Install action, including approval of a plugin installation that needs its engine. Downloads include uv from GitHub, Python distributions and Python packages resolved by uv, MolScribe source from GitHub and model weights from Hugging Face, or the naming engine’s Centres dependency from GitHub. These downloads send package, version and platform requests, not drawings or recognition images. Exact Python-package destinations and download redirect hosts are not fully determined by this source review. The host passes recognition images and naming structures to local processes.</p>
+          <p><strong>Optional assistant tools.</strong> The host supports user-approved installation of Claude Code from <code>downloads.claude.ai</code> or Codex from GitHub and its release-asset service. Sign-in uses your account with the selected provider. After consent for a plugin and tool, assistant requests can send prompts, conversation and open-page or document content, including unpublished structures, to Anthropic or OpenAI. The assistant may search the web and read external pages during a request without separate approval for each website. Its local tool connection uses a session-protected loopback server; results can become part of the provider conversation. Stored consent is reused and can be revoked. Exact vendor endpoints, authentication traffic, background behavior and retention are not established here; vendor status commands may also have network behavior that this review could not determine.</p>
+          <p><strong>Bug and crash reports.</strong> ChemDraft opens an email draft addressed to <code>jgassens@gmail.com</code> for you to review, edit and send through your own email program. It can include app version, build, platform, browser engine and error details, plus anything you attach. Crash notes are stored locally until you choose to report them. No separate analytics or automatic crash-upload client was found in the inspected application source.</p>
+          <p><strong>What services can observe.</strong> Servers and configured proxies can receive your IP address, requested URL, request timing and HTTP/TLS metadata. Download paths can identify the requested version and platform. ChemDraft’s update and download flows do not supply document content. Exact updater headers and any Sparkle system/version metadata or profiling behavior have not been established by this review. The host requests that optional CLI tools disable telemetry, error reporting and automatic updating; this does not verify every vendor’s behavior.</p>
+          <p><strong>Review limits.</strong> Official plugin release packages live in separate repositories and were not independently audited here. Their workers are restricted to the app’s local origin, and the desktop does not provide a generic plugin network-fetch capability. Third-party package internals, updater libraries, OS network services and service-side logging or retention have not been exhaustively verified. This policy must not be read as a guarantee that no information ever leaves the computer.</p>
+          <p><strong>This website.</strong> This website is hosted on Cloudflare and uses Adobe Fonts. Visiting this page contacts Cloudflare and Adobe’s font services at <code>use.typekit.net</code> and <code>p.typekit.net</code> for the site typography. Website hosting and font-service logging, cookie and retention details have not been established by this review. Desktop and website traffic are separate.</p>
+          <p>This website uses Cloudflare Web Analytics, which counts page views without cookies and collects no personal data.</p>
+          <p>Evidence and unresolved details: <a class="text-link" href="https://github.com/jgassens/ChemDraft/blob/main/docs/releasing/code-signing-network-audit.md">network audit</a>. Privacy contact: <a class="text-link" href="mailto:jgassens@gmail.com">jgassens@gmail.com</a>.</p>
+        </div>
+      </section>
+      <p><a class="text-link" href="code-signing.html">Read the code signing policy</a>.</p>
+    </main>
+
+    <footer class="site-footer">
+      <span>ChemDraft</span>
+      <nav aria-label="Footer navigation">
+        <a href="https://github.com/jgassens/ChemDraft/releases/latest">Download</a>
+        <a href="https://github.com/jgassens/ChemDraft/issues">Support</a>
+        <a href="https://github.com/jgassens/ChemDraft">GitHub</a>
+      </nav>
+    </footer>
+  </body>
+</html>
