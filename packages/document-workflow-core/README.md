@@ -146,3 +146,8 @@ bond length. The requested atom-bounds centre is retained,
 including near page edges. The function returns a molecule without mutating the document or template;
 callers insert it through their normal patch/undo path. Provenance uses existing style/source and
 compatibility metadata.
+
+`nameDictionary.ts` owns the shared OPSIN-first fallback policy and exact name/CAS dictionary
+lookup. Callers inject OPSIN and decompressed text loading, so the module has no filesystem,
+DOM or engine-loading dependency. The app uses DecompressionStream; Node uses node:zlib.
+See data/names/README.md for the data contract and bundling.

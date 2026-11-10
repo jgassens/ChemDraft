@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.09.22.03-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11796,8 +11796,13 @@ export function MainWindow({
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
+  const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
     onPluginUpdateStatus: setStatus,
+    onNameResolutionStatus: text => {
+      nameResolutionStatusRef.current = text;
+      if (text) setStatus(text);
+    },
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
@@ -11845,11 +11850,14 @@ export function MainWindow({
         const templateMessages = applied.document.pages.flatMap(page => page.objects.flatMap(object =>
           object.type === "molecule" && !previousIds.has(object.id) && applied.receipt.objectIds.includes(object.id)
             ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
-        setStatus(templateMessages.length ? templateMessages.join("; ") :
+        const sourceStatus = plugin.id === "org.chemdraft.opsin.nameToStructure" && insertedDescription === "structure"
+          ? nameResolutionStatusRef.current : undefined;
+        if (sourceStatus) nameResolutionStatusRef.current = undefined;
+        const insertionStatus = templateMessages.length ? templateMessages.join("; ") :
           applied.receipt.objectIds.length > 0 && insertedDescription
             ? `${plugin.name}: inserted ${insertedDescription}`
-            : `${plugin.name}: applied ${command.title}`
-        );
+            : `${plugin.name}: applied ${command.title}`;
+        setStatus(sourceStatus ? `${insertionStatus} (${sourceStatus})` : insertionStatus);
         return applied.receipt;
       });
     }

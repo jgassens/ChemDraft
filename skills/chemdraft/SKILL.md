@@ -291,3 +291,9 @@ allowed. See the relevant reference for combined versus per-job files.
 - [Art](references/art.md): styled figures, ring fills and letters, highlights, sketch look, arrows, known limits.
 - [Recipes](references/recipes.md): worked commands for exams, figures, properties, datasets and styled figures.
 - `scripts/ring-style.mjs`: Nicolaou-style ring fills, letters, fusion H and Me for any molecule, with the identity and figure checks (recipe 11; `--help` lists commands and options).
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.

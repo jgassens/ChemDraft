@@ -344,19 +344,19 @@ const DIRECT_WRITE_COMMAND_ID = "plugin.directWriteFixture.insert";
 const DIRECT_TEXT_WRITE_PLUGIN_ID = "org.chemdraft.test.direct-text-write";
 const DIRECT_TEXT_WRITE_COMMAND_ID = "plugin.directTextWriteFixture.insert";
 
-function registerDirectWritePlugin(pageId: string): { release: () => void } {
+function registerDirectWritePlugin(pageId: string, resolveName = false): { release: () => void } {
   let release!: () => void;
   const released = new Promise<void>((resolve) => {
     release = resolve;
   });
   harness.runtime!.registerPlugin(
     {
-      id: DIRECT_WRITE_PLUGIN_ID,
+      id: resolveName ? "org.chemdraft.opsin.nameToStructure" : DIRECT_WRITE_PLUGIN_ID,
       name: "Direct Write Fixture",
       version: "0.0.1",
       apiVersion: "^0.1.6",
       entry: "test:direct-write",
-      permissions: ["document.write"],
+      permissions: resolveName ? ["document.write", "chemistry.compute", "native.execute"] : ["document.write"],
       contributes: {
         commands: [{ id: DIRECT_WRITE_COMMAND_ID, title: "Insert Named Structure", requiredPermissions: ["document.write"] }]
       }
@@ -365,6 +365,11 @@ function registerDirectWritePlugin(pageId: string): { release: () => void } {
       commandHandlers: {
         [DIRECT_WRITE_COMMAND_ID]: async (context) => {
           await released;
+          if (resolveName) {
+            const nameToStructure = context.chemistry?.nameToStructure;
+            if (!nameToStructure) throw new Error("Name resolution capability is unavailable in the direct-write fixture.");
+            await nameToStructure({ name: "β-CD" });
+          }
           return context.documents.applyPatch!({
             reason: "deterministic result for a name the user typed",
             patch: {
@@ -524,6 +529,17 @@ describe("a plugin's direct write that lands during a canvas drag", () => {
     expect(receipt).toEqual({ applied: true, objectIds: ["mol_named_001"] });
     expect(objectIds(bridge)).toEqual(["mol_named_001"]);
     expect(statusText()).toBe("Direct Write Fixture: inserted structure");
+  });
+
+  it("retains the name resolution source after inserting the structure", async () => {
+    const bridge = await renderMainWindow();
+    const { release } = registerDirectWritePlugin(bridge.snapshot().document.pages[0]!.id, true);
+    release();
+    await act(async () => {
+      await harness.runtime!.host.invokeCommand(DIRECT_WRITE_COMMAND_ID);
+    });
+    expect(objectIds(bridge)).toContain("mol_named_001");
+    expect(statusText()).toContain("built-in template");
   });
 
   it.each([

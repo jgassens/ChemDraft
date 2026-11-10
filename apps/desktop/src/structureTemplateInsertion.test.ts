@@ -12,6 +12,8 @@ import { depictSmilesForPaste } from "./smilesListPaste";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import * as workflow from "@chemdraft/document-workflow-core";
 import * as ocl from "@chemdraft/ocl-adapter";
+import { readFile } from "node:fs/promises";
+import { nameDictionaryUrl } from "@chemdraft/document-workflow-core";
 
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockRejectedValue(new Error("No native runtime")) }));
@@ -42,6 +44,27 @@ describe("desktop template input boundaries", () => {
     expect(await nameToStructureForPlugin({ name: "β-CD" })).toEqual({ available: true, parsed: true,
       smiles: template.smiles, engine: { id: "chemdraft-templates", version: "builtin" } });
     expect(invoke).not.toHaveBeenCalled();
+  });
+  it("returns OPSIN provenance without fetching the dictionary, then falls back to local data", async () => {
+    const fetchAsset = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(new Uint8Array(await readFile(nameDictionaryUrl)).buffer));
+    vi.mocked(invoke).mockResolvedValueOnce({ available: true, version: "test" })
+      .mockResolvedValueOnce({ smiles: "CCO" });
+    expect(await nameToStructureForPlugin({ name: "ethanol" })).toMatchObject({
+      parsed: true, source: "opsin", smiles: "CCO"
+    });
+    expect(fetchAsset).not.toHaveBeenCalled();
+    vi.mocked(invoke).mockResolvedValueOnce({ available: true, version: "test" })
+      .mockResolvedValueOnce({ failureReason: "OPSIN parse miss" });
+    expect(await nameToStructureForPlugin({ name: "Prozac" })).toMatchObject({
+      parsed: true, source: "dictionary", matchedName: "Prozac", engine: { id: "dictionary" }
+    });
+    expect(fetchAsset).toHaveBeenCalledOnce();
+    vi.mocked(invoke).mockResolvedValueOnce({ available: true, version: "test" })
+      .mockResolvedValueOnce({ failureReason: "OPSIN parse miss" });
+    expect(await nameToStructureForPlugin({ name: "CAS No. 64-17-5" })).toMatchObject({
+      parsed: true, source: "dictionary", matchedCas: "64-17-5", smiles: "CCO"
+    });
   });
   it("builds a plugin molecule with the shared authored layout", async () => {
     const result = await structureFromSmilesForPlugin({ smiles: template.smiles }, () => createEmptyDocument());
