@@ -214,4 +214,3 @@ function centredOnPage(object: DocumentObject, page: ChemDraftDocument["pages"][
     atoms: object.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
   };
 }
-
