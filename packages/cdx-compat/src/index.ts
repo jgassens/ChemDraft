@@ -2963,9 +2963,20 @@ function importPageObjects(
     colorTable,
     fonts,
     curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) },
-    preserveReactionIds: findElements(pageElement.children, "scheme").length > 0
+    preserveReactionIds: findElements(pageElement.children, "scheme").length > 0 || findElements(pageElement.children, "step").length > 0
   };
   const schemes: XmlElementView[] = [];
+  // A step need not have a scheme wrapper. Collect these even inside containers whose
+  // ordinary content importer does not visit; resolve all links after the page is imported.
+  const standaloneSteps: XmlElementView[] = [];
+  const collectStandaloneSteps = (element: XmlElementView, inScheme = false) => {
+    if (element.name === "step" && !inScheme) standaloneSteps.push(element);
+    for (const child of element.children) {
+      const view = elementView(child);
+      if (view) collectStandaloneSteps(view, inScheme || element.name === "scheme");
+    }
+  };
+  collectStandaloneSteps(pageElement);
   const rootsBySourceId = new Map<string, string[]>();
   const supersededBySourceId = new Map<string, string>();
   context.preserveReactionIds ||= findElements(pageElement.children, "bracketedgroup").length > 0;
@@ -3053,14 +3064,7 @@ function importPageObjects(
       return { objects: [], rootIds: [] };
     }
     if (element.name === "step") {
-      const links = reactionListAttributes.filter(attribute => splitCdxmlIdList(element.attributes[attribute]).length > 0);
-      for (const attribute of links) {
-        warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: element.attributes.id,
-          message: `${sourceFormat} step ${element.attributes.id ?? "(unknown)"}: ${reactionLinkNames[attribute]} link ${attribute}="${element.attributes[attribute]}" was not imported natively because the step is outside a supported scheme; source data is preserved as an unknown compatibility object.` });
-      }
-      if (!links.length) warnings.push({ code: "cdxml.reaction_step_preserved", sourceObjectId: element.attributes.id,
-        message: `${sourceFormat} step ${element.attributes.id ?? "(unknown)"} has no arrow, reactants, products or conditions links and is outside a supported scheme; it was not imported natively and remains an unknown compatibility object.` });
-      return single(importUnknownCompatibilityObject(element, pageIndex, objectIndex, sourceFormat));
+      return { objects: [], rootIds: [] };
     }
     if (element.name === "objecttag") {
       return { objects: [], rootIds: [] };
@@ -3128,12 +3132,17 @@ function importPageObjects(
     objects.push(...importElement(element).objects);
   }
   const objectsById = new Map(objects.map(object => [object.id, object]));
-  schemes.forEach((scheme, schemeIndex) => {
-    childElements(scheme, "step").forEach((step, stepIndex) => {
-      const reaction = importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
-        rootsBySourceId, objectsById, supersededBySourceId, warnings, sourceFormat);
-      objects.push(reaction);
-    });
+  // Visible export puts standalone steps in standard scheme containers. This supplies no
+  // invented links: the same resolver and source step metadata serve both source forms.
+  schemes.push(...standaloneSteps.map(step => ({ name: "scheme", attributes: {},
+    children: [{ step: step.children, ":@": step.attributes }] })));
+  const sourceStepOrder = new Map(findElements(pageElement.children, "step").map((step, index) => [step.children, index]));
+  const pendingSteps = schemes.flatMap((scheme, schemeIndex) => childElements(scheme, "step")
+    .map((step, stepIndex) => ({ scheme, schemeIndex, step, stepIndex })));
+  pendingSteps.sort((a, b) => sourceStepOrder.get(a.step.children)! - sourceStepOrder.get(b.step.children)!);
+  pendingSteps.forEach(({ scheme, schemeIndex, step, stepIndex }) => {
+    objects.push(importReactionStep(scheme, step, pageIndex, schemeIndex, stepIndex,
+      rootsBySourceId, objectsById, supersededBySourceId, warnings, sourceFormat));
   });
   for (const group of bracketGroups) {
     const attachments = childElements(group, "bracketattachment");
@@ -4269,6 +4278,14 @@ function importGraphic(
         warnings: [], unknown: { cdxmlBracket: element, cdxmlCoordinateSpace: "xy", cdxmlBracketState: JSON.stringify([undefined, undefined, undefined, undefined]),
           ...(element.attributes.color !== undefined ? { cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) } : {}),
           cdxmlBracketGeometry: JSON.stringify([box.x, box.y, box.width, box.height, 0, element.attributes.BracketType === "Round" ? "round" : "square", "open"]) } } };
+  }
+  const separateHeads = cdxmlArrowMarkers(element);
+  if (element.attributes.GraphicType === "Line" &&
+      (!element.attributes.ArrowType || normalizedCdxmlToken(element.attributes.ArrowType) === "nohead") &&
+      (separateHeads.markerStart || separateHeads.markerEnd)) {
+    // Binary line graphics may use the same head/tail properties as standalone arrows.
+    // An ArrowType-only check silently imported those headed lines as decorative paths.
+    return importArrowGraphic(element, pageIndex, objectIndex, context);
   }
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
     // Arrow identity depends on ArrowType alone: Solid, absent and unknown LineType values

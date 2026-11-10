@@ -237,6 +237,8 @@ a warning rather than converted to a different radical.
 Synthetic-fixture-covered `<scheme>/<step>` import uses native `reaction` objects, one per step in
 source order. `components` holds reactant/product/agent roles; `conditionsTextObjectIds` links text
 above or below the arrow; optional `arrowObjectIds` and `plusObjectIds` link shared drawables.
+Scheme-less steps, including direct page children, use the same native import and link resolver.
+Visible export places them in standard scheme containers without inventing participants or links.
 Groups resolve to their members, and an intermediate used by two steps remains one molecule.
 Explicit reactant/product text labels remain participants; decorative group members do not acquire
 chemical roles and produce a named warning while retaining their source references. Multiline
@@ -251,11 +253,14 @@ migration of previously saved native documents is performed.
 Headed `Line` graphics become native editable arrows independently of `LineType`, including
 `Solid`, absent and unknown values. Mapped dash, bold and wave styles remain native; explicit
 solid and unmapped line-type text survive visible export in `cdxmlLineType` compatibility data.
+Line graphics may state their heads with `ArrowType` or separate `ArrowheadHead`/`ArrowheadTail`
+properties. Separate heads use the standalone-arrow importer, retaining the headed ends and full
+versus half heads. Synthetic tests construct binary property records directly and exercise three
+visible CDX round trips, including `FullHead` and separate heads with solid, absent and dashed lines.
 Unknown binary line-type bits retain their complete numeric value. Unmapped styles produce
 `cdxml.arrow_line_type_approximation` while keeping the arrowhead and reaction link.
 Unresolved-link warnings name the source step id, attribute, target id and link role (arrow,
-reactants, products or conditions). A step outside a supported scheme remains an unknown object
-with `cdxml.reaction_step_preserved` naming every affected link, rather than a generic warning.
+reactants, products or conditions), including links on scheme-less steps.
 Legacy `<graphic>` arrow twins carrying `SupersededBy` are intentionally not imported or written
 back. The modern `<arrow>` they point to is kept, and reaction steps reference that arrow.
 

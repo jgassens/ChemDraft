@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { XMLParser } from "fast-xml-parser";
 import type { ChemDraftDocument, MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import { planNativeArtVisual } from "../../art-engine/src/index";
-import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
+import { MAGIC, cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 
 const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false });
@@ -18,6 +18,70 @@ const withoutIds = (node: CdxElement): CdxElement => ({
 const molecule = '<fragment id="2"><n id="3" p="60 60" Element="6"/><n id="4" p="90 60" Element="8"/><b id="5" B="3" E="4" Order="1"/></fragment>';
 const glyph = (id: number, kind = "Round", usage = "") => `<graphic id="${id}" GraphicType="Bracket" BracketType="${kind}" BoundingBox="${id * 5} 40 ${id * 5 + 8} 80" LipSize="60" Z="1" ${usage}/>`;
 const attachment = (id: number, graphic: number) => `<bracketattachment id="${id}" GraphicID="${graphic}"><crossingbond id="${id + 1}" BondID="5" InnerAtomID="3"/></bracketattachment>`;
+
+// Independent binary records: a CDXML writer cannot hide an enum/property decoding bug here.
+const u16 = (value: number) => [value & 255, value >>> 8 & 255];
+const u32 = (value: number) => [...u16(value), ...u16(value >>> 16)];
+const coord = (value: number) => u32(value * 65536);
+const property = (tag: number, bytes: number[]) => [...u16(tag), ...u16(bytes.length), ...bytes];
+const record = (tag: number, id: number, ...children: number[][]) => [...u16(tag), ...u32(id), ...children.flat(), 0, 0];
+const binaryPageStep = (heads: number[][], lineType?: number) => new Uint8Array([
+  ...new TextEncoder().encode(MAGIC), 4, 3, 2, 1, ...Array(10).fill(0),
+  ...record(0x8000, 0, record(0x8001, 1,
+    record(0x800e, 41, property(0x0c04, u32(30)), property(0x0c01, [2, 5].flatMap(u32)),
+      property(0x0c02, [8, 11, 14, 17, 20].flatMap(u32))),
+    ...[2, 5, 8, 11, 14, 17, 20].map((id, index) => record(0x8003, id,
+      record(0x8004, id + 1, property(0x0402, u16(index % 2 ? 8 : 6)),
+        property(0x0200, [60, 30 + index * 30].flatMap(coord))))),
+    record(0x8007, 30, property(0x0a00, u16(1)), ...heads,
+      ...(lineType === undefined ? [] : [property(0x0a01, u16(lineType))]),
+      property(0x0204, [90, 100, 90, 160].flatMap(coord)),
+      property(0x0a20, u16(1000)), property(0x000a, u16(2)))))
+]);
+const assertPageStep = (document: ChemDraftDocument, tool = "reactionArrow") => {
+  const objects = document.pages[0].objects;
+  const reaction = objects.find(object => object.type === "reaction")!;
+  expect(reaction).toBeDefined();
+  expect(reaction.components.map(component => component.role)).toEqual([
+    "reactant", "reactant", "product", "product", "product", "product", "product"
+  ]);
+  expect(objects.filter(object => object.type === "molecule").map(object => object.atoms.map(atom => atom.element))).toEqual([
+    ["C"], ["O"], ["C"], ["O"], ["C"], ["O"], ["C"]
+  ]);
+  expect(reaction.components.every(component => objects.some(object => object.id === component.objectId && object.type === "molecule"))).toBe(true);
+  expect(new Set(reaction.components.map(component => component.objectId)).size).toBe(7);
+  expect(reaction.arrowObjectIds).toHaveLength(1);
+  const arrow = objects.find(object => object.id === reaction.arrowObjectIds![0]);
+  expect(arrow).toMatchObject({ type: "graphic", graphicKind: "path", data: { artToolId: tool } });
+  return arrow;
+};
+
+describe("independently authored binary CDX arrowed lines", () => {
+  for (const [name, heads, tool, markers] of [
+    ["ArrowType FullHead", [property(0x0a02, u16(2))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
+    ["separate head", [property(0x0a2f, u16(1)), property(0x0a35, u16(2)), property(0x0a36, u16(1))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
+    ["separate tail", [property(0x0a2f, u16(1)), property(0x0a35, u16(1)), property(0x0a36, u16(2))], "reactionArrow", { markerStart: { kind: "filled-arrow" } }],
+    ["both ends", [property(0x0a35, u16(2)), property(0x0a36, u16(2))], "resonanceArrow", { markerStart: { kind: "filled-arrow" }, markerEnd: { kind: "filled-arrow" } }],
+    ["NoHead with separate head", [property(0x0a02, u16(0)), property(0x0a35, u16(2))], "reactionArrow", { markerEnd: { kind: "filled-arrow" } }],
+    ["half head", [property(0x0a35, u16(3))], "fishhookArrow", { markerEnd: { kind: "half-arrow" } }]
+  ] as const) {
+    it.each([undefined, 0, 1])(`${name} with LineType %s keeps its step target through three CDX cycles`, lineType => {
+      let bytes = binaryPageStep([...heads], lineType);
+      const decoded = all(readCdx(bytes), "graphic")[0];
+      expect(decoded.attrs).toMatchObject({ GraphicType: "Line", BoundingBox: "100 90 160 90" });
+      if (name === "ArrowType FullHead") expect(decoded.attrs.ArrowType).toBe("FullHead");
+      for (let cycle = 0; cycle <= 3; cycle++) {
+        const imported = importCdx(bytes);
+        expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+        const arrow = assertPageStep(imported.document!, tool);
+        expect(arrow).toMatchObject({ data: markers });
+        if (lineType === 1) expect(arrow!.style.strokeDasharray).toBeTruthy();
+        expect(imported.warnings.filter(warning => ["cdxml.reaction_step_preserved", "cdxml.reaction_reference_unresolved"].includes(warning.code))).toEqual([]);
+        if (cycle < 3) bytes = exportDocumentToCdx(imported.document!, { embedNativePayload: false }).bytes;
+      }
+    });
+  }
+});
 
 describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => {
   const open = (xml: string) => format === "CDX" ? importCdx(writeCdx(tree(xml))) : openChemDraftPayload(xml);
@@ -171,19 +235,44 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     );
   }
 
-  it("names every link on a step preserved outside a scheme", () => {
+  it("resolves a scheme-less step and names only its unresolved links", () => {
     const imported = open(page(molecule + `<step id="21" ReactionStepArrows="999" ReactionStepReactants="2"
       ReactionStepProducts="2" ReactionStepObjectsAboveArrow="998" ReactionStepObjectsBelowArrow="997"/>`));
-    expect(imported.document!.pages[0].objects).toContainEqual(expect.objectContaining({
-      type: "unknown-compatibility-object", sourceObjectType: "step"
-    }));
-    for (const link of ["arrow", "reactants", "products", "conditions"]) {
+    const reaction = imported.document!.pages[0].objects.find(object => object.type === "reaction")!;
+    expect(reaction.components.map(component => component.role)).toEqual(["reactant", "product"]);
+    for (const attribute of ["ReactionStepArrows", "ReactionStepObjectsAboveArrow", "ReactionStepObjectsBelowArrow"]) {
       expect(imported.warnings).toContainEqual(expect.objectContaining({
-        code: "cdxml.reaction_step_preserved", sourceObjectId: "21",
-        message: expect.stringMatching(new RegExp(`step 21:.*${link} link.*not imported`, "i"))
+        code: "cdxml.reaction_reference_unresolved",
+        message: expect.stringMatching(new RegExp(`step 21:.*${attribute}.*could not be resolved`, "i"))
       }));
     }
+    expect(imported.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.reaction_step_preserved" }));
     expect(imported.warnings.filter(warning => warning.code === "cdxml.object_import_unsupported")).toEqual([]);
+  });
+
+  it.each(["page", "group", "objectdefinition"])("keeps a scheme-less step under %s linked through three visible round trips", container => {
+    const step = '<step id="41" ReactionStepArrows="30" ReactionStepReactants="2 5" ReactionStepProducts="8 11 14 17 20"/>';
+    let imported = open(page((container === "page" ? step : `<${container} id="40">${step}</${container}>`) +
+      [2, 5, 8, 11, 14, 17, 20].map((id, index) => `<fragment id="${id}"><n id="${id + 1}" Element="${index % 2 ? 8 : 6}" p="${30 + index * 30} 60"/></fragment>`).join("") +
+      '<graphic id="30" GraphicType="Line" ArrowType="FullHead" LineType="Solid" BoundingBox="100 90 160 90"/>'));
+    for (let cycle = 0; cycle <= 3; cycle++) {
+      expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+      assertPageStep(imported.document!);
+      expect(imported.warnings).not.toContainEqual(expect.objectContaining({ code: "cdxml.reaction_step_preserved" }));
+      if (cycle < 3) imported = roundTrip(imported.document!);
+    }
+  });
+
+  it("keeps standalone and scheme steps in source order", () => {
+    let imported = open(page('<step id="40" ReactionStepArrows="30"/>' +
+      '<scheme id="41"><step id="42" ReactionStepArrows="30 31"/></scheme>' +
+      '<step id="43" ReactionStepArrows="31"/>' +
+      [30, 31].map(id => `<graphic id="${id}" GraphicType="Line" ArrowType="FullHead" BoundingBox="60 ${id * 3} 120 ${id * 3}"/>`).join("")));
+    for (let cycle = 0; cycle <= 3; cycle++) {
+      expect(imported.document!.pages[0].objects.filter(object => object.type === "reaction")
+        .map(reaction => reaction.arrowObjectIds?.length)).toEqual([1, 2, 1]);
+      if (cycle < 3) imported = roundTrip(imported.document!);
+    }
   });
 
   it("warns specifically about alternative-group semantics and keeps its label and source expansion", () => {
