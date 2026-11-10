@@ -253,6 +253,27 @@ Check. Close/reopen it, change tools, and open floating palettes and panels: men
 Windows attaches the menu only to the document window and never crashes during the menu change.
 Update must still download for review and require explicit confirmation; checking alone installs nothing.
 
+On macOS and Windows, check an incompatible release with no usable fallback: an older host sees
+**Needs ChemDraft &lt;Min-App&gt; or later** (or **Needs a newer ChemDraft** without Min-App); a host
+newer than the supported API sees **Not yet available for this ChemDraft version**. There is no
+**Review update…**, download or automatic announcement. An installed version equal to or newer
+than the latest release still says **Up to date**. With fallback releases, both fresh installs and
+installed-plugin updates choose the newest marked compatible version (updates must be newer than
+installed), then unknown compatibility only if no usable marked candidate exists. Skip drafts,
+prereleases and candidates with malformed/missing assets; fresh-install review explains the choice.
+No installed plugin changes until installation is confirmed.
+
+Simulate GitHub HTTP 403 with `x-ratelimit-remaining: 0`, HTTP 429, offline/network failure and a
+metadata timeout. An unavailable release list falls back to the latest version with the install
+gate still enforced; unavailable latest metadata preserves existing offers. User-initiated
+**Check for updates** shows **Couldn't reach GitHub to check for plugin updates. Try again later.**
+**Install from the catalog** shows **Couldn't reach GitHub to download the plugin. Try again later.**
+Verify both messages inline, including a successful fallback after a release-list outage. Background automatic checks stay silent. Verify the log names
+`api.github.com` and the error kind, including an allowlist denial. With two installed plugins,
+one successful check must not refresh the timestamp of an offer retained after the other check's outage.
+No error dialog, repeated network diagnosis or retry loop appears. A later manual
+check remains usable, and automatic checks stay bounded to their daily interval.
+
 Restart within the day: no automatic request or repeated status notice. At the next due check,
 the same version stays quiet; a new version gets one status-line notice. Disable **Check for plugin
 updates automatically** in Preferences before the delay expires: no automatic request occurs, while

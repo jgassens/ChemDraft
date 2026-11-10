@@ -1018,12 +1018,60 @@ each plugin's id, display name, description, exact GitHub repository, and releas
 no network discovery. The **Available** section of **Add or Remove Plugins** lists every catalog entry
 that is not installed and offers a one-click **Install** action.
 
-The desktop host fetches the latest stable release only from that catalog entry's repository and
+The desktop host fetches stable releases only from that catalog entry's repository and
 requires the exact versioned ZIP and `.zip.sha256` asset names. It applies the same redirect-host,
 download-size, checksum, archive, manifest, API, permission, and worker-handshake gates used by
 manual package installs and updates. Before either an official install or an update is committed, the
 ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
 its same-origin-only CSP and receives no network or filesystem capability for this workflow.
+
+**Release body markers (required for official releases).** Every official plugin release,
+including **NMR Shift Predictor**, **MolScribe OCSR**, and **Orthonym**, MUST include both
+machine-readable lines in its GitHub release body. The exact format is
+`ChemDraft-Plugin-API: <manifest apiVersion>` and `ChemDraft-Min-App: <minimum app version>`,
+each on its own line with one space after the colon. For example:
+
+```text
+ChemDraft-Plugin-API: ^0.1.25
+ChemDraft-Min-App: 1.2.0
+```
+
+Set `ChemDraft-Plugin-API` to the manifest's `apiVersion` (an exact Semantic Version, caret range,
+or tilde range, as supported by the install gate). `ChemDraft-Min-App` is the minimum ChemDraft
+version to display to users, as a plain `MAJOR.MINOR.PATCH` release version without a prerelease
+or build suffix. Each marker value is limited to 64 characters; longer, missing, malformed, or
+duplicate markers are treated as unknown.
+When the host API is too old, an incompatible marker says **Needs ChemDraft 1.2.0 or later**, or
+**Needs a newer ChemDraft** without a valid minimum app version. When the host API is newer than
+the release supports, it says **Not yet available for this ChemDraft version**. Neither case
+offers or downloads that release when metadata is available; the host first looks for a compatible
+fallback. An installed version equal to or newer than the latest release stays **Up to date**
+regardless of markers. A release without a valid API marker keeps the existing version-based flow.
+The install-time gate remains the real compatibility check, even when release markers are present.
+
+For a fresh catalog install or installed-plugin update whose latest release is incompatible, the
+host checks only the first 20 releases at
+`https://api.github.com/repos/<repository>/releases?per_page=20`, skipping drafts and prereleases.
+It chooses the newest version with a compatible API marker, or the newest release with
+unknown compatibility only if no usable marked compatible release exists. Installed-plugin updates
+consider only versions newer than the installed version. A candidate with malformed or missing
+assets is skipped in favor of the next candidate; if none is usable, the existing asset error is
+reported. Fresh-install package review explains the selected version and reason. If no compatible
+or unknown candidate exists, the appropriate incompatibility message is shown without downloading.
+All selected packages still pass the unchanged install gates; an installed plugin is never changed
+by checking or preparing a package.
+
+GitHub rate limits (HTTP 403 with `x-ratelimit-remaining: 0`, or HTTP 429), offline/network failures,
+and metadata timeouts stay silent during background automatic checks and are not retried in a loop.
+User-initiated **Check for updates** shows **Couldn't reach GitHub to check for plugin updates. Try again later.**
+**Install from the catalog** shows **Couldn't reach GitHub to download the plugin. Try again later.**
+Metadata failures are logged with the URL host and error kind, including allowlist denials.
+If the release list is unavailable,
+the host falls back to the latest release by version and leaves compatibility enforcement to the
+install-time gate. If latest metadata itself is unavailable, existing offers remain unchanged;
+without version and asset metadata, a new offer or fresh install waits for a later check. These
+metadata outages open no error dialog. A successful fallback still shows the inline metadata status
+for a user-initiated action. Package download and validation failures still report errors.
 
 On macOS and Windows, ChemDraft automatically checks installed official plugins daily, starting
 15 seconds after the installed catalog is ready. **Check for plugin updates automatically** in
