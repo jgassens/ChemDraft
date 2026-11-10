@@ -361,7 +361,7 @@ export function moleculeTargetBondLengthChanges(
   return moleculeObjectChanges(object, scaled);
 }
 
-function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
+export function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
   // Projected distances are foreshortened; their stored length is the nominal scale.
   if (molecule.style.projection === "perspective") {
     return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;

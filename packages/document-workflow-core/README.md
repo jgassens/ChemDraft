@@ -20,7 +20,8 @@ desktop importers did not change.
 |---|---|
 | `atomProblems.ts` | Read-only explanations and explicit H/charge/Ignore/Restore suggestions, accepted only by the existing atom validator |
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
-| `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
+| `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope, warnings?)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
+| `electronMarks.ts` | Shared electron-mark association, anchor and charge helpers used by layout edits and commit reconciliation |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `cleanupSelection.ts` | Constrained partial-molecule 2D cleanup using injected layout and identity engines; fixed native atom coordinates are retained exactly |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |

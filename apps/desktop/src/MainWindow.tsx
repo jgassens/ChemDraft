@@ -132,6 +132,7 @@ import {
   type ArrowObject,
   type BracketObject,
   type ChemDraftDocument,
+  type CompatibilityWarning,
   type DocumentHistory,
   type DocumentObject,
   type DocumentPage,
@@ -11424,16 +11425,23 @@ export function MainWindow({
 
     nativeStylePresetActions.forEach(action => register(action, () => {
       const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const warnings: CompatibilityWarning[] = [];
+      let appliedStructures = 0;
       const changed = commitDocumentChange(current => {
         const patch = nativeStylePresetPatchForSelection(current, presetId,
-          selectedNativeMoleculePartsRef.current.map(part => part.objectId));
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId), warnings);
+        const moleculeIds = new Set(current.pages.flatMap(page => page.objects.filter(object => object.type === "molecule").map(object => object.id)));
+        appliedStructures = patch.patches.filter(leaf => leaf.op === "updateObject" && moleculeIds.has(leaf.objectId)).length;
         // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
         // while a native document-wide edit may contain more objects. Both paths are atomic.
         return applyPatches(current, patch.patches);
       }, action.title);
       if (changed) setSelectedNativeMoleculeParts([]);
       setActiveEditorObjectId(undefined);
-      setStatus(changed ? `Applied ${action.title}` : `${action.title} already matches`);
+      const kinds = [...new Set(warnings.map(warning => warning.message.includes("radical") ? "radical" : "charge"))];
+      const reason = kinds.join(" or ");
+      setStatus(warnings.length ? `${changed ? `Applied ${action.title}${appliedStructures ? ` to ${appliedStructures} structure${appliedStructures === 1 ? "" : "s"}` : ""}; skipped` : "Skipped"} ${warnings.length} structure${warnings.length === 1 ? "" : "s"} because ${warnings.length === 1 ? "it" : "they"} would change a ${reason}.`
+        : changed ? `Applied ${action.title}` : `${action.title} already matches`);
     }));
 
     bracketActions.forEach(action => register(action, () => {

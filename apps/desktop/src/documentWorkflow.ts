@@ -1,5 +1,12 @@
 import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
-import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import {
+  atomProblem, readNativeDocumentContents, formulaSpansFromText,
+  nativeElectronMarkAtomKey, isEditableNativeMoleculeGraph,
+  nativeChargeValue, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude
+} from "@chemdraft/document-workflow-core";
+export {
+  isEditableNativeMoleculeGraph, nativeChargeMarkCenter, nativeChargeAssociationRadiusPx, nativeChargeMarkMaxMagnitude
+} from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
 import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
@@ -852,9 +859,6 @@ export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.
 
 export const nativeAtomHitRadiusPx = 8;
 export const nativeChargeMarkSizePx = 18;
-export const nativeChargeAssociationRadiusPx = nativeBondLengthPx * 1.15;
-/** Stacking the charge tool tops out here — beyond ±9 is a typo, not chemistry. */
-export const nativeChargeMarkMaxMagnitude = 9;
 
 const nativeBondLength = nativeBondLengthPx;
 const nativeCarbonSingleBondLengthAngstrom = 1.56;
@@ -8328,7 +8332,6 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: Committed
     return page;
   }
 
-  const atomKey = (moleculeId: string, atomId: string) => `${moleculeId}\n${atomId}`;
   const moleculeById = new Map(molecules.map((molecule) => [molecule.id, molecule] as const));
   // The atom-targeted tool drops the mark one bond length out (the chain-growth slot), so a
   // molecule drawn or pasted with longer bonds needs its radius to scale with its own bonds.
@@ -8354,7 +8357,7 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: Committed
   };
 
   const assign = (moleculeId: string, atomId: string, contribution: { charge: number; radicals: number }) => {
-    const key = atomKey(moleculeId, atomId);
+    const key = nativeElectronMarkAtomKey(moleculeId, atomId);
     assignedChargeByAtomKey.set(key, (assignedChargeByAtomKey.get(key) ?? 0) + contribution.charge);
     assignedRadicalsByAtomKey.set(key, (assignedRadicalsByAtomKey.get(key) ?? 0) + contribution.radicals);
   };
@@ -8412,7 +8415,7 @@ function reconcileNativeChargeMarksOnPage(page: DocumentPage, options: Committed
   molecules.forEach((molecule) => {
     let atomsChanged = false;
     const atoms = molecule.atoms.map((atom) => {
-      const key = atomKey(molecule.id, atom.id);
+      const key = nativeElectronMarkAtomKey(molecule.id, atom.id);
       const chargeContribution = assignedChargeByAtomKey.get(key) ?? 0;
       const radicalContribution = assignedRadicalsByAtomKey.get(key) ?? 0;
       const formalCharge = atom.formalCharge - (atom.markCharge ?? 0) + chargeContribution;
@@ -8589,13 +8592,6 @@ export function applyMechanismArrowControlPoint(
     },
     { now: phase4Timestamp }
   );
-}
-
-export function nativeChargeMarkCenter(mark: ElectronMarkObject): PagePoint {
-  return {
-    x: mark.x + mark.width / 2,
-    y: mark.y + mark.height / 2
-  };
 }
 
 export interface ElectronMarkMoveAssociationOptions {
@@ -21476,28 +21472,6 @@ function nextOrdinalId(prefix: string, index: number): string {
   return `${prefix}_${String(index + 1).padStart(3, "0")}`;
 }
 
-export function isEditableNativeMoleculeGraph(molecule: MoleculeObject): boolean {
-  const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
-  const supportedBondOrders = new Set<MoleculeBond["order"]>(["single", "double", "triple", "aromatic", "unknown"]);
-
-  return (
-    molecule.atoms.length >= 1 &&
-    molecule.atoms.every((atom) =>
-      atom.id.trim().length > 0 &&
-      atom.element.trim().length > 0 &&
-      Number.isFinite(atom.x) &&
-      Number.isFinite(atom.y)
-    ) &&
-    molecule.bonds.every((bond) =>
-      bond.id.trim().length > 0 &&
-      bond.fromAtomId !== bond.toAtomId &&
-      atomIds.has(bond.fromAtomId) &&
-      atomIds.has(bond.toAtomId) &&
-      supportedBondOrders.has(bond.order)
-    )
-  );
-}
-
 function nativeMoleculePartBondIds(
   molecule: MoleculeObject,
   target: NativeMoleculePartReorderTarget
@@ -21598,13 +21572,6 @@ function atomChargeLabelSuffix(charge: number): string {
   const magnitude = Math.abs(charge);
   const sign = charge > 0 ? "+" : "-";
   return magnitude === 1 ? sign : `${magnitude}${sign}`;
-}
-
-/** A drawable mark charge: any nonzero integer up to |9| — 2+ zincs, 3- phosphates. */
-function nativeChargeValue(charge: number | undefined): number | undefined {
-  return typeof charge === "number" && Number.isInteger(charge) && charge !== 0 && Math.abs(charge) <= nativeChargeMarkMaxMagnitude
-    ? charge
-    : undefined;
 }
 
 function atomDegreeMap(
