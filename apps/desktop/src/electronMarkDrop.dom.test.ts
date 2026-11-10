@@ -86,7 +86,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     return molecule.atoms.map(atom => atomDisplayLabel(atom, molecule.bonds, undefined, molecule.atoms));
   }
 
-  it("keeps repeated charge-tool clicks on isolated carbon stacked on the same mark through +4", async () => {
+  it("keeps repeated charge-tool clicks stacked through +9, warning beyond carbon's valence", async () => {
     const ethane = workflow.insertNativeSingleBondMolecule(workflow.createPhase4Document("Carbon charge stacking"), { x: 300, y: 300 });
     const molecule = dropMolecule(ethane);
     const methane = workflow.applyNativeMoleculeDeleteTarget(ethane, {
@@ -105,7 +105,8 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       await act(async () => pointer(atomTarget(), "pointerup", atom));
     };
     let markId: string | undefined;
-    for (let charge = 1; charge <= 4; charge++) {
+    // Drawing edits preserve the requested charge and warn; only the ±9 format cap refuses.
+    for (let charge = 1; charge <= 9; charge++) {
       await clickAtom();
       const after = snapshot(), mark = dropMark(after);
       markId ??= mark.id;
@@ -113,12 +114,20 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       expect(mark).toMatchObject({ id: markId, charge,
         anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id } });
       expect(dropMolecule(after).atoms[0]).toMatchObject({ formalCharge: charge, markCharge: charge });
+      expect(status()).toBe(`Placed positive charge${charge > 1 ? ` ${charge}+` : ""} on hovered atom`);
+      if (charge > 4) {
+        // Valence warnings identify the charged atom within the molecule.
+        expect(dropMolecule(after).chemistry?.warnings).toContainEqual(expect.objectContaining({
+          code: "chemistry.invalid_valence", objectId: atom.id
+        }));
+      }
     }
     const charged = snapshot();
     await clickAtom();
     expect(snapshot()).toBe(charged);
+    expect(status()).toBe("Charge is already at the ±9 limit");
     await command("edit.undo");
-    expect(dropMolecule(snapshot()).atoms[0]).toMatchObject({ formalCharge: 3, markCharge: 3 });
+    expect(dropMolecule(snapshot()).atoms[0]).toMatchObject({ formalCharge: 8, markCharge: 8 });
     await command("edit.redo");
     expect(snapshot()).toEqual(charged);
   });

@@ -10,7 +10,7 @@ import { createPhase4Document, insertNativeSingleBondMolecule, selectDocumentObj
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import {
-  dismissToolsetPopovers, sendPaletteCommand, sendToolsetFlyoutKey, setToolsetPopoverContent,
+  dismissToolsetPopovers, newToolsetPopoverOpening, sendPaletteCommand, sendToolsetFlyoutKey, setToolsetPopoverContent,
   type ToolsetPopoverContentPayload, type ToolsetPopoverDismissPayload, type ToolsetFlyoutKey,
   type ToolsetFlyoutSession
 } from "./window-manager";
@@ -155,7 +155,8 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
       { id: "tool.cyclobutane", title: "Disabled", enabled: false, active: false, disabledReason: "Unavailable now" },
       { id: "tool.cyclopentane", title: "Last", enabled: true, active: false }
     ] };
-    await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened, flyout }));
+    // A changed snapshot is a fresh opening; an identical opening identity is a replay.
+    await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened, ...newToolsetPopoverOpening(), flyout }));
     expect(host.querySelector<HTMLButtonElement>('[data-test-popover] [data-command-id="tool.cyclobutane"]')?.disabled).toBe(true);
     await key("ArrowLeft"); expect(highlighted()?.dataset.commandId).toBe("tool.cyclopentane");
     await key("ArrowRight"); expect(highlighted()?.dataset.commandId).toBe("tool.cyclopropane");
@@ -173,7 +174,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
   it("consumes arrows with no enabled choices and never invokes them", async () => {
     const opened = await mouseOpen();
     const before = current();
-    await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened,
+    await act(async () => setToolsetPopoverContent(opened.toolsetId, { ...opened, ...newToolsetPopoverOpening(),
       flyout: { ...opened.flyout, commands: opened.flyout.commands.map(command => ({ ...command, enabled: false })) }
     }));
     for (const value of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", " "]) {

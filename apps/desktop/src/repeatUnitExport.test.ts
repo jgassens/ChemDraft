@@ -26,9 +26,12 @@ describe("document repeat-unit export mapping", () => {
   it("warns naming the bracket if explicit membership is unresolved", () => {
     const doc = structuredClone(fixture());
     doc.pages[0].objects.forEach(object => { if (object.type === "bracket") object.containedObjectIds = ["missing"]; });
+    const close = doc.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")!;
     const warnings: string[] = [];
     expect(copyAsMolfile(doc, "v3000", warnings)).not.toContain("BEGIN SGROUP");
-    expect(warnings).toEqual([expect.stringContaining(`bracket ${doc.selection.objectIds[0]}`)]);
+    expect(warnings).toEqual([
+      `MOL cannot represent repeat unit n (bracket ${close.id}): its membership includes missing or non-molecular objects; only the bare structure is written.`
+    ]);
   });
   it("namespaces merged molecule membership and includes expanded atoms", () => {
     const doc = structuredClone(fixture());

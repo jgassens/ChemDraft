@@ -74,12 +74,15 @@ function normalizeAngle(angle: number): number {
   return normalized;
 }
 
-function placementFixture(shape: "isolated" | "terminal" | "ring" | "saturated" | "growth-limit", element: string,
+function placementFixture(shape: "isolated" | "terminal" | "ring" | "saturated" | "growth-limit" | "blocked", element: string,
   origin: LayoutPoint, rotation: number, fontSize: number): MoleculeObject {
   const points = shape === "isolated" ? [[0, 0]] : shape === "terminal" ? [[0, 0], [-22, 0]]
     : shape === "saturated" ? [[0, 0], [22, 0], [0, 22], [-22, 0], [0, -22]]
-    : shape === "growth-limit" ? [[0, 0], ...Array.from({ length: 8 }, (_, index) =>
-      [22 * Math.cos(index * Math.PI / 4), 22 * Math.sin(index * Math.PI / 4)])]
+    : shape === "growth-limit" || shape === "blocked" ? [[0, 0], ...Array.from({ length: shape === "blocked" ? 16 : 8 }, (_, index) => {
+      const angle = index * Math.PI / (shape === "blocked" ? 8 : 4);
+      const radius = shape === "blocked" ? nativeBondLength : 22;
+      return [radius * Math.cos(angle), radius * Math.sin(angle)];
+    })]
     : Array.from({ length: 6 }, (_, index) => [22 * (Math.cos(index * Math.PI / 3) - 1), 22 * Math.sin(index * Math.PI / 3)]);
   const atoms = points.map(([x, y], index) => ({ id: `atom_${index}`, element: index === 0 ? element : "C", formalCharge: 0,
     x: origin.x + x * Math.cos(rotation) - y * Math.sin(rotation),
@@ -119,8 +122,9 @@ describe("charge-tool placement equivalence with ee50d782", () => {
   });
 
   it("still accounts for existing charge centres when there is no growth slot", () => {
-    // Growth admits up to eight bonds, even on a four-bond carbon; use the actual editor limit.
-    const molecule = placementFixture("growth-limit", "Zn", { x: 300, y: 300 }, 0, 15);
+    // Growth has no valence/degree cap. Sixteen bonded neighbours block every endpoint
+    // geometrically (within 0.25 bond lengths), and cannot be offered as new ring closures.
+    const molecule = placementFixture("blocked", "Zn", { x: 300, y: 300 }, 0, 15);
     expect(previewNativeMoleculeBondGrowth(molecule, molecule.atoms[0], 792, 612)).toBeUndefined();
     const original = nativeChargePlacementPointForAtom(molecule, "atom_0", [molecule], 792, 612)!;
     const objects = [molecule, chargeMark(molecule, original)];
