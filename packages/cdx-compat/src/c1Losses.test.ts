@@ -60,7 +60,7 @@ const assertPageStep = (document: ChemDraftDocument, tool = "reactionArrow") => 
 
 describe("independently authored binary CDX arrowed lines", () => {
   it("keeps a binary NoHead line unheaded through three visible CDX cycles", () => {
-    let bytes = binaryPage(record(0x8007, 30, property(0x0a00, u16(1)),
+    let bytes: Uint8Array = binaryPage(record(0x8007, 30, property(0x0a00, u16(1)),
       property(0x0a02, u16(0)), property(0x0204, [90, 100, 90, 160].flatMap(coord))));
     expect(all(readCdx(bytes), "graphic")[0].attrs.ArrowType).toBe("NoHead");
     for (let cycle = 0; cycle <= 3; cycle++) {
@@ -91,7 +91,7 @@ describe("independently authored binary CDX arrowed lines", () => {
     ["half head", [property(0x0a35, u16(3))], "fishhookArrow", { markerEnd: { kind: "half-arrow" } }]
   ] as const) {
     it.each([undefined, 0, 1, 8, 9])(`${name} with LineType %s keeps its step target through three CDX cycles`, lineType => {
-      let bytes = binaryPageStep([...heads], lineType);
+      let bytes: Uint8Array = binaryPageStep([...heads], lineType);
       const decoded = all(readCdx(bytes), "graphic")[0];
       expect(decoded.attrs).toMatchObject({ GraphicType: "Line", BoundingBox: "100 90 160 90" });
       if (name === "ArrowType FullHead") expect(decoded.attrs.ArrowType).toBe("FullHead");
