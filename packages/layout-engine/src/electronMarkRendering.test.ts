@@ -69,7 +69,12 @@ describe("electron-mark rendering preferences", () => {
       // Rasterize only the text, so circle widths cannot conceal an unchanged numeral/sign.
       const ink = texts.map(text => {
         const attrs = Object.entries(text.attrs).map(([name, value]) => `${name}="${value}"`).join(" ");
-        const pixels = new Resvg(`<svg xmlns="http://www.w3.org/2000/svg" width="280" height="280" viewBox="95 95 28 28"><text ${attrs}>${Math.abs(markFor(key).charge!)}${markFor(key).charge! > 0 ? "+" : "−"}</text></svg>`)
+        // resvg's default sans-serif family is Arial, which Linux CI lacks. Its last-resort
+        // fallback can select the same face for 400 and 700, unlike browser font matching.
+        // Map the generic family to Linux's installed regular/bold pair; Arial still wins
+        // earlier in the authored font stack on macOS and Windows.
+        const pixels = new Resvg(`<svg xmlns="http://www.w3.org/2000/svg" width="280" height="280" viewBox="95 95 28 28"><text ${attrs}>${Math.abs(markFor(key).charge!)}${markFor(key).charge! > 0 ? "+" : "−"}</text></svg>`,
+          { font: { sansSerifFamily: "DejaVu Sans" } })
           .render().pixels;
         let coverage = 0;
         for (let i = 3; i < pixels.length; i += 4) coverage += pixels[i];
