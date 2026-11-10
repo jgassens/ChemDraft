@@ -61,8 +61,8 @@ describe("group labels export as the canvas draws them", () => {
     }
   });
 
-  it("exports a leading HO and H2N at the canvas positions, as tight as the trailing OH and NH2", () => {
-    // HO-CH2-CH2-OH and H2N-CH2-CH2-NH2: the left end's bond leaves to the right.
+  it("exports HO/OH and H2N/NH2 with the shared layout's exact advance-box gaps", () => {
+    // The left end's bond leaves to the right, so its hydrogen group leads the element.
     const chain = (id: string, element: string): MoleculeObject => ({
       id, type: "molecule", x: 90, y: 130, width: 125, height: 40, rotation: 0,
       style: { source: "chemdraft-native-drawing" },
@@ -85,27 +85,35 @@ describe("group labels export as the canvas draws them", () => {
       const svg = exportDocumentToSvg(document).contents;
       const parsed = new JSDOM(svg, { contentType: "image/svg+xml" }).window.document;
       const plans = planMoleculeAtomLabels(molecule);
-      const glyphs = (label: string) => {
+      const gapEm = (boxes: ReturnType<typeof atomLabelGlyphBoxes>, label: string, fontSize: number) => {
+        const symbol = boxes.find((box) => box.text === element)!;
+        // H2 is one hydrogen group; its count's advance edge touches N in H2N.
+        const hydrogens = boxes.filter((box) => box !== symbol);
+        const left = Math.min(...hydrogens.map((box) => box.left));
+        const right = Math.max(...hydrogens.map((box) => box.right));
+        return (label.startsWith("H") ? symbol.left - right : left - symbol.right) / fontSize;
+      };
+      const exportedGapEm = (label: string) => {
         const plan = plans.find((candidate) => candidate.label === label)!;
         const exported = [...parsed.querySelectorAll(`[data-atom-label="${label}"] [data-atom-label-run]`)];
         expect(exported.map((run) => run.textContent)).toEqual(plan.layout.runs.map((run) => run.text));
         // The SVG carries the shared layout's run positions, as the canvas draws them.
-        exported.forEach((run, index) => expect(Number(run.getAttribute("x"))).toBeCloseTo(plan.layout.runs[index]!.x, 3));
-        return atomLabelGlyphBoxes(exported.map((run, index) => ({
+        exported.forEach((run, index) => {
+          expect(Number(run.getAttribute("x"))).toBeCloseTo(plan.layout.runs[index]!.x, 3);
+          expect(run.getAttribute("text-anchor")).toBe(plan.layout.runs[index]!.textAnchor);
+        });
+        const boxes = atomLabelGlyphBoxes(exported.map((run, index) => ({
           ...plan.layout.runs[index]!,
           x: Number(run.getAttribute("x")),
           textAnchor: run.getAttribute("text-anchor") as "start" | "middle" | "end"
         })), plan.drawingStyle);
+        const layoutBoxes = atomLabelGlyphBoxes(plan.layout.runs, plan.drawingStyle);
+        const exportedGap = gapEm(boxes, label, plan.fontSizePx);
+        const layoutGap = gapEm(layoutBoxes, label, plan.fontSizePx);
+        expect(Math.abs(exportedGap - layoutGap), `${label}: SVG versus layout gap in em`).toBeLessThanOrEqual(1e-6);
+        return exportedGap;
       };
-      const left = glyphs(leading);
-      const right = glyphs(trailing);
-      const gap = (boxes: typeof left, first: string, second: string) => {
-        const index = boxes.findIndex((box, at) => box.text === first && boxes[at + 1]?.text === second);
-        expect(index).toBeGreaterThanOrEqual(0);
-        return boxes[index + 1]!.left - boxes[index]!.right;
-      };
-      // The glyph beside the element sits as close as the H beside it on the other side.
-      expect(Math.abs(gap(left, left.at(-2)!.text, element) - gap(right, element, "H"))).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(exportedGapEm(leading) - exportedGapEm(trailing))).toBeLessThanOrEqual(1e-6);
     }
   });
 
