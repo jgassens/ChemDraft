@@ -682,6 +682,7 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
+  canAutoConvertNativeTextObjectToAtom,
   convertNativeTextObjectToAtomLabel,
   selectedTextToAtomLabelDisabledReason,
   selectedTextToAtomLabelResult,
@@ -1714,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.10.07.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7573,6 +7574,7 @@ export function MainWindow({
     textAutoConversionInProgressRef.current = true;
     try {
       const currentDocument = documentRef.current;
+      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
       const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
       if (labelResult.target) {
         if (labelResult.document !== currentDocument) {
@@ -7616,10 +7618,13 @@ export function MainWindow({
     }
   }, [commitDocumentHistoryFrom]);
 
-  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string, reason: "commit" | "escape" = "commit") => {
     // Canvas capture can close the editor before its blur arrives; use the owner's id.
     const objectId = finishedObjectId ?? activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
     if (!objectId) return;
+    // Escape keeps the literal text. Disarm conversion before closing so late blur/effects
+    // can safely run the same finish path without converting this box.
+    if (reason === "escape") textObjectIdsAwaitingAutoConversionRef.current.delete(objectId);
     settlePalettePreviewRef.current("finish text edit");
     if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
@@ -7629,6 +7634,7 @@ export function MainWindow({
     // Neither history baseline tells us what a mid-edit Save actually wrote.
     reconcileSavedDocumentDirtyState();
   }, [convertCommittedText, finalizeTextEditHistory, reconcileSavedDocumentDirtyState]);
+
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
     if (textEditHistoryWritingRef.current) return;
     // Settle a visible chooser first so its style never leaks into the typing entry.
@@ -28033,7 +28039,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
-  onTextEditFinish(objectId?: string): void;
+  onTextEditFinish(objectId?: string, reason?: "commit" | "escape"): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
   onTextPlaceholderClear(objectId: string): void;
@@ -28166,7 +28172,7 @@ function DocumentObjectViewContent({
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      onTextEditFinish(object.id);
+      onTextEditFinish(object.id, "escape");
       return;
     }
 
@@ -28978,7 +28984,7 @@ function DocumentObjectViewContent({
                 }
                 recordTextEditorSelection(event.currentTarget);
               }}
-              // Click-away commits like Escape does (element-symbol text becomes an atom). The
+              // Click-away commits (exact element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
               onBlur={(event) => {
                 if (inlineEditorBlurEndsEdit(event.currentTarget)) {
