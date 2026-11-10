@@ -302,6 +302,7 @@ type ExportColorTable = string[];
 
 interface VisibleExportContext {
   format: "CDXML" | "CDX";
+  embedNativePayload: boolean;
   colors: ExportColorTable;
   ids: Map<string, string>;
   bondIdsByRefKey: Map<string, string>;
@@ -956,7 +957,7 @@ function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversi
 }
 
 function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly CdxmlFont[], colors: ExportColorTable, allocator: IdAllocator, unknownObjects: UnknownObjectExportDiagnostics): string {
-  const context = createVisibleExportContext(page, colors, unknownObjects.format === "cdx" ? "CDX" : "CDXML");
+  const context = createVisibleExportContext(page, colors, unknownObjects.format === "cdx" ? "CDX" : "CDXML", unknownObjects.embedNativePayload);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(needsSourceGraphicIds);
   for (const object of page.objects) {
@@ -1592,7 +1593,7 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
   return groups;
 }
 
-function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable, format: VisibleExportContext["format"]): VisibleExportContext {
+function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable, format: VisibleExportContext["format"], embedNativePayload: boolean): VisibleExportContext {
   const crossingPartnerKeysByRefKey = new Map<string, Set<string>>();
   const crossingFrontKeysByRefKey = new Map<string, { front: number; back: number }>();
 
@@ -1608,6 +1609,7 @@ function createVisibleExportContext(page: DocumentPage, colors: ExportColorTable
 
   return {
     format,
+    embedNativePayload,
     colors,
     ids: new Map(),
     bondIdsByRefKey: new Map(),
@@ -1705,11 +1707,12 @@ function exportMoleculeObject(
     const recordedNeighbour = record ? molecule.atoms.find((candidate) => candidate.id === record.atomId) : undefined;
     const drawnSide = recordedNeighbour ? drawnLabelBondSide(atom, [recordedNeighbour]) : undefined;
     if (record && drawnSide && drawnSide !== record.side) {
+      const recordedReadingPreservation = context.embedNativePayload ? " ChemDraft's embedded document keeps the recorded reading." : "";
       warnings.push({
         code: "cdxml.label_bond_side_turned",
         message: record.side === "left"
-          ? `Label "${atom.element}" on atom ${atom.id} is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible ${context.format} reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula). ChemDraft's embedded document keeps the recorded reading.`
-          : `Label "${atom.element}" on atom ${atom.id} is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible ${context.format} reads as its cyano group. ChemDraft's embedded document keeps the recorded reading.`,
+          ? `Label "${atom.element}" on atom ${atom.id} is recorded as its cyano group (bond on the left), but its bond is drawn on the right, so the visible ${context.format} reads as the N-bonded isomer, which imports as an unrecognized group (a bare formula).${recordedReadingPreservation}`
+          : `Label "${atom.element}" on atom ${atom.id} is recorded as the N-bonded isomer (a bare formula; bond on the right), but its bond is drawn on the left, so the visible ${context.format} reads as its cyano group.${recordedReadingPreservation}`,
         sourceObjectId: molecule.id
       });
     }
