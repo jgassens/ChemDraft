@@ -147,7 +147,7 @@ describe("synthetic CDXML reaction schemes", () => {
     expect(summary(document)[0].conditions[0].text).toBe(expected);
     const xml = exportDocumentToCdxml(document).contents;
     // Inspect standard visible content, independently of embedded native restoration.
-    expect(xml).toContain(`>${expected}</t>`);
+    expect(xml).toContain(source.match(/<t id="60"[\s\S]*?<\/t>/)![0]);
     const xmlDocument = importFixture(visibleOnly(xml)).document;
     const binaryDocument = importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes).document!;
     const chained = importCdx(exportDocumentToCdx(xmlDocument, { embedNativePayload: false }).bytes).document!;

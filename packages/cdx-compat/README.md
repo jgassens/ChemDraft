@@ -45,6 +45,16 @@ Edits to expansion atoms export their current chemistry, rather than restoring t
 `compatibility.unknown.cdxmlAbbreviations` retains source nodes, including unsupported
 expansions. Fragment captions and local display objects lifted into native objects are removed
 from these snapshots, so restoring an unsupported expansion cannot duplicate them on export.
+Lifted captions and ordinary page-level text retain their source `<t>` element in
+`compatibility.unknown.cdxmlTextElement`, including every text attribute and styled `<s>` run.
+`cdxmlTextNativeState` detects edits; `cdxmlTextFontTable` and `cdxmlTextColorTable` retain the
+referenced font and color definitions. Unedited text exports that source element once through
+both CDXML and binary CDX; moving it translates the source coordinates while keeping its runs.
+Edited content, spans, style, size or rotation export the current native text instead, with
+`cdxml.text_source_formatting_not_kept` naming the native object and original source id. Conflicting
+source font or color indices from combined documents produce named warnings. CDX retains its
+ordinary numeric precision and supported attribute limits; CDXML-only attributes still produce
+the binary codec's omission warnings.
 Multiple external connection points, ambiguous attachment bonds, wrapper charge and
 other unrepresentable states emit `cdxml.abbreviation_not_expanded`; they retain the literal atom
 label and original source expansion instead of silently flattening it. Original `BeginAttach` and

@@ -306,6 +306,8 @@ interface CdxmlColorTable {
   colorByIndex: Map<number, string>;
 }
 
+type CdxmlFont = Record<string, string>;
+
 interface CdxmlCrossingImportHint {
   sourceBondId: string;
   partnerBondIds: string[];
@@ -320,6 +322,7 @@ interface ImportPageContext {
   displayByRefKey: Map<string, string>;
   crossingHints: CdxmlCrossingImportHint[];
   colorTable: CdxmlColorTable;
+  fonts: readonly CdxmlFont[];
   curveLineDefaults: Record<string, string>;
   preserveReactionIds: boolean;
 }
@@ -344,19 +347,17 @@ export function exportDocumentToCdxml(
   // hashes and parses whatever JSON bytes the envelope carries.
   const nativeJson = JSON.stringify(parsedDocument);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
-  const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
-    .filter((object): object is TableObject => object.type === "table")
-    .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
+  const fonts = exportCdxmlFonts(parsedDocument, warnings);
   // Source compatibility graphics retain their color indices as well as their other attributes.
   const curveColors: string[] = [...standardCdxmlColorTable];
   const sourceColors = new Map<number, string>();
   for (const page of parsedDocument.pages) for (const object of page.objects) {
-    const table = object.compatibility?.unknown.cdxmlGraphicColorTable;
+    const table = object.compatibility?.unknown.cdxmlGraphicColorTable ?? object.compatibility?.unknown.cdxmlTextColorTable;
     if (isRecord(table)) for (const [index, color] of Object.entries(table)) {
       if (/^\d+$/.test(index) && Number(index) >= 2 && Number(index) < 65536 && typeof color === "string" && normalizeHexColor(color)) {
         const previous = sourceColors.get(Number(index));
-        if (previous && previous !== color) warnings.push({ code: "cdxml.graphic_color_table_conflict", sourceObjectId: object.id,
-          message: `Source graphic color index ${index} refers to different colors in this document; its attribute is retained, but the shared CDXML color table uses ${color}.` });
+        if (previous && previous !== color) warnings.push({ code: object.type === "text" ? "cdxml.text_color_table_conflict" : "cdxml.graphic_color_table_conflict", sourceObjectId: object.id,
+          message: `Source ${object.type === "text" ? "text" : "graphic"} color index ${index} refers to different colors in this document; its attribute is retained, but the shared CDXML color table uses ${color}.` });
         sourceColors.set(Number(index), color);
         while (curveColors.length <= Number(index) - 2) curveColors.push("#000000");
         curveColors[Number(index) - 2] = color;
@@ -758,14 +759,42 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[], colors: readonly string[], embedded = true, pageSetup: Record<string, string> = {}): string {
+function exportCdxmlFonts(document: ChemDraftDocument, warnings: CompatibilityConversionWarning[]): CdxmlFont[] {
+  const fonts = new Map<string, CdxmlFont>();
+  for (const page of document.pages) for (const object of page.objects) {
+    const source = object.compatibility?.unknown.cdxmlTextFontTable;
+    if (!Array.isArray(source)) continue;
+    for (const entry of source) {
+      const font = preservedCurveAttributes(entry);
+      if (!/^\d+$/.test(font.id ?? "") || Number(font.id) >= 65535) continue;
+      const previous = fonts.get(font.id);
+      if (previous && (previous.name !== font.name || previous.charset !== font.charset)) {
+        warnings.push({ code: "cdxml.text_font_table_conflict", sourceObjectId: object.id,
+          message: `Text ${object.id} has a conflicting source font ${font.id}; the shared CDXML font table uses ${font.name}.` });
+      }
+      fonts.set(font.id, font);
+    }
+  }
+  let nextId = 1;
+  for (const page of document.pages) for (const object of page.objects) {
+    if (object.type !== "table") continue;
+    const name = nativeTextStyleFromObjectStyle(object.style).fontFamily;
+    if ([...fonts.values()].some(font => font.name === name)) continue;
+    while (fonts.has(String(nextId))) nextId++;
+    const id = String(nextId++);
+    fonts.set(id, { id, charset: "iso-8859-1", name });
+  }
+  return [...fonts.values()];
+}
+
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly CdxmlFont[], colors: readonly string[], embedded = true, pageSetup: Record<string, string> = {}): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
     `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}"${embedded ? ` ${VisibleHashVersionAttribute}="${EncodedVisibleHashVersion}"` : ""}${Object.keys(pageSetup).length ? ` ${xmlAttributes(pageSetup)}` : ""}>`,
     buildStandardColorTableXml(colors),
-    ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
-      `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
+    ...(fonts.length ? ["  <fonttable>", ...fonts.map(font =>
+      `    <font ${xmlAttributes(font)}/>`), "  </fonttable>"] : []),
     ...pages,
     "</CDXML>",
     ""
@@ -870,7 +899,7 @@ function restorePageOffset(page: XmlElementView, warnings: CompatibilityConversi
   }
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly string[], curveColors: readonly string[], allocator: IdAllocator): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], fonts: readonly CdxmlFont[], curveColors: readonly string[], allocator: IdAllocator): string {
   const context = createVisibleExportContext(page, curveColors);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const preserveSourceIds = page.objects.some(needsSourceGraphicIds);
@@ -1177,7 +1206,7 @@ function exportVisibleObject(
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
   objectsById: ReadonlyMap<string, DocumentObject>,
-  fonts: readonly string[]
+  fonts: readonly CdxmlFont[]
 ): string {
   if (object.type === "unknown-compatibility-object" && object.sourceObjectType === "curve") {
     const sourceAttributes = object.compatibility?.unknown.cdxmlCurveAttributes;
@@ -1197,10 +1226,10 @@ function exportVisibleObject(
     return exportMoleculeObject(object, context, allocator, warnings);
   }
   if (object.type === "text") {
-    return exportTextObject(object, context.ids, allocator);
+    return exportTextObject(object, context.ids, allocator, warnings);
   }
   if (object.type === "plus") {
-    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator);
+    return exportTextObject({ ...object, type: "text", text: "+", spans: [] }, context.ids, allocator, warnings);
   }
   if (object.type === "reaction-arrow") {
     return exportReactionArrowObject(object, context.ids, allocator, objectsById, warnings);
@@ -1695,12 +1724,12 @@ function exportTableObject(
   ids: Map<string, string>,
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
-  fonts: readonly string[],
+  fonts: readonly CdxmlFont[],
   colors: readonly string[]
 ): string {
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
-  const font = fonts.indexOf(style.fontFamily) + 1;
+  const font = fonts.find(font => font.name === style.fontFamily)?.id ?? "1";
   const texts: string[] = [];
   const writeLines = (lines: typeof layout.cells[number]["lines"], fontSizePx: number) => {
     for (const line of lines) {
@@ -1750,8 +1779,38 @@ function exportTableObject(
   return `<group id="${idFor(ids, table.id, allocator)}">${texts.join("")}${lines.join("")}</group>`;
 }
 
-function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator): string {
+// Position is separate: moving text can translate the source coordinates without discarding runs.
+function textSourceState(text: TextObject): string {
+  return JSON.stringify([text.text, text.spans, text.style, text.width, text.height, text.rotation]);
+}
+
+function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator, warnings: CompatibilityConversionWarning[]): string {
   const textId = idFor(ids, text.id, allocator);
+  const source = text.compatibility?.unknown.cdxmlTextElement;
+  if (typeof source === "string") {
+    if (text.compatibility?.unknown.cdxmlTextNativeState === textSourceState(text)) {
+      // Reparse our serialized source rather than injecting compatibility data as unchecked XML.
+      try {
+        const tree = parseCdxml(source);
+        const node = tree.find(node => elementView(node)?.name === "t");
+        const element = node && elementView(node);
+        if (node && element) {
+          node[":@"] = { ...element.attributes, id: textId };
+          const point = parseCdxmlPoint(element.attributes.p);
+          const dx = cssPxToCdxml(text.x - point.x), dy = cssPxToCdxml(text.y - point.y);
+          if (dx || dy) {
+            visitVisibleCoordinates([node], (x, y) => ({ x: x + dx, y: y + dy }));
+            if (!element.attributes.p) (node[":@"] as Record<string, string>).p = formatPoint(text);
+          }
+          return serializeVisibleTree([node]);
+        }
+      } catch {
+        // Invalid compatibility data must not prevent the current native text from being written.
+      }
+    }
+    warnings.push({ code: "cdxml.text_source_formatting_not_kept", sourceObjectId: text.id,
+      message: `Text ${text.id} (source ${text.compatibility?.originalId ?? "<unnamed>"}) was edited or its source text is unavailable; source formatting was not kept. The current native text is written.` });
+  }
   return `<t id="${textId}" p="${formatPoint({ x: text.x, y: text.y })}">${escapeXmlText(text.text)}</t>`;
 }
 
@@ -1841,6 +1900,7 @@ function exportGraphicObject(
 
 function needsSourceGraphicIds(object: DocumentObject): boolean {
   return object.type === "reaction" || object.type === "bracket" ||
+    object.type === "text" && typeof object.compatibility?.unknown.cdxmlTextElement === "string" ||
     object.type === "graphic" && (object.graphicKind === "unknown" || object.graphicKind === "ellipse") && object.compatibility?.unknown.cdxmlElementName === "graphic";
 }
 
@@ -2763,6 +2823,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree, sourceFormat: "CDXML" 
 
   const importTransform = importTransformForTree(tree);
   const colorTable = importCdxmlColorTable(tree);
+  const fonts = findElements(tree, "fonttable").flatMap(table => childElements(table, "font").map(font => font.attributes));
   const root = tree.map(elementView).find(element => element?.name.toLowerCase() === "cdxml");
   const curveLineDefaults = cdxmlCurveLineDefaults(root?.attributes ?? {});
   const base = createEmptyDocument({ title: `Imported ${sourceFormat}.chemdraft`, now: nativeImportTimestamp });
@@ -2772,7 +2833,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree, sourceFormat: "CDXML" 
       const pageTemplate = importPageSetup(base.pages[0], pageElement.attributes, root?.attributes ?? {});
       restorePageOffset(pageElement, warnings, sourceFormat);
       const importedPage = applyImportTransformToPageObjects(
-        importPageObjects(pageElement, pageIndex, warnings, colorTable, curveLineDefaults, sourceFormat),
+        importPageObjects(pageElement, pageIndex, warnings, colorTable, fonts, curveLineDefaults, sourceFormat),
         importTransform
       );
       return {
@@ -2829,6 +2890,7 @@ function importPageObjects(
   pageIndex: number,
   warnings: CompatibilityConversionWarning[],
   colorTable: CdxmlColorTable,
+  fonts: readonly CdxmlFont[],
   curveLineDefaults: Record<string, string>,
   sourceFormat: "CDXML" | "CDX"
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
@@ -2842,6 +2904,7 @@ function importPageObjects(
     displayByRefKey: new Map(),
     crossingHints: [],
     colorTable,
+    fonts,
     curveLineDefaults: { ...curveLineDefaults, ...cdxmlCurveLineDefaults(pageElement.attributes) },
     preserveReactionIds: findElements(pageElement.children, "scheme").length > 0
   };
@@ -2897,7 +2960,7 @@ function importPageObjects(
       return molecule;
     }
     if (element.name === "t") {
-      return single(importText(element, pageIndex, objectIndex));
+      return single(importText(element, pageIndex, objectIndex, context));
     }
     if (element.name === "graphic") {
       return single(importGraphic(element, pageIndex, objectIndex, context));
@@ -4089,10 +4152,10 @@ function frontBondRefFromCdxmlDepth(left: BondRef, right: BondRef, context: Impo
   return bondRefKey(left).localeCompare(bondRefKey(right)) >= 0 ? left : right;
 }
 
-function importText(textElement: XmlElementView, pageIndex: number, objectIndex: number): TextObject {
+function importText(textElement: XmlElementView, pageIndex: number, objectIndex: number, context: ImportPageContext): TextObject {
   const point = parseCdxmlPoint(textElement.attributes.p);
   const text = textContent(textElement.children);
-  return {
+  const object: TextObject = {
     id: `cdxml_text_${pageIndex + 1}_${objectIndex}`,
     type: "text",
     x: point.x,
@@ -4107,9 +4170,15 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
       sourceFormat: "cdxml",
       originalId: textElement.attributes.id,
       warnings: [],
-      unknown: {}
+      unknown: {
+        cdxmlTextElement: serializeVisibleTree([{ t: textElement.children, ":@": textElement.attributes }]),
+        cdxmlTextFontTable: context.fonts,
+        cdxmlTextColorTable: Object.fromEntries(context.colorTable.colorByIndex)
+      }
     }
   };
+  object.compatibility!.unknown.cdxmlTextNativeState = textSourceState(object);
+  return object;
 }
 
 function importGraphic(

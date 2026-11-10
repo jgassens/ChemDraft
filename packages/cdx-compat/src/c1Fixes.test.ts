@@ -9,6 +9,20 @@ const binaryFromXml = (xml: string) => writeCdx(cdxElementFromOrderedTree(parser
 const page = (contents: string) => `<CDXML><page id="1">${contents}</page></CDXML>`;
 const fragment = (contents: string) => `<fragment id="2"><n id="3" p="30 30" Element="7"><t id="4"><s>N</s></t></n>${contents}</fragment>`;
 
+const styledCaption = '<t id="7" p="30.000 60.000" BoundingBox="25 45 95 65" Justification="Center" LineHeight="14" Z="9" InterpretChemically="no" attrib4a10="|x|010203"><s font="3" size="12.00" face="1" color="4">Styled </s><s font="4" size="14" face="2" color="5">caption</s></t>';
+const styledSource = (placement: "direct" | "grouped" | "page") => `<CDXML>
+  <fonttable><font id="3" charset="iso-8859-1" name="Arial"/><font id="4" charset="iso-8859-1" name="Times New Roman"/></fonttable>
+  <colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="1" g="0" b="0"/><color r="0" g="0" b="1"/></colortable>
+  <page id="1">${placement === "page" ? styledCaption : `<fragment id="2"><n id="3" NodeType="Nickname" Charge="1" p="30 30">
+    <t><s>Me</s></t><fragment id="5"><n id="6" Element="6"/>
+      ${placement === "grouped" ? `<group id="8">${styledCaption}</group>` : styledCaption}
+    </fragment></n></fragment>`}</page></CDXML>`;
+const elementsNamed = (node: CdxElement, name: string): CdxElement[] => [
+  ...(node.name === name ? [node] : []), ...node.kids.flatMap(child => elementsNamed(child, name))
+];
+const elementText = (node: CdxElement): string => node.text + node.kids.map(elementText).join("");
+const captionsIn = (node: CdxElement) => elementsNamed(node, "t").filter(node => elementText(node) === "Styled caption");
+
 function requireDocument(opened: ReturnType<typeof openChemDraftPayload>): ChemDraftDocument {
   expect(opened.document, JSON.stringify(opened.warnings)).toBeDefined();
   return opened.document!;
@@ -102,6 +116,69 @@ describe.each(["CDXML", "CDX"] as const)("C1 visible %s regressions", format => 
       }
       expectOneNativeCaption(document);
     }
+  });
+
+  it.each(["direct", "grouped", "page"] as const)("preserves every styled run and text attribute exactly once for %s text through three round trips", placement => {
+    const source = format === "CDXML" ? styledSource(placement)
+      .replace('<t id="7"', '<t SourceTextAttribute="keep" id="7"')
+      .replace('<s font="3"', '<s font="3" SourceRunAttribute="keep"') : styledSource(placement);
+    const sourceTree = format === "CDX" ? readCdx(binaryFromXml(source)) : cdxElementFromOrderedTree(parser.parse(source));
+    const expectedCaption = captionsIn(sourceTree)[0];
+    expect(expectedCaption.kids).toHaveLength(2);
+    let document = requireDocument(open(source));
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const texts = document.pages[0].objects.filter(object => object.type === "text");
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toMatchObject({ text: "Styled caption", x: 40, y: 80 });
+      expect(texts[0].compatibility?.unknown.cdxmlTextElement).toContain('<s font="3"');
+      // Exercise native persistence too: the preserved source belongs to the native text object.
+      document = JSON.parse(JSON.stringify(document)) as ChemDraftDocument;
+      const exported = format === "CDX"
+        ? exportDocumentToCdx(document, { embedNativePayload: false })
+        : exportDocumentToCdxml(document, { embedNativePayload: false });
+      expect(exported.warnings.filter(warning => warning.code === "cdxml.text_source_formatting_not_kept")).toEqual([]);
+      const outputTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(parser.parse(exported.contents));
+      expect(captionsIn(outputTree)).toEqual([expectedCaption]);
+      expect(elementsNamed(outputTree, "t").filter(node => node.attrs.id === "7")).toHaveLength(1);
+      expect(elementsNamed(outputTree, "font")).toEqual(elementsNamed(sourceTree, "font"));
+      expect(elementsNamed(outputTree, "color").slice(0, 4)).toEqual(elementsNamed(sourceTree, "color"));
+      document = requireDocument("bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents));
+    }
+  });
+
+  it.each(["direct", "page"] as const)("exports edited %s text once and names it in the source-formatting warning", placement => {
+    const document = requireDocument(open(styledSource(placement)));
+    const text = document.pages[0].objects.find(object => object.type === "text")!;
+    text.text = "Edited caption";
+    const exported = format === "CDX"
+      ? exportDocumentToCdx(document, { embedNativePayload: false })
+      : exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.text_source_formatting_not_kept", sourceObjectId: text.id,
+      message: expect.stringContaining(`Text ${text.id} (source 7)`)
+    }));
+    expect(exported.warnings.find(warning => warning.code === "cdxml.text_source_formatting_not_kept")?.message).toContain("source formatting was not kept");
+    const outputTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(parser.parse(exported.contents));
+    expect(captionsIn(outputTree)).toEqual([]);
+    expect(elementsNamed(outputTree, "t").filter(node => elementText(node) === "Edited caption")).toHaveLength(1);
+    const reopened = requireDocument("bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents));
+    expect(reopened.pages[0].objects.filter(object => object.type === "text")).toEqual([
+      expect.objectContaining({ text: "Edited caption", x: 40, y: 80 })
+    ]);
+  });
+
+  it("moves preserved text coordinates while retaining its styled runs", () => {
+    const document = requireDocument(open(styledSource("page")));
+    const text = document.pages[0].objects.find(object => object.type === "text")!;
+    text.x += 40;
+    text.y += 20;
+    const exported = exportDocumentToCdxml(document, { embedNativePayload: false });
+    expect(exported.warnings).toEqual([]);
+    const output = captionsIn(cdxElementFromOrderedTree(parser.parse(exported.contents)))[0];
+    expect(output.attrs).toMatchObject({ p: "60 75", BoundingBox: "55 60 125 80" });
+    const source = captionsIn(format === "CDX" ? readCdx(binaryFromXml(styledSource("page")))
+      : cdxElementFromOrderedTree(parser.parse(styledSource("page"))))[0];
+    expect(output.kids).toEqual(source.kids);
   });
 
   it("imports a fragment-local group with text and graphics exactly once and retains the group", () => {
