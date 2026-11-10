@@ -33,6 +33,25 @@ function existingBond(smiles: string, fromIndex: number, toIndex: number) {
 }
 
 describe("wavy bond tool", () => {
+  it.each(["perceiver throws", "molfile atom limit"])("keeps stored direction and converts when %s", failure => {
+    const initial = existingBond("CC(O)CC", 0, 1);
+    const original = getSelectedMolecule(initial.document)!;
+    const document = failure === "molfile atom limit"
+      ? applyPatches(initial.document, [{ op: "updateObject", objectId: original.id, changes: {
+          atoms: [...original.atoms, ...Array.from({ length: 1000 - original.atoms.length }, (_, index) => ({
+            ...original.atoms[0]!, id: `extra-${index}`, x: index, y: 0
+          }))]
+        } }])
+      : initial.document;
+    const perceive = vi.fn(() => { throw new Error("Perception failed"); });
+    const wave = applyNativeBondDisplayStyleTarget(document, initial.target, "wavy", perceive);
+    expect(getSelectedMolecule(wave)!.bonds.find(bond => bond.id === initial.target.bondId))
+      .toMatchObject({ fromAtomId: initial.fromAtomId, toAtomId: initial.toAtomId, display: { bondStyle: "wavy" } });
+    expect(getSelectedMolecule(wave)!.atoms).toEqual(getSelectedMolecule(document)!.atoms);
+    if (failure === "molfile atom limit") expect(perceive).not.toHaveBeenCalled();
+    else expect(perceive).toHaveBeenCalledOnce();
+  });
+
   it.each([[0, 1], [1, 0]])("puts the narrow end on C2 of butan-2-ol for stored atom indices %i→%i", (from, to) => {
     const { document, target } = existingBond("CC(O)CC", from, to);
     const original = getSelectedMolecule(document)!;

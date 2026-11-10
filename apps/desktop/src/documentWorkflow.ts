@@ -7477,10 +7477,15 @@ export function applyNativeBondDisplayStyleTarget(
   if (bondStyle === "wavy" && perceiveStereo && !molecule.bonds.some(candidate => candidate.order === "unknown")) {
     // Use the same index-aligned chemical perception as wedge read-back. An unspecified
     // centre still counts; the CIP descriptor need not already be R or S.
-    const stereo = perceiveStereo(stereoPerceptionMolfile(molecule));
-    const from = stereo[molecule.atoms.findIndex(atom => atom.id === bond.fromAtomId)]?.isStereoCenter;
-    const to = stereo[molecule.atoms.findIndex(atom => atom.id === bond.toAtomId)]?.isStereoCenter;
-    if (from === false && to === true) directedBond = reversedNativeBond(bond);
+    try {
+      const stereo = perceiveStereo(stereoPerceptionMolfile(molecule));
+      const from = stereo[molecule.atoms.findIndex(atom => atom.id === bond.fromAtomId)]?.isStereoCenter;
+      const to = stereo[molecule.atoms.findIndex(atom => atom.id === bond.toAtomId)]?.isStereoCenter;
+      if (from === false && to === true) directedBond = reversedNativeBond(bond);
+    } catch {
+      // Molfile limits or engine failures must not prevent styling the bond. Without
+      // perception, preserve its stored direction just as an unperceived conversion does.
+    }
   }
   const bonds = molecule.bonds.map((candidate) =>
     candidate.id === bond.id ? nativeBondWithDisplayStyle(directedBond, bondStyle) : candidate
