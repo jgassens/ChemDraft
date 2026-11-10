@@ -3281,6 +3281,12 @@ textarea:focus-visible,
   color: var(--cd-accent-text);
 }
 
+.toolbar-command-flyout-menu button:focus,
+.palette-popover-shell button[data-keyboard-highlighted="true"] {
+  outline: 2px solid var(--cd-accent);
+  outline-offset: -2px;
+}
+
 .toolbar-command-flyout-menu button:disabled {
   color: var(--cd-text-disabled);
   cursor: not-allowed;

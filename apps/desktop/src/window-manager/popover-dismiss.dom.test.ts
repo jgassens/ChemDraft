@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, listenForToolsetPopoverContent, setToolsetPopoverContent,
-  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease } from "./index";
+  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease,
+  listenForToolsetFlyoutKeys, sendToolsetFlyoutKey, listenForToolsetFlyoutClosed, notifyToolsetFlyoutClosed } from "./index";
 
 const transport = vi.hoisted(() => ({
   emit: vi.fn(async (_event: string, _payload?: unknown) => {}),
@@ -71,5 +72,27 @@ it("transports the originating open time with the content without restamping it"
   expect(transport.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-content", payload);
   transport.receive?.({ event: "chemdraft://toolset-popover-content", id: 1, payload });
   expect(handler).toHaveBeenCalledWith(payload);
+  stop();
+});
+
+it("transports flyout keys with the originating session without transferring focus", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetFlyoutKeys(handler);
+  const payload = { toolsetId: "core.main", flyoutId: "rings", openedAt: 123, key: "ArrowDown" };
+  await sendToolsetFlyoutKey(payload);
+  expect(transport.emit).toHaveBeenCalledExactlyOnceWith("chemdraft://toolset-flyout-key", payload);
+  transport.receive?.({ event: "chemdraft://toolset-flyout-key", id: 1, payload });
+  expect(handler).toHaveBeenCalledExactlyOnceWith(payload);
+  stop();
+});
+
+it("notifies the document which flyout session closed", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetFlyoutClosed(handler);
+  const payload = { toolsetId: "core.main", flyoutId: "rings", openedAt: 123 };
+  await notifyToolsetFlyoutClosed(payload);
+  expect(transport.emit).toHaveBeenCalledExactlyOnceWith("chemdraft://toolset-flyout-closed", payload);
+  transport.receive?.({ event: "chemdraft://toolset-flyout-closed", id: 1, payload });
+  expect(handler).toHaveBeenCalledExactlyOnceWith(payload);
   stop();
 });

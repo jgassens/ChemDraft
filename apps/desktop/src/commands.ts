@@ -76,6 +76,33 @@ export interface CommandSpec extends CommandDefinition {
   disabledReason?: string;
 }
 
+export type SelectionNudgeDirection = "left" | "right" | "up" | "down";
+
+export function selectionNudgeCommandId(direction: SelectionNudgeDirection, large = false): string {
+  return `selection.nudge.${direction}${large ? ".large" : ""}`;
+}
+
+export const selectionNudgeActions: readonly CommandSpec[] =
+  (["left", "right", "up", "down"] as const).flatMap(direction =>
+    [false, true].map(large => ({
+      id: selectionNudgeCommandId(direction, large),
+      title: `Nudge ${direction}${large ? " 10 units" : ""}`,
+      icon: "select" as const,
+      source: "core" as const,
+      shortcut: `${large ? "Shift+" : ""}Arrow${direction[0].toUpperCase()}${direction.slice(1)}`
+    })));
+
+export function isSelectionNudgeCommand(commandId: string): boolean {
+  return selectionNudgeActions.some(action => action.id === commandId);
+}
+
+export function createSelectionNudgeActions(hasSelection: boolean): CommandSpec[] {
+  return selectionNudgeActions.map(action => ({ ...action,
+    enabled: hasSelection,
+    disabledReason: hasSelection ? undefined : "Select objects or molecule parts to nudge"
+  }));
+}
+
 export function activateDocumentTabCommandId(id: string): string {
   return `document.activateTab.${id}`;
 }
@@ -2352,6 +2379,7 @@ export function allShellCommands(
 ): CommandSpec[] {
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
+    ...createSelectionNudgeActions(document.selection.objectIds.length > 0 || options.availability?.hasMoleculeFragmentSelection === true),
     ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled),

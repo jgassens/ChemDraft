@@ -135,7 +135,9 @@ it("sends the live content kind on each reveal of a prewarmed Art popover", asyn
   await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
   await act(async () => native.content?.({ ...rings, toolsetId: "core.art" }));
-  expect(native.show).toHaveBeenLastCalledWith("focus", "flyout");
+  // Command navigation is routed from the document; even a failed native reveal
+  // must not fall back to an activating show for this flyout.
+  expect(native.show).toHaveBeenLastCalledWith("preserve", "flyout");
   await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
 });
