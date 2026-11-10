@@ -17,6 +17,32 @@ function type(text: string) {
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 describe("Reaction conditions form", () => {
+  it.each(["macos", "windows"] as const)("saves on one DOM click after focus leaves the editor on %s", async platform => {
+    const save = vi.fn();
+    let latest = initial;
+    function Form() {
+      const [draft, setDraft] = useState(initial);
+      return createElement(ReactionConditionsForm, { title: "Drawing", draft, platform,
+        onChange: value => { latest = value; setDraft(value); }, onSave: save, onCancel: vi.fn() });
+    }
+    await act(async () => root.render(createElement(Form)));
+    const field = container.querySelector("textarea")!;
+    const blur = vi.fn();
+    field.addEventListener("blur", blur);
+    await act(async () => type("80 °C, 2 h"));
+    const otherWindow = document.createElement("button");
+    container.append(otherWindow);
+    otherWindow.focus();
+    expect(blur).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(otherWindow);
+    const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    // Use real DOM focus and the button's default form submission, not bridge events.
+    // jsdom does not move focus on a mouse press, so perform that step explicitly.
+    await act(async () => { submit.focus(); submit.click(); });
+    expect(document.activeElement).toBe(submit);
+    expect(save).toHaveBeenCalledOnce();
+    expect(latest.spans).toEqual([{ text: "80 °C, 2 h", script: "normal" }]);
+  });
   it("formats a selection, retains scripts through edits and previews real text safely", async () => {
     let latest = initial;
     function Form() {
