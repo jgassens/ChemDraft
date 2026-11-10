@@ -187,6 +187,14 @@ InChI (statically linked into the RDKit MinimalLib build above; not the copy in 
   dependency inventory and must be resolved, with the notice archived here, before
   any public redistribution.
 
+InChI 1.07.5 (inside the Intel Mac naming engine's RDKit wheel)
+  MIT. Copyright (c) 2024 InChI Project.
+  Source: https://github.com/IUPAC-InChI/InChI, tag v1.07.5.
+  Ships in the RDKit wheel installed by the Orthonym naming engine on Intel Macs
+  from https://github.com/jgassens/ChemDraft-Engines releases; not in the app bundle.
+  The wheel includes the InChI licence text in its licences folder.
+  The tbb Apache-2.0 text is included for reference only; tbb is not compiled in.
+
 Avogadro libraries (avogadrolibs Core + Calc, statically linked into the
 avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
   BSD-3-Clause. Copyright (c) 2011-2020, Kitware, Inc.

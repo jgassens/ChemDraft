@@ -179,8 +179,8 @@ environment; partial results carry warnings. No calibrated confidence percentage
 
 - The core is **Apache-2.0**; example plugins and the two SDK packages are MIT. Changing either is the
   owner's call. `NOTICE` ships with every distribution; a new vendored binary adds its row there and
-  in `docs/architecture/dependency-inventory.md` in the same change (InChI 1.07.3 terms are still
-  unconfirmed and block public redistribution).
+  in `docs/architecture/dependency-inventory.md` in the same change (InChI 1.07.5 is MIT
+  (owner-approved 2026-11-10); 1.07.3 terms remain unconfirmed and block public redistribution of 1.07.3).
 - **Code licence and data licence are separate claims.** A plugin bundling data declares its code
   `license` and a `dataLicenses` entry per dataset; `tools/plugin-extract/gates.ts` refuses a dataset
   covered by a code licence alone. The NMR predictor's database carries nmrshiftdb2's ODbL-derived
