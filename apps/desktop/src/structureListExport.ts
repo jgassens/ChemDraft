@@ -7,7 +7,7 @@ import {
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
-import { copyAsScopeMolecules, copyAsScopeObjects } from "./documentWorkflow";
+import { copyAsScopeMolecules } from "./documentWorkflow";
 import { loadStructureIdentifiers, moleculeSmiles } from "./moleculeSmiles";
 
 /**
@@ -107,7 +107,7 @@ export async function exportStructureListSdf(
     let smiles: string | undefined;
     try {
       smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile);
-      warnings.push(...repeatUnitExportWarnings(document, "SMILES", { objects: [], molecules: [molecule] }));
+      warnings.push(...repeatUnitExportWarnings(document, "SMILES", { molecules: [molecule] }));
     } catch (error) {
       warnings.push(smilesWriteFailure(molecule, error));
     }
@@ -130,7 +130,7 @@ export async function exportStructureListSdf(
 export async function exportStructureListSmi(document: ChemDraftDocument): Promise<TextExportResult> {
   const descriptor = getExportFormatDescriptor("smiles");
   const molecules = structureListMolecules(document);
-  const warnings: ExportWarning[] = repeatUnitExportWarnings(document, "SMILES", { objects: copyAsScopeObjects(document), molecules });
+  const warnings: ExportWarning[] = repeatUnitExportWarnings(document, "SMILES", { molecules });
   const computeStructureIdentifiers = molecules.length > 0 ? await loadStructureIdentifiers() : undefined;
   const lines: string[] = [];
   for (const [index, molecule] of molecules.entries()) {

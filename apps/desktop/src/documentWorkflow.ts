@@ -19834,7 +19834,7 @@ export function copyAsMolfile(
 const copyAsPagePaddingPx = 16;
 
 function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, molecules: readonly MoleculeObject[], warningsOut?: string[]) {
-  const messages = repeatUnitExportWarnings(document, format, { objects: copyAsScopeObjects(document), molecules }).map(warning => warning.message);
+  const messages = repeatUnitExportWarnings(document, format, { molecules }).map(warning => warning.message);
   warningsOut?.push(...messages);
 }
 

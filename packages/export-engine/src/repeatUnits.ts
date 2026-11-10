@@ -1,4 +1,4 @@
-import { bracketPairs, type ChemDraftDocument, type DocumentObject, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
+import { bracketPairs, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
 import { projectedPlaneSvgTransformForObject, transformPointForObject } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
 
@@ -49,7 +49,6 @@ function warning(unit: RepeatUnit, message: string): ExportWarning {
 
 /** SMILES has no SRU encoding. Other graph-only formats use the same explicit loss channel. */
 export function repeatUnitExportWarnings(document: ChemDraftDocument, format: string, scope?: {
-  objects: readonly DocumentObject[];
   molecules: readonly MoleculeObject[];
 }): ExportWarning[] {
   return repeatUnits(document, scope?.molecules).map(unit => warning(unit,

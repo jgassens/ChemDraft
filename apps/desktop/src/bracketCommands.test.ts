@@ -184,8 +184,8 @@ describe("repeat-unit graph-export warnings", () => {
     const repeat = repeatAroundMolecule();
     const molecule = repeat.pages[0].objects.find(object => object.type === "molecule")!;
     // Selecting just the molecule must still report the semantic loss of its repeat brackets.
-    expect(repeatUnitExportWarnings(repeat, "SMILES", { objects: [molecule], molecules: [molecule] })).toHaveLength(1);
-    expect(repeatUnitExportWarnings(repeat, "MOL", { objects: bracketObjects(repeat), molecules: [] })).toEqual([]);
+    expect(repeatUnitExportWarnings(repeat, "SMILES", { molecules: [molecule] })).toHaveLength(1);
+    expect(repeatUnitExportWarnings(repeat, "MOL", { molecules: [] })).toEqual([]);
     expect(repeatUnitExportWarnings(repeat, "MOL")).toHaveLength(1);
     const enclosed = { ...repeat, pages: [{ ...repeat.pages[0], objects: repeat.pages[0].objects.map(object =>
       object.type === "bracket" ? { ...object, containedObjectIds: [] } : object) }] };

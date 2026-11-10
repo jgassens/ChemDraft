@@ -42,7 +42,7 @@ describe("document repeat-unit export mapping", () => {
     expect(warnings).toEqual([]);
     // Only the molecule is selected; the bracket annotation still applies.
     const selected: ChemDraftDocument = selectDocumentObjects(doc, doc.pages[0].id, [first.id]);
-    expect(repeatUnitExportWarnings(selected, "SMILES", { objects: [first], molecules: [first] })).toHaveLength(1);
+    expect(repeatUnitExportWarnings(selected, "SMILES", { molecules: [first] })).toHaveLength(1);
     const partialWarnings: ExportWarning[] = [];
     expect(repeatUnitMolfileGroups(selected, [first], partialWarnings)).toEqual([]);
     expect(partialWarnings[0].message).toContain("outside the export selection");
