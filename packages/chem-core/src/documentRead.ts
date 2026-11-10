@@ -3,7 +3,7 @@ import { ChemDraftDocumentSchema, type ChemDraftDocument } from "./schemas";
 import { normalizeBracketPairs } from "./brackets";
 import { nativeSchemaInventory, NativeDocumentBaselineAppVersion, NativeDocumentFeatureVersions, NativeDocumentFormatVersion, NativeDocumentReaderVersion } from "./documentFeatures";
 import { NativeFieldPatternSchema, nativeFieldPatternMatches, nativeFieldPatternsOverlap } from "./nativeFieldPatterns";
-import { DefaultNativeDrawingStyle, DocumentStylePreset } from "./styles";
+import { DefaultNativeDrawingStyle, NativeStylePresets } from "./styles";
 import {
   compareNativeVersions, isNativeRecord, NativeVersionSchema, ownNativeValue,
   setNativeValue, stableExtensionPath, type NativeExtension
@@ -323,7 +323,7 @@ function normalizeStylePresetIds(
   preserve: (path: (string | number)[], kind: NativeExtension["kind"], code: NativeDocumentWarningCode,
     originalValue: unknown, fallbackValue?: unknown) => void
 ): void {
-  const known = new Set<string>([DefaultNativeDrawingStyle.stylePresetId, DocumentStylePreset.id]);
+  const known = new Set<string>(NativeStylePresets.map(preset => preset.id));
   // Metadata is deliberately open. Recognize this particular rendering setting, without walking
   // arbitrary plugin payloads or converting an unrelated property with the same name.
   const inspect = (style: unknown, path: (string | number)[]) => {

@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { applyNativeStylePreset } from "@chemdraft/document-workflow-core";
 import { z } from "zod";
 import { ChemDraftDocumentSchema as Released111DocumentSchema,
   DocumentObjectSchema as Released111ObjectSchema } from "./__fixtures__/v1.1.1/schemas";
@@ -13,6 +15,7 @@ import { applyPatch } from "./patches";
 import { CORPUS } from "./corpus";
 import { snapshotChemicalIdentity } from "./identity";
 import { compareNativeVersions } from "./nativeCompatibilityState";
+import { NativeStylePresets } from "./styles";
 
 function plainDocument() {
   const document = createEmptyDocument({ now: "2026-11-09T00:00:00.000Z" });
@@ -156,6 +159,24 @@ describe("native feature version registry", () => {
 });
 
 describe("forward-compatible native reader", () => {
+  it.each(NativeStylePresets)("keeps $id after styling and reopening a newer document", preset => {
+    const opened = readSerializedDocument(readFileSync(
+      new URL("./__fixtures__/compat/newer-1.3.chemdraft", import.meta.url), "utf8"
+    )).document;
+    const styled = applyPatch(opened, applyNativeStylePreset(opened, preset.id, "document"));
+    const reopened = readSerializedDocument(serializeDocument(styled));
+
+    expect(reopened.formatVersion).toBe("1.3.0");
+    expect.soft(reopened.document.styles.drawing).toMatchObject({ stylePresetId: preset.id });
+    for (const page of reopened.document.pages) {
+      for (const object of page.objects) {
+        if (object.type === "molecule") expect.soft(object.style.stylePresetId).toBe(preset.id);
+      }
+    }
+    expect.soft(reopened.warnings.filter(warning => warning.code === "NATIVE_STYLE_PRESET_FALLBACK")).toEqual([]);
+    expect(reopened.document.pages).toEqual(styled.pages);
+  });
+
   it("preserves a synthetic 1.3 file's unknown fields and nested objects and gives named visual fallbacks", () => {
     const source = futureDocument();
     const molecule = source.pages[0]!.objects[0] as MoleculeObject;
