@@ -199,6 +199,24 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     }
   );
 
+  it("commits lowercase hover typing otbdps on a terminal atom without moving the pointer", async () => {
+    await mount();
+    const before = molecule();
+    const atom = before.atoms[0]!;
+    expect(before.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id)).toHaveLength(1);
+    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
+    await pointer("pointermove", atom);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+    for (const key of ["o", "t", "b", "d", "p", "s"]) await typeKey(key);
+    const editor = container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+    expect(editor?.value).toBe("OTBDPS");
+    expect(document.activeElement).toBe(editor);
+    await typeKey("Enter");
+    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
+    expect(molecule().atoms).toEqual([{ ...atom, element: "OTBDPS", labelLiteral: true }, before.atoms[1]]);
+    expect(molecule().bonds).toEqual(before.bonds);
+  });
+
   it.each([["no2", "NO2"], ["ome", "OMe"], ["obn", "OBn"]])(
     "attaches lowercase hover typing %s as a %s substituent on a ring", async (typed, label) => {
       await mount(insertNativeTemplateMolecule(createPhase4Document("Hover substituent"), { x: 300, y: 300 }, "benzene"));

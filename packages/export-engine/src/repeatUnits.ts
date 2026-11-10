@@ -1,4 +1,4 @@
-import { bracketChemistryWarnings, bracketPairs, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
+import { bracketChemistryWarnings, bracketPairs, type BracketObject, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
 import { projectedPlaneSvgTransformForObject, transformPointForObject } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
 
@@ -11,6 +11,79 @@ type RepeatUnit = {
   reason?: string;
 };
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Source ids are opaque: only the importer's scoped native references can resolve them. */
+function importedMembership(pair: BracketObject[], objects: readonly DocumentObject[]) {
+  const source = pair.find(object => {
+    const group = object.compatibility?.unknown.bracketedGroup;
+    return record(group) && record(group.attributes);
+  });
+  if (!source) return undefined;
+  const group = source.compatibility!.unknown.bracketedGroup as { attributes: Record<string, unknown> };
+  const value = group.attributes.BracketedObjectIDs;
+  const sourceIds = typeof value === "string" ? [...new Set(value.trim().split(/\s+/).filter(Boolean))] : [];
+  const members = new Map<string, Set<string>>();
+  let reason = sourceIds.length ? undefined : "its imported BracketedObjectIDs membership is empty or invalid";
+  for (const sourceId of sourceIds) {
+    const records = pair.flatMap(object => {
+      const entries = object.compatibility?.unknown.cdxmlBracketMembers;
+      return Array.isArray(entries) ? entries.filter(entry => record(entry) && entry.sourceId === sourceId) : [];
+    });
+    const unique = [...new Map(records.map(entry => [JSON.stringify(entry), entry])).values()];
+    const member = unique.length === 1 && record(unique[0]) ? unique[0] : undefined;
+    const molecule = member && objects.find(object => object.id === member.objectId);
+    const atoms = molecule?.type === "molecule" ? molecule.atoms.filter(atom => member!.atomId === undefined || atom.id === member!.atomId) : [];
+    if (!atoms.length) {
+      reason ??= `its imported BracketedObjectIDs member "${sourceId}" does not resolve unambiguously to atoms in the export scope`;
+      continue;
+    }
+    const ids = members.get(molecule!.id) ?? new Set<string>();
+    atoms.forEach(atom => ids.add(atom.id));
+    members.set(molecule!.id, ids);
+  }
+  return { members, reason };
+}
+
+/** The MOL writer derives boundary bonds; decline any imported references it cannot preserve. */
+function crossingReason(pair: BracketObject[], members: RepeatUnit["members"], molecules: readonly MoleculeObject[]): string | undefined {
+  const refs = pair.flatMap(object => object.crossingBondIds ?? []);
+  for (const object of pair) {
+    const entries = object.compatibility?.unknown.cdxmlBracketCrossings;
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!record(entry)) return "its imported crossing-bond membership is invalid";
+      const attributes = record(entry.attributes) ? entry.attributes : {};
+      const ref = record(entry.ref) ? entry.ref : undefined;
+      if (!ref || !refs.some(candidate => candidate.objectId === ref.objectId && candidate.bondId === ref.bondId)) {
+        return `its imported crossing bond "${attributes.BondID ?? "(unknown)"}" does not resolve to a crossing bond in the export scope`;
+      }
+      const molecule = molecules.find(molecule => molecule.id === ref.objectId);
+      const bond = molecule?.bonds.find(bond => bond.id === ref.bondId);
+      if (entry.bondIdentity !== undefined && entry.bondIdentity !== JSON.stringify(bond && [bond.fromAtomId, bond.toAtomId])) {
+        return `its imported crossing bond "${attributes.BondID}" no longer has its original endpoints`;
+      }
+      if (attributes.InnerAtomID !== undefined && (!bond ||
+        ![bond.fromAtomId, bond.toAtomId].includes(String(entry.innerAtomId)) ||
+        !members.some(member => member.molecule.id === ref.objectId && member.atomIds.includes(String(entry.innerAtomId))))) {
+        return `its imported crossing InnerAtomID "${attributes.InnerAtomID}" does not resolve to a member atom on its bond`;
+      }
+    }
+  }
+  const boundary = members.flatMap(member => {
+    const atoms = new Set(member.atomIds);
+    return molecules.find(molecule => molecule.id === member.molecule.id)?.bonds.flatMap(bond =>
+      atoms.has(bond.fromAtomId) !== atoms.has(bond.toAtomId) ? [{ objectId: member.molecule.id, bondId: bond.id }] : []) ?? [];
+  });
+  if (refs.some(ref => !boundary.some(bond => bond.objectId === ref.objectId && bond.bondId === ref.bondId)) ||
+    refs.length > 0 && boundary.some(bond => !refs.some(ref => bond.objectId === ref.objectId && bond.bondId === ref.bondId))) {
+    return "its crossing-bond references do not match the boundary of its atom membership in the export scope";
+  }
+  return undefined;
+}
+
 /** Scope follows exported molecules, even when the user selected no bracket glyphs. */
 function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
   const exported = molecules && new Set(molecules.map(molecule => molecule.id));
@@ -20,6 +93,7 @@ function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeO
     if (usage === "generic") return [];
     const close = pair.find(object => object.side === "close")!;
     const explicit = new Set(pair.flatMap(object => object.containedObjectIds));
+    const imported = importedMembership(pair, page.objects);
     const left = Math.min(...pair.map(object => object.x));
     const top = Math.min(...pair.map(object => object.y));
     const right = Math.max(...pair.map(object => object.x + object.width));
@@ -27,24 +101,30 @@ function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeO
     const allMembers = page.objects.flatMap(object => {
       if (object.type !== "molecule") return [];
       const atomIds = object.atoms.filter(atom => {
+        if (imported) return imported.members.get(object.id)?.has(atom.id) ?? false;
         if (explicit.has(object.id)) return true;
         const point = transformPointForObject(object, atom);
         return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
       }).map(atom => atom.id);
       const context = bracketChemistryWarnings(document, object).filter(warning => warning.pairId === pair[0].pairId);
-      return atomIds.length || explicit.has(object.id) || context.length ? [{ molecule: object, atomIds, context }] : [];
+      return (imported ? atomIds.length : atomIds.length || explicit.has(object.id) || context.length)
+        ? [{ molecule: object, atomIds, context }] : [];
     });
     const members = allMembers.filter(member => !exported || exported.has(member.molecule.id));
-    if (!members.length) return [];
+    if (!members.length && !(imported && page.objects.some(object => object.type === "molecule" && (!exported || exported.has(object.id))))) return [];
     const missing = [...explicit].some(id => !page.objects.some(object => object.id === id && object.type === "molecule"));
     const excluded = allMembers.some(member => exported && !exported.has(member.molecule.id));
     const reason = usage !== "sru" ? `its ${usage === "multiple" ? "multiple-group" : "unknown group"} semantics cannot be represented as an SRU`
+      : imported?.reason ? imported.reason
       : missing ? "its membership includes missing or non-molecular objects"
       : excluded ? "part of its atom membership is outside the export selection"
-      : pair.some(object => projectedPlaneSvgTransformForObject(object) !== undefined)
+      : members.some(member => member.atomIds.some(id => !(molecules ?? [member.molecule]).some(molecule =>
+        molecule.id === member.molecule.id && molecule.atoms.some(atom => atom.id === id))))
+        ? "part of its atom membership is outside the export scope"
+      : !imported && pair.some(object => projectedPlaneSvgTransformForObject(object) !== undefined)
         ? "rotated or projected brackets have no unambiguous atom membership"
       : members.some(member => member.atomIds.length === 0) ? "its atom membership is empty"
-      : undefined;
+      : crossingReason(pair, members, molecules ?? members.map(member => member.molecule));
     return [{ objectId: close.id, label: close.label ?? "n", usage, members,
       context: members.flatMap(member => member.context.map(warning => warning.message)), reason }];
   }));

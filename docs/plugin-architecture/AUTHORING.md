@@ -176,11 +176,11 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
-| 0.1.21 | `chemistry.properties` and session-local extra assistant tools | Existing `chemistry.compute` / assistant permissions |
-| 0.1.22 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
-| 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
-| 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
 | 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
+| 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
+| 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
+| 0.1.22 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
+| 0.1.21 | `chemistry.properties` and session-local extra assistant tools | Existing `chemistry.compute` / assistant permissions |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
