@@ -137,7 +137,7 @@ export function parseRows(text) {
 // Conservative: even a source label containing a stereo/epimer descriptor needs
 // independent structure evidence. Include German sugar stems and Greek glyphs.
 export const hasStereoDescriptor = name => /(?:[αβ]|alpha|beta|gluco|gluko|galacto|galakto|manno|allo|altro|gulo|ido|talo|\b[dl][-‐-―\s]|(?:^|[\s([,\d])[RS](?=$|[\s)\],-]))/i.test(name);
-const samePubchemIdentity = (a, b) => KEY.test(a ?? "") && KEY.test(b ?? "") && a.slice(0, 25) === b.slice(0, 25);
+const samePubchemIdentity = (a, b) => KEY.test(a ?? "") && KEY.test(b ?? "") && a === b;
 
 /** A new exact name must have positive evidence; an available contradiction vetoes it. */
 export async function nameAccuracy(name, entry, { keyOf, opsinSmiles, pubchem, pubchemAvailable = () => true }, ownLabel = false, evidence = {}) {
@@ -182,7 +182,11 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
     const legacy = source.map(s => priorSmiles.get(s)).find(e => e && (!wanted.length || wanted.includes(e.key)));
     if (legacy && pick?.key !== legacy.key) pick = { s: legacy.smiles, key: legacy.key };
     if (!pick) continue;
-    const e = { id: item.id, smiles: prior.get(pick.key)?.smiles ?? pick.s, key: pick.key, names: [], cas: unique(item.cas.filter(casValid)), suggest: [],
+    // A connectivity fallback does not establish that the source CAS identifies
+    // this protonation/stereo/isotope state. Require the full source identity;
+    // historical CAS assignments are preserved separately with their baseline row.
+    const cas = wanted.includes(pick.key) ? unique(item.cas.filter(casValid)) : [];
+    const e = { id: item.id, smiles: prior.get(pick.key)?.smiles ?? pick.s, key: pick.key, names: [], cas, suggest: [],
       ownLabels: (!wanted.length || wanted.includes(pick.key)) ? [...item.labels, ...(item.germanLabels ?? [])].flatMap(usableNames) : [] };
     entries.push(e);
     // The cached German query combines labels and aliases. Do not guess which
@@ -229,7 +233,7 @@ export async function buildRows(items, { keyOf, opsinSmiles, pubchem, baseline =
     e[field] = kept;
   }
   // Apply collision checks to BOTH exact-name columns. New collisions require
-  // matching connectivity AND stereo. Previously searchable column-2 ownership
+  // matching the full InChIKey. Previously searchable column-2 ownership
   // takes priority over historical column-5 names that the old app never searched.
   for (const field of ["names", "cas"]) {
     const index = new Map();
