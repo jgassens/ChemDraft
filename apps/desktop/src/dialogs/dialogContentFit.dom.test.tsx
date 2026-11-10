@@ -81,6 +81,51 @@ function layoutWithOverflow(form: HTMLElement, viewport: number, intrinsic: numb
 }
 
 describe.each(["macos", "windows"] as const)("live content minimum on %s", platform => {
+  const firstFitCases = [
+    { kind: "pageSize", width: 420, viewport: 300, intrinsicGrid: 240, required: 286 },
+    { kind: "insertTable", width: 480, viewport: 240, intrinsicGrid: 198, required: 230 }
+  ].flatMap(form => [1, 1.25, 1.5, 2].map(pixelRatio => ({ ...form, pixelRatio })));
+  it.each(firstFitCases)("does not shrink $kind below its flex content on the first fit at $pixelRatio×", ({ kind, width, viewport, intrinsicGrid, required, pixelRatio }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("devicePixelRatio", pixelRatio);
+    vi.stubGlobal("screen", { width: 2560, height: 1440, availWidth: 2560, availHeight: 1415 });
+    vi.stubGlobal("innerWidth", width);
+    vi.stubGlobal("innerHeight", viewport);
+    const styles = document.createElement("style");
+    styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
+    document.head.append(styles);
+    const container = document.createElement("div"); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      act(() => root.render(kind === "pageSize"
+        ? createElement(PageSizeForm, { title: "Drawing", platform,
+          state: { width: "8.5", height: "11", unit: "inch" }, onChange: vi.fn(), onCancel: vi.fn(), onApply: vi.fn() })
+        : createElement(InsertTableForm, { title: "Drawing", platform,
+          initial: { rows: 2, columns: 2, headerRows: 1, preset: "grid" }, onSubmit: vi.fn(), onCancel: vi.fn() })));
+      const form = container.querySelector<HTMLElement>(".cd-dialog-fit")!;
+      const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+      let clientHeight = viewport;
+      const height = () => form.style.height !== "auto" ? clientHeight
+        : getComputedStyle(form).display === "grid" && platform === "macos" ? intrinsicGrid : required;
+      form.getBoundingClientRect = () => ({ top: 0, width, height: height() } as DOMRect);
+      Object.defineProperty(form, "scrollHeight", { get: height });
+      // The initial client fits: live overflow cannot rescue an under-sized grid probe.
+      // The two intrinsic layouts deliberately have different track/control heights.
+      Object.defineProperty(body, "clientHeight", { get: () => height() - 66 });
+      Object.defineProperty(body, "scrollHeight", { get: () => height() - 66 });
+      const before = [form.getAttribute("style"), body.getAttribute("style")];
+      const fit = measureDialogContent(form)!;
+      expect(fit).toEqual({ contentHeight: required, contentWidth: width, pixelRatio });
+      // Stable after fitting, or restoring a larger saved client: neither viewport becomes
+      // the content minimum. Rust's placement tests exercise the saved-client floor itself.
+      for (const nextClient of [required, 800]) {
+        clientHeight = nextClient;
+        expect(measureDialogContent(form)).toEqual(fit);
+      }
+      expect([form.getAttribute("style"), body.getAttribute("style")]).toEqual(before);
+    } finally { act(() => root.unmount()); container.remove(); styles.remove(); }
+  });
+
   it.each(["hidden", "clip"])("does not size Insert Table to an ellipsized title (%s)", overflow => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const styles = document.createElement("style");

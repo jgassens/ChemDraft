@@ -49,8 +49,9 @@ function overrideStyles(element: HTMLElement, overrides: Record<string, string>)
  * The element's natural height, from the top of the viewport: its CSS height and minimum height
  * (`100vh`) are lifted while measuring, so a window taller than the content does not measure as
  * content, and its scrolling bodies are unclipped, so content they would scroll counts too;
- * overflowing children count through `scrollHeight`. Also check the live scrolling layout:
- * WebKit can give the temporary intrinsic grid less height than the restored flex/grid needs.
+ * overflowing children count through `scrollHeight`. Measure both the form's own layout and
+ * an intrinsic grid: WebKit can give either layout less height than the other needs. The live
+ * overflow check alone cannot catch this when the initial viewport is taller than the content.
  * A nested scrollport's overflow does not contribute to the root's `scrollHeight`.
  */
 export function measureDialogContent(element: HTMLElement): DialogContentFit | undefined {
@@ -75,14 +76,21 @@ export function measureDialogContent(element: HTMLElement): DialogContentFit | u
       ? [{ child, minWidth: css.minWidth && css.minWidth !== "auto" ? css.minWidth : "32px" }] : [];
   }) : [];
   const restores = [
-    // Intrinsic grid rows avoid WebKit's viewport-constrained flex cross/track sizes, including
-    // nested labels and native closed selects. Keep the actual width, gaps, margins and padding.
-    overrideStyles(element, { display: "grid", "grid-template-columns": "minmax(0, 1fr)", "grid-template-rows": "none", "grid-auto-rows": "max-content", "align-content": "start", height: "auto", "min-height": "0px", "max-height": "none" }),
+    overrideStyles(element, { height: "auto", "min-height": "0px", "max-height": "none" }),
     ...bodies.map(body => overrideStyles(body, { height: "max-content", "max-height": "none", "flex-grow": "0", "flex-shrink": "0", "flex-basis": "auto", "min-height": "0px", overflow: "visible" }))
   ];
   try {
+    // Keep the real flex/grid layout for the first intrinsic probe. Otherwise the temporary
+    // grid can report a smaller minimum and the very first fit hides fields behind the footer,
+    // even though there was no overflow in the initial viewport. Do not use that viewport as
+    // a floor: a larger remembered window must still be distinguishable from natural content.
+    const naturalRect = element.getBoundingClientRect();
+    const naturalHeight = naturalRect.top + (view?.scrollY ?? 0) + Math.max(naturalRect.height, element.scrollHeight) + marginBottom;
+    // Retain the grid probe too: it avoids WebKit's viewport-constrained flex cross/track sizes,
+    // including nested labels and native closed selects. Width, gaps and padding stay intact.
+    restores.push(overrideStyles(element, { display: "grid", "grid-template-columns": "minmax(0, 1fr)", "grid-template-rows": "none", "grid-auto-rows": "max-content", "align-content": "start" }));
     const rect = element.getBoundingClientRect();
-    const contentHeight = Math.ceil(Math.max(liveContentHeight,
+    const contentHeight = Math.ceil(Math.max(liveContentHeight, naturalHeight,
       rect.top + (view?.scrollY ?? 0) + Math.max(rect.height, element.scrollHeight) + marginBottom));
     // Measure width independently of the viewport. Reporting overflow alone loses the minimum
     // as soon as a successful native fit removes that overflow, allowing the next drag to clip.
