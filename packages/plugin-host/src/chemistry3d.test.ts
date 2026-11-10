@@ -14,6 +14,24 @@ const embedded: PluginEmbed3DResult = {
   warnings: []
 };
 
+describe("host 3D chemistry input validation", () => {
+  it.each([
+    [{ components: [{ smiles: "C".repeat(5001) }] }, "The smiles is 5001 characters, over the 5000 limit."],
+    [{ components: Array.from({ length: 9 }, () => ({ smiles: "C" })) }, "The components has 9 entries, over the 8 limit."]
+  ])("explains invalid embedding input", async (request, reason) => {
+    const host = new PluginHost();
+    host.registerPlugin(manifest(true), { commandHandlers: { [command]: ctx => ctx.chemistry!.embed3d!(request) } });
+    await expect(host.invokeCommand(command)).rejects.toThrow(reason);
+  });
+  it.each(["minimize3d", "flatten3d"] as const)("explains oversized model smiles for %s", async method => {
+    const model = { ...embedded.model, components: [{ ...embedded.model.components[0]!, smiles: "C".repeat(5001) }] };
+    const request = method === "minimize3d" ? { model, interfragment: false } : { model, view: "auto" as const };
+    const host = new PluginHost();
+    host.registerPlugin(manifest(true), { commandHandlers: { [command]: ctx => ctx.chemistry![method]!(request as never) } });
+    await expect(host.invokeCommand(command)).rejects.toThrow("The smiles is 5001 characters, over the 5000 limit.");
+  });
+});
+
 describe("host 3D chemistry result validation", () => {
   const results = {
     embed3d: embedded,

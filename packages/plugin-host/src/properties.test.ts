@@ -13,11 +13,21 @@ describe("chemistry.properties host boundary", () => {
     await expect(properties({ format: "smiles", structure: "C" })).resolves.toMatchObject({ available: false, reason: "test decline" });
     expect(computeProperties).toHaveBeenCalledWith({ format: "smiles", structure: "C" });
     await expect(properties({ format: "smiles", structure: "C".repeat(5001) })).resolves.toEqual({
-      available: false, reason: "The structure is too long: 5001 characters; the limit is 5000."
+      available: false, reason: "The structure is 5001 characters, over the 5000 limit."
     });
     expect(computeProperties).toHaveBeenCalledTimes(1);
     host.unregisterPlugin(manifest.id);
     await expect(properties({ format: "smiles", structure: "C" })).rejects.toThrow("not registered");
+  });
+  it.each([
+    [{ format: "smiles", structure: "" }, "The structure must not be empty."],
+    [{ format: "smiles", structure: "   " }, "The structure must not be empty."],
+    [{ format: "unknown", structure: "C" }, "The format is invalid."],
+    [{ format: "smiles", structure: 42 }, "The structure is invalid."]
+  ])("explains invalid request fields", async (request, reason) => {
+    const host = new PluginHost(); host.registerPlugin(manifest);
+    await expect(host.createCommandContext(manifest.id).chemistry!.properties!(request as never))
+      .resolves.toEqual({ available: false, reason });
   });
   it("declines absent engines and refuses malformed host results", async () => {
     const host = new PluginHost(); host.registerPlugin(manifest);

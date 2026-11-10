@@ -124,12 +124,24 @@ export function chemistryPropertiesInputError(
   request: unknown,
   error: Extract<ReturnType<typeof PluginChemistryPropertiesRequestSchema.safeParse>, { success: false }>['error']
 ): string {
-  const issue = error.issues.find(item => item.code === "too_big" && item.path[0] === "structure");
-  if (issue?.code === "too_big" && typeof request === "object" && request !== null &&
-    "structure" in request && typeof request.structure === "string") {
-    return `The structure is too long: ${request.structure.length} characters; the limit is ${issue.maximum}.`;
+  return chemistryInputError(request, error.issues[0]);
+}
+
+function chemistryInputError(request: unknown, issue: Extract<ReturnType<typeof PluginChemistryPropertiesRequestSchema.safeParse>, { success: false }>['error']['issues'][number]): string {
+  const field = [...issue.path].reverse().find(part => typeof part === "string");
+  const name = typeof field === "string" && /^[A-Za-z][A-Za-z0-9]*$/.test(field) ? field : "input";
+  let value: unknown = request;
+  for (const part of issue.path) {
+    if (value === null || typeof value !== "object") { value = undefined; break; }
+    value = (value as Record<string | number, unknown>)[part];
   }
-  return `Invalid chemistry properties input: ${error.issues.map(item => item.message).join("; ")}`;
+  if (issue.code === "too_big") {
+    if (issue.type === "string" && typeof value === "string") return `The ${name} is ${value.length} characters, over the ${issue.maximum} limit.`;
+    if (issue.type === "array" && Array.isArray(value)) return `The ${name} has ${value.length} entries, over the ${issue.maximum} limit.`;
+  }
+  if ((name === "structure" || name === "smiles") && typeof value === "string" && !value.trim() &&
+    (issue.code === "too_small" || issue.code === "custom")) return `The ${name} must not be empty.`;
+  return `The ${name} is invalid.`;
 }
 import type {
   AppliedPatchReceipt,
@@ -1019,18 +1031,24 @@ export class PluginHost {
             return PluginChemistryPropertiesResultSchema.parse(await this.computeProperties(parsed.data));
           },
           embed3d: request => this.runChemistry3d(pluginId, invocationToken, "embed3d", () => {
-            const parsed = PluginEmbed3DRequestSchema.parse(request);
+            const result = PluginEmbed3DRequestSchema.safeParse(request);
+            if (!result.success) throw new PluginHostError(chemistryInputError(request, result.error.issues[0]));
+            const parsed = result.data;
             if (!this.chemistry3d.embed3d) throw new PluginHostError("This host provides no 3D embedding engine.");
             return { timeoutMs: chemistry3dTimeoutMs("embed3d", parsed.components.length),
               run: signal => this.chemistry3d.embed3d!(parsed, signal) };
           }),
           minimize3d: request => this.runChemistry3d(pluginId, invocationToken, "minimize3d", () => {
-            const parsed = PluginMinimize3DRequestSchema.parse(request);
+            const result = PluginMinimize3DRequestSchema.safeParse(request);
+            if (!result.success) throw new PluginHostError(chemistryInputError(request, result.error.issues[0]));
+            const parsed = result.data;
             if (!this.chemistry3d.minimize3d) throw new PluginHostError("This host provides no 3D minimization engine.");
             return { timeoutMs: chemistry3dTimeoutMs("minimize3d"), run: signal => this.chemistry3d.minimize3d!(parsed, signal) };
           }),
           flatten3d: request => this.runChemistry3d(pluginId, invocationToken, "flatten3d", () => {
-            const parsed = PluginFlatten3DRequestSchema.parse(request);
+            const result = PluginFlatten3DRequestSchema.safeParse(request);
+            if (!result.success) throw new PluginHostError(chemistryInputError(request, result.error.issues[0]));
+            const parsed = result.data;
             if (!this.chemistry3d.flatten3d) throw new PluginHostError("This host provides no 3D flattening engine.");
             return { timeoutMs: chemistry3dTimeoutMs("flatten3d"), run: signal => this.chemistry3d.flatten3d!(parsed, signal) };
           }),
