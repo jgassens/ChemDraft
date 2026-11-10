@@ -163,7 +163,7 @@ describe("custom swatch toolbar and native dialog requests", () => {
     await act(async () => persistCustomSwatches(setCustomSwatchSlot(state, 1, 2, "#123456")));
     await render(false); invoke.mockClear();
     const set = h.element.querySelector<HTMLButtonElement>('[aria-label="Custom color 1, slot 2: #123456"]')!;
-    expect(set.title).toBe("#123456");
+    expect(set.title).toBe("Select an object to change its color");
     expect(set.getAttribute("aria-disabled")).toBe("true"); expect(set.disabled).toBe(false);
     await act(async () => set.click()); expect(invoke).not.toHaveBeenCalled();
     await act(async () => set.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "F10", shiftKey: true })));
@@ -176,12 +176,22 @@ describe("custom swatch toolbar and native dialog requests", () => {
     expect(h.element.querySelectorAll('[role="group"][aria-label^="Custom Color Swatch"]')).toHaveLength(2);
   });
 
-  it("announces the stored colour to the native floating tooltip", async () => {
+  it("announces the disabled reason or stored colour to the native floating tooltip", async () => {
     saveCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), 1, 1, "#123456"));
     document.body.classList.add("palette-window-body");
     const tooltip = vi.fn(); window.addEventListener(PALETTE_TOOLTIP_DOM_EVENT, tooltip);
     try {
-      const h = host(); await act(async () => h.root.render(<CustomColorSwatchWidget swatch={1} />));
+      const h = host();
+      const render = async (hasSelection: boolean) => act(async () => h.root.render(<ToolbarWidgetStateContext.Provider value={{
+        onInvoke: () => {}, commandSpecs: createCustomSwatchActions(loadCustomSwatches(), hasSelection)
+      }}><CustomColorSwatchWidget swatch={1} /></ToolbarWidgetStateContext.Provider>));
+      await render(false);
+      await act(async () => h.element.querySelector("button")!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
+      expect(tooltip).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({ visible: true, title: "Select an object to change its color" }) }));
+      await act(async () => h.element.querySelector("button")!.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })));
+      await render(true);
+      tooltip.mockClear();
       await act(async () => h.element.querySelector("button")!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
       expect(tooltip).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({ visible: true, title: "#123456" }) }));
