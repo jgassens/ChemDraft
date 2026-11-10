@@ -866,6 +866,7 @@ describe("PluginHost", () => {
     });
     expect(applyDocumentPatch).toHaveBeenCalledWith({
       signal: expect.any(AbortSignal),
+      writeScopeObjectIds: [],
       plugin: { id: "org.test.direct-write", name: "Direct Writer", version: "0.0.1" },
       command: { id: "plugin.directWrite.insert", title: "Insert Structure" },
       patch: {

@@ -1,4 +1,4 @@
-import { applyPatch, createEmptyDocument, type BracketObject, type DocumentPatch, type DocumentObject, type ReactionObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, toEngineDocument, type BracketObject, type DocumentPatch, type DocumentObject, type MoleculeObject, type ReactionObject } from "@chemdraft/chem-core";
 import type { PluginCommandContext, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import { PluginHost, writePatchOps, type PluginPatchApplicationRequest } from "./index";
@@ -12,6 +12,15 @@ const bracket = (id: string, pairId: string, side: "open" | "close"): BracketObj
   id, type: "bracket", bracketKind: "square", pairId, side, repeatUnit: true, bracketUsage: "sru",
   ...(side === "close" ? { label: "n" } : {}), containedObjectIds: [],
   x: 100, y: 100, width: 10, height: 100, rotation: 0, style: {}
+});
+const cachedMolecule = (): MoleculeObject => ({
+  id: "mol_3", type: "molecule", x: 110, y: 120, width: 30, height: 20, rotation: 0, style: {},
+  structureFormat: "smiles", structure: "CC",
+  atoms: [{ id: "a1", element: "C", x: 110, y: 120, formalCharge: 0 },
+    { id: "a2", element: "C", x: 140, y: 120, formalCharge: 0 }],
+  bonds: [{ id: "bond", fromAtomId: "a1", toAtomId: "a2", order: "single" }], superatoms: [], rGroups: [],
+  chemistry: { formula: "C2H6", averageMass: 30.07, atomCount: 2, bondCount: 1, totalCharge: 0,
+    isotopeLabels: [], stereochemistry: [], warnings: [{ code: "test.retained", message: "Keep this warning" }] }
 });
 const reaction = (reference: "components" | "conditions" | "arrows" | "plusses" | "metadata"): ReactionObject => ({
   id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {}, mappingState: "absent",
@@ -58,6 +67,87 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it.each(["before read", "during read"] as const)("reports a document switch before preflight errors (%s)", async timing => {
+    let key = "original";
+    const document = createEmptyDocument({ now });
+    const applyDocumentPatch = vi.fn();
+    const getActiveDocument = vi.fn(async () => {
+      key = "switched";
+      return document;
+    });
+    const host = new PluginHost({ getActiveDocument, getActiveDocumentKey: () => key, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.switch", name: "Switch", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.switch.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.switch.run": ctx => {
+      if (timing === "before read") key = "switched";
+      return ctx.documents.applyPatch!({ reason: "Edit object from original document", patch: {
+        op: "updateObject", objectId: "missing-in-new-document", changes: { x: 20 }
+      } });
+    } } });
+    await expect(host.invokeCommand("plugin.switch.run", { writeSelection: snapshot(["missing-in-new-document"]) }))
+      .rejects.toThrow("The document changed while the plugin was running; nothing was inserted.");
+    expect(getActiveDocument).toHaveBeenCalledTimes(timing === "before read" ? 0 : 1);
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it.each(["label", "repeat count", "remove pair"] as const)("allows %s changes beside an unselected molecule's cached chemistry", async operation => {
+    const multiple = operation === "repeat count";
+    const open = { ...bracket("open", "pair", "open"), containedObjectIds: ["mol_3"],
+      bracketUsage: multiple ? "multiple" as const : "sru" as const };
+    const close = { ...open, id: "close", side: "close" as const, x: 160, label: "n",
+      ...(multiple ? { repeatCount: 2 } : {}) };
+    const f = fixture(["open", "close"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected brackets", patch:
+      operation === "remove pair" ? { op: "batch", patches: [
+        { op: "removeObject", objectId: "open" }, { op: "removeObject", objectId: "close" }
+      ] } : { op: "updateObject", objectId: "close", changes: multiple ? { repeatCount: 4 } : { label: "m" } }
+    }), undefined, [cachedMolecule(), open, close]);
+    const before = f.document().pages[0].objects.find(object => object.id === "mol_3") as MoleculeObject;
+    expect(before.chemistry!.warnings.some(warning => warning.code === "chemistry.bracket_multiplier")).toBe(true);
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    const after = f.document().pages[0].objects.find(object => object.id === "mol_3") as MoleculeObject;
+    expect(after.chemistry!.warnings).not.toEqual(before.chemistry!.warnings);
+    expect({ ...after, chemistry: { ...after.chemistry, warnings: before.chemistry!.warnings } }).toEqual(before);
+    expect(after.chemistry!.warnings).toContainEqual({ code: "test.retained", message: "Keep this warning" });
+    if (operation !== "remove pair") expect(after.chemistry!.warnings.at(-1)!.message).toContain(multiple ? "x4" : "repeat unit m");
+  });
+
+  it.each([false, true])("allows writes with repeated unselected ids (shared references = %s)", async shared => {
+    const empty = createEmptyDocument({ now });
+    let document = toEngineDocument({ ...empty, pages: [{ ...empty.pages[0], objects: [
+      text("selected"), text("duplicate"), { ...text("duplicate"), x: 50 }, { ...text("duplicate"), x: 100 }
+    ] }], selection: { pageId: empty.pages[0].id, objectIds: ["selected"] } });
+    if (!shared) document = structuredClone(document);
+    const before = document.pages[0].objects.slice(1);
+    const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
+      document = applyPatch(document, request.patch.patch);
+      return { applied: true as const, objectIds: ["selected"] };
+    });
+    const host = new PluginHost({ getActiveDocument: () => document, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.duplicates", name: "Duplicates", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.duplicates.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.duplicates.run": ctx => ctx.documents.applyPatch!({ reason: "Move selected text", patch: {
+      op: "moveObject", objectId: "selected", x: 20, y: 30
+    } }) } });
+    await expect(host.invokeCommand("plugin.duplicates.run")).resolves.toMatchObject({ applied: true });
+    expect(applyDocumentPatch).toHaveBeenCalledOnce();
+    expect(document.pages[0].objects.slice(1)).toEqual(before);
+  });
+
+  it.each(["remove", "change bonds"] as const)("names an indirect bracket change when a selected molecule is edited: %s", async operation => {
+    const open = { ...bracket("b7", "pair", "open"), containedObjectIds: ["mol_3"],
+      crossingBondIds: [{ objectId: "mol_3", bondId: "bond" }] };
+    const f = fixture(["mol_3"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected molecule", patch:
+      operation === "remove" ? { op: "removeObject", objectId: "mol_3" } :
+        { op: "updateObject", objectId: "mol_3", changes: { bonds: [] } }
+    }), undefined, [cachedMolecule(), open, { ...open, id: "close", side: "close", x: 160, label: "n" }]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(operation === "remove" ?
+      'Removing "mol_3" would change bracket "b7", which is not selected' :
+      'Patch would change object "b7", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
   it.each(["selected", "inserted", "colliding insertion"] as const)("refuses pairId hijacking by a %s bracket atomically", async mode => {
     const inserted = mode !== "selected";
     const id = mode === "colliding insertion" ? "old-open" : "editable";
@@ -69,7 +159,9 @@ describe("direct-write invocation scope", () => {
         ] : []),
         { op: "updateObject", objectId: id, changes: { pairId: "old-pair" } }
       ] }
-    }), undefined, [bracket("old-open", "old-pair", "open"), bracket("old-close", "old-pair", "close"),
+    }), undefined, [cachedMolecule(),
+      { ...bracket("old-open", "old-pair", "open"), containedObjectIds: ["mol_3"] },
+      { ...bracket("old-close", "old-pair", "close"), containedObjectIds: ["mol_3"] },
       ...(!inserted ? [bracket(id, "new-pair", "open"), bracket("editable-close", "new-pair", "close")] : [])]);
     const before = f.document();
     await expect(f.host.invokeCommand("plugin.scope.run"))
@@ -81,12 +173,35 @@ describe("direct-write invocation scope", () => {
   it("refuses removing one bracket when its partner is outside the write scope", async () => {
     const f = fixture(["open"], ctx => ctx.documents.applyPatch!({ reason: "Remove half a pair", patch: {
       op: "removeObject", objectId: "open"
-    } }), undefined, [bracket("open", "pair", "open"), bracket("close", "pair", "close")]);
+    } }), undefined, [cachedMolecule(),
+      { ...bracket("open", "pair", "open"), containedObjectIds: ["mol_3"] },
+      { ...bracket("close", "pair", "close"), containedObjectIds: ["mol_3"] }]);
     const before = f.document();
     await expect(f.host.invokeCommand("plugin.scope.run"))
       .rejects.toThrow('Patch would change object "close", which is not selected');
     expect(f.applyDocumentPatch).not.toHaveBeenCalled();
     expect(f.document()).toBe(before);
+  });
+
+  it("still detects an indirect change to one occurrence of a repeated bracket id", async () => {
+    // Duplicate ids are valid on load, though individual addObject operations refuse collisions.
+    const source = createEmptyDocument({ now });
+    const document = toEngineDocument({ ...source, pages: [{ ...source.pages[0], objects: [
+      bracket("open", "pair", "open"), bracket("duplicate", "pair", "close"),
+      bracket("other-open", "other-pair", "open"), bracket("duplicate", "other-pair", "close")
+    ] }], selection: { objectIds: ["open"] } });
+    const applyDocumentPatch = vi.fn();
+    const host = new PluginHost({ getActiveDocument: () => document, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.scope", name: "Scope", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.scope.run", title: "Run" }] }
+    }, {
+      commandHandlers: { "plugin.scope.run": ctx => ctx.documents.applyPatch!({ reason: "Remove half a pair", patch: {
+        op: "removeObject", objectId: "open"
+      } }) }
+    });
+    await expect(host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "duplicate", which is not selected');
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
   });
 
   it.each(["edit", "remove one", "remove both"] as const)("allows an in-scope bracket pair operation: %s", async operation => {

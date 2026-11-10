@@ -13,7 +13,7 @@ import {
 import { setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
-import { PluginHost } from "@chemdraft/plugin-host";
+import { assertPluginPatchWriteScope, PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { createNativeArtLineGraphicObject, moveDocumentObjects, normalizeCommittedDocument } from "../documentWorkflow";
 
@@ -802,6 +802,58 @@ describe("accepting a proposal into a document it was not laid out for", () => {
 });
 
 describe("plugin writes during a canvas gesture", () => {
+  it.each([false, true])("rechecks the invocation's scope after the gesture commits (new bracket = %s)", async attachBracket => {
+    let gesture = true;
+    const gate = createPluginWriteGate({ isGestureActive: () => gesture,
+      setTimer: () => 1, clearTimer: () => undefined });
+    const [molecule, open, close] = repeatUnitObjects();
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    document = applyPatch(document, { op: "addObject", pageId, object: molecule });
+    document = applyPatch(document, { op: "setSelection", objectIds: [molecule.id] });
+    const commit = vi.fn();
+    const queued = vi.fn();
+    const host = new PluginHost({ getActiveDocument: () => document,
+      applyDocumentPatch: request => {
+        queued();
+        return gate.run(() => {
+          assertPluginPatchWriteScope(document, request.patch, request.writeScopeObjectIds);
+          const result = applyPluginDocumentPatch(document, request.patch);
+          document = result.document;
+          commit();
+          return result.receipt;
+        });
+      }
+    });
+    host.registerPlugin({ id: "org.test.gesture", name: "Gesture", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.gesture.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.gesture.run": ctx => ctx.documents.applyPatch!({ reason: "Remove selected molecule", patch: {
+      op: "removeObject", objectId: molecule.id
+    } }) } });
+    const pending = host.invokeCommand("plugin.gesture.run");
+    await vi.waitFor(() => expect(queued).toHaveBeenCalledOnce());
+    expect(gate.pending()).toBe(1);
+    expect(commit).not.toHaveBeenCalled();
+    if (attachBracket) {
+      document = applyPatch(document, { op: "batch", patches: [open, close].map(object => ({ op: "addObject", pageId, object })) });
+      // A later selection must not broaden the original command's grant.
+      document = applyPatch(document, { op: "setSelection", objectIds: [molecule.id, open.id, close.id] });
+    }
+    const afterGesture = document;
+    gesture = false;
+    gate.flush();
+    if (attachBracket) {
+      await expect(pending).rejects.toThrow('Removing "mol" would change bracket "open", which is not selected');
+      expect(document).toBe(afterGesture);
+      expect(commit).not.toHaveBeenCalled();
+    } else {
+      await expect(pending).resolves.toMatchObject({ applied: true });
+      expect(commit).toHaveBeenCalledOnce();
+      expect(document.pages[0].objects).toEqual([]);
+    }
+    gate.dispose();
+  });
+
   it("runs at once when no gesture is active", async () => {
     const gate = createPluginWriteGate({ isGestureActive: () => false });
     await expect(gate.run(() => "applied")).resolves.toBe("applied");

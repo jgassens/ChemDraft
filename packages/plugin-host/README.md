@@ -36,9 +36,15 @@ to commands declared and registered by the reporting plugin.
 Direct writes enforce an invocation's initial selection plus its accepted insertions. Write-scope
 preflight and desktop application share `rebasePluginPatch`, including object references and independent
 bracket pair ids. Every write is applied to an atomic draft and refused if core validation changes
-any object outside that scope, naming the first offending object. Removal checks also inspect
+any authored field outside that scope, naming the first offending object. The only excluded derived
+object field is `molecule.chemistry.warnings` entries with code `chemistry.bracket_multiplier`,
+which validation regenerates from the enclosing brackets. Other cached chemistry and warnings remain
+protected, as do bracket pair/repeat metadata, membership references, and molecular graphs.
+Repeated object ids match by reference identity first, then by remaining occurrence order.
+Removal checks also inspect
 the core's atomic draft before removal, without normalizing
-partly inserted groups between operations. Embedding hosts rebase again against their commit-time document.
+partly inserted groups between operations. Embedding hosts rerun `assertPluginPatchWriteScope` against
+their commit-time document using the callback's host-only `writeScopeObjectIds`, then rebase and apply.
 Flat `batch` patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
