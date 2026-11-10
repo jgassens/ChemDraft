@@ -7354,10 +7354,12 @@ export function nativeBondDragSourceAtomId(molecule: MoleculeObject, point: Page
   return atomHit && canGrowNativeAtom(molecule, atomHit.atomId) ? atomHit.atomId : undefined;
 }
 
+/** The caller supplies its stereo reader to orient a newly converted wave toward a lone centre. */
 export function applyNativeBondDisplayStyleTarget(
   document: ChemDraftDocument,
   target: NativeBondOrderTarget,
-  bondStyle: NativeBondDisplayStyle
+  bondStyle: NativeBondDisplayStyle,
+  perceiveStereo?: StereoPerceiver
 ): ChemDraftDocument {
   const page = firstPage(document);
   const molecule = page.objects.find((object): object is MoleculeObject =>
@@ -7395,8 +7397,23 @@ export function applyNativeBondDisplayStyleTarget(
     return document;
   }
 
+  let directedBond = bond;
+  // Query bonds cannot be perceived safely; retain the stored direction in that case.
+  if (bondStyle === "wavy" && perceiveStereo && !molecule.bonds.some(candidate => candidate.order === "unknown")) {
+    // Use the same index-aligned chemical perception as wedge read-back. An unspecified
+    // centre still counts; the CIP descriptor need not already be R or S.
+    try {
+      const stereo = perceiveStereo(stereoPerceptionMolfile(molecule));
+      const from = stereo[molecule.atoms.findIndex(atom => atom.id === bond.fromAtomId)]?.isStereoCenter;
+      const to = stereo[molecule.atoms.findIndex(atom => atom.id === bond.toAtomId)]?.isStereoCenter;
+      if (from === false && to === true) directedBond = reversedNativeBond(bond);
+    } catch {
+      // Molfile limits or engine failures must not prevent styling the bond. Without
+      // perception, preserve its stored direction just as an unperceived conversion does.
+    }
+  }
   const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id ? nativeBondWithDisplayStyle(candidate, bondStyle) : candidate
+    candidate.id === bond.id ? nativeBondWithDisplayStyle(directedBond, bondStyle) : candidate
   );
   const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
 

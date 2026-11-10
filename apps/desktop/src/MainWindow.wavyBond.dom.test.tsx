@@ -2,9 +2,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
@@ -54,11 +54,44 @@ describe("MainWindow wavy bond undo", () => {
       }
     });
   }
-  async function bondClick() {
-    const mol = molecule()!, bond = mol.bonds[0]!;
+  async function bondClick(bondId = molecule()!.bonds[0]!.id) {
+    const mol = molecule()!, bond = mol.bonds.find(candidate => candidate.id === bondId)!;
     const from = mol.atoms.find(a => a.id === bond.fromAtomId)!, to = mol.atoms.find(a => a.id === bond.toAtomId)!;
     await click(container.querySelector(`[data-object-id="${mol.id}"]`)!, (from.x + to.x) / 2, (from.y + to.y) / 2);
   }
+
+  it("converts the CH3–CH bond of butan-2-ol with its narrow end on C2 after lazy perception, in one undo", async () => {
+    const { depictSmiles2D } = await import("@chemdraft/ocl-adapter");
+    const inserted = insertNativeMolfileMolecule(createPhase4Document("Butan-2-ol"), { x: 220, y: 220 },
+      depictSmiles2D("CC(O)CC").molfile, "molfile-v2000");
+    const mol = getSelectedMolecule(inserted)!;
+    const c1 = mol.atoms[0]!.id, c2 = mol.atoms[1]!.id;
+    const bond = mol.bonds.find(candidate =>
+      [candidate.fromAtomId, candidate.toAtomId].includes(c1) &&
+      [candidate.fromAtomId, candidate.toAtomId].includes(c2))!;
+    // The stored narrow end points at CH3, so perception must reverse it on conversion.
+    const initialDocument = applyPatches(inserted, [{ op: "updateObject", objectId: mol.id, changes: {
+      bonds: mol.bonds.map(candidate => candidate.id === bond.id ? { ...candidate, fromAtomId: c1, toAtomId: c2 } : candidate)
+    } }]);
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument, initialActiveToolCommandId: "tool.select",
+      initialPaletteMode: "hidden", initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false
+    })));
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+    const original = molecule()!;
+    await command("tool.wavyBond");
+    await bondClick(bond.id);
+    // The pointer handler does not await the adapter import; wait for the committed result.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(molecule()!.bonds.find(candidate => candidate.id === bond.id))
+        .toMatchObject({ fromAtomId: c2, toAtomId: c1, display: { bondStyle: "wavy" } });
+    });
+    expect(container.querySelector('path[data-bond-style="wavy"]')).not.toBeNull();
+    await command("edit.undo");
+    expect(molecule()).toEqual(original);
+  });
 
   it.each(["MacIntel", "Win32"])("draws/converts/reverses as one undo entry each (%s)", async platform => {
     Object.defineProperty(navigator, "platform", { configurable: true, value: platform });

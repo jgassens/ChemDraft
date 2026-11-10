@@ -15391,7 +15391,7 @@ export function MainWindow({
     }
   }, [commitDocumentChangeWithPageFit, startNativePlacementDrag]);
 
-  const applyNativeBondDisplayStyleDocumentTarget = useCallback((
+  const applyNativeBondDisplayStyleDocumentTarget = useCallback(async (
     target: NativeBondOrderTarget,
     bondStyle: NativeBondDisplayStyle
   ) => {
@@ -15411,7 +15411,20 @@ export function MainWindow({
       return;
     }
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
-    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle);
+    if (bondStyle === "wavy" && !reverses && !cachedOclAdapter) {
+      try {
+        cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+      } catch {
+        setStatus("Cannot set wavy bond: stereocentre perception is unavailable");
+        return;
+      }
+      if (documentRef.current !== currentDocument) {
+        setStatus("Wavy bond unchanged: document changed while loading; try again");
+        return;
+      }
+    }
+    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle,
+      cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument !== currentDocument) {
       commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : undefined);
     }
