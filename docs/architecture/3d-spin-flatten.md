@@ -616,7 +616,7 @@ background (speculative) refine is **skipped if a user `generate` is already que
 (its thunk is kept, refined on demand if the molecule is actually spun), so idle polish
 never blocks a click. The on-demand refine of the molecule the user just spun is *not*
 skippable — its overlay is live and must reach planar geometry. A very large molecule
-can therefore still occupy the worker for the duration of one capped minimise; that is
+can therefore still occupy the worker for the duration of one capped minimize; that is
 the accepted floor (correct geometry > a responsiveness trick that produced wrong
 output). The `worker.refine` trace reports `"<cap> iters · <converged|capped|error> · Xms"`.
 

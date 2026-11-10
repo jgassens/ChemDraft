@@ -1,6 +1,6 @@
 ---
 name: chemdraft
-description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (coloured or shaded rings, ring letters, highlighted substructures, colour-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Make same-scale document-style figures inserted at natural size; name a structure through the app plugin, not headless. Never draw molecules by hand or quote chemistry numbers from memory.
+description: Use ChemDraft to draw or show molecules; make structure images for documents, exams, slides and handouts, multiple-choice structure grids and reaction schemes; convert chemical names to structures; answer R/S and E/Z questions; compute molecular properties including formula, exact and average mass, m/z, isotope patterns, logP, TPSA, pKa and the property suite; predict NMR shifts; export CDXML, SDF, MOL, PDF and SMILES; make styled publication figures (colored or shaded rings, ring letters, highlighted substructures, color-coded atoms, hand-sketched looks, a named chemist's or journal's drawing style, arrows and annotations); and work with ChemDraft plugins. Make same-scale document-style figures inserted at natural size; name a structure through the app plugin, not headless. Never draw molecules by hand or quote chemistry numbers from memory.
 ---
 
 # ChemDraft
@@ -163,7 +163,7 @@ the user asks for a particular size; do not combine document style with
    common name, look the compound up in PubChem and cite the CID (recipes
    11 and 12 show the lookup), or supply a systematic name and say it came
    from memory. Either way, confirm the formula with `analyze` and the
-   stereocentres with `stereo` before using the structure. If a name is
+   stereocenters with `stereo` before using the structure. If a name is
    ambiguous, explain it and obtain a clearer one; never guess a structure.
 3. Read only the reference for the operation you need. Choose output paths
    outside the repository, in a scratch or user-chosen output directory.
@@ -205,9 +205,9 @@ to the app's Orthonym plugin.
 ## Appearance and style requests
 
 Route every request about how a structure looks to [art](references/art.md):
-"in the style of" a chemist or journal, coloured or shaded rings, ring
-letters, highlighting part of a molecule, colour-coded atoms, explicit H
-or Me at stereocentres, hand-drawn or sketched looks, publication or
+"in the style of" a chemist or journal, colored or shaded rings, ring
+letters, highlighting part of a molecule, color-coded atoms, explicit H
+or Me at stereocenters, hand-drawn or sketched looks, publication or
 journal figures, annotations, arrows and brackets. The workflow is
 `document` (MCP `build_document`) → edit the native JSON →
 `render-document` (MCP `render_document`) → look → iterate.
@@ -230,19 +230,19 @@ preserves unknown content and its source minimum version; unsupported chemistry 
   conventions to reproduce, not something to refuse or to call
   impossible.
 - "Nicolaou style" is a style for any molecule, not one structure: loud,
-  saturated fills, one per lettered ring with no two neighbours alike,
+  saturated fills, one per lettered ring with no two neighbors alike,
   are the core of the look, with italic serif ring letters, fusion H and
-  Me labels on top. Deliver the coloured figure as the answer, not as an
+  Me labels on top. Deliver the colored figure as the answer, not as an
   optional variant; black and white with ring letters, or pale pastels,
   is not the style. `scripts/ring-style.mjs` applies it to any molecule
   and checks the result against PubChem (recipe 11). Its figure checks
   fail a drawing with sliver rings, stretched bonds or wedges, shrunk
   letters, hidden rings or dropped fusion H: such a figure is not
-  finished. Say what failed and offer the plain drawing, or the coloured
+  finished. Say what failed and offer the plain drawing, or the colored
   one with the failures named.
 - A label such as Me set as an atom's element replaces that carbon with
   a placeholder atom. Keep the editable file with real carbons and use
-  the Me-labelled copy only as the picture (art.md, pattern 2).
+  the Me-labeled copy only as the picture (art.md, pattern 2).
 - Look at every wedge and hash at full size after a sketched render, and
   offer an unsketched version when stereochemistry must be unambiguous.
 - Never tell a user ChemDraft cannot produce a visual style until you
@@ -258,9 +258,9 @@ preserves unknown content and its source minimum version; unsupported chemistry 
 - Report a declined value as **not computed**, with its reason. Never
   fill it from memory, another species, or a fallback calculation.
   Distinguish declined results from `not-requested` methods.
-- Keep estimates labelled estimates, including NMR multiplicities and J
+- Keep estimates labeled estimates, including NMR multiplicities and J
   couplings. Predicted shifts are predictions, not measurements.
-- Isotopes and their positions are preserved, including D/T and labelled C, N and O.
+- Isotopes and their positions are preserved, including D/T and labeled C, N and O.
 - Refused radicals remain refusals. Do not remove their SMILES
   notation to make a command succeed. `render`, `document` and `export`
   refuse a radical such as `C[CH2]`, while `analyze` keeps it and reports

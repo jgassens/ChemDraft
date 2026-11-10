@@ -356,7 +356,7 @@ slice's minimum OS checked; app, sidecar and JRE must be thin. Parsing handles
 architecture-specific libraries inside the OPSIN JAR remain packaged as-is.
 Production verification requires `--release --dmg <final.dmg>` and `--team-id <team-id>` or
 `APPLE_TEAM_ID`. It mounts the final DMG read-only and checks each app **inside the DMG**, including
-its architecture, licences, source commit, `codesign --verify --deep --strict`, Developer ID Application
+its architecture, licenses, source commit, `codesign --verify --deep --strict`, Developer ID Application
 authority, expected team ID, and `spctl --assess --type execute`. It runs `xcrun stapler validate`
 and `spctl --assess --type open --context context:primary-signature` on **the DMG only**. The
 documented process staples only the DMG; no app staple is required. All native trust and mount

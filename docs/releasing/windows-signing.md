@@ -31,7 +31,7 @@ certificate, or approval is supplied by the workflow.
 
 1. Read the [Foundation conditions](https://signpath.org/terms) and
    [apply for free open-source signing](https://signpath.org/apply). ChemDraft's core uses the
-   OSI-approved Apache-2.0 licence. Supply the public `jgassens/ChemDraft` repository, project and
+   OSI-approved Apache-2.0 license. Supply the public `jgassens/ChemDraft` repository, project and
    download pages, release history, and the CI build workflow. All bundled components must meet
    the Foundation's licensing conditions; core licensing alone does not establish eligibility.
    Approval is the Foundation's decision.
