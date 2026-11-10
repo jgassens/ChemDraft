@@ -22,7 +22,7 @@ struct DialogKindSpec {
     size: (f64, f64),
     min_size: (f64, f64),
     // Content-fit: `ready` carries the form's measured height; reveal sets the inner height to it
-    // (clamped to the work area); remembered user sizes take precedence.
+    // (clamped to the work area); larger remembered user sizes are retained.
     fit_content: bool,
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
@@ -245,10 +245,13 @@ enum Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ContentFit {
     content_height: f64,
+    #[serde(default)]
+    content_width: Option<f64>,
     pixel_ratio: f64,
 }
 /// A dialog form is far shorter than this; anything taller is not a measurement.
 const CONTENT_FIT_MAX_HEIGHT: f64 = 4096.0;
+const CONTENT_FIT_MAX_WIDTH: f64 = 4096.0;
 /// Device pixel ratios and native scale factors outside this range are not a real display.
 const CONTENT_FIT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;
 impl ContentFit {
@@ -256,9 +259,13 @@ impl ContentFit {
         serde_json::from_value::<Self>(data.clone())
             .ok()
             .filter(|f| {
-                f.content_height.is_finite()
+                !data.get("contentWidth").is_some_and(Value::is_null)
+                    && f.content_height.is_finite()
                     && f.content_height > 0.0
                     && f.content_height <= CONTENT_FIT_MAX_HEIGHT
+                    && f.content_width.is_none_or(|width| {
+                        width.is_finite() && width > 0.0 && width <= CONTENT_FIT_MAX_WIDTH
+                    })
                     && f.pixel_ratio.is_finite()
                     && CONTENT_FIT_SCALE_RANGE.contains(&f.pixel_ratio)
             })
@@ -289,6 +296,11 @@ impl MeasuredContent {
         (self.fit.content_height * self.fit.pixel_ratio / self.scale_at_ready)
             .ceil()
             .max(min_height)
+    }
+    fn logical_width(self) -> Option<f64> {
+        self.fit
+            .content_width
+            .map(|width| (width * self.fit.pixel_ratio / self.scale_at_ready).ceil())
     }
 }
 #[derive(Deserialize)]
@@ -2239,14 +2251,17 @@ fn dialog_client_size(
     saved: Option<&SavedPosition>,
     current_frame: bool,
 ) -> (f64, f64) {
-    let content_height = content
-        .filter(|_| spec.fit_content)
-        .map(|fit| fit.logical_height(1.0));
+    let content = content.filter(|_| spec.fit_content);
+    let content_height = content.map(|fit| fit.logical_height(1.0));
+    let content_width = content.and_then(|fit| fit.logical_width());
     let (width, height) = remembered_client_size(saved, spec.resizable || current_frame)
         .unwrap_or((spec.size.0, content_height.unwrap_or(spec.size.1)));
     // Keep a larger user size, but a remembered/live size cannot clip newly added content.
     // The shared placement path subsequently caps this to the destination work area.
-    (width, height.max(content_height.unwrap_or(1.0)))
+    (
+        width.max(content_width.unwrap_or(1.0)),
+        height.max(content_height.unwrap_or(1.0)),
+    )
 }
 fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Option<(f64, f64)> {
     saved.filter(|_| resizable)?.size.filter(|(width, height)| {
@@ -5133,8 +5148,16 @@ mod tests {
         for (macos, border, title_bar) in [(true, 0, 28), (false, 16, 40)] {
             for scale in [1.0, 1.5, 2.0] {
                 for kind in ["pageSize", "export"] {
-                    for user_height in [180.0_f64, 800.0] {
-                        let spec = kind_spec(kind).unwrap();
+                    let spec = kind_spec(kind).unwrap();
+                    // Includes the old Custom Page Size 420x300 frame, a narrower but
+                    // taller frame, and a wider but shorter frame. Each axis fits independently.
+                    for (extra_width, user_height) in [
+                        (0.0_f64, 180.0_f64),
+                        (0.0, 300.0),
+                        (-40.0, 800.0),
+                        (80.0, 300.0),
+                        (80.0, 800.0),
+                    ] {
                         let work = WorkArea {
                             id: "screen".into(),
                             x: -1000.0,
@@ -5145,7 +5168,7 @@ mod tests {
                         }
                         .inset(12.0);
                         let mut saved = SavedPosition {
-                            size: Some((spec.size.0, user_height)),
+                            size: Some((spec.size.0 + extra_width, user_height)),
                             monitor: work.id.clone(),
                             x: -900.0,
                             y: 100.0,
@@ -5153,17 +5176,39 @@ mod tests {
                             offset_y: 0.0,
                         };
                         // Initial full form, extra cancellation line, removed line, huge report.
-                        for height in [334.0, 358.0, 334.0, 4096.0] {
+                        for height in [
+                            if macos { 334.0_f64 } else { 286.0_f64 },
+                            358.0,
+                            334.0,
+                            4096.0,
+                        ] {
+                            let width = if height == 4096.0 {
+                                4096.0
+                            } else {
+                                spec.size.0
+                            };
                             let measured = MeasuredContent::new(
-                                ContentFit::from_ready(
-                                    &json!({"contentHeight":height,"pixelRatio":scale}),
-                                ),
+                                ContentFit::from_ready(&json!({
+                                    "contentHeight": height,
+                                    "contentWidth": width,
+                                    "pixelRatio": scale
+                                })),
                                 Some(scale),
                             );
                             let desired = dialog_client_size(&spec, measured, Some(&saved), true);
+                            assert_eq!(
+                                desired,
+                                (
+                                    width.max(saved.size.unwrap().0),
+                                    height.max(saved.size.unwrap().1)
+                                )
+                            );
+                            assert!(desired.0 >= spec.size.0);
+                            assert!(desired.0 >= saved.size.unwrap().0);
                             assert!(desired.1 >= height);
                             assert!(desired.1 >= saved.size.unwrap().1);
                             let initial = dialog_client_size(&spec, measured, Some(&saved), false);
+                            assert!(initial.0 >= spec.size.0);
                             assert!(initial.1 >= height);
                             let client = Cell::new((1_u32, 1_u32));
                             let position = Cell::new((0.0, 0.0));
@@ -5203,6 +5248,11 @@ mod tests {
                                 },
                             )
                             .unwrap();
+                            let maximum_width = (work.width * scale) as u32 - border;
+                            assert_eq!(
+                                client.get().0,
+                                ((desired.0 * scale).ceil() as u32).min(maximum_width)
+                            );
                             let maximum = (work.height * scale) as u32 - title_bar;
                             assert_eq!(
                                 client.get().1,
@@ -5439,6 +5489,7 @@ mod tests {
             json!({"contentHeight": 262.5, "pixelRatio": 1.25}),
             json!({"contentHeight": 4096, "pixelRatio": 8}),
             json!({"contentHeight": 263, "pixelRatio": 0.5}),
+            json!({"contentHeight": 334, "contentWidth": 420, "pixelRatio": 2}),
         ] {
             ready.data = data;
             assert!(ready.validate().is_ok(), "{}", ready.data);
@@ -5456,6 +5507,9 @@ mod tests {
             json!({"contentHeight": 263, "pixelRatio": 17}),
             json!({"contentHeight": "263", "pixelRatio": 1}),
             json!({"contentHeight": 263, "pixelRatio": 1, "width": 480}),
+            json!({"contentHeight": 334, "contentWidth": null, "pixelRatio": 2}),
+            json!({"contentHeight": 334, "contentWidth": 0, "pixelRatio": 2}),
+            json!({"contentHeight": 334, "contentWidth": 4097, "pixelRatio": 2}),
         ] {
             ready.data = data;
             assert!(ready.validate().is_err(), "{}", ready.data);
@@ -5469,6 +5523,7 @@ mod tests {
             MeasuredContent::new(
                 Some(ContentFit {
                     content_height,
+                    content_width: None,
                     pixel_ratio,
                 }),
                 Some(scale),
@@ -5482,11 +5537,20 @@ mod tests {
         // WebView zoom or larger text (ratio above the monitor scale) grows the window.
         assert_eq!(fit(263.0, 1.25, 1.0).logical_height(240.0), 329.0);
         assert_eq!(fit(263.0, 1.875, 1.5).logical_height(240.0), 329.0);
+        let width = MeasuredContent::new(
+            ContentFit::from_ready(&json!({
+                "contentHeight": 334, "contentWidth": 420, "pixelRatio": 1.875
+            })),
+            Some(1.5),
+        )
+        .unwrap();
+        assert_eq!(width.logical_width(), Some(525.0));
         // Explicit caller floors are honored; production content fitting passes 1px.
         assert_eq!(fit(200.0, 1.0, 1.0).logical_height(240.0), 240.0);
         // No usable scale at measurement, or no measurement: the spec size applies.
         let measured = Some(ContentFit {
             content_height: 263.0,
+            content_width: None,
             pixel_ratio: 2.0,
         });
         for scale in [
