@@ -20,6 +20,7 @@ function Slot({ swatch, slot, color }: { swatch: CustomSwatchNumber; slot: Custo
   const disabled = spec?.enabled === false;
   const handlers = usePaletteButtonInvoke(commandId, onInvoke, disabled);
   const label = `Custom color ${swatch}, slot ${slot}: ${color ?? "empty. Click to set."}`;
+  const tooltip = (disabled ? spec?.disabledReason : undefined) ?? color ?? spec?.disabledReason ?? label;
   const tooltipId = `custom-color-${swatch}-${slot}`;
   const { visibleTooltipId, requestTooltip, clearTooltip } = usePaletteTooltipState();
   const shellRef = useRef<HTMLSpanElement>(null);
@@ -32,7 +33,7 @@ function Slot({ swatch, slot, color }: { swatch: CustomSwatchNumber; slot: Custo
     onPointerLeave={() => clearTooltip(tooltipId, { onlyMatchingPending: true })}
     onPointerDownCapture={() => clearTooltip(tooltipId)}>
     <button type="button" className="toolbar-color-swatch custom-color-slot" aria-label={label}
-    aria-disabled={disabled || undefined} title={color ?? spec?.disabledReason ?? label} data-command-id={commandId} data-palette-control="true"
+    aria-disabled={disabled || undefined} title={tooltip} data-command-id={commandId} data-palette-control="true"
     style={{ "--swatch-color": color ?? "var(--cd-bg-control)" } as CSSProperties} {...handlers}
     onPointerDown={event => { if (event.button === 0) event.preventDefault(); if (event.button === 2 && !color) { rightPressAt.current = Date.now(); onInvoke(edit); } handlers.onPointerDown(event); }}
     onMouseDown={event => { if (event.button === 0) event.preventDefault(); handlers.onMouseDown(event); }}
@@ -42,6 +43,6 @@ function Slot({ swatch, slot, color }: { swatch: CustomSwatchNumber; slot: Custo
         event.preventDefault(); event.stopPropagation(); onInvoke(edit);
       }
     }}>{color ? null : "?"}</button>
-    {color && <span className="tool-tooltip" role="tooltip" aria-hidden="true"><span>{color}</span></span>}
+    {color && <span className="tool-tooltip" role="tooltip" aria-hidden="true"><span>{tooltip}</span></span>}
   </span>;
 }
