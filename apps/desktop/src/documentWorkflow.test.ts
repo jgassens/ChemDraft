@@ -1222,7 +1222,7 @@ describe("SMILES molecule grid", () => {
     expect(result.document.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "inch" });
     expect(result.document.selection.objectIds).toEqual(result.objectIds);
     expectContainedAndSeparated(result.document);
-    expect(insertSmilesMoleculeGridStatus(result, 1)).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
+    expect(insertSmilesMoleculeGridStatus(result, 1, [], { document: result.document, decision: "enlarge", overflowObjectIds: [] })).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
   });
 
   it("uses origin when the whole grid fits there, including for single-atom depictions", () => {

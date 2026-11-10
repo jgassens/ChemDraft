@@ -9,7 +9,7 @@ import {
   applyClipboardPastePayload, applyEditorSaveResultWithLabelWarnings, applyNativeMoleculeEngineRelayout,
   cleanUpNativeMolecules2d, copyAsMolfile, createSelectionClipboardPayload,
   duplicateSelectedDocumentObjects, insertNativeTemplateMolecule, insertNativeTextObject, insertSmilesMolecule,
-  insertSmilesMoleculeGrid, insertTableIntoDocument, insertNativeArtGraphicObject, insertNativeBracket, insertNativeSymbolGlyph,
+  insertSmilesMoleculeGrid, insertSmilesMoleculeGridStatus, insertTableIntoDocument, insertNativeArtGraphicObject, insertNativeBracket, insertNativeSymbolGlyph,
   setDocumentCustomPageSize
 } from "./documentWorkflow";
 import { pasteSelectionClipboardPayload } from "./documentWorkflow";
@@ -45,6 +45,40 @@ function proposal(document: ChemDraftDocument, object = createSmilesMolecule(doc
 }
 const mol = (flavor: "v2000" | "v3000") => copyAsMolfile(moleculeDocument(2000), flavor)!;
 const identifiers = () => { let index = 0; return (prefix: string) => `${prefix}_${++index}`; };
+
+describe.each(["macos", "windows"] as const)("SMILES grid status on %s", platform => {
+  it("omits the overflow clause when no inserted structure extends past the kept page", () => {
+    const before = createEmptyDocument();
+    const result = insertSmilesMoleculeGrid(before, { x: 24, y: 24 }, [{ smiles, depiction }]);
+    const status = insertSmilesMoleculeGridStatus(result, 0, [], { document: before, decision: "keep", overflowObjectIds: [] });
+    expect(status).toContain("(page kept at US Letter)");
+    expect(status).not.toContain("past it");
+  });
+  it.each(["fits", "enlarge", "keep"] as const)("reports the committed outcome: %s", async decision => {
+    const before = createEmptyDocument();
+    const result = insertSmilesMoleculeGrid(before, { x: 24, y: 24 },
+      Array.from({ length: decision === "fits" ? 2 : 60 }, () => ({ smiles, depiction })));
+    dialog.message.mockResolvedValue(decision === "enlarge" ? "Enlarge" : "Keep Page Size");
+    let status = "";
+    await commitWithPageFit(before, result.document, () => {}, { consent: new PageEnlargementConsent(platform), onCommit: (document, outcome) => {
+      status = insertSmilesMoleculeGridStatus(result, 0, [], { document, decision: outcome.decision,
+        overflowObjectIds: outcome.plan.growth.flatMap(growth => growth.objectIds ?? []) });
+    } });
+    if (decision === "fits") {
+      expect(dialog.message).not.toHaveBeenCalled();
+      expect(status).toBe(`Pasted 2 SMILES structures in a ${result.columns} × ${result.rows} grid`);
+    } else if (decision === "enlarge") {
+      expect(status).toMatch(/\(page grown to Custom 8\.5 × [\d.]+ in\)$/);
+    } else {
+      const page = before.pages[0]!;
+      const count = result.document.pages[0]!.objects.filter(object => object.type === "molecule" &&
+        (object.x < 0 || object.y < 0 || object.x + object.width > page.width || object.y + object.height > page.height)).length;
+      expect(count).toBeGreaterThan(0);
+      expect(status).toContain(`page kept at US Letter; ${count} structures extend past it`);
+      expect(status).not.toContain("grown");
+    }
+  });
+});
 
 type Scenario = { name: string; prepare(size: number): { before: ChemDraftDocument; proposed: ChemDraftDocument } | Promise<{ before: ChemDraftDocument; proposed: ChemDraftDocument }> };
 const insert = (name: string, build: (before: ChemDraftDocument) => ChemDraftDocument | Promise<ChemDraftDocument>): Scenario => ({ name,

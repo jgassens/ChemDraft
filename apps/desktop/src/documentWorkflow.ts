@@ -5236,13 +5236,21 @@ export function visibleSkippedItems<T>(skippedItems: readonly T[]): T[] {
 export function insertSmilesMoleculeGridStatus(
   result: ReturnType<typeof insertSmilesMoleculeGrid>,
   skipped: number,
-  skippedItems: readonly { line: number; token: string; reason?: string }[] = []
+  skippedItems: readonly { line: number; token: string; reason?: string }[] = [],
+  outcome: { document: ChemDraftDocument; decision: "fits" | "enlarge" | "keep"; overflowObjectIds: readonly string[] } =
+    { document: result.document, decision: "fits", overflowObjectIds: [] }
 ): string {
   let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
-  if (result.pageResized) {
-    const page = firstPage(result.document);
+  if (outcome.decision === "enlarge") {
+    const page = firstPage(outcome.document);
     const unit = pageLayoutSourceUnit(page.layout);
     status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
+  } else if (outcome.decision === "keep") {
+    const page = firstPage(outcome.document);
+    const title = PageSizePresets.find(preset => preset.id === page.layout.presetId)?.title ?? page.layout.presetId;
+    const overflow = new Set(outcome.overflowObjectIds);
+    const count = result.objectIds.filter(id => overflow.has(id)).length;
+    status += ` (page kept at ${title}${count ? `; ${count} structure${count === 1 ? "" : "s"} extend${count === 1 ? "s" : ""} past it` : ""})`;
   }
   if (skippedItems.length > 0) {
     const visibleItems = visibleSkippedItems(skippedItems);
