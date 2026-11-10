@@ -2593,7 +2593,8 @@ describe("ChemDraft desktop shell", () => {
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
+    // The atom-problem fix path also normalizes commits into inactive tabs.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(12);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(
@@ -2669,14 +2670,11 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
-  it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
-    // A refused increment used to read "Cannot place positive charge on hovered atom" even though
-    // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the
-    // element can carry. The query itself is covered in documentWorkflow.test.ts; this guards the
-    // MainWindow wiring of both messages.
+  it("keeps the charge-hotkey format cap without a valence-refusal status", () => {
+    // The representation cap still has its own message; valence no longer vetoes charge edits.
     expect(mainWindowSource).toContain("nativeChargeStackRefusal(currentDocument, markSpec, target)");
     expect(mainWindowSource).toContain("Charge is already at the ±");
-    expect(mainWindowSource).toContain("cannot carry ${noun} at its current valence");
+    expect(mainWindowSource).not.toContain("cannot carry ${noun} at its current valence");
   });
 
   it("names the stacked magnitude in the charge status noun", () => {
@@ -6360,6 +6358,9 @@ describe("ChemDraft desktop shell", () => {
       expect(clearedMolecule?.atoms.find((atom) => atom.id === selectedAtomIds[index])?.warningSuppressed).toBe(true);
       expect(clearedMolecule?.atoms.find((atom) => atom.id === molecule.atoms[1].id)?.warningSuppressed).toBeUndefined();
       expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule).map((state) => state.atomId) : [])
+        .toEqual(molecule.atoms.map(atom => atom.id));
+      expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule)
+        .filter(state => !state.warningSuppressed).map(state => state.atomId) : [])
         .toEqual([molecule.atoms[1].id]);
     }
   });

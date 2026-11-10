@@ -8,6 +8,7 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 import { writeClipboardText } from "./clipboard";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { invalidCarbonDocument, invalidCarbonWarning } from "../../../packages/document-workflow-core/test/invalidStructureFixtures";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
@@ -32,6 +33,23 @@ describe("Copy As SMILES status line", () => {
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+  });
+  it.each(["smiles", "mol", "molV2000", "cdxml"])("shows suppressed invalidity in Copy As %s status while hiding its badge", async format => {
+    vi.mocked(computeStructureIdentifiers).mockResolvedValue(undefined);
+    await act(async () => {
+      root.render(createElement(MainWindow, {
+        initialDocument: invalidCarbonDocument(true), initialActiveToolCommandId: "tool.select",
+        initialCrosshairsVisible: false, initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: true
+      }));
+    });
+    expect(container.querySelector('[data-invalid-atom-id="a1"]')).toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: `clipboard.copyAs.${format}` } }));
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[role="status"]')?.textContent).toContain(invalidCarbonWarning);
+    });
+    expect(writeClipboardText).toHaveBeenCalledOnce();
   });
   it.each(["success", "empty", "clipboard unavailable", "clipboard rejection", "unknown order", "second molecule refusal"])("shows specific SMILES status for %s", async (path) => {
     let doc = createPhase4Document("Copy SMILES");

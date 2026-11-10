@@ -365,9 +365,9 @@ export const MoleculeAtomSchema = z
      */
     hydrogenCount: z.number().int().nonnegative().optional(),
     /**
-     * The user dismissed this atom's valence warning from the context menu: the checker still
-     * runs but reports the atom valid, so no badge renders and no warning is stored. Restore
-     * from the same menu.
+     * The user dismissed this atom's warning from the context menu. Hides only the canvas
+     * badge; validation, chemistry metadata, analysis and export diagnostics still report it.
+     * Restore from the same menu.
      */
     warningSuppressed: z.boolean().optional(),
     /**

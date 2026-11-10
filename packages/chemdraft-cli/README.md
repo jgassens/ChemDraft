@@ -130,6 +130,14 @@ and no H objects. This command does not force hydrogens into the depiction.
 
 ## render-document
 
+Invalid native drawings can still be rendered or saved as `.chemdraft`. The result's
+`warnings` and `exportWarnings` include one `export.invalid_structure` warning per problem
+atom (for example, `C1 has unsupported valence 5.`), even when its canvas badge is suppressed.
+If the structure cannot be parsed, that molecule reports `chemistryStatus: "unverified"` and
+`null` for `canonicalSmiles`, `stereoCenters`, `unspecifiedStereoCenters` and
+`unspecifiedDoubleBonds`; those nulls are not zero counts or verified chemical identity.
+SMILES-input export commands retain their identity-preserving refusals.
+
 Render a styled native JSON document or a desktop `.chemdraft` envelope through the same native
 loader and SVG exporter as the app. It supports ring interiors, ring letters supplied as text
 objects, bold/hashed/wedge bond displays, per-bond/per-atom style maps, sketch visual effects,

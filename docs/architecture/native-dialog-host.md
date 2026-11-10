@@ -51,6 +51,23 @@ and missing-monitor fallback. They require
 native execution on both platforms; follow the Preferences checks in the standing manual stress
 checklist for real-window verification.
 
+## Atom problems
+
+Value-encoded `atom.problem.open.<object>.<atom>` commands open the `atomProblem` kind from a
+focusable (!) badge or the atom context menu, including suppressed invalid atoms. The one live
+problem window retargets within a tab without changing its native frame; changing its originating
+tab closes the old session before opening the new one. It shares the modeless construction,
+document ownership, first-open centring, per-kind position persistence, floating-toolbar stacking
+and Windows taskbar policy. Native creation failure reports status without an in-page fallback.
+
+The window receives only a bounded explanation, typed action labels and a target version. Its
+actions are limited to hydrogens, the existing suggested charge, Ignore and Restore. Rust and the
+coordinator reject unavailable actions and stale target versions. The owner revalidates against
+the current drawing before patching; one labelled history entry selects the atom. Inactive-tab
+actions update that tab's own history and atom selection. Opening never writes. Live updates show
+No problem after correction/deletion, and tab close/replacement settles the session normally.
+Suppression hides the badge only: validation still supplies the explanation and Restore action.
+
 
 ## Local engine installation
 

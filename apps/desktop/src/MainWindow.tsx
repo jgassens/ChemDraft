@@ -2,6 +2,10 @@ import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
+import { AtomProblemMarker } from "./AtomProblemMarker";
+import { atomProblemCommandId, atomProblemCommands, atomProblemSnapshot, type AtomProblemTarget } from "./atomProblemCommands";
+import { atomProblem, type AtomProblemAction } from "@chemdraft/document-workflow-core";
+import { applyNativeAtomProblemFix } from "./documentWorkflow";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -1557,7 +1561,7 @@ type ObjectContextMenuState = {
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
   bondDepthContext?: BondDepthContext;
   /** Present when the right-clicked scope carries (or has dismissed) valence warnings. */
-  atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number };
+  atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number; problemCommandId?: string };
   x: number;
   y: number;
 };
@@ -2434,6 +2438,10 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const atomProblemTargetRef = useRef<{ tabId: string; target: AtomProblemTarget; source: ChemDraftDocument; version: number } | undefined>(undefined);
+  const atomProblemVersionRef = useRef(0);
+  const fixAtomProblemRef = useRef<(tabId: string, action: AtomProblemAction, version: number) => void>(() => {});
+  const refreshAtomProblemRef = useRef<() => void>(() => {});
   const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
   const vibeGuideActionRef = useRef<(action: "saveStarter" | "openPluginManager") => Promise<void>>(async () => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
@@ -4796,14 +4804,12 @@ export function MainWindow({
     const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
       // A refused INCREMENT is not a refused mark: the mark is already on the atom, so name
-      // what stopped the press — the ±9 cap, or a valence that cannot carry one more — instead
+      // what stopped the press — the ±9 representation cap — instead
       // of claiming the charge could not be placed.
       const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
       setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : refusal === "valence"
-          ? `Hovered atom cannot carry ${noun} at its current valence`
-          : `Cannot place ${noun} on hovered atom`);
+        : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -7499,9 +7505,11 @@ export function MainWindow({
         await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
         return;
       }
-      case "clipboard.copyAs.cdxml":
-        await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
+      case "clipboard.copyAs.cdxml": {
+        const result = exportPhase4Cdxml(copyAsScopedDocument(current));
+        await writeText(result.contents, "CDXML text", result.warnings.map(warning => warning.message));
         return;
+      }
       case "clipboard.copyAs.svg": {
         const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
@@ -9770,9 +9778,49 @@ export function MainWindow({
     void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
+  refreshAtomProblemRef.current = () => {
+    const target = atomProblemTargetRef.current;
+    if (!target) return;
+    const source = target.tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present
+      : documentTabSnapshotsRef.current.get(target.tabId)?.history.present;
+    if (!source || source === target.source) return;
+    target.source = source;
+    target.version = ++atomProblemVersionRef.current;
+    void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, atomProblemSnapshot(source, target.target, target.version))
+      .catch(error => setStatus(`Atom problem could not update: ${String(error)}`));
+  };
+  fixAtomProblemRef.current = (tabId, action, version) => {
+    const target = atomProblemTargetRef.current;
+    if (!target || target.tabId !== tabId || target.version !== version) throw new Error("This atom problem changed. Use the current window actions.");
+    const active = tabId === activeDocumentTabIdRef.current;
+    const snapshot = active ? undefined : documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source || source !== target.source) throw new Error("The drawing changed. Use the current window actions.");
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
+    const result = applyNativeAtomProblemFix(source, target.target.objectId, target.target.atomId, action);
+    if (!result) throw new Error("This fix no longer applies to the atom.");
+    if (active) {
+      commitDocumentChange(result.document, result.label);
+      setSelectedNativeMoleculePart({ kind: "atom", ...target.target });
+      setStatus(result.label);
+    } else if (snapshot) {
+      const present = normalizeCommittedDocument(result.document);
+      documentUndoLabelsRef.current.set(present, result.label);
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        parts: [{ kind: "atom", ...target.target }],
+        file: { ...snapshot.file, dirty: true }, status: result.label });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+    refreshAtomProblemRef.current();
+  };
+  useEffect(() => { refreshAtomProblemRef.current(); }, [document, documentTabs, activeDocumentTabId]);
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      fixAtomProblem: (tabId, action, version) => fixAtomProblemRef.current(tabId, action, version),
       vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
@@ -9783,7 +9831,10 @@ export function MainWindow({
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
-      onSettled: (tabId, _reason, kind) => { if (kind === "export") exportGrantsRef.current.delete(tabId); }
+      onSettled: (tabId, _reason, kind) => {
+        if (kind === "export") exportGrantsRef.current.delete(tabId);
+        if (kind === "atomProblem" && atomProblemTargetRef.current?.tabId === tabId) atomProblemTargetRef.current = undefined;
+      }
     });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
@@ -11001,6 +11052,24 @@ export function MainWindow({
       } else commitDocumentChange(moved, "Move");
       arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
       setStatus("Move selection");
+    }));
+
+    atomProblemCommands(document).forEach(({ spec, target, action }) => register(spec, async () => {
+      const tabId = activeDocumentTabIdRef.current;
+      if (action === "open") {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Atom problem could not open: the native dialog host is unavailable."); return; }
+        atomProblemTargetRef.current = { tabId, target, source: documentHistoryRef.current.present, version: ++atomProblemVersionRef.current };
+        const data = atomProblemSnapshot(atomProblemTargetRef.current.source, target, atomProblemTargetRef.current.version);
+        await coordinator.openAtomProblem(tabId, data);
+      } else {
+        const result = applyNativeAtomProblemFix(documentHistoryRef.current.present, target.objectId, target.atomId, action);
+        if (!result) return;
+        if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
+        commitDocumentChange(result.document, result.label);
+        setSelectedNativeMoleculePart({ kind: "atom", ...target });
+        setStatus(result.label);
+      }
     }));
 
     tableActions.forEach(action => register(action, async () => {
@@ -20140,7 +20209,9 @@ export function MainWindow({
       if (flagged === 0 && suppressedCount === 0) {
         return undefined;
       }
-      return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount };
+      const problemCommandId = nativeMoleculeHit?.kind === "atom" && object?.type === "molecule" && atomProblem(object, nativeMoleculeHit.atomId)
+        ? atomProblemCommandId({ objectId, atomId: nativeMoleculeHit.atomId }) : undefined;
+      return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount, problemCommandId };
     })();
     setPageContextMenu(undefined);
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
@@ -21148,6 +21219,7 @@ export function MainWindow({
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
+    onAtomProblemInvoke: (commandId: string) => { void invokeCommandRef.current(commandId); },
     onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
     onTextEditFinish: finishActiveNativeTextEdit,
@@ -23859,30 +23931,18 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
 }
 
 /** Why a ring or sprout could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
+export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal | "atom-no-free-valence"): string {
   switch (reason) {
+    case "atom-no-free-valence":
+      return "that atom has no free valence";
+    case "branched-carbon-full":
+      return "this carbon already uses all four valences; branched alkyl needs one attachment bond";
     case "sprout-no-free-direction":
       return "there is no free direction to grow into without overlapping";
     case "sprout-page-edge":
       return "the page edge blocks every direction";
-    case "sprout-needs-two-valences":
-      return "that atom needs two free valences for this sprout";
-    case "methylidene-needs-neutral-carbon":
-      return "methylidene needs a neutral carbon atom";
     case "closure-bond-exists":
       return "those atoms are already connected";
-    case "atom-no-free-valence":
-      return "that atom has no free valence";
-    case "bond-atom-no-free-valence":
-      return "an atom on that bond has no free valence";
-    case "closure-atom-no-free-valence":
-      return "the ring would close onto an atom with no free valence";
-    case "connection-atom-no-free-valence":
-      return "the atom it would connect to has no free valence";
-    case "double-bond-overfill":
-      return "the ring's double bonds would overfill a neighbouring atom";
-    case "atom-label-not-element":
-      return "that atom's label is an abbreviation; relabel it to an element first";
     case "ring-geometry-unavailable":
       return "the ring's geometry could not be placed there";
     case "structure-not-editable":
@@ -25695,6 +25755,8 @@ export function ObjectLayerContextMenu({
       <div className="object-context-menu-separator" role="separator" />
       {atomWarning ? (
         <>
+          {atomWarning.problemCommandId && <button type="button" role="menuitem" className="object-context-menu-item"
+            data-command-id={atomWarning.problemCommandId} onClick={() => onInvoke(atomWarning.problemCommandId!)}>Atom problem…</button>}
           <button
             type="button"
             role="menuitem"
@@ -28171,9 +28233,11 @@ function DocumentObjectViewContent({
   onAtomLabelChange,
   onAtomLabelCancel,
   onAtomLabelFinish,
-  onBondStereoBadgeOpen
+  onBondStereoBadgeOpen,
+  onAtomProblemInvoke
 }: {
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
+  onAtomProblemInvoke(commandId: string): void;
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
@@ -28597,7 +28661,7 @@ function DocumentObjectViewContent({
       // Charge-mark chemistry is reconciled INTO atom.formalCharge on commit, so validity and
       // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
-      const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
+      const invalidAtomIds = new Set(invalidAtomStates.filter((state) => !state.warningSuppressed).map((state) => state.atomId));
       const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
@@ -28806,26 +28870,13 @@ function DocumentObjectViewContent({
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
-                <g
-                  className="native-atom-invalid-marker"
-                  data-invalid-atom-id={atom.id}
+                <AtomProblemMarker
+                  target={{ objectId: object.id, atomId: atom.id }}
                   key={`invalid-${atom.id}`}
-                >
-                  <title>{invalidReasonByAtomId.get(atom.id)}</title>
-                  <circle
-                    className="native-atom-invalid-ring"
-                    cx={atom.x - object.x + 9}
-                    cy={atom.y - object.y - 9}
-                    r="6"
-                  />
-                  <text
-                    className="native-atom-invalid-exclamation"
-                    x={atom.x - object.x + 9}
-                    y={atom.y - object.y - 9}
-                  >
-                    !
-                  </text>
-                </g>
+                  explanation={invalidReasonByAtomId.get(atom.id)}
+                  x={atom.x - object.x + 9} y={atom.y - object.y - 9}
+                  invoke={onAtomProblemInvoke}
+                />
               ))}
             {object.atoms
               .filter((atom) => deleteTarget?.kind === "atom" && atom.id === deleteTarget.atomId)

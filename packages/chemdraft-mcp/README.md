@@ -104,3 +104,9 @@ Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary
 `source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
 CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
 The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.
+
+Invalid native drawings still render and save with the CLI's shared atom warnings, including
+suppressed badges (`export.invalid_structure`, e.g. `C1 has unsupported valence 5.`).
+An unparseable molecule returns `chemistryStatus: "unverified"`, with `canonicalSmiles` and
+all stereo counts set to `null`. Treat this as an unverified drawing, never as verified
+chemistry. `export_structure` retains its SMILES-input identity checks.

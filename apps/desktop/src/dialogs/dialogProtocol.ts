@@ -9,7 +9,39 @@ export type { DialogContentFit } from "./dialogContentFit";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "arrangementSpacing" | "export" | "engineInstall" | "toolInstall" | "insertTable" | "structureTemplates" | "vibeCodeGuide";
+export type DialogKind = "pageSize" | "arrangementSpacing" | "export" | "engineInstall" | "toolInstall" | "insertTable" | "structureTemplates" | "atomProblem" | "vibeCodeGuide";
+export type { AtomProblemAction } from "@chemdraft/document-workflow-core";
+import type { AtomProblemAction } from "@chemdraft/document-workflow-core";
+export interface AtomProblemSnapshot {
+  title: string; explanation: string; targetVersion: number;
+  fixes: { action: AtomProblemAction; label: string }[];
+}
+const problemActions = ["hydrogens", "charge", "ignore", "restore"];
+const SMALL_DIALOG_MAX_BYTES = 3400;
+const serializedBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/** Clip JSON string content by encoded bytes and schema length without splitting a code point. */
+function clipDialogText(text: string, maxLength: number, maxBytes: number): string {
+  let result = "", bytes = 0;
+  for (const character of text) {
+    const size = serializedBytes(character) - 2; // Exclude JSON's surrounding quotes.
+    if (result.length + character.length > maxLength || bytes + size > maxBytes) break;
+    result += character;
+    bytes += size;
+  }
+  return result;
+}
+
+export function boundedAtomProblemSnapshot(data: AtomProblemSnapshot): AtomProblemSnapshot {
+  // Reserve the largest valid envelope, including later snapshot revisions and retargets.
+  const empty = { ...data, title: "", explanation: "" };
+  const overhead = serializedBytes({ protocolVersion: 1, ownerWindowId: "main", dialogKind: "atomProblem",
+    documentTabId: "x".repeat(128), sessionId: "x".repeat(128), requestId: "x".repeat(128),
+    snapshotRevision: Number.MAX_SAFE_INTEGER, type: "snapshot", data: empty });
+  const title = clipDialogText(data.title, 256, 768);
+  const remaining = SMALL_DIALOG_MAX_BYTES - overhead - (serializedBytes(title) - 2);
+  return { ...data, title, explanation: clipDialogText(data.explanation, 1024, remaining) };
+}
 export interface StructureTemplatesSnapshot { title: string; templateIds: string[] }
 export type EngineInstallAction = "install" | "cancelInstall" | "close";
 export type ToolInstallAction = "install" | "allow" | "cancelInstall" | "close";
@@ -65,6 +97,7 @@ export interface ExportDialogResult {
   error?: string;
 }
 export type DialogSnapshot = DialogEnvelope & (
+  | { dialogKind: "atomProblem"; type: "snapshot"; data: AtomProblemSnapshot }
   | { dialogKind: "insertTable"; type: "snapshot"; data: InsertTableOptions & { title: string } }
   | { dialogKind: "pageSize"; type: "snapshot"; data: PageSize & { title: string } }
   | { dialogKind: "arrangementSpacing"; type: "snapshot"; data: SpacingSnapshot }
@@ -77,7 +110,7 @@ export type DialogSnapshot = DialogEnvelope & (
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request"; data: Record<string, never> }
   | { type: "ready"; data: Record<string, never> | DialogContentFit }
-  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: AtomProblemAction; targetVersion: number } | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "cancel" | "saveStarter" | "openPluginManager" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
@@ -99,13 +132,28 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "export", "engineInstall", "toolInstall", "insertTable", "structureTemplates", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "export", "engineInstall", "toolInstall", "insertTable", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
     // Room for the Rust-written delivery wrapper, including the longest native label.
-    if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall") && new TextEncoder().encode(JSON.stringify(value)).length > 3400) return undefined;
+    if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall" || value.dialogKind === "atomProblem") && serializedBytes(value) > SMALL_DIALOG_MAX_BYTES) return undefined;
     let valid = false;
+    if (value.dialogKind === "atomProblem") {
+      const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
+      switch (value.type) {
+        case "snapshot": valid = keys(d, ["title", "explanation", "targetVersion", "fixes"]) && text(d.title, 256) && text(d.explanation, 1024) &&
+          Number.isSafeInteger(d.targetVersion) && Number(d.targetVersion) > 0 && Array.isArray(d.fixes) && d.fixes.length <= 4 &&
+          d.fixes.every(f => record(f) && keys(f, ["action", "label"]) && problemActions.includes(String(f.action)) && text(f.label, 128)) &&
+          new Set(d.fixes.map(f => f.action)).size === d.fixes.length; break;
+        case "action": valid = d.action === "cancel" ? keys(d, ["action"]) : keys(d, ["action", "targetVersion"]) && problemActions.includes(String(d.action)) && Number.isSafeInteger(d.targetVersion) && Number(d.targetVersion) > 0; break;
+        case "request": valid = keys(d, []); break;
+        case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
+        case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
+        case "result": valid = keys(d, ["status"], ["error"]) && ["accepted", "applied", "cancelled", "error"].includes(String(d.status)) && (d.error === undefined || typeof d.error === "string" && d.error.length <= 2048); break;
+      }
+      return valid ? value as unknown as DialogMessage : undefined;
+    }
     if (value.dialogKind === "structureTemplates") {
       switch (value.type) {
         case "snapshot": valid = keys(d, ["title", "templateIds"]) && typeof d.title === "string" && d.title.length > 0 && d.title.length <= 256 && !d.title.includes("\0") &&

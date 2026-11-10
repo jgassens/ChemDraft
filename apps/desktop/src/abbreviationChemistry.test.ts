@@ -153,7 +153,7 @@ describe("the owner's report: OMe on a ring carbon", () => {
 });
 
 describe("the bond tool and abbreviations", () => {
-  it("draws exactly the one bond a lone abbreviation is missing, and no second", () => {
+  it("fills a lone abbreviation's attachment and allows another single bond with a warning", () => {
     const lone = relabel(loneAtom(), "atom_001", "OMe");
     const objectId = selectedMolecule(lone).id;
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(lone))).toMatchObject([{ atomId: "atom_001" }]);
@@ -165,15 +165,25 @@ describe("the bond tool and abbreviations", () => {
     expect(nativeMoleculeInvalidAtomStates(molecule)).toEqual([]);
     expect(molecule.chemistry?.formula).toBe("C2H6O");
 
-    // The group's valence is full: the tool never draws a second bond to it.
+    // A second single bond is an authored edit: it lands and the attachment mismatch is diagnosed.
     const again = growFrom(bonded, "atom_001");
-    expect(bondsAt(again, objectId, "atom_001")).toHaveLength(1);
+    expect(bondsAt(again, objectId, "atom_001")).toHaveLength(2);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(again))).toContainEqual(expect.objectContaining({
+      atomId: "atom_001", invalidReason: "OMe attaches by 1 bond; this atom has 2."
+    }));
   });
 
-  it("still refuses any bond from a label with no free valence to fill", () => {
+  it("allows single-bond growth from placeholders, unrecognized labels and bare formulas", () => {
     for (const label of ["R", "Ome", "CONH2"]) {
       const lone = relabel(loneAtom(), "atom_001", label);
-      expect(bondsAt(growFrom(lone, "atom_001"), selectedMolecule(lone).id, "atom_001"), label).toHaveLength(0);
+      const grown = growFrom(lone, "atom_001");
+      expect(bondsAt(grown, selectedMolecule(lone).id, "atom_001"), label).toHaveLength(1);
+      expect(selectedMolecule(grown).atoms.find(atom => atom.id === "atom_001")?.element).toBe(label);
+      if (label === "Ome") {
+        expect(nativeMoleculeInvalidAtomStates(selectedMolecule(grown))).toContainEqual(expect.objectContaining({
+          atomId: "atom_001", unrecognizedLabel: true
+        }));
+      }
     }
   });
 });
@@ -282,8 +292,10 @@ describe("cyano labels and the side their bond comes from", () => {
     expect(nativeMoleculeInvalidAtomStates(reversed)).toEqual([]);
     expect(reversed.chemistry?.formula).toBe("C2H3NS");
     expect(await canonical(reversed)).not.toContain("#");
-    // A bare formula has no free valence for the bond tool to fill.
-    expect(bondsAt(growFrom(reversedDocument, left!.id), reversed.id, left!.id)).toHaveLength(1);
+    // Single-bond growth does not require a known free valence for a bare formula.
+    const grown = growFrom(reversedDocument, left!.id);
+    expect(bondsAt(grown, reversed.id, left!.id)).toHaveLength(2);
+    expect(selectedMolecule(grown).atoms.find(atom => atom.id === left!.id)?.element).toBe("SCN");
   });
 });
 
@@ -942,14 +954,23 @@ describe("the commit funnel when nothing changes", () => {
 });
 
 describe("the bond tool and a bonded element spelling", () => {
-  it("lets a lone typed Ac take its first bond as actinium, then holds it to acetyl's one", () => {
+  it("lets a lone typed Ac become acetyl when bonded, then warns on a second single bond", () => {
     const lone = relabel(loneAtom(), "atom_001", "Ac", { literal: true });
     const objectId = selectedMolecule(lone).id;
     const bonded = growFrom(lone, "atom_001");
     expect(bondsAt(bonded, objectId, "atom_001")).toHaveLength(1);
     // Now it is acetyl on a methyl: acetone, C3H6O.
     expect(selectedMolecule(bonded).chemistry?.formula).toBe("C3H6O");
-    expect(bondsAt(growFrom(bonded, "atom_001"), objectId, "atom_001")).toHaveLength(1);
+    const again = growFrom(bonded, "atom_001");
+    const bonds = bondsAt(again, objectId, "atom_001");
+    expect(bonds).toHaveLength(2);
+    expect(bonds.every((bond) => bond.order === "single")).toBe(true);
+    expect(selectedMolecule(again).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({
+      element: "Ac", labelLiteral: true
+    });
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(again))).toContainEqual(expect.objectContaining({
+      atomId: "atom_001", invalidReason: "Ac attaches by 1 bond; this atom has 2."
+    }));
   });
 
   it("treats an Ac placed by the element path (not typed) as actinium on a bond", () => {

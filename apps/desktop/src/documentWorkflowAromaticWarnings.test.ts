@@ -11,6 +11,8 @@ import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it, vi } from "vitest";
 import { MainWindow, nativeMoleculeRingSelectionFromPointerTarget, spin3dHydrogenWarnings, spin3dPrefetchMolfile } from "./MainWindow";
 import { nativeMoleculeInvalidAtomStates } from "./documentWorkflow";
+import { AtomProblemMarker } from "./AtomProblemMarker";
+import { atomProblemCommandId } from "./atomProblemCommands";
 import { buildPluginSelectionSnapshot } from "./plugins/selectionSnapshot";
 import type { PluginRuntimeProviders, PluginRuntimeView } from "./plugins/usePluginRuntime";
 
@@ -157,7 +159,7 @@ describe("Spin 3D speculative structure reliability", () => {
 });
 
 describe("aromatic warning marker explanations", () => {
-  it("leaves the ring hit target under a badge available to the shipped picking path", () => {
+  it("opens the problem command from the focusable badge and keeps ring picking away from it", async () => {
     const graph = testMoleculeFromSmiles("c1cccc1");
     const molecule: MoleculeObject = {
       id: "badged-ring", type: "molecule", x: 0, y: 0, width: 200, height: 200,
@@ -178,14 +180,32 @@ describe("aromatic warning marker explanations", () => {
     style.textContent = readFileSync("apps/desktop/src/App.css", "utf8")
       .match(/\.native-atom-invalid-marker\s*\{[^}]+\}/)![0];
     document.body.append(style, container);
+    const interactive = document.createElement("div");
+    document.body.append(interactive);
+    const root = createRoot(interactive);
     try {
       const marker = container.querySelector(".native-atom-invalid-marker")!;
-      expect(getComputedStyle(marker).pointerEvents).toBe("none");
+      // Badges now open the modeless problem window; clicks must no longer pass through to rings.
+      expect(getComputedStyle(marker).pointerEvents).toBe("all");
+      expect(marker.getAttribute("tabindex")).toBe("0");
+      const invoke = vi.fn(), ringClick = vi.fn();
+      const target = { objectId: molecule.id, atomId: marker.getAttribute("data-invalid-atom-id")! };
+      await act(async () => root.render(createElement("svg", { onClick: ringClick },
+        createElement(AtomProblemMarker, { target, x: 0, y: 0, invoke }))));
+      const button = interactive.querySelector<SVGGElement>('[role="button"]')!;
+      await act(async () => {
+        button.focus();
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(document.activeElement).toBe(button);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(atomProblemCommandId(target));
+      expect(ringClick).not.toHaveBeenCalled();
       const ringTarget = container.querySelector(".native-molecule-ring-hit-target")!;
-      const atom = molecule.atoms[0]!;
-      const hit = nativeMoleculeRingSelectionFromPointerTarget(molecule, ringTarget, { x: atom.x + 9, y: atom.y - 9 });
+      const hit = nativeMoleculeRingSelectionFromPointerTarget(molecule, ringTarget, { x: 100, y: 100 });
       expect(hit).toMatchObject({ objectId: molecule.id, kind: "ring", ringKey: ringTarget.getAttribute("data-ring-hit-key") });
     } finally {
+      act(() => root.unmount());
+      interactive.remove();
       style.remove();
       container.remove();
     }

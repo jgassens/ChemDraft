@@ -11,6 +11,7 @@ import { saveKeybindingSettings } from "./keybindingSettings";
 import { tableInsertCommandId } from "./tableCommands";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { buildDocumentSessionEnvelope } from "./documentSession";
+import { invalidCarbonDocument, invalidCarbonWarning } from "../../../packages/document-workflow-core/test/invalidStructureFixtures";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -203,6 +204,23 @@ describe("save warnings in the existing file warnings list", () => {
     expect(warning).toBeDefined();
     return warning!;
   }
+
+  it.each([false, true])("saves invalid carbon successfully and reports its warning even when ignored (%s)", async suppressed => {
+    await mount(invalidCarbonDocument(suppressed));
+    // Only the save boundary needs the native picker and write mocks.
+    native.desktop = true;
+    await command("document.saveAs");
+    native.desktop = false;
+    expect(native.write).toHaveBeenCalledTimes(1);
+    expect(status().textContent).toBe("Saved table.chemdraft with 1 compatibility warning(s)");
+    expect(status().title).toContain(invalidCarbonWarning);
+    expect(button()?.textContent).toBe("1 warning");
+    await click(button()!);
+    const row = list()?.querySelector('[data-warning-code="export.invalid_structure"]');
+    expect(row?.querySelector(".open-warnings-message")?.textContent).toBe(invalidCarbonWarning);
+    await click(row!.querySelector<HTMLButtonElement>("[data-open-warning-show]")!);
+    expect(bridge().snapshot().selection.objectIds).toEqual(["invalid_carbon"]);
+  });
 
   it("puts every save warning in the status title on the content-sized pointer target and in the list", async () => {
     const document = tableDocument();

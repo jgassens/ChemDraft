@@ -260,7 +260,11 @@ interface PerJobExportResult {
   warnings: string[];
 }
 
-async function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument, warnings: string[] = []): Promise<string> {
+async function verifiedSourceCanonicalSmiles(
+  built: BuiltSmilesDocument,
+  warnings: string[] = [],
+  writerWarnings: string[] = []
+): Promise<string> {
   if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
     throw new Error(
       "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
@@ -268,7 +272,7 @@ async function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument, warning
   }
   // Do not accept a supposedly verified canonical source made from an already lossy molfile.
   const notes: ExportWarning[] = [];
-  await currentMoleculeIdentityMolfile(built.molecule, [], notes);
+  await currentMoleculeIdentityMolfile(built.molecule, writerWarnings, notes);
   warnings.push(...notes.map((note) => note.message));
   return built.sourceCanonicalSmiles;
 }
@@ -301,13 +305,19 @@ export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
+  // Identity verification already supplies problem-accounted invalid-structure warnings.
   const identityWarnings: string[] = [];
-  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings);
+  const writerWarnings: string[] = [];
+  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings, writerWarnings);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
     const warnings = await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
     return { contents: result.contents, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message), ...warnings] };
   }
+  // Validation suppresses unrecognized-label warnings in favor of serialization diagnostics.
+  // Unlike CDXML's round-trip writer above, MOL/PDF have no later writer to report them.
+  // Keep missing notices in writer order; the builder normally already supplies these.
+  identityWarnings.push(...writerWarnings.filter((warning) => !built.warnings.includes(warning)));
   if (format === "pdf") {
     // Keep the jsPDF/svg2pdf implementation and its Node JSDOM shim out of non-PDF exports.
     const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
@@ -386,6 +396,7 @@ async function combinedRecord(
     { requireEngineAtomStates: true }
   );
   const loss = smilesWarnings.find((warning) => warning.severity !== "info" &&
+    warning.code !== "export.invalid_structure" &&
     !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"));
   if (loss) throw new Error(`Cannot export without changing chemical identity: ${loss.message}`);
   await assertCanonicalIdentity(sourceCanonicalSmiles, smiles);

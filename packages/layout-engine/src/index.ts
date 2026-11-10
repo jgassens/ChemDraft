@@ -191,6 +191,7 @@ export interface BondExtensionPlanningInput {
   pageBounds: LayoutBounds;
   objectBounds?: LayoutBounds;
   preferredAtomId?: string;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
   targetBondAngleDegrees?: number;
   collisionRadius?: number;
@@ -206,6 +207,7 @@ export interface FreeformBondExtensionPlanningInput {
   endPoint: LayoutPoint;
   bondLength: number;
   pageBounds: LayoutBounds;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
   minimumBondLength?: number;
   customLengthBreakawayDistance?: number;
@@ -251,12 +253,14 @@ export interface AtomHitPlanningInput {
   bonds: readonly MoleculeLayoutBond[];
   point: LayoutPoint;
   hitRadius: number;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
 }
 
 export interface AtomHit {
   atomId: string;
   degree: number;
+  /** Unbounded for drawing; chemistry warnings never remove a hit. */
   availableBonds: number;
   distance: number;
 }
@@ -335,8 +339,7 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const source = preferredOrNearestEligibleAtom(input, maxBondsPerAtom);
+  const source = preferredOrNearestEligibleAtom(input);
   if (!source) {
     return undefined;
   }
@@ -360,7 +363,6 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     bonds: input.bonds,
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
-    maxBondsPerAtom,
     targetBondAngleDegrees,
     collisionRadius: input.collisionRadius ?? input.bondLength * 0.45
   };
@@ -388,7 +390,6 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
       plannedPoint: plannedNewAtomPoint,
       bondLength: input.bondLength,
       hitRadius: Math.min(input.hitRadius, input.bondLength * 0.3),
-      maxBondsPerAtom,
       targetBondAngleDegrees: candidate.angleDegrees
     });
     const newAtomPoint = targetAtom ? clampPointToBounds(targetAtom, input.pageBounds) : plannedNewAtomPoint;
@@ -620,10 +621,8 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const degrees = atomDegrees(input.atoms, input.bonds);
   const source = input.atoms.find((atom) => atom.id === input.sourceAtomId);
-  if (!source || (degrees.get(source.id) ?? 0) >= maxBondsPerAtom) {
+  if (!source) {
     return undefined;
   }
 
@@ -638,11 +637,9 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     ? nearestFreeformSnapTarget({
         atoms: input.atoms,
         bonds: input.bonds,
-        degrees,
         sourceAtom: source,
         endPoint: input.endPoint,
         snapHitRadius: input.snapHitRadius ?? 18,
-        maxBondsPerAtom
       })
     : undefined;
   if (snapTarget) {
@@ -692,7 +689,7 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     angularDistance(degreesToRadians(linearAim), degreesToRadians(input.directionDegrees!)) < 1e-6 &&
     (!newAtomPoint || !usableGrowthEndpoint(input.atoms, source, newAtomPoint, Math.min(plannedLength, input.bondLength), false))
   ) {
-    newAtomPoint = angledFreeformFallbackPoint(input, source, maxBondsPerAtom);
+    newAtomPoint = angledFreeformFallbackPoint(input, source);
   }
   if (!newAtomPoint) {
     return undefined;
@@ -718,8 +715,7 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
 /** The best chain-angle endpoint off `source` steered by the pointer that `usableGrowthEndpoint` accepts. */
 function angledFreeformFallbackPoint(
   input: FreeformBondExtensionPlanningInput,
-  source: MoleculeLayoutAtom,
-  maxBondsPerAtom: number
+  source: MoleculeLayoutAtom
 ): LayoutPoint | undefined {
   const directions = extensionDirections({
     sourceAtom: source,
@@ -729,7 +725,6 @@ function angledFreeformFallbackPoint(
     bonds: input.bonds,
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
-    maxBondsPerAtom,
     targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees,
     collisionRadius: input.bondLength * 0.45
   });
@@ -748,11 +743,9 @@ function angledFreeformFallbackPoint(
 function nearestFreeformSnapTarget(input: {
   atoms: readonly MoleculeLayoutAtom[];
   bonds: readonly MoleculeLayoutBond[];
-  degrees: ReadonlyMap<string, number>;
   sourceAtom: MoleculeLayoutAtom;
   endPoint: LayoutPoint;
   snapHitRadius: number;
-  maxBondsPerAtom: number;
 }): MoleculeLayoutAtom | undefined {
   if (input.snapHitRadius < 0) {
     return undefined;
@@ -773,7 +766,6 @@ function nearestFreeformSnapTarget(input: {
   return input.atoms
     .filter((atom) => atom.id !== input.sourceAtom.id)
     .filter((atom) => !sourceNeighborIds.has(atom.id))
-    .filter((atom) => (input.degrees.get(atom.id) ?? 0) < input.maxBondsPerAtom)
     .map((atom) => ({ atom, distance: distance(atom, input.endPoint) }))
     .filter((hit) => hit.distance <= input.snapHitRadius)
     .sort((left, right) => left.distance - right.distance || left.atom.id.localeCompare(right.atom.id))[0]?.atom;
@@ -787,14 +779,12 @@ function guidedBondTargetAtom(input: {
   plannedPoint: LayoutPoint;
   bondLength: number;
   hitRadius: number;
-  maxBondsPerAtom: number;
   targetBondAngleDegrees: number;
 }): MoleculeLayoutAtom | undefined {
   if (input.neighbors.length === 0 || input.hitRadius < 0) {
     return undefined;
   }
 
-  const degrees = atomDegrees(input.atoms, input.bonds);
   const sourceNeighborIds = new Set(input.neighbors.map((neighbor) => neighbor.id));
   const targetAngle = degreesToRadians(input.targetBondAngleDegrees);
   const angleTolerance = degreesToRadians(defaultTargetBondAngleToleranceDegrees);
@@ -803,7 +793,6 @@ function guidedBondTargetAtom(input: {
   return input.atoms
     .filter((atom) => atom.id !== input.sourceAtom.id)
     .filter((atom) => !sourceNeighborIds.has(atom.id))
-    .filter((atom) => (degrees.get(atom.id) ?? 0) < input.maxBondsPerAtom)
     .filter((atom) => !input.bonds.some((bond) =>
       (bond.fromAtomId === input.sourceAtom.id && bond.toAtomId === atom.id) ||
       (bond.fromAtomId === atom.id && bond.toAtomId === input.sourceAtom.id)
@@ -839,20 +828,19 @@ function nearestTargetAngleError(
 }
 
 export function findNearestAtomHit(input: AtomHitPlanningInput): AtomHit | undefined {
+  const degrees = atomDegrees(input.atoms, input.bonds);
   if (input.hitRadius < 0) {
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const degrees = atomDegrees(input.atoms, input.bonds);
   return input.atoms
     .map((atom) => ({
       atomId: atom.id,
       degree: degrees.get(atom.id) ?? 0,
-      availableBonds: maxBondsPerAtom - (degrees.get(atom.id) ?? 0),
+      availableBonds: Number.POSITIVE_INFINITY,
       distance: distance(atom, input.point)
     }))
-    .filter((hit) => hit.availableBonds > 0 && hit.distance <= input.hitRadius)
+    .filter((hit) => hit.distance <= input.hitRadius)
     .sort((left, right) => left.distance - right.distance || left.atomId.localeCompare(right.atomId))[0];
 }
 
@@ -879,8 +867,8 @@ export function findNearestBondHit(input: BondHitPlanningInput): BondHit | undef
     return undefined;
   }
 
-  const atomById = new Map(input.atoms.map((atom) => [atom.id, atom]));
   const degrees = atomDegrees(input.atoms, input.bonds);
+  const atomById = new Map(input.atoms.map((atom) => [atom.id, atom]));
 
   return input.bonds
     .map((bond): BondHit | undefined => {
@@ -937,20 +925,17 @@ export function atomDegrees(
 }
 
 function preferredOrNearestEligibleAtom(
-  input: BondExtensionPlanningInput,
-  maxBondsPerAtom: number
+  input: BondExtensionPlanningInput
 ): { atom: MoleculeLayoutAtom; distance: number } | undefined {
-  const degrees = atomDegrees(input.atoms, input.bonds);
   if (input.preferredAtomId) {
     const preferred = input.atoms.find((atom) => atom.id === input.preferredAtomId);
-    if (!preferred || (degrees.get(preferred.id) ?? 0) >= maxBondsPerAtom) {
+    if (!preferred) {
       return undefined;
     }
     return { atom: preferred, distance: distance(preferred, input.clickPoint) };
   }
 
   return input.atoms
-    .filter((atom) => (degrees.get(atom.id) ?? 0) < maxBondsPerAtom)
     .map((atom) => ({ atom, distance: distance(atom, input.clickPoint) }))
     .sort((left, right) => left.distance - right.distance || left.atom.id.localeCompare(right.atom.id))[0];
 }
@@ -982,7 +967,6 @@ interface ExtensionDirectionInput {
   bonds: readonly MoleculeLayoutBond[];
   bondLength: number;
   pageBounds: LayoutBounds;
-  maxBondsPerAtom: number;
   targetBondAngleDegrees: number;
   collisionRadius: number;
 }
@@ -1067,7 +1051,6 @@ function scoreDirectionCandidate(
     plannedPoint,
     bondLength: input.bondLength,
     hitRadius: Math.min(input.collisionRadius, input.bondLength * 0.3),
-    maxBondsPerAtom: input.maxBondsPerAtom,
     targetBondAngleDegrees: input.targetBondAngleDegrees
   });
   const duplicatePenalty =

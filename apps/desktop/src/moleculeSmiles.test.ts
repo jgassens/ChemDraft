@@ -112,6 +112,7 @@ describe("Copy As SMILES messages", () => {
     const warnings: string[] = [];
     await copyAsSmiles(documentWith(mol), warnings);
     expect(warnings).toEqual([
+      ...Array.from({ length: 5 }, (_, index) => `C${index + 1}: its aromatic bonds don't resolve into single and double bonds.`),
       "Aromatic bonds at atoms a0, a1, a2, a3, a4 have no resolved Kekulé order; the structure engine interpreted them for SMILES. Hydrogen counts at literal atoms a0 could not be specified; the structure engine may add hydrogens."
     ]);
     assertSmilesMessages(warnings);
@@ -120,6 +121,7 @@ describe("Copy As SMILES messages", () => {
     await copyAsSmiles(documentWith(mol), fallback);
     // The literal C has no hydrogens or radical marks; two single bonds leave two radicals.
     expect(fallback).toEqual([
+      ...Array.from({ length: 5 }, (_, index) => `C${index + 1}: its aromatic bonds don't resolve into single and double bonds.`),
       "5 aromatic bonds could not be resolved into alternating single and double bonds; written to SMILES as single.",
       "Atom a0 (C) is drawn with 0 radical electrons; SMILES would imply 2 radical electrons with its hydrogen count and formal charge."
     ]);
@@ -131,7 +133,7 @@ describe("Copy As SMILES messages", () => {
     mol.bonds = mol.atoms.slice(1).map((atom, i) => ({ id: `b${i}`, fromAtomId: "a0", toAtomId: atom.id, order: "single" }));
     const warnings: string[] = [];
     await copyAsSmiles(documentWith(mol), warnings);
-    expect(warnings).toEqual(['Literal atom "C" has a bond-order sum of 15, which the structure engine cannot receive exactly for SMILES; the engine may add hydrogens.']);
+    expect(warnings).toEqual(['C1 has unsupported valence 15.', 'Literal atom "C" has a bond-order sum of 15, which the structure engine cannot receive exactly for SMILES; the engine may add hydrogens.']);
     assertSmilesMessages(warnings);
   });
 
@@ -202,7 +204,10 @@ describe("Copy As SMILES messages", () => {
     const mol = { ...molecule(), atoms: graph.atoms, bonds: graph.bonds };
     const warnings: ExportWarning[] = [];
     expect(await moleculeSmiles(mol, 0, warnings, undefined)).toBeTruthy();
-    expect(warnings.map((warning) => warning.message)).toEqual([message]);
+    expect(warnings.map((warning) => warning.message)).toEqual([
+      ...(smiles === "c1ccnc1" ? [4] : [3, 5]).map(index =>
+        `N${index}: hydrogen count guessed from the aromatic bonds. Draw the H to settle it.`), message
+    ]);
   });
 
   it("reports a non-ring aromatic fallback and handles empty/stored SMILES silently", async () => {
@@ -210,7 +215,11 @@ describe("Copy As SMILES messages", () => {
     mol.bonds[0].order = "aromatic";
     const warnings: ExportWarning[] = [];
     expect(await moleculeSmiles(mol, 0, warnings, undefined)).toBe("CC");
-    expect(warnings.map((warning) => warning.message)).toEqual(["1 aromatic bond outside any aromatic ring written to SMILES as single."]);
+    expect(warnings.map((warning) => warning.message)).toEqual([
+      "C1: its aromatic bonds don't resolve into single and double bonds.",
+      "C2: its aromatic bonds don't resolve into single and double bonds.",
+      "1 aromatic bond outside any aromatic ring written to SMILES as single."
+    ]);
     const stored = { ...molecule(["C", "C"]), structureFormat: "smiles" as const, structure: "CC" };
     expect(await moleculeSmiles(stored, 0, [], undefined)).toBe("CC");
     const out: string[] = [];
