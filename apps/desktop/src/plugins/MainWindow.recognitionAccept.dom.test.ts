@@ -5,7 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentSnapshot } from "../agentBridge";
-import { createPhase4Document } from "../documentWorkflow";
+import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createPhase4Document, insertNativeTemplateMolecule } from "../documentWorkflow";
+import { getAssistantHistoryPort } from "../assistant/historyPort";
+import { objectRect, overlaps } from "../assistant/placement";
 import { MainWindow } from "../MainWindow";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
@@ -145,7 +148,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderMainWindow(options: { initialActiveToolCommandId?: string } = {}): Promise<Bridge> {
+async function renderMainWindow(options: { initialActiveToolCommandId?: string; initialDocument?: ChemDraftDocument;
+  shortcutPlatform?: "macos" | "windows" } = {}): Promise<Bridge> {
   installDomMocks();
   window.history.replaceState(null, "", "/?agentBridge=1");
   container = document.createElement("div");
@@ -154,7 +158,8 @@ async function renderMainWindow(options: { initialActiveToolCommandId?: string }
     root = createRoot(container!);
     root.render(
       createElement(MainWindow, {
-        initialDocument: createPhase4Document("Recognition Accept"),
+        initialDocument: options.initialDocument ?? createPhase4Document("Recognition Accept"),
+        shortcutPlatform: options.shortcutPlatform,
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: false,
@@ -207,6 +212,38 @@ function moleculeIds(bridge: Bridge): string[] {
 }
 
 describe("accepting a recognition proposal from the review window", () => {
+  it.each(["macos", "windows"] as const)("places mocked recognition beside benzene on %s only after review, selected in one undo", async platform => {
+    const blank = createEmptyDocument();
+    const page = blank.pages[0]!;
+    const drawing = insertNativeTemplateMolecule(blank, { x: page.width / 2, y: page.height / 2 }, "benzene");
+    const bridge = await renderMainWindow({ initialDocument: drawing, shortcutPlatform: platform });
+    const port = getAssistantHistoryPort();
+    const before = port.read("initial")!;
+    const proposal = await recognizeIntoProposal(bridge);
+    expect(proposal.proposal.recognition).toBeDefined();
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
+    const after = port.read("initial")!;
+    expect(after.pages[0]!.objects).toHaveLength(2);
+    const existing = after.pages[0]!.objects[0]!;
+    const inserted = after.pages[0]!.objects[1]! as MoleculeObject;
+    expect(existing).toEqual(before.pages[0]!.objects[0]);
+    expect(overlaps(objectRect(inserted), objectRect(existing))).toBe(false);
+    expect(inserted.atoms.map(atom => atom.element)).toEqual(["C", "O"]);
+    expect(inserted.bonds).toHaveLength(1);
+    expect(inserted.bonds[0]!.order).toBe("double");
+    expect(after.selection.objectIds).toEqual([inserted.id]);
+    expect(harness.runtime!.host.listProposedPatches("pending")).toHaveLength(0);
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(statusText()).toBe("Undid Recognition Fixture: Insert Recognized Structure");
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(statusText()).toBe("Nothing to undo");
+    await act(async () => { await bridge.command("edit.redo"); });
+    expect(port.read("initial")!.pages).toEqual(after.pages);
+    expect(port.read("initial")!.selection.objectIds).toEqual([inserted.id]);
+  });
+
   it("inserts the recognized structure as one undoable, selected edit and says so", async () => {
     const bridge = await renderMainWindow();
     const before = moleculeIds(bridge);

@@ -103,6 +103,35 @@ describe("Name to Structure insertion placement", () => {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: id } })); });
   }
 
+  it("applies a reviewed edit without moving overlapping existing objects", async () => {
+    const drawing = createEmptyDocument();
+    const page = drawing.pages[0]!;
+    const centre = { x: page.width / 2, y: page.height / 2 };
+    const existing = createSmilesMolecule(drawing, centre, benzene, "c1ccccc1");
+    const edited = { ...createSmilesMolecule(drawing, centre, ethanol, "CCO"), id: "edited-molecule" };
+    page.objects = [existing, edited];
+    const port = await mount(drawing, "unused");
+    const before = port.read("initial")!;
+    await act(async () => {
+      harness.runtime!.registerPlugin({ id: "org.chemdraft.test.proposal", name: "Mock Proposal", version: "0.1.0",
+        apiVersion: "^0.1.25", entry: "test.js", permissions: ["document.proposePatch"],
+        contributes: { commands: [{ id: "plugin.mockProposal.edit", title: "Edit" }] }
+      }, { commandHandlers: { "plugin.mockProposal.edit": context => context.documents.proposePatch({
+        reason: "Edit style", patch: { op: "updateObject", objectId: edited.id, changes: { rotation: 15 } }
+      }) } });
+      await harness.runtime!.invokeCommand("plugin.mockProposal.edit");
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
+    expect(port.read("initial")!.pages[0]!.objects).toEqual([
+      before.pages[0]!.objects[0], { ...before.pages[0]!.objects[1], rotation: 15 }
+    ]);
+    expect(port.read("initial")!.selection.objectIds).toEqual([edited.id]);
+    await command("edit.undo");
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(container.querySelector("[role=status]")?.textContent).toBe("Undid Mock Proposal: Apply Proposal");
+  });
+
   it.each(["opsin", "dictionary"] as const)("places a %s result beside central benzene, selected in one undo entry", async source => {
     harness.opsin.mockResolvedValue(source === "opsin" ? { smiles: "CCO" } : { smiles: null });
     const drawing = createEmptyDocument();

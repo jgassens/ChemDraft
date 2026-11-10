@@ -208,6 +208,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
   applyPluginDocumentPatch,
+  placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
   type PluginWriteGate
@@ -12735,7 +12736,15 @@ export function MainWindow({
       try {
         const before = documentRef.current;
         const documentIdentity = documentIdentityRef.current;
-        const prepared = normalizeCommittedDocument(applyAcceptedPluginProposal(before, proposal.proposal).document);
+        let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
+        if (recognized) {
+          const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+          for (const page of prepared.pages) {
+            const insertedIds = page.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds);
+          }
+        }
+        prepared = normalizeCommittedDocument(prepared);
         // Keep the proposal pending until the page question and stale-document check succeed.
         const pending = commitWithPageFit(before, prepared, document => {
           const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
