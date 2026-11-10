@@ -21,13 +21,13 @@ concurrency:
   cancel-in-progress: true
 
 # Advisory smoke job; do not add it to branch protection's required checks.
-# No release credentials or signing secrets. The fresh runner has no Developer ID identity.
+# Leave APPLE_SIGNING_IDENTITY unset: the fresh runner has no Developer ID identity,
+# and the bundle verifier does not require a signature.
 jobs:
   intel-smoke:
     runs-on: macos-15-intel
     timeout-minutes: 60
     env:
-      APPLE_SIGNING_IDENTITY: ''
       CHEMDRAFT_ENGINE3D_SIDECAR: apps/desktop/src-tauri/binaries/avogadro3d-sidecar-x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
