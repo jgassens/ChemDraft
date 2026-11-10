@@ -1,5 +1,5 @@
 import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
-import { moleculeToInteropMolfile, atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { assertMolfileExportIdentity, type ComputeStructureIdentifiers, moleculeToInteropMolfile, atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
 import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
@@ -19968,6 +19968,7 @@ export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: st
  * lossy-emission notes (V2000 flattens dative bonds to single; any other label — a placeholder,
  * unrecognized text, a flagged group, a bonded "Ar" — writes as a dummy atom) — V3000 keeps dative
  * bonds as coordination type 9 and stays silent about them.
+ * Serialization only: clipboard commands use copyAsMolfileForExport to verify the final bytes.
  * External copies default to Angstrom units; identifier computation requests raw coordinates.
  */
 export function copyAsMolfile(
@@ -20015,6 +20016,21 @@ export function copyAsMolfile(
       return nativeMoleculeExportWarnings(molecule, { unrecognizedLabels }).map(warning => warning.message);
     }), ...writerWarnings.filter(message => !repeatMessages.some(warning => warning.includes(message))));
   }
+}
+
+/** Prepare and verify a complete merged Copy As CTAB before any clipboard write. */
+export async function copyAsMolfileForExport(
+  document: ChemDraftDocument,
+  flavor: "v2000" | "v3000",
+  warningsOut?: string[],
+  computeStructureIdentifiers?: ComputeStructureIdentifiers
+): Promise<string | undefined> {
+  const contents = copyAsMolfile(document, flavor, warningsOut);
+  if (contents === undefined) return undefined;
+  const source = copyAsMolfile(document, flavor, undefined, { coordinateUnits: "raw" })!;
+  const engine = computeStructureIdentifiers ?? await (await import("./moleculeSmiles")).loadStructureIdentifiers();
+  await assertMolfileExportIdentity(source, contents, engine, flavor === "v2000" ? "Copy As MOL V2000" : "Copy As MOL");
+  return contents;
 }
 
 const copyAsPagePaddingPx = 16;

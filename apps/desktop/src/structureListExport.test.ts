@@ -19,6 +19,12 @@ import { chargeSeparationCases } from "../../../packages/document-workflow-core/
 
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+// These format/SMILES-property tests deliberately make identifiers unavailable; exercise the
+// mandatory export guard with real and failing engines in molfileExportIdentity.test.ts instead.
+vi.mock("@chemdraft/document-workflow-core", async importOriginal => ({
+  ...await importOriginal<typeof import("@chemdraft/document-workflow-core")>(),
+  assertMolfileExportIdentity: vi.fn().mockResolvedValue(undefined)
+}));
 
 beforeEach(() => {
   vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined);

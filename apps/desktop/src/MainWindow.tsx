@@ -498,7 +498,8 @@ import {
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
   applyMechanismArrowControlPoint,
-  copyAsMolfile,
+  copyAsMolfile as serializeCopyAsMolfile,
+  copyAsMolfileForExport as copyAsMolfile,
   copyAsScopedDocument,
   copyAsSmiles,
   createMechanismArrowBetween,
@@ -7663,7 +7664,7 @@ export function MainWindow({
       case "clipboard.copyAs.mol": {
         const warnings: string[] = [];
         try {
-          await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+          await writeText(await copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
         } catch (error) {
           setStatus(`Copy As MOL failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -7672,7 +7673,7 @@ export function MainWindow({
       case "clipboard.copyAs.molV2000": {
         const warnings: string[] = [];
         try {
-          await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+          await writeText(await copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
         } catch (error) {
           setStatus(`Copy As MOL V2000 failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -7701,7 +7702,7 @@ export function MainWindow({
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
         const warnings: string[] = [];
         try {
-          const molfile = copyAsMolfile(current, "v2000", warnings, { coordinateUnits: "raw" });
+          const molfile = serializeCopyAsMolfile(current, "v2000", warnings, { coordinateUnits: "raw" });
           if (!molfile) {
             setStatus(`Nothing to copy as ${label}`);
             return;

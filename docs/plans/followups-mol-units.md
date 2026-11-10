@@ -12,4 +12,3 @@ Deferred:
 - Preserve z/3D input separately from drawing geometry; physical conformer/model units stay unchanged.
 - Multi-record SDF import.
 - Open/drop of .mol/.sdf files.
-- Desktop Copy As MOL/SDF export has no canonical-identity check on the scaled bytes (the CLI does); consider adding one if 4-decimal rounding ever changes stereo for near-collinear wedges.
