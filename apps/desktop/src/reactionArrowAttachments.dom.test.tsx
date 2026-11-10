@@ -83,3 +83,41 @@ it("does not create conditions by double-clicking a bare ordinary arrow", async 
   expect(container.querySelector(".reaction-conditions-form")).toBeNull();
   expect(snapshot().pages[0].objects).toHaveLength(1);
 });
+
+it.each(["object", "page"])("labels dragging reaction conditions released on the %s and restores exact undo/redo states", async release => {
+  await mount(false, true);
+  const label = snapshot().pages[0].objects.find(object => object.type === "text")!;
+  const page = container.querySelector<HTMLElement>(".page")!;
+  page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612,
+    width: 792, height: 612, toJSON: () => ({}) });
+  for (const element of container.querySelectorAll("*")) {
+    element.setPointerCapture = () => {};
+    element.releasePointerCapture = () => {};
+    element.hasPointerCapture = () => false;
+  }
+  const target = container.querySelector(`[data-page-svg-object-visual="${label.id}"] text`)!;
+  async function pointer(type: string, x: number, y: number) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+      buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y });
+    Object.defineProperties(event, { pointerId: { value: 1 }, isPrimary: { value: true }, pointerType: { value: "mouse" } });
+    const destination = type === "pointerup" && release === "page" ? page
+      : container.querySelector(`[data-page-svg-object-visual="${label.id}"] text`) ?? target;
+    await act(async () => destination.dispatchEvent(event));
+  }
+  await pointer("pointerdown", label.x + 5, label.y + 5);
+  const before = snapshot();
+  await pointer("pointermove", label.x + 15, label.y + 15);
+  await pointer("pointermove", label.x + 25, label.y + 35);
+  expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  await pointer("pointerup", label.x + 25, label.y + 35);
+  const after = snapshot();
+  expect(after).not.toEqual(before);
+  expect(container.querySelector("[data-status-message]")?.textContent).toBe("Moved selected object");
+  await route("edit.undo");
+  expect(container.querySelector("[data-status-message]")?.textContent).toBe("Undid Move Reaction Conditions");
+  expect(snapshot()).toEqual(before);
+  expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  await route("edit.redo");
+  expect(container.querySelector("[data-status-message]")?.textContent).toBe("Redid Move Reaction Conditions");
+  expect(snapshot()).toEqual(after);
+});

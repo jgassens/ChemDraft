@@ -11,6 +11,7 @@ import { atomProblemCommandId, atomProblemCommands, atomProblemSnapshot, type At
 import { atomProblem, type AtomProblemAction } from "@chemdraft/document-workflow-core";
 import { applyNativeAtomProblemFix } from "./documentWorkflow";
 import { dropElectronMark, electronMarkDropTarget } from "./electronMarkDrop";
+import { electronMarkUndoLabel } from "./electronMarkUndoLabel";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -1769,7 +1770,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.14.22-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3549,7 +3550,8 @@ export function MainWindow({
   const installDocumentHistory = useCallback((
     update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
     switchingTabs = false,
-    palettePreview = false
+    palettePreview = false,
+    objectDragPreview = false
   ) => {
     // A chooser may never blur. Close its snapshot transaction before *any* other
     // document write, including live drawing/selection replacements and navigation.
@@ -3576,7 +3578,7 @@ export function MainWindow({
     // Retained moves never install preview documents. Any install while one is active
     // replaces its source geometry, so disarm it before React updates the paint/chrome.
     const drag = objectDragRef.current;
-    if (drag && !graphicObjectIdsForCssDragPreview(drag)) {
+    if (drag && !objectDragPreview && !graphicObjectIdsForCssDragPreview(drag)) {
       objectDragRef.current = null;
       objectDragMachineRef.current = initialInteractionState();
       clearObjectTransformPreview(drag.pointerId);
@@ -3621,7 +3623,8 @@ export function MainWindow({
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    palettePreview = false
+    palettePreview = false,
+    objectDragPreview = false
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     let changed = false;
@@ -3636,7 +3639,7 @@ export function MainWindow({
       if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
       changed = true;
       return { ...currentHistory, present };
-    }, false, palettePreview);
+    }, false, palettePreview, objectDragPreview);
     return changed;
   }, [installDocumentHistory]);
   // Strip the live draft before normalization, then carry the name across both object changes.
@@ -4970,7 +4973,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, electronMarkUndoLabel(currentDocument, nextDocument, markSpec));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -15485,7 +15488,7 @@ export function MainWindow({
   const applyChargeDocumentAtPoint = useCallback((spec: NativeElectronMarkSpec, point: ClientPoint) => {
     const nextDocument = applyChargeToolAtPoint(documentRef.current, spec, point);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, electronMarkUndoLabel(documentRef.current, nextDocument, spec));
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -16072,7 +16075,9 @@ export function MainWindow({
       }
       if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         clearObjectTransformPreview(drag.pointerId);
-        replacePresentDocument(objectDragDocument(drag, point)); return;
+        // Attached labels need a document preview rather than a rigid translation. Keep the
+        // gesture alive until release records its history entry.
+        replacePresentDocument(objectDragDocument(drag, point), false, true); return;
       }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
@@ -16492,7 +16497,8 @@ export function MainWindow({
 
     const movesMark = (drag.groupObjectIds ?? [drag.objectId]).some(id =>
       findDocumentObject(drag.startDocument, id)?.type === "electron-mark");
-    commitDocumentHistoryFrom(drag.startDocument, moved, movesMark ? "Move electron mark" : undefined);
+    commitDocumentHistoryFrom(drag.startDocument, moved, movesMark ? "Move electron mark"
+      : object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? "Move Reaction Conditions" : undefined);
     return true;
   }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
