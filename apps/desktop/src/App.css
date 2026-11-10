@@ -7893,6 +7893,7 @@ textarea:focus-visible,
 .cd-vibe-guide { line-height: 1.3; }
 .cd-vibe-guide ol { margin: 0; padding-left: 22px; }
 .cd-vibe-guide li { margin: 0 0 8px; }
+.cd-vibe-guide li, .cd-vibe-guide p { -webkit-user-select: none; user-select: none; cursor: default; }
 .cd-vibe-guide li div { margin-top: 4px; }
 .cd-vibe-guide p { margin: 4px 0 13px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
