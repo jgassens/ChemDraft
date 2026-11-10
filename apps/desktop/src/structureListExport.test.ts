@@ -383,7 +383,8 @@ describe("structure list export", () => {
     const result = await exportStructureListSdf(document);
     for (const message of writerWarnings) {
       expect(result.warnings).toContainEqual({
-        code: "export.sdf_v2000_loss", message, severity: "warning", objectId: molecule.id
+        code: message.startsWith('Atom label "Ph"') ? "export.smiles_atom_label" : "export.sdf_v2000_loss",
+        message, severity: "warning", objectId: molecule.id
       });
     }
     const smi = await exportStructureListSmi(document);

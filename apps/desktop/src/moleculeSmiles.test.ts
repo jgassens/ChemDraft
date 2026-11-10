@@ -55,7 +55,9 @@ describe("Copy As SMILES messages", () => {
     mol.bonds[1].display = { bondStyle: "dashed" };
     for (const exportList of [exportStructureListSmi, exportStructureListSdf]) {
       const result = await exportList(documentWith(mol));
-      expect(result.warnings.filter(w => w.message.includes('Atom label "Phe"'))).toHaveLength(1);
+      expect(result.warnings.filter(w => w.message.includes('Atom label "Phe"'))).toEqual([
+        expect.objectContaining({ code: "export.smiles_atom_label" })
+      ]);
       expect(result.warnings.some(w => /dative|coordination/i.test(w.message))).toBe(true);
     }
   });
