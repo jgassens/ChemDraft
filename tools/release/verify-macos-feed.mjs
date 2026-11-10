@@ -10,20 +10,27 @@ import { parseArgs } from "node:util";
 import { dmgArchitecture, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
 import { targetArchitecture } from "./macos-mach-o.mjs";
 import { readAppPlist, verifyApp, verifySourceCommit } from "./verify-macos-app.mjs";
-import { withDmgApps } from "./macos-dmg.mjs";
+import { refuseUnsignedBuild, withDmgApps } from "./macos-dmg.mjs";
 
 export function verifyDmg(dmg, target, {
-  checkApp = verifyApp, ...options
+  run = spawnSync, checkApp = (app, appTarget) => {
+    refuseUnsignedBuild(readAppPlist(app, run));
+    verifyApp(app, appTarget, { run });
+  }, ...options
 } = {}) {
   if (dmgArchitecture(basename(dmg)) !== targetArchitecture(target)) throw new Error(`${dmg}: filename does not match feed architecture`);
-  return withDmgApps(dmg, (app) => checkApp(app, target), options);
+  return withDmgApps(dmg, (app) => checkApp(app, target), { ...options, run });
 }
 
 // Release provenance must come from the payload, never an adjacent build record.
 export function verifyDmgCommit(dmg, target, commit, { run = spawnSync, ...options } = {}) {
   verifyDmg(dmg, target, {
     ...options, run,
-    checkApp: (app) => verifySourceCommit(readAppPlist(app, run), commit)
+    checkApp: (app) => {
+      const plist = readAppPlist(app, run);
+      refuseUnsignedBuild(plist);
+      verifySourceCommit(plist, commit);
+    }
   });
 }
 

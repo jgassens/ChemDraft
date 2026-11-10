@@ -9,7 +9,7 @@
 // On both platforms it sets CHEMDRAFT_WORKTREE_LABEL for the child: the worktree label (AGENTS.md
 // §21.1) for dev and branch builds, and the EMPTY string for a stable package build (on main, or with
 // CHEMDRAFT_STABLE_BUILD=1), so a release is titled plain "ChemDraft" and does not fall back to git.
-// The explicit local-only CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 escape labels a stable DMG "(unsigned)".
+// The explicit local-only CHEMDRAFT_ALLOW_UNSIGNED_STABLE=1 escape labels a stable DMG "UNSIGNED".
 //
 //   node scripts/desktop-tauri.mjs --package-build [tauri build args…]   (the package `build` script)
 //   node scripts/desktop-tauri.mjs <any tauri subcommand…>               (the package `tauri` script)
@@ -45,7 +45,7 @@ export function buildMacosDesktop(args, { env, stable, isPackageBuild }, {
   if (unsigned) {
     warn(warning);
     // Vite's stamp and the native title already consume this label; no app source change needed.
-    env.CHEMDRAFT_WORKTREE_LABEL = `${env.CHEMDRAFT_WORKTREE_LABEL?.trim() || "ChemDraft"} (unsigned)`;
+    env.CHEMDRAFT_WORKTREE_LABEL = "UNSIGNED";
   }
   let releasePlist;
   try {

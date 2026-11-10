@@ -69,7 +69,7 @@ export function withDmgApps(dmg, checkApp, {
 export function verifyDmgSourceCommit(dmg, commit, { run = spawnSync, recordCommit, ...options } = {}) {
   return withDmgApps(dmg, (app) => {
     const plist = readAppPlist(app, run);
-    // Shared by record-build, release body drafting and the final macOS asset gate.
+    // Shared by record-build and the final macOS asset gate.
     refuseUnsignedBuild(plist);
     verifySourceCommit(plist, commit);
     if (recordCommit !== undefined) verifySourceCommit(plist, recordCommit);

@@ -112,6 +112,14 @@ test("release DMGs require their embedded source commit and detach after rejecti
   }
 });
 
+for (const name of [arm, intel]) {
+  test(`release body refuses an unsigned ${name} even with a matching source commit`, (t) => {
+    const args = fixture(t);
+    assert.throws(() => draft(args, { run: fakeReleaseRunner({ unsigned: (dmg) => dmg === join(args.assets, name) }) }),
+      /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+  });
+}
+
 test("missing expected source, unresolvable tag and tag/commit disagreement fail", (t) => {
   const args = fixture(t);
   assert.throws(() => draft(args, { run: () => ({ status: 1, stderr: "no tag" }) }), /Expected --commit/);

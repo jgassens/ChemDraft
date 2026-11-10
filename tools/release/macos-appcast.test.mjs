@@ -11,9 +11,30 @@ import { feedForTarget, verifyApp } from "./verify-macos-app.mjs";
 import { machOSlices } from "./macos-mach-o.mjs";
 import { thinMachO } from "./macos-test-fixtures.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
+import { fakeReleaseRunner } from "./release-test-fixtures.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const names = { arm64: "ChemDraft_1.1.1_aarch64.dmg", x86_64: "ChemDraft_1.1.1_x86_64.dmg" };
+
+for (const architecture of ["arm64", "x86_64"]) {
+  test(`feed verification refuses an unsigned ${architecture} DMG`, () => {
+    const run = fakeReleaseRunner({ unsigned: true });
+    assert.throws(() => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [names[architecture]] }, {
+      checkDmg: (dmg, target) => verifyDmg(dmg, target, { run })
+    }), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+  });
+
+  test(`appcast generation refuses an unsigned ${architecture} DMG before running Sparkle`, (t) => {
+    const staging = mkdtempSync(join(tmpdir(), "chemdraft-unsigned-appcast-"));
+    t.after(() => rmSync(staging, { recursive: true, force: true }));
+    writeFileSync(join(staging, names[architecture]), "fixture DMG");
+    const run = fakeReleaseRunner({ unsigned: true });
+    assert.throws(() => generateMacosAppcast({ target: architecture, version: "1.1.1", staging }, {
+      checkDmg: (dmg, target) => verifyDmg(dmg, target, { run }),
+      run: () => assert.fail("must not run Sparkle")
+    }), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
+  });
+}
 
 function feed(architecture, { version = "1.1.1", notesDirectory = appcastConfiguration(architecture).notesDirectory } = {}) {
   const item = `<item>

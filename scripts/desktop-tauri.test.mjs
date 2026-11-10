@@ -123,7 +123,7 @@ for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
           assert.equal(config.env.CHEMDRAFT_RELEASE_BUILD, "0");
           assert.equal(config.env.CHEMDRAFT_ALLOW_UNSIGNED_STABLE, "1");
           assert.equal(config.env.APPLE_SIGNING_IDENTITY, undefined);
-          assert.equal(config.env.CHEMDRAFT_WORKTREE_LABEL, "ChemDraft (unsigned)");
+          assert.equal(config.env.CHEMDRAFT_WORKTREE_LABEL, "UNSIGNED");
           if (outcome === "throw") throw new Error("fixture runner failure");
           return { status: outcome };
         }

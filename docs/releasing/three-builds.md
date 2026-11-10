@@ -20,7 +20,8 @@ For each Mac DMG, run `node tools/release/record-build.mjs --artifact <final.dmg
 dirty source tree, including staged changes and untracked files; keep staging outside the source tree.
 Recording a DMG mounts it read-only and refuses an app whose embedded `ChemDraftSourceCommit`
 differs from the checkout's HEAD. This requires macOS; an adjacent record cannot establish payload provenance.
-All Mac publishing gates also refuse `ChemDraftUnsignedBuild = true`, the permanent marker from
+Recording, feed verification, appcast generation, release body drafting and the final Mac publishing
+gates also refuse an unsigned stamp (`ChemDraftUnsignedBuild` present with a value other than `false`), from
 the [local-only unsigned stable escape](macos-updates.md#local-unsigned-stable-rebuilds-never-publish).
 Those builds must never be published, even if subsequently signed or given matching build records.
 The Windows workflow records source identity in the clean checkout and updates the hash and size
