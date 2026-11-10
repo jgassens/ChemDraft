@@ -74,7 +74,7 @@ it("lists every implemented desktop export format without planned/deferred rows 
     expect(visibleText).not.toMatch(/\(planned\)|\(deferred\)|should alias|resvg pipeline|delegates through|SVG export path/i);
     if (descriptor.status !== "implemented" && descriptor.warningSummary) expect(visibleText).not.toContain(descriptor.warningSummary);
   }
-  expect(updateExportDialogFormat({ ...exportFixture(), filename: "compound.mol" }, "pdf").filename).toBe("compound.pdf");
+  expect(updateExportDialogFormat({ ...exportFixture(), filename: "compound.mol", busy: false }, "pdf").filename).toBe("compound.pdf");
 });
 
 it.each(["macos", "windows"] as const)("suggests one extension for every implemented format on %s", platform => {
