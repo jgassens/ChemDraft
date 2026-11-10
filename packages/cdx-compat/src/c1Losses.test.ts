@@ -126,6 +126,70 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     ? exportDocumentToCdx(document, { embedNativePayload: false }).warnings
     : exportDocumentToCdxml(document, { embedNativePayload: false }).warnings;
 
+  for (const placement of ["Unspecified label", "Nickname label", "expanded Nickname label", "page caption", "fragment caption"]) {
+    it.each(["ABC", "ABCDE"])(`keeps mixed text/run order and run attributes on a ${placement} (%s) through three visible round trips`, expected => {
+      const runAttributes = { font: "3", size: "12", face: "1", color: "4" };
+      const content = 'A<s font="3" size="12" face="1" color="4">B</s>C' +
+        (expected === "ABCDE" ? '<s face="2">D</s>E' : "");
+      const caption = `<t id="4" p="60 60">${content}</t>`;
+      const source = placement === "page caption" ? caption
+        : placement === "fragment caption" ? `<fragment id="2"><n id="3" p="60 60" Element="6"/>${caption}</fragment>`
+        : `<fragment id="2"><n id="3" NodeType="${placement === "Unspecified label" ? "Unspecified" : "Nickname"}" p="60 60">${caption}${
+          placement === "expanded Nickname label" ? '<fragment id="5"><n id="6" Element="6" p="60 60"/></fragment>' : ""
+        }</n></fragment>`;
+      let imported = open(page(source));
+      for (let cycle = 0; cycle <= 3; cycle++) {
+        expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+        const document = JSON.parse(JSON.stringify(imported.document)) as ChemDraftDocument;
+        if (placement.endsWith("caption")) {
+          expect(document.pages[0].objects.filter(object => object.type === "text").map(object => object.text)).toEqual([expected]);
+        } else {
+          const native = document.pages[0].objects.find(object => object.type === "molecule")!;
+          expect(placement === "expanded Nickname label" ? native.superatoms[0].label : native.atoms[0].element).toBe(expected);
+        }
+        const exported = output(document);
+        const texts = all(exported, "t");
+        expect(texts).toHaveLength(1);
+        // Read serialized XML independently in source order, including raw text between runs.
+        const textContent = (nodes: Record<string, unknown>[]): string => nodes.map(node =>
+          node["#text"] !== undefined ? String(node["#text"]) : Object.entries(node)
+            .filter(([name, value]) => name !== ":@" && Array.isArray(value))
+            .map(([, children]) => textContent(children as Record<string, unknown>[])).join("")
+        ).join("");
+        expect(textContent(parser.parse(cdxElementToCdxml(texts[0])))).toBe(expected);
+        expect(all(texts[0], "s").find(run => run.text === "B")?.attrs).toEqual(runAttributes);
+        if (expected === "ABCDE") expect(all(texts[0], "s").find(run => run.text === "D")?.attrs).toMatchObject({ face: "2" });
+        if (cycle < 3) imported = roundTrip(document);
+      }
+    });
+  }
+
+  it("restores mixed content from an older ordered snapshot instead of its flattened codec tree", () => {
+    const label = '<t id="4">A<s face="1">B</s>C</t>';
+    const imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" p="60 60">${label}</n></fragment>`));
+    const native = imported.document!.pages[0].objects.find(object => object.type === "molecule")!;
+    const record = (native.compatibility!.unknown.cdxmlAbbreviations as { source: CdxElement; sourceNode?: unknown }[])[0];
+    expect(record.sourceNode).toBeUndefined();
+    // Simulate an older native save: its sourceNode is ordered, while source.text is flattened.
+    record.sourceNode = { name: "n", attributes: { ...record.source.attrs }, children: parser.parse(label) };
+    const text = record.source.kids.find(child => child.name === "t")!;
+    text.text = "AC";
+    text.kids = text.kids.filter(child => child.name === "s" && child.text === "B");
+    const reopened = roundTrip(JSON.parse(JSON.stringify(imported.document)) as ChemDraftDocument);
+    expect(reopened.document!.pages[0].objects.find(object => object.type === "molecule")!.atoms[0].element).toBe("ABC");
+    expect(all(output(imported.document!), "s").find(run => run.text === "B")?.attrs).toMatchObject({ face: "1" });
+  });
+
+  it("replaces an edited mixed-content label without retaining stale raw segments", () => {
+    const imported = open(page('<fragment id="2"><n id="3" NodeType="Unspecified" p="60 60"><t id="4">A<s face="1">B</s>C</t></n></fragment>'));
+    const native = imported.document!.pages[0].objects.find(object => object.type === "molecule")!;
+    native.atoms[0].element = "Xx";
+    expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({
+      code: "cdxml.atom_snapshot_attribute_not_written", message: expect.stringContaining("run formatting")
+    }));
+    expect(roundTrip(imported.document!).document!.pages[0].objects.find(object => object.type === "molecule")!.atoms[0].element).toBe("Xx");
+  });
+
   it.each(format === "CDXML" ? ["NoHead", "no head", "NONE", "Unspecified", "0", ""] : ["NoHead", "0"])(
     "keeps ArrowType=%s as a plain line through three visible round trips", arrowType => {
       const source = `<graphic id="30" GraphicType="Line" ArrowType="${arrowType}" BoundingBox="100 90 160 90"/>`;

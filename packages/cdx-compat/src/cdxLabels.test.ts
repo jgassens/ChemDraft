@@ -9,7 +9,7 @@ import { computeStructureIdentifiers } from "../../rdkit-adapter/src/identifiers
 import { resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
 import { analyzeStructure } from "../../rdkit-adapter/src/analysis";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
-import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx } from "./cdxBinary";
+import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { XMLParser } from "fast-xml-parser";
 import { canonicalVisibleCdxml, exportDocumentToCdx, exportDocumentToCdxml, importCdx, openChemDraftPayload } from "./index";
 
@@ -418,6 +418,11 @@ function rGroupTree(labels: readonly [string, string]) {
 
 describe("synthetic numbered R-group attachments", () => {
   const formats = ["CDXML", "CDX"] as const;
+  const nicknameRuns = (node: CdxElement): CdxElement[][] => [
+    ...(node.name === "n" && node.attrs.GenericNickname === "R"
+      ? [node.kids.find(child => child.name === "t")!.kids.filter(child => child.name === "s")] : []),
+    ...node.kids.flatMap(nicknameRuns)
+  ];
   const openedTree = (tree: ReturnType<typeof xmlTree>, format: typeof formats[number]) =>
     format === "CDX" ? openChemDraftPayload(cdxElementToCdxml(readCdx(writeCdx(tree))))
       : openChemDraftPayload(cdxElementToCdxml(tree));
@@ -439,7 +444,8 @@ describe("synthetic numbered R-group attachments", () => {
 
   for (const format of formats) {
     it(`${format} imports R1/R2 from text and keeps their numbers through engine SMILES and visible round trips`, async () => {
-      const opened = openedTree(rGroupTree(["R1", "R2"]), format);
+      const source = rGroupTree(["R1", "R2"]);
+      const opened = openedTree(source, format);
       const molecule = moleculeOf(opened);
       expectRgroups(molecule, ["R1", "R2"]);
       expect(molecule.rGroups.map((group) => rGroupNumberFromLabel(group.label))).toEqual([1, 2]);
@@ -453,8 +459,11 @@ describe("synthetic numbered R-group attachments", () => {
       }
       const exported = exportDocumentToCdxml(opened.document!, { embedNativePayload: false }).contents;
       expect(exported).toContain('GenericNickname="R"');
-      expect(exported).toContain('<s>R1</s>');
-      expect(exported).toContain('<s>R2</s>');
+      const exportedTree = cdxElementFromOrderedTree(new XMLParser({
+        preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", trimValues: false
+      }).parse(exported));
+      // Retain the source R + subscript-1 runs as well as the numbered label's meaning.
+      expect(nicknameRuns(exportedTree)).toEqual(nicknameRuns(format === "CDX" ? readCdx(writeCdx(source)) : source));
       const reopened = format === "CDX"
         ? importCdx(exportDocumentToCdx(opened.document!, { embedNativePayload: false }).bytes)
         : openChemDraftPayload(exported);

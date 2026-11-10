@@ -176,10 +176,27 @@ describe("interchange graphics and page extent", () => {
     const source = wrap(sourceGraphic(10, 'OvalType="Filled" OrbitalType="s"')).replace('<page ',
       '<colortable><color r="1" g="1" b="1"/><color r="0" g="0" b="0"/><color r="0.2" g="0.4" b="0.6"/></colortable><page ');
     const document = requireDocument(openChemDraftPayload(source));
-    const exported = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    const result = exportDocumentToCdxml(document, { embedNativePayload: false });
+    const exported = result.contents;
+    expect(result.warnings.filter(warning => warning.code === "cdxml.graphic_color_approximation")).toEqual([]);
     expect(attributes(exported, "graphic")).toEqual(attributes(source, "graphic"));
     expect(requireDocument(openChemDraftPayload(exported)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
-    expect(requireDocument(importCdx(exportDocumentToCdx(document).bytes)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
+    const binary = exportDocumentToCdx(document);
+    expect(binary.warnings.filter(warning => warning.code === "cdxml.graphic_color_approximation")).toEqual([]);
+    expect(requireDocument(importCdx(binary.bytes)).pages[0].objects[0].style).toEqual(document.pages[0].objects[0].style);
+  });
+
+  it.each([false, true])("warns when a native graphic's custom color is actually approximated (embedded=%s)", embedNativePayload => {
+    const document = requireDocument(openChemDraftPayload(wrap('<graphic id="10" GraphicType="Rectangle" BoundingBox="20 30 80 90"/>')));
+    document.pages[0].objects[0].style.strokeColor = "#336699";
+    for (const result of [exportDocumentToCdxml(document, { embedNativePayload }), exportDocumentToCdx(document, { embedNativePayload })]) {
+      const warning = result.warnings.find(warning => warning.code === "cdxml.graphic_color_approximation");
+      expect(warning).toMatchObject({ sourceObjectId: document.pages[0].objects[0].id });
+      expect(warning?.message).toContain("#336699");
+      const visible = "bytes" in result ? cdxElementToCdxml(readCdx(result.bytes)) : result.contents;
+      expect(attributes(visible, "graphic")[0].color).toBeUndefined();
+      if (!embedNativePayload) expect(requireDocument(openChemDraftPayload(visible)).pages[0].objects[0].style.strokeColor).not.toBe("#336699");
+    }
   });
 
   it("recognizes an unedited source orbital even when its axis frame differs from BoundingBox", () => {

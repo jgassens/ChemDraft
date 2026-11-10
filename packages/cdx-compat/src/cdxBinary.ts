@@ -5,9 +5,11 @@ import { atomicNumberForElementSymbol } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { sha256Hex } from "./sha256";
 export interface CdxElement {
+  /** `#text` children hold character data interleaved with element children. */
   name: string;
   attrs: Record<string, string>;
   kids: CdxElement[];
+  /** Leading character data only; later text segments belong in `kids`, in source order. */
   text: string;
 }
 export interface CdxWarning { code: string; message: string; sourceObjectId?: string }
@@ -188,8 +190,17 @@ export function cdxElementFromOrderedTree(nodes: Record<string, unknown>[]): Cdx
     const name = Object.keys(node).find((key) => !key.startsWith("#") && key !== ":@" && !key.startsWith("?"));
     if (!name || !Array.isArray(node[name])) return [];
     const children = node[name] as Record<string, unknown>[];
-    return [{ name, attrs: Object.fromEntries(Object.entries((node[":@"] ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
-      kids: elements(children), text: children.map((child) => String(child["#text"] ?? "")).join("") }];
+    const result: CdxElement = { name,
+      attrs: Object.fromEntries(Object.entries((node[":@"] ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
+      kids: [], text: "" };
+    for (const child of children) {
+      if (child["#text"] !== undefined) {
+        const text = String(child["#text"]);
+        if (!result.kids.length) result.text += text;
+        else result.kids.push({ name: "#text", attrs: {}, kids: [], text });
+      } else result.kids.push(...elements([child]));
+    }
+    return [result];
   });
   const root = elements(nodes)[0];
   if (!root || root.name.toLowerCase() !== "cdxml") throw new Error("CDX export failed: expected a CDXML root element");
@@ -199,7 +210,8 @@ export function cdxElementFromOrderedTree(nodes: Record<string, unknown>[]): Cdx
 
 export function cdxElementToCdxml(root: CdxElement): string {
   const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\r/g, "&#13;").replace(/\n/g, "&#10;").replace(/\t/g, "&#9;");
-  const write = (x: CdxElement): string => `<${x.name}${Object.entries(x.attrs).map(([k, v]) => ` ${k}="${escape(v)}"`).join("")}>${escape(x.text)}${x.kids.map(write).join("")}</${x.name}>`;
+  const write = (x: CdxElement): string => x.name === "#text" ? escape(x.text)
+    : `<${x.name}${Object.entries(x.attrs).map(([k, v]) => ` ${k}="${escape(v)}"`).join("")}>${escape(x.text)}${x.kids.map(write).join("")}</${x.name}>`;
   return write(root);
 }
 // Name on a tag and on a chemical property is plain bytes, not a styled string.
@@ -761,12 +773,15 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
     // Children CDXML holds that CDX holds as properties.
     for (const k of x.kids) {
       if (["colortable", "fonttable"].includes(k.name)) checkAttrs(k, []);
-      if (k.name === "colortable") for (const color of k.kids) checkAttrs(color, ["r", "g", "b"]);
-      if (k.name === "colortable") put(0x0300, new Uint8Array([...le(2, k.kids.length), ...k.kids.flatMap((c) => [...le(2, ...["r", "g", "b"].map((ch) => Math.round(Math.min(1, Math.max(0, real(c.attrs[ch]) ?? 0)) * 65535)))])]));
+      if (k.name === "colortable") {
+        const colors = k.kids.filter(child => child.name === "color");
+        for (const color of colors) checkAttrs(color, ["r", "g", "b"]);
+        put(0x0300, new Uint8Array([...le(2, colors.length), ...colors.flatMap((c) => [...le(2, ...["r", "g", "b"].map((ch) => Math.round(Math.min(1, Math.max(0, real(c.attrs[ch]) ?? 0)) * 65535)))])]));
+      }
       if (k.name === "fonttable") {
         const entries: number[] = [];
         let count = 0;
-        for (const f of k.kids) {
+        for (const f of k.kids.filter(child => child.name === "font")) {
           checkAttrs(f, ["id", "charset", "name"]);
           const id = Number.parseInt(f.attrs.id ?? "", 10), cs = charsetCode.get(f.attrs.charset ?? "") ?? 0;
           if (!Number.isFinite(id)) { warn(f, "unencodable font ID"); continue; }
@@ -793,11 +808,18 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
         put(0x0a86, b);
       }
     }
-    const runs = x.kids.filter((k) => k.name === "s");
-    // ChemDraft's CDXML writer also emits plain text directly inside <t>.
-    if (x.name === "t" && x.text.length) runs.unshift({ name: "s", attrs: {}, kids: [], text: x.text });
+    // CDX stores one string plus style offsets. Turn each raw segment into a default-style run
+    // at its original position, including text following/between styled <s> elements.
+    const plainRun = (text: string): CdxElement => ({ name: "s", attrs: {}, kids: [], text });
+    const runs = x.name === "t" && x.text.length ? [plainRun(x.text)] : [];
+    for (const child of x.kids) {
+      if (child.name === "s") runs.push(child);
+      else if (child.name === "#text" && x.name === "t") runs.push(plainRun(child.text));
+      else if (child.name === "#text" && child.text.trim()) warn(x, "raw text outside a text object");
+    }
+    if (x.name !== "t" && x.name !== "spectrum" && x.text.trim()) warn(x, "raw text outside a text object");
     if (runs.length) textProps(runs, x);
-    for (const k of x.kids) if (!["colortable", "fonttable", "represent", "s"].includes(k.name)) object(k, depth + 1);
+    for (const k of x.kids) if (!["colortable", "fonttable", "represent", "s", "#text"].includes(k.name)) object(k, depth + 1);
     out.u16(0);
   };
   object(root, 0);

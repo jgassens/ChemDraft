@@ -19,6 +19,26 @@ const styled = (text: string) => [...u16(1), ...[0, 3, 1, 240, 3].flatMap(u16), 
 const element = (name: string, attrs: Record<string, string> = {}, kids: CdxElement[] = [], text = ""): CdxElement => ({ name, attrs, kids, text });
 
 describe("binary CDX headers and reference codec cases", () => {
+  it("keeps interleaved text and elements at every XML depth", () => {
+    const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", trimValues: false });
+    const xml = '<CDXML>before<page id="1">A<group id="2">B<t id="3">C<s face="1">D</s>E</t>F</group>G</page>after</CDXML>';
+    expect(cdxElementToCdxml(cdxElementFromOrderedTree(parser.parse(xml)))).toBe(xml);
+  });
+
+  it("encodes raw text between styled runs as default runs in order in both text copies", () => {
+    const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", trimValues: false });
+    const source = cdxElementFromOrderedTree(parser.parse('<CDXML><t id="2">A<s font="3" face="1" size="12" color="4">B</s>C<s face="2">D</s>E</t></CDXML>'));
+    const bytes = writeCdx(source);
+    // Construct the property records independently: each raw segment gets its own default run.
+    const styles = [[0, 0xffff, 0, 0, 3], [1, 3, 1, 240, 4], [2, 0xffff, 0, 0, 3],
+      [3, 0xffff, 2, 0, 3], [4, 0xffff, 0, 0, 3]];
+    const text = [...u16(styles.length), ...styles.flatMap(style => style.flatMap(u16)), ...ascii("ABCDE")];
+    expect(bytes).toEqual(file(object(0x8006, 2, property(0x0700, text), property(0x0709, text))));
+    const runs = readCdx(bytes).kids[0].kids;
+    expect(runs.map(run => run.text)).toEqual(["A", "B", "C", "D", "E"]);
+    expect(runs[1].attrs).toEqual({ font: "3", face: "1", size: "12", color: "4" });
+  });
+
   it("writes the magic, little-endian marker, ten reserved bytes and document tag/id", () => {
     const bytes = writeCdx(element("CDXML"));
     expect([...bytes]).toEqual([...header, ...u16(0x8000), ...u32(0), 0, 0]);

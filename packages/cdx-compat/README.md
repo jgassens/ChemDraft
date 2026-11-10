@@ -55,6 +55,8 @@ Lifted captions and ordinary page-level text retain their source `<t>` element i
 `cdxmlTextNativeState` detects edits; `cdxmlTextFontTable` and `cdxmlTextColorTable` retain the
 referenced font and color definitions. Unedited text exports that source element once through
 both CDXML and binary CDX; moving it translates the source coordinates while keeping its runs.
+Raw text before, between and after styled runs retains its order in labels and captions. Binary
+CDX encodes each raw segment as a default-style run in its original position.
 Edited content, spans, style, size or rotation export the current native text instead, with
 `cdxml.text_source_formatting_not_kept` naming the native object and original source id. Conflicting
 source font or color indices from combined documents produce named warnings. CDX retains its
@@ -357,6 +359,5 @@ Unsupported source glyph kinds, including `Curly`, use `cdxml.bracket_type_prese
 source graphic and the omitted native glyph/visible export. Nested bracket groups remain raw source
 children of an exportable outer pair, with `cdxml.bracket_nested_group_preserved` naming every group
 whose native semantics are not imported. These warnings also apply to binary CDX.
-See [the C1 loss handoff](C1-remaining-losses-handoff.md) for synthetic cases and decisions.
 No independent-reader or interactive
 platform verification is claimed. See [the bracket handoff](../../docs/architecture/brackets-repeat-units.md).

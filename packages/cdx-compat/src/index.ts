@@ -1906,7 +1906,7 @@ function exportGraphicObject(
   const graphicId = idFor(ids, graphic.id, allocator);
   const sourceElementName = graphic.compatibility?.unknown.cdxmlElementName;
   const curve = sourceElementName === "curve" ? graphic : sourceElementName === "arrow" ? undefined : nativeCurveGraphic(graphic);
-  warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve));
+  warnForGraphicCdxmlLimitations(graphic, warnings, Boolean(curve), curveColors);
   if ((graphic.graphicKind === "unknown" || graphic.graphicKind === "ellipse") && graphic.compatibility?.unknown.cdxmlElementName === "graphic") {
     const attributes = preservedCurveAttributes(graphic.compatibility.unknown.cdxmlGraphicAttributes);
     // Older imports retained only these individual compatibility keys.
@@ -2243,14 +2243,15 @@ function warnForGenericGraphicMarkerLoss(
 function warnForGraphicCdxmlLimitations(
   graphic: GraphicObject,
   warnings: CompatibilityConversionWarning[],
-  exportsCurve = false
+  exportsCurve = false,
+  colors: readonly string[] = standardCdxmlColorTable
 ): void {
   const color = graphic.style.strokeColor ?? graphic.style.color ?? graphic.style.fillColor;
   // Curves encode custom colors and path controls themselves; these warnings apply only to graphics.
-  if (!exportsCurve && typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlColorIndexForHex(color) === undefined) {
+  if (!exportsCurve && typeof color === "string" && color.length > 0 && color.toLowerCase() !== "none" && cdxmlGraphicColorIndex(graphic, [], colors) === undefined) {
     warnings.push({
       code: "cdxml.graphic_color_approximation",
-      message: `Native graphic color "${color}" is not in the standard ChemDraw color table and is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `Native graphic color "${color}" is not in the exported CDXML color table. It is preserved exactly only in the embedded ChemDraft payload.`,
       sourceObjectId: graphic.id
     });
   }
@@ -2703,21 +2704,6 @@ function boxesApproximatelyEqual(
 
 function nearlyEqual(left: number, right: number): boolean {
   return Math.abs(left - right) <= 0.01;
-}
-
-function cdxmlColorIndexForHex(color: string): number | undefined {
-  const normalized = normalizeHexColor(color);
-  if (!normalized) {
-    return undefined;
-  }
-  if (normalized === "#000000") {
-    return 0;
-  }
-  if (normalized === "#ffffff") {
-    return 1;
-  }
-  const index = standardCdxmlColorTable.findIndex((candidate) => candidate === normalized);
-  return index >= 0 ? index + 2 : undefined;
 }
 
 function normalizeHexColor(color: string): string | undefined {
@@ -3416,7 +3402,7 @@ function expandCdxmlAbbreviationNodes(
         const label = cdxmlAtomLabelText(atomElement);
         literalLabelByCdxmlId.set(nodeId, label ?? "*");
         // Keep the source kind, charge, annotations and label runs for visible interchange.
-        if (unspecifiedLabel) abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
+        abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
         warnings.push({
           code: "cdxml.abbreviation_not_expanded",
           sourceObjectId: nodeId,
@@ -3785,8 +3771,7 @@ function importFragment(
     // Superatom metadata has no ID. Retain its original array index as the source association,
     // independently of membership (nested groups can contain exactly the same live atoms).
     ...(item.expanded && cdxmlAtomLabelText(item.source) ? { superatomIndex: superatomIndex++ } : {}),
-    // Keep the ordered XML view too: unlike the codec tree, it preserves mixed-content order.
-    sourceNode: item.source,
+    // The codec tree retains character-data segments between children in source order.
     source: cdxElementFromOrderedTree([{ CDXML: [{ n: item.source.children, ":@": item.source.attributes }] }]).kids[0]
   }));
   const cdxmlAbbreviationAttachmentsByBondId = Object.fromEntries(bonds.flatMap((bond, index) => {

@@ -1,7 +1,7 @@
 import { elementSymbolForAtomicNumber, normalizeAtomIsotope, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import type { CompatibilityConversionWarning } from "./index";
-import type { CdxElement } from "./cdxBinary";
+import { cdxElementFromOrderedTree, type CdxElement } from "./cdxBinary";
 
 /** Shared structural gate for import and source measurements. No chemistry is inferred here. */
 export function abbreviationExpansionIssue(
@@ -39,6 +39,8 @@ interface SourceAbbreviation {
   atomIds: string[];
   expanded: boolean;
   source: CdxElement;
+  /** Older snapshots also stored the parser's ordered view beside a flattened codec tree. */
+  sourceNode?: { name: string; attributes: Record<string, string>; children: Record<string, unknown>[] };
   depth?: number;
   superatomIndex?: number;
   nativeState?: ReturnType<typeof cdxmlAtomNativeState>;
@@ -117,10 +119,12 @@ function mergeLabel(source: CdxElement, label: string, warn: (reason: string) =>
     return;
   }
   const runs = text.kids.filter(child => child.name === "s");
-  if (runs.length > 1) warn("edited label text uses the first source run's formatting; the original run boundaries could not be carried.");
-  const replacement = element("s", { ...runs[0]?.attrs }, [], label);
+  if (runs.length > 1 || (runs.length > 0 && (text.text || text.kids.some(child => child.name === "#text" && child.text)))) {
+    warn("edited label text uses the first source text segment's formatting; the original run formatting and boundaries could not be carried.");
+  }
+  const replacement = element("s", text.text ? {} : { ...runs[0]?.attrs }, [], label);
   text.text = "";
-  text.kids = [replacement, ...text.kids.filter(child => child.name !== "s")];
+  text.kids = [replacement, ...text.kids.filter(child => child.name !== "s" && child.name !== "#text")];
 }
 
 function mergeSourceAtom(copy: CdxElement, generated: CdxElement, atom: MoleculeAtom,
@@ -179,7 +183,13 @@ export function restoreCdxmlAbbreviations(
   const sources = (Array.isArray(stored) ? stored : []).filter((value): value is SourceAbbreviation =>
     !!value && typeof value === "object" && Array.isArray(value.atomIds) &&
     value.atomIds.every((id: unknown) => typeof id === "string") && typeof value.expanded === "boolean" &&
-    value.source?.name === "n" && !!value.source.attrs && Array.isArray(value.source.kids));
+    value.source?.name === "n" && !!value.source.attrs && Array.isArray(value.source.kids))
+    .map(record => {
+      const ordered = record.sourceNode;
+      return ordered?.name === "n" && ordered.attributes && Array.isArray(ordered.children)
+        ? { ...record, source: cdxElementFromOrderedTree([{ CDXML: [{ n: ordered.children, ":@": ordered.attributes }] }]).kids[0] }
+        : record;
+    });
   const warn = (label: string, reason: string) => warnings.push({ code: "cdxml.superatom_not_collapsed",
     message: `Abbreviation "${label}" is written as its live expanded atoms: ${reason} The label and source data remain in the native document.`,
     sourceObjectId: molecule.id });
