@@ -10,7 +10,7 @@ import {
   nativeTextMetrics, nativeTextScriptFontScale, nativeTextSubscriptBottomEm, nativeTextSuperscriptOffsetEm,
   reactionArrowHeadDepthPx, reactionArrowVerticalExtent
 } from "@chemdraft/layout-engine";
-import { formulaSpansForMixedText } from "./formulaText";
+import { formulaSpansForReactionCondition } from "./formulaText";
 import { estimateNativeTextSpanLineWidth, nativeTextObjectSizeForSpanLines } from "./textObjects";
 
 export interface ReactionLabelsOptions {
@@ -50,7 +50,7 @@ const minimumCaptionWidthInBonds = 8;
 const defaultLabelStyle: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 
 function lineSpans(text: string, caption = false): TextSpan[] {
-  const spans = (!caption && formulaSpansForMixedText(text)) || [{ text, script: "normal", style: {} }];
+  const spans = (!caption && formulaSpansForReactionCondition(text)) || [{ text, script: "normal", style: {} }];
   return spans.reduce<TextSpan[]>((runs, span) => {
     const previous = runs.at(-1);
     if (previous && previous.script === span.script &&

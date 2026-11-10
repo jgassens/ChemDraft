@@ -135,7 +135,7 @@ The formatted reaction-conditions dialog and its editing preference are app-only
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants
-left and products right. Species, plus signs and arrows use 24 px gutters.
+left and products right. Species, plus signs and arrows use equal gaps of 1.25 bond lengths, measured between drawn ink bounds.
 
 Reaction batch shape:
 

@@ -5,7 +5,7 @@ import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed, createReactionProductAligner } from "@chemdraft/rdkit-adapter";
-import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
+import { layoutReactionSchemeAsync } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
@@ -696,7 +696,7 @@ export async function renderReactionScheme(
     orientationWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   });
-  const { document, warnings: layoutWarnings } = layoutReactionScheme({
+  const { document, warnings: layoutWarnings } = await layoutReactionSchemeAsync({
     alignProduct,
     style: options.style,
     reactants: reactants.map(componentFor),

@@ -243,7 +243,7 @@ composition formulas, falling back to SMILES only when composition fails; --cond
 there. Agent formulas carry net ionic charge as a superscript; hydroxide is written OH⁻. Carbon-free
 formulas use conventional written order rather than strict Hill order (H2SO4, HCl, NH3); each
 exact Hill formula is kept in agentTexts[].hillFormula. Species, plus signs, and the arrow use
-24 px gutters.
+equal gaps of 1.25 bond lengths, measured between drawn ink bounds.
 
 Batch jobs contain either rxn or reactants/agents/products arrays. Array entries preserve . as one
 molecule object. Each job may supply out; otherwise --out-dir is required and files are named from

@@ -1,13 +1,15 @@
+import { nativeTextStyleFromObjectStyle } from "@chemdraft/chem-core";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
-import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
-import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
-import { canonicalSmiles } from "../document";
+import { moleculeInkBounds, planPageSvgRender, planReactionArrowGeometry, reactionArrowInkBounds,
+  reactionSchemeDrawingMetrics, representativeMoleculeBondLength, atomLabelHaloWidthPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
+import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { chemicalIdentityMolfile, planReactionLabels, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { buildSmilesDocument, canonicalSmiles } from "../document";
 
 import {
   renderReactionScheme,
@@ -16,6 +18,22 @@ import {
 } from "./reaction";
 
 vi.setConfig({ testTimeout: 60_000 });
+
+it.each([
+  { smiles: "[Na+].[OH-]", labels: ["Na+", "OH-"], condensed: "NaOH" },
+  { smiles: "C[Mg]Br", labels: ["Mg", "Br"], condensed: "MgBr" }
+])("keeps baseline ordinary-document labels and uses explicit scheme abbreviations: $smiles", async fixture => {
+  const plain = (await buildSmilesDocument(fixture.smiles, { style: "document" })).molecule;
+  // These are the label outputs on release/1.2-rc 357f3ff6; every real atom/bond still draws.
+  expect(planMoleculeAtomLabels(plain).map(plan => plan.label)).toEqual(fixture.labels);
+  const scheme = await renderReactionScheme({ reactants: [fixture.smiles], products: [], agents: [] }, { style: "document" });
+  const condensed = scheme.document.pages[0]!.objects.find(object => object.type === "molecule")!;
+  expect(condensed.atoms.some(atom => atom.element === fixture.condensed)).toBe(true);
+  expect(condensed.atoms).toHaveLength(plain.atoms.length - 1);
+  expect(planMoleculeAtomLabels(plain).map(plan => plan.label)).toEqual(fixture.labels);
+  expect(await canonicalSmiles(chemicalIdentityMolfile(condensed), "explicit label"))
+    .toBe(await canonicalSmiles(fixture.smiles, "input"));
+});
 
 it("draws NaOH, H2O and BrMg without changing any canonical molecular identity", async () => {
   const inputs = ["[Na+].[OH-]", "O", "Br[Mg]c1ccccc1"];
@@ -33,7 +51,7 @@ it("draws NaOH, H2O and BrMg without changing any canonical molecular identity",
         expect(rendered.svg).not.toMatch(/data-bond-id="b0"/);
       }
       expect(JSON.stringify(molecule)).toBe(before);
-      expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "rendered graph"))
+      expect(await canonicalSmiles(chemicalIdentityMolfile(molecule), "rendered graph"))
         .toBe(await canonicalSmiles(smiles, "original input"));
     }
   }
@@ -428,4 +446,86 @@ describe("chemdraft reaction", () => {
     expect(rendered.products).toEqual(["CC=O", "O"]);
     expect(plusSigns).toHaveLength(1);
   });
+});
+
+describe("reaction scheme geometry and chemical identity", () => {
+  it.each([
+    { name: "aspirin", reactants: ["OC(=O)c1ccccc1O", "CC(=O)OC(C)=O"],
+      products: ["CC(=O)Oc1ccccc1C(=O)O", "CC(=O)O"], above: ["H2SO4"], below: ["85 °C, 15 min"] },
+    { name: "three reactants", reactants: ["O=Cc1ccccc1", "CC(C)=O", "[Na+].[OH-]"],
+      products: ["CC(=O)/C=C/c1ccccc1"], above: ["H2O"], below: ["room temperature, 30 min"] }
+  ])("uses measured ink gaps and a common centre line: $name", async fixture => {
+    const rendered = await renderReactionScheme({ ...fixture, agents: [] }, { style: "document",
+      above: fixture.above, below: fixture.below });
+    const objects = rendered.document.pages[0]!.objects;
+    const molecules = objects.filter(o => o.type === "molecule");
+    const arrow = objects.find(o => o.type === "reaction-arrow")!;
+    const pluses = objects.filter(o => o.type === "text" && o.text === "+");
+    const start = arrow.start.point!, end = arrow.end.point!;
+    const bounds = molecules.map(moleculeInkBounds);
+    const bondLength = representativeMoleculeBondLength(molecules[0]!)!;
+    const expectedGap = 1.25 * bondLength;
+    const arrowInk = reactionArrowInkBounds(arrow.arrowKind, end.x - start.x, Number(arrow.style.strokeWidth));
+    const ordered = [...bounds, ...pluses, { ...arrowInk, x: start.x + arrowInk.x, y: start.y + arrowInk.y }]
+      .sort((a, b) => a.x - b.x);
+    ordered.slice(1).forEach((b, i) => {
+      const a = ordered[i]!;
+      expect(Math.abs(b.x - a.x - a.width - expectedGap)).toBeLessThan(0.5);
+    });
+    bounds.forEach(b => expect(Math.abs(b.y + b.height / 2 - start.y)).toBeLessThan(0.01));
+    const drawing = reactionSchemeDrawingMetrics(molecules[0]!);
+    pluses.forEach(plus => {
+      expect(plus.y + plus.height / 2).toBeCloseTo(start.y, 6);
+      expect(plus.width).toBeGreaterThanOrEqual(drawing.fontSizePx * 0.9);
+      expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
+      const strokes = planPageSvgRender(rendered.document.pages[0]!).fragments
+        .filter(f => f.attrs["data-object-id"] === plus.id && f.tag === "line");
+      expect(strokes).toHaveLength(2);
+    });
+    const labelPlan = planReactionLabels({ above: fixture.above, below: fixture.below,
+      textStyle: nativeTextStyleFromObjectStyle(objects.find(o => o.type === "text" && o.text !== "+")!.style),
+      bondLength, arrowKind: "forward" });
+    expect(end.x - start.x).toBeGreaterThanOrEqual(labelPlan.arrowLength - 0.001);
+    expect(end.x - start.x).toBeGreaterThanOrEqual(3 * bondLength - 0.001);
+    const geometry = planReactionArrowGeometry("forward", start, end);
+    expect(geometry.lines[0]!.end.x).toBeLessThan(end.x - Number(arrow.style.strokeWidth) / 2);
+    expect(geometry.lines[0]!.end.x).toBeGreaterThan(geometry.heads[0]!.points[1]!.x);
+    const inputs = [...fixture.reactants, ...fixture.products];
+    for (let i = 0; i < molecules.length; i++) {
+      expect(await canonicalSmiles(chemicalIdentityMolfile(molecules[i]!), "placed molecule"))
+        .toBe(await canonicalSmiles(inputs[i]!, "input"));
+    }
+    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
+    if (fixture.name === "aspirin") {
+      // The salicylate query disambiguates the six symmetry-equivalent ring matches using both
+      // substituents; testing an unconstrained benzene query could hide a reversed core.
+      const rdkit = await ensureRdkit() as unknown as {
+        get_mol(value: string): { get_substruct_match(query: unknown): string; delete(): void };
+      };
+      const query = rdkit.get_mol(fixture.reactants[0]!);
+      const handles = [rdkit.get_mol(stereoPerceptionMolfile(molecules[0]!)),
+        rdkit.get_mol(stereoPerceptionMolfile(molecules[2]!))];
+      try {
+        const points = handles.map((handle, i) => {
+          const indices = (JSON.parse(handle.get_substruct_match(query)) as { atoms: number[] }).atoms;
+          return indices.slice(3, 9).map(index => molecules[i === 0 ? 0 : 2]!.atoms[index]!);
+        });
+        const deltas = points[0]!.map((a, i) => ({ x: points[1]![i]!.x - a.x, y: points[1]![i]!.y - a.y }));
+        const dx = deltas.reduce((s, d) => s + d.x, 0) / 6, dy = deltas.reduce((s, d) => s + d.y, 0) / 6;
+        const rmsd = Math.sqrt(deltas.reduce((s, d) => s + (d.x - dx) ** 2 + (d.y - dy) ** 2, 0) / 6);
+        expect(rmsd).toBeLessThan(0.15);
+      } finally { handles.forEach(h => h.delete()); query.delete(); }
+    }
+  });
+
+  it("preserves tetrahedral stereo when aligning a substituted ring product", async () => {
+    const reactant = "OC[C@H](O)c1ccccc1", product = "CC(=O)OC[C@H](O)c1ccccc1";
+    const rendered = await renderReactionScheme({ reactants: [reactant], agents: [], products: [product] });
+    const molecule = rendered.document.pages[0]!.objects.filter(o => o.type === "molecule")[1]!;
+    expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "aligned product"))
+      .toBe(await canonicalSmiles(product, "input"));
+    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
+  });
+
+
 });

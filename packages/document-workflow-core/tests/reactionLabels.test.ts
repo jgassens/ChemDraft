@@ -499,3 +499,12 @@ describe("reaction label policy", () => {
     }
   });
 });
+it.each(["H2O", "CH2Cl2", "Et2O", "K2CO3", "Pd(PPh3)4"])("subscripts condition formula %s", text => {
+  const result = labels({ above: [text], below: [] });
+  expect(result.above!.spans.some(span => span.script === "subscript")).toBe(true);
+});
+
+it.each(["90 °C", "2 h", "1:1", "10 mol%", "TS1/TS2", "TS1,TS2", "p-TsOH"])("leaves condition prose %s plain", text => {
+  const result = labels({ above: [text], below: [] });
+  expect(result.above!.spans.every(span => span.script === "normal")).toBe(true);
+});

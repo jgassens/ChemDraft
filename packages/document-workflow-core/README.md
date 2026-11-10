@@ -132,10 +132,12 @@ Callers supply pre-depicted molecules at the intended bond length. Reaction sche
 anchor when it leaves room for page padding, otherwise translating the whole scheme together.
 These layout functions translate molecules without
 rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
+Async hosts call layoutReactionSchemeAsync; synchronous layoutReactionScheme only places components.
 Hosts may inject `createReactionProductAligner` from rdkit-adapter. The shared planner uses its
 FMCS and `generate_aligned_coords` result to orient each product against the largest reactant
 core (a complete ring or six heavy atoms), retaining directed stereo and canonical identity.
-Unavailable or refused alignment leaves the original depiction and reports a warning.
+All searches share a 1.5 s scheme budget and yield between one-second FMCS searches.
+A timed-out later pair retains an earlier completed match. Unavailable or refused alignment leaves the original depiction and reports a warning.
 
 Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a

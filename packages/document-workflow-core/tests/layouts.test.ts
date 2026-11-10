@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { moleculeInkBounds, planPageSvgRender, planReactionArrowGeometry, reactionArrowHeadLengthPx,
-  reactionArrowInkBounds, reactionSchemeDrawingMetrics, representativeMoleculeBondLength } from "@chemdraft/layout-engine";
-import { ensureRdkit } from "@chemdraft/rdkit-adapter";
-import { renderReactionScheme } from "../../chemdraft-cli/src/commands/reaction";
-import { canonicalSmiles } from "../../chemdraft-cli/src/document";
+import { moleculeInkBounds, reactionArrowHeadLengthPx,
+  reactionArrowInkBounds, reactionSchemeDrawingMetrics } from "@chemdraft/layout-engine";
 
-import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText,
-  planReactionLabels, stereoPerceptionMolfile, type LayoutBounds } from "../src/index";
+import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, layoutReactionSchemeAsync, nativeTextObjectSizeForText,
+  type LayoutBounds } from "../src/index";
 
 function molecule(id: string, width = 40, height = 20): MoleculeObject {
   return {
@@ -28,6 +25,38 @@ function overlaps(left: { x: number; y: number; width: number; height: number },
 }
 
 describe("shared reaction and grid layout", () => {
+  it("preserves isotope, radical and nonstandard hydrogen annotations when choosing scheme labels", () => {
+    const base = molecule("salt");
+    const sodium = { id: "na", element: "Na", x: 0, y: 0, formalCharge: 1 };
+    const hydroxide = { id: "o", element: "O", x: 22, y: 0, formalCharge: -1 };
+    const variants: MoleculeObject["atoms"][] = [
+      [{ ...sodium, isotope: 23 }, hydroxide], [sodium, { ...hydroxide, isotope: 18 }],
+      [sodium, { ...hydroxide, markRadicals: 1 }], [sodium, { ...hydroxide, hydrogenCount: 0 }],
+      [{ ...sodium, hydrogenCount: 1 }, hydroxide]
+    ];
+    for (const atoms of variants) {
+      const result = layoutReactionScheme({ reactants: [{ molecule: { ...base, atoms } }], products: [],
+        arrowKind: "forward", anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24 });
+      expect(result.molecules[0]!.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
+        .toEqual(atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+    }
+  });
+  it("shares a 1500 ms budget across products and yields before alignment", async () => {
+    let now = 0, calls = 0, yields = 0;
+    const result = await layoutReactionSchemeAsync({
+      reactants: [{ molecule: molecule("r") }], products: ["p1", "p2", "p3"].map(id => ({ molecule: molecule(id) })),
+      arrowKind: "forward", anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24,
+      alignmentScheduler: { now: () => now, yieldControl: async () => { yields++; } },
+      alignProduct: (_references, _product, budget) => {
+        expect(budget!.deadline).toBe(1500);
+        expect(yields).toBeGreaterThan(calls);
+        calls++; now += 1500;
+        return undefined;
+      }
+    });
+    expect(calls).toBe(1);
+    expect(result.molecules).toHaveLength(4);
+  });
   it("places a reaction deterministically at its anchor without molecule overlaps", () => {
     const options = {
       reactants: [{ molecule: molecule("reactant"), bounds: bounds() }],
@@ -218,87 +247,4 @@ describe("shared reaction and grid layout", () => {
     const ink = moleculeInkBounds(layout.molecules[0]!);
     expect(layout.caption!.y).toBeCloseTo(Math.max(ink.y + ink.height, layout.arrow.y + layout.arrow.height) + 0.8 * 14);
   });
-});
-
-
-describe("reaction scheme geometry and chemical identity", () => {
-  it.each([
-    { name: "aspirin", reactants: ["OC(=O)c1ccccc1O", "CC(=O)OC(C)=O"],
-      products: ["CC(=O)Oc1ccccc1C(=O)O", "CC(=O)O"], above: ["H2SO4"], below: ["85 °C, 15 min"] },
-    { name: "three reactants", reactants: ["O=Cc1ccccc1", "CC(C)=O", "[Na+].[OH-]"],
-      products: ["CC(=O)/C=C/c1ccccc1"], above: ["H2O"], below: ["room temperature, 30 min"] }
-  ])("uses measured ink gaps and a common centre line: $name", async fixture => {
-    const rendered = await renderReactionScheme({ ...fixture, agents: [] }, { style: "document",
-      above: fixture.above, below: fixture.below });
-    const objects = rendered.document.pages[0]!.objects;
-    const molecules = objects.filter(o => o.type === "molecule");
-    const arrow = objects.find(o => o.type === "reaction-arrow")!;
-    const pluses = objects.filter(o => o.type === "text" && o.text === "+");
-    const start = arrow.start.point!, end = arrow.end.point!;
-    const bounds = molecules.map(moleculeInkBounds);
-    const bondLength = representativeMoleculeBondLength(molecules[0]!)!;
-    const expectedGap = 1.25 * bondLength;
-    const arrowInk = reactionArrowInkBounds(arrow.arrowKind, end.x - start.x, Number(arrow.style.strokeWidth));
-    const ordered = [...bounds, ...pluses, { ...arrowInk, x: start.x + arrowInk.x, y: start.y + arrowInk.y }]
-      .sort((a, b) => a.x - b.x);
-    ordered.slice(1).forEach((b, i) => {
-      const a = ordered[i]!;
-      expect(Math.abs(b.x - a.x - a.width - expectedGap)).toBeLessThan(0.5);
-    });
-    bounds.forEach(b => expect(Math.abs(b.y + b.height / 2 - start.y)).toBeLessThan(0.01));
-    const drawing = reactionSchemeDrawingMetrics(molecules[0]!);
-    pluses.forEach(plus => {
-      expect(plus.y + plus.height / 2).toBeCloseTo(start.y, 6);
-      expect(plus.width).toBeGreaterThanOrEqual(drawing.fontSizePx * 0.9);
-      expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
-      const strokes = planPageSvgRender(rendered.document.pages[0]!).fragments
-        .filter(f => f.attrs["data-object-id"] === plus.id && f.tag === "line");
-      expect(strokes).toHaveLength(2);
-    });
-    const labelPlan = planReactionLabels({ above: fixture.above, below: fixture.below,
-      textStyle: nativeTextStyleFromObjectStyle(objects.find(o => o.type === "text" && o.text !== "+")!.style),
-      bondLength, arrowKind: "forward" });
-    expect(end.x - start.x).toBeGreaterThanOrEqual(labelPlan.arrowLength - 0.001);
-    expect(end.x - start.x).toBeGreaterThanOrEqual(3 * bondLength - 0.001);
-    const geometry = planReactionArrowGeometry("forward", start, end);
-    expect(geometry.lines[0]!.end.x).toBeLessThan(end.x - Number(arrow.style.strokeWidth) / 2);
-    expect(geometry.lines[0]!.end.x).toBeGreaterThan(geometry.heads[0]!.points[1]!.x);
-    const inputs = [...fixture.reactants, ...fixture.products];
-    for (let i = 0; i < molecules.length; i++) {
-      expect(await canonicalSmiles(stereoPerceptionMolfile(molecules[i]!), "placed molecule"))
-        .toBe(await canonicalSmiles(inputs[i]!, "input"));
-    }
-    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
-    if (fixture.name === "aspirin") {
-      // The salicylate query disambiguates the six symmetry-equivalent ring matches using both
-      // substituents; testing an unconstrained benzene query could hide a reversed core.
-      const rdkit = await ensureRdkit() as unknown as {
-        get_mol(value: string): { get_substruct_match(query: unknown): string; delete(): void };
-      };
-      const query = rdkit.get_mol(fixture.reactants[0]!);
-      const handles = [rdkit.get_mol(stereoPerceptionMolfile(molecules[0]!)),
-        rdkit.get_mol(stereoPerceptionMolfile(molecules[2]!))];
-      try {
-        const points = handles.map((handle, i) => {
-          const indices = (JSON.parse(handle.get_substruct_match(query)) as { atoms: number[] }).atoms;
-          return indices.slice(3, 9).map(index => molecules[i === 0 ? 0 : 2]!.atoms[index]!);
-        });
-        const deltas = points[0]!.map((a, i) => ({ x: points[1]![i]!.x - a.x, y: points[1]![i]!.y - a.y }));
-        const dx = deltas.reduce((s, d) => s + d.x, 0) / 6, dy = deltas.reduce((s, d) => s + d.y, 0) / 6;
-        const rmsd = Math.sqrt(deltas.reduce((s, d) => s + (d.x - dx) ** 2 + (d.y - dy) ** 2, 0) / 6);
-        expect(rmsd).toBeLessThan(0.15);
-      } finally { handles.forEach(h => h.delete()); query.delete(); }
-    }
-  });
-
-  it("preserves tetrahedral stereo when aligning a substituted ring product", async () => {
-    const reactant = "OC[C@H](O)c1ccccc1", product = "CC(=O)OC[C@H](O)c1ccccc1";
-    const rendered = await renderReactionScheme({ reactants: [reactant], agents: [], products: [product] });
-    const molecule = rendered.document.pages[0]!.objects.filter(o => o.type === "molecule")[1]!;
-    expect(await canonicalSmiles(stereoPerceptionMolfile(molecule), "aligned product"))
-      .toBe(await canonicalSmiles(product, "input"));
-    expect(rendered.warnings.filter(w => w.includes("orientation"))).toEqual([]);
-  });
-
-
 });

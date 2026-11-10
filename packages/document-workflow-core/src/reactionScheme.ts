@@ -13,7 +13,7 @@ import {
 } from "@chemdraft/chem-core";
 import { moleculeInkBounds, reactionArrowInkBounds, reactionSchemeDrawingMetrics, representativeMoleculeBondLength,
   type FigureStyle } from "@chemdraft/layout-engine";
-import type { ReactionProductAligner } from "@chemdraft/rdkit-adapter";
+import type { ReactionAlignmentBudget, ReactionProductAligner } from "@chemdraft/rdkit-adapter/depiction";
 import { createNativeReactionArrow } from "./reactionArrows";
 import { defaultDoubleBondSide, normalizeNativeMoleculeGeometry, pastedStructureDepictionFromMolfile,
   stereoPerceptionMolfile } from "./molecule";
@@ -65,6 +65,70 @@ export interface ReactionSchemeLayoutOptions {
   pagePadding: number;
   /** Host supplies the adapter after loading its engine. Core never loads an engine. */
   alignProduct?: ReactionProductAligner;
+  /** Injectable clock/yield for deterministic budget tests. */
+  alignmentScheduler?: Pick<ReactionAlignmentBudget, "now" | "yieldControl">;
+}
+
+/** One budget for every product and reactant pair. Yield before synchronous WASM work so
+ * interactive hosts can paint/cancel between searches; no engine is loaded by this planner. */
+export async function layoutReactionSchemeAsync(options: ReactionSchemeLayoutOptions): Promise<ReactionSchemeLayout> {
+  const scheduler = options.alignmentScheduler ?? { now: () => performance.now(),
+    yieldControl: () => new Promise<void>(resolve => setTimeout(resolve, 0)) };
+  const budget = { ...scheduler, deadline: scheduler.now() + 1_500 };
+  const warnings: string[] = [];
+  const products: ReactionSchemeComponent[] = [];
+  for (const component of options.products) {
+    let molecule = component.molecule;
+    if (options.alignProduct && options.reactants.length && budget.now() < budget.deadline) {
+      await budget.yieldControl();
+      if (budget.now() < budget.deadline) try {
+        const writerWarnings: string[] = [];
+        const references = options.reactants.map(reference => stereoPerceptionMolfile(reference.molecule, writerWarnings));
+        const product = stereoPerceptionMolfile(molecule, writerWarnings);
+        if (writerWarnings.length) throw new Error(writerWarnings.join(" "));
+        const alignment = await options.alignProduct(references, product, budget);
+        if (alignment) molecule = alignedMolecule(molecule, alignment.molfile);
+      } catch (error) {
+        warnings.push(`Shared-core orientation unavailable for ${molecule.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    products.push({ ...component, molecule });
+  }
+  const result = layoutReactionScheme({ ...options, products });
+  return { ...result, warnings: [...warnings, ...result.warnings] };
+}
+
+/** Persist real label atoms, just like authored abbreviations: nothing invisible remains
+ * selectable behind them. Chemistry consumers expand these through the shared label grammar. */
+function condenseSchemeLabels(molecule: MoleculeObject): MoleculeObject {
+  const eligible = (atom: MoleculeObject["atoms"][number]) => atom.isotope === undefined &&
+    !atom.labelLiteral && !atom.markRadicals && !atom.markCharge && atom.labelVisible !== false;
+  if (molecule.atoms.length === 2 && !molecule.bonds.length && molecule.atoms.every(eligible)) {
+    const sodium = molecule.atoms.find(a => a.element === "Na" && a.formalCharge === 1 && !a.hydrogenCount);
+    const hydroxide = molecule.atoms.find(a => a.element === "O" && a.formalCharge === -1 &&
+      (a.hydrogenCount === undefined || a.hydrogenCount === 1));
+    if (sodium && hydroxide) return { ...molecule, atoms: [{ ...sodium, element: "NaOH", formalCharge: 0, labelVisible: true }] };
+  }
+  let atoms = [...molecule.atoms], bonds = [...molecule.bonds];
+  for (const metal of molecule.atoms.filter(a => a.element === "Mg" && a.formalCharge === 0 && !a.hydrogenCount && eligible(a))) {
+    const incident = bonds.filter(b => b.fromAtomId === metal.id || b.toAtomId === metal.id);
+    if (incident.length !== 2) continue;
+    for (const bond of incident) {
+      if (bond.order !== "single" || bond.stereo !== undefined || bond.display?.bondStyle) continue;
+      const halide = atoms.find(a => a.id === (bond.fromAtomId === metal.id ? bond.toAtomId : bond.fromAtomId));
+      if (!halide || halide.element !== "Br" || halide.formalCharge !== 0 || halide.hydrogenCount || !eligible(halide) ||
+          bonds.filter(b => b.fromAtomId === halide.id || b.toAtomId === halide.id).length !== 1) continue;
+      atoms = atoms.filter(a => a.id !== halide.id).map(a => a.id === metal.id ? { ...a, element: "MgBr", labelVisible: true } : a);
+      bonds = bonds.filter(b => b.id !== bond.id);
+      break;
+    }
+  }
+  // A spelled single-element label already has exact, editable hydrogen semantics.
+  if (atoms.length === 1 && !bonds.length && atoms[0]!.element === "O" && atoms[0]!.formalCharge === 0 &&
+      (atoms[0]!.hydrogenCount === undefined || atoms[0]!.hydrogenCount === 2) && eligible(atoms[0]!)) {
+    atoms = [{ ...atoms[0]!, element: "H2O", labelVisible: true }];
+  }
+  return { ...molecule, atoms, bonds };
 }
 
 /** Read the native roles of every step in page order, including shared intermediates. */
@@ -90,31 +154,18 @@ export function documentReactionSummary(document: ChemDraftDocument) {
  * Positions already-depicted reaction components without loading a chemistry engine. The anchor
  * is the left edge of the left-most component at the scheme's vertical centre.
  */
-export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): ReactionSchemeLayout {
+export function layoutReactionScheme(options: Omit<ReactionSchemeLayoutOptions, "alignProduct" | "alignmentScheduler">): ReactionSchemeLayout {
   const textStyle = { ...(options.style === "document" ? DocumentTextStyle : {}), ...options.textStyle };
   const warnings: string[] = [];
-  const products = options.products.map(component => {
-    if (!options.alignProduct || !options.reactants.length) return component;
-    try {
-      const writerWarnings: string[] = [];
-      const references = options.reactants.map(reference => stereoPerceptionMolfile(reference.molecule, writerWarnings));
-      const product = stereoPerceptionMolfile(component.molecule, writerWarnings);
-      if (writerWarnings.length) throw new Error(writerWarnings.join(" "));
-      const alignment = options.alignProduct(references, product);
-      return alignment ? { ...component, molecule: alignedMolecule(component.molecule, alignment.molfile) } : component;
-    } catch (error) {
-      warnings.push(`Shared-core orientation unavailable for ${component.molecule.id}: ${error instanceof Error ? error.message : String(error)}`);
-      return component;
-    }
-  });
   // Bounds supplied by older callers may include storage padding. Always measure the same bond
   // and atom-label plans that paint the canvas, after orientation matching has finished.
   const measure = (component: ReactionSchemeComponent) => {
-    const b = moleculeInkBounds(component.molecule);
-    return { molecule: component.molecule, bounds: { minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height } };
+    const molecule = condenseSchemeLabels(component.molecule);
+    const b = moleculeInkBounds(molecule);
+    return { molecule, bounds: { minX: b.x, minY: b.y, maxX: b.x + b.width, maxY: b.y + b.height } };
   };
   const reactants = options.reactants.map(measure);
-  const measuredProducts = products.map(measure);
+  const measuredProducts = options.products.map(measure);
   const visible = [...reactants, ...measuredProducts];
   if (visible.length === 0) throw new Error("A reaction scheme needs at least one molecule.");
   const bondLength = representativeMoleculeBondLength(visible[0]!.molecule) ?? options.bondLength;

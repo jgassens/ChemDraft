@@ -18,7 +18,14 @@ export interface ReactionProductAlignment {
   molfile: string;
   matchedAtomCount: number;
 }
-export type ReactionProductAligner = (reactants: readonly string[], product: string) => ReactionProductAlignment | undefined;
+export const REACTION_ALIGNMENT_BUDGET_MS = 1_500;
+export interface ReactionAlignmentBudget {
+  deadline: number;
+  now(): number;
+  yieldControl(): Promise<void>;
+}
+export type ReactionProductAligner = (reactants: readonly string[], product: string,
+  budget?: ReactionAlignmentBudget) => ReactionProductAlignment | undefined | Promise<ReactionProductAlignment | undefined>;
 
 /** Existing MinimalLib FMCS + constrained depiction. Coordinates and directed stereo stay in
  * molfile order and its y-UP frame. No document types or host loading policy enter this adapter. */
@@ -27,7 +34,9 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
   if (!rdkit.MolList || !rdkit.get_mcs_as_json || !rdkit.get_qmol) {
     throw new Error("The RDKit build has no maximum-common-substructure depiction support.");
   }
-  return (reactants, product) => {
+  return async (reactants, product, suppliedBudget) => {
+    const budget = suppliedBudget ?? { deadline: performance.now() + REACTION_ALIGNMENT_BUDGET_MS,
+      now: () => performance.now(), yieldControl: () => new Promise<void>(resolve => setTimeout(resolve, 0)) };
     const target = rdkit.get_mol(product, JSON.stringify({ removeHs: false })) as AlignmentMol | null;
     if (!target) throw new Error("RDKit could not parse a reaction product for orientation matching.");
     let template: AlignmentMol | null = null;
@@ -35,6 +44,10 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
     try {
       if (!target.generate_aligned_coords) throw new Error("The RDKit build has no aligned-coordinate function.");
       for (const reactant of reactants) {
+        await budget.yieldControl();
+        // MinimalLib's FMCS timeout is in whole seconds. Never start a search unless its
+        // entire one-second allowance fits within the remaining scheme budget.
+        if (budget.deadline - budget.now() < 1_000) break;
         const reference = rdkit.get_mol(reactant, JSON.stringify({ removeHs: false })) as AlignmentMol | null;
         if (!reference) continue;
         const list = new rdkit.MolList();
@@ -46,7 +59,7 @@ export async function createReactionProductAligner(): Promise<ReactionProductAli
           const common = JSON.parse(rdkit.get_mcs_as_json(list, JSON.stringify({
             Timeout: 1, RingMatchesRingOnly: true, CompleteRingsOnly: true, BondCompare: "CompareAny"
           }))) as { smarts?: string; canceled?: boolean; numAtoms: number; numBonds: number };
-          if (common.canceled) throw new Error("Reaction core search exceeded its one-second limit.");
+          if (common.canceled) continue; // An earlier completed match is still useful.
           if (!common.smarts || common.numAtoms <= bestCount) continue;
           query = rdkit.get_qmol(common.smarts);
           if (!query) continue;

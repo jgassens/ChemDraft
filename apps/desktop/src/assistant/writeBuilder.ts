@@ -3,8 +3,8 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, buildTableObject, createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
+  assertMoleculeMatchesSmiles, chemicalIdentityMolfile, buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
+  nativeTextObjectSizeForText, documentDrawingDefaults,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
@@ -72,7 +72,7 @@ export async function inspectSmiles(context: AssistantToolContext, smiles: strin
 }
 export async function inspectMolecule(context: AssistantToolContext, molecule: MoleculeObject) {
   const warnings: string[] = [];
-  const molfile = stereoPerceptionMolfile(molecule, warnings);
+  const molfile = chemicalIdentityMolfile(molecule, warnings);
   if (warnings.length) throw new Error(warnings.join(" "));
   const result = await context.chemistry.inspectStructure("molfile", molfile);
   if (!result.valid) throw new Error(result.reason);
@@ -332,14 +332,14 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   const components = molecules.map(molecule => ({ molecule }));
   const defaults = documentDrawingDefaults(document);
   // The host owns engine loading; this tool passes the injected adapter to the shared planner.
-  let alignProduct: Parameters<typeof layoutReactionScheme>[0]["alignProduct"];
+  let alignProduct: Parameters<typeof layoutReactionSchemeAsync>[0]["alignProduct"];
   const layoutWarnings: string[] = [];
   try {
     alignProduct = await context.chemistry.reactionProductAligner?.();
   } catch (error) {
     layoutWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+  const scheme = await layoutReactionSchemeAsync({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
     alignProduct,
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
     above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],

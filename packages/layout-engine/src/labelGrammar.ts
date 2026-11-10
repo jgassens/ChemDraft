@@ -18,25 +18,15 @@ import {
 
 import { nativeElementFromAtomLabel, nativeElementSymbols, type NativeElementSymbol } from "./valence";
 
-/** Conventional free hydride spellings; bonded labels still follow their attachment side. */
-export function nativeFreeHydrideLabel(element: string, hydrogens: string): string {
-  return hydrogens === "H2" && ["O", "S", "Se", "Te"].includes(element)
-    ? `${hydrogens}${element}` : `${element}${hydrogens}`;
-}
-
-/** Display aliases for fully specified inorganic fragments. These never rewrite the graph. */
-export function nativeInorganicDisplayLabel(parts: readonly string[]): string | undefined {
-  if (parts.length === 2 && parts.includes("Na+") && parts.includes("OH-")) return "NaOH";
-  return undefined;
-}
-
-/** A terminal halide may be spelled with Mg, anchored on the Mg that attaches to the rest. */
-export function nativeMagnesiumHalideDisplay(halide: string, side: "left" | "right"):
-  { label: string; anchor: AtomLabelAnchor } | undefined {
-  if (!["F", "Cl", "Br", "I"].includes(halide)) return undefined;
-  return side === "left" ? { label: `Mg${halide}`, anchor: { side: "start", length: 2 } }
-    : { label: `${halide}Mg`, anchor: { side: "end", length: 2 } };
-}
+/** Explicit editable label expanded by the ordinary abbreviation machinery.
+ * A renderer alias must never conceal atoms remaining in the drawn graph. */
+const sodiumHydroxideLabel: AbbreviationDefinition = {
+  label: "NaOH", aliases: [], name: "sodium hydroxide", smiles: "[Na+].[OH-]",
+  formula: "HNaO", attachmentCount: 0,
+  atoms: [{ element: "Na", charge: 1, hydrogens: 0, x: 0, y: 0 },
+    { element: "O", charge: -1, hydrogens: 1, x: 1.5, y: 0 }],
+  bonds: []
+};
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
@@ -210,7 +200,7 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   if (element) {
     return { kind: "element", element };
   }
-  const definition = abbreviationForLabel(trimmed);
+  const definition = trimmed === "NaOH" ? sodiumHydroxideLabel : abbreviationForLabel(trimmed);
   if (definition && !(context.bondSide === "right" && sideDependentSpellings.has(trimmed))) {
     return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition } };
   }
