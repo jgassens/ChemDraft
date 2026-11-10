@@ -47,6 +47,19 @@ export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocume
   "field:compatibility.nativeExtensions.*.originalValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
   "field:compatibility.nativeExtensions.*.fallbackValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
 
+  // #339: the released page and superatom schemas are strict. Neither page print/source
+  // setup nor live expansion membership survives that reader; both carry document meaning.
+  "field:pages.*.compatibility": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.sourceFormat": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.originalId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.warnings": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.warnings.*.code": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.warnings.*.message": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.warnings.*.objectId": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.compatibility.unknown": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=molecule].superatoms.*.atomIds": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+  "field:pages.*.objects.*[type=superatom].metadata.atomIds": { introducedIn: "1.2.0", kind: "feature", ignorable: false },
+
   // #327: a wavy single bond explicitly leaves fromAtomId's stereochemistry unknown.
   // Dropping it would lose chemical meaning even though it lives in the display container.
   'value:pages.*.objects.*[type=molecule].bonds.*.display.bondStyle="wavy"': { introducedIn: "1.2.0", kind: "feature", ignorable: false },

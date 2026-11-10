@@ -18,6 +18,58 @@ function documentWithObject(object: unknown) {
 }
 
 describe("integrated 1.2 native document features", () => {
+  it.each([
+    ["compatibility", {}],
+    ["compatibility.sourceFormat", { sourceFormat: "cdxml" }],
+    ["compatibility.originalId", { originalId: "source-page" }],
+    ["compatibility.warnings", { warnings: [] }],
+    ["compatibility.warnings.*.code", { warnings: [{ code: "source.warning", message: "Source warning" }] }],
+    ["compatibility.warnings.*.message", { warnings: [{ code: "source.warning", message: "Source warning" }] }],
+    ["compatibility.warnings.*.objectId", { warnings: [{ code: "source.warning", message: "Source warning", objectId: "source-object" }] }],
+    ["compatibility.unknown", { unknown: { cdxmlPageAttributes: { WidthPages: "2", HeightPages: "1" } } }]
+  ])("requires support for page %s, which the released strict page schema rejects", (field, compatibility) => {
+    const document = createEmptyDocument({ now: "2026-11-09T00:00:00.000Z" });
+    const parsed = parseDocument({ ...document, pages: [{ ...document.pages[0], compatibility }] });
+    expect(Released111DocumentSchema.parse(document)).toEqual(document);
+    expect(Released111DocumentSchema.safeParse(parsed).success).toBe(false);
+    expect(NativeDocumentFeatureVersions[`field:pages.*.${field}`]).toEqual({
+      introducedIn: "1.2.0", kind: "feature", ignorable: false
+    });
+    const saved = { ...parsed, formatVersion: "1.2.0", minAppVersion: "1.2.0" };
+    expect(JSON.parse(serializeDocument(parsed))).toEqual(saved);
+    expect(readDocument(saved).document).toEqual(saved);
+    expect(() => readDocument({ ...saved, ignorableFields: [`pages.*.${field}`] }))
+      .toThrow(/known field .* cannot be declared ignorable/);
+  });
+
+  it.each(["molecule", "superatom"] as const)(
+    "requires support for %s expansion membership, which the released strict metadata schema rejects", type => {
+      const metadata = { label: "Me", atomIds: ["carbon"] };
+      const object = type === "molecule"
+        ? { ...base, type, structureFormat: "unknown", structure: "",
+          atoms: [{ id: "carbon", element: "C", x: 0, y: 0, formalCharge: 0 }],
+          bonds: [], superatoms: [metadata], rGroups: [] }
+        : { ...base, type, label: "Me", metadata };
+      const document = documentWithObject(object);
+      const saved = { ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0" };
+      expect(JSON.parse(serializeDocument(document))).toEqual(saved);
+      expect(readDocument(saved).document).toEqual(saved);
+      expect(Released111DocumentSchema.safeParse(document).success).toBe(false);
+      const baseline = structuredClone(document);
+      const group = baseline.pages[0]!.objects[0]!;
+      if (group.type === "molecule") delete group.superatoms[0]!.atomIds;
+      else if (group.type === "superatom") delete group.metadata.atomIds;
+      expect(Released111DocumentSchema.parse(baseline)).toEqual(baseline);
+      const field = type === "molecule" ? "superatoms.*.atomIds" : "metadata.atomIds";
+      const pattern = `pages.*.objects.*[type=${type}].${field}`;
+      expect(NativeDocumentFeatureVersions[`field:${pattern}`]).toEqual({
+        introducedIn: "1.2.0", kind: "feature", ignorable: false
+      });
+      expect(() => readDocument({ ...saved, ignorableFields: [pattern] }))
+        .toThrow(/known field .* cannot be declared ignorable/);
+    }
+  );
+
   it("classifies every bracket relation and usage enum as meaning-bearing", () => {
     const bracketFeatures = Object.entries(NativeDocumentFeatureVersions).filter(([token]) =>
       /^(field|value):pages\.\*\.objects\.\*\[type=bracket\]\.(side|pairId|repeatUnit|bracketUsage|repeatCount|crossingBondIds)(\.|=|$)/.test(token));

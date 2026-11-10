@@ -5,14 +5,20 @@ import { atomicNumberForElementSymbol } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { sha256Hex } from "./sha256";
 export interface CdxElement {
+  /** `#text` children hold character data interleaved with element children. */
   name: string;
   attrs: Record<string, string>;
   kids: CdxElement[];
+  /** Leading character data only; later text segments belong in `kids`, in source order. */
   text: string;
 }
 export interface CdxWarning { code: string; message: string; sourceObjectId?: string }
 // Bit 14 identifies the user-defined envelope property interpreted by index.ts.
 export const CDX_NATIVE_ENVELOPE_ATTRIBUTE = "attrib4344";
+// User-defined root property 0x4347: UTF-8 "xyz" identifies the corrected Point3D writer.
+// Kept in the visible layer (and both integrity hashes), independently of the native envelope.
+export const CDX_POINT3D_ORDER_ATTRIBUTE = "attrib4347";
+const POINT3D_XYZ = "|x|78797A";
 const fmt = (n: number) => { const s = n.toFixed(2); return s === "-0.00" ? "0" : s.endsWith(".00") ? s.slice(0, -3) : s; };
 
 export const MAGIC = "VjCD0100";
@@ -157,7 +163,7 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
       } else {
         delete attrs.Element;
         const hasExpansion = kids.some((kid) => kid.name === "fragment");
-        attrs.NodeType = hasExpansion ? "Fragment" : "GenericNickname";
+        attrs.NodeType = hasExpansion ? attrs.NodeType ?? "Nickname" : "GenericNickname";
         if (!hasExpansion) attrs.GenericNickname = label;
         if (!kids.some((kid) => kid.name === "t")) {
           if (++count > MAX_OBJECTS) throw new Error(`CDX export failed: object count exceeds ${MAX_OBJECTS}`);
@@ -184,8 +190,17 @@ export function cdxElementFromOrderedTree(nodes: Record<string, unknown>[]): Cdx
     const name = Object.keys(node).find((key) => !key.startsWith("#") && key !== ":@" && !key.startsWith("?"));
     if (!name || !Array.isArray(node[name])) return [];
     const children = node[name] as Record<string, unknown>[];
-    return [{ name, attrs: Object.fromEntries(Object.entries((node[":@"] ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
-      kids: elements(children), text: children.map((child) => String(child["#text"] ?? "")).join("") }];
+    const result: CdxElement = { name,
+      attrs: Object.fromEntries(Object.entries((node[":@"] ?? {}) as Record<string, unknown>).map(([k, v]) => [k, String(v)])),
+      kids: [], text: "" };
+    for (const child of children) {
+      if (child["#text"] !== undefined) {
+        const text = String(child["#text"]);
+        if (!result.kids.length) result.text += text;
+        else result.kids.push({ name: "#text", attrs: {}, kids: [], text });
+      } else result.kids.push(...elements([child]));
+    }
+    return [result];
   });
   const root = elements(nodes)[0];
   if (!root || root.name.toLowerCase() !== "cdxml") throw new Error("CDX export failed: expected a CDXML root element");
@@ -195,7 +210,8 @@ export function cdxElementFromOrderedTree(nodes: Record<string, unknown>[]): Cdx
 
 export function cdxElementToCdxml(root: CdxElement): string {
   const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\r/g, "&#13;").replace(/\n/g, "&#10;").replace(/\t/g, "&#9;");
-  const write = (x: CdxElement): string => `<${x.name}${Object.entries(x.attrs).map(([k, v]) => ` ${k}="${escape(v)}"`).join("")}>${escape(x.text)}${x.kids.map(write).join("")}</${x.name}>`;
+  const write = (x: CdxElement): string => x.name === "#text" ? escape(x.text)
+    : `<${x.name}${Object.entries(x.attrs).map(([k, v]) => ` ${k}="${escape(v)}"`).join("")}>${escape(x.text)}${x.kids.map(write).join("")}</${x.name}>`;
   return write(root);
 }
 // Name on a tag and on a chemical property is plain bytes, not a styled string.
@@ -273,6 +289,27 @@ function unhex(s: string): Uint8Array | undefined {
 }
 
 export const isCdx = (b: Uint8Array) => b.length >= 8 && MAGIC.split("").every((c, i) => b[i] === c.charCodeAt(0));
+
+function isLegacyChemDraftCdx(root: CdxElement, warn: (warning: CdxWarning) => void): boolean {
+  const marker = root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE];
+  if (marker === POINT3D_XYZ) return false;
+  if (marker !== undefined) warn({
+    code: "cdx.point3d_order_marker_unrecognized",
+    message: `CDX import: unrecognized Point3D order marker 0x4347 value ${JSON.stringify(marker)}; using producer provenance to select coordinate order.`
+  });
+  if (root.attrs.CreationProgram === "ChemDraft") return true;
+  // Custom CreationProgram strings were allowed on embedded saves too. Recognize only our
+  // namespaced envelope, never infer coordinate order from geometry or another producer's name.
+  const encoded = root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+  if (!encoded?.startsWith("|x|")) return false;
+  const bytes = unhex(encoded.slice(3));
+  if (!bytes) return false;
+  try {
+    const envelope: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return typeof envelope === "object" && envelope !== null && "format" in envelope
+      && envelope.format === "org.chemdraft/cdx-envelope.v1";
+  } catch { return false; }
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Reading.
@@ -365,6 +402,12 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "b8": case "b16": {
         const v = int(d, false);
         if (v === undefined) return;
+        // LineType is an open bit field in source files. Keep every bit when its value has no
+        // complete named mapping, rather than silently turning an unknown style into Solid.
+        if (name === "LineType" && (v & ~[...p.names!.keys()].reduce((mask, bit) => mask | bit, 0))) {
+          a[name] = String(v);
+          return;
+        }
         const set = [...p.names!].filter(([bit]) => bit && (v & bit) === bit).map(([, nm]) => nm);
         a[name] = set.length ? set.join(" ") : p.names!.get(0) ?? "0";
         return;
@@ -378,8 +421,13 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       case "charge": { const v = n === 4 ? d.getInt32(0, little) / 2 ** 24 : int(d, true); if (v !== undefined) a[name] = String(n === 4 ? +v.toFixed(4) : v); return; }
       case "coord": if (n === 4) a[name] = num(coord(d, 0)); return;
       case "p2": if (n === 8) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))}`; return;
-      case "p3": if (n === 12) a[name] = `${num(coord(d, 8))} ${num(coord(d, 4))} ${num(coord(d, 0))}`; return;
-      case "rect": if (n === 16) a[name] = `${num(coord(d, 4))} ${num(coord(d, 0))} ${num(coord(d, 12))} ${num(coord(d, 8))}`; return;
+      // Point3D is x/y/z, unlike Point2D's y/x. Matches the Octet Draw codec credited above.
+      case "p3": if (n === 12) a[name] = `${num(coord(d, 0))} ${num(coord(d, 4))} ${num(coord(d, 8))}`; return;
+      case "rect": if (n === 16) {
+        // PrintMargins spells top/left/bottom/right in XML as well as binary.
+        const order = name === "PrintMargins" ? [0, 4, 8, 12] : [4, 0, 12, 8];
+        a[name] = order.map(offset => num(coord(d, offset))).join(" ");
+      } return;
       case "angle": { const v = n === 4 ? d.getInt32(0, little) / 65536 : n === 2 ? d.getInt16(0, little) / 10 : undefined; if (v !== undefined) a[name] = exact ? String(v) : String(+v.toFixed(2)); return; }
       case "deg10": { const v = int(d, true); if (v !== undefined) a[name] = String(v / 10); return; }
       case "spacing": { const v = int(d, false); if (v !== undefined) a[name] = String(v / 10); return; }
@@ -505,6 +553,17 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
   if (tag !== 0x8000 && (tag || id)) fail("invalid document object tag 0x" + tag.toString(16).padStart(4, "0"));
   root = { name: "CDXML", attrs: Object.create(null), kids: [], text: "" };
   const result = object(0x8000, id, 0);
+  // Producer/envelope properties can follow child objects, so select the legacy convention
+  // only after reading the whole document. This also preserves old envelopes' visible hashes.
+  if (isLegacyChemDraftCdx(result, warn)) {
+    const restore = (element: CdxElement) => {
+      for (const [name, value] of Object.entries(element.attrs)) {
+        if (byName.get(name)?.kind === "p3") element.attrs[name] = value.split(" ").reverse().join(" ");
+      }
+      element.kids.forEach(restore);
+    };
+    restore(result);
+  }
   if (integrity && envelopeRange) {
     // Hash all raw bytes except the root envelope, including both text copies and skipped properties.
     const [start, end] = envelopeRange, visible = new Uint8Array(bytes.length - (end - start));
@@ -551,6 +610,10 @@ const fixed = (v: number) => Math.round(v * 65536);
 export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Array {
   const emitWarning = warningSink(warnings);
   root = prepareCdxTree(root, emitWarning);
+  // A named producer or native envelope could otherwise identify this newly written file as
+  // legacy on reopen. prepareCdxTree made a copy, so adding the marker never mutates the caller.
+  if (root.attrs.CreationProgram !== undefined || root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] !== undefined
+    || root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] !== undefined) root.attrs[CDX_POINT3D_ORDER_ATTRIBUTE] = POINT3D_XYZ;
   const warn = (x: CdxElement, detail: string) => emitWarning({ code: "cdx.unencodable_data", message: "CDX export: " + detail + " in " + x.name + " object " + (x.attrs.id ?? "0") + " was omitted", sourceObjectId: x.attrs.id });
   const encodingLoss = (x: CdxElement) => (detail: string) => emitWarning({ code: "cdx.text_encoding_loss", message: `CDX export: ${detail} in ${x.name} object ${x.attrs.id ?? "0"}`, sourceObjectId: x.attrs.id });
   const fonts = new Map<number, number>();
@@ -614,8 +677,9 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
       case "charge": return r === undefined ? undefined : Number.isInteger(r) && Math.abs(r) < 128 ? le(1, r) : le(4, Math.round(r * 2 ** 24));
       case "coord": return r === undefined ? undefined : le(4, fixed(r));
       case "p2": return list.length >= 2 && list[0] !== undefined && list[1] !== undefined ? le(4, fixed(list[1]), fixed(list[0])) : undefined;
-      case "p3": return list.length >= 2 && list.slice(0, 3).every((x) => x !== undefined) ? le(4, fixed(list[2] ?? 0), fixed(list[1]!), fixed(list[0]!)) : undefined;
-      case "rect": return list.length === 4 && list.every((x) => x !== undefined) ? le(4, fixed(list[1]!), fixed(list[0]!), fixed(list[3]!), fixed(list[2]!)) : undefined;
+      case "p3": return list.length >= 2 && list.slice(0, 3).every((x) => x !== undefined) ? le(4, fixed(list[0]!), fixed(list[1]!), fixed(list[2] ?? 0)) : undefined;
+      case "rect": return list.length === 4 && list.every((x) => x !== undefined)
+        ? le(4, ...(p.name === "PrintMargins" ? list : [list[1], list[0], list[3], list[2]]).map(x => fixed(x!))) : undefined;
       case "angle": return r === undefined ? undefined : le(4, fixed(r));
       case "deg10": return r === undefined ? undefined : le(2, Math.round(r * 10));
       case "spacing": return r === undefined ? undefined : le(2, Math.round(r * 10));
@@ -709,12 +773,15 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
     // Children CDXML holds that CDX holds as properties.
     for (const k of x.kids) {
       if (["colortable", "fonttable"].includes(k.name)) checkAttrs(k, []);
-      if (k.name === "colortable") for (const color of k.kids) checkAttrs(color, ["r", "g", "b"]);
-      if (k.name === "colortable") put(0x0300, new Uint8Array([...le(2, k.kids.length), ...k.kids.flatMap((c) => [...le(2, ...["r", "g", "b"].map((ch) => Math.round(Math.min(1, Math.max(0, real(c.attrs[ch]) ?? 0)) * 65535)))])]));
+      if (k.name === "colortable") {
+        const colors = k.kids.filter(child => child.name === "color");
+        for (const color of colors) checkAttrs(color, ["r", "g", "b"]);
+        put(0x0300, new Uint8Array([...le(2, colors.length), ...colors.flatMap((c) => [...le(2, ...["r", "g", "b"].map((ch) => Math.round(Math.min(1, Math.max(0, real(c.attrs[ch]) ?? 0)) * 65535)))])]));
+      }
       if (k.name === "fonttable") {
         const entries: number[] = [];
         let count = 0;
-        for (const f of k.kids) {
+        for (const f of k.kids.filter(child => child.name === "font")) {
           checkAttrs(f, ["id", "charset", "name"]);
           const id = Number.parseInt(f.attrs.id ?? "", 10), cs = charsetCode.get(f.attrs.charset ?? "") ?? 0;
           if (!Number.isFinite(id)) { warn(f, "unencodable font ID"); continue; }
@@ -741,11 +808,18 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
         put(0x0a86, b);
       }
     }
-    const runs = x.kids.filter((k) => k.name === "s");
-    // ChemDraft's CDXML writer also emits plain text directly inside <t>.
-    if (x.name === "t" && x.text.length) runs.unshift({ name: "s", attrs: {}, kids: [], text: x.text });
+    // CDX stores one string plus style offsets. Turn each raw segment into a default-style run
+    // at its original position, including text following/between styled <s> elements.
+    const plainRun = (text: string): CdxElement => ({ name: "s", attrs: {}, kids: [], text });
+    const runs = x.name === "t" && x.text.length ? [plainRun(x.text)] : [];
+    for (const child of x.kids) {
+      if (child.name === "s") runs.push(child);
+      else if (child.name === "#text" && x.name === "t") runs.push(plainRun(child.text));
+      else if (child.name === "#text" && child.text.trim()) warn(x, "raw text outside a text object");
+    }
+    if (x.name !== "t" && x.name !== "spectrum" && x.text.trim()) warn(x, "raw text outside a text object");
     if (runs.length) textProps(runs, x);
-    for (const k of x.kids) if (!["colortable", "fonttable", "represent", "s"].includes(k.name)) object(k, depth + 1);
+    for (const k of x.kids) if (!["colortable", "fonttable", "represent", "s", "#text"].includes(k.name)) object(k, depth + 1);
     out.u16(0);
   };
   object(root, 0);
