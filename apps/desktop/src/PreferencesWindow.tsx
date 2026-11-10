@@ -158,13 +158,15 @@ export function PreferencesWindow() {
         <fieldset className="preferences-compound-layout-features" disabled={!compoundLayouts.enabled}>
           <legend>Optional conditions editor (off by default)</legend>
           {compoundLayoutFeatures.map(({ key, title, description }) => <label className="preferences-radio" key={key}>
-            <input type="checkbox" checked={compoundLayouts[key] === true} onChange={event => {
+            <input type="checkbox" disabled={!compoundLayouts.enabled} aria-describedby={!compoundLayouts.enabled ? `pref-${key}-prerequisite` : undefined} checked={compoundLayouts[key] === true} onChange={event => {
               const next = { ...compoundLayouts, [key]: event.currentTarget.checked };
               setCompoundLayouts(next);
               saveCompoundLayoutSettings(next);
               void broadcastCompoundLayoutSettings(next);
             }} />
-            <span className="preferences-radio-body"><strong>{title}</strong><small>{description}</small></span>
+            <span className="preferences-radio-body"><strong>{title}</strong><small>{description}</small>
+              {!compoundLayouts.enabled && <small id={`pref-${key}-prerequisite`}>Turn on Compound layout tools first.</small>}
+            </span>
           </label>)}
         </fieldset>
       </section>
