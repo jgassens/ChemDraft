@@ -86,6 +86,8 @@ it.each([
   expect(snapshot.dialogKind).toBe("atomProblem");
   if (snapshot.dialogKind !== "atomProblem") throw new Error("Expected problem window");
   await deliver("action", { action, targetVersion: snapshot.data.targetVersion });
+  expect(container.querySelector('[role="status"]')!.textContent).toContain(action === "charge"
+    ? 'Formal charge set to +1 for "N"' : `Explicit hydrogens set to 1 for "${source.atoms[0]!.element}"`);
   expect(molecule().atoms[0]!.formalCharge).toBe(charge);
   if (hydrogens !== undefined) expect(nativeAtomLabelReading(molecule().atoms[0]!.element)).toMatchObject({ kind: "spelled", hydrogens });
   expect(Molecule.fromSmiles(nativeSingleBondGraphSmiles(molecule().atoms, molecule().bonds)).toIsomericSmiles()).toBe(Molecule.fromSmiles(smiles).toIsomericSmiles());
@@ -106,6 +108,7 @@ it("Ignore hides only the badge; context-menu Restore works for a suppressed inv
   await command(atomProblemCommandId(target)); await deliver("ready", {});
   if (snapshot.dialogKind !== "atomProblem") throw new Error("Expected problem window");
   await deliver("action", { action: "ignore", targetVersion: snapshot.data.targetVersion });
+  expect(container.querySelector('[role="status"]')!.textContent).toContain('Warning ignored for "C"');
   expect(badge()).toBeNull();
   expect(atomProblem(molecule(), "a0")!.state).toMatchObject({ valid: false, warningSuppressed: true });
   expect(native.close).toHaveBeenCalledTimes(1);
@@ -121,6 +124,7 @@ it("Ignore hides only the badge; context-menu Restore works for a suppressed inv
   await deliver("ready", {});
   const version = snapshot.data.targetVersion;
   await deliver("action", { action: "restore", targetVersion: version });
+  expect(container.querySelector('[role="status"]')!.textContent).toContain('Warning restored for "C"');
   expect(badge()).not.toBeNull();
   expect(atomProblem(molecule(), "a0")!.state.valid).toBe(false);
   expect(native.close).toHaveBeenCalledTimes(1);
@@ -162,11 +166,21 @@ it("applies to the originating inactive tab with its atom selection and one Undo
   await deliver("action", { action: "charge", targetVersion: version });
   expect(current().document.pages[0]!.objects).toHaveLength(0);
   await command("document.activateTab.initial");
+  expect(container.querySelector('[role="status"]')!.textContent).toContain('Formal charge set to +1 for "N"');
   expect(molecule().atoms[0]!.formalCharge).toBe(1);
   expect(current().selectedNativeMoleculePart).toMatchObject({ kind: "atom", ...target });
   await command("edit.undo");
   expect(molecule().atoms[0]!.formalCharge).toBe(0);
   expect(container.querySelector("main")!.dataset.canUndo).toBe("false");
+});
+it.each(["dialog", "context command"])("reports the drawn label for an ignored warning through the %s", async route => {
+  await mount(problemDocument(problemMolecule("Phe")));
+  if (route === "dialog") {
+    await command(atomProblemCommandId(target)); await deliver("ready", {});
+    if (snapshot.dialogKind !== "atomProblem") throw new Error("Expected problem window");
+    await deliver("action", { action: "ignore", targetVersion: snapshot.data.targetVersion });
+  } else await command(atomProblemCommandId(target, "ignore"));
+  expect(container.querySelector('[role="status"]')!.textContent).toContain('Warning ignored for "Phe"');
 });
 it("the standalone SVG marker consumes key repeat and Space scrolling", async () => {
   const invoke = vi.fn();

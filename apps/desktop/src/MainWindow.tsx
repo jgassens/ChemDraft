@@ -1718,7 +1718,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.23.32-codex";
+const CURRENT_BUILD_STAMP = "11.10.09.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -9736,7 +9736,7 @@ export function MainWindow({
     if (active) {
       commitDocumentChange(result.document, result.label);
       setSelectedNativeMoleculePart({ kind: "atom", ...target.target });
-      setStatus(result.label);
+      setStatus(result.status);
     } else if (snapshot) {
       const present = normalizeCommittedDocument(result.document);
       documentUndoLabelsRef.current.set(present, result.label);
@@ -9744,7 +9744,7 @@ export function MainWindow({
       documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
         history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
         parts: [{ kind: "atom", ...target.target }],
-        file: { ...snapshot.file, dirty: true }, status: result.label });
+        file: { ...snapshot.file, dirty: true }, status: result.status });
       nonPristineTabsRef.current.add(tabId);
       setDocumentTabs([...documentTabsRef.current]);
     }
@@ -10939,7 +10939,7 @@ export function MainWindow({
         if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
         commitDocumentChange(result.document, result.label);
         setSelectedNativeMoleculePart({ kind: "atom", ...target });
-        setStatus(result.label);
+        setStatus(result.status);
       }
     }));
 

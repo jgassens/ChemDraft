@@ -9289,15 +9289,21 @@ export function applyNativeAtomProblemFix(
   objectId: string,
   atomId: string,
   action: import("@chemdraft/document-workflow-core").AtomProblemAction
-): { document: ChemDraftDocument; label: string } | undefined {
+): { document: ChemDraftDocument; label: string; status: string } | undefined {
   const molecule = document.pages.flatMap(page => page.objects).find(object => object.id === objectId);
   if (molecule?.type !== "molecule" || !isEditableNativeMoleculeGraph(molecule)) return undefined;
   const fix = atomProblem(molecule, atomId)?.fixes.find(fix => fix.action === action);
   if (!fix) return undefined;
+  const atom = molecule.atoms.find(atom => atom.id === atomId)!;
+  const name = JSON.stringify(atom.element || "atom");
+  const status = action === "ignore" ? `Warning ignored for ${name}`
+    : action === "restore" ? `Warning restored for ${name}`
+    : action === "charge" ? `Formal charge set to ${fix.atom.formalCharge > 0 ? "+" : ""}${fix.atom.formalCharge} for ${name}`
+    : `Explicit hydrogens set to ${fix.atom.hydrogenCount} for ${name}`;
   const atoms = molecule.atoms.map(atom => atom.id === atomId ? fix.atom : atom);
   const updated = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
   return { document: selectDocumentObject(applyPatch(document, { op: "updateObject", objectId, changes: updated }, { now: phase4Timestamp }), objectId),
-    label: fix.label };
+    label: fix.label, status };
 }
 
 /** Suppression hides only the badge; raw validation remains available. */
