@@ -14,7 +14,7 @@ import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
-import { structureTemplates } from "@chemdraft/template-library";
+import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
@@ -241,6 +241,7 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  nativeAtomLabelReading,
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
@@ -3308,6 +3309,8 @@ export function MainWindow({
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
   // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
+  // Leaving keeps the instant assignment on cancellation. A committed continuation still
+  // coalesces with that assignment's undo entry.
   // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
@@ -13777,8 +13780,13 @@ export function MainWindow({
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
             hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
-            hotkeyUndoState: assignment.hotkeyUndoState,
-            hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
+            // The original atom still informs the typed-label chemistry decision (for example,
+            // attaching OMe to a ring carbon). Keep its history entry for commit coalescing,
+            // but after pointer drift Escape cancels only the later text draft.
+            ...(!assignment.leftAtom ? {
+              hotkeyUndoState: assignment.hotkeyUndoState,
+              hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
+            } : {})
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -23889,7 +23897,8 @@ export function hoveredNativeTargetShortcutCommand(
 
 /**
  * A label typed by hovering an atom and pressing an element key, open for continuation. `leftAtom`
- * records that the pointer has since left the atom and its own bonds.
+ * records that the pointer has since left the atom and its own bonds. Its pre-hotkey snapshot may
+ * only be reused for cancellation while the pointer has not left; commits can still coalesce.
  */
 type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
@@ -23916,14 +23925,30 @@ export function hoverTargetKeepsLabelContinuation(
     : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
 }
 
+/** A drifted label may continue only as a recognized label or the start of an abbreviation. */
+function hoverLabelTextContinues(label: string, key: string): boolean {
+  const draft = label + key;
+  return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
+    [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
+      spelling.startsWith(draft) ||
+      // A partial substituent also counts when the shared grammar recognizes its completion:
+      // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
+      (spelling.startsWith(key) && nativeAtomLabelReading(label + spelling, { bonded: true }).kind === "group")
+    );
+}
+
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
  * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
- * An element key in either case continues while the pointer has stayed on the labelled atom and
- * its own bonds ("CF3"). After leaving, element keys in either case and all digits act on a different
+ * An element key in either case continues while the pointer has stayed on the labelled atom.
+ * On its own bonds or empty canvas, only recognized labels or abbreviation prefixes continue
+ * ("CF3", not "Oo" or "Sv").
+ * After leaving, element keys in either case and all digits act on a different
  * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
  * continues; other element keys over a target start a new label, even on the same atom again.
- * Other letters ("M" in OMe, "e") continue after a drift, as do alphanumeric keys over empty canvas.
+ * Other letters ("M" in OMe, "e") continue after a drift. An element key over empty canvas cannot
+ * reopen a committed relabel; there is no atom there to label. Repeating the starting element
+ * (C in CF3) can still start a word, since that key did not change the element.
  * Nothing continues once the labelled atom no longer carries the label (undone, or changed some
  * other way).
  */
@@ -23944,6 +23969,12 @@ export function hoverLabelContinuesForKey(
   if (atom?.element !== assignment.label) {
     return false;
   }
+  if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
+    return hoverLabelTextContinues(assignment.label, key);
+  }
+  if (target === undefined && !hoverLabelTextContinues(assignment.label, key)) {
+    return false;
+  }
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
   }
@@ -23954,7 +23985,8 @@ export function hoverLabelContinuesForKey(
   if (/^[a-z]$/.test(key) && elementSymbols.some(symbol => symbol === assignment.label + key)) {
     return true;
   }
-  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined && target !== undefined;
+  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined &&
+    (target !== undefined || assignment.beforeAtom.element !== assignment.label);
   return !startsNewLabel;
 }
 
