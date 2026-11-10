@@ -1,5 +1,6 @@
 import { SketchStylePreset, createEmptyDocument, stylePresetToObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { describe, expect, it } from "vitest";
+import * as artEngine from "@chemdraft/art-engine";
+import { describe, expect, it, vi } from "vitest";
 import { planPageSvgRender } from "./index";
 import { elementFragments } from "./testing";
 
@@ -20,6 +21,49 @@ const render = (object: MoleculeObject) => planPageSvgRender({ ...createEmptyDoc
 const sketch = (object: MoleculeObject) => render(object).filter(fragment => fragment.attrs.class === "native-molecule-sketch");
 
 describe("Sketch preset bond geometry at roughness 1.25", () => {
+  it.each([
+    { name: "explicit bond", bondColor: "#123456", effectColor: "#654321", override: "#ab1234", expected: "#ab1234" },
+    { name: "Sketch effect", bondColor: "#123456", effectColor: "#654321", expected: "#654321" },
+    { name: "molecule bond", bondColor: "#123456", expected: "#123456" },
+    { name: "default bond", expected: SketchStylePreset.drawing.bondColor }
+  ])("uses the $name colour for rough ink without changing atom labels", ({ bondColor, effectColor, override, expected }) => {
+    for (const bondStyle of [undefined, "wedge", "hashed"] as const) {
+      const object = molecule("single", bondStyle);
+      object.style = { ...object.style, ...(bondColor ? { bondColor } : {}),
+        bondColors: override ? { ab: override } : {}, atomLabelColors: { b: "#267a38" },
+        visualEffects: [{ kind: "sketch", roughness: 1.25, seed: 7, ...(effectColor ? { color: effectColor } : {}) }] };
+      object.atoms[1]!.element = "N";
+      const ink = sketch(object);
+      expect(ink.length).toBeGreaterThan(0);
+      expect(ink.every(mark => (mark.attrs.stroke === "none" ? mark.attrs.fill : mark.attrs.stroke) === expected)).toBe(true);
+      expect(render(object).find(fragment => fragment.key === "label-sketch-b")?.attrs.fill).toBe("#267a38");
+    }
+  });
+
+  it.each([undefined, "#654321"])("renders mismatched rough stroke counts with one resolved colour (effect %s)", effectColor => {
+    const object = molecule("single");
+    object.style = { ...object.style, bondColor: "#123456", bondColors: { ab: "#ab1234" },
+      visualEffects: [{ kind: "sketch", ...(effectColor ? { color: effectColor } : {}) }] };
+    object.atoms.push({ id: "c", element: "C", x: 100, y: 60, formalCharge: 0 });
+    object.bonds.push({ id: "bc", fromAtomId: "b", toAtomId: "c", order: "single" });
+    const original = artEngine.visualEffectPlansForStyle;
+    const spy = vi.spyOn(artEngine, "visualEffectPlansForStyle").mockImplementation(input => {
+      const effects = original(input);
+      for (const effect of effects) {
+        if (effect.kind === "sketch") effect.paths[0]!.d = "M 1 2 L 3 4";
+      }
+      return effects;
+    });
+    try {
+      const ink = sketch(object);
+      expect(ink).toHaveLength(1);
+      expect(ink[0]!.attrs.d).toBe("M 1 2 L 3 4");
+      expect(ink[0]!.attrs.stroke).toBe(effectColor ?? "#123456");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it.each(["single", "double", "triple"] as const)("keeps the %s bond's separate parallel strokes", order => {
     const object = molecule(order);
     const count = { single: 1, double: 2, triple: 3 }[order];

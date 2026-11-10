@@ -47,10 +47,10 @@ for (let i = 0; i < count; i++) {
     if (!offset || glyph) glyph = (glyph + delta) & 0xffff;
     if (!glyph) continue;
     advances[code] = hmtx.readUInt16BE(Math.min(glyph, metricCount - 1) * 4) / em;
-    const start = glyphOffset(glyph);
+    const glyphStart = glyphOffset(glyph);
     // glyf boxes enclose simple and composite outlines, including negative side bearings.
-    inkBounds[code] = start === glyphOffset(glyph + 1) ? [0, 0, 0, 0]
-      : [2, 4, 6, 8].map(offset => glyf.readInt16BE(start + offset) / em);
+    inkBounds[code] = glyphStart === glyphOffset(glyph + 1) ? [0, 0, 0, 0]
+      : [2, 4, 6, 8].map(offset => glyf.readInt16BE(glyphStart + offset) / em);
     if (ranges.length && ranges.at(-1) + 1 === code) ranges[ranges.length - 1] = code;
     else ranges.push(code, code);
   }

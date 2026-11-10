@@ -1994,7 +1994,7 @@ function planNativeMoleculeGraphSvg(
     sketchLineOverrides: sketchGeometry?.lineOverrides,
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
-  // Rough ink replaces/overlays the clean strokes, so it must use their resolved colours.
+  // Rough ink honours explicit bond colours before the Sketch effect's colour.
   // Repaint after generation to preserve roughjs's seeded geometry across colour edits.
   for (const effect of effects) {
     if (effect.kind === "sketch" && sketchGeometry) {
@@ -2987,6 +2987,9 @@ function moleculeEffectSketchBasePathD(
   resolution: NativeBondOrderResolution
 ): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides;
   paintPaths: (paths: NativeArtSketchPathPlan[]) => NativeArtSketchPathPlan[] } | undefined {
+  const effectColor = visualEffectsForStyle(object.style).find(effect => effect.kind === "sketch")?.color;
+  const sketchColor = typeof effectColor === "string" && effectColor.trim() ? effectColor.trim() : undefined;
+  const fallbackColor = sketchColor ?? nativeDrawingStyleFromObjectStyle(object.style).bondColor;
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
       moleculeBondSketchPathParts(
@@ -2995,7 +2998,10 @@ function moleculeEffectSketchBasePathD(
         drawingStyle,
         gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
         resolution
-      ).map(part => ({ ...part, color: nativeMoleculeBondColor(object, bond, drawingStyle) }))
+      ).map(part => ({ ...part, color: depthCuedBondColor(
+        styleColorMapValue(object.style.bondColors, bond.id) ?? sketchColor ?? drawingStyle.bondColor,
+        bond.display?.depthWeight
+      ) }))
     )
   );
   const basePathD = bondPathParts.map((part) => part.d).join(" ");
@@ -3012,7 +3018,7 @@ function moleculeEffectSketchBasePathD(
       if (colors.every(color => color === colors[0])) return [{ ...path!, stroke: colors[0]! }, ...ticks];
       const strokes = path!.d.match(/M[^M]*/g) ?? [];
       if (strokes.length !== colors.length * 2) {
-        throw new Error("Molecule Sketch colours require roughjs paired strokes for each source edge.");
+        return [{ ...path!, stroke: fallbackColor }, ...ticks];
       }
       return [...colors.map((color, index) => ({ ...path!,
         d: strokes.slice(index * 2, index * 2 + 2).join("").trim(), stroke: color })), ...ticks];
