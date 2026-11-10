@@ -130,7 +130,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     const states = [snapshot()];
     for (const [point, message, expectedLabels] of [
       [carbonylOxygen, "Charge moved from N to O (O now OH, N now NH)", ["NH", "OH", "OH"]],
-      [hydroxylOxygen, "Charge moved from O to O (O now OH2, O now O)", ["NH", "O", "OH2"]],
+      [hydroxylOxygen, "Charge moved from O (C=O) to O (OH) (OH now OH2, C=O now O)", ["NH", "O", "OH2"]],
       [nitrogen, "Charge moved from O to N (N now NH2, O now OH)", ["NH2", "O", "OH"]]
     ] as const) {
       const drag = await start(), before = snapshot(), calls = reporter.mock.calls.length;

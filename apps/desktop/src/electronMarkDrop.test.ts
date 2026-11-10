@@ -68,7 +68,7 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
 
     for (const [point, message, charges, hydrogens, labels, smiles] of [
       [o, "Charge moved from N to O (O now OH, N now NH)", [0, 1, 0], [1, 1, 1], ["NH", "OH", "OH"], "CC(C)(C)OC(=O)NCC(=[OH+])O"],
-      [oh, "Charge moved from O to O (O now OH2, O now O)", [0, 0, 1], [1, 0, 2], ["NH", "O", "OH2"], "CC(C)(C)OC(=O)NCC(=O)[OH2+]"],
+      [oh, "Charge moved from O (C=O) to O (OH) (OH now OH2, C=O now O)", [0, 0, 1], [1, 0, 2], ["NH", "O", "OH2"], "CC(C)(C)OC(=O)NCC(=O)[OH2+]"],
       [n, "Charge moved from O to N (N now NH2, O now OH)", [1, 0, 0], [2, 0, 1], ["NH2", "O", "OH"], "CC(C)(C)OC(=O)[NH2+]CC(=O)O"]
     ] as const) {
       const before = serializeDocument(document);
@@ -85,6 +85,18 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
       expect(workflow.normalizeCommittedDocument(document)).toBe(document);
     }
     expect(canonical(document)).toBe(startCanonical);
+  });
+
+  it("distinguishes carbonyl and hydroxyl oxygens in both charge-transfer directions", () => {
+    const { document, carbonylOxygen, hydroxylOxygen } = electronMarkDropFixture();
+    const onCarbonyl = drop(document, carbonylOxygen);
+    const onHydroxyl = drop(onCarbonyl.document, hydroxylOxygen);
+    expect(onHydroxyl.refused).toBeUndefined();
+    expect(onHydroxyl.status).toBe("Charge moved from O (C=O) to O (OH) (OH now OH2, C=O now O)");
+    const backOnCarbonyl = drop(onHydroxyl.document, carbonylOxygen);
+    expect(backOnCarbonyl.refused).toBeUndefined();
+    expect(backOnCarbonyl.status).toBe("Charge moved from O (OH2) to O (C=O) (C=O now OH, OH2 now OH)");
+    expect(dropMolecule(backOnCarbonyl.document)).toEqual(dropMolecule(onCarbonyl.document));
   });
 
   it.each([false, true])("places a dropped charge beside the reconciled label, including reversed H labels (%s)", mirrored => {
