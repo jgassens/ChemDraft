@@ -12,9 +12,9 @@ const groupSafe = (group: string) => group === "ungrouped" || /^group-[0-9a-f]{1
 const eraSafe = (era: string) => /^(?:19|20)\d{2}(?:[-–](?:19|20)\d{2})?$/.test(era) ? era : "unknown";
 export function verdict(result: Result): string {
   if (result.status !== "ok") return result.status;
-  if (!result.roundTrips.some(r => r.verdict !== "SKIPPED") || result.roundTrips.some(r => r.verdict === "ERROR")) return "error";
   const comparisons = [...result.roundTrips, initialComparison(result)].filter(r => r !== undefined);
   if (comparisons.some(r => r.verdict === "FAIL")) return "FAIL";
+  if (!result.roundTrips.some(r => r.verdict !== "SKIPPED") || comparisons.some(r => r.verdict === "ERROR")) return "error";
   if (comparisons.some(r => r.verdict === "WARNED")) return "WARNED";
   return comparisons.some(r => r.verdict === "DRAWN-DIFFERENTLY") ? "DRAWN-DIFFERENTLY" : "PASS";
 }

@@ -483,7 +483,7 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
           bondLength: lengths.length ? lengths[Math.floor(lengths.length / 2)] : 30,
           elements: atoms.map(a => a.element), labels: atoms.filter(a => a.element !== "C" || a.labelVisible || a.labelLiteral).map(a => a.element), bonds: object.bonds.length
         } : undefined;
-        molecules.push({ ...structuredClone(cached.summary!), objectId: object.id, pairing });
+        molecules.push({ ...structuredClone(cached.summary!), objectId: object.id, originalId: object.compatibility?.originalId, pairing });
       }
       warnings.push(...cached.warnings.map(w => ({ ...w, ...(w.objectId ? { objectId: object.id } : {}) })));
     } catch (error) {

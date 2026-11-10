@@ -51,7 +51,8 @@ export async function rescore(out: string): Promise<void> {
           trip.drawingLoss = [...new Set([...trip.drawingLoss, ...comparison.drawingLoss])];
           trip.comparisonInternalErrors += comparison.comparisonInternalErrors ?? 0;
         }
-        trip.verdict = trip.error || trip.errors?.length || incomplete || trip.undetermined?.length || trip.verdict === "ERROR" ? "ERROR" : chemistryVerdict(trip.differences);
+        const measured = chemistryVerdict(trip.differences, !!trip.undetermined?.length);
+        trip.verdict = trip.error || trip.errors?.length || incomplete || (trip.verdict === "ERROR" && measured !== "FAIL") ? "ERROR" : measured;
         if (legacyChainLoss && trip.verdict !== "FAIL" && trip.verdict !== "ERROR") {
           trip.verdict = "ERROR";
           trip.reason = "Legacy chained losses cannot be cleared without stored intermediate summaries.";

@@ -38,6 +38,8 @@ export interface Warning {
   objectId?: string;
 }
 export interface MoleculeSummary {
+  /** Interchange identity, distinct from the importer's positional native object ID. */
+  originalId?: string;
   /** Private native drawing metadata; absent in legacy or standalone summaries. */
   pairing?: { page: number; centroid: [number, number]; bondLength: number; elements: string[]; labels: string[]; bonds: number };
   strict: boolean;
@@ -214,7 +216,7 @@ const namedFeatures: [Feature, RegExp][] = [
   ["r-group", /\bR[- ]?groups?\b/i],
   ["reaction-roles", /\b(reaction scheme|reaction role|reactant|product|agent role)\b/i],
   ["reaction-step-arrow", /\b(ReactionStepArrows|step[- ]arrow|arrow link)\b/i],
-  ["display-object", /\b(graphic|circle|oval|rectangle|curve|arrow|text|bracket|embeddedobject|table|spectrum)s?\b/i],
+  ["display-object", /\b(graphic|circle|oval|line|rectangle|arc|curve|arrow|text|bracket|embeddedobject|table|spectrum)s?\b/i],
   ["bracket-pair", /\bbrackets?\b(?!\s+(?:usage|repeat|members?|label|kind))/i],
   ["bracket-usage", /\bbracket usage\b/i],
   ["bracket-repeat-count", /\b(repeat count|multiplier)\b/i],
@@ -305,7 +307,7 @@ const reactionValue = (r: Summary["reactions"][number]) => ({
 
 export const bracketValue = ({ objectIds: _objectIds, ...value }: BracketSummary) => value;
 
-/** Stable identities outrank native IDs, which exporters may reuse in a new order. */
+/** Chemical identities and source IDs outrank geometry; positional native IDs are last. */
 export function pairMolecules(before: MoleculeSummary[], after: MoleculeSummary[]) {
   const remaining = new Set(after);
   const paired = new Map<MoleculeSummary, MoleculeSummary>();
@@ -313,12 +315,13 @@ export function pairMolecules(before: MoleculeSummary[], after: MoleculeSummary[
   const key = (m: MoleculeSummary) => JSON.stringify([m.smiles, sorted([...(m.dummyAtoms ?? [])])]);
   for (const match of [
     (a: MoleculeSummary, b: MoleculeSummary) => key(a) === key(b),
-    (a: MoleculeSummary, b: MoleculeSummary) => !!a.objectId && a.objectId === b.objectId
+    (a: MoleculeSummary, b: MoleculeSummary) => !!a.originalId && a.originalId === b.originalId
   ]) {
     for (const a of before) {
       if (paired.has(a)) continue;
       const candidates = [...remaining].filter(b => match(a, b));
-      const b = candidates.find(b => a.objectId && a.objectId === b.objectId)
+      const b = candidates.find(b => a.originalId && a.originalId === b.originalId)
+        ?? candidates.find(b => a.objectId && a.objectId === b.objectId)
         ?? candidates.find(b => chemistryFeatures.every(f => jsonEqual(moleculeValue(a, f), moleculeValue(b, f)))) ?? candidates[0];
       if (b) { paired.set(a, b); remaining.delete(b); }
     }
@@ -345,6 +348,12 @@ export function pairMolecules(before: MoleculeSummary[], after: MoleculeSummary[
   for (const a of left) {
     const b = best(a, right);
     if (b && best(b, left, true) === a) { paired.set(a, b); remaining.delete(b); bestMatched.add(a); }
+  }
+  // Importer-generated IDs encode page-object positions and can shift when a display
+  // object is dropped. Use them only after source identity and geometry are exhausted.
+  for (const a of before.filter(a => !paired.has(a))) {
+    const b = [...remaining].find(b => !!a.objectId && a.objectId === b.objectId);
+    if (b) { paired.set(a, b); remaining.delete(b); }
   }
   // A standalone structure comparison has no native IDs. Never guess among multiple residuals.
   const unidentified = before.filter(a => !paired.has(a) && !a.objectId);
@@ -391,23 +400,25 @@ function sameSpecies(a: MoleculeSummary, b: MoleculeSummary): { check?: Differen
   return { evidence, ...(evidence.decision === "same-species" ? { check: evidence.standardInchi === "match" ? "standard-inchi" as const : "electron-pair-resonance" as const } : {}) };
 }
 
-export function chemistryVerdict(differences: Difference[]): RoundTrip["verdict"] {
+export function chemistryVerdict(differences: Difference[], undetermined = false): RoundTrip["verdict"] {
   const losses = differences.filter(d => !d.classification);
-  return losses.some(d => !d.warned) ? "FAIL" : losses.length ? "WARNED" : differences.some(d => d.classification) ? "DRAWN-DIFFERENTLY" : "PASS";
+  return losses.some(d => !d.warned) ? "FAIL" : undetermined ? "ERROR" : losses.length ? "WARNED" : differences.some(d => d.classification) ? "DRAWN-DIFFERENTLY" : "PASS";
 }
 
 /** Count losses only. The source tree supplies drawing intent, not a second chemistry engine. */
 export function compareSurvival(before: import("./survival").SurvivalCounts, after: import("./survival").SurvivalCounts, warnings: Warning[]): Comparison {
   const differences: Difference[] = [];
   const drawingLoss: DrawingFeature[] = [];
-  if (stepArrowLosses(before, [after]).links) {
+  const arrowLoss = stepArrowLosses(before, [after]);
+  if (arrowLoss.links) {
     differences.push({ feature: "reaction-step-arrow",
       before: { totalLinks: before.stepArrows, linksPerStep: before.stepArrowLinks ?? [before.stepArrows] },
       after: { totalLinks: after.stepArrows, linksPerStep: after.stepArrowLinks ?? [after.stepArrows] },
       // Reclassify stored diagnostics too: older runs did not map step_preserved to
       // this feature. Stored feature arrays must not turn a generic warning into cover.
-      warned: warnings.some(w => warning({ code: w.category, message: w.message, objectId: w.objectId })
-        .features.includes("reaction-step-arrow")) });
+      warned: arrowLoss.lostStepIds.every(id => id !== null && warnings.some(w =>
+        warning({ code: w.category, message: w.message, objectId: w.objectId }).features.includes("reaction-step-arrow")
+        && /\bstep\s+([^\s:]+)\s*:/i.exec(w.message)?.[1] === id)) });
   }
   if (before.abbreviations > after.abbreviations) {
     const warned = warnings.some(w => w.features.includes("abbreviation"));
@@ -419,7 +430,7 @@ export function compareSurvival(before: import("./survival").SurvivalCounts, aft
     const next = after.display[kind] ?? 0;
     if (count <= next) continue;
     const name = kind === "bracketedgroup" ? "bracket group" : kind === "t" ? "text" : kind.split(".").at(-1)!.toLowerCase();
-    const namesKind = (w: Warning) => w.features.includes("display-object") && w.message.toLowerCase().includes(name);
+    const namesKind = (w: Warning) => w.features.includes("display-object") && new RegExp(`\\b${name}s?\\b`, "i").test(w.message);
     const sourceIds = before.displayObjectIds?.[kind];
     const remainingIds = [...(after.displayObjectIds?.[kind] ?? [])];
     const missingIds = sourceIds?.filter(id => {
@@ -427,9 +438,21 @@ export function compareSurvival(before: import("./survival").SurvivalCounts, aft
       if (index < 0) return true;
       remainingIds.splice(index, 1); return false;
     });
-    const warned = missingIds
-      ? missingIds.filter(id => warnings.some(w => w.objectId === id && namesKind(w))).length >= count - next
-      : warnings.some(namesKind);
+    const available = warnings.filter(namesKind);
+    // Consume each warning once. Prefer scoped warnings so a generic diagnostic can
+    // still cover another lost object; a diagnostic for a survivor covers no loss.
+    let covered = 0;
+    if (missingIds) {
+      const unmatched = missingIds.filter(id => {
+        const index = available.findIndex(w => w.objectId === id);
+        if (index < 0) return true;
+        available.splice(index, 1); covered++; return false;
+      });
+      if (kind !== "graphic.Bracket" && kind !== "bracketedgroup") {
+        covered += Math.min(unmatched.length, available.filter(w => !w.objectId).length);
+      }
+    } else covered = available.length; // Legacy summaries have only aggregate counts.
+    const warned = covered >= count - next;
     differences.push({ feature: "display-object", before: { kind, count }, after: { kind, count: next }, warned,
       ...(!warned ? { classification: "drawing-object-loss" as const } : {}) });
     const feature = kind === "arrow" ? "arrows" : kind === "bracketedgroup" || kind === "graphic.Bracket" ? "brackets" : kind === "t" ? "text-styling" : "other-graphics";
@@ -469,7 +492,7 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   const undetermined: NonNullable<Comparison["undetermined"]> = [];
   // Preserve every stored chemistry field, including graph evidence and display intent.
   // Compare as a multiset without depending on object IDs, geometry or ordering.
-  const chemistry = ({ objectId: _objectId, pairing: _pairing, ...m }: MoleculeSummary) => m;
+  const chemistry = ({ objectId: _objectId, originalId: _originalId, pairing: _pairing, ...m }: MoleculeSummary) => m;
   const remaining = after.molecules.map(chemistry);
   const identical = before.molecules.length > 0 && before.molecules.length === remaining.length && before.molecules.every(m => {
     const index = remaining.findIndex(candidate => jsonEqual(chemistry(m), candidate));
@@ -571,6 +594,6 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   const drawingLoss = drawingFeatures.filter(feature => !jsonEqual(before.drawing[feature], after.drawing[feature]));
   for (const feature of survival?.drawingLoss ?? []) if (!drawingLoss.includes(feature)) drawingLoss.push(feature);
   const incomplete = !!before.summaryErrors?.length || !!after.summaryErrors?.length;
-  const verdict = chemistryVerdict(guarded.differences);
-  return { ...guarded, drawingLoss, verdict: incomplete || (undetermined.length > 0 && verdict !== "FAIL") ? "ERROR" : verdict, ...(undetermined.length ? { undetermined } : {}), ...(identical ? { identityPasses: before.molecules.length, chemistryPassReason: "identity" as const } : {}) };
+  const verdict = chemistryVerdict(guarded.differences, undetermined.length > 0);
+  return { ...guarded, drawingLoss, verdict: incomplete ? "ERROR" : verdict, ...(undetermined.length ? { undetermined } : {}), ...(identical ? { identityPasses: before.molecules.length, chemistryPassReason: "identity" as const } : {}) };
 }

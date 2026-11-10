@@ -16,9 +16,11 @@ export interface SurvivalCounts {
   stepArrows: number;
   /** Counts in page/scheme/step order; absent only in legacy stored summaries. */
   stepArrowLinks?: number[];
+  /** Source step IDs aligned with stepArrowLinks; null when no source ID exists. */
+  stepIds?: (string | null)[];
   abbreviations: number;
   display: Record<string, number>;
-  /** Bracket source IDs let diagnostics cover the missing glyph/group, rather than its file. */
+  /** Source IDs let diagnostics cover individual missing display objects. */
   displayObjectIds?: Record<string, string[]>;
 }
 
@@ -27,14 +29,19 @@ export function stepArrowLosses(source: SurvivalCounts, stages: SurvivalCounts[]
   // Older stored summaries cannot recover per-step evidence without reimporting.
   const perStep = source.stepArrowLinks !== undefined && stages.every(stage => stage.stepArrowLinks !== undefined);
   const counts = perStep ? source.stepArrowLinks! : [source.stepArrows];
-  const losses = counts.map((count, step) => Math.max(0, count - Math.min(...stages.map(stage =>
-    (perStep ? stage.stepArrowLinks! : [stage.stepArrows])[step] ?? 0))));
+  const losses = counts.map((count, step) => Math.max(0, count - Math.min(...stages.map(stage => {
+    const id = perStep ? source.stepIds?.[step] : undefined;
+    // An omitted empty/unlinked source step must not shift subsequent reactions.
+    const index = id && stage.stepIds ? stage.stepIds.indexOf(id) : step;
+    return (perStep ? stage.stepArrowLinks! : [stage.stepArrows])[index] ?? 0;
+  }))));
   const links = losses.reduce((sum, count) => sum + count, 0);
-  return { links, steps: perStep ? losses.filter(count => count > 0).length : links };
+  return { links, steps: perStep ? losses.filter(count => count > 0).length : links,
+    lostStepIds: losses.flatMap((loss, step) => loss > 0 ? [perStep ? source.stepIds?.[step] ?? null : null] : []) };
 }
 
 const add = (counts: Record<string, number>, kind: string) => { counts[kind] = (counts[kind] ?? 0) + 1; };
-const recordBracketId = (out: SurvivalCounts, kind: string, id: string | undefined) => {
+const recordDisplayId = (out: SurvivalCounts, kind: string, id: string | undefined) => {
   if (id) ((out.displayObjectIds ??= {})[kind] ??= []).push(id);
 };
 const isCircle = (width: number, height: number) => width > 0 && height > 0 && Math.abs(width - height) <= Math.max(width, height) * 1e-6;
@@ -68,11 +75,12 @@ export function sourceSurvival(bytes: Uint8Array): SurvivalCounts {
     return false;
   };
   const text = (n: CdxElement): string => n.text + n.kids.map(text).join("");
-  const out: SurvivalCounts = { stepArrows: 0, stepArrowLinks: [], abbreviations: 0, display: {} };
+  const out: SurvivalCounts = { stepArrows: 0, stepArrowLinks: [], stepIds: [], abbreviations: 0, display: {} };
   for (const n of all) {
     if (n.name === "step") {
       const links = (n.attrs.ReactionStepArrows ?? "").trim().split(/\s+/).filter(resolves).length;
       out.stepArrowLinks!.push(links);
+      out.stepIds!.push(n.attrs.id ?? null);
       out.stepArrows += links;
     }
   }
@@ -113,7 +121,7 @@ export function sourceSurvival(bytes: Uint8Array): SurvivalCounts {
       const kind = isArrowedLine(n) ? "arrow"
         : n.name === "graphic" ? graphicKind(n.attrs.GraphicType, n.attrs.OvalType, box.length === 4 && isCircle(Math.abs(box[2] - box[0]), Math.abs(box[3] - box[1]))) : n.name;
       add(out.display, kind);
-      if (kind === "graphic.Bracket" || kind === "bracketedgroup") recordBracketId(out, kind, n.attrs.id);
+      recordDisplayId(out, kind, n.attrs.id);
     }
     n.kids.forEach(k => scan(k, n.name));
   };
@@ -122,7 +130,7 @@ export function sourceSurvival(bytes: Uint8Array): SurvivalCounts {
 }
 
 export function nativeSurvival(document: ChemDraftDocument): SurvivalCounts {
-  const out: SurvivalCounts = { stepArrows: 0, stepArrowLinks: [], abbreviations: 0, display: {} };
+  const out: SurvivalCounts = { stepArrows: 0, stepArrowLinks: [], stepIds: [], abbreviations: 0, display: {} };
   for (const page of document.pages) {
     const objects = new Map(page.objects.map(item => [item.id, item]));
     const bracketGroups = new Set<string>();
@@ -136,28 +144,32 @@ export function nativeSurvival(document: ChemDraftDocument): SurvivalCounts {
       if (object.type === "reaction") {
         const links = (object.arrowObjectIds ?? []).filter(isArrow).length;
         out.stepArrowLinks!.push(links);
+        out.stepIds!.push(object.compatibility?.originalId ?? null);
         out.stepArrows += links;
       }
       if (object.type === "superatom" && isAbbreviation(object.label)) out.abbreviations++;
       if (object.type === "molecule") {
         out.abbreviations += (object.superatoms ?? []).filter(item => typeof item.label === "string" && isAbbreviation(item.label)).length;
       }
-      if (object.type === "text") add(out.display, "t");
-      else if (object.type === "table") add(out.display, "table");
+      const display = (kind: string) => {
+        add(out.display, kind);
+        recordDisplayId(out, kind, object.compatibility?.originalId ?? object.id);
+      };
+      if (object.type === "text") display("t");
+      else if (object.type === "table") display("table");
       else if (object.type === "bracket") {
-        add(out.display, "graphic.Bracket");
-        recordBracketId(out, "graphic.Bracket", object.compatibility?.originalId ?? object.id);
+        display("graphic.Bracket");
         if (object.pairId && !bracketGroups.has(object.pairId)) {
           bracketGroups.add(object.pairId);
           add(out.display, "bracketedgroup");
           const source = object.compatibility?.unknown.bracketedGroup as { attributes?: { id?: string } } | undefined;
-          recordBracketId(out, "bracketedgroup", source?.attributes?.id ?? object.pairId);
+          recordDisplayId(out, "bracketedgroup", source?.attributes?.id ?? object.pairId);
         }
-      } else if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") add(out.display, "arrow");
+      } else if (object.type === "reaction-arrow" || object.type === "mechanism-arrow") display("arrow");
       else if (object.type === "graphic") {
         const unknown = object.compatibility?.unknown as Record<string, unknown> | undefined;
         const type = typeof unknown?.cdxmlGraphicType === "string" ? unknown.cdxmlGraphicType : ({ ellipse: "Oval", rect: "Rectangle", line: "Line", path: "Unknown", image: "Unknown", unknown: "Unknown" } as const)[object.graphicKind];
-        add(out.display, unknown?.cdxmlElementName === "curve" ? "curve" : isArrow(object.id) ? "arrow" : graphicKind(type, typeof unknown?.cdxmlOvalType === "string" ? unknown.cdxmlOvalType : undefined, isCircle(object.width, object.height)));
+        display(unknown?.cdxmlElementName === "curve" ? "curve" : isArrow(object.id) ? "arrow" : graphicKind(type, typeof unknown?.cdxmlOvalType === "string" ? unknown.cdxmlOvalType : undefined, isCircle(object.width, object.height)));
       }
     }
   }

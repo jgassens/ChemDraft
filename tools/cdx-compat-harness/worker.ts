@@ -144,7 +144,7 @@ export async function processCopy(copy: string, formats: Format[] = ["cdx", "cdx
         } finally { trip.warnings.push(...summaryWarnings); }
       }
       trip.summary = latest;
-      trip.verdict = trip.error || trip.undetermined?.length ? "ERROR" : chemistryVerdict(trip.differences);
+      trip.verdict = trip.error ? "ERROR" : chemistryVerdict(trip.differences, !!trip.undetermined?.length);
       trip.ms = performance.now() - started;
       return trip;
     }

@@ -152,7 +152,8 @@ a round-trip PASS or ground-truth agreement; exports and other routes still run.
   through symmetric mappings, bounded to 50,000 operations; missing graph evidence or an
   exhausted search cannot excuse a changed graph. Connectivity and per-atom H changes
   are separate `connectivity` failures, never covered by bond-order diagnostics.
-- **FAIL:** at least one measured chemistry feature changed silently.
+- **FAIL:** at least one measured chemistry feature changed silently. A definite silent loss
+  takes precedence over unfinished graph checks in the same leg, another route or initial import.
 - **DRAWN-DIFFERENTLY:** a molecule's identity, charge placement, bond orders or stereo drawing
   differ, but a guarded identity check finds the same species. Private differences carry
   `classification: "same-species-different-drawing"` and the deciding `identityCheck`.
@@ -168,7 +169,8 @@ a round-trip PASS or ground-truth agreement; exports and other routes still run.
   It searches actual pi-pair cleavage and lone-pair donation steps, checking nonbonding-electron
   parity, formal charge and the octet at every step; H and sigma bonds never move. The supported
   Lewis subset declines hypervalent changes and moves involving radicals. Mapping and attempted
-  pushes share a 50,000-operation budget; exhaustion records `undetermined` and remains FAIL.
+  pushes share a 50,000-operation budget; exhaustion of this alternative-drawing proof records
+  `undetermined` identity evidence and leaves an already measured silent difference as FAIL.
   Formula, net charge, atom count, isotope and radical changes never qualify.
   Changed tetrahedral or assigned double-bond stereo conservatively prevents this classification,
   including when a remote resonance change makes the stereo key differ. Missing evidence stays FAIL.
@@ -186,7 +188,9 @@ a round-trip PASS or ground-truth agreement; exports and other routes still run.
 - **ERROR:** a round-trip conversion or chemistry summary could not be completed.
   A bounded exact graph check that cannot finish also prevents PASS: private results
   retain `undetermined` feature checks, and public reports count these separately from
-  chemistry failures. Equal connectivity/H values are accepted before sigma evidence;
+  chemistry failures. These checks yield ERROR only when there is no definite silent FAIL;
+  conversion errors and incomplete chemistry summaries still yield ERROR.
+  Equal connectivity/H values are accepted before sigma evidence;
   equal stereo-preserving RDKit canonical SMILES suppress connectivity and bond-order
   differences. Otherwise an exact element/charge/isotope/H/bond-order mapping is
   required to prove equality. Colour refinement only prunes that search.
@@ -210,18 +214,23 @@ Native abbreviations count standalone superatoms and molecule superatom metadata
 Property-only nicknames, text-only `Unspecified` nodes and other label-only atoms are not superatom
 records. Their labels still participate in molecular chemistry comparisons. External connection
 points inside expansions never count. Display counts include grouped objects and every nested
-bracket group; optional `displayObjectIds` records bracket source ids, so each missing glyph/group
-needs its own matching diagnostic. Legacy summaries without those ids retain aggregate warning
-matching. Atom labels and hidden expansion graphics are
+bracket group; optional `displayObjectIds` records source IDs for every display kind. Each lost
+object needs a separate warning naming its kind as a whole word (singular or plural); an
+object-specific warning covers only its source ID. Bracket glyphs/groups with known IDs require
+their own object-specific diagnostics. Legacy summaries without IDs use aggregate matching,
+still requiring one diagnostic per lost object. Atom labels and hidden expansion graphics are
 not standalone displays. Circle geometry remains a circle when export omits `OvalType="Circle"`.
 Arrow elements and line graphics with arrow types or separate head/tail arrowheads share the
 `arrow` display kind.
 Legacy graphics with `SupersededBy` are excluded because their replacement is counted instead.
 `stepArrows` is the total link count; `stepArrowLinks` retains counts in page/scheme/step order.
-Comparisons check corresponding steps, so a gain in another step cannot offset a loss. Reports
+`stepIds` aligns those counts by source step ID, so skipped empty or unlinked steps cannot shift
+the comparison. Comparisons check corresponding steps, so a gain in another step cannot offset a loss. Reports
 show total links, `stepArrowLinksLost`, and `stepsWhoseArrowLinkWasLost` separately, including losses
 in intermediate route legs that are restored later. Stored summaries without `stepArrowLinks`
 retain their legacy aggregate comparison; rerun synthetic inputs to obtain per-step evidence.
+Without stored step IDs a named diagnostic cannot establish which step lost a link, so rescoring
+cannot excuse that loss; rerun synthetic inputs to obtain the IDs.
 
 Private results retain `sourceSurvival`, native `summary.survival`, and `importComparison`.
 The initial comparison contributes to the file verdict and report categories even when every
@@ -249,12 +258,13 @@ excluded from route survival counts.
 The CDXML baseline section compares shared IDs' CDXML routes, flags worse chemistry verdicts or added drawing-loss
 categories, and reports new IDs separately. Reports do not assert compatibility beyond their corpus.
 
-Round-trip comparison pairs canonical identities (SMILES plus dummy labels) before native object
-IDs, so reordering molecules or reusing IDs cannot swap their sanitization status. Remaining native
+Round-trip comparison pairs canonical identities (SMILES plus dummy labels), then
+`compatibility.originalId` source identities. Remaining native
 molecules are paired only when each is the other's unique closest candidate on the same page,
 within one measured bond length (30 drawing units for an unbonded molecule), with identical
-heavy-atom element multisets. Equal distances remain ambiguous. Ambiguous or distant molecules
-remain added/removed. Private differences for a best-match pair include element and visible atom-label
+heavy-atom element multisets. Equal distances remain ambiguous. Native object IDs are used only
+after geometry, since dropping a page object can shift those positional IDs. Residual molecules
+without a matching native ID remain added/removed. Private differences for a best-match pair include element and visible atom-label
 multiset additions/removals and net bond-count additions/removals. New summaries store the drawing
 metadata needed for this pairing; legacy summaries without it retain the previous behavior during
 rescore. Differences identify the affected molecule rather than

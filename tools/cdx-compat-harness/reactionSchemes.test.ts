@@ -68,7 +68,7 @@ describe("synthetic reaction scheme summaries", () => {
     const bytes = format === "cdxml" ? Buffer.from(xml) : writeCdx(parseSourceXml(xml));
     const source = sourceSurvival(bytes);
     // The superseded legacy graphic is not a second display object or a loss.
-    expect(source).toEqual({ stepArrows: 1, stepArrowLinks: [1], abbreviations: 0, display: { arrow: 1 } });
+    expect(source).toEqual({ stepArrows: 1, stepArrowLinks: [1], stepIds: ["91"], abbreviations: 0, display: { arrow: 1 }, displayObjectIds: { arrow: ["51"] } });
     const opened = await open(bytes);
     const preserved = await describeDocument(opened.document!, []);
     expect(preserved.survival!.stepArrows).toBe(1);
@@ -101,7 +101,7 @@ describe("synthetic reaction scheme summaries", () => {
       <graphic id="52" GraphicType="Oval" OvalType="Circle" BoundingBox="0 0 10 10"/>
       <fragment id="10"><n id="11" NodeType="Nickname" p="0 0"><t><s>Me</s></t></n></fragment></page></CDXML>`;
     const source = sourceSurvival(Buffer.from(xml));
-    expect(source).toEqual({ stepArrows: 1, stepArrowLinks: [1], abbreviations: 0, display: { arrow: 1, "graphic.Oval.Circle": 1 } });
+    expect(source).toEqual({ stepArrows: 1, stepArrowLinks: [1], stepIds: ["91"], abbreviations: 0, display: { arrow: 1, "graphic.Oval.Circle": 1 }, displayObjectIds: { arrow: ["51"], "graphic.Oval.Circle": ["52"] } });
     const noCircle = sourceSurvival(Buffer.from(xml.replace(/<graphic id="52"[^>]*\/>/, "")));
     expect(noCircle.display["graphic.Oval.Circle"] ?? 0).toBe(0);
     expect(sourceSurvival(Buffer.from(xml.replace('SupersededBy="51"', 'SupersededBy="999"'))).stepArrows).toBe(0);
