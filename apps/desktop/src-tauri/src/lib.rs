@@ -9870,8 +9870,37 @@ mod tests {
         }
     }
 
+    fn plist_feed_url(text: &str) -> Option<String> {
+        let mut uncommented = String::new();
+        let mut remaining = text;
+        while let Some((before, comment)) = remaining.split_once("<!--") {
+            uncommented.push_str(before);
+            remaining = comment.split_once("-->")?.1;
+        }
+        uncommented.push_str(remaining);
+        uncommented
+            .split_once("<key>SUFeedURL</key>")
+            .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
+            .and_then(|value| value.split_once("</string>"))
+            .map(|(feed, _)| feed.to_string())
+    }
+
     #[test]
     fn released_update_configurations_route_to_updater_and_dev_to_notice() {
+        assert_eq!(
+            plist_feed_url("<!-- <key>SUFeedURL</key><string>commented</string> -->"),
+            None
+        );
+        assert_eq!(
+            plist_feed_url(
+                "<!-- first -->\n<!--\n<key>SUFeedURL</key>\n<string>commented</string>\n-->"
+            ),
+            None
+        );
+        assert_eq!(
+            plist_feed_url("<!-- ignored -->\n<key>SUFeedURL</key>\n  <string>https://chemdraft.ai/appcast.xml</string>"),
+            Some("https://chemdraft.ai/appcast.xml".to_string())
+        );
         let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let config: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(config_dir.join("tauri.conf.json"))
@@ -9899,13 +9928,9 @@ mod tests {
         for file in ["Info.plist", "Info.intel.plist"] {
             let plist = std::fs::read_to_string(config_dir.join(file))
                 .unwrap_or_else(|error| panic!("read {file}: {error}"));
-            let feed = plist
-                .split_once("<key>SUFeedURL</key>")
-                .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
-                .and_then(|value| value.split_once("</string>"))
-                .map(|(feed, _)| feed)
+            let feed = plist_feed_url(&plist)
                 .unwrap_or_else(|| panic!("{file} must contain an SUFeedURL string"));
-            assert_routes(file, feed);
+            assert_routes(file, &feed);
         }
 
         let windows_config: serde_json::Value = serde_json::from_str(
