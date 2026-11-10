@@ -13,7 +13,7 @@ Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDr
 - Copy structures and editable tables for use in Office applications.
 - Add editable tables and pictures, and use structure templates.
 - Inspect molecular properties and analysis results, and explore structures with Spin 3D.
-- Convert chemical names to structures with OPSIN.
+- Convert chemical names to structures with OPSIN, or with an offline dictionary of common and trade names and CAS registry numbers.
 - Extend the app with plugins, including the optional official NMR predictor and MolScribe structure-recognition plugins.
 - Use the headless CLI, MCP server and [agent skill](skills/chemdraft/SKILL.md) from scripts or coding assistants.
 

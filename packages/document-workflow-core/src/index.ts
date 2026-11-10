@@ -31,3 +31,5 @@ export * from "./documentStyle";
 export * from "./sourceBondSemantics";
 export * from "./drawingDefaults";
 export * from "./tables";
+
+export * from "./nameDictionary";

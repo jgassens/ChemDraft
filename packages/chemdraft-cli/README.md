@@ -412,7 +412,7 @@ masses are stored per atom. Radical inputs remain refused by drawing and export 
 
 Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
 `18-crown-6` rather than writing SMILES for these hosts. The `name` result reports
-`source: "template" | "opsin"`; template results also carry `templateId` and
+`source: "template" | "opsin" | "dictionary"`; template results also carry `templateId` and
 `templateName`. Existing SMILES fields retain their meaning. `name --render` draws
 the template layout at the default document style.
 
@@ -424,3 +424,9 @@ Templates use the default document bond length; ordinary SMILES sizing is unchan
 Stereo-free or different stereoisomers do not substitute. Native documents supplied to
 `render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
 native document built from SMILES inherits the layout chosen by `document`.
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.

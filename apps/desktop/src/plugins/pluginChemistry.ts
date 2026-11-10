@@ -15,7 +15,7 @@ export { createChemistry3dProviders } from "../chemistry3d/client";
 export { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
 
 import { invoke } from "@tauri-apps/api/core";
-import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { createNameDictionary, nameDictionaryUrl, resolveChemicalName, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { templateMoleculeForSmiles } from "../structureTemplateInsertion";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
@@ -232,6 +232,15 @@ interface OpsinErrorReply {
   message?: string;
 }
 
+const dictionary = createNameDictionary(async () => {
+  const response = await fetch(nameDictionaryUrl);
+  if (!response.ok) throw new Error(`Offline name dictionary could not be loaded (${response.status}).`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return bytes[0] === 0x1f && bytes[1] === 0x8b
+    ? new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).text()
+    : new TextDecoder().decode(bytes);
+});
+
 const OPSIN_ENGINE_ID = "opsin";
 
 /**
@@ -272,9 +281,13 @@ export async function nameToStructureForPlugin(
   // number.
   const engine = { id: OPSIN_ENGINE_ID, version: status.version ?? "unknown" };
   try {
-    const reply = await invoke<OpsinConversionReply>("opsin_name_to_structure", { name: request.name });
+    const reply = await resolveChemicalName(request.name,
+      name => invoke<OpsinConversionReply>("opsin_name_to_structure", { name }), dictionary);
     if (reply.smiles) {
-      return { available: true, parsed: true, smiles: reply.smiles, engine };
+      return { available: true, parsed: true, smiles: reply.smiles, source: reply.source,
+        ...("matchedName" in reply ? { matchedName: reply.matchedName } : {}),
+        ...("matchedCas" in reply ? { matchedCas: reply.matchedCas } : {}),
+        engine: reply.source === "dictionary" ? { id: "dictionary", version: "wikidata-2026-10-27" } : engine };
     }
     return {
       available: true,

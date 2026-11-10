@@ -102,7 +102,8 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.20`. For a 0.x version the minor is the compatibility boundary, so additive
+`PluginApiVersion` is `0.1.22`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.22 adds
+name-to-structure result source and dictionary match provenance. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
