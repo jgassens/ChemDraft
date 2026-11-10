@@ -1379,3 +1379,79 @@ upload and drop, acknowledging the shared prompt fallback.
 - Move the modeless dialog outside the document window and to a monitor with different scaling.
   Toolbars remain usable; reopening remembers its position. On Windows it has no taskbar entry
   and stays owned by the document window. Check Escape, Cmd/Ctrl+W and title-bar close.
+
+## 1.2 hands-on pass (macOS and Windows)
+
+Run each section on both systems. Use the macOS app menu or the Windows document-window menu;
+Windows utility windows have no menu. Native prompts and file choosers use the operating system's
+controls. For Undo use Cmd+Z on macOS or Ctrl+Z on Windows; for Redo use Cmd+Shift+Z on macOS
+or Ctrl+Shift+Z or Ctrl+Y on Windows.
+
+### Wavy single bond
+
+- Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.
+  It displays a wave. Undo and Redo restore each edit; export MOL and check the unknown stereo survives.
+
+### Round brackets and repeat units
+
+- Draw round brackets around a molecule. Right-click a bracket and mark a repeat unit; double-click
+  its n and enter m. The label changes. Copy as MOL and check for an SRU SGroup; copy as SMILES
+  with the molecule selected and check the warning about the omitted repeat label.
+
+### Electron-mark editing
+
+- In Preferences enable Direct electron-mark editing. Drag a charge mark onto an atom: it lands
+  beside the atom label. Move it again, then Undo and Redo; its placement follows each edit.
+
+### Reaction conditions
+
+- In Preferences turn off Compound layout tools: Formatted Reaction Conditions is disabled. Turn
+  on both options, right-click an ordinary arrow and choose Reaction conditions…. The native editor
+  opens on the first click. Enter text, Save, and double-click the label: the saved text reopens.
+
+### Custom colour swatches
+
+- In Customize Main Toolbar add a Custom Color Swatch from Object Style. Click an empty slot, enter
+  a colour and choose OK. Select a bond and click the slot: the colour applies. Undo and Redo it;
+  restart and check that the swatch retains its colour.
+
+### Double and triple bond tools
+
+- On the default Main toolbar choose Double Bond and draw, then choose Triple Bond and draw. Each
+  has the selected order. In Preferences change Default double bond between Offset and Centred;
+  new double bonds follow the setting and existing bonds stay unchanged.
+
+### Drawing style presets
+
+- Select a molecule and apply the ACS 1996-style preset from Structure's drawing style items, then apply
+  Drawing style: Sketch. Sketch shows uneven strokes and Patrick Hand labels. Undo and Redo, then
+  save and reopen: the applied style remains without changing the chemistry.
+
+### Page-enlarge question
+
+- Paste a list of SMILES large enough to overflow the page. In the native question choose Enlarge:
+  the page grows to fit. Repeat and choose Keep Page Size: the page keeps its size. Undo each insertion.
+
+### Newer files
+
+- Open a `.chemdraft` file made with a greater minimum app version through File > Open. A native
+  message gives the minimum version. Acknowledge it, edit unrelated content, save and reopen; the
+  future data and minimum version remain in the file.
+
+### Structure search
+
+- Select a molecule and choose Search PubChem from Tools. Cancel the first consent prompt: no
+  browser opens. Run it again and choose Continue: the browser opens with the selected structure.
+  With nothing selected the search is disabled.
+
+### Name dictionary
+
+- With the name-to-structure plugin and its local engine installed, choose Structure > Convert Name
+  to Structure… and enter `64-17-5`. The inserted structure is ethanol and the status identifies
+  the Wikidata dictionary match. Try an unrecognised name: it reports failure instead of inserting.
+
+### Binary CDX import
+
+- Use File > Open to open a binary `.cdx` with known structures. Check bonds, labels and any import
+  warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
+  the file chooser or Open With; the installer does not register `.cdx` as an association.
