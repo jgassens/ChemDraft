@@ -18,6 +18,8 @@ import {
   type KeybindingSettings
 } from "./keybindingSettings";
 import { loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { loadDrawingSettings, saveDrawingSettings, type DefaultDoubleBond } from "./drawingSettings";
+import { broadcastDrawingSettings, listenForDrawingSettings } from "./window-manager";
 import { broadcastCompoundLayoutSettings, broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings, broadcastExportPreviewSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
@@ -30,6 +32,11 @@ const MODES: RadioOption<Spin3dRefinementMode>[] = [
   { value: "fast", title: "Fast", description: "Embedded conformer only. Fastest; least polished geometry." },
   { value: "balanced", title: "Balanced", description: "Quick force-field cleanup. Good default for large structures." },
   { value: "quality", title: "Quality", description: "Longer force-field cleanup. Best geometry." }
+];
+
+const DOUBLE_BONDS: RadioOption<DefaultDoubleBond>[] = [
+  { value: "offset", title: "Offset", description: "Use the usual automatic placement, toward the ring interior or substituents." },
+  { value: "centred", title: "Centred", description: "Use equal lines on either side of the bond axis." }
 ];
 
 const ENGINES: RadioOption<Spin3dEnginePreference>[] = [
@@ -99,11 +106,21 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 export function PreferencesWindow() {
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
+  const [drawing, setDrawing] = useState(loadDrawingSettings);
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
   const [automaticPluginUpdates, setAutomaticPluginUpdates] = useState(loadAutomaticPluginUpdates);
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForDrawingSettings(next => setDrawing(next)).then(listener => {
+      if (disposed) listener(); else unlisten = listener;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("preferences-window-html");
@@ -204,6 +221,20 @@ export function PreferencesWindow() {
           <span className="preferences-radio-body"><span>Export preview and size presets</span><small>Show a live preview and size presets in the Export window</small></span>
         </label>
       </section>
+
+      <PreferenceRadioGroup
+        legend="Default double bond"
+        hint="Applies to newly drawn double bonds. Ring and structure templates keep their own placement."
+        name="default-double-bond"
+        options={DOUBLE_BONDS}
+        value={drawing.defaultDoubleBond}
+        onSelect={defaultDoubleBond => {
+          const next = { defaultDoubleBond };
+          setDrawing(next);
+          saveDrawingSettings(next);
+          void broadcastDrawingSettings(next);
+        }}
+      />
 
       <PreferenceRadioGroup
         legend="Keyboard shortcuts"

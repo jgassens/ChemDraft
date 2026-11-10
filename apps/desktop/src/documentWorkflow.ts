@@ -9,6 +9,7 @@ import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-work
 import { planTableLayout, tableVisualBoundsForArrangement, transformPointForObject, rotatedGraphicLocalBounds } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
+import { loadDrawingSettings } from "./drawingSettings";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
 import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
 import {
@@ -995,7 +996,10 @@ export function createNativeSingleBondMolecule(
     fromAtomId: leftAtom.id,
     toAtomId: rightAtom.id,
     order: options.bondOrder ?? "single",
-    ...nativeBondDisplayObject(options.bondStyle)
+    ...nativeBondDisplayObject(options.bondStyle),
+    ...(options.bondOrder === "double" && loadDrawingSettings().defaultDoubleBond === "centred"
+      ? { display: { ...nativeBondDisplayObject(options.bondStyle).display, doubleBondSide: "center" as const } }
+      : {})
   }] satisfies MoleculeBond[];
   const geometry = moleculeGeometryFromAtoms(atoms);
 
@@ -9130,7 +9134,10 @@ export function applyNativeMoleculeBondOrderValueTarget(
   }
 
   const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order) : candidate
+    candidate.id === bond.id
+      // Clearing an existing double bond's "either" stereo is not double-bond creation.
+      ? nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order, bond.order !== "double")
+      : candidate
   );
   const refreshed = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
   const nextMolecule = bond.stereo === "either" ? withStoredBondStereoMolfile(refreshed) : refreshed;
@@ -20576,11 +20583,16 @@ function nextNativeBondOrder(molecule: MoleculeObject, bond: MoleculeBond): Mole
 function nativeBondWithOrderAndDisplay(
   molecule: MoleculeObject,
   bond: MoleculeBond,
-  order: MoleculeBond["order"]
+  order: MoleculeBond["order"],
+  useDrawingDefault = true
 ): MoleculeBond {
   const bondStyle = bond.display?.bondStyle;
   if (order === "double") {
-    const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
+    // This helper is used only by drawing/order edits. Imported and pasted graphs retain
+    // their own display data; ring/template insertion also keeps its explicit placement.
+    const doubleBondSide = bond.display?.doubleBondSide ??
+      (useDrawingDefault && loadDrawingSettings().defaultDoubleBond === "centred"
+        ? "center" : defaultDoubleBondSide(molecule, { ...bond, order }));
     const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
     const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {

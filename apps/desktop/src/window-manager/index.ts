@@ -9,6 +9,7 @@ import type { MoleculeInspectorModel } from "../moleculeInspectorModel";
 import type { ToolbarSelectionModel } from "../toolbars/toolbarSelectionKind";
 import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
+import { isDrawingSettings, DRAWING_SETTINGS_STORAGE_KEY, loadDrawingSettings, type DrawingSettings } from "../drawingSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./tauriEvents";
@@ -1662,6 +1663,31 @@ async function invokeToolsetWindow(commandName: string, toolsetId: string): Prom
 }
 
 export const COMPOUND_LAYOUT_SETTINGS_EVENT = "chemdraft://compound-layout-settings";
+
+export const DRAWING_SETTINGS_EVENT = "chemdraft://drawing-settings";
+
+export async function broadcastDrawingSettings(settings: DrawingSettings): Promise<void> {
+  dispatchDomToolsetEvent(DRAWING_SETTINGS_EVENT, settings);
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit<DrawingSettings>(DRAWING_SETTINGS_EVENT, settings);
+}
+
+export async function listenForDrawingSettings(handler: (settings: DrawingSettings) => void): Promise<Unlisten> {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === DRAWING_SETTINGS_STORAGE_KEY || event.key === null) handler(loadDrawingSettings());
+  };
+  globalThis.addEventListener?.("storage", onStorage);
+  const removeStorage = () => globalThis.removeEventListener?.("storage", onStorage);
+  const unlistenDom = listenForDomToolsetEvent(DRAWING_SETTINGS_EVENT, event => {
+    if (isDrawingSettings(event.detail)) handler(event.detail);
+  });
+  if (!isDesktopRuntime()) return () => { unlistenDom(); removeStorage(); };
+  const unlistenTauri = await listenTauriEvent<DrawingSettings>(DRAWING_SETTINGS_EVENT, event => {
+    if (isDrawingSettings(event.payload)) handler(event.payload);
+  });
+  return () => { removeStorage(); unlistenDom(); unlistenTauri(); };
+}
 
 export async function broadcastCompoundLayoutSettings(settings: CompoundLayoutSettings): Promise<void> {
   dispatchDomToolsetEvent(COMPOUND_LAYOUT_SETTINGS_EVENT, settings);
