@@ -126,6 +126,105 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     expect(objects()).toEqual(after);
   });
 
+  it.each(["smoothness", "height", "width"] as const)("labels a %s keyboard step in undo history", async setting => {
+    await command("view.toolset.toggle.core.art");
+    const slider = container.querySelector<HTMLInputElement>(`[aria-label="Wave ${setting}"]`)!;
+    await act(async () => {
+      slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    await command("edit.undo");
+    expect(container.textContent).toContain(`Undid Updated wave ${setting}`);
+  });
+
+  it("cancels a detached palette preview when Escape reaches the document window", async () => {
+    const before = structuredClone(objects());
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 59));
+    expect(waves().every(object => object.data.waveWidth === 59)).toBe(true);
+    const canceled = vi.fn();
+    window.addEventListener(PALETTE_COMMAND_CANCEL_EVENT, canceled);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    window.removeEventListener(PALETTE_COMMAND_CANCEL_EVENT, canceled);
+    expect(canceled).toHaveBeenCalledOnce();
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("disarms the palette pointer when cancellation arrives from the document window", async () => {
+    await command("view.toolset.toggle.core.art");
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+      right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+    const before = structuredClone(objects());
+    await act(async () => { slider.dispatchEvent(pointer("pointerdown", { clientX: 45, buttons: 1 })); });
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "palette.preview.cancel");
+    invokeSpy.mockClear();
+    await act(async () => { slider.dispatchEvent(pointer("pointerup", { clientX: 45 })); });
+    expect(invokeSpy.mock.calls.filter(([id]) => id.startsWith("object.wave."))).toEqual([]);
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it.each(["document", "palette"])("lets an expanded menu own Escape before cancelling a wave drag in the %s", async source => {
+    const before = structuredClone(objects());
+    await command("view.toolset.toggle.core.art");
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    if (source === "palette") {
+      vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+        right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+      await act(async () => { slider.dispatchEvent(pointer("pointerdown", { clientX: 45, buttons: 1 })); });
+    } else {
+      await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 59));
+    }
+    const preview = structuredClone(objects());
+    expect(preview).not.toEqual(before);
+    const menu = container.querySelector<HTMLButtonElement>('[data-menu-section="file"]')!;
+    await act(async () => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    const canceled = vi.fn();
+    window.addEventListener(PALETTE_COMMAND_CANCEL_EVENT, canceled);
+    try {
+      await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      expect(menu.getAttribute("aria-expanded")).toBe("false");
+      expect(objects()).toEqual(preview);
+      expect(canceled).not.toHaveBeenCalled();
+      await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      expect(objects()).toEqual(before);
+      invokeSpy.mockClear();
+      await act(async () => { slider.dispatchEvent(pointer("pointerup", { clientX: 45 })); });
+      expect(invokeSpy.mock.calls.filter(([id]) => id.startsWith("object.wave."))).toEqual([]);
+      expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    } finally {
+      window.removeEventListener(PALETTE_COMMAND_CANCEL_EVENT, canceled);
+    }
+  });
+
+  it.each(["document", "palette"])("lets a modal own Escape before cancelling a wave drag in the %s", async source => {
+    const before = structuredClone(objects());
+    if (source === "palette") {
+      await command("view.toolset.toggle.core.art");
+      const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+      vi.spyOn(slider, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+        right: 100, bottom: 20, width: 100, height: 20, toJSON: () => ({}) });
+      await act(async () => { slider.dispatchEvent(pointer("pointerdown", { clientX: 45, buttons: 1 })); });
+    } else {
+      await palette(PALETTE_COMMAND_PREVIEW_EVENT, objectWaveCommandId("width", 59));
+    }
+    const preview = structuredClone(objects());
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    container.append(modal);
+    const close = vi.fn((event: KeyboardEvent) => { event.preventDefault(); modal.hidden = true; });
+    modal.addEventListener("keydown", close);
+    await act(async () => { modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(close).toHaveBeenCalledOnce();
+    expect(modal.hidden).toBe(true);
+    expect(objects()).toEqual(preview);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(objects()).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
   it("excludes per-value wave tiles from the mounted Customize gallery", async () => {
     await command("view.customizeMainToolbar");
     const gallery = container.querySelector('[aria-label="Toolbar item gallery"]');

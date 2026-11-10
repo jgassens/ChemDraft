@@ -798,6 +798,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  sendPaletteCommandCancel,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -8589,7 +8590,8 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange(result.document,
-      electronMarkStyleCommands.some(command => command.id === commandId) ? result.message : undefined);
+      objectWaveForCommand(commandId) || electronMarkStyleCommands.some(command => command.id === commandId)
+        ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
     return true;
@@ -14105,6 +14107,18 @@ export function MainWindow({
       if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
         return;
       }
+      // The detached palette can leave keyboard focus in this document window during a drag.
+      // Modal dialogs and expanded menus keep ownership of Escape, including when their
+      // handler has already closed the surface and marked this event handled.
+      if (event.key === "Escape" && artStylePreviewRef.current &&
+          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
+          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+          !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+        event.preventDefault();
+        cancelObjectStylePreview();
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
+        return;
+      }
       // Before the text-field early return, so typing in an editor can't reload the page either.
       // `resolve` is undefined there (and for any chord no command claims), which is exactly when
       // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
@@ -14427,6 +14441,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelObjectStylePreview,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
