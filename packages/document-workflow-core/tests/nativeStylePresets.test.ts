@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { Acs1996StylePreset, RscJournalStylePreset, applyPatches, createEmptyDocument,
+import { Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset, ChemDraftSyntheticStylePreset, applyPatches, createEmptyDocument,
   ChemDraftDocumentSchema, snapshotChemicalIdentity, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
@@ -13,7 +13,7 @@ beforeAll(() => installRealRdkitModuleLoader());
 
 async function fixture() {
   const document = createEmptyDocument();
-  for (const [index, smiles] of ["C[NH3+]", "[13CH3]CO", "[CH2]C", "N[C@@H](C)C(=O)O", "C/C=C/C"].entries()) {
+  for (const [index, smiles] of ["C[NH3+]", "[13CH3]CO", "[CH2]C", "N[C@@H](C)C(=O)O", "C/C=C/C", "CC(=O)Oc1ccccc1C(=O)O"].entries()) {
     const molfile = await generateSmiles2DMolfile(smiles);
     const object = createSmilesMolecule(document, { x: 140 + index * 90, y: 150 },
       pastedStructureDepictionFromMolfile(molfile), smiles, undefined, { bondLengthPx: 30 });
@@ -65,7 +65,7 @@ async function canonical(molecule: MoleculeObject) {
 }
 
 describe("applyNativeStylePreset", () => {
-  it.each([Acs1996StylePreset, RscJournalStylePreset])("preserves chemistry and scales uniformly about each centre: $id", async preset => {
+  it.each([Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset])("preserves chemistry and scales uniformly about each centre: $id", async preset => {
     const document = await fixture();
     const before = structuredClone(document);
     const result = apply(document, preset.id, "document");
@@ -86,6 +86,11 @@ describe("applyNativeStylePreset", () => {
       expect(styled.superatoms).toEqual(original.superatoms);
       expect(styled.rGroups).toEqual(original.rGroups);
       expect(styled.atoms).toHaveLength(original.atoms.length);
+      expect(styled.bonds).toHaveLength(original.bonds.length);
+      expect(nativeSingleBondGraphMetadata(styled.atoms, styled.bonds).formula)
+        .toBe(nativeSingleBondGraphMetadata(original.atoms, original.bonds).formula);
+      expect(styled.atoms.reduce((charge, atom) => charge + atom.formalCharge, 0))
+        .toBe(original.atoms.reduce((charge, atom) => charge + atom.formalCharge, 0));
       const centre = (axis: "x" | "y") => (Math.min(...original.atoms.map(atom => atom[axis])) + Math.max(...original.atoms.map(atom => atom[axis]))) / 2;
       const bondLengths = (molecule: MoleculeObject) => molecule.bonds.map(bond => {
         const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
@@ -116,6 +121,60 @@ describe("applyNativeStylePreset", () => {
     expect(documentDrawingDefaults(result).textStyle).toMatchObject({ fontSizePx: preset.drawing.atomLabelFontSizePx, fontWeight: 400 });
     expect(applyNativeStylePreset(result, preset.id, "document").patches).toEqual([]);
     expect(apply(result, preset.id, "document")).toBe(result);
+  });
+
+  it("uses Sketch for new molecules and captions, is idempotent and restores Synthetic without losing other effects", async () => {
+    const document = await fixture();
+    document.pages[0]!.objects[0]!.style.visualEffects = [{ kind: "shadow", blurPx: 2 }];
+    document.pages[0]!.objects[0]!.style.effects = [{ kind: "sketch", roughness: 0.5 }];
+    const caption = document.pages[0]!.objects.find(object => object.type === "text")!;
+    caption.style.fontStyle = "italic";
+    const sketch = apply(document, SketchStylePreset.id, "document");
+    expect(sketch.pages[0]!.objects[0]!.style.visualEffects).toEqual([
+      { kind: "shadow", blurPx: 2 }, ...SketchStylePreset.drawing.visualEffects
+    ]);
+    expect(applyNativeStylePreset(sketch, SketchStylePreset.id, "document").patches).toEqual([]);
+    expect(documentDrawingDefaults(sketch).objectStyle).toMatchObject(SketchStylePreset.drawing);
+    expect(createNativeTextObject(sketch, { x: 20, y: 20 }, "Handwriting").style.fontFamily)
+      .toBe(SketchStylePreset.drawing.atomLabelFontFamily);
+    expect(sketch.pages[0]!.objects.find(object => object.type === "text")!.style.fontStyle).toBe("normal");
+    const inserted = createSmilesMolecule(sketch, { x: 60, y: 60 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    expect(inserted.style).toMatchObject(SketchStylePreset.drawing);
+    const restored = apply(sketch, ChemDraftSyntheticStylePreset.id, "document");
+    expect(documentDrawingDefaults(restored).drawing).toEqual(ChemDraftSyntheticStylePreset.drawing);
+    expect(restored.pages[0]!.objects[0]!.style.visualEffects).toEqual([{ kind: "shadow", blurPx: 2 }]);
+    for (const object of restored.pages[0]!.objects) {
+      if (object.type === "molecule") {
+        expect(object.style.atomLabelFontFamily).toBe(ChemDraftSyntheticStylePreset.drawing.atomLabelFontFamily);
+        expect((object.style.visualEffects ?? [])).not.toContainEqual(expect.objectContaining({ kind: "sketch" }));
+      } else if (object.type === "text") {
+        expect(object.style.fontFamily).toBe(ChemDraftSyntheticStylePreset.drawing.atomLabelFontFamily);
+        expect(object.spans.every(span => span.style.fontFamily === object.style.fontFamily)).toBe(true);
+      }
+    }
+  });
+
+  it.each([
+    { effects: null, expected: null },
+    { effects: "sketch", expected: "sketch" },
+    { effects: { kind: "sketch" }, expected: { kind: "sketch" } },
+    { effects: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }, { kind: "sketch" }],
+      expected: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }] },
+    { effects: [{ kind: "sketch" }], expected: undefined }
+  ])("removes only sketch entries from legacy effect arrays: $effects", ({ effects, expected }) => {
+    const document = createEmptyDocument();
+    const molecule = createSmilesMolecule(document, { x: 100, y: 100 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    molecule.style.effects = effects;
+    document.pages[0]!.objects.push(molecule);
+    const result = apply(document, ChemDraftSyntheticStylePreset.id, "document");
+    expect(result.pages[0]!.objects[0]!.style.effects).toEqual(expected);
+    expect(molecule.style.effects).toEqual(effects);
   });
 
   it("styles only selected molecules/text and keeps all other objects and defaults untouched", async () => {

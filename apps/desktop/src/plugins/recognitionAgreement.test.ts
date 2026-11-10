@@ -118,7 +118,7 @@ async function reviewed(
   );
   await host.invokeCommand("plugin.molscribeOcsr.recognizeImage");
   const [queued] = host.listProposedPatches("pending");
-  return proposalReviewItem(host, queued!);
+  return (await proposalReviewItem(host, queued!));
 }
 
 describe("recognition agreement levels", () => {

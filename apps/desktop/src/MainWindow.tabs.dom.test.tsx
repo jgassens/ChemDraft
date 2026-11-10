@@ -1437,7 +1437,7 @@ describe("documents in one window", () => {
       native.dialogListener!(delivery); native.dialogListener!(delivery);
     });
     await vi.waitFor(() => expect(native.writeFile.mock.calls.filter(([path]) => path.startsWith("/tmp/"))).toHaveLength(1));
-    expect(native.writeFile).toHaveBeenCalledWith("/tmp/granted-without-extension", exportPhase4Svg(origin, options.svg).contents);
+    expect(native.writeFile).toHaveBeenCalledWith("/tmp/granted-without-extension", (await exportPhase4Svg(origin, options.svg)).contents);
     expect(active()).toBe(1);
     expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ status: "exported" }) }));
   });

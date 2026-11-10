@@ -142,6 +142,7 @@ import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import type { ScreenPlacement } from "./interaction/spinOverlay";
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlText,
+  ensureSvgFontsLoaded,
   exportDocumentToSvg,
   type BinaryExportResult,
   type ExportWarning,
@@ -20100,10 +20101,11 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
   return patches.length === 0 ? scoped : applyPatches(scoped, patches, { now: phase4Timestamp });
 }
 
-export function exportPhase4Svg(
+export async function exportPhase4Svg(
   document: ChemDraftDocument,
   options: SvgExportOptions = {}
-): SvgExportResult {
+): Promise<SvgExportResult> {
+  await ensureSvgFontsLoaded(document, options);
   return exportDocumentToSvg(document, {
     ...options,
     directElectronMarkEditing: options.directElectronMarkEditing ?? loadDirectElectronMarkEditing(),

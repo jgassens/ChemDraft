@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Acs1996StylePreset, RscJournalStylePreset, createEmptyDocument } from "@chemdraft/chem-core";
+import { Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset, createEmptyDocument } from "@chemdraft/chem-core";
 import { createSmilesMolecule, createNativeTextObject } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -35,7 +35,7 @@ describe.each(["macos", "windows"] as const)("MainWindow native style presets (%
   }
   const read = () => getAssistantHistoryPort().read("initial")!;
 
-  it.each([Acs1996StylePreset, RscJournalStylePreset])("applies $name in one labelled entry and restores exact undo/redo snapshots", async preset => {
+  it.each([Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset])("applies $name in one labelled entry and restores exact undo/redo snapshots", async preset => {
     const initial = createEmptyDocument();
     initial.pages[0]!.objects.push(createSmilesMolecule(initial, { x: 180, y: 180 }, {
       atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "N", x: 1, y: 0, charge: 1 }],

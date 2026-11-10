@@ -1,5 +1,5 @@
 import {
-  NativeStylePresets, nativeTextStyleFromObjectStyle, stylePresetToObjectStyle,
+  NativeStylePresets, SketchStylePreset, nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle, stylePresetToObjectStyle,
   type ChemDraftDocument, type DocumentObject, type DocumentPatch
 } from "@chemdraft/chem-core";
 import { moleculeTargetBondLengthChanges } from "./molecule";
@@ -30,7 +30,9 @@ export function applyNativeStylePreset(
   const text = {
     fontFamily: preset.drawing.atomLabelFontFamily,
     fontSizePx: preset.drawing.atomLabelFontSizePx,
-    fontWeight: preset.drawing.atomLabelFontWeight
+    fontWeight: preset.drawing.atomLabelFontWeight,
+    // The bundled handwriting face is regular; avoid synthesizing an imported italic.
+    ...(preset.id === SketchStylePreset.id ? { fontStyle: "normal" as const } : {})
   };
   const patches: DocumentPatch[] = [];
   const changedOnPage: string[] = [];
@@ -39,9 +41,24 @@ export function applyNativeStylePreset(
       if (scope === "selection" && (currentPage.id !== page.id || !selected.has(object.id))) continue;
       let changes: Partial<DocumentObject>;
       if (object.type === "molecule") {
+        // Presets own the sketch treatment; preserve independently authored art effects.
+        const style = { ...object.style, ...stylePresetToObjectStyle(preset) };
+        const effects = Array.isArray(object.style.visualEffects) ? object.style.visualEffects : [];
+        const visualEffects = [
+          ...effects.filter(effect => effect?.kind !== "sketch"),
+          ...("visualEffects" in preset.drawing ? preset.drawing.visualEffects : [])
+        ];
+        if (visualEffects.length) style.visualEffects = visualEffects;
+        else delete style.visualEffects;
+        if (Array.isArray(style.effects)) {
+          const remainingEffects = style.effects.filter(effect =>
+            typeof effect !== "object" || effect === null || !("kind" in effect) || effect.kind !== "sketch");
+          if (remainingEffects.length) style.effects = remainingEffects;
+          else delete style.effects;
+        }
         changes = {
           ...moleculeTargetBondLengthChanges(object, preset.drawing.bondLengthPx),
-          style: { ...object.style, ...stylePresetToObjectStyle(preset) }
+          style
         };
       } else if (object.type === "text") {
         changes = {
@@ -58,7 +75,7 @@ export function applyNativeStylePreset(
   if (scope === "document") {
     const storedText = document.styles.text;
     const defaults = {
-      drawing: preset.drawing,
+      drawing: nativeDrawingStyleFromObjectStyle({ ...preset.drawing }),
       text: { ...nativeTextStyleFromObjectStyle(storedText && typeof storedText === "object" && !Array.isArray(storedText)
         ? storedText as Record<string, unknown> : {}), ...text }
     };

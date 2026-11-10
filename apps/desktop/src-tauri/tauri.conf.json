@@ -49,7 +49,8 @@
       "../../../NOTICE": "licenses/NOTICE",
       "../../../LICENSE": "licenses/LICENSE",
       "../../../packages/export-engine/src/fonts/LICENSE_NOTO.txt": "licenses/LICENSE_NOTO.txt",
-      "../../../packages/export-engine/src/fonts/LICENSE_DEJAVU.txt": "licenses/LICENSE_DEJAVU.txt"
+      "../../../packages/export-engine/src/fonts/LICENSE_DEJAVU.txt": "licenses/LICENSE_DEJAVU.txt",
+      "../../../packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt": "licenses/LICENSE_PATRICK_HAND.txt"
     },
     "fileAssociations": [
       {

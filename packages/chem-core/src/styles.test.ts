@@ -1,10 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { Acs1996StylePreset, RscJournalStylePreset, NativeStylePresets, DOCUMENT_STYLE_UNITS_PER_PT,
+import { Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset, NativeStylePresets, DOCUMENT_STYLE_UNITS_PER_PT,
   DocumentStylePreset, nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle, stylePresetToObjectStyle,
   createEmptyDocument, ChemDraftDocumentSchema, DocumentObjectSchema, DocumentSchemaVersion,
   deserializeDocument, serializeDocument, applyPatch } from "./index";
 
 describe("native style presets", () => {
+  it("loads the stored Synthetic id unchanged on document defaults, molecules and text", () => {
+    const document = createEmptyDocument();
+    document.styles.drawing = { stylePresetId: "chemdraft.synthetic" };
+    document.styles.text = { stylePresetId: "chemdraft.synthetic" };
+    document.pages[0]!.objects = [
+      DocumentObjectSchema.parse({ id: "m", type: "molecule", x: 0, y: 0, width: 40, height: 20,
+        structureFormat: "smiles", structure: "CO", style: { stylePresetId: "chemdraft.synthetic" } }),
+      DocumentObjectSchema.parse({ id: "t", type: "text", x: 0, y: 30, width: 40, height: 20,
+        text: "Caption", style: { stylePresetId: "chemdraft.synthetic" } })
+    ];
+    expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+    expect(NativeStylePresets.find(preset => preset.id === "chemdraft.synthetic")?.name).toBe("ChemDraft Synthetic");
+  });
+
+  it("round-trips the existing sketch effect with handwriting without a schema migration", () => {
+    const document = createEmptyDocument();
+    document.styles.drawing = stylePresetToObjectStyle(SketchStylePreset);
+    document.pages[0]!.objects = [DocumentObjectSchema.parse({ id: "m", type: "molecule", x: 0, y: 0, width: 40,
+      height: 20, structureFormat: "smiles", structure: "CO", style: stylePresetToObjectStyle(SketchStylePreset) })];
+    expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+    expect(SketchStylePreset.drawing.visualEffects).toEqual([{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7 }]);
+  });
   it.each([
     { type: "molecule", structureFormat: "smiles", structure: "CO" },
     { type: "text", text: "Caption" },

@@ -219,6 +219,7 @@ export {
   Acs1996StylePreset,
   RscJournalStylePreset,
   NativeStylePresets,
+  SketchStylePreset,
   type NativeStylePresetId,
   DOCUMENT_STYLE_UNITS_PER_PT,
   DocumentMoleculeSizeStyle,

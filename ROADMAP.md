@@ -25,7 +25,7 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Arrow keys move the selection.
 - Choose whether new double bonds are drawn offset or centred.
 - A warning, instead of a refusal, when a bond would exceed normal valence.
-- More drawing style presets alongside "Tot. Syn. blog", including a journal-style preset.
+- More drawing style presets alongside ChemDraft Synthetic, including a journal-style preset.
 - Formatted reaction conditions, movable electron-pushing marks and adjustable wavy lines (community contributions).
 - Asks before enlarging the page when a structure doesn't fit.
 

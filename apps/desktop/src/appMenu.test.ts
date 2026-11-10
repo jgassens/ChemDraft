@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { NativeStylePresets } from "@chemdraft/chem-core";
 
 import {
   buildAppMenuModel,
@@ -16,6 +17,7 @@ import {
 } from "./appMenu";
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
+import { nativeStylePresetCommandId } from "./commands";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -68,7 +70,8 @@ describe("app menu model", () => {
     }));
     const model = buildAppMenuModel({ ...context, pluginMenuItems: aliases.map(command => ({ location: "structure", command })) });
     const structure = model.find(section => section.id === "structure")!;
-    expect(base.items.at(-1)).toMatchObject({ commandId: "style.preset.apply.chemdraft.rscjournal" });
+    expect(base.items.slice(-NativeStylePresets.length)).toEqual(NativeStylePresets.map(preset =>
+      expect.objectContaining({ kind: "command", commandId: nativeStylePresetCommandId(preset.id) })));
     expect(structure.items.slice(0, base.items.length)).toEqual(base.items);
     expect(structure.items.slice(base.items.length)).toEqual([expect.objectContaining({ kind: "separator" }), ...aliases]);
     expect(nativeRoutedCommandIds(model)).toEqual(nativeRoutedCommandIds(buildAppMenuModel(context)));

@@ -428,7 +428,7 @@ it("preserves default SVG export bytes for an unsized custom page taller than 81
   const state = { ...createDefaultExportDialogState(tall), format: "svg" as const };
   expect(state.presentation).toBeUndefined();
   const result = await createDialogExportResult(tall, state);
-  expect(result.kind === "text" && result.contents).toBe(exportPhase4Svg(tall, state.svg).contents);
+  expect(result.kind === "text" && result.contents).toBe((await exportPhase4Svg(tall, state.svg)).contents);
 });
 
 it("restarts a pending preview after a destination picker busy cycle", async () => {
@@ -456,6 +456,7 @@ it("discards a superseded native render before encoding or transporting its prev
   const encode = vi.spyOn(globalThis, "btoa");
   const pending = createDialogExportPreview(document, { ...createDefaultExportDialogState(document), format: "png" }, () => live);
   const rejected = expect(pending).rejects.toThrow("Preview was superseded");
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
   live = false;
   finish(raster);
   await rejected;

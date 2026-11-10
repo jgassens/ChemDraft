@@ -244,7 +244,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       let previewSvg: string | undefined;
       try {
         const document = request.context.getDocument();
-        if (document) previewSvg = runThumbnail(document, result.touchedIds);
+        if (document) previewSvg = await runThumbnail(document, result.touchedIds);
       } catch { /* A transcript preview must not turn a completed request into a failure. */ }
       return { ...result, ...(previewSvg ? { previewSvg } : {}), summary: `${request.touched.size} object(s) changed.` };
     } finally {

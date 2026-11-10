@@ -8,10 +8,12 @@ import {
   documentStylePointBounds,
   planPageSvgRender,
   planNativeArtVisual,
+  isPatrickHandFont,
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
+import { ensureHandwritingFontLoaded, requireHandwritingFontFaceCss } from "./handwritingFont";
 
 export interface SvgExportOptions {
   /** Match the editor's opt-in electron-mark rendering; custom stored styling always renders. */
@@ -120,6 +122,10 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
       preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
     }, children: [] }] }, 2);
   }).join("\n");
+  // Only rendered text on this page needs a font. Preserve all other SVG bytes.
+  const fontMarkup = needsHandwriting(plan.fragments)
+    ? `  <defs><style>${requireHandwritingFontFaceCss()}</style></defs>`
+    : "";
   const warnings = plan.warnings.filter((warning) => !(warning.code === "export.svg.graphic_fallback" && warning.objectId && images.has(warning.objectId))).map<ExportWarning>((warning) => ({
     code: warning.code,
     message: warning.message,
@@ -146,6 +152,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     format: "svg",
     contents: [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      fontMarkup,
       backgroundMarkup,
       pageGuideMarkup,
       body,
@@ -250,4 +257,15 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function needsHandwriting(fragments: readonly PageSvgFragment[]): boolean {
+  return fragments.some(fragment => fragment.kind === "element" &&
+    (isPatrickHandFont(String(fragment.attrs["font-family"] ?? "")) || needsHandwriting(fragment.children)));
+}
+
+/** Prepare only the exported page's rendered fonts before calling the synchronous writer. */
+export async function ensureSvgFontsLoaded(document: ChemDraftDocument, options: SvgExportOptions = {}): Promise<void> {
+  const page = document.pages[options.pageIndex ?? 0];
+  if (page && needsHandwriting(planPageSvgRender(page).fragments)) await ensureHandwritingFontLoaded();
 }

@@ -406,7 +406,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     const doc = window.__CHEMDRAFT_AGENT__!.snapshot().document;
     vi.stubGlobal("getComputedStyle", window.getComputedStyle.bind(window));
     const pdf = await exportPhase4Pdf(doc, { compress: false });
-    for (const output of [exportPhase4Svg(doc).contents, exportPhase4Cdxml(doc).contents, new TextDecoder().decode(pdf.bytes)]) {
+    for (const output of [(await exportPhase4Svg(doc)).contents, exportPhase4Cdxml(doc).contents, new TextDecoder().decode(pdf.bytes)]) {
       expect(output).not.toContain("native-bond-stereo-marker"); expect(output).not.toContain("E/Z not specified");
       expect(output).not.toContain("This double bond"); expect(output).not.toMatch(/>!<|\(!\) Tj/);
     }

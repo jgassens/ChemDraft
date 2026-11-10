@@ -49,6 +49,8 @@ Oversized links show “This structure is too large for a search link. Select a 
 Check charged, isotopic and stereochemical queries in both destinations; Reaxys needs the user's
 own access and its browser session may retain an earlier query, so verify the loaded structure.
 
+Sketch preset (macOS and Windows): check uneven single/double/triple/wedge/hash ink at roughness 1.25 and Patrick Hand labels/captions. Export SVG and PDF, open on a machine without the font installed, and compare label spacing and searchable PDF text. Apply ChemDraft Synthetic afterward and verify that the sketch ink and handwriting are removed in the chosen scope.
+
 Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example

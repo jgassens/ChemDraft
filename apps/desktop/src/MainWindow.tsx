@@ -2,6 +2,7 @@ import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel } from "./bracketCommands";
 import { bracketLabelPlan } from "@chemdraft/layout-engine";
+import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
@@ -3244,8 +3245,8 @@ export function MainWindow({
   }, [activePage, atomLabelPreview, tableResizePreview]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
-  const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
-    [labelDisplayPage, nativeDoubleBondSidePreview]);
+  const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
+    [labelDisplayPage, nativeDoubleBondSidePreview]));
   // One full-page plan supplies both the native overlays and the ordered SVG runs.
   // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
   // their start geometry until the real document is rendered once on release.
@@ -7616,7 +7617,7 @@ export function MainWindow({
         return;
       }
       case "clipboard.copyAs.svg": {
-        const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
+        const svgContents = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false })).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
         // picture from public.svg-image, while text editors still get the source via text/plain.
         // A bare text/plain write pasted into Illustrator as literal markup.
@@ -7659,7 +7660,7 @@ export function MainWindow({
       case "clipboard.copyAs.png": {
         setStatus("Rendering PNG…");
         try {
-          const svgResult = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false });
+          const svgResult = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }));
           // Oversample 4x for sharpness; the exported SVG's units are CSS px (96/inch, not the
           // 72/inch PDF-point convention), so declaring the true density needs CSS_PX_PER_INCH,
           // not a hardcoded "288". Both raster paths derive the stamped density from the scale
@@ -9916,7 +9917,7 @@ export function MainWindow({
     if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
     return source;
   };
-  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
+  const previewSpacingRef = useRef<(tabId: string, percent: number) => Promise<string>>(async () => "");
   previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
   const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
   applySpacingRef.current = (tabId, percent) => {
@@ -12669,15 +12670,15 @@ export function MainWindow({
     return documentTabs.length < 2 ? undefined : tab.title;
   }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
-    (open: boolean, focus: boolean): Promise<boolean> => {
+    async (open: boolean, focus: boolean): Promise<boolean> => {
       const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
       return publishAnalysisWindow(
         PATCH_REVIEW_WINDOW_ID,
         "Plugin Proposals",
         {
           kind: "patchReview",
-          proposals: pending.map((proposal) =>
-            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal)))
+          proposals: await Promise.all(pending.map((proposal) =>
+            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal))))
         },
         { open, focus, width: 420, height: 420 }
       );
@@ -25300,6 +25301,11 @@ function SpinOverlay({
   onPointerUp: (event: PointerEvent<SVGSVGElement>) => void;
   onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
 }) {
+  const fonts = useCanvasHandwritingFont(useMemo(() => ({
+    drawingStyle, atomLabelStyles: state.atomLabelStyles, sourceMolecule: state.sourceMolecule
+  }), [drawingStyle, state.atomLabelStyles, state.sourceMolecule]));
+  drawingStyle = fonts.drawingStyle;
+  state = { ...state, atomLabelStyles: fonts.atomLabelStyles, sourceMolecule: fonts.sourceMolecule };
   const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
   // Depth-cue weights computed with the EXACT recipe flattenSpunMolecule commits, so the
   // live overlay's stroke weighting is identical to the flattened result (no snap on
@@ -33330,14 +33336,14 @@ export async function createDialogExportResult(
   const dpi = preview ? 96 : sanitizedDialogNumber(presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
-    const result = exportPhase4Svg(document, {
+    const result = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
       outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
       outputUnit: preview ? undefined : "mm" as const } : {}),
       ...(sized ? { background: presentation.background === "transparent" ? "transparent" as const : "#ffffff" } : {}),
       includeWarnings: state.svg.includeWarnings,
       includePageGuides: state.svg.includePageGuides
-    });
+    }));
     return {
       format: descriptor.id,
       kind: "text",
@@ -33380,11 +33386,11 @@ export async function createDialogExportResult(
     const transparent = rasterFormat === "png" && state.raster.background === "transparent";
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
     // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
-    const svgResult = exportPhase4Svg(document, {
+    const svgResult = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: width, outputHeight: height } : {}),
       includeWarnings: true,
       background: transparent ? "transparent" : "#ffffff"
-    });
+    }));
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
       // Legacy scale-based exports use the source SVG's 96 CSS px/inch. Rust multiplies

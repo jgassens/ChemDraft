@@ -7605,7 +7605,7 @@ describe("Phase 4 document workflow", () => {
     expect(colored.selection.objectIds).toEqual([molecule.id, textObject.id]);
   });
 
-  it("keeps native art graphics editable, persistent, undoable, and warning-backed", () => {
+  it("keeps native art graphics editable, persistent, undoable, and warning-backed", async () => {
     const document = createPhase4Document("Native Graphic Workflow");
     const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, "tool.art.roundedRectGloss");
     const objectId = inserted.selection.objectIds[0];
@@ -7703,7 +7703,7 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.source).toBe("native-payload");
     expect(graphicById(reopened.document ?? document, objectId)).toEqual(tiltedGraphic);
 
-    const svg = exportPhase4Svg(tilted, { includeWarnings: true });
+    const svg = (await exportPhase4Svg(tilted, { includeWarnings: true }));
     expect(svg.contents).toContain('data-object-id="' + objectId + '"');
     expect(svg.contents).toContain('id="graphic-gloss-' + objectId + '"');
     expect(svg.contents).toContain('gradientUnits="userSpaceOnUse"');
@@ -8523,7 +8523,7 @@ describe("Phase 4 document workflow", () => {
     expect(moleculeById(mainToolbarColored, molecule.id).style.fillColor).not.toBe("#1648FF");
   });
 
-  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {
+  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", async () => {
     const withGraphic = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Gradient Paint Selection"),
       { x: 220, y: 180 },
@@ -8674,7 +8674,7 @@ describe("Phase 4 document workflow", () => {
 
     const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
     const transparentGraphic = graphicById(transparentFill, objectId);
-    const linearSvg = exportPhase4Svg(transparentFill, { includeWarnings: true });
+    const linearSvg = (await exportPhase4Svg(transparentFill, { includeWarnings: true }));
     expect(linearSvg.contents).toContain(`<linearGradient id="graphic-fill-${objectId}"`);
     expect(linearSvg.contents).toContain(`x1="${transparentGraphic.x}"`);
     expect(linearSvg.contents).toContain(`y1="${transparentGraphic.y}"`);
@@ -8770,7 +8770,7 @@ describe("Phase 4 document workflow", () => {
     });
     expect(resizedRadialPaint?.kind === "radial-gradient" ? resizedRadialPaint.r : undefined).toBeCloseTo(0.4, 6);
 
-    const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
+    const radialSvg = (await exportPhase4Svg(radialStroked, { includeWarnings: true }));
     const radialGraphic = graphicById(radialStroked, objectId);
     expect(radialSvg.contents).toContain(`<radialGradient id="graphic-stroke-${objectId}"`);
     expect(radialSvg.contents).toContain(`cx="${radialGraphic.x + radialGraphic.width * 0.5}"`);
@@ -9186,7 +9186,7 @@ describe("Phase 4 document workflow", () => {
     expect(lineOnly.selection.objectIds).toEqual([lineId]);
   });
 
-  it("applies native art boolean union and exports the result as SVG", () => {
+  it("applies native art boolean union and exports the result as SVG", async () => {
     const withFirst = insertNativeArtGraphicObject(
       createPhase4Document("Boolean Art Union"),
       { x: 220, y: 180 },
@@ -9211,7 +9211,7 @@ describe("Phase 4 document workflow", () => {
       throw new Error("Expected boolean union result.");
     }
     const graphic = graphicById(result.document, resultId);
-    const svg = exportPhase4Svg(result.document, { includeWarnings: true });
+    const svg = (await exportPhase4Svg(result.document, { includeWarnings: true }));
     const exportedTag = exportedObjectTag(svg.contents, resultId);
     const exportedPathD = exportedAttribute(exportedTag, "d");
     const exportedPoints = svgPathCoordinatePairs(exportedPathD);
@@ -9242,7 +9242,7 @@ describe("Phase 4 document workflow", () => {
     expect(svg.warnings).toEqual([]);
 
     const rotated = rotateDocumentObject(result.document, resultId, 12);
-    const rotatedSvg = exportPhase4Svg(rotated, { includeWarnings: true });
+    const rotatedSvg = (await exportPhase4Svg(rotated, { includeWarnings: true }));
     const rotatedTag = exportedObjectTag(rotatedSvg.contents, resultId);
     expect(exportedAttribute(rotatedTag, "transform")).toContain("rotate(12");
   });
@@ -12896,7 +12896,7 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", () => {
+  it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", async () => {
     // Methanolate with its ⊖ mark, plus an electron-push arrow from the mark to the carbon.
     const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
       setNativeAtomElement(
@@ -12925,7 +12925,7 @@ describe("Phase 4 document workflow", () => {
     expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
 
     const scoped = copyAsScopedDocument(moleculeSelected);
-    const svg = exportPhase4Svg(scoped, { includeWarnings: false }).contents;
+    const svg = (await exportPhase4Svg(scoped, { includeWarnings: false })).contents;
     expect(svg).toContain('data-mark-kind="charge"');
     expect(svg).toContain('data-mechanism-arrow-kind="full-headed"');
 
@@ -13081,7 +13081,7 @@ describe("Phase 4 document workflow", () => {
     expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
   });
 
-  it("fits the Copy As scoped document page to the selection", () => {
+  it("fits the Copy As scoped document page to the selection", async () => {
     const twoMolecules = insertNativeSingleBondMolecule(
       insertNativeSingleBondMolecule(createPhase4Document("Copy As Fit"), { x: 300, y: 300 }),
       { x: 620, y: 500 }
@@ -13096,7 +13096,7 @@ describe("Phase 4 document workflow", () => {
     expect(scoped.pages[0].width).toBeCloseTo(only.width + 32, 3);
     expect(scoped.pages[0].height).toBeCloseTo(only.height + 32, 3);
     // The SVG of the scoped document renders without warnings machinery blowing up.
-    expect(exportPhase4Svg(scoped, { includeWarnings: false }).contents).toContain("<svg");
+    expect((await exportPhase4Svg(scoped, { includeWarnings: false })).contents).toContain("<svg");
   });
 
   it("keeps intrinsic drawn or imported charges out of the mark reconciliation", () => {
@@ -14075,9 +14075,9 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("exports the Phase 4 subset as SVG", () => {
+  it("exports the Phase 4 subset as SVG", async () => {
     const document = insertAdapterFallbackMolecule(createPhase4Document("SVG Fixture"));
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.format).toBe("svg");
     expect(result.contents).toContain('aria-label="SVG Fixture"');
@@ -14098,9 +14098,9 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).toContain('Name="org.chemdraft/native-document"');
   });
 
-  it("exports native single-bond molecules as bond geometry", () => {
+  it("exports native single-bond molecules as bond geometry", async () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Bond SVG"), { x: 200, y: 220 });
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.contents).toContain('data-chem-primitive="single-bond"');
     expect(result.contents).toContain('data-structure="CC"');
@@ -14108,13 +14108,13 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).not.toContain(">CC</text>");
   });
 
-  it("exports connected native molecule graphs as connected bond geometry", () => {
+  it("exports connected native molecule graphs as connected bond geometry", async () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Chain SVG"), { x: 200, y: 220 }),
       "atom_002",
       0
     );
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.contents).toContain('data-chem-primitive="connected-carbon-chain"');
     expect(result.contents).toContain('data-structure="CCC"');
