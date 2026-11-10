@@ -42,6 +42,7 @@ jobs:
       run:
         shell: pwsh
     outputs:
+      commit: ${{ steps.bundle.outputs.commit }}
       version: ${{ steps.bundle.outputs.version }}
       authenticode_signed: ${{ steps.authenticode.outputs.signed || 'false' }}
       updater_signed: ${{ steps.updater.outputs.signed || 'false' }}
@@ -144,6 +145,7 @@ jobs:
           Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets
           Copy-Item -LiteralPath "$($installers[0].FullName).build.json" -Destination release-assets
           "version=$($config.version)" >> $env:GITHUB_OUTPUT
+          "commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_OUTPUT
           "installer=$expected" >> $env:GITHUB_OUTPUT
           Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha"
 
@@ -202,7 +204,7 @@ jobs:
           EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
           INSTALLER: ${{ steps.bundle.outputs.installer }}
         run: |
-          # The source record travels beside the installer; retain the original record unchanged.
+          # Keep source identity; the final-byte record is rebound after signing below.
           $signed = @(Get-ChildItem signpath-signed -Recurse -File | Where-Object { $_.Name -cne "$env:INSTALLER.build.json" })
           if ($signed.Count -ne 1 -or $signed[0].Name -cne $env:INSTALLER) { throw 'SignPath must return exactly the expected installer.' }
           $signature = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
@@ -247,6 +249,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows update manifest generation failed.' }
           'signed=true' >> $env:GITHUB_OUTPUT
 
+      - name: Bind build record to final signed installer bytes
+        env:
+          INSTALLER: ${{ steps.bundle.outputs.installer }}
+        run: |
+          $installer = Join-Path release-assets $env:INSTALLER
+          $recordPath = "$installer.build.json"
+          $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+          $record.sha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $record.size = (Get-Item -LiteralPath $installer).Length
+          $record | ConvertTo-Json | Set-Content -LiteralPath $recordPath -Encoding utf8NoBOM
+
       - name: Print SHA-256 and sizes and write checksums
         run: |
           $checksums = @(Get-ChildItem release-assets -File | Sort-Object Name | ForEach-Object {
@@ -267,9 +280,14 @@ jobs:
     if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
     runs-on: windows-latest
     permissions:
-      contents: write # Only this job can upload release assets; no source code executes here.
+      contents: write # Upload and validate draft assets here; all other jobs stay read-only.
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Require verified signatures before release upload
         shell: pwsh
         env:
@@ -294,8 +312,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.upload_to_release }}
           VERSION: ${{ needs.build.outputs.version }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           if ($env:RELEASE_TAG -cne "v$env:VERSION") { throw 'Release tag must match the installer version.' }
+          # Fetch the destination tag immediately before upload, and peel annotated tags.
+          git fetch --no-tags origin "+refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch destination release tag.' }
+          $destinationCommit = git rev-parse --verify "refs/tags/$($env:RELEASE_TAG)^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $destinationCommit.Trim() -cne $env:BUILD_COMMIT) { throw 'Destination release tag does not match the built commit.' }
           $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,tagName
           if ($LASTEXITCODE -ne 0) { throw 'Target release must already exist.' }
           $release = $releaseJson | ConvertFrom-Json
@@ -303,3 +327,19 @@ jobs:
           $assets = @(Get-ChildItem release-assets -File | ForEach-Object { $_.FullName })
           gh release upload $env:RELEASE_TAG @assets --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          token: ''
+      - name: Check all attached release builds when complete
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.upload_to_release }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
+        # Draft assets need this upload job's token. A Windows-only result is not a publishing pass.
+        run: |
+          node tools/release/check-release-assets.mjs --tag "$env:RELEASE_TAG" --commit "$env:BUILD_COMMIT" --allow-incomplete --skip-dmg-provenance
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset validation failed.' }
