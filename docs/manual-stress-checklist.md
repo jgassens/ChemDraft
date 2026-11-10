@@ -1,5 +1,16 @@
 # Manual stress checklist
 
+Clean Up Structure 2D (macOS and Windows): draw a ring with a distorted side chain, select only
+the chain atoms (then repeat by selecting its bonds), and clean up. The chain should have standard
+bond lengths/angles and join the ring at the document bond length; every unselected atom must stay
+where it was placed. Repeat with one ligand on a metal complex, including a metal with more than
+four bonds, and with selected parts in two molecules. The metal and other ligands stay fixed unless
+explicitly selected. Selection remains highlighted; one Undo labelled “Clean Up Selection” restores
+the exact drawing and one Redo restores the result. A lone selected atom is deliberately a no-op.
+Repeat beside wedges/hashes and E/Z double bonds: stereo must remain identical, or cleanup must
+refuse with a stereochemistry message and leave the drawing unchanged. Compare no-selection and
+whole-molecule cleanup with the existing behaviour, and check save/reopen and export.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
