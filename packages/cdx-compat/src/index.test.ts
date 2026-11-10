@@ -1022,7 +1022,6 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(result.contents).toContain('RectangleType="RoundEdge Shadow"');
     expect(result.contents).toContain('CornerRadius="525"');
     expect(result.warnings.map((item) => item.code)).toEqual([
-      "cdxml.graphic_color_approximation",
       "cdxml.graphic_gloss_payload_only",
       "cdxml.graphic_tilt_payload_only"
     ]);
@@ -2656,6 +2655,143 @@ function expectRingDoubleBondsPointInward(molecule: MoleculeObject | undefined):
     });
   }
 }
+
+describe("visible CDXML colours", () => {
+  const standard = ["#ffffff", "#000000", "#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff"];
+  const text = (color?: string): TextObject => ({
+    id: "colour_text", type: "text", x: 10, y: 20, width: 80, height: 24, rotation: 0,
+    style: color ? { color } : {}, text: "H2O", spans: []
+  });
+  const shape = (id: string, color?: string, filled = false): GraphicObject => ({
+    id, type: "graphic", graphicKind: "rect", x: 50, y: 60, width: 40, height: 30, rotation: 0,
+    style: { ...(color ? { strokeColor: color } : {}), fillColor: filled ? color : "none" }, data: {}
+  });
+  const arrow = (color?: string): GraphicObject => ({
+    ...shape("colour_arrow", color), graphicKind: "path",
+    data: { artToolId: "reactionArrow", artPathKind: "line", markerEnd: { kind: "filled-arrow", sizePx: 16 } }
+  });
+  const tableColors = (xml: string) => [...xml.match(/<colortable>([\s\S]*?)<\/colortable>/)![1].matchAll(/<color\b[^>]*>/g)]
+    .map(([entry]) => "#" + ["r", "g", "b"].map(channel =>
+      Math.round(Number(entry.match(new RegExp(`${channel}="([^"]+)"`))![1]) * 255).toString(16).padStart(2, "0")).join(""));
+  const visible = (document: ChemDraftDocument) => exportDocumentToCdxml(document).contents.replace(/<objecttag\b[^>]*\/>/g, "");
+
+  it("deduplicates colours across pages in first-use order after the standard entries", () => {
+    const molecule = singleBondMolecule();
+    // Object-key insertion order must not determine the table: nodes are written before bonds.
+    molecule.style = { bondColors: { bond_001: "#0a0b0c" }, atomLabelColors: { atom_002: "#12AB34" } };
+    const rich = text("#1f5fbf");
+    rich.spans = [{ text: "H", script: "normal", style: { color: "#12ab34" } },
+      { text: "2O", script: "normal", style: { color: "#ff0000" } }];
+    const document = documentWithObjects([molecule, rich, arrow("#0A0B0C"), shape("filled", "#1f5fbf", true)]);
+    document.pages.push({ ...document.pages[0], id: "second_page", objects: [shape("last", "#abcdef"), { ...text("#12ab34"), id: "repeat" }] });
+    const xml = visible(document);
+    expect(tableColors(xml)).toEqual([...standard, "#12ab34", "#0a0b0c", "#1f5fbf", "#abcdef"]);
+    expect(xml).toMatch(/<n\b[^>]*Element="8"[^>]*color="10"|<n\b[^>]*color="10"[^>]*Element="8"/);
+    expect(xml).toMatch(/<b\b[^>]*color="11"/);
+    expect(xml).toMatch(/<t\b[^>]*color="12"/);
+    expect(xml).toContain('<s color="10">H</s>');
+    expect(xml).toContain('<s color="4">2O</s>');
+    expect(xml).toMatch(/<graphic\b[^>]*color="11"/);
+    expect(xml).toMatch(/<graphic\b[^>]*color="13"/);
+    expect(visible(document)).toBe(xml);
+  });
+
+  it.each(["#12AB34", "#0a0b0c", "#1f5fbf", "#ff0000", "#ffffff"])("round-trips %s on atoms, bonds, text, runs, arrows and filled shapes", color => {
+    const molecule = singleBondMolecule();
+    molecule.style = { atomLabelColors: { atom_002: color }, bondColors: { bond_001: color } };
+    const rich = { ...text(), id: "rich", spans: [
+      { text: "H", script: "normal" as const, style: {} },
+      { text: "2", script: "subscript" as const, style: { color } },
+      { text: "O", script: "normal" as const, style: {} }
+    ] };
+    const result = exportDocumentToCdxml(documentWithObjects([molecule, text(color), rich, arrow(color), shape("outline", color), shape("filled", color, true)]));
+    expect(result.warnings).toEqual([]);
+    const opened = openChemDraftPayload(result.contents.replace(/<objecttag\b[^>]*\/>/g, ""));
+    expect(opened.source).toBe("external-cdxml");
+    const [mol, whole, runs, artArrow, outline, filled] = opened.document!.pages[0].objects;
+    const normalized = color.toLowerCase();
+    expect(mol.style).toEqual({ atomLabelColors: { atom_002: normalized }, bondColors: { bond_001: normalized } });
+    expect(whole.style.color).toBe(normalized);
+    expect(runs).toMatchObject({ text: "H2O", spans: [
+      { text: "H", style: {} }, { text: "2", script: "subscript", style: { color: normalized } }, { text: "O", style: {} }
+    ] });
+    expect(artArrow.style.strokeColor).toBe(normalized);
+    expect(outline.style.strokeColor).toBe(normalized);
+    expect(filled.style).toMatchObject({ strokeColor: normalized, fillColor: normalized });
+  });
+
+  it("uses molecule-wide colours as fallbacks for individual atoms and bonds", () => {
+    const molecule = singleBondMolecule();
+    molecule.style = { atomLabelColor: "#12AB34", bondColor: "#1f5fbf", atomLabelColors: { atom_002: "#0a0b0c" } };
+    const reopened = openChemDraftPayload(visible(documentWithObjects([molecule]))).document!.pages[0].objects[0];
+    expect(reopened.style).toEqual({ atomLabelColors: { atom_001: "#12ab34", atom_002: "#0a0b0c" }, bondColors: { bond_001: "#1f5fbf" } });
+  });
+
+  it("keeps default black implicit on objects and runs", () => {
+    const molecule = singleBondMolecule();
+    molecule.style = { atomLabelColor: "#000000", bondColor: "#000000" };
+    const rich = text("#000000");
+    rich.spans = [{ text: "H2O", script: "normal", style: { color: "#000000" } }];
+    const xml = visible(documentWithObjects([molecule, rich, arrow("#000000"), shape("default", "#000000", true)]));
+    expect(xml).not.toMatch(/\bcolor="/);
+    expect(tableColors(xml)).toEqual(standard);
+  });
+
+  it("lets a black run override a coloured parent and leaves other runs inherited", () => {
+    const rich = text("#12ab34");
+    rich.spans = [{ text: "H", script: "normal", style: {} },
+      { text: "2", script: "normal", style: { color: "#000000" } },
+      { text: "O", script: "normal", style: { color: "#12AB34" } }];
+    const xml = visible(documentWithObjects([rich]));
+    expect(xml).toContain('<s>H</s><s color="3">2</s><s>O</s>');
+    const reopened = openChemDraftPayload(xml).document!.pages[0].objects[0] as TextObject;
+    expect(reopened.style.color).toBe("#12ab34");
+    expect(reopened.spans.map(span => span.style.color ?? reopened.style.color)).toEqual(["#12ab34", "#000000", "#12ab34"]);
+  });
+
+  it("reads atom label text/run colours and reserved black/white indices", () => {
+    const opened = openChemDraftPayload(`<CDXML><page><fragment>
+      <n id="a" p="0 0" Element="8"><t color="4"><s color="8">O</s></t></n>
+      <n id="b" p="20 0" color="1"/><b B="a" E="b" color="0"/>
+      </fragment></page></CDXML>`);
+    expect(opened.document!.pages[0].objects[0].style).toEqual({ atomLabelColors: { atom_001: "#0000ff", atom_002: "#ffffff" }, bondColors: { bond_001: "#000000" } });
+  });
+
+  it("keeps referenced colours even when an arrow type is unknown", () => {
+    const opened = openChemDraftPayload('<CDXML><page><graphic GraphicType="Line" ArrowType="Unrecognized" BoundingBox="0 0 30 10" color="4"/></page></CDXML>');
+    expect(opened.document!.pages[0].objects[0]).toMatchObject({ type: "reaction-arrow", arrowKind: "unknown", style: { strokeColor: "#ff0000" } });
+  });
+
+  it.each(["oops", "999", "-1", "4.5", "", "0x4"])("warns and uses defaults for invalid index %j on every imported kind", index => {
+    const opened = openChemDraftPayload(`<CDXML><page><fragment>
+      <n id="a" p="0 0" color="${index}"/><n id="b" p="20 0"/>
+      <b B="a" E="b" color="${index}"/></fragment>
+      <t color="${index}"><s color="${index}">H2O</s></t>
+      <graphic GraphicType="Rectangle" BoundingBox="0 0 30 30" color="${index}"/>
+      <graphic GraphicType="Line" ArrowType="FullHead" BoundingBox="0 0 30 10" color="${index}"/>
+      </page></CDXML>`);
+    expect(opened.document).toBeDefined();
+    expect(opened.warnings.filter(({ code }) => code === "cdxml.color_index_invalid")).toHaveLength(6);
+    const [molecule, plain, rectangle, artArrow] = opened.document!.pages[0].objects;
+    expect(molecule.style).toEqual({});
+    expect(plain).toMatchObject({ style: {}, spans: [{ style: {} }] });
+    expect(rectangle.style.strokeColor).toBe("#000000");
+    expect(artArrow.style.strokeColor).toBe("#000000");
+  });
+
+  it("preserves atom identity, charge, isotope, bond order, stereo display and coordinates through the visible layer", () => {
+    const molecule = singleBondMolecule();
+    molecule.atoms[0].isotope = 13;
+    molecule.atoms[1].formalCharge = -1;
+    molecule.bonds[0].display = { bondStyle: "wedge" };
+    molecule.style = { atomLabelColor: "#12ab34", bondColor: "#1f5fbf" };
+    const before = structuredClone(molecule);
+    const reopened = openChemDraftPayload(visible(documentWithObjects([molecule]))).document!.pages[0].objects[0] as MoleculeObject;
+    expect(reopened.atoms).toEqual(before.atoms);
+    expect(reopened.bonds).toEqual(before.bonds);
+    expect(molecule).toEqual(before);
+  });
+});
 
 function documentWithObjects(objects: ChemDraftDocument["pages"][number]["objects"]): ChemDraftDocument {
   const base = createEmptyDocument({ title: "Round Trip", now: "2026-06-06T00:00:00.000Z" });

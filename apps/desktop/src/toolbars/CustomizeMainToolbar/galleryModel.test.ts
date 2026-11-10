@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandSpec } from "../../commands";
+import { allPaletteCommands } from "../../commands";
 import { buildGalleryModel, buildGallerySections, type GalleryWidgetDescriptor } from "./galleryModel";
 
 const cmd = (id: string, title: string): CommandSpec =>
@@ -70,6 +71,18 @@ describe("buildGalleryModel", () => {
 });
 
 describe("buildGallerySections", () => {
+  it("offers all direct bond and chain tools from the shipped catalog in Bonds & Chains", () => {
+    const ids = ["tool.doubleBond", "tool.tripleBond", "tool.chain", "tool.chainFlexible"];
+    const catalog = allPaletteCommands();
+    const sections = buildGallerySections(catalog, [], new Set(), "");
+    const bonds = sections.find(section => section.id === "bonds");
+    expect(bonds?.title).toBe("Bonds & Chains");
+    for (const id of ids) {
+      expect(bonds?.entries.filter(entry => entry.commandId === id)).toHaveLength(1);
+    }
+    expect(catalog.find(command => command.id === "tool.chain")?.defaultShortcut).toBe("C");
+  });
+
   const themed: CommandSpec[] = [
     cmd("view.toolset.toggle.core.art", "Toggle Art Toolbar"),
     cmd("tool.select", "Selection Tool"),

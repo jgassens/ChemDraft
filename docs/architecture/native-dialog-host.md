@@ -337,7 +337,7 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-Plugin prompts, report readers, plugin manager, toolbar customization and colour editors
+Plugin prompts, report readers, plugin manager and toolbar customization
 are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
 coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
 Page Size has no such lease. Other kinds will need their own busy/progress contracts,
@@ -554,3 +554,15 @@ both kind-specific messages. The host assembles only the current request in orde
 bounded total and a timeout; stale/partial/error previews cannot enable Save. Native bootstrap,
 focus/ownership, monitor placement, position persistence and native-prompt suspension reuse
 the shared host unchanged. Browser builds use the same draft-only form in their fallback.
+
+## Custom colour slots
+
+`customColor` is a modeless document-owned dialog (`dialog-main-customColor-<slot>`), initially
+460 × 480 logical pixels and resizable. It uses the shared centring, per-kind saved position,
+Windows ownership/no-taskbar policy, and private session channels. Its strict snapshot contains
+only the title, swatch number (1–4), slot (1–2), and current normalized hex colour or null.
+Hex, RGB and approximate CMYK input share the pure swatch parsers; the form previews valid values
+and sends only normalized RGB hex on OK. The owner persists the slot without applying it to the
+drawing, and Clear invokes the slot's registered clear command. Changing slots replaces the
+previous draft; reopening the same slot retains it. Settings notifications and storage events
+refresh every palette webview. No plugin API or dialog-owner permission is broadened.

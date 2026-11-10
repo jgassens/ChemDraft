@@ -44,6 +44,7 @@ import {
   usePaletteButtonInvoke
 } from "./toolbars/toolbarCells";
 import { MainStyleWidget } from "./toolbars/mainStyleWidget";
+import { CustomColorSwatchWidget } from "./toolbars/CustomColorSwatchWidget";
 import {
   type ClearTooltipOptions,
   TOOLTIP_DELAY_MS,
@@ -555,6 +556,10 @@ const TOOLBAR_WIDGET_REGISTRY: Record<
   string,
   { gridMode: ToolbarWidgetGridMode; className: string; title: string; render: () => ReactNode }
 > = {
+  ...Object.fromEntries(([1, 2, 3, 4] as const).map(swatch => [`widget.core.customColorSwatch${swatch}`, {
+    gridMode: "append" as const, className: "custom-color-palette", title: `Custom Color Swatch ${swatch}`,
+    render: () => <CustomColorSwatchWidget swatch={swatch} />
+  }])),
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: {
     gridMode: "append",
     className: "main-style-palette",

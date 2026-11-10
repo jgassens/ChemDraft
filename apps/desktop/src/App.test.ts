@@ -2054,7 +2054,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(tooltipFor("tool.select")?.shortcutLabel).toBe("Space");
     expect(tooltipFor("tool.bond")?.shortcutLabel).toBe("X");
-    expect(tooltipFor("tool.chain")?.shortcutLabel).toBe("⇧X");
+    expect(createDesktopShortcutRegistry(commands, "macos").resolve({ key: "X", shiftKey: true })).toBe("tool.chain");
     expect(tooltipFor("tool.text")?.shortcutLabel).toBe("T");
     // Unbound keys show no shortcut at all — not the stale ChemDraft key.
     expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
@@ -2070,7 +2070,7 @@ describe("ChemDraft desktop shell", () => {
     ).flat();
     const chemdraftTooltip = (id: string) => chemdraftItems.find((item) => item.id === id)?.tooltip;
     expect(chemdraftTooltip("tool.select")?.shortcutLabel).toBe("V");
-    expect(chemdraftTooltip("tool.chain")?.shortcutLabel).toBe("C");
+    expect(createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos").resolve({ key: "c" })).toBe("tool.chain");
     expect(chemdraftTooltip("tool.lasso")?.shortcutLabel).toBe("L");
   });
 
@@ -2862,6 +2862,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.eraser",
       "tool.text",
       "tool.bond",
+      "tool.doubleBond",
+      "tool.tripleBond",
       "tool.wedgeBond",
       "tool.hashedBond",
       "tool.dashedBond",
@@ -2923,7 +2925,9 @@ describe("ChemDraft desktop shell", () => {
     ]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
-    expect(paletteGroups.flat().find((command) => command.id === "tool.bond")).toMatchObject({ enabled: true });
+    for (const id of ["tool.bond", "tool.doubleBond", "tool.tripleBond"]) {
+      expect(paletteGroups.flat().find((command) => command.id === id)).toMatchObject({ enabled: true });
+    }
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({

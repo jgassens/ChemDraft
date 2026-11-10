@@ -18,6 +18,7 @@ import { AtomProblemForm } from "./AtomProblemForm";
 import { measureDialogContentWhenFontsReady } from "./dialogContentFit";
 const VibeCodeGuideForm = lazy(() => import("./VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
+const CustomColorForm = lazy(() => import("./CustomColorForm").then(module => ({ default: module.CustomColorForm })));
 const StructureTemplatePicker = lazy(() => import("./StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
@@ -239,6 +240,9 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     onCancel={() => sendAction({ action: "cancel" })}
     onChooseDestination={() => sendAction({ action: "chooseDestination", options: exportOptions(exportDraft) })}
     onSubmit={() => sendAction({ action: "export", options: exportOptions(exportDraft) })} /></Suspense>;
+  if (snapshot?.dialogKind === "customColor") return <Suspense fallback={<p role="status">Opening Custom Color…</p>}><CustomColorForm key={snapshot.sessionId} initial={snapshot.data}
+    busy={busy} error={error} onReady={reportReady} onCancel={() => sendAction({ action: "cancel" })}
+    onClear={() => sendAction({ action: "clear" })} onSubmit={hex => sendAction({ action: "apply", hex })} /></Suspense>;
   if (snapshot?.dialogKind === "insertTable") return <InsertTableForm key={snapshot.sessionId} title={snapshot.data.title} initial={snapshot.data}
     busy={busy} error={error} onReady={reportReady} onCancel={() => sendAction({ action: "cancel" })}
     onSubmit={options => sendAction({ action: "apply", ...options })} />;

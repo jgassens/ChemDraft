@@ -1,3 +1,4 @@
+import { allCustomSwatchCommandIds, loadCustomSwatches, parseCustomSwatchCommandId, type CustomSwatchState } from "./customColorSwatches";
 import {
   MinimalPageSizePresetIds,
   NativeStylePresets,
@@ -73,6 +74,7 @@ export interface CommandAvailability {
 export interface ShellCommandOptions {
   structureSearchEnabled?: boolean;
   hasSearchableStructure?: boolean;
+  customSwatches?: CustomSwatchState;
   activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
   compoundLayoutSettings?: CompoundLayoutSettings;
@@ -2462,6 +2464,7 @@ export function allShellCommands(
   return dedupeCommands([
     ...createSelectionNudgeActions(document.selection.objectIds.length > 0 || options.availability?.hasMoleculeFragmentSelection === true),
     ...atomProblemCommands(document).map(command => command.spec),
+    ...createCustomSwatchActions(options.customSwatches ?? loadCustomSwatches(), document.selection.objectIds.length > 0 || options.availability?.hasMoleculeFragmentSelection === true),
     ...createTableCommands(document, options.activeTableCell),
     ...createBracketCommands(document),
     ...createQuickActions(document, selectedMolecule, options.availability),
@@ -2489,6 +2492,19 @@ export function allShellCommands(
     ...nativeStylePresetActions,
     ...toolbarCustomizationActions
   ]);
+}
+
+/** Finite value-encoded family. Only the two-slot widgets are offered by the toolbar gallery. */
+export function createCustomSwatchActions(state: CustomSwatchState, hasSelection: boolean): CommandSpec[] {
+  return allCustomSwatchCommandIds().map(id => {
+    const { swatch, slot, action } = parseCustomSwatchCommandId(id)!;
+    const color = state[swatch][`slot${slot}`];
+    const disabledReason = action === "apply" ? !color ? "Set this custom color first" : !hasSelection ? "Select an object to change its color" : undefined
+      : action === "clear" && !color ? "This custom color is empty" : undefined;
+    const verb = { apply: "Apply", edit: "Edit", clear: "Clear" }[action];
+    return { id, title: `${verb} Custom Color ${swatch}, Slot ${slot}${action === "edit" ? "…" : ""}`,
+      source: "core", icon: "style", category: "color", enabled: disabledReason === undefined, disabledReason };
+  });
 }
 
 function dedupeCommands(commands: CommandSpec[]): CommandSpec[] {

@@ -1168,7 +1168,8 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 ## Direct multiple-bond tools (Windows and macOS)
 
 - In Preferences, switch Default double bond between Offset and Centred; draw by click/drag, extend/connect atoms, press hover key 2 over atoms and bonds, and click a bond to cycle order. Only newly created double bonds follow the choice; ring/structure templates keep their explicit placement. Reopen Preferences and relaunch to confirm persistence and live document-window sync. Existing drawings, undo/redo, opening files, import and paste must retain their display and chemical identity. Repeat on macOS and Windows.
-- On a fresh profile, confirm the default Main toolbar does not show Double Bond or Triple Bond. Add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
+- On macOS and Windows, confirm default Main has Single/Double/Triple Bond together and Chain in the Bonds & Chains gallery; existing customized layouts retain their prior order and Chain, without newly added Double/Triple Bond. Reset restores the new defaults; activate both bond tools and verify distinct icons and active highlight.
+- In an existing customized layout without Double Bond or Triple Bond, add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
 - Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
 - Allow growth or order changes that exceed available valence and show (!) on the affected atoms; retain existing atoms and coordinates, with only the requested graph changes. Still refuse unrepresentable multiple bonds to group labels or dashed dative bonds. Check save/reopen and SVG/MOL export, including valence warnings. Switch back to Single Bond and wedge/hash/dashed/bold tools.
 - Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
@@ -1360,3 +1361,21 @@ restored file gets one message and retains its data. With fresh startup enabled,
 tabs show no message. For a modified visible CDXML layer, choose the visible subset and confirm
 that unused future embedded content produces no update message. In browser preview repeat file
 upload and drop, acknowledging the shared prompt fallback.
+
+## Custom Color Swatches (macOS and Windows)
+
+- In Customize Main Toolbar, place two different Custom Color Swatch items from Object Style.
+  Each has two independent `?` slots; none are on the factory toolbar. Reorder them and restart:
+  placement and colours must survive.
+- Click empty slots and set colours using Hex, RGB and CMYK. Check prefilled conversions, live
+  preview, inline invalid-input messages, disabled OK for invalid input, and the CMYK approximation
+  note. OK stores the colour without changing the drawing. Other open palette windows update.
+- Apply each colour to a selected bond, atom, whole molecule, text object, selected text run,
+  reaction arrow, and shape. Compare with a preset; only the intended targets change, chemistry
+  stays unchanged, and Undo/Redo restores the colour in one operation (or within the text edit).
+- Right-click both empty and set slots to edit. Tab to a slot and use Shift+F10/the context-menu
+  key, including a set slot with no selection. Change a colour, Cancel a draft, and Clear a set
+  slot; only Clear removes its stored colour. Restart again to check persistence.
+- Move the modeless dialog outside the document window and to a monitor with different scaling.
+  Toolbars remain usable; reopening remembers its position. On Windows it has no taskbar entry
+  and stays owned by the document window. Check Escape, Cmd/Ctrl+W and title-bar close.

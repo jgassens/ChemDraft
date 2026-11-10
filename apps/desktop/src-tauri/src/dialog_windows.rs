@@ -75,6 +75,14 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             min_size: (360.0, 260.0),
             fit_content: true,
         }),
+        "customColor" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Custom Color",
+            size: (460.0, 480.0),
+            min_size: (360.0, 320.0),
+            fit_content: false,
+        }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -199,6 +207,28 @@ enum AtomProblemAction {
 }
 fn problem_action(action: &str) -> bool {
     matches!(action, "hydrogens" | "charge" | "ignore" | "restore")
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CustomColorSnapshot {
+    title: String,
+    swatch: u8,
+    slot: u8,
+    color: Option<String>,
+}
+fn valid_custom_color(hex: &str) -> bool {
+    hex.len() == 7
+        && hex.starts_with('#')
+        && hex.as_bytes()[1..]
+            .iter()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum CustomColorAction {
+    Apply { hex: String },
+    Clear {},
+    Cancel {},
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -919,6 +949,25 @@ impl Message {
                 | AtomProblemAction::Restore { target_version } => {
                     (1..=9_007_199_254_740_991).contains(&target_version)
                 }
+            }),
+            "snapshot" if self.dialog_kind == "customColor" => {
+                self.data.get("color").is_some()
+                    && serde_json::from_value::<CustomColorSnapshot>(self.data.clone()).is_ok_and(
+                        |s| {
+                            valid_title(&s.title)
+                                && !s.title.contains('\0')
+                                && (1..=4).contains(&s.swatch)
+                                && (1..=2).contains(&s.slot)
+                                && s.color.as_deref().is_none_or(valid_custom_color)
+                        },
+                    )
+            }
+            "action" if self.dialog_kind == "customColor" => serde_json::from_value::<
+                CustomColorAction,
+            >(self.data.clone())
+            .is_ok_and(|a| match a {
+                CustomColorAction::Apply { hex } => valid_custom_color(&hex),
+                CustomColorAction::Clear {} | CustomColorAction::Cancel {} => true,
             }),
             "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
                 serde_json::from_value::<VibeGuideSnapshot>(self.data.clone())
@@ -5576,6 +5625,53 @@ mod tests {
         assert!(message.validate().is_err());
         message.data = json!({"action":"preview", "percent":80});
         assert!(message.validate().is_err());
+    }
+    #[test]
+    fn custom_color_registers_labels_and_validates_payloads() {
+        let spec = kind_spec("customColor").unwrap();
+        assert!(!spec.maximizable);
+        assert!(spec.resizable);
+        assert!(
+            include_str!("../capabilities/dialog-host.json").contains("dialog-main-customColor-*")
+        );
+        let mut message = snapshot();
+        message.dialog_kind = "customColor".into();
+        message.data =
+            json!({"title":"Custom Color 1, Slot 2", "swatch":1, "slot":2, "color":null});
+        assert!(message.validate().is_ok());
+        let (registration, _) = register(&mut Registry::default(), message.clone(), false).unwrap();
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-customColor-"));
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(!is_dialog_label("dialog-main-customColor-../main"));
+        for (field, value) in [
+            ("swatch", json!(5)),
+            ("slot", json!(0)),
+            ("color", json!("#abcd")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data[field] = value;
+            assert!(invalid.validate().is_err());
+        }
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"apply", "hex":"#1f5fbf"}),
+            json!({"action":"clear"}),
+            json!({"action":"cancel"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_ok());
+        }
+        for data in [
+            json!({"action":"apply", "hex":"#ABCDEF"}),
+            json!({"action":"apply", "hex":"#12345678"}),
+            json!({"action":"clear", "swatch":1}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
     }
     #[test]
     fn validates_kind_label_owner_and_payload() {

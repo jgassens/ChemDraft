@@ -7716,8 +7716,14 @@ describe("Phase 4 document workflow", () => {
     expect(cdxml.contents).toContain('GraphicType="Rectangle"');
     expect(cdxml.contents).toContain('RectangleType="RoundEdge"');
     expect(cdxml.contents).toContain('CornerRadius="525"');
+    const colorTable = cdxml.contents.match(/<colortable>([\s\S]*?)<\/colortable>/)?.[1] ?? "";
+    const colors = [...colorTable.matchAll(/<color\b[^>]*>/g)].map(([entry]) =>
+      "#" + ["r", "g", "b"].map((channel) =>
+        Math.round(Number(entry.match(new RegExp(`${channel}="([^"]+)"`))?.[1]) * 255).toString(16).padStart(2, "0")).join(""));
+    const colorIndex = colors.indexOf("#1d7f68");
+    expect(colorIndex).toBeGreaterThanOrEqual(0);
+    expect(cdxml.contents).toMatch(new RegExp(`<graphic\\b[^>]*color="${colorIndex + 2}"`));
     expect(graphicCdxmlWarnings.map((warning) => warning.code)).toEqual([
-      "cdxml.graphic_color_approximation",
       "cdxml.graphic_gloss_payload_only",
       "cdxml.graphic_tilt_payload_only"
     ]);

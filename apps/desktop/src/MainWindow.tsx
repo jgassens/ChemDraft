@@ -19,6 +19,9 @@ import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
+import { clearCustomSwatchSlot, customSwatchCommandId, loadCustomSwatches, parseCustomSwatchCommandId, setCustomSwatchSlot, type CustomSwatchNumber, type CustomSwatchSlot } from "./customColorSwatches";
+import { persistCustomSwatches, useCustomSwatches } from "./toolbars/customSwatchSettings";
+import { createCustomSwatchActions, textCustomColorCommandId } from "./commands";
 import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
@@ -183,7 +186,7 @@ import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/Tool
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
-import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
+import { mergeVisibilityIntoLayoutState, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
@@ -843,7 +846,7 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
-  migrateLegacyMainToolbarLayoutState,
+  migrateMainToolbarDefaultsLayoutState,
   type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
@@ -3408,9 +3411,16 @@ export function MainWindow({
   const hasSearchableStructure = useMemo(() => structureSearchDocument(
     document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
   ) !== undefined, [document, selectedNativeMoleculeParts]);
+  const customSwatches = useCustomSwatches();
+  const customSwatchActions = useMemo(() => createCustomSwatchActions(customSwatches,
+    document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0 || activeTextEditObjectId !== undefined),
+    [customSwatches, document.selection.objectIds, selectedNativeMoleculeParts, activeTextEditObjectId]);
+  const customColorSaveRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot, hex: string) => void>(() => {});
+  const customColorClearRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot) => Promise<void>>(async () => {});
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       [...allShellCommands(document, selectedMolecule, {
+        customSwatches,
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined,
           hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0 },
@@ -3418,10 +3428,10 @@ export function MainWindow({
         compoundLayoutsEnabled, compoundLayoutSettings,
         structureSearchEnabled,
         hasSearchableStructure
-      }), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
+      }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
+    [customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -4004,9 +4014,9 @@ export function MainWindow({
         }
 
         if (layoutState !== undefined) {
-          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
-          // consumes it; the next save persists the migrated shape.
-          const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
+          // Preserve historical Main defaults and fold pre-flatten layouts before anything consumes
+          // them; the visibility save below persists the migrated state and its defaults revision.
+          const migrated = migrateMainToolbarDefaultsLayoutState(layoutState);
           toolbarCatalog.setLayoutState(migrated);
           const nextRegistry = toolbarCatalog.registry();
           setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
@@ -10069,6 +10079,8 @@ export function MainWindow({
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
       applyReactionConditions: (tabId, arrowId, draft) => applyConditionsRef.current(tabId, arrowId, draft),
       onConditionsSettled: tabId => { conditionsSourcesRef.current.delete(tabId); },
+      saveCustomColor: (snapshot, hex) => customColorSaveRef.current(snapshot.swatch, snapshot.slot, hex),
+      clearCustomColor: snapshot => customColorClearRef.current(snapshot.swatch, snapshot.slot),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
@@ -11967,6 +11979,23 @@ export function MainWindow({
       });
     });
 
+    customSwatchActions.forEach(action => register(action, async () => {
+      const parsed = parseCustomSwatchCommandId(action.id)!;
+      const state = loadCustomSwatches();
+      const color = state[parsed.swatch][`slot${parsed.slot}`];
+      if (parsed.action === "clear") {
+        if (color) persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+      } else if (parsed.action === "apply") {
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color));
+      } else {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }
+        await coordinator.openCustomColor(activeDocumentTabIdRef.current, {
+          title: `Custom Color ${parsed.swatch}, Slot ${parsed.slot}`, swatch: parsed.swatch, slot: parsed.slot, color: color ?? null
+        });
+      }
+    }));
+
     textToolbarActions.forEach((action) => {
       register(action, () => {
         if (!applyTextStyleCommand(action.id)) {
@@ -12122,7 +12151,7 @@ export function MainWindow({
     return bindings;
   }, [
     isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
-    tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
+    customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -12194,6 +12223,8 @@ export function MainWindow({
 
   coreCommandBindingsRef.current = coreCommandBindings;
 
+  customColorSaveRef.current = (swatch, slot, hex) => persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+
   // The registry and its core-command registrar are created exactly once. Handlers delegate
   // to the live bindings ref, so plugin commands registered into the same stable instance in
   // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
@@ -12206,6 +12237,7 @@ export function MainWindow({
   }, []);
 
   vibeGuideActionRef.current = async action => { await registry.invoke(action === "saveStarter" ? VIBE_CODE_SAVE_COMMAND_ID : PLUGIN_MANAGER_COMMAND_ID); };
+  customColorClearRef.current = async (swatch, slot) => { await registry.invoke(customSwatchCommandId(swatch, slot, "clear")); };
 
   insertTableFromDialogRef.current = async (tabId, options) => {
     const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
@@ -13174,6 +13206,7 @@ export function MainWindow({
   // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
   // applies immediately — no draft that can drift out of sync) from a final close.
   const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
+    next = withCurrentMainToolbarDefaults(next);
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
     const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);
@@ -13228,6 +13261,7 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
+      if (parseCustomSwatchCommandId(command.id)) continue;
       if (isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
@@ -21866,6 +21900,7 @@ export function MainWindow({
                 onInvoke={invoke}
                 customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
+                  commandSpecs: shellCommandSpecs,
                   colorContextKey,
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,
