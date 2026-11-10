@@ -2149,7 +2149,14 @@ fn bring_to_front_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Resul
     {
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut objc2_app_kit::NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
-        native.orderFront(None);
+        // Preferences is explicitly requested by Cmd+, even when already visible behind the
+        // document. Ordering alone does not make it key; finish the reopen on AppKit's main
+        // thread with both activation and ordering. Other utilities keep their existing order.
+        if window.label() == super::PREFERENCES_WINDOW_LABEL {
+            native.makeKeyAndOrderFront(None);
+        } else {
+            native.orderFront(None);
+        }
     }
     #[cfg(windows)]
     {
