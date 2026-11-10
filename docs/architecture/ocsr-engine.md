@@ -228,14 +228,14 @@ applicable, the dependency inventory, and this document together. The typed `Req
 `EngineTarget`, the Rust build target. Install resource lookup, lock verification, current receipts,
 rollback health checks and legacy verification all use that profile. Tests check both locks for their
 profile's SHA-256, exact pins followed by hashes, and torch, torchvision, NumPy, RDKit and both OpenCV
-versions. The Intel lock-hash check deliberately fails until its generated lock and reviewed hash exist.
+versions. Both generated locks and their reviewed SHA-256 pins are present.
 
 | What | Pin |
 | --- | --- |
 | uv | 0.12.18, per-platform archive SHA-256 |
 | Python | 3.10 (uv-managed) |
 | Python packages, Apple silicon and Windows | Unchanged `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, NumPy 1.26.4, RDKit 2026.3.6, both OpenCV packages 4.11.0.86); `REQUIREMENTS_LOCK_SHA256` stays unchanged |
-| Python packages, Intel Mac | `resources/ocsr/requirements-macos-x86_64.txt`, generated from its own `.in`: torch 2.2.2, torchvision 0.17.2, RDKit 2023.9.6, both OpenCV packages 4.9.0.80; NumPy remains 1.26.4 and all other pins stay unchanged; separate `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` |
+| Python packages, Intel Mac | `resources/ocsr/requirements-macos-x86_64.txt`, generated from its own `.in`: 88 exact pins with SHA-256 hashes, including torch 2.2.2, torchvision 0.17.2, RDKit 2023.9.6, both OpenCV packages 4.9.0.80; NumPy remains 1.26.4 and all other pins stay unchanged; separate `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` |
 | MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162`, 5,727,892 bytes, SHA-256 `8e323f47…e2d6` |
 | Model | `yujieq/MolScribe` revision `a0189776…`, `swin_base_char_aux_1m.pth`, 1,134,940,406 bytes, SHA-256 `6f0df56f…ea1d` |
 | Free disk | 3.0 GB |
@@ -277,31 +277,35 @@ NumPy stays 1.26.4. Five package pins differ:
 
 `requirements-macos-x86_64.in` copies the original input with those changes and adds the remaining
 exact pins from the existing lock, including transitive dependencies, to prevent unrelated upgrades.
-Generate its lock from `apps/desktop/src-tauri/resources/ocsr/` with exactly:
+The generated lock is committed. Re-lock from `apps/desktop/src-tauri/resources/ocsr/` with exactly:
 
 ```text
 uv pip compile requirements-macos-x86_64.in --python-version 3.10 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
 ```
 
-Then review the lock and set `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` in `ocsr_engine/pins.rs` to
-its SHA-256 with line endings normalized to LF. This offline change provides only the input: the
-`.txt` is not generated here and the Intel hash is a 64-zero placeholder. The unignored lock-hash
-test fails until both are supplied, and the installer never bypasses hash verification.
+After any re-lock, review the lock and set `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` in
+`ocsr_engine/pins.rs` to its SHA-256 with line endings normalized to LF. The current pin is
+`28413a92463e53747917d84d7c469fb59b44ddcd637bb382b82f70d15e643b20`.
+The lock-hash test checks that the committed file matches, and the installer never bypasses hash
+verification. Checked against PyPI on 2026-11-09: every one of the 88 locked packages has an
+x86_64 macOS or pure-Python wheel for Python 3.10, and the highest macOS floor is 10.16 (macOS 11).
 
-The receipt records the selected lock's SHA-256, exact torch/torchvision/NumPy/RDKit/OpenCV versions
-and the MolScribe archive's SHA-256. Earlier version-2 receipts that lack RDKit and OpenCV fields
-default those fields to the original profile's versions, keeping existing Apple silicon and Windows
-installs valid. Those defaults cannot validate an Intel receipt. A receipt from either requirements
-profile is rejected under the other, even if its uv fields are changed to match. A legacy install is
-checked against the selected profile's complete lock before its receipt can be upgraded.
+The receipt records the selected lock's SHA-256, exact torch/torchvision/NumPy versions and the
+MolScribe archive's SHA-256. Only Intel receipts also record the exact RDKit and both OpenCV
+versions; Intel validation requires all three fields. On Apple silicon and Windows these optional
+fields remain absent, keeping fresh and legacy-upgraded receipts byte-identical to the previous
+format and existing version-2 receipts valid without a re-download. A receipt from either
+requirements profile is rejected under the other, even if its uv fields are changed to match. A
+legacy install is checked against the selected profile's complete lock before its receipt can be
+upgraded.
 
 **Intel recognition must be proven on a real Intel Mac.** A compatible wheel set and mocked Rust
-tests do not prove model loading or image recognition. Before release, generate and pin the lock,
-complete a clean install on real Intel hardware (including the macOS 11 compatibility floor), load
-the model and recognize a real image through the normal proposal-review flow. Also exercise
+tests do not prove model loading or image recognition. Before release, complete a clean install on
+real Intel hardware (including the macOS 11 compatibility floor), load the model and recognize a
+real image through the normal proposal-review flow. Also exercise
 cancellation, reinstall/rollback and uninstall there. Apple silicon and Windows install and
-recognition regression checks remain required; none of these live platform checks ran for this
-offline change.
+recognition regression checks remain required; the wheel checks do not replace live platform
+validation.
 
 ## Sidecar protocol (version 2)
 
@@ -569,7 +573,7 @@ the installer's junction relocation and venv launcher refresh are the other OS-s
 | Target | uv asset | venv Python | Child processes | Status |
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
-| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | enabled with the separate Intel requirements profile; generated lock/hash and real Intel recognition validation still required (see above) |
+| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | enabled with the separate Intel requirements profile and committed lock/hash; real Intel recognition validation still required (see above) |
 | Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | junction relocation and final-tree launcher refresh implemented; automated Windows validation pending |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
