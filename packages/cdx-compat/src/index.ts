@@ -35,7 +35,7 @@ import {
   type TableObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
-import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
+import { measureTextRun, planTableLayout, transformPointForObject } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
@@ -1060,7 +1060,7 @@ function exportVisibleObject(
   if (object.type === "bracket") {
     if (!canExportBracketGlyph(object)) warnings.push({
       code: "cdxml.bracket_geometry_approximated",
-      message: `Bracket ${object.id} has unsupported ${object.bracketKind} shape, rotation or tilt; its glyph is approximated by an axis-aligned ${object.bracketKind === "round" ? "round" : "square"} bounding box.`,
+      message: `Bracket ${object.id} has unsupported ${object.bracketKind} shape, rotation or tilt; its glyph is approximated by an axis-aligned ${object.bracketKind === "round" ? "round" : object.bracketKind === "curly" ? "curly" : "square"} bounding box.`,
       sourceObjectId: object.id
     });
     if (!exportableBracketPair(object, objectsById)) {
@@ -1093,8 +1093,49 @@ function exportVisibleObject(
 }
 
 function canExportBracketGlyph(object: BracketObject): boolean {
-  return (object.bracketKind === "square" || object.bracketKind === "round") && object.rotation === 0 &&
+  return ["square", "round", "curly"].includes(object.bracketKind) && object.rotation % 90 === 0 &&
     !(Number(object.style.tiltXDegrees) || Number(object.style.tiltYDegrees));
+}
+
+/** CDXML's corners form a directed spine; its right-hand side is the glyph's opening.
+ * SVG/page rotation is clockwise: +90 maps the native +x opening to page +y.
+ * Use 0/90 plus side as the canonical four facing states. */
+function bracketFacingFromBoundingBox(value: string | undefined): { rotation: number; side: "open" | "close" } | undefined {
+  if (!value) return undefined;
+  const [x1, y1, x2, y2] = value.trim().split(/\s+/).map(Number);
+  if (![x1, y1, x2, y2].every(Number.isFinite) || x1 === x2 && y1 === y2) return undefined;
+  if (Math.abs(y2 - y1) >= Math.abs(x2 - x1)) return { rotation: 0, side: y1 > y2 ? "open" : "close" };
+  return { rotation: 90, side: x1 < x2 ? "open" : "close" };
+}
+
+function importedBracketFacing(object: BracketObject) {
+  const raw = object.compatibility?.unknown.cdxmlBracket;
+  return bracketFacingFromBoundingBox(isRecord(raw) ? preservedCurveAttributes(raw.attributes).BoundingBox : undefined);
+}
+
+// A directed box carries facing, but cannot distinguish 180/270 from 0/90 with
+// the side reversed. Retain that frame choice so the closing glyph and its SRU
+// label do not jump to the partner on reopen. User-defined CDX property 0x4346
+// survives visible CDXML and CDX without requiring an embedded native document.
+// The standard BoundingBox remains the complete page-space glyph geometry.
+const BracketFrameAttribute = "attrib4346";
+const BracketFrames = [180, 270].map(rotation => ({ rotation,
+  encoded: `|x|${hex(utf8Bytes(`org.chemdraft/bracket-frame.v1:${rotation}`))}` }));
+
+function bracketFrameFromAttributes(attributes: Record<string, string>) {
+  const facing = bracketFacingFromBoundingBox(attributes.BoundingBox);
+  if (!facing) return { rotation: 0, side: "open" as const };
+  const frame = BracketFrames.find(frame => frame.encoded === attributes[BracketFrameAttribute] && frame.rotation % 180 === facing.rotation);
+  return frame ? { rotation: frame.rotation, side: facing.side === "open" ? "close" as const : "open" as const } : facing;
+}
+
+function formatBracketBoundingBox(object: BracketObject): string {
+  // Reuse the renderer's frame-centred transform, including the swapped extents at 90/270.
+  // Unsupported transforms retain the existing axis-aligned approximation.
+  const frame = ["square", "round", "curly"].includes(object.bracketKind) && object.rotation % 90 === 0 ? object : { ...object, rotation: 0 };
+  const points = objectCornerPoints(frame).map(point => transformPointForObject(frame, point));
+  if (object.side !== "close") points.reverse();
+  return points.flatMap(point => [formatNumber(cssPxToCdxml(point.x)), formatNumber(cssPxToCdxml(point.y))]).join(" ");
 }
 
 function hasUnmappedBracketStyle(attributes: Record<string, unknown>): boolean {
@@ -1149,9 +1190,11 @@ function exportBracketGlyph(object: BracketObject, context: VisibleExportContext
   const unchangedGeometry = object.compatibility?.unknown.cdxmlBracketGeometry === bracketGeometryKey(object);
   attrs.id = idFor(context.ids, object.id, allocator);
   attrs.GraphicType = "Bracket";
-  attrs.BracketType = object.bracketKind === "round" ? "Round" : "Square";
-  // Source endpoint order is opaque. Geometry, never point order, determines the native side.
-  if (!unchangedGeometry || !attrs.BoundingBox) attrs.BoundingBox = formatBoundingBox(object);
+  attrs.BracketType = object.bracketKind === "round" ? "Round" : object.bracketKind === "curly" ? "Curly" : "Square";
+  if (!unchangedGeometry || !attrs.BoundingBox) attrs.BoundingBox = formatBracketBoundingBox(object);
+  const frame = canExportBracketGlyph(object) ? BracketFrames.find(frame => frame.rotation === (object.rotation % 360 + 360) % 360) : undefined;
+  if (frame) attrs[BracketFrameAttribute] = frame.encoded;
+  else delete attrs[BracketFrameAttribute];
   attrs.LineWidth ??= formatNumber(cssPxToCdxml(1.5));
   const sourceColor = object.compatibility?.unknown.cdxmlCurveColor;
   if (typeof sourceColor === "string" && attrs.color !== undefined) {
@@ -2609,7 +2652,7 @@ function importPageObjects(
       const memberIds = splitCdxmlIdList(group.attributes.BracketedObjectIDs);
       const members = objects.filter(object => memberIds.includes(object.compatibility?.originalId ?? "") ||
         object.type === "molecule" && Object.values(preservedCurveAttributes(object.compatibility?.unknown.cdxmlAtomIdsByAtomId)).some(id => memberIds.includes(id)));
-      if (remaining.length === 1 && members.length) {
+      if (remaining.length === 1 && members.length && !importedBracketFacing(remaining[0])) {
         const centre = (Math.min(...members.map(object => object.x)) + Math.max(...members.map(object => object.x + object.width))) / 2;
         const bracket = remaining[0];
         bracket.side = bracket.x + bracket.width / 2 <= centre ? "open" : "close";
@@ -2634,8 +2677,16 @@ function importPageObjects(
       continue;
     }
     brackets.sort(compareGeometry);
-    brackets[0].side = "open";
-    brackets[1].side = "close";
+    // Only a point-like (or missing/malformed) source box needs the pair-position heuristic.
+    brackets.forEach((bracket, index) => {
+      if (!importedBracketFacing(bracket)) bracket.side = index === 0 ? "open" : "close";
+    });
+    if (brackets[0].side === brackets[1].side) {
+      warnings.push({ code: "cdxml.bracket_sides_ambiguous",
+        message: `Bracket group ${group.attributes.id ?? "(unknown)"} has glyphs with the same directed side; opening and closing sides are assigned by pair position.` });
+      brackets[0].side = "open";
+      brackets[1].side = "close";
+    }
     const usageName = group.attributes.BracketUsage ?? brackets.map(bracket => bracket.compatibility?.unknown.cdxmlBracket)
       .flatMap(raw => isRecord(raw) ? [preservedCurveAttributes(raw.attributes).BracketUsage] : []).find(Boolean);
     let bracketUsage: BracketObject["bracketUsage"] = usageName === "SRU" ? "sru" : usageName === "MultipleGroup" ? "multiple" : usageName === undefined ? "generic" : "unknown";
@@ -3652,22 +3703,29 @@ function importGraphic(
   }
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
-  if (element.attributes.GraphicType === "Bracket" && !["Square", "Round"].includes(element.attributes.BracketType)) {
+  if (element.attributes.GraphicType === "Bracket" && !["Square", "Round", "Curly"].includes(element.attributes.BracketType)) {
     context.warnings.push({ code: "cdxml.bracket_type_preserved",
       message: `Unsupported CDXML bracket type "${element.attributes.BracketType ?? "unspecified"}" was preserved as an unknown compatibility object.` });
     return importUnknownCompatibilityObject(element, pageIndex, objectIndex);
   }
-  if (element.attributes.GraphicType === "Bracket" && ["Square", "Round"].includes(element.attributes.BracketType)) {
+  if (element.attributes.GraphicType === "Bracket" && ["Square", "Round", "Curly"].includes(element.attributes.BracketType)) {
     if (hasUnmappedBracketStyle(element.attributes)) {
       context.warnings.push({ code: "cdxml.bracket_style_preserved", sourceObjectId: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`,
         message: "Bracket styling that has no native mapping was preserved in compatibility metadata; the default native glyph style is displayed." });
     }
-    return { id: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`, type: "bracket", ...box, rotation: 0, style: {},
-      bracketKind: element.attributes.BracketType === "Round" ? "round" : "square", side: "open",
+    const facing = bracketFrameFromAttributes(element.attributes);
+    // The stored frame is local to the upright glyph. Swap page extents about its centre
+    // before rotating a wide source bracket, rather than rotating its already-wide frame.
+    const frame = facing.rotation % 180 === 90 ? { x: box.x + (box.width - box.height) / 2,
+      y: box.y + (box.height - box.width) / 2, width: box.height, height: box.width } : box;
+    const bracketKind = element.attributes.BracketType === "Round" ? "round" : element.attributes.BracketType === "Curly" ? "curly" : "square";
+    const bracket: BracketObject = { id: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`, type: "bracket", ...frame, ...facing, style: {},
+      bracketKind,
       containedObjectIds: [], compatibility: { sourceFormat: "cdxml", originalId: element.attributes.id,
         warnings: [], unknown: { cdxmlBracket: element, cdxmlCoordinateSpace: "xy", cdxmlBracketState: JSON.stringify([undefined, undefined, undefined, undefined]),
-          ...(element.attributes.color !== undefined ? { cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) } : {}),
-          cdxmlBracketGeometry: JSON.stringify([box.x, box.y, box.width, box.height, 0, element.attributes.BracketType === "Round" ? "round" : "square", "open"]) } } };
+          ...(element.attributes.color !== undefined ? { cdxmlCurveColor: colorForCdxmlIndex(element.attributes.color, context.colorTable) } : {}) } } };
+    bracket.compatibility!.unknown.cdxmlBracketGeometry = bracketGeometryKey(bracket);
+    return bracket;
   }
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
     // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it

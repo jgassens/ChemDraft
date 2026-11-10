@@ -5,7 +5,9 @@ import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPay
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx } from "./cdxBinary";
 
-function fixture(name: string) { return readFileSync(new URL(`../../fixtures/cdxml/${name}.cdxml`, import.meta.url), "utf8"); }
+function fixture(name: string) {
+  return readFileSync(new URL(`../../fixtures/cdxml/${name}.cdxml`, import.meta.url), "utf8");
+}
 function visibleOnly(cdxml: string) { return cdxml.replace(/<objecttag\b[^>]*\/>/g, ""); }
 function pair(kind: "square" | "round", label?: string) {
   const document = createEmptyDocument();
@@ -155,19 +157,36 @@ describe("native bracket group interchange", () => {
     expect(molecule.type === "molecule" && molecule.atoms.map(atom => atom.element)).toEqual(first.atoms.map(atom => atom.element));
   });
 
-  it.each(["vertical", "bounding-box", "identical"])("decides %s sides independently of attachment order", mode => {
+  it.each(["horizontal", "vertical", "bounding-box", "identical"])("imports explicit same-sided %s glyphs independently of attachment order", mode => {
     const source = fixture("brackets-native-sru")
       .replace('BoundingBox="87 138 75 90"', 'BoundingBox="75 90 87 138"')
-      .replace('BoundingBox="183 90 195 138"', mode === "vertical" ? 'BoundingBox="75 150 87 198"' : mode === "bounding-box" ? 'BoundingBox="76 90 86 138"' : 'BoundingBox="75 90 87 138"');
+      .replace('BoundingBox="183 90 195 138"', mode === "horizontal" ? 'BoundingBox="183 90 195 138"' : mode === "vertical" ? 'BoundingBox="75 150 87 198"' : mode === "bounding-box" ? 'BoundingBox="76 90 86 138"' : 'BoundingBox="75 90 87 138"');
     const reversed = source.replace(/(<bracketattachment id="31"[\s\S]*?<\/bracketattachment>)\s*(<bracketattachment id="33"[^>]*\/>)/, "$2$1");
-    const results = [source, reversed].map(xml => openChemDraftPayload(xml));
+    const results = [source, reversed].flatMap(xml => [openChemDraftPayload(xml), importCdx(binary(xml))]);
     const sides = results.map(result => result.document!.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket")
       .map(object => [object.compatibility!.originalId, object.side, object.label]));
-    expect(sides[0]).toEqual(sides[1]);
-    if (mode === "identical") {
-      expect(sides[0]).toEqual([["20", "open", undefined], ["21", "open", undefined]]);
-      for (const result of results) expect(result.warnings.map(warning => warning.code)).toContain("cdxml.bracket_sides_ambiguous");
-    } else expect(sides[0]).toEqual([["20", "open", undefined], ["21", "close", "x-y"]]);
+    for (const side of sides) expect(side).toEqual(mode === "identical"
+      ? [["20", "close", undefined], ["21", "close", undefined]]
+      : [["20", "open", undefined], ["21", "close", "x-y"]]);
+    for (const result of results) {
+      expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_sides_ambiguous", message: expect.stringContaining("group 30") }));
+      expect(result.document!.pages[0].objects.some(object => object.type === "unknown-compatibility-object")).toBe(mode === "identical");
+      if (mode === "identical") continue;
+      const brackets = result.document!.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
+      const molecule = result.document!.pages[0].objects.find(object => object.type === "molecule")!;
+      expect(brackets[0].pairId).toBeDefined();
+      expect(brackets[1].pairId).toBe(brackets[0].pairId);
+      for (const bracket of brackets) expect(bracket).toMatchObject({ bracketUsage: "sru", repeatUnit: true,
+        repeatCount: 7, containedObjectIds: [molecule.id] });
+      expect(brackets[0].crossingBondIds).toEqual([{ objectId: molecule.id, bondId: molecule.bonds[0].id }]);
+      for (const reopened of [openChemDraftPayload(exportDocumentToCdxml(result.document!, { embedNativePayload: false }).contents),
+        importCdx(exportDocumentToCdx(result.document!, { embedNativePayload: false }).bytes)]) {
+        const pair = reopened.document!.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
+        expect(pair.map(bracket => bracket.side)).toEqual(["open", "close"]);
+        expect(pair[1]).toMatchObject({ label: "x-y", bracketUsage: "sru", repeatCount: 7 });
+        expect(pair[0].crossingBondIds).toHaveLength(1);
+      }
+    }
   });
 
   it.each(["sru", "multiple"] as const)("round-trips %s fields, graphics and crossing bonds through visible CDXML and CDX", usage => {
@@ -426,7 +445,8 @@ describe("CDXML bracket graphics", () => {
     expect(JSON.stringify(unknown)).toContain("crossingbond");
     expect(JSON.stringify(unknown)).toContain("InnerAtomID");
     expect(imported.warnings.find(warning => warning.code === "cdxml.bracket_group_preserved")?.message).toBe("CDXML import: bracket group bg_crossing has unsupported attachment count or bracket references; the following data is not interpreted: atom or object membership and crossing-bond attachments; the group is preserved as an unknown compatibility object.");
-    const paired = fixture("crossing-bonds").replace('<bracketedgroup id="bg_crossing"', '<graphic id="g_other" BoundingBox="198 174 186 186" GraphicType="Bracket" BracketType="Round"/><bracketedgroup id="bg_crossing"')
+    const paired = fixture("crossing-bonds").replace('BoundingBox="174 174 186 186"', 'BoundingBox="186 186 174 174"')
+      .replace('<bracketedgroup id="bg_crossing"', '<graphic id="g_other" BoundingBox="198 174 186 186" GraphicType="Bracket" BracketType="Round"/><bracketedgroup id="bg_crossing"')
       .replace('</bracketedgroup>', '<bracketattachment id="ba_other" GraphicID="g_other"/></bracketedgroup>');
     const native = openChemDraftPayload(paired);
     expect(native.warnings.map(warning => warning.code)).toContain("cdxml.bracket_atom_membership_preserved");
