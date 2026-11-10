@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::pins;
 use super::platform::EnginePlatform;
+use super::requirements::RequirementsProfile;
 use super::InstallError;
 
 pub const CURRENT_RECEIPT_VERSION: u32 = 2;
@@ -41,6 +42,14 @@ pub struct InstallReceipt {
     pub torch_version: String,
     pub torchvision_version: String,
     pub numpy_version: String,
+    // Earlier version-2 receipts omit these fields. Their original lock pins these values;
+    // defaulting to that profile keeps them readable without accepting them as Intel receipts.
+    #[serde(default = "original_rdkit_version")]
+    pub rdkit_version: String,
+    #[serde(default = "original_opencv_version")]
+    pub opencv_python_version: String,
+    #[serde(default = "original_opencv_version")]
+    pub opencv_python_headless_version: String,
     pub molscribe_commit: String,
     pub molscribe_source_url: String,
     pub molscribe_source_sha256: String,
@@ -65,16 +74,20 @@ pub struct InPlaceUpgrade {
 
 impl InstallReceipt {
     pub fn pinned(platform: &dyn EnginePlatform, disk_bytes: u64) -> Self {
+        let profile = RequirementsProfile::for_target(platform.target());
         Self {
             receipt_version: CURRENT_RECEIPT_VERSION,
             uv_version: pins::UV_VERSION.to_string(),
             uv_asset: platform.uv_asset().to_string(),
             uv_sha256: platform.uv_sha256().to_string(),
             python_version: pins::PYTHON_VERSION.to_string(),
-            requirements_sha256: pins::REQUIREMENTS_LOCK_SHA256.to_string(),
-            torch_version: pins::TORCH_VERSION.to_string(),
-            torchvision_version: pins::TORCHVISION_VERSION.to_string(),
-            numpy_version: pins::NUMPY_VERSION.to_string(),
+            requirements_sha256: profile.sha256.to_string(),
+            torch_version: profile.torch.to_string(),
+            torchvision_version: profile.torchvision.to_string(),
+            numpy_version: profile.numpy.to_string(),
+            rdkit_version: profile.rdkit.to_string(),
+            opencv_python_version: profile.opencv_python.to_string(),
+            opencv_python_headless_version: profile.opencv_python_headless.to_string(),
             molscribe_commit: pins::MOLSCRIBE_COMMIT.to_string(),
             molscribe_source_url: pins::MOLSCRIBE_SOURCE_URL.to_string(),
             molscribe_source_sha256: pins::MOLSCRIBE_SOURCE_SHA256.to_string(),
@@ -89,15 +102,19 @@ impl InstallReceipt {
     }
 
     pub fn matches_pins(&self, platform: &dyn EnginePlatform) -> bool {
+        let profile = RequirementsProfile::for_target(platform.target());
         self.receipt_version == CURRENT_RECEIPT_VERSION
             && self.uv_version == pins::UV_VERSION
             && self.uv_asset == platform.uv_asset()
             && self.uv_sha256 == platform.uv_sha256()
             && self.python_version == pins::PYTHON_VERSION
-            && self.requirements_sha256 == pins::REQUIREMENTS_LOCK_SHA256
-            && self.torch_version == pins::TORCH_VERSION
-            && self.torchvision_version == pins::TORCHVISION_VERSION
-            && self.numpy_version == pins::NUMPY_VERSION
+            && self.requirements_sha256 == profile.sha256
+            && self.torch_version == profile.torch
+            && self.torchvision_version == profile.torchvision
+            && self.numpy_version == profile.numpy
+            && self.rdkit_version == profile.rdkit
+            && self.opencv_python_version == profile.opencv_python
+            && self.opencv_python_headless_version == profile.opencv_python_headless
             && self.molscribe_commit == pins::MOLSCRIBE_COMMIT
             && self.molscribe_source_url == pins::MOLSCRIBE_SOURCE_URL
             && self.molscribe_source_sha256 == pins::MOLSCRIBE_SOURCE_SHA256
@@ -106,6 +123,18 @@ impl InstallReceipt {
             && self.model_sha256 == pins::MODEL_SHA256
             && self.model_bytes == pins::MODEL_BYTES
     }
+}
+
+fn original_rdkit_version() -> String {
+    RequirementsProfile::for_target(super::platform::EngineTarget::MacosAarch64)
+        .rdkit
+        .to_string()
+}
+
+fn original_opencv_version() -> String {
+    RequirementsProfile::for_target(super::platform::EngineTarget::MacosAarch64)
+        .opencv_python
+        .to_string()
 }
 
 /// The receipt installs wrote before the Python packages were hash-locked: range constraints
@@ -353,6 +382,92 @@ pub(crate) mod tests {
             ..receipt
         };
         assert!(!stale.matches_pins(&platform));
+    }
+
+    #[test]
+    fn cross_profile_receipts_are_rejected_even_with_matching_uv_pins() {
+        use crate::local_engine::platform::{for_target, EngineTarget};
+
+        let intel = for_target(EngineTarget::MacosX86_64).expect("Intel platform");
+        for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+            let original = for_target(target).expect("original platform");
+            for (source, destination) in [
+                (intel.as_ref(), original.as_ref()),
+                (original.as_ref(), intel.as_ref()),
+            ] {
+                let mut receipt = InstallReceipt::pinned(source, 42);
+                assert!(receipt.matches_pins(source));
+                // Remove the existing uv-asset guard as a reason for rejection: the lock and
+                // package profile must independently reject this receipt.
+                receipt.uv_asset = destination.uv_asset().to_string();
+                receipt.uv_sha256 = destination.uv_sha256().to_string();
+                assert!(!receipt.matches_pins(destination));
+            }
+        }
+    }
+
+    #[test]
+    fn earlier_version_two_receipts_keep_the_original_profile_defaults() {
+        use crate::local_engine::platform::{for_target, EngineTarget};
+
+        for target in [
+            EngineTarget::MacosAarch64,
+            EngineTarget::WindowsX86_64,
+            EngineTarget::MacosX86_64,
+        ] {
+            let platform = for_target(target).expect("platform");
+            let mut value = serde_json::to_value(InstallReceipt::pinned(platform.as_ref(), 42))
+                .expect("receipt JSON");
+            for field in [
+                "rdkitVersion",
+                "opencvPythonVersion",
+                "opencvPythonHeadlessVersion",
+            ] {
+                value.as_object_mut().expect("object").remove(field);
+            }
+            let ReceiptRead::Current(receipt) = parse_receipt(&value.to_string()).expect("v2")
+            else {
+                panic!("version 2 receipt");
+            };
+            assert_eq!(
+                receipt.matches_pins(platform.as_ref()),
+                target != EngineTarget::MacosX86_64
+            );
+        }
+    }
+
+    #[test]
+    fn each_profile_package_pin_is_checked_in_the_receipt() {
+        use crate::local_engine::platform::{for_target, EngineTarget};
+
+        for target in [
+            EngineTarget::MacosAarch64,
+            EngineTarget::MacosX86_64,
+            EngineTarget::WindowsX86_64,
+        ] {
+            let platform = for_target(target).expect("platform");
+            let receipt = InstallReceipt::pinned(platform.as_ref(), 42);
+            for field in [
+                "requirementsSha256",
+                "torchVersion",
+                "torchvisionVersion",
+                "numpyVersion",
+                "rdkitVersion",
+                "opencvPythonVersion",
+                "opencvPythonHeadlessVersion",
+            ] {
+                let mut value = serde_json::to_value(&receipt).expect("receipt JSON");
+                value[field] = serde_json::Value::from("stale");
+                let ReceiptRead::Current(stale) = parse_receipt(&value.to_string()).expect("v2")
+                else {
+                    panic!("version 2 receipt");
+                };
+                assert!(
+                    !stale.matches_pins(platform.as_ref()),
+                    "{target:?}: {field}"
+                );
+            }
+        }
     }
 
     #[test]
