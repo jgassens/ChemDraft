@@ -1715,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.02.24-codex";
+const CURRENT_BUILD_STAMP = "11.09.14.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2592,6 +2592,31 @@ export function MainWindow({
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [nativeToolsetLayoutReady, setNativeToolsetLayoutReady] = useState(false);
   const [nativeToolsetStartupReady, setNativeToolsetStartupReady] = useState(false);
+  const nativeToolsetStartup = useMemo(() => {
+    let ready!: () => void;
+    const promise = new Promise<void>(resolve => { ready = resolve; });
+    return { promise, ready };
+  }, []);
+  useEffect(() => {
+    if (!effectiveNativePalette || !isDesktopRuntime() || nativeToolsetStartupReady) nativeToolsetStartup.ready();
+  }, [effectiveNativePalette, nativeToolsetStartupReady, nativeToolsetStartup]);
+  const [nativeDocumentNoticeOpen, setNativeDocumentNoticeOpen] = useState(false);
+  const nativeDocumentNoticeOpenRef = useRef(false);
+  // Open and restore share both the version predicate and this startup ordering on both platforms.
+  const notifyInstalledDocumentCompatibility = useCallback((
+    opened: ReturnType<typeof openNativeDocument>, installed: ChemDraftDocument
+  ) => notifyNativeDocumentCompatibility(opened, installed, shortcutPlatform, async notice => {
+    await nativeToolsetStartup.promise;
+    if (!mountedRef.current) return;
+    nativeDocumentNoticeOpenRef.current = true;
+    setNativeDocumentNoticeOpen(true);
+    try {
+      await nativePrompt(notice, undefined, undefined, undefined, shortcutPlatform);
+    } finally {
+      nativeDocumentNoticeOpenRef.current = false;
+      if (mountedRef.current) setNativeDocumentNoticeOpen(false);
+    }
+  }), [nativeToolsetStartup, shortcutPlatform]);
   const [keptDrawingsStartupWaitExpired, setKeptDrawingsStartupWaitExpired] = useState(false);
   const nativeToolsetsSuspendedForLaunchPrompt =
     (nativeToolsetStartupReady || keptDrawingsStartupWaitExpired) && keptDrawingsPrompt !== undefined;
@@ -9490,8 +9515,8 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
     perfHook(() => reportOutcome?.("installed"));
-    await notifyNativeDocumentCompatibility(opened, resolvedOpen.document);
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+    await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -9897,6 +9922,12 @@ export function MainWindow({
               const opened = openNativeDocument(session.contents);
               const resolved = await resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+              // Autosave uses the ordinary feature-based writer, which can legitimately drop a
+              // format-only header. Restore the source headers so its notice matches File > Open,
+              // including on later relaunches, without changing that writer's compatibility rules.
+              if (session.nativeDocumentVersions && resolved.source !== "external-cdxml") {
+                resolved.document = { ...resolved.document, ...session.nativeDocumentVersions };
+              }
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
               const reports = restoreSessionWarningReports(session);
               restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
@@ -9954,7 +9985,7 @@ export function MainWindow({
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
           for (const { opened, resolved } of restored) {
             if (!active) break;
-            await notifyNativeDocumentCompatibility(opened, resolved.document);
+            await notifyInstalledDocumentCompatibility(opened, resolved.document);
           }
         };
         await restore();
@@ -9991,7 +10022,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -10043,7 +10074,10 @@ export function MainWindow({
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
           openWarnings: snapshot.warnings,
-          saveWarnings: snapshot.saveWarnings
+          saveWarnings: snapshot.saveWarnings,
+          nativeDocumentVersions: tabDocument.formatVersion || tabDocument.minAppVersion ? {
+            formatVersion: tabDocument.formatVersion, minAppVersion: tabDocument.minAppVersion
+          } : undefined
         };
       });
       const envelope = buildDocumentTabsSession(tabs,
@@ -14099,13 +14133,13 @@ export function MainWindow({
     // A plugin or a timed-out layout/IPC can finish while the box is open. Its hidden windows are
     // healthy; cancel/defer reconciliation until the launch sequence releases them instead of
     // counting suspension's refusal to create/reveal windows as genuine failures.
-    if (nativeToolsetsSuspendedForLaunchPrompt) {
+    if (nativeToolsetsSuspendedForLaunchPrompt || nativeDocumentNoticeOpen) {
       return;
     }
 
     let cancelled = false;
     const useFallback = () => {
-      if (cancelled) return;
+      if (cancelled || nativeDocumentNoticeOpenRef.current) return;
       setWebPaletteFallback(true);
       setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
       setStatus("Native toolset windows unavailable; using in-window toolbars");
@@ -14116,7 +14150,7 @@ export function MainWindow({
       closeToolsetWindow,
       isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
       desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
-      isCancelled: () => cancelled
+      isCancelled: () => cancelled || nativeDocumentNoticeOpenRef.current
     }).then((result) => {
       if (cancelled || result.outcome === "cancelled") {
         return;
@@ -14143,7 +14177,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the

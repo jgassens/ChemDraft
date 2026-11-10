@@ -16,6 +16,7 @@
  */
 
 import type { ViewportState } from "@chemdraft/viewport-engine";
+import { ChemDraftDocumentSchema, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { OpenWarningsReport } from "./openWarnings";
 
 export const DOCUMENT_SESSION_VERSION = 1;
@@ -52,7 +53,11 @@ export interface DocumentSessionEnvelope {
   view?: DocumentSessionView;
   openWarnings?: OpenWarningsReport;
   saveWarnings?: OpenWarningsReport;
+  /** Original file headers: the feature-based Save writer may omit them from contents. */
+  nativeDocumentVersions?: Pick<ChemDraftDocument, "formatVersion" | "minAppVersion">;
 }
+
+const sessionNativeVersionsSchema = ChemDraftDocumentSchema.pick({ formatVersion: true, minAppVersion: true });
 
 export interface DocumentSessionView {
   viewport: ViewportState;
@@ -227,6 +232,7 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   const view = candidate.view === undefined ? undefined : parseSessionView(candidate.view);
   const warnings = candidate.openWarnings === undefined ? undefined : parseSessionWarnings(candidate.openWarnings);
   const saveWarnings = parseSessionWarnings(candidate.saveWarnings);
+  const nativeDocumentVersions = sessionNativeVersionsSchema.safeParse(candidate.nativeDocumentVersions);
   if (candidate.pristine !== undefined && typeof candidate.pristine !== "boolean") return undefined;
   if (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs)) return undefined;
   const parsed: DocumentSessionEnvelope = {
@@ -243,7 +249,8 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
     ...(typeof candidate.pristine === "boolean" ? { pristine: candidate.pristine } : {}),
     ...(view ? { view } : {}),
     ...(warnings ? { openWarnings: warnings } : {}),
-    ...(saveWarnings ? { saveWarnings } : {})
+    ...(saveWarnings ? { saveWarnings } : {}),
+    ...(nativeDocumentVersions.success ? { nativeDocumentVersions: nativeDocumentVersions.data } : {})
   };
   rawSessionTabs.set(parsed, raw);
   return parsed;
