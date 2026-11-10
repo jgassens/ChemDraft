@@ -41,6 +41,7 @@ interface SourceAbbreviation {
   source: CdxElement;
   depth?: number;
   superatomIndex?: number;
+  nativeState?: ReturnType<typeof cdxmlAtomNativeState>;
 }
 
 const element = (name: string, attrs: Record<string, string>, kids: CdxElement[] = [], text = ""): CdxElement =>
@@ -79,20 +80,90 @@ export function cdxmlAtomChemistry(attributes: Record<string, string>, literalLa
   });
 }
 
-function sourceAtomIsUnedited(atom: MoleculeAtom, source: CdxElement, molecule: MoleculeObject): boolean {
+/** Compare native values with native values, not with source attributes ignored by import.
+ * Nulls survive native JSON saves, including the absence of a native hydrogen constraint.
+ */
+export function cdxmlAtomNativeState(atom: MoleculeAtom, stereochemistry: readonly string[] = []) {
+  return {
+    element: atom.element, isotope: atom.isotope ?? null, formalCharge: atom.formalCharge,
+    markRadicals: atom.markRadicals ?? 0, hydrogenCount: atom.hydrogenCount ?? null,
+    labelLiteral: atom.labelLiteral === true, labelBondSide: atom.labelBondSide ?? null,
+    stereo: stereochemistry.filter(value => value.startsWith(`${atom.id}:`)).map(value => value.slice(atom.id.length + 1)),
+    x: atom.x, y: atom.y
+  };
+}
+
+// Released snapshots predate nativeState. Reproduce their import policy without treating an
+// opaque NumHydrogens on an ordinary atom as an edit to its engine-derived implicit H count.
+function legacyNativeState(source: CdxElement, atom: MoleculeAtom, molecule: MoleculeObject) {
   const original = cdxmlAtomChemistry(source.attrs, abbreviationLabel(source));
-  const hydrogenCount = source.attrs.NumHydrogens === undefined ? undefined : Number(source.attrs.NumHydrogens);
-  const originalHydrogens = hydrogenCount !== undefined && Number.isInteger(hydrogenCount) && hydrogenCount >= 0
-    ? hydrogenCount : undefined;
-  const sourceStereo = source.attrs.AS?.trim().toUpperCase();
-  const expectedStereo = sourceStereo === "R" || sourceStereo === "S" ? [`${atom.id}:${sourceStereo}`] : [];
-  const liveStereo = molecule.chemistry?.stereochemistry.filter(value => value.startsWith(`${atom.id}:`)) ?? [];
-  return atom.element === original.element && atom.isotope === original.isotope &&
-    atom.formalCharge === original.formalCharge && (atom.markRadicals ?? 0) === (original.markRadicals ?? 0) &&
-    atom.hydrogenCount === originalHydrogens && !!atom.labelLiteral === !!original.labelLiteral &&
-    // Source import does not assign a side-dependent label reading. Restoring its text after
-    // such a native edit would discard that new chemical interpretation.
-    atom.labelBondSide === undefined && sameMembers(liveStereo, expectedStereo);
+  const hydrogenCount = Number(source.attrs.NumHydrogens);
+  const aromatic = molecule.bonds.some(bond => bond.order === "aromatic" &&
+    [bond.fromAtomId, bond.toAtomId].includes(atom.id));
+  const stereo = source.attrs.AS?.trim().toUpperCase();
+  return cdxmlAtomNativeState({ ...original, id: atom.id, x: atom.x, y: atom.y,
+    ...((original.labelLiteral || aromatic) && Number.isInteger(hydrogenCount) && hydrogenCount >= 0
+      ? { hydrogenCount } : {})
+  }, stereo === "R" || stereo === "S" ? [`${atom.id}:${stereo}`] : []);
+}
+
+/** Change label text only when its native meaning changed; untouched styled runs stay intact. */
+function mergeLabel(source: CdxElement, label: string, warn: (reason: string) => void): void {
+  const text = source.kids.find(child => child.name === "t");
+  if (text && elementText(text).trim() === label) return;
+  if (source.attrs.GenericNickname !== undefined) source.attrs.GenericNickname = label;
+  if (!text) {
+    source.kids.push(element("t", {}, [element("s", {}, [], label)]));
+    return;
+  }
+  const runs = text.kids.filter(child => child.name === "s");
+  if (runs.length > 1) warn("edited label text uses the first source run's formatting; the original run boundaries could not be carried.");
+  const replacement = element("s", { ...runs[0]?.attrs }, [], label);
+  text.text = "";
+  text.kids = [replacement, ...text.kids.filter(child => child.name !== "s")];
+}
+
+function mergeSourceAtom(copy: CdxElement, generated: CdxElement, atom: MoleculeAtom,
+  record: SourceAbbreviation, molecule: MoleculeObject, warnings: CompatibilityConversionWarning[]): void {
+  const original = record.nativeState ?? legacyNativeState(record.source, atom, molecule);
+  const current = cdxmlAtomNativeState(atom, molecule.chemistry?.stereochemistry);
+  const warn = (reason: string) => warnings.push({ code: "cdxml.atom_snapshot_attribute_not_written",
+    sourceObjectId: record.source.attrs.id, atomIds: [atom.id],
+    message: `Source atom node ${record.source.attrs.id ?? atom.id}: ${reason}` });
+  const set = (key: string, value: string | undefined) => {
+    if (value === undefined) delete copy.attrs[key]; else copy.attrs[key] = value;
+  };
+  if (current.formalCharge !== original.formalCharge) set("Charge", String(current.formalCharge));
+  if (current.markRadicals !== original.markRadicals) set("Radical", generated.attrs.Radical);
+  if (current.hydrogenCount !== original.hydrogenCount) set("NumHydrogens", generated.attrs.NumHydrogens);
+  const isotope = (state: typeof current) => state.element === "D" ? 2 : state.element === "T" ? 3 : state.isotope;
+  if (isotope(current) !== isotope(original)) set("Isotope", generated.attrs.Isotope);
+  if (current.element !== original.element) {
+    // A literal's element field IS its label. Its source Element is independent wrapper data.
+    if (!current.labelLiteral) set("Element", generated.attrs.Element ?? "6");
+    else if (copy.attrs.Element === original.element) set("Element", current.element);
+    if (current.labelLiteral || copy.kids.some(child => child.name === "t")) {
+      const sourceLabel = abbreviationLabel(record.source);
+      const label = sourceLabel === "H" && ["H", "D", "T"].includes(current.element) ? "H" : current.element;
+      mergeLabel(copy, label, warn);
+    }
+  }
+  if (current.labelLiteral !== original.labelLiteral) {
+    set("NodeType", generated.attrs.NodeType);
+    set("GenericNickname", generated.attrs.GenericNickname);
+    set("Element", generated.attrs.Element ?? (current.labelLiteral ? undefined : "6"));
+    if (current.labelLiteral) mergeLabel(copy, current.element, warn);
+  }
+  if (!sameMembers(current.stereo, original.stereo)) {
+    set("AS", current.stereo.length === 1 && ["R", "S"].includes(current.stereo[0]) ? current.stereo[0] : undefined);
+    if (current.stereo.length && copy.attrs.AS === undefined) warn("the edited atom stereo assignment cannot be written as AS; it remains only in the native document.");
+  }
+  if (JSON.stringify(current.labelBondSide) !== JSON.stringify(original.labelBondSide)) {
+    warn("the edited side-dependent label interpretation has no source attribute; only its drawn bond side is visible.");
+  }
+  const moved = record.nativeState ? current.x !== original.x || current.y !== original.y
+    : JSON.stringify(copy.attrs.p?.trim().split(/\s+/).map(Number)) !== JSON.stringify(generated.attrs.p?.split(/\s+/).map(Number));
+  if (moved || copy.attrs.p === undefined) copy.attrs.p = generated.attrs.p;
 }
 
 /** Restore grouping around the live graph. Chemistry always reads the graph, never this snapshot. */
@@ -102,7 +173,8 @@ export function restoreCdxmlAbbreviations(
   atomIds: ReadonlyMap<string, string>,
   nextId: () => string,
   warnings: CompatibilityConversionWarning[]
-): void {
+): Set<string> {
+  const restoredAtoms = new Set<string>();
   const stored = molecule.compatibility?.unknown.cdxmlAbbreviations;
   const sources = (Array.isArray(stored) ? stored : []).filter((value): value is SourceAbbreviation =>
     !!value && typeof value === "object" && Array.isArray(value.atomIds) &&
@@ -135,19 +207,11 @@ export function restoreCdxmlAbbreviations(
     const index = fragment.kids.findIndex(child => child.name === "n" && child.attrs.id === id);
     if (index < 0) continue;
     const nativeAtom = molecule.atoms.find(atom => atom.id === record.atomIds[0]);
-    const label = abbreviationLabel(record.source);
-    // Replacing the entire generated node also replaces every chemical attribute. Check them
-    // all, including absent source values (neutral charge, natural isotope, no H constraint).
-    if (!nativeAtom || !sourceAtomIsUnedited(nativeAtom, record.source, molecule)) {
-      const original = cdxmlAtomChemistry(record.source.attrs, label);
-      warn(label ?? original.element, nativeAtom?.element !== original.element
-        ? "its original literal label was edited."
-        : "its atom chemistry was edited; source formatting was not kept.");
-      continue;
-    }
+    if (!nativeAtom) continue;
     const copy = cloneSource(record.source, id!);
-    copy.attrs.p = fragment.kids[index].attrs.p;
+    mergeSourceAtom(copy, fragment.kids[index], nativeAtom, record, molecule, warnings);
     fragment.kids[index] = copy;
+    restoredAtoms.add(nativeAtom.id);
   }
 
   const nativeIdByVisibleId = new Map([...atomIds].map(([nativeId, visibleId]) => [visibleId, nativeId]));
@@ -192,19 +256,25 @@ export function restoreCdxmlAbbreviations(
     const wrapperId = nextId();
     const sourceCopy = source ? cloneSource(source.source, wrapperId) : undefined;
     const attributes: Record<string, string> = { ...sourceCopy?.attrs, id: wrapperId, NodeType: sourceCopy?.attrs.NodeType ?? "Nickname" };
-    // The body's atoms carry their elements. A symbolic Element on the wrapper is only a label
-    // hint, which the explicit text already supplies; it must not be counted as another atom.
-    delete attributes.Element;
     const anchorNode = fragment.kids.find(node => node.name === "n" && node.attrs.id === displayIds.get(anchorId ?? group.atomIds![0]));
     if (anchorNode) attributes.p = anchorNode.attrs.p;
-    const body = element("fragment", { id: nextId() }, [...nodes.map(([node]) => node), ...bodyBonds]);
+    const sourceBody = sourceCopy?.kids.find(child => child.name === "fragment");
+    const body = element("fragment", { ...sourceBody?.attrs, id: nextId() }, [...nodes.map(([node]) => node), ...bodyBonds,
+      ...(sourceBody?.kids.filter(child => child.name !== "n" && child.name !== "b") ?? [])]);
     if (anchorId) {
       const connectionId = nextId();
       body.kids.push(element("n", { id: connectionId, NodeType: "ExternalConnectionPoint" }),
         element("b", { id: nextId(), B: connectionId, E: displayIds.get(anchorId)!, Order: "1" }));
     }
-    const label = element("t", { id: nextId() }, [element("s", {}, [], group.label)]);
-    const wrapper = element("n", attributes, [body, label]);
+    const wrapper = sourceCopy ?? element("n", attributes);
+    wrapper.attrs = attributes;
+    wrapper.kids = sourceCopy
+      ? sourceCopy.kids.map(child => child.name === "fragment" ? body : child)
+      : [body];
+    if (abbreviationLabel(wrapper) !== group.label) mergeLabel(wrapper, group.label, reason => warnings.push({
+      code: "cdxml.atom_snapshot_attribute_not_written", sourceObjectId: source?.source.attrs.id,
+      message: `Source atom node ${source?.source.attrs.id ?? wrapperId}: ${reason}`
+    }));
     const removed = new Set([...nodes.map(([node]) => node), ...bodyBonds]);
     fragment.kids = fragment.kids.filter(node => !removed.has(node));
     for (const bond of fragment.kids.filter(node => node.name === "b")) {
@@ -216,4 +286,5 @@ export function restoreCdxmlAbbreviations(
     nodeMembers.set(wrapper, members);
     members.forEach(id => displayIds.set(id, wrapperId));
   }
+  return restoredAtoms;
 }

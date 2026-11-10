@@ -49,7 +49,7 @@ import {
   writeCdx,
   type CdxElement
 } from "./cdxBinary";
-import { abbreviationExpansionIssue, cdxmlAtomChemistry, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
+import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -1559,7 +1559,7 @@ function exportMoleculeObject(
     const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
     const elementNumber = heavyHydrogen ? 1
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
-    const literalLabel = elementNumber === undefined && atom.labelLiteral === true;
+    const literalLabel = atom.labelLiteral === true;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`
@@ -1578,12 +1578,12 @@ function exportMoleculeObject(
         ? {
             code: "cdxml.atom_element_symbol_exported",
             message: `Atom element "${atom.element}" was exported as a CDXML element label because no atomic number mapping exists.`,
-            sourceObjectId: molecule.id
+            sourceObjectId: molecule.id, atomIds: [atom.id]
           }
         : {
             code: "cdxml.bonded_element_label_exported",
             message: `Atom "${atom.element}" on a bond is ${bondedMeaning}, not the element ${atom.element}; it was exported as the label "${atom.element}" rather than an atomic number.`,
-            sourceObjectId: molecule.id
+            sourceObjectId: molecule.id, atomIds: [atom.id]
           });
     }
     // A side-dependent label ("SCN") has its recorded reading from the side its bond came from
@@ -1635,14 +1635,25 @@ function exportMoleculeObject(
   });
   const bondLines = molecule.bonds.map((bond) => exportBond(bond, molecule, atomIds, context, allocator, warnings));
 
-  if (molecule.chemistry?.radicalCount || molecule.chemistry?.stereochemistry.length) {
+  const warnMetadata = (nodes: CdxElement[] = []) => {
+    const visibleStereo = new Map<string, string>();
+    const visit = (node: CdxElement) => {
+      if (node.name === "n" && node.attrs.AS) visibleStereo.set(node.attrs.id, node.attrs.AS.trim().toUpperCase());
+      node.kids.forEach(visit);
+    };
+    nodes.forEach(visit);
+    const missingStereo = molecule.chemistry?.stereochemistry.some(value => {
+      const split = value.lastIndexOf(":");
+      return visibleStereo.get(atomIds.get(value.slice(0, split)) ?? "") !== value.slice(split + 1);
+    });
+    if (!molecule.chemistry?.radicalCount && !missingStereo) return;
     warnings.push({
       code: "cdxml.molecule_metadata_payload_only",
       message: "Molecule radical and stereochemistry aggregates remain in the native payload; " +
         "isotopes are preserved on CDXML atoms and supported bond stereo is written visibly.",
       sourceObjectId: molecule.id
     });
-  }
+  };
 
   const contents = [
     `<fragment id="${fragmentId}" BoundingBox="${formatBoundingBox(molecule)}">`,
@@ -1650,9 +1661,19 @@ function exportMoleculeObject(
     ...bondLines.map((line) => indent(line, 2)),
     "</fragment>"
   ].join("\n");
-  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations) return contents;
+  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations) {
+    warnMetadata();
+    return contents;
+  }
   const root = cdxElementFromOrderedTree(parseCdxml(`<CDXML>${contents}</CDXML>`));
-  restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings);
+  const restored = restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings);
+  // These diagnostics describe the discarded generated node, not the merged source node.
+  for (let index = warnings.length - 1; index >= 0; index--) {
+    const warning = warnings[index];
+    if (warning.sourceObjectId === molecule.id && warning.atomIds?.some(id => restored.has(id)) &&
+        ["cdxml.atom_element_symbol_exported", "cdxml.bonded_element_label_exported"].includes(warning.code)) warnings.splice(index, 1);
+  }
+  warnMetadata(root.kids);
   return cdxElementToCdxml(root.kids[0]);
 }
 
@@ -2149,6 +2170,10 @@ function exportSemanticReactionArrowGraphic(
     ...cdxmlGraphicColorAttribute(graphic, warnings, colors),
     ...cdxmlLineTypeAttributes(graphic),
     `BoundingBox="${formatLineBoundingBox(line.start, line.end)}"`,
+    // Start/End are CDXML-only aliases. Binary CDX needs standard endpoints too; otherwise
+    // reopening falls back to an inset bounding-box diagonal and shortens a standalone arrow.
+    `Tail3D="${formatPoint(line.start)} 0"`,
+    `Head3D="${formatPoint(line.end)} 0"`,
     `Start="${formatPoint(line.start)}"`,
     `End="${formatPoint(line.end)}"`
   ];
@@ -3377,6 +3402,9 @@ function expandCdxmlAbbreviationNodes(
             ? `Kept abbreviation node ${nodeId} ("${label}") as a literal label with its bonds: it carries no expanded atom graph.`
             : `Kept abbreviation node ${nodeId} as an unknown atom (*): it carries neither label text nor an expanded atom graph.`
         });
+      } else if (depth > 0) {
+        // Live atoms inside rebuilt superatoms need the same attribute merge as literal nodes.
+        abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
       }
       continue;
     }
@@ -3686,11 +3714,15 @@ function importFragment(
   // Order=1.5 bonds cannot say whether a ring N is pyridine-type or an N–H; the file's NumHydrogens
   // can, so it is kept for the Kekulé resolution to honour. Literal labels also retain an explicit
   // count: their text supplies no implicit hydrogens and cannot replace the source constraint.
+  // Snapshot atoms use the same policy even when nonliteral: only a source-fixed count becomes
+  // a constraint. An absent attribute never freezes an ordinary atom's engine-derived H count.
   const aromaticAtomIds = new Set(normalizedBonds.flatMap((bond) =>
     bond.order === "aromatic" ? [bond.fromAtomId, bond.toAtomId] : []));
+  const snapshotAtomIds = new Set(expansion.abbreviations.filter(item => !item.expanded)
+    .flatMap(item => item.atomCdxmlIds.map(id => atomIdByCdxmlId.get(id))));
   for (const atom of atoms) {
     const stated = statedHydrogensByAtomId.get(atom.id);
-    if (stated !== undefined && (atom.labelLiteral || aromaticAtomIds.has(atom.id))) {
+    if (stated !== undefined && (atom.labelLiteral || aromaticAtomIds.has(atom.id) || snapshotAtomIds.has(atom.id))) {
       atom.hydrogenCount = stated;
     }
   }
@@ -3726,6 +3758,8 @@ function importFragment(
     atomIds: item.atomCdxmlIds.flatMap(id => atomIdByCdxmlId.get(id) ?? []),
     expanded: item.expanded,
     depth: item.depth,
+    ...(!item.expanded ? { nativeState: cdxmlAtomNativeState(
+      atoms.find(atom => atom.id === atomIdByCdxmlId.get(item.atomCdxmlIds[0]))!, atomStereochemistry) } : {}),
     // Superatom metadata has no ID. Retain its original array index as the source association,
     // independently of membership (nested groups can contain exactly the same live atoms).
     ...(item.expanded && cdxmlAtomLabelText(item.source) ? { superatomIndex: superatomIndex++ } : {}),

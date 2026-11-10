@@ -2610,7 +2610,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       sourceFormat: "cdxml",
       sourceObjectType: "step"
     });
-    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
+    expect(opened.warnings).toContainEqual(expect.objectContaining({
+      code: "cdxml.reaction_step_preserved", message: expect.stringContaining("step1")
+    }));
   });
 });
 

@@ -67,6 +67,22 @@ label and original source expansion instead of silently flattening it. Original 
 cannot be collapsed safely exports its live graph with `cdxml.superatom_not_collapsed`.
 Synthetic coverage includes biphenyl/Ph, Boc-NH, OTBS, OMe and three independent Me groups.
 
+### Merging source atom snapshots
+
+Visible CDXML and CDX export starts from the imported atom node. An unchanged snapshot keeps its
+attributes and children verbatim (object ids may be remapped); an edited atom overwrites only its
+changed charge, isotope, radical, hydrogen constraint, element or label text. Unchanged `AS`,
+`NodeType`, annotations, styled label runs and unexpanded fragments stay intact. Supported R/S edits
+update `AS` too. Each snapshot records the imported native values in `cdxmlAbbreviations.nativeState`,
+so comparisons use the same native interpretation on import and export. Every snapshotted atom
+retains an explicit source `NumHydrogens` constraint, including nonliteral atoms and D/T labels;
+absent counts stay absent, leaving ordinary implicit hydrogens engine-derived. Older snapshots
+can also retain a source-only count without mistaking the absent native constraint for an edit.
+Rebuilt superatoms use live body atoms with the same merge and retain unchanged wrapper labels and
+annotations. Older snapshots use the original import policy as their comparison baseline. Warnings
+name the source node and actual loss, such as run formatting that cannot follow edited label text;
+changing charge alone no longer discards the source node or warns about retained stereo.
+
 Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` contains a namespaced
 `org.chemdraft/cdx-envelope.v1` envelope with the existing CDXML payload tags. Its visible hash covers
 the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope

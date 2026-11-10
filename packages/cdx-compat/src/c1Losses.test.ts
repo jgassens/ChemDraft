@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { XMLParser } from "fast-xml-parser";
-import type { ChemDraftDocument, MoleculeAtom } from "@chemdraft/chem-core";
-import { cdxElementFromOrderedTree, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
+import type { ChemDraftDocument, MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
+import { planNativeArtVisual } from "../../art-engine/src/index";
+import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 
 const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false });
@@ -142,6 +143,34 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     }));
   });
 
+  for (const [head, tool] of [["FullHead", "reactionArrow"], ["HalfHead", "fishhookArrow"],
+    ["Resonance", "resonanceArrow"], ["Equilibrium", "equilibriumArrow"], ["Retrosynthetic", "retroArrow"]]) {
+    it.each([undefined, "Solid", "Dashed", "Bold", "Wavy"])(
+      `keeps a standalone ${head} line's %s appearance and geometry without a reaction step`, lineType => {
+        const lineAttribute = lineType === undefined ? "" : `LineType="${lineType}"`;
+        let imported = open(page(`<graphic id="10" GraphicType="Line" ArrowType="${head}" ${lineAttribute}
+          BoundingBox="60 60 180 100" Tail3D="60 60 0" Head3D="180 100 0"/>`));
+        const arrow = imported.document!.pages[0].objects[0];
+        expect(arrow).toMatchObject({ type: "graphic", graphicKind: "path", data: { artToolId: tool } });
+        if (arrow.type !== "graphic") throw new Error("Expected an editable art arrow");
+        const geometry = { x: arrow.x, y: arrow.y, width: arrow.width, height: arrow.height };
+        const appearance = planNativeArtVisual(arrow);
+        const style = { ...arrow.style };
+        for (let cycle = 0; cycle < 3; cycle++) {
+          expect(all(output(imported.document!), "step")).toEqual([]);
+          imported = roundTrip(imported.document!);
+          expect(imported.document!.pages[0].objects).toHaveLength(1);
+          const reopened = imported.document!.pages[0].objects[0];
+          expect(reopened).toMatchObject({
+            type: "graphic", graphicKind: "path", ...geometry, style, data: { artToolId: tool }
+          });
+          if (reopened.type !== "graphic") throw new Error("Expected an editable art arrow");
+          expect(planNativeArtVisual(reopened)).toEqual(appearance);
+        }
+      }
+    );
+  }
+
   it("names every link on a step preserved outside a scheme", () => {
     const imported = open(page(molecule + `<step id="21" ReactionStepArrows="999" ReactionStepReactants="2"
       ReactionStepProducts="2" ReactionStepObjectsAboveArrow="998" ReactionStepObjectsBelowArrow="997"/>`));
@@ -187,90 +216,220 @@ describe.each(["CDXML", "CDX"] as const)("C1 remaining losses in %s", format => 
     }
   });
 
-  it.each([[2, "D"], [3, "T"]] as const)("keeps an unedited isotopic H source node for mass %s with native %s", (isotope, symbol) => {
-    const xml = page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" AS="R" NeedsClean="yes" Warning="synthetic" Z="1" p="60 60"><t id="4" p="60 60"><s face="1">H</s></t></n></fragment>`);
-    const source = format === "CDX" ? readCdx(writeCdx(tree(xml))) : tree(xml);
-    const sourceNode = withoutIds(all(source, "n")[0]);
+  const nativeMolecule = (document: ChemDraftDocument) => document.pages[0].objects.find(o => o.type === "molecule")!;
+  // Include absent values: partial matching previously missed lost literal and H semantics.
+  const atomState = (native: MoleculeObject) => {
+    const atom = native.atoms[0];
+    return {
+      element: atom.element, isotope: atom.isotope, formalCharge: atom.formalCharge,
+      markRadicals: atom.markRadicals, hydrogenCount: atom.hydrogenCount, labelLiteral: atom.labelLiteral,
+      stereo: (native.chemistry?.stereochemistry ?? []).map(value => value.slice(value.indexOf(":") + 1))
+    };
+  };
+  const plainState = {
+    isotope: undefined, formalCharge: 0, markRadicals: undefined, hydrogenCount: undefined,
+    labelLiteral: true, stereo: []
+  };
+  const normalizedSource = (xml: string) => format === "CDX" ? readCdx(writeCdx(tree(xml))) : tree(xml);
+
+  it.each([
+    { name: "D", attrs: 'NodeType="Unspecified" Isotope="2"', label: "H", element: "D", nested: "" },
+    { name: "T", attrs: 'NodeType="Unspecified" Isotope="3"', label: "H", element: "T", nested: "" },
+    { name: "Unspecified label", attrs: 'NodeType="Unspecified"', label: "Qq", element: "Qq", nested: "" },
+    { name: "unexpandable abbreviation", attrs: 'NodeType="AnonymousAlternativeGroup"', label: "Alt", element: "Alt",
+      nested: '<fragment id="5"><n id="6" Element="7" p="60 60"/></fragment>' }
+  ])("restores an unedited $name source node byte-identically apart from ids without warnings", ({ attrs, label, element, nested }) => {
+    const xml = page(`<fragment id="2"><n id="3" ${attrs} NeedsClean="yes" Warning="synthetic" Z="1" p="60 60"><t id="4" p="60 60"><s face="1">${label}</s></t>${nested}</n></fragment>`);
+    const expected = cdxElementToCdxml(withoutIds(all(normalizedSource(xml), "n")[0]));
     let imported = open(xml);
     for (let cycle = 0; cycle < 3; cycle++) {
-      const molecule = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
-      expect(molecule.atoms).toMatchObject([{ element: symbol, labelLiteral: true, formalCharge: 0 }]);
-      expect(molecule.atoms[0].isotope).toBeUndefined();
-      expect(exportWarnings(imported.document!).filter(warning => warning.code === "cdxml.superatom_not_collapsed")).toEqual([]);
-      // Visible ids may be reassigned; every other source attribute and label run stays intact.
-      expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(sourceNode);
+      expect(atomState(nativeMolecule(imported.document!))).toEqual({ ...plainState, element });
+      expect(exportWarnings(imported.document!)).toEqual([]);
+      expect(cdxElementToCdxml(withoutIds(all(output(imported.document!), "n")[0]))).toBe(expected);
       imported = roundTrip(imported.document!);
     }
   });
 
-  it.each([2, 3])("warns when an isotopic H source label of mass %s is edited", isotope => {
-    for (const element of ["Qq", "H", isotope === 2 ? "T" : "D"]) {
-      const imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" AS="R" p="60 60"><t id="4"><s>H</s></t></n></fragment>`));
-      const molecule = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
-      molecule.atoms[0].element = element;
-      expect(exportWarnings(imported.document!).filter(warning => warning.code === "cdxml.superatom_not_collapsed")).toEqual([
-        expect.objectContaining({ message: expect.stringContaining("original literal label was edited") })
-      ]);
-      expect(all(output(imported.document!), "n")[0].attrs.NodeType).not.toBe("Unspecified");
-    }
-  });
-
-  it.each([2, 3])("restores an untouched isotopic H node of mass %s verbatim without export warnings", isotope => {
-    const xml = page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" p="60 60"><t id="4" p="60 60"><s face="1">H</s></t></n></fragment>`);
-    const source = format === "CDX" ? readCdx(writeCdx(tree(xml))) : tree(xml);
+  it.each([[2, "D"], [3, "T"]] as const)("keeps literal %s/%s and NumHydrogens after editing charge", (isotope, element) => {
+    const xml = page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" NumHydrogens="1" p="60 60"><t id="4"><s>H</s></t></n></fragment>`);
     const imported = open(xml);
-    expect(exportWarnings(imported.document!)).toEqual([]);
-    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(withoutIds(all(source, "n")[0]));
-  });
-
-  it.each([
-    { name: "D charge", attrs: 'Isotope="2"', label: "H", edit: { formalCharge: -1 }, expected: { element: "D", formalCharge: -1 }, visible: { Isotope: "2", Charge: "-1" } },
-    { name: "D to T", attrs: 'Isotope="2"', label: "H", edit: { element: "T" }, expected: { element: "T" }, visible: { Isotope: "3" } },
-    { name: "label hydrogen count", attrs: 'NumHydrogens="1"', label: "Qq", edit: { hydrogenCount: 2 }, expected: { element: "Qq", hydrogenCount: 2 }, visible: { NumHydrogens: "2" } },
-    { name: "label added hydrogen count", attrs: '', label: "Qq", edit: { hydrogenCount: 0 }, expected: { element: "Qq", hydrogenCount: 0 }, visible: { NumHydrogens: "0" } },
-    { name: "label charge", attrs: '', label: "Qq", edit: { formalCharge: -1 }, expected: { element: "Qq", formalCharge: -1 }, visible: { Charge: "-1" } },
-    { name: "label neutralized charge", attrs: 'Charge="1"', label: "Qq", edit: { formalCharge: 0 }, expected: { element: "Qq", formalCharge: 0 }, visible: {} },
-    { name: "carbon isotope", attrs: 'Isotope="13"', label: "C", edit: { isotope: 14 }, expected: { element: "C", isotope: 14 }, visible: { Isotope: "14" } },
-    { name: "label text", attrs: '', label: "Qq", edit: { element: "Xx" }, expected: { element: "Xx" }, visible: {} },
-    { name: "label radical", attrs: 'Radical="Doublet"', label: "Qq", edit: { markRadicals: 2 }, expected: { element: "Qq", markRadicals: 2 }, visible: { Radical: "Triplet" } },
-    { name: "label removed hydrogen count", attrs: 'NumHydrogens="1"', label: "Qq", edit: { hydrogenCount: undefined }, expected: { element: "Qq" }, visible: {} }
-  ] satisfies { name: string; attrs: string; label: string; edit: Partial<MoleculeAtom>; expected: Partial<MoleculeAtom>; visible: Record<string, string> }[])(
-    "exports edited $name instead of the Unspecified snapshot", ({ attrs, label, edit, expected, visible }) => {
-      const imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" ${attrs} p="60 60"><t id="4"><s>${label}</s></t></n></fragment>`));
-      const native = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
-      Object.assign(native.atoms[0], edit);
-      const exported = all(output(imported.document!), "n")[0];
-      expect(exported.attrs).toMatchObject(visible);
-      expect(exported.attrs.NodeType).not.toBe("Unspecified");
-      if ("hydrogenCount" in edit && edit.hydrogenCount === undefined) expect(exported.attrs.NumHydrogens).toBeUndefined();
-      expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({ code: "cdxml.superatom_not_collapsed" }));
-      const reopened = roundTrip(imported.document!).document!.pages[0].objects.find(o => o.type === "molecule")!;
-      expect(reopened.atoms[0]).toMatchObject(expected);
-      if ("hydrogenCount" in edit && edit.hydrogenCount === undefined) expect(reopened.atoms[0].hydrogenCount).toBeUndefined();
-    }
-  );
-
-  it.each(["Nickname", "AnonymousAlternativeGroup"])("keeps an edited charge on an unexpandable %s snapshot", kind => {
-    const imported = open(page(`<fragment id="2"><n id="3" NodeType="${kind}" Charge="1" p="60 60">
-      <fragment id="4"><n id="5" Element="7" p="60 60"/></fragment><t id="6"><s>Me</s></t></n></fragment>`));
-    const native = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
+    const native = nativeMolecule(imported.document!);
+    expect(atomState(native)).toEqual({ ...plainState, element, hydrogenCount: 1 });
     native.atoms[0].formalCharge = -1;
-    const nodes = all(output(imported.document!), "n");
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0].attrs.Charge).toBe("-1");
-    expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({ code: "cdxml.superatom_not_collapsed" }));
-    expect(roundTrip(imported.document!).document!.pages[0].objects.find(o => o.type === "molecule")!.atoms[0])
-      .toMatchObject({ element: "Me", formalCharge: -1 });
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    expected.attrs.Charge = "-1";
+    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element, hydrogenCount: 1, formalCharge: -1
+    });
   });
 
-  it("does not restore a source atom stereo assignment after its native assignment changes", () => {
+  it("keeps an untouched nonliteral charged Nickname and its explicit NumHydrogens", () => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Nickname" Element="6" Charge="1" NumHydrogens="1" p="60 60"><fragment id="4"><n id="5" Element="7" p="60 60"/></fragment></n></fragment>');
+    let imported = open(xml);
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      expect(atomState(nativeMolecule(imported.document!))).toEqual({
+        ...plainState, element: "C", formalCharge: 1, labelLiteral: undefined, hydrogenCount: 1
+      });
+      expect(exportWarnings(imported.document!)).toEqual([]);
+      expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+      imported = roundTrip(imported.document!);
+    }
+  });
+
+  it("keeps AS=R when only charge changes on an Unspecified label", () => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Unspecified" AS="R" p="60 60"><t id="4"><s>Qq</s></t></n></fragment>');
+    const imported = open(xml);
+    nativeMolecule(imported.document!).atoms[0].formalCharge = -1;
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    expected.attrs.Charge = "-1";
+    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "Qq", formalCharge: -1, stereo: ["R"]
+    });
+  });
+
+  for (const kind of ["Unspecified", "Nickname", "AnonymousAlternativeGroup"]) {
+    it.each([
+      { name: "charge", edit: { formalCharge: -1 }, attribute: "Charge", value: "-1" },
+      { name: "neutral charge", edit: { formalCharge: 0 }, attribute: "Charge", value: "0" },
+      { name: "isotope", edit: { isotope: 14 }, attribute: "Isotope", value: "14" },
+      { name: "removed isotope", edit: { isotope: undefined }, attribute: "Isotope", value: undefined },
+      { name: "radical", edit: { markRadicals: 2 }, attribute: "Radical", value: "Triplet" },
+      { name: "removed radical", edit: { markRadicals: undefined }, attribute: "Radical", value: undefined },
+      { name: "hydrogen count", edit: { hydrogenCount: 2 }, attribute: "NumHydrogens", value: "2" },
+      { name: "zero hydrogen count", edit: { hydrogenCount: 0 }, attribute: "NumHydrogens", value: "0" },
+      { name: "removed hydrogen count", edit: { hydrogenCount: undefined }, attribute: "NumHydrogens", value: undefined },
+      { name: "label text", edit: { element: "N" }, attribute: undefined, value: undefined }
+    ] satisfies { name: string; edit: Partial<MoleculeAtom>; attribute?: string; value?: string }[])(
+      `merges only edited $name on ${kind}, retaining stereo, annotations and children`, ({ edit, attribute, value }) => {
+        const nested = kind === "Unspecified" ? "" : '<fragment id="5"><n id="6" Element="7" p="60 60"/></fragment>';
+        const xml = page(`<fragment id="2"><n id="3" NodeType="${kind}" Isotope="13" Charge="1" Radical="Doublet" NumHydrogens="1" AS="R" Geometry="Tetrahedral" NeedsClean="yes" Warning="synthetic" Z="1" p="60 60"><t id="4" p="60 60"><s face="1">C</s></t>${nested}</n></fragment>`);
+        const imported = open(xml);
+        expect(imported.document, JSON.stringify(imported.warnings)).toBeDefined();
+        const native = nativeMolecule(imported.document!);
+        const before = { element: "C", isotope: 13, formalCharge: 1, markRadicals: 1,
+          hydrogenCount: 1, labelLiteral: true, stereo: ["R"] };
+        expect(atomState(native)).toEqual(before);
+        Object.assign(native.atoms[0], edit);
+        const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+        if (attribute) {
+          if (value === undefined) delete expected.attrs[attribute]; else expected.attrs[attribute] = value;
+        } else expected.kids.find(kid => kid.name === "t")!.kids[0].text = "N";
+        expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+        expect(exportWarnings(imported.document!)).toEqual([]);
+        expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({ ...before, ...edit });
+      }
+    );
+  }
+
+  it.each([2, 3])("merges an edited isotopic H label of mass %s without dropping its literal semantics", isotope => {
+    for (const element of ["Qq", "H", isotope === 2 ? "T" : "D"]) {
+      const imported = open(page(`<fragment id="2"><n id="3" NodeType="Unspecified" Isotope="${isotope}" NumHydrogens="1" AS="R" p="60 60"><t id="4"><s>H</s></t></n></fragment>`));
+      nativeMolecule(imported.document!).atoms[0].element = element;
+      expect(exportWarnings(imported.document!)).toEqual([]);
+      expect(all(output(imported.document!), "n")[0].attrs.NodeType).toBe("Unspecified");
+      expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+        ...plainState, element, hydrogenCount: 1, stereo: ["R"]
+      });
+    }
+  });
+
+  it("merges an edited source AS assignment without discarding the label", () => {
     const imported = open(page('<fragment id="2"><n id="3" NodeType="Unspecified" AS="R" p="60 60"><t id="4"><s>Qq</s></t></n></fragment>'));
-    const native = imported.document!.pages[0].objects.find(o => o.type === "molecule")!;
+    const native = nativeMolecule(imported.document!);
     native.chemistry!.stereochemistry = [`${native.atoms[0].id}:S`];
-    expect(all(output(imported.document!), "n")[0].attrs.AS).toBeUndefined();
-    expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({ code: "cdxml.superatom_not_collapsed" }));
-    // The ordinary exporter already warns that native atom stereo assignments are payload-only.
-    expect(exportWarnings(imported.document!)).toContainEqual(expect.objectContaining({ code: "cdxml.molecule_metadata_payload_only" }));
+    expect(all(output(imported.document!), "n")[0].attrs.AS).toBe("S");
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "Qq", stereo: ["S"]
+    });
+  });
+
+  it("merges Element on a nonliteral unexpandable atom without treating its explicit H count as an edit", () => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Nickname" Element="6" Charge="1" NumHydrogens="1" AS="R" p="60 60"><fragment id="4"><n id="5" Element="7" p="60 60"/></fragment></n></fragment>');
+    const imported = open(xml);
+    nativeMolecule(imported.document!).atoms[0].element = "N";
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    expected.attrs.Element = "7";
+    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "N", formalCharge: 1, labelLiteral: undefined, hydrogenCount: 1, stereo: ["R"]
+    });
+  });
+
+  it("retains multiple source label runs on a charge edit and names formatting lost on a text edit", () => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Unspecified" AS="R" p="60 60"><t id="4"><s face="1">Q</s><s face="32">q</s></t></n></fragment>');
+    const imported = open(xml);
+    const atom = nativeMolecule(imported.document!).atoms[0];
+    atom.formalCharge = -1;
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    expected.attrs.Charge = "-1";
+    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "Qq", formalCharge: -1, stereo: ["R"]
+    });
+    atom.element = "Xx";
+    expect(exportWarnings(imported.document!)).toEqual([expect.objectContaining({
+      code: "cdxml.atom_snapshot_attribute_not_written", sourceObjectId: "3",
+      message: expect.stringMatching(/node 3:.*run.*formatting/)
+    })]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "Xx", formalCharge: -1, stereo: ["R"]
+    });
+  });
+
+  it.each([0, 2, undefined])("merges a nonliteral snapshot's edited hydrogen count %s", hydrogenCount => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Nickname" Element="6" Charge="1" NumHydrogens="1" AS="R" p="60 60"><fragment id="4"><n id="5" Element="7" p="60 60"/></fragment></n></fragment>');
+    const imported = open(xml);
+    nativeMolecule(imported.document!).atoms[0].hydrogenCount = hydrogenCount;
+    const expected = withoutIds(all(normalizedSource(xml), "n")[0]);
+    if (hydrogenCount === undefined) delete expected.attrs.NumHydrogens;
+    else expected.attrs.NumHydrogens = String(hydrogenCount);
+    expect(withoutIds(all(output(imported.document!), "n")[0])).toEqual(expected);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "C", formalCharge: 1, labelLiteral: undefined, hydrogenCount, stereo: ["R"]
+    });
+  });
+
+  it("merges snapshots from older native documents without a recorded native baseline", () => {
+    const imported = open(page('<fragment id="2"><n id="3" NodeType="Nickname" Element="6" Charge="1" NumHydrogens="1" AS="R" p="60 60"><fragment id="4"><n id="5" Element="7" p="60 60"/></fragment></n></fragment>'));
+    const native = nativeMolecule(imported.document!);
+    const records = native.compatibility!.unknown.cdxmlAbbreviations as { nativeState?: unknown }[];
+    records.forEach(record => { delete record.nativeState; });
+    delete native.atoms[0].hydrogenCount; // The older importer kept this source constraint opaque.
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    native.atoms[0].formalCharge = -1;
+    expect(all(output(imported.document!), "n")[0].attrs.NumHydrogens).toBe("1");
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "C", formalCharge: -1, labelLiteral: undefined, hydrogenCount: 1, stereo: ["R"]
+    });
+  });
+
+  it("keeps inner atom attributes and unchanged wrapper label runs when rebuilding a superatom", () => {
+    const xml = page('<fragment id="2"><n id="3" NodeType="Nickname" NeedsClean="yes" Warning="wrapper" p="60 60"><fragment id="4"><n id="5" Element="6" AS="R" NumHydrogens="1" Warning="body" p="60 60"/></fragment><t id="6"><s face="1">M</s><s face="2">e</s></t></n></fragment>');
+    const imported = open(xml);
+    const native = nativeMolecule(imported.document!);
+    expect(native.superatoms).toHaveLength(1);
+    native.atoms[0].formalCharge = -1;
+    const source = all(normalizedSource(xml), "n");
+    const nodes = all(output(imported.document!), "n");
+    expect(withoutIds(nodes[0]).attrs).toEqual(withoutIds(source[0]).attrs);
+    expect(withoutIds(nodes[0]).kids.find(kid => kid.name === "t")).toEqual(withoutIds(source[0]).kids.find(kid => kid.name === "t"));
+    const body = withoutIds(source[1]);
+    body.attrs.Charge = "-1";
+    expect(withoutIds(nodes[1])).toEqual(body);
+    expect(exportWarnings(imported.document!)).toEqual([]);
+    expect(atomState(nativeMolecule(roundTrip(imported.document!).document!))).toEqual({
+      ...plainState, element: "C", formalCharge: -1, labelLiteral: undefined, hydrogenCount: 1, stereo: ["R"]
+    });
   });
 
   it("keeps an edited charge in an ordinary expanded superatom", () => {
