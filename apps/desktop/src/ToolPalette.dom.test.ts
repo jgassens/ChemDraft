@@ -156,19 +156,21 @@ describe("ToolPalette art color popover", () => {
     commandId = "tool.art.rect",
     currentArtStyle = artInspectorModelFor(commandId),
     onCancel = vi.fn(),
-    onRequestColorPopover
+    onRequestColorPopover,
+    includeCommands = false
   }: {
     commandId?: string;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
     onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
+    includeCommands?: boolean;
   } = {}) {
     const onInvoke = vi.fn();
     const onPreview = vi.fn();
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.art"),
+        itemGroups: includeCommands ? getToolsetItemGroups("core.art") : widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -294,6 +296,51 @@ describe("ToolPalette art color popover", () => {
       slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 }));
     });
     expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("closes an inline menu on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({
+      currentArtStyle: artInspectorModelFor("tool.art.lineWavy"), includeCommands: true
+    });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const menu = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    act(() => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(onCancel).not.toHaveBeenCalled();
+    const previews = onPreview.mock.calls.length;
+    act(() => { slider.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalledTimes(previews + 1);
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("lets a modal close on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    container.append(modal);
+    const close = vi.fn((event: KeyboardEvent) => { event.preventDefault(); modal.hidden = true; });
+    modal.addEventListener("keydown", close);
+    act(() => { modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(close).toHaveBeenCalledOnce();
+    expect(modal.hidden).toBe(true);
+    expect(onCancel).not.toHaveBeenCalled();
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
     expect(onCommit).not.toHaveBeenCalled();
   });
 

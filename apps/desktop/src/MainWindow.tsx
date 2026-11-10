@@ -1717,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.22.30-codex";
+const CURRENT_BUILD_STAMP = "11.10.01.16-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -13570,8 +13570,12 @@ export function MainWindow({
         return;
       }
       // The detached palette can leave keyboard focus in this document window during a drag.
+      // Modal dialogs and expanded menus keep ownership of Escape, including when their
+      // handler has already closed the surface and marked this event handled.
       if (event.key === "Escape" && artStylePreviewRef.current &&
-          objectWaveForCommand(artStylePreviewRef.current.commandId)) {
+          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
+          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+          !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
         event.preventDefault();
         cancelObjectStylePreview();
         void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);

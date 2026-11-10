@@ -1,5 +1,6 @@
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { waveSettingRanges, type WaveSetting } from "@chemdraft/art-engine";
+import { isBlockedByModalDialog } from "@chemdraft/shortcut-engine";
 import {
   Fragment,
   useCallback,
@@ -2038,6 +2039,10 @@ function ArtToolbarStyleControls() {
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
     const cancelWaveDrag = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || !sliderDragRef.current?.wave) return;
+      // This capture listener runs before modal/menu handlers in the detached palette too.
+      // Let the owning surface close without disarming the slider or swallowing its key.
+      if (event.defaultPrevented || isBlockedByModalDialog(event.target) ||
+          document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) return;
       sliderDragRef.current = null;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -2511,7 +2516,9 @@ function ArtToolbarStyleControls() {
       data-art-line-ends-support-all={currentArtStyle?.supportsLineEndsAll ?? false}
       data-art-corners-support-all={currentArtStyle?.supportsCornersAll ?? false}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
+        if (event.key === "Escape" && !event.defaultPrevented &&
+            !isBlockedByModalDialog(event.target) &&
+            !document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
           onCancel?.();
           setColorOpen(false);
         }
