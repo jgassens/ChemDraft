@@ -6200,7 +6200,7 @@ async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> 
     let _creation = lock_window_creation()?;
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
         if toggle_should_hide(&window) {
-            dialog_windows::flush_preferences(&app);
+            dialog_windows::flush_preferences(&app, dialog_windows::PreferencesClose::Hide);
             return window.hide().map_err(|error| error.to_string());
         }
     }
