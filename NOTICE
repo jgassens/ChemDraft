@@ -192,22 +192,22 @@ InChI 1.07.5 (inside the Intel Mac naming engine's RDKit wheel)
   Source: https://github.com/IUPAC-InChI/InChI, tag v1.07.5.
   Ships in the RDKit wheel installed by the Orthonym naming engine on Intel Macs
   from https://github.com/jgassens/ChemDraft-Engines releases; not in the app bundle.
-  The wheel includes the InChI licence text in its licences folder.
+  The wheel includes the InChI license text in its licenses folder.
   The tbb Apache-2.0 text is included for reference only; tbb is not compiled in.
 
 Boost (compiled into the Intel Mac naming engine's RDKit wheel)
   BSL-1.0 (Boost Software License 1.0). Source: https://www.boost.org/.
   Installed only with the Intel wheel from https://github.com/jgassens/ChemDraft-Engines;
-  not bundled with ChemDraft. The wheel carries the Boost licence text.
+  not bundled with ChemDraft. The wheel carries the Boost license text.
 
 Eigen (compiled into the Intel Mac naming engine's RDKit wheel)
   MPL-2.0. Source: https://gitlab.com/libeigen/eigen.
   Built MPL2-only with EIGEN_MPL2_ONLY, excluding Eigen's LGPL modules. The wheel
-  carries the MPL-2.0 licence text; source for the MPL-2.0 files is available above.
+  carries the MPL-2.0 license text; source for the MPL-2.0 files is available above.
 
 better-enums (compiled into the Intel Mac naming engine's RDKit wheel)
   BSD-2-Clause. Source: https://github.com/aantron/better-enums.
-  The wheel carries the better-enums licence text. Not bundled with ChemDraft.
+  The wheel carries the better-enums license text. Not bundled with ChemDraft.
 
 Avogadro libraries (avogadrolibs Core + Calc, statically linked into the
 avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
