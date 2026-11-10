@@ -62,11 +62,11 @@ describe("PreferencesWindow", () => {
     for (const heading of ["Keyboard shortcuts", "3D refinement", "Embedding engine", "Force field"]) {
       expect(markup).toContain(heading);
     }
-    for (const title of ["ChemDraft", "ChemDraw-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
+    for (const title of ["ChemDraft", "Classic desktop-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
       expect(markup).toContain(title);
     }
     expect(markup).toContain("Requires the RDKit engine");
-    // The ChemDraw scheme description quotes ambiguous key names (React SSR escapes them as
+    // The classic scheme description quotes ambiguous key names (React SSR escapes them as
     // &quot;) and calls out case sensitivity.
     expect(markup).toContain("&quot;l&quot; for Cl");
     expect(markup).toContain("Case matters for element keys: B = boron, b = Br");
@@ -79,9 +79,18 @@ describe("PreferencesWindow", () => {
     // One selection per radio group (four groups total).
     expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
     expect(markup).toMatch(selected("keybinding-scheme", "chemdraw"));
+    expect(checkboxLabel(markup, "Classic desktop-compatible")).toMatch(selected("keybinding-scheme", "chemdraw"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "balanced"));
     expect(markup).toMatch(selected("spin3d-engine", "openchemlib"));
     expect(markup).toMatch(selected("spin3d-force-field", "uff"));
+  });
+
+  it("keeps shortcut scheme titles and descriptions neutral", () => {
+    const markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    const section = markup.match(/<section[^>]*aria-labelledby="pref-keybinding-scheme"[\s\S]*?<\/section>/)?.[0];
+    expect(section).toBeDefined();
+    const visibleText = section!.replace(/<[^>]*>/g, " ");
+    expect(visibleText).not.toMatch(/chemdraw/i);
   });
 
   it("defaults to chemdraft / quality / auto / mmff94s when nothing is stored", () => {
