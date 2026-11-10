@@ -1769,7 +1769,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.14.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7865,6 +7865,12 @@ export function MainWindow({
     if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
     finalizeTextEditHistory(objectId);
+    // Every close path shares this finisher, including blur and state-only tool switches.
+    // Preserve a newer command's status or another editor's message; conversion below
+    // may replace the cleared editing message with its own result.
+    if (!activeTextEditObjectIdRef.current) {
+      setStatus((current) => current === "Editing text" ? "" : current);
+    }
     convertCommittedText(objectId);
     // New boxes share placement's undo entry; existing boxes have a snapshot from before typing.
     // Neither history baseline tells us what a mid-edit Save actually wrote.
