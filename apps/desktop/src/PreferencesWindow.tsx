@@ -1,4 +1,4 @@
-import { measureDialogContentWhenFontsReady } from "./dialogs/dialogContentFit";
+import { measureDialogContentWhenFontsReady, observeDialogContent } from "./dialogs/dialogContentFit";
 import { isDesktopRuntime } from "./window-manager";
 import { useEffect, useRef, useState } from "react";
 import { loadStructureSearchEnabled, saveStructureSearchEnabled } from "./structureSearchSettings";
@@ -112,15 +112,22 @@ export function PreferencesWindow() {
   const shell = useRef<HTMLElement>(null);
   useEffect(() => {
     let stopped = false;
-    if (isDesktopRuntime() && shell.current) {
-      void measureDialogContentWhenFontsReady(shell.current).then(async data => {
+    let stopObserving: (() => void) | undefined;
+    const element = shell.current;
+    if (isDesktopRuntime() && element) {
+      void measureDialogContentWhenFontsReady(element).then(async data => {
         if (!stopped) {
           const { invoke } = await import("@tauri-apps/api/core");
-          if (!stopped) await invoke("preferences_ready", { data: data ?? {} });
+          if (!stopped) {
+            await invoke("preferences_ready", { data: data ?? {} });
+            if (!stopped) stopObserving = observeDialogContent(element, data, fit => {
+              void invoke("preferences_ready", { data: fit }).catch(error => console.error("Could not size Preferences:", error));
+            });
+          }
         }
       }).catch(error => console.error("Could not size Preferences:", error));
     }
-    return () => { stopped = true; };
+    return () => { stopped = true; stopObserving?.(); };
   }, []);
   const [structureSearchEnabled, setStructureSearchEnabled] = useState(loadStructureSearchEnabled);
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
