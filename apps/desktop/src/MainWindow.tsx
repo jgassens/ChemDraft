@@ -14,7 +14,7 @@ import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
-import { structureTemplates } from "@chemdraft/template-library";
+import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
@@ -241,6 +241,7 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  nativeAtomLabelReading,
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
@@ -1714,7 +1715,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.10.07.18-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3308,6 +3309,8 @@ export function MainWindow({
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
   // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
+  // Leaving keeps the instant assignment on cancellation. A committed continuation still
+  // coalesces with that assignment's undo entry.
   // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
@@ -4549,18 +4552,20 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = applyNativeAtomElementTarget(currentDocument, target, element);
+    const result = commitNativeAtomLabelTarget(currentDocument, target, element);
+    const nextDocument = result.document;
     if (nextDocument === currentDocument) {
       setStatus(`Cannot set hovered atom to ${element}`);
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
+    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered atom to ${element}`);
+    setStatus(result.message ?? `Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeAtomLabel = useCallback((label: string) => {
@@ -9148,7 +9153,11 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
     hoverLabelAssignmentRef.current = undefined;
+    hoverRetargetedForLabelRef.current = false;
     setFreeformNativeBond(undefined);
+    // History restores chemistry, not a label key's temporary target. Resolve the current pointer
+    // against the restored graph through the same path as pointermove, before another hover key.
+    rederiveNativeCanvasHoverRef.current(nextHistory.present);
     setLastAnalysis(null);
     setStatus(
       undoLabel
@@ -13777,8 +13786,13 @@ export function MainWindow({
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
             hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
-            hotkeyUndoState: assignment.hotkeyUndoState,
-            hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
+            // The original atom still informs the typed-label chemistry decision (for example,
+            // attaching OMe to a ring carbon). Keep its history entry for commit coalescing,
+            // but after pointer drift Escape cancels only the later text draft.
+            ...(!assignment.leftAtom ? {
+              hotkeyUndoState: assignment.hotkeyUndoState,
+              hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
+            } : {})
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -14976,7 +14990,14 @@ export function MainWindow({
   // re-derives the hover from the last canvas pointer position through the SAME path pointermove
   // uses — never a duplicate derivation, and a press over empty canvas still clears the hover.
   const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
-    const clientPoint = lastCanvasPointerClientPointRef.current;
+    let clientPoint = lastCanvasPointerClientPointRef.current;
+    const canvas = canvasRegionRef.current;
+    // Layout can move the canvas without a pointer event. History and charge keys must never
+    // resurrect a hover from a saved client point that is now outside the workspace.
+    if (clientPoint && (!canvas || !clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()))) {
+      lastCanvasPointerClientPointRef.current = undefined;
+      clientPoint = undefined;
+    }
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
     // resolve the element at the pointer the way a real pointer event's target would report it.
     // (Guarded like agentBridge.ts: hosts without layout, such as jsdom, have no elementFromPoint.)
@@ -14988,17 +15009,30 @@ export function MainWindow({
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
+    const canvas = canvasRegionRef.current;
+    const clearLastCanvasPointer = () => {
+      lastCanvasPointerClientPointRef.current = undefined;
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
       if (canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect())) {
         lastCanvasPointerClientPointRef.current = clientPoint;
+      } else {
+        clearLastCanvasPointer();
       }
     };
 
+    // Leaving for a menu or another window may deliver no further move to this webview.
+    canvas?.addEventListener("pointerleave", clearLastCanvasPointer);
+    window.addEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+    window.addEventListener("blur", clearLastCanvasPointer);
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
     return () => {
+      canvas?.removeEventListener("pointerleave", clearLastCanvasPointer);
+      window.removeEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+      window.removeEventListener("blur", clearLastCanvasPointer);
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
     };
@@ -23889,7 +23923,8 @@ export function hoveredNativeTargetShortcutCommand(
 
 /**
  * A label typed by hovering an atom and pressing an element key, open for continuation. `leftAtom`
- * records that the pointer has since left the atom and its own bonds.
+ * records that the pointer has since left the atom and its own bonds. Its pre-hotkey snapshot may
+ * only be reused for cancellation while the pointer has not left; commits can still coalesce.
  */
 type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
@@ -23916,14 +23951,30 @@ export function hoverTargetKeepsLabelContinuation(
     : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
 }
 
+/** A drifted label may continue only as a recognized label or the start of an abbreviation. */
+function hoverLabelTextContinues(label: string, key: string): boolean {
+  const draft = label + key;
+  return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
+    [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
+      spelling.startsWith(draft) ||
+      // A partial substituent also counts when the shared grammar recognizes its completion:
+      // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
+      (spelling.startsWith(key) && nativeAtomLabelReading(label + spelling, { bonded: true }).kind === "group")
+    );
+}
+
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
  * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
- * An element key in either case continues while the pointer has stayed on the labelled atom and
- * its own bonds ("CF3"). After leaving, element keys in either case and all digits act on a different
+ * An element key in either case continues while the pointer has stayed on the labelled atom.
+ * On its own bonds or empty canvas, only recognized labels or abbreviation prefixes continue
+ * ("CF3", not "Oo" or "Sv").
+ * After leaving, element keys in either case and all digits act on a different
  * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
  * continues; other element keys over a target start a new label, even on the same atom again.
- * Other letters ("M" in OMe, "e") continue after a drift, as do alphanumeric keys over empty canvas.
+ * Other letters ("M" in OMe, "e") continue after a drift. An element key over empty canvas cannot
+ * reopen a committed relabel; there is no atom there to label. Repeating the starting element
+ * (C in CF3) can still start a word, since that key did not change the element.
  * Nothing continues once the labelled atom no longer carries the label (undone, or changed some
  * other way).
  */
@@ -23944,6 +23995,12 @@ export function hoverLabelContinuesForKey(
   if (atom?.element !== assignment.label) {
     return false;
   }
+  if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
+    return hoverLabelTextContinues(assignment.label, key);
+  }
+  if (target === undefined && !hoverLabelTextContinues(assignment.label, key)) {
+    return false;
+  }
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
   }
@@ -23954,7 +24011,8 @@ export function hoverLabelContinuesForKey(
   if (/^[a-z]$/.test(key) && elementSymbols.some(symbol => symbol === assignment.label + key)) {
     return true;
   }
-  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined && target !== undefined;
+  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined &&
+    (target !== undefined || assignment.beforeAtom.element !== assignment.label);
   return !startsNewLabel;
 }
 

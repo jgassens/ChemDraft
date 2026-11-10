@@ -339,6 +339,62 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     expect(molecule(1)).toEqual(other);
   });
 
+  it("routes v over empty canvas as in a fresh state after S, without opening Sv", async () => {
+    const before = molecule();
+    await hoverPoint({ x: 650, y: 450 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await press("v");
+    expect(editor()).toBeNull();
+    const freshTool = snapshot().activeToolCommandId;
+    expect(freshTool).toBe("tool.select");
+    expect(molecule()).toEqual(before);
+
+    await remountDocument(snapshot().document);
+    await hoverAtom(0);
+    await press("S");
+    const committed = molecule();
+    expect(committed.atoms[0]!.element).toBe("S");
+    await hoverPoint({ x: 650, y: 450 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    await press("v");
+    expect(editor()).toBeNull();
+    expect(molecule()).toEqual(committed);
+    expect(snapshot().activeToolCommandId).toBe(freshTool);
+  });
+
+  it.each(["OMe", "Si"])("continues %s after the first letter drifts onto empty canvas", async label => {
+    const before = molecule();
+    await hoverAtom(0);
+    await press(label[0]!);
+    await hoverPoint({ x: 650, y: 450 });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    for (const key of label.slice(1)) await press(key);
+    expect(editor()?.value).toBe(label);
+    expect(editor()?.dataset.atomId).toBe(before.atoms[0]!.id);
+    await press("Enter");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: label, labelLiteral: true }, before.atoms[1]]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+  });
+
+  it.each(["OMe", "CO2Me", "CF3", "Cl", "Si", "NMe2", "OTBS"])("continues %s after the first letter drifts onto its own bond", async label => {
+    const before = molecule();
+    const [carbon, neighbour] = before.atoms;
+    await hoverAtom(0);
+    await press(label[0]!);
+    await hoverPoint({ x: carbon!.x + (neighbour!.x - carbon!.x) * 0.6, y: carbon!.y + (neighbour!.y - carbon!.y) * 0.6 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: before.bonds[0]!.id });
+    for (const key of label.slice(1)) await press(key);
+    expect(editor()?.value).toBe(label);
+    expect(editor()?.dataset.atomId).toBe(carbon!.id);
+    await press("Enter");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms).toEqual([{ ...carbon, element: label, labelLiteral: true }, neighbour]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+  });
+
   it("keeps typing in an explicitly opened label editor over another atom", async () => {
     await addEthanes();
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.atom"); });
@@ -814,15 +870,17 @@ describe("hover label typing", () => {
     await hover(0);
     await press("C");
     await hover(1);
-    await press("F");
+    // F now attaches as a monovalent substituent on this ring. Use a multivalent element to
+    // keep testing a fresh relabel and its continuation after drifting away from the first C.
+    await press("N");
     expect(molecule().atoms[0]!.element).toBe("C");
-    expect(molecule().atoms[1]!.element).toBe("F");
+    expect(molecule().atoms[1]!.element).toBe("N");
     expect(editor()).toBeNull();
-    await press("3");
-    expect(editor()?.value).toBe("F3");
+    await press("H");
+    expect(editor()?.value).toBe("NH");
     await press("Enter");
     expect(molecule().atoms[0]!.element).toBe("C");
-    expect(molecule().atoms[1]).toMatchObject({ element: "F3" });
+    expect(molecule().atoms[1]).toMatchObject({ element: "NH" });
     expectIntact();
   });
 
