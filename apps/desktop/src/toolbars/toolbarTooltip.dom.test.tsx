@@ -1,13 +1,119 @@
 // @vitest-environment jsdom
-
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolPalette } from "../ToolPalette";
 import type { CommandSpec } from "../commands";
 import type { ToolbarPaletteItemModel } from "../toolsets";
+import { PaletteControlTooltip, PaletteControlTooltipContext, TOOLTIP_DELAY_MS, TOOLTIP_RESHOW_WINDOW_MS, usePaletteTooltipState } from "./toolbarTooltip";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("palette tooltip handoff", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let state: ReturnType<typeof usePaletteTooltipState>;
+  function Harness() {
+    state = usePaletteTooltipState();
+    return <PaletteControlTooltipContext.Provider value={state}>
+      <PaletteControlTooltip tooltip="Button A"><button id="a">A</button></PaletteControlTooltip>
+      <PaletteControlTooltip tooltip="Button B"><button id="b">B</button></PaletteControlTooltip>
+      <PaletteControlTooltip tooltip="Button C"><button id="c">C</button></PaletteControlTooltip>
+    </PaletteControlTooltipContext.Provider>;
+  }
+  beforeEach(() => {
+    vi.useFakeTimers();
+    container = document.createElement("div"); document.body.append(container);
+    root = createRoot(container);
+    act(() => root.render(createElement(Harness)));
+  });
+  afterEach(() => {
+    act(() => root.unmount()); container.remove(); vi.useRealTimers();
+  });
+  const button = (id: string) => container.querySelector<HTMLButtonElement>(`#${id}`)!;
+  const visible = (id: string) => button(id).dataset.tooltipVisible === "true";
+  function pointer(id: string, type: "pointerover" | "pointerout", relatedTarget: Element = document.body) {
+    button(id).dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget }));
+  }
+  function showA() {
+    act(() => pointer("a", "pointerover"));
+    expect(visible("a")).toBe(false);
+    act(() => vi.advanceTimersByTime(TOOLTIP_DELAY_MS));
+    expect(visible("a")).toBe(true);
+  }
+
+  it("switches A to B to C promptly when leave and enter share a tick", () => {
+    showA();
+    act(() => {
+      pointer("a", "pointerout", button("b"));
+      pointer("b", "pointerover", button("a"));
+      // A stale document listener can still run before React commits B.
+      state.clearTooltip(button("a").dataset.tooltipOwnerId, { onlyMatchingPending: true });
+      button("b").dispatchEvent(new MouseEvent("pointermove", { bubbles: true }));
+    });
+    expect(visible("a")).toBe(false);
+    expect(visible("b")).toBe(true);
+    act(() => {
+      pointer("b", "pointerout", button("c"));
+      pointer("c", "pointerover", button("b"));
+      vi.advanceTimersByTime(TOOLTIP_DELAY_MS);
+    });
+    expect(visible("b")).toBe(false);
+    expect(visible("c")).toBe(true);
+  });
+
+  it("hides on leaving A for empty space and restores the first-hover delay", () => {
+    showA();
+    act(() => pointer("a", "pointerout"));
+    expect(visible("a")).toBe(false);
+    act(() => vi.advanceTimersByTime(TOOLTIP_RESHOW_WINDOW_MS + 1));
+    act(() => pointer("b", "pointerover"));
+    expect(visible("b")).toBe(false);
+    act(() => vi.advanceTimersByTime(TOOLTIP_DELAY_MS));
+    expect(visible("b")).toBe(true);
+  });
+
+  it("switches promptly across the small gap between neighbouring controls", () => {
+    showA();
+    act(() => pointer("a", "pointerout"));
+    expect(visible("a")).toBe(false);
+    act(() => vi.advanceTimersByTime(50));
+    act(() => pointer("b", "pointerover"));
+    expect(visible("b")).toBe(true);
+  });
+
+  it("does not let a late leave from A cancel B's first-hover timer", () => {
+    act(() => {
+      pointer("a", "pointerover");
+      pointer("a", "pointerout", button("b"));
+      pointer("b", "pointerover", button("a"));
+      state.clearTooltip(button("a").dataset.tooltipOwnerId, { onlyMatchingPending: true });
+      vi.advanceTimersByTime(TOOLTIP_DELAY_MS);
+    });
+    expect(visible("a")).toBe(false);
+    expect(visible("b")).toBe(true);
+  });
+
+  it("ends the warm interval on explicit dismissal while between controls", () => {
+    showA();
+    act(() => pointer("a", "pointerout"));
+    act(() => state.clearTooltip(button("a").dataset.tooltipOwnerId));
+    act(() => pointer("b", "pointerover"));
+    expect(visible("b")).toBe(false);
+    act(() => vi.advanceTimersByTime(TOOLTIP_DELAY_MS));
+    expect(visible("b")).toBe(true);
+  });
+
+  it("cancels pending and visible tooltips on blur", () => {
+    showA();
+    act(() => window.dispatchEvent(new Event("blur")));
+    expect(visible("a")).toBe(false);
+    act(() => pointer("b", "pointerover"));
+    act(() => window.dispatchEvent(new Event("blur")));
+    act(() => vi.advanceTimersByTime(TOOLTIP_DELAY_MS));
+    expect(visible("b")).toBe(false);
+  });
+});
 
 describe("toolbar tooltip pointer transitions", () => {
   let container: HTMLDivElement;
@@ -95,15 +201,27 @@ describe("toolbar tooltip pointer transitions", () => {
     }
   }
 
-  it("shows every tooltip when sweeping across four buttons after the 500 ms delay", () => {
-    let previous: HTMLButtonElement | null = null;
+  it("shows every tooltip when sweeping across four buttons after the initial delay", () => {
+    moveTo(buttons[0]!);
+    advance(TOOLTIP_DELAY_MS - 1);
+    expectTooltip();
+    advance(1);
+    expectTooltip(buttons[0]!);
+    for (let index = 1; index < buttons.length; index += 1) {
+      moveTo(buttons[index]!, buttons[index - 1]!);
+      expectTooltip(buttons[index]!);
+    }
+  });
+
+  it("restores the full delay for each button after the warm interval expires", () => {
     for (const button of buttons) {
-      moveTo(button, previous);
-      advance(499);
+      moveTo(button);
+      advance(TOOLTIP_DELAY_MS - 1);
       expectTooltip();
-      advance(2);
+      advance(1);
       expectTooltip(button);
-      previous = button;
+      moveTo(null, button);
+      advance(TOOLTIP_RESHOW_WINDOW_MS + 1);
     }
   });
 
@@ -164,17 +282,26 @@ describe("toolbar tooltip pointer transitions", () => {
     expectTooltip(buttons[1]!);
   });
 
-  it.each(["leave", "press"])("hides a visible tooltip on pointer %s", (action) => {
+  it.each(["leave", "press", "scroll", "blur"])("hides a visible tooltip on %s", (action) => {
     moveTo(buttons[0]!);
     advance(501);
     expectTooltip(buttons[0]!);
     if (action === "leave") {
       moveTo(null, buttons[0]!);
-    } else {
+    } else if (action === "press") {
       act(() => pointer(buttons[0]!, "pointerdown"));
+    } else if (action === "scroll") {
+      act(() => container.dispatchEvent(new Event("scroll")));
+    } else {
+      act(() => window.dispatchEvent(new Event("blur")));
     }
     expectTooltip();
     advance(501);
     expectTooltip();
+    moveTo(buttons[1]!);
+    advance(TOOLTIP_DELAY_MS - 1);
+    expectTooltip();
+    advance(1);
+    expectTooltip(buttons[1]!);
   });
 });

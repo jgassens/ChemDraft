@@ -222,7 +222,7 @@ export function PluginPromptSection({ section, onAction, includeSelected = false
     <div className="plugin-report-composer-controls">
       {select ? <label className="plugin-report-composer-select">
         <span>{select.label}</span>
-        <select
+        <select className="native-dialog-panel-select"
           value={includeSelected ? selected : select.value}
           disabled={busy || !onAction}
           onChange={(event) => {
