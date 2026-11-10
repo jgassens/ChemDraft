@@ -1,17 +1,89 @@
-import { bracketChemistryWarnings, type ChemDraftDocument, type DocumentObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { bracketChemistryWarnings, bracketPairs, type DocumentObject, type ChemDraftDocument, type MoleculeObject, type MolfileWriteOptions } from "@chemdraft/chem-core";
+import { projectedPlaneSvgTransformForObject, transformPointForObject } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
 
-/** Molecular graph formats currently omit repeat-unit semantics, even when the atoms survive. */
+type RepeatUnit = {
+  objectId: string;
+  label: string;
+  usage: "sru" | "multiple" | "unknown";
+  members: { molecule: MoleculeObject; atomIds: string[] }[];
+  context: string[];
+  reason?: string;
+};
+
+/** Scope follows exported molecules, even when the user selected no bracket glyphs. */
+function repeatUnits(document: ChemDraftDocument, molecules?: readonly MoleculeObject[]): RepeatUnit[] {
+  const exported = molecules && new Set(molecules.map(molecule => molecule.id));
+  return document.pages.flatMap(page => [...bracketPairs(page.objects).values()].flatMap(pair => {
+    const usage = pair.find(object => object.bracketUsage && object.bracketUsage !== "generic")?.bracketUsage ??
+      (pair.some(object => object.repeatUnit || object.bracketKind === "polymer") ? "sru" : "generic");
+    if (usage === "generic") return [];
+    const close = pair.find(object => object.side === "close")!;
+    const explicit = new Set(pair.flatMap(object => object.containedObjectIds));
+    const left = Math.min(...pair.map(object => object.x));
+    const top = Math.min(...pair.map(object => object.y));
+    const right = Math.max(...pair.map(object => object.x + object.width));
+    const bottom = Math.max(...pair.map(object => object.y + object.height));
+    const allMembers = page.objects.flatMap(object => {
+      if (object.type !== "molecule") return [];
+      const atomIds = object.atoms.filter(atom => {
+        if (explicit.has(object.id)) return true;
+        const point = transformPointForObject(object, atom);
+        return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+      }).map(atom => atom.id);
+      const context = bracketChemistryWarnings(document, object).filter(warning => warning.pairId === pair[0].pairId);
+      return atomIds.length || explicit.has(object.id) || context.length ? [{ molecule: object, atomIds, context }] : [];
+    });
+    const members = allMembers.filter(member => !exported || exported.has(member.molecule.id));
+    if (!members.length) return [];
+    const missing = [...explicit].some(id => !page.objects.some(object => object.id === id && object.type === "molecule"));
+    const excluded = allMembers.some(member => exported && !exported.has(member.molecule.id));
+    const reason = usage !== "sru" ? `its ${usage === "multiple" ? "multiple-group" : "unknown group"} semantics cannot be represented as an SRU`
+      : missing ? "its membership includes missing or non-molecular objects"
+      : excluded ? "part of its atom membership is outside the export selection"
+      : pair.some(object => projectedPlaneSvgTransformForObject(object) !== undefined)
+        ? "rotated or projected brackets have no unambiguous atom membership"
+      : members.some(member => member.atomIds.length === 0) ? "its atom membership is empty"
+      : undefined;
+    return [{ objectId: close.id, label: close.label ?? "n", usage, members,
+      context: members.flatMap(member => member.context.map(warning => warning.message)), reason }];
+  }));
+}
+
+function warning(unit: RepeatUnit, message: string): ExportWarning {
+  return { code: "export.repeat_unit_not_represented", severity: "warning", objectId: unit.objectId, message };
+}
+
+/** SMILES has no SRU encoding. Other graph-only formats use the same explicit loss channel. */
 export function repeatUnitExportWarnings(document: ChemDraftDocument, format: string, scope?: {
-  objects: readonly DocumentObject[];
+  objects?: readonly DocumentObject[];
   molecules: readonly MoleculeObject[];
 }): ExportWarning[] {
-  const molecules = scope?.molecules ?? document.pages.flatMap(page =>
-    page.objects.filter((object): object is MoleculeObject => object.type === "molecule"));
-  const warnings = new Map<string, ExportWarning>();
-  for (const molecule of molecules) for (const warning of bracketChemistryWarnings(document, molecule)) {
-    warnings.set(warning.objectId, { code: "export.repeat_unit_not_represented", severity: "warning", objectId: warning.objectId,
-      message: `${format} export: ${warning.message}` });
-  }
-  return [...warnings.values()];
+  return repeatUnits(document, scope?.molecules).map(unit => {
+    const description = unit.usage === "sru" ? `the repeat unit ${unit.label}` :
+      unit.usage === "multiple" ? "the multiple group" : "the bracket group with unknown usage";
+    return warning(unit,
+      `${format} cannot hold ${description} around ${unit.members.reduce((count, member) => count + member.atomIds.length, 0)} atoms (bracket ${unit.objectId}); only the bare structure is written. ${unit.context.join(" ")}`.trim());
+  });
+}
+
+/** Resolve annotations before merging/expanding atoms; never guess incomplete membership. */
+export function repeatUnitMolfileGroups(
+  document: ChemDraftDocument,
+  molecules: readonly MoleculeObject[],
+  warnings: ExportWarning[],
+  options: { merged?: boolean; expansions?: readonly { atomId: string; atomIds: readonly string[] }[] } = {}
+): NonNullable<MolfileWriteOptions["repeatUnitGroups"]> {
+  return repeatUnits(document, molecules).flatMap(unit => {
+    if (unit.reason) {
+      warnings.push(warning(unit, `MOL cannot represent repeat unit ${unit.label} (bracket ${unit.objectId}): ${unit.reason}; only the bare structure is written.`));
+      return [];
+    }
+    const atomIds = new Set(unit.members.flatMap(member => member.atomIds.map(id =>
+      options.merged && molecules.length > 1 ? `m${molecules.findIndex(molecule => molecule.id === member.molecule.id)}_${id}` : id)));
+    for (const expansion of options.expansions ?? []) {
+      if (atomIds.has(expansion.atomId)) expansion.atomIds.forEach(id => atomIds.add(id));
+    }
+    return [{ objectId: unit.objectId, label: unit.label, atomIds: [...atomIds] }];
+  });
 }

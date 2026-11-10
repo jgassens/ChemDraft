@@ -1,7 +1,7 @@
 import { atomProblem, readNativeDocumentContents, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { loadDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { bracketVisualBounds } from "@chemdraft/layout-engine";
-import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
+import { repeatUnitExportWarnings, repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
@@ -19998,7 +19998,6 @@ export function copyAsMolfile(
   warningsOut?: string[]
 ): string | undefined {
   const molecules = copyAsScopeMolecules(document);
-  const repeatWarnings = reportRepeatUnitExportWarnings(document, "MOL", molecules, warningsOut);
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
@@ -20007,11 +20006,19 @@ export function copyAsMolfile(
   // the label, so a reader that contracts abbreviations still shows "OMe".
   const { molecule: merged, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(scoped);
   const writerWarnings: string[] = [];
+  const repeatWarnings: ExportWarning[] = [];
+  const repeatUnitGroups = repeatUnitMolfileGroups(document, molecules, repeatWarnings, { merged: true, expansions });
+  // SRU encoding preserves the annotation; the graph and cached formula still describe one copy.
+  // Read live context before merging, which can rebuild cached chemistry under a new molecule id.
+  const repeatMessages = [...repeatWarnings.map(warning => warning.message),
+    ...molecules.flatMap(molecule => moleculeBracketWarningMessages(molecule, document))];
+  warningsOut?.push(...repeatMessages);
   const options = {
     fromDocFrame: true,
     warnings: writerWarnings,
     kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
     superatomGroups: expansions,
+    repeatUnitGroups,
     placeholderAtoms
   };
   try {
@@ -20023,14 +20030,14 @@ export function copyAsMolfile(
         message.startsWith(`Atom label "${atom.element}" is not an element symbol;`)
       )).map(atom => atom.element));
       return nativeMoleculeExportWarnings(molecule, { unrecognizedLabels }).map(warning => warning.message);
-    }), ...writerWarnings.filter(message => !repeatWarnings.some(warning => warning.includes(message))));
+    }), ...writerWarnings.filter(message => !repeatMessages.some(warning => warning.includes(message))));
   }
 }
 
 const copyAsPagePaddingPx = 16;
 
 function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, molecules: readonly MoleculeObject[], warningsOut?: string[]) {
-  const messages = repeatUnitExportWarnings(document, format, { objects: copyAsScopeObjects(document), molecules }).map(warning => warning.message);
+  const messages = repeatUnitExportWarnings(document, format, { molecules }).map(warning => warning.message);
   warningsOut?.push(...messages);
   return messages;
 }

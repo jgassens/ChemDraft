@@ -10,6 +10,12 @@ preparation. PDF prepares its own fonts through the same lazy loader.
 
 Format-specific work should go through the correct adapters and compatibility packages.
 
+`repeatUnitMolfileGroups` resolves repeat brackets against the exported molecules, including
+atom subsets within a molecule. It carries membership through merged molecule ids and expanded
+abbreviations for SRU output. Incomplete or ambiguous mappings warn with the source bracket id.
+`repeatUnitExportWarnings` reports the repeat label, atom count and source bracket when a graph-only
+format such as SMILES omits SRU semantics, including when only the molecule is selected.
+
 ## Table clipboard payloads
 
 `exportTableClipboardPayloads(table, options?)` produces editable HTML, ASCII-safe RTF, and plain

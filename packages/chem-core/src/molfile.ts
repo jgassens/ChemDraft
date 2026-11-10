@@ -100,6 +100,13 @@ export interface MolfileWriteOptions {
    * the molecule are ignored, and a group left with no atoms is not written.
    */
   superatomGroups?: readonly { label: string; atomIds: readonly string[] }[];
+  /** SRU membership resolved by the document exporter; crossing bonds are derived from it. */
+  repeatUnitGroups?: readonly {
+    objectId: string;
+    label: string;
+    atomIds: readonly string[];
+    connectivity?: "eu" | "ht" | "hh";
+  }[];
   /**
    * Atoms to write as placeholders even though their label is a valid symbol, each with the reason
    * the warning gives — a bonded "Ar" is how chemists write aryl, not argon. They take the same
@@ -619,10 +626,10 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   // Superatom S-groups: type (STY, up to 8 per line), atoms (SAL) and crossing bonds (SBL, up to
   // 15 per line each), and the label (SMT).
-  const sgroups = superatomSgroups(atoms, writableBonds, options);
+  const sgroups = molfileSgroups(atoms, writableBonds, options, "V2000");
   for (let i = 0; i < sgroups.length; i += 8) {
     const chunk = sgroups.slice(i, i + 8);
-    lines.push(`M  STY${i3(chunk.length)}${chunk.map((_, offset) => ` ${i3(i + offset + 1)} SUP`).join("")}`);
+    lines.push(`M  STY${i3(chunk.length)}${chunk.map((group, offset) => ` ${i3(i + offset + 1)} ${group.type}`).join("")}`);
   }
   sgroups.forEach((sgroup, index) => {
     const number = index + 1;
@@ -635,6 +642,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
       lines.push(`M  SBL ${i3(number)}${i3(chunk.length)}${chunk.map((bond) => ` ${i3(bond)}`).join("")}`);
     }
     lines.push(`M  SMT ${i3(number)} ${sgroup.label}`);
+    if (sgroup.type === "SRU") lines.push(`M  SCN  1 ${i3(number)} ${sgroup.connectivity!.toUpperCase()}`);
   });
 
   lines.push("M  END");
@@ -662,7 +670,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const hasStereo = writableBonds.some((bond) => [1, 6].includes(bondStereoFlag(bond)));
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
-  const sgroups = superatomSgroups(atoms, writableBonds, options);
+  const sgroups = molfileSgroups(atoms, writableBonds, options, "V3000");
 
   const lines: string[] = [
     "",
@@ -711,7 +719,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
         ? ` XBONDS=(${sgroup.bondNumbers.length} ${sgroup.bondNumbers.join(" ")})`
         : "";
       lines.push(...v3000ContinuedLines(
-        `${index + 1} SUP 0 ATOMS=(${sgroup.atomNumbers.length} ${sgroup.atomNumbers.join(" ")})${crossing} LABEL=${v3000Value(sgroup.label)}`
+        `${index + 1} ${sgroup.type} 0 ATOMS=(${sgroup.atomNumbers.length} ${sgroup.atomNumbers.join(" ")})${crossing} LABEL=${v3000Value(sgroup.label)}`
+        + (sgroup.type === "SRU" ? ` CONNECT=${sgroup.connectivity!.toUpperCase()}` : "")
       ));
     });
     lines.push("M  V30 END SGROUP");
@@ -723,6 +732,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
 
 /** One `superatomGroups` entry resolved to 1-based atom and crossing-bond numbers. */
 interface SuperatomSgroup {
+  type: "SUP" | "SRU";
+  connectivity?: "eu" | "ht" | "hh";
   label: string;
   atomNumbers: number[];
   bondNumbers: number[];
@@ -743,8 +754,34 @@ function superatomSgroups(
       .map((bond, index) => ({ bond, number: index + 1 }))
       .filter(({ bond }) => members.has(bond.fromAtomId) !== members.has(bond.toAtomId))
       .map(({ number }) => number);
-    return [{ label: group.label, atomNumbers, bondNumbers }];
+    return [{ type: "SUP", label: group.label, atomNumbers, bondNumbers }];
   });
+}
+
+function molfileSgroups(
+  atoms: readonly MoleculeAtom[], writableBonds: readonly MoleculeBond[],
+  options: MolfileWriteOptions, format: "V2000" | "V3000"
+): SuperatomSgroup[] {
+  const groups = superatomSgroups(atoms, writableBonds, options);
+  const atomNumbers = new Map(atoms.map((atom, index) => [atom.id, index + 1]));
+  for (const group of options.repeatUnitGroups ?? []) {
+    const members = new Set(group.atomIds);
+    const reason = members.size === 0 || [...members].some(id => !atomNumbers.has(id))
+      ? "its atom membership is incomplete"
+      : !group.label || /[\r\n\x00-\x1f]/.test(group.label) ||
+        (format === "V2000" && (group.label.length > 69 || /[^\x20-\x7e]/.test(group.label)))
+        ? "its repeat label cannot be represented in this format"
+        : format === "V2000" && groups.length >= 999 ? "the SGroup count exceeds 999" : undefined;
+    if (reason) {
+      options.warnings?.push(`${format} cannot represent repeat unit ${group.label} (bracket ${group.objectId}): ${reason}; only the bare structure is written.`);
+      continue;
+    }
+    groups.push({ type: "SRU", label: group.label, connectivity: group.connectivity ?? "eu",
+      atomNumbers: [...members].map(id => atomNumbers.get(id)!).sort((a, b) => a - b),
+      bondNumbers: writableBonds.flatMap((bond, index) =>
+        members.has(bond.fromAtomId) !== members.has(bond.toAtomId) ? [index + 1] : []) });
+  }
+  return groups;
 }
 
 /** A V3000 property value, quoted when it holds a space, a quote or nothing (CTfile rule). */

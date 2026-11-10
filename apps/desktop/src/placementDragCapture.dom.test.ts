@@ -222,6 +222,8 @@ describe("placement drags that start on an object follow pointer capture", () =>
     expect(brackets.map(object => object.x)).toEqual([100, 244]);
     expect(brackets.map(object => object.height)).toEqual([100, 100]);
     expect(snapshot.document.selection.objectIds).toEqual(brackets.map(object => object.id));
+    expect(snapshot.activeToolCommandId).toBe("tool.select");
+    expect(container.querySelector("[data-group-selection]")).not.toBeNull();
     const paths = [...container.querySelectorAll(`[data-page-svg-object-visual] .bracket-glyph-path`)];
     expect(paths).toHaveLength(2);
     expect(paths[0].getAttribute("d")).not.toBe(paths[1].getAttribute("d"));

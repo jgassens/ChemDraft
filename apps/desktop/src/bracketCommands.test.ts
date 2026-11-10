@@ -249,11 +249,58 @@ describe("bracket pair annotations", () => {
 });
 
 describe("repeat-unit graph-export warnings", () => {
-  it.each(["square", "round"] as const)("leaves ordinary %s exports unchanged and warns once per repeat pair", async kind => {
+  it.each(["multiple", "unknown"] as const)("keeps %s context and never substitutes an SRU", async usage => {
+    const repeat = repeatAroundMolecule();
+    const document = applyPatch(repeat, { op: "batch", patches: bracketObjects(repeat).map(object => ({
+      op: "updateObject" as const, objectId: object.id,
+      changes: { bracketUsage: usage, repeatUnit: false, repeatCount: usage === "multiple" ? 3 : undefined }
+    })) });
+    const description = usage === "multiple" ? "multiple group x3" : "unknown usage";
+    const smilesWarnings: string[] = [];
+    expect(await copyAsSmiles(document, smilesWarnings)).toBe("CC");
+    expect(smilesWarnings).toEqual([expect.stringContaining(description)]);
+    for (const flavor of ["v2000", "v3000"] as const) {
+      const warnings: string[] = [];
+      const contents = copyAsMolfile(document, flavor, warnings)!;
+      expect(contents).not.toContain("SRU");
+      expect(warnings).toEqual([
+        expect.stringContaining("cannot be represented as an SRU"), expect.stringContaining(description)
+      ]);
+    }
+  });
+
+  it("encodes an atom subset without changing the molecule and warns with its atom count", async () => {
+    const document = applySingleBondToolAtPoint(createPhase4Document("Partial unit"), { x: 140, y: 140 });
+    const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const atom = molecule.atoms[0];
+    const repeat = toggleBracketRepeatUnit(insertNativeBracket(document,
+      { x: atom.x - 5, y: atom.y - 10 }, "square", { x: atom.x + 5, y: atom.y + 10 }));
+    expect(bracketObjects(repeat).every(object => object.containedObjectIds.length === 0)).toBe(true);
+    expect(copyAsMolfile(repeat, "v3000")).toContain("SRU 0 ATOMS=(1 1) XBONDS=(1 1) LABEL=n CONNECT=EU");
+    const warnings: string[] = [];
+    expect(await copyAsSmiles(repeat, warnings)).toBe("CC");
+    expect(warnings).toEqual([expect.stringContaining("repeat unit n around 1 atoms")]);
+    const repeatedMolecule = repeat.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(repeatedMolecule.atoms).toEqual(molecule.atoms);
+    expect(repeatedMolecule.bonds).toEqual(molecule.bonds);
+  });
+
+  it("keeps live one-copy context and SRU membership when merging molecules for MOL", () => {
+    let document = applySingleBondToolAtPoint(createPhase4Document("Two members"), { x: 140, y: 140 });
+    document = applySingleBondToolAtPoint(document, { x: 220, y: 140 });
+    const repeat = toggleBracketRepeatUnit(insertNativeBracket(document,
+      { x: 100, y: 100 }, "round", { x: 300, y: 200 }));
+    const warnings: string[] = [];
+    expect(copyAsMolfile(repeat, "v3000", warnings)).toContain("SRU 0 ATOMS=(4 1 2 3 4) LABEL=n CONNECT=EU");
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every(message => message.includes("inside a repeat unit n"))).toBe(true);
+  });
+
+  it.each(["square", "round"] as const)("leaves ordinary %s exports unchanged, writes SRU and warns for SMILES", async kind => {
     const molecule = applySingleBondToolAtPoint(createPhase4Document("Unit"), { x: 140, y: 140 });
     const plain = insertNativeBracket(molecule, { x: 100, y: 100 }, kind, { x: 260, y: 200 });
     const beforeWarnings: string[] = [];
-    const before = copyAsMolfile(plain, "v3000", beforeWarnings);
+    copyAsMolfile(plain, "v3000", beforeWarnings);
     expect(beforeWarnings).toEqual([]);
     expect(repeatUnitExportWarnings(plain, "SMILES")).toEqual([]);
     const repeat = applyPatch(toggleBracketRepeatUnit(plain), { op: "setSelection", objectIds: [] });
@@ -265,19 +312,28 @@ describe("repeat-unit graph-export warnings", () => {
     for (const flavor of ["v2000", "v3000"] as const) {
       const warnings: string[] = [];
       const contents = copyAsMolfile(repeat, flavor, warnings);
+      expect(copyAsMolfile(plain, flavor)).toBe(copyAsMolfile(molecule, flavor));
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("inside a repeat unit n");
-      if (flavor === "v3000") expect(contents).toBe(before);
+      expect(contents).toContain(flavor === "v3000" ? "SRU 0 ATOMS=(2 1 2) LABEL=n CONNECT=EU" : "  1 SRU");
+      expect(contents).toContain(flavor === "v3000" ? "BEGIN SGROUP" : "M  SMT   1 n");
     }
     const smilesWarnings: string[] = [];
     expect(await copyAsSmiles(repeat, smilesWarnings)).toBe("CC");
     expect(smilesWarnings).toHaveLength(1);
+    expect(smilesWarnings[0]).toContain("SMILES cannot hold the repeat unit n around 2 atoms");
     for (const writer of [exportStructureListSmi, exportStructureListSdf]) {
       const result = await writer(repeat);
       expect(result.contents.length).toBeGreaterThan(0);
-      expect(result.warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented" })]);
+      const omission = expect.objectContaining({ code: "export.repeat_unit_not_represented",
+        message: expect.stringContaining("SMILES cannot hold the repeat unit n around 2 atoms") });
+      // SDF also retains the low-level writer's one-copy chemistry context alongside its
+      // graph-only SMILES property's omission warning; its connection table now carries SRU.
+      expect(result.warnings).toEqual(writer === exportStructureListSdf ? [expect.objectContaining({
+        code: "export.sdf_v2000_loss", message: expect.stringContaining("inside a repeat unit n")
+      }), omission] : [omission]);
     }
-    expect(copyAsMolfile(repeat, "v3000")).toBe(before);
+    expect((await exportStructureListSdf(repeat)).contents).toContain("  1 SRU");
     await expect(copyAsSmiles(repeat)).resolves.toBe("CC");
   });
 
@@ -301,12 +357,15 @@ describe("repeat-unit graph-export warnings", () => {
     const molecule = repeat.pages[0].objects.find(object => object.type === "molecule")!;
     expect(repeatUnitExportWarnings(repeat, "MOL", { objects: [molecule], molecules: [molecule] })).toHaveLength(1);
     expect(repeatUnitExportWarnings(repeat, "MOL", { objects: bracketObjects(repeat), molecules: [] })).toEqual([]);
+    // Selecting just the molecule must still report the semantic loss of its repeat brackets.
+    expect(repeatUnitExportWarnings(repeat, "SMILES", { molecules: [molecule] })).toHaveLength(1);
+    expect(repeatUnitExportWarnings(repeat, "MOL", { molecules: [] })).toEqual([]);
     expect(repeatUnitExportWarnings(repeat, "MOL")).toHaveLength(1);
     const enclosed = { ...repeat, pages: [{ ...repeat.pages[0], objects: repeat.pages[0].objects.map(object =>
       object.type === "bracket" ? { ...object, containedObjectIds: [] } : object) }] };
     expect(repeatUnitExportWarnings(enclosed, "MOL")).toHaveLength(1);
     const outside = { ...enclosed, pages: [{ ...enclosed.pages[0], objects: enclosed.pages[0].objects.map(object =>
-      object.type === "molecule" ? { ...object, x: 400, y: 400 } : object) }] };
+      object.type === "molecule" ? { ...object, x: 400, y: 400, atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + 400, y: atom.y + 400 })) } : object) }] };
     expect(repeatUnitExportWarnings(outside, "MOL")).toEqual([]);
   });
 

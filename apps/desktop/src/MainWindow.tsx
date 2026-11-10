@@ -7088,7 +7088,11 @@ export function MainWindow({
     commitDocumentChangeWithPageFit(insertNativeBracket(currentDocument, point, bracketKind), `Draw ${bracketKind} bracket pair`);
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
-    setStatus(`Inserted ${bracketKind} bracket`);
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    setStatus(`Inserted ${bracketKind} bracket pair`);
   }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChangeWithPageFit]);
 
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
@@ -7916,8 +7920,15 @@ export function MainWindow({
       arrowCommandTargetRef.current = attachment.parentObjectId;
       void invokeCommandRef.current("arrow.conditions"); return;
     }
+    if (object?.type === "bracket") {
+      if (event.target instanceof Element && event.target.closest(".bracket-repeat-label")) {
+        replacePresentDocument(current => selectDocumentObject(current, objectId));
+        void invokeCommandRef.current("bracket.label.edit");
+      }
+      return;
+    }
     startTextObjectEdit(objectId);
-  }, [activeToolState.activeCommandId, startTextObjectEdit]);
+  }, [activeToolState.activeCommandId, replacePresentDocument, startTextObjectEdit]);
 
   const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableText) => {
     clearScheduledTextEditorFocus();
@@ -15842,6 +15853,13 @@ export function MainWindow({
     if (drag.kind === "art-line" && changed) {
       setArrowEditTargetId(drag.objectId);
       setActiveGraphicTransformObjectId(undefined);
+    }
+    if (drag.kind === "bracket" && changed) {
+      // Selection chrome is shown only by selection tools. Make the new pair visibly selected.
+      const selectToolState = createActiveToolState("tool.select");
+      activeToolCommandIdRef.current = selectToolState.activeCommandId;
+      setActiveToolState(selectToolState);
+      void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
     }
     setStatus(changed
       ? drag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
@@ -28360,7 +28378,7 @@ function PageSvgSurfaceContent({
                   onPointerCancel={handlers.onPointerCancel}
                   onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
                   onContextMenu={event => handlers.onContextMenu(object.id, event)}
-                  onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+                  onDoubleClick={object.type === "text" || object.type === "bracket" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
                 >
                   {object.type === "graphic" ? (
                     // Keep the existing art renderer and its generous stroke/fill catchers.
