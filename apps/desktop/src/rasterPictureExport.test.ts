@@ -8,7 +8,8 @@ import { rasterPicturePlaceholderHref } from "./rasterPictureDecode";
 import { picturePngBase64, pictureSvg } from "./testSupport/imageFixture";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: native.invoke }));
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(), isDesktopRuntime: () => true
 }));

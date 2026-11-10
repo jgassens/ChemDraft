@@ -4,7 +4,8 @@ import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as bracketCommands from "./bracketCommands";
 import { MainWindow } from "./MainWindow";
 import { applyNativeChainTool, applyNativeTemplateToolAtPoint, createPhase4Document } from "./documentWorkflow";
 
@@ -209,6 +210,77 @@ describe("placement drags that start on an object follow pointer capture", () =>
 
   const straightPath = (from: { x: number; y: number }, dx: number, dy: number, steps: number) =>
     Array.from({ length: steps }, (_, index) => ({ x: from.x + (dx * (index + 1)) / steps, y: from.y + (dy * (index + 1)) / steps }));
+
+  it.each(["round", "square"])("draws a matching %s pair with DOM pointer events and one undo entry", async kind => {
+    await renderMainWindow(createPhase4Document("Bracket pair"), "tool.select");
+    await act(async () => { await bridge().command(`tool.${kind}Bracket`); });
+    await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 91);
+    const snapshot = bridge().snapshot();
+    const brackets = snapshot.document.pages[0].objects.filter(object => object.type === "bracket");
+    expect(brackets).toHaveLength(2);
+    expect(brackets.map(object => object.side)).toEqual(["open", "close"]);
+    expect(brackets.map(object => object.bracketKind)).toEqual([kind, kind]);
+    expect(brackets.map(object => object.x)).toEqual([100, 244]);
+    expect(brackets.map(object => object.height)).toEqual([100, 100]);
+    expect(snapshot.document.selection.objectIds).toEqual(brackets.map(object => object.id));
+    expect(snapshot.activeToolCommandId).toBe("tool.select");
+    expect(container.querySelector("[data-group-selection]")).not.toBeNull();
+    const paths = [...container.querySelectorAll(`[data-page-svg-object-visual] .bracket-glyph-path`)];
+    expect(paths).toHaveLength(2);
+    expect(paths[0].getAttribute("d")).not.toBe(paths[1].getAttribute("d"));
+    await act(async () => { await bridge().command("edit.undo"); });
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(0);
+    await act(async () => { await bridge().command("edit.redo"); });
+    expect(bridge().snapshot().document.pages[0].objects).toEqual(snapshot.document.pages[0].objects);
+  });
+
+  it("reports when a repeat unit is marked and removed", async () => {
+    await renderMainWindow(createPhase4Document("Repeat unit status"), "tool.roundBracket");
+    await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 93);
+    const before = bridge().snapshot().document;
+    const statusBefore = container.querySelector('[role="status"]')?.textContent;
+    // A no-op update makes commitDocumentChange return false: it must not report success.
+    const toggle = vi.spyOn(bracketCommands, "toggleBracketRepeatUnit").mockImplementationOnce(document => document);
+    try {
+      await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+      expect(toggle).toHaveBeenCalledOnce();
+      expect(bridge().snapshot().document).toEqual(before);
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(statusBefore);
+    } finally {
+      toggle.mockRestore();
+    }
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Marked 0 atoms as repeat unit "n"');
+    await act(async () => { await bridge().command("bracket.repeatUnit.toggle"); });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Removed repeat unit "n"');
+  });
+
+  it("marks a pair as a repeat unit and edits its annotation label in one undo step", async () => {
+    await renderMainWindow(createPhase4Document("Repeat unit"), "tool.roundBracket");
+    await dragFrom(pageElement(), { x: 100, y: 120 }, [{ x: 260, y: 220 }], 92);
+    const openMenu = async () => {
+      const visual = container.querySelector("[data-page-svg-object-visual]")!;
+      await act(async () => { visual.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 150 })); });
+    };
+    await openMenu();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[role="menu"] [data-command-id="bracket.repeatUnit.toggle"]')!.click(); });
+    expect(container.querySelector(".bracket-repeat-label")?.textContent).toBe("n");
+    await openMenu();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[role="menu"] [data-command-id="bracket.label.edit"]')!.click(); });
+    const input = container.querySelector<HTMLInputElement>("[data-bracket-label-editor]")!;
+    expect(input).toBe(document.activeElement);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "m");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(container.querySelector(".bracket-repeat-label")?.textContent).toBe("m");
+    await act(async () => { await bridge().command("edit.undo"); });
+    expect(container.querySelector(".bracket-repeat-label")?.textContent).toBe("n");
+    await act(async () => { await bridge().command("edit.undo"); });
+    expect(container.querySelector(".bracket-repeat-label")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects.filter(object => object.type === "bracket")).toHaveLength(2);
+  });
 
   it("grows a chain dragged off a ring atom, one undo entry, SMILES derived", async () => {
     const seeded = applyNativeTemplateToolAtPoint(createPhase4Document("Ring Anchor"), { x: 200, y: 260 }, "benzene");

@@ -3,8 +3,9 @@
 NMR (nuclear magnetic resonance) spectra describe nuclei in their chemical
 environments. `nmr` / MCP `predict_nmr` predicts ¹H and ¹³C chemical shifts
 from the separate NMR Shift Predictor plugin. This is the OCL-native
-provider using HOSE-fragment statistics from NMRShiftDB2 experimental
-assignments. HOSE codes describe progressively larger atom neighborhoods.
+provider using HOSE-fragment statistics from NMRShiftDB2
+assignments (the database does not mark which are experimental). HOSE codes
+describe progressively larger atom neighborhoods.
 The shipped provider must not be described as synthetic or fixture-backed.
 
 ## Plugin and trust
@@ -52,7 +53,7 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'C
   match; `source: "rule-estimated"` is a disclosed additive-rule estimate
   only where the rule applies, flagged `NMR_RULE_ESTIMATED`.
 - ¹H multiplicity and J couplings are first-order estimates from bond
-  topology, labelled `estimated: true`; they are not measured values.
+  topology, labeled `estimated: true`; they are not measured values.
   J is a coupling in hertz; shift is in parts per million (`shiftPpm`).
 - `nEquivalent` and spectrum stick height mean predicted equivalent nuclei,
   not integration. Line shape and field, where shown in plugin simulations,
@@ -72,12 +73,12 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft nmr --smiles 'C
   `NMR_POTENTIALLY_DIASTEREOTOPIC_METHYLS`. Do not invent split shifts.
 - The reference derivative database has the **nmrshiftdb2 Database License
   (ODbL-derived: attribution and share-alike)**, separate from the code
-  licence. Each result names it under `database`; retain attribution.
+  license. Each result names it under `database`; retain attribution.
   Never describe the whole data-bundling package as MIT.
 
 `atomIndices` are 0-based indices into the drawn molfile depiction. For
 ¹H they identify the atoms carrying those hydrogens. Preserve the JSON
-mapping beside a labelled structure when explaining environments.
+mapping beside a labeled structure when explaining environments.
 
 ## Comparing with experiment
 

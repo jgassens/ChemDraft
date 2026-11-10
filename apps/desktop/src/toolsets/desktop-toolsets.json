@@ -181,6 +181,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"
@@ -189,6 +194,54 @@
                 "title": "Single Bond",
                 "shortcut": "M",
                 "description": "Draw a bond. Long-press for bond variants."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.doubleBond",
+              "title": "Double Bond",
+              "icon": "doubleBond",
+              "assetName": "Custom_Bond_Double",
+              "category": "structure",
+              "id": "tool.doubleBond",
+              "kind": "button",
+              "label": "Double Bond",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.doubleBond"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Double Bond",
+                "shortcut": null,
+                "description": "Draw a double bond or click a bond to set its order."
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.tripleBond",
+              "title": "Triple Bond",
+              "icon": "tripleBond",
+              "assetName": "Custom_Bond_Triple",
+              "category": "structure",
+              "id": "tool.tripleBond",
+              "kind": "button",
+              "label": "Triple Bond",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.tripleBond"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Triple Bond",
+                "shortcut": null,
+                "description": "Draw a triple bond or click a bond to set its order."
               },
               "layout": {
                 "colSpan": 1,
@@ -281,58 +334,6 @@
               "tooltip": {
                 "title": "Bold Bond",
                 "shortcut": null
-              },
-              "layout": {
-                "colSpan": 1,
-                "rowSpan": 1
-              }
-            },
-            {
-              "commandId": "tool.chain",
-              "title": "Chain Tool",
-              "icon": "chain",
-              "assetName": "Custom_Draw_Line",
-              "shortcutDisplay": "C",
-              "category": "structure",
-              "id": "tool.chain",
-              "kind": "button",
-              "label": "Chain Tool",
-              "primary": {
-                "type": "command",
-                "commandId": "tool.chain"
-              },
-              "submenu": {
-                "type": "command-grid",
-                "title": "Chain tools",
-                "columns": 2,
-                "items": [
-                  {
-                    "commandId": "tool.chain",
-                    "label": "Chain",
-                    "icon": "chain",
-                    "assetName": "Custom_Draw_Line",
-                    "tooltip": {
-                      "title": "Chain Tool",
-                      "shortcut": "C",
-                      "description": "Zig-zag chain along a straight drag; drag length sets the carbon count."
-                    }
-                  },
-                  {
-                    "commandId": "tool.chainFlexible",
-                    "label": "Flexible Chain",
-                    "icon": "chainFlexible",
-                    "tooltip": {
-                      "title": "Flexible Chain Tool",
-                      "description": "Chain that bends to follow the pointer path as you drag."
-                    }
-                  }
-                ],
-                "id": "chain-tools"
-              },
-              "tooltip": {
-                "title": "Chain Tool",
-                "shortcut": "C",
-                "description": "Draw a carbon chain. Long-press for chain variants."
               },
               "layout": {
                 "colSpan": 1,
@@ -623,6 +624,28 @@
               "submenu": null,
               "tooltip": {
                 "title": "Square Bracket Tool",
+                "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.roundBracket",
+              "title": "Round Bracket Tool",
+              "icon": "roundBracket",
+              "category": "annotation",
+              "id": "tool.roundBracket",
+              "kind": "button",
+              "label": "Round Bracket Tool",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.roundBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Round Bracket Tool",
                 "shortcut": null
               },
               "layout": {
@@ -1931,6 +1954,11 @@
                     "label": "Bold Bond",
                     "icon": "bond",
                     "assetName": "Custom_Bond_Bold"
+                  },
+                  {
+                    "commandId": "tool.wavyBond",
+                    "label": "Wavy bond",
+                    "icon": "wavyBond"
                   }
                 ],
                 "id": "bond-tools"
@@ -2509,6 +2537,28 @@
               "submenu": null,
               "tooltip": {
                 "title": "Square Bracket Tool",
+                "shortcut": null
+              },
+              "layout": {
+                "colSpan": 1,
+                "rowSpan": 1
+              }
+            },
+            {
+              "commandId": "tool.roundBracket",
+              "title": "Round Bracket Tool",
+              "icon": "roundBracket",
+              "category": "annotation",
+              "id": "tool.roundBracket",
+              "kind": "button",
+              "label": "Round Bracket Tool",
+              "primary": {
+                "type": "command",
+                "commandId": "tool.roundBracket"
+              },
+              "submenu": null,
+              "tooltip": {
+                "title": "Round Bracket Tool",
                 "shortcut": null
               },
               "layout": {

@@ -136,7 +136,7 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
     };
     const arm = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => finish(undefined,
       new Error(`${job.method} timed out after ${timeout / 1000} seconds including queue time.`)), ms); };
-    const abort = () => finish(undefined, new Error(`chemistry.${job.method} cancelled because the plugin command ended.`));
+    const abort = () => finish(undefined, new Error(`chemistry.${job.method} canceled because the plugin command ended.`));
     const task: Task = { method: job.method, cancel: abort, fail: error => finish(undefined, error), receive: (message, workerSlot, hostReceivedAtEpochMs) => {
       // Kind alone identifies the protocol, not the job. Filter *every* reply,
       // including timing/errors, before it can affect the active task.

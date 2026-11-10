@@ -20,10 +20,18 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
+  it("grants content-size reporting only to the actual Preferences window", () => {
+    const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability)
+      .includes("allow-preferences-ready"));
+    expect(granted.map(({ name }) => name)).toEqual(["preferences-layout.json"]);
+    expect(granted[0]!.capability.windows).toEqual(["preferences"]);
+    expect(granted[0]!.capability.webviews).toBeUndefined();
+    expect(granted[0]!.capability.permissions).toEqual(["allow-preferences-ready"]);
+  });
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
-    // The final pattern belongs to the structure-template picker.
-    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-vibeCodeGuide-*"]);
+    // Each native dialog kind gets only the same validated request/send transport.
+    expect(host.windows).toEqual(["dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*", "dialog-main-vibeCodeGuide-*"]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);

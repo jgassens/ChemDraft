@@ -1,6 +1,6 @@
 # pKa corpus provenance and open licensing questions
 
-**Purpose.** One place recording, per corpus, what the licence actually covers, whether the rows feed the
+**Purpose.** One place recording, per corpus, what the license actually covers, whether the rows feed the
 shipped model or are research-only, and the question a lawyer needs to answer. Written so the open
 questions can be resolved without re-deriving any of this from the code.
 
@@ -9,7 +9,7 @@ and artifacts derived from an encumbered corpus stay in `~/pka-runs/` rather tha
 decision is foreclosed by something already committed.
 
 **The recurring error, stated once.** Several of these corpora ship inside a software repository. The
-repository's licence — BSD, Apache, MIT — governs its *code*. It is not a grant over a dataset sitting in
+repository's license — BSD, Apache, MIT — governs its *code*. It is not a grant over a dataset sitting in
 that repository's `data/` directory. Two rows in `ionizationContract()` had made exactly that
 substitution and are corrected below.
 
@@ -17,7 +17,7 @@ substitution and are corrected below.
 
 ## Shipped training corpus — 12,096 rows
 
-| corpus | rows | licence recorded | what it covers | status |
+| corpus | rows | license recorded | what it covers | status |
 |---|---:|---|---|---|
 | pKaCHU | 4,419 | CC BY 4.0 | the dataset itself, Zenodo 20089807 | **clear** |
 | QupKake experimental | 4,022 | **CC BY 4.0** (corrected) | the upstream dataset | **corrected, attribution owed** |
@@ -26,7 +26,7 @@ substitution and are corrected below.
 
 ### QupKake experimental, 4,022 rows — CORRECTED
 
-Was recorded as `BSD-3-Clause`, `redistributable: true`. BSD-3-Clause is **QupKake's software licence**.
+Was recorded as `BSD-3-Clause`, `redistributable: true`. BSD-3-Clause is **QupKake's software license**.
 The data originates with Baltruschat & Czodrowski (*Machine-learning-meets-pKa*), released **CC BY 4.0**.
 
 Now recorded as CC BY 4.0. Still `redistributable: true`, which is correct — CC BY 4.0 permits
@@ -41,7 +41,7 @@ sufficient for CC BY 4.0 when what is distributed is model weights rather than t
 
 ### Dwar-iBond, 3,031 rows — OPEN, AND THE ONE THAT MATTERS
 
-Was recorded as `Apache-2.0` — **Uni-pKa's software licence**, the same category error. No terms have been
+Was recorded as `Apache-2.0` — **Uni-pKa's software license**, the same category error. No terms have been
 established for the data itself. Now recorded as
 `"unresolved — Apache-2.0 covers Uni-pKa's code, not this dataset"`.
 
@@ -64,14 +64,14 @@ exposure of the artifact already shipped?
 
 ## Research-only, never in the shipped corpus
 
-| corpus | rows | licence | why it is quarantined |
+| corpus | rows | license | why it is quarantined |
 |---|---:|---|---|
 | IUPAC Dissociation Constants | — | **CC BY-NC 4.0** | non-commercial. Usable for research analysis; cannot back commercially-distributed weights. |
 | D2A-pKa, nonaqueous | 4,445 | CC BY 4.0, but incorporates iBonD/IUPAC material | the incorporated material's downstream terms are unclear. Needed for Codex's Stage 6. |
-| QupKake 1.55M ChemAxon-labelled | ~1.55M | ChemAxon terms govern bulk calculated output | Codex's research-only last arm. Weights derived from it must not be distributed without written clearance, and the inherited-predictor provenance must be disclosed. |
+| QupKake 1.55M ChemAxon-labeled | ~1.55M | ChemAxon terms govern bulk calculated output | Codex's research-only last arm. Weights derived from it must not be distributed without written clearance, and the inherited-predictor provenance must be disclosed. |
 | QMugs | ~665k mols | CC BY 4.0 | clean, and the intended Stage 5 pretraining corpus. No obstacle expected. |
 | SAMPL6/8, euroSAMPL | — | challenge data | reserved as never-train test material. |
-| pKaLearn | 12,817 | MIT (code) | **design donor only.** Its CSV mixes DataWarrior/F1000Res lineage, Epik-generated rows, and SAMPL benchmark molecules, so ingesting it would import both a licence question and benchmark contamination. |
+| pKaLearn | 12,817 | MIT (code) | **design donor only.** Its CSV mixes DataWarrior/F1000Res lineage, Epik-generated rows, and SAMPL benchmark molecules, so ingesting it would import both a license question and benchmark contamination. |
 
 **External evaluation set (398 rows).** QupKake's Novartis and literature SDFs. The data is **not
 vendored** — only `external_eval.py` is, and it reads a checkout the user supplies. So no dataset
@@ -92,7 +92,7 @@ models repeatedly and is development data, not a blind test.
 
 1. **Dwar-iBond, 3,031 rows, 25% of the corpus.** Terms unestablished, references partly lost. Highest
    exposure; determines whether a retrain is needed.
-2. **QupKake, 4,022 rows.** Licence corrected to CC BY 4.0. Confirm attribution is adequate when the
+2. **QupKake, 4,022 rows.** License corrected to CC BY 4.0. Confirm attribution is adequate when the
    distributed thing is weights.
-3. **Anything ChemAxon-labelled.** Written clearance required before distributing derived weights.
+3. **Anything ChemAxon-labeled.** Written clearance required before distributing derived weights.
 4. **IUPAC CC BY-NC.** Research analysis only; must not back commercial weights.

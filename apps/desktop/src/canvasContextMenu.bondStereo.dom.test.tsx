@@ -369,7 +369,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     // A later press in another palette reaches this window only via its broadcast.
     await dismissToolsetPopovers(performance.timeOrigin + performance.now());
     await act(async () => nativePopover.dismiss?.(nativePopover.pendingDismisses.shift()));
-    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", originalContent.openedAt, originalContent.generation);
     await act(async () => nativePopover.request?.("core.bondStereo"));
     expect(setToolsetPopoverContent).toHaveBeenCalledTimes(2);
   });
@@ -397,7 +397,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
       if (action === "click-away") canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       if (action === "palette-away") nativePopover.dismiss?.();
     });
-    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", content.openedAt, content.generation);
     expect(document.activeElement).toBe(canvas); expect(molecule()).toEqual(original);
     await command("edit.undo"); expect(molecule()).toEqual(original);
   });
@@ -406,7 +406,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     const doc = window.__CHEMDRAFT_AGENT__!.snapshot().document;
     vi.stubGlobal("getComputedStyle", window.getComputedStyle.bind(window));
     const pdf = await exportPhase4Pdf(doc, { compress: false });
-    for (const output of [exportPhase4Svg(doc).contents, exportPhase4Cdxml(doc).contents, new TextDecoder().decode(pdf.bytes)]) {
+    for (const output of [(await exportPhase4Svg(doc)).contents, exportPhase4Cdxml(doc).contents, new TextDecoder().decode(pdf.bytes)]) {
       expect(output).not.toContain("native-bond-stereo-marker"); expect(output).not.toContain("E/Z not specified");
       expect(output).not.toContain("This double bond"); expect(output).not.toMatch(/>!<|\(!\) Tj/);
     }

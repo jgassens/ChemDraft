@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Nicolaou-style ring figures for any molecule: vivid ring fills, ring letters,
-// H at ring-fusion stereocentres and Me labels, applied to a ChemDraft document.
+// H at ring-fusion stereocenters and Me labels, applied to a ChemDraft document.
 // Plain Node (18+), no dependencies; paths go through node:path, and the one child
 // process (the ChemDraft CLI) is started with this Node and an argument list, never a
 // shell, so it runs on macOS, Linux and Windows. It edits document JSON only; ChemDraft
@@ -20,8 +20,8 @@
 //                 and <name>-job.json (the batch for `document`).
 //   style         reads <name>-build.jsonl (the `document` stdout), the document it names and
 //                 <name>-pubchem.sdf if present; writes <name>-carbon.json (true structure,
-//                 methyls drawn CH3), <name>-nicolaou.json (the picture, methyls relabelled
-//                 Me) and <name>-style.json (layout, moves, ring letters, colours, H and Me
+//                 methyls drawn CH3), <name>-nicolaou.json (the picture, methyls relabeled
+//                 Me) and <name>-style.json (layout, moves, ring letters, colors, H and Me
 //                 added, warnings). Each molecule and its decorations form one native group,
 //                 so moving, copying, deleting or transforming it keeps the figure together.
 //                 The CLI accepts exactly one molecule per document: its layout, figure and
@@ -30,7 +30,7 @@
 //                 Before styling it
 //                   1. compares layouts: ChemDraft's build, ChemDraft's layout of the canonical
 //                      SMILES, and PubChem's 2D record (atoms matched to the document's, wedges
-//                      re-drawn to keep every stereocentre), scored on bond crossings, bonds,
+//                      re-drawn to keep every stereocenter), scored on bond crossings, bonds,
 //                      atoms and labels on fills not their own, fill overlap, clashes and
 //                      stretched bonds; the build stays unless another is clearly cleaner;
 //                   2. moves every substituent off the filled rings (rule: no substituent atom,
@@ -42,10 +42,10 @@
 //                 Every new layout, every move (rotate turns included) and every fusion H must
 //                 read, by render-document in the --checkout, as the same molecule (canonical
 //                 SMILES; with explicit H, the standard InChIKey) with the same specified and
-//                 unspecified stereocentre counts as the build's own drawing; a change that does
+//                 unspecified stereocenter counts as the build's own drawing; a change that does
 //                 not is undone and reported. What cannot be cleared is reported by name;
 //                 atom labels on a fill, including ring atoms, are white or near-black by that
-//                 fill's luminance, with no label halo. Fills reach every atom centre on the ring
+//                 fill's luminance, with no label halo. Fills reach every atom center on the ring
 //                 outline. Ring letters use the same luminance rule.
 //   relayout      rewrites <name>-job.json with the canonical SMILES in <name>-build.jsonl:
 //                 the same molecule in another atom order, which `document` lays out anew.
@@ -63,7 +63,7 @@
 // the regular angle, outline not crossing itself); no plain bond over 1.3x and no wedge or hash over
 // 1.3x the median bond length; no ring letter under 14 px or missing; no lettered ring more than 40%
 // under another lettered ring's fill; every emitted ring fill is its plain ring polygon;
-// no fusion CH stereocentre left without its H.
+// no fusion CH stereocenter left without its H.
 //
 // Options (all optional), a JSON object; with none, the options file may be omitted:
 //   convention  "walk" (default), "taxane", "steroid" or "morphinan"
@@ -83,7 +83,7 @@
 //               that contains atom about its attachment atom (positive = clockwise on
 //               the page) before steps 2 and 3; checked like every move (locally, then by
 //               render-document) and undone and reported if the stereochemistry changes
-//   palette     ["#e53935", ...] fill colours, assigned in letter order
+//   palette     ["#e53935", ...] fill colors, assigned in letter order
 //   fillOpacity 0.9;  letterSizePx 20;  letterFont "Times New Roman, Times, serif"
 //   fusionH     true;  methyls "ring" (default: Me on methyls bonded to lettered rings) or "none"
 // A selector picks one ring by its chemistry; every given field must hold:
@@ -180,7 +180,7 @@ function inPolygon(p, poly) {
 }
 const area = (poly) => Math.abs(poly.reduce((s, a, i) => { const b = poly[(i + 1) % poly.length]; return s + a.x * b.y - b.x * a.y; }, 0)) / 2;
 
-// ---------- colour ----------
+// ---------- color ----------
 function luminance(hex) {
   const n = hex.replace("#", "");
   const c = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16) / 255).map((v) => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
@@ -192,7 +192,7 @@ function blendOnWhite(hex, opacity) {
 }
 /** White on a dark fill, near-black on a light one, judged by the fill's relative
  * luminance as drawn (blended on white at its opacity). Below 0.34 white reads better
- * on saturated colours: red, blue, green, purple and magenta take white. */
+ * on saturated colors: red, blue, green, purple and magenta take white. */
 export function letterColour(fill, opacity = 1) {
   return luminance(blendOnWhite(fill, opacity)) < 0.34 ? WHITE : DARK;
 }
@@ -270,7 +270,7 @@ export function describeRings(m, buildRings) {
 }
 
 /** A canonical rank for every heavy atom from the molecular graph alone: element, charge, heavy
- * degree and hydrogen count, refined over neighbours until the classes stop splitting (extended
+ * degree and hydrogen count, refined over neighbors until the classes stop splitting (extended
  * connectivity). Coordinates never enter it, so a rotated or mirrored drawing ranks the same; SMILES
  * atom order only separates atoms the graph cannot tell apart (symmetry-equivalent ones). */
 export function canonicalRanks(m) {
@@ -294,7 +294,7 @@ export function canonicalRanks(m) {
 
 const label = (r) => `${r.size}-ring${Object.keys(r.hetero).length ? " (" + Object.entries(r.hetero).map(([e, n]) => e + n).join(" ") + ")" : " (carbocycle)"}` +
   `${r.aromatic ? ", aromatic" : ""}, ${r.ringDoubleBonds} ring double bond(s)${r.carbonyl ? ", carbonyl" : ""}` +
-  `, centre (${r.center.x.toFixed(0)}, ${r.center.y.toFixed(0)}), SMILES atoms [${r.inputAtoms.join(",")}]`;
+  `, center (${r.center.x.toFixed(0)}, ${r.center.y.toFixed(0)}), SMILES atoms [${r.inputAtoms.join(",")}]`;
 
 function matches(r, sel, letterOf) {
   if (sel.size !== undefined && r.size !== sel.size) return false;
@@ -398,7 +398,7 @@ export function assignLetters(rings, options = {}) {
   return { letters: [...letterOf.entries()].sort((a, b) => a[0].localeCompare(b[0])), notes };
 }
 
-/** Palette colours in letter order; a ring never shares a colour with a ring it touches. */
+/** Palette colors in letter order; a ring never shares a color with a ring it touches. */
 export function assignColours(letters, palette = PALETTE) {
   const colour = new Map(), used = new Map();
   for (const [, r] of letters) {
@@ -412,8 +412,8 @@ export function assignColours(letters, palette = PALETTE) {
 }
 
 // ---------- predicted label boxes (letter placement only; check uses the real SVG) ----------
-// The renderer centres symbol+H on the atom ("OH", "CH" then a subscript 3), or, when
-// the bonds leave to the right, centres the symbol and writes H to its left ("HO").
+// The renderer centers symbol+H on the atom ("OH", "CH" then a subscript 3), or, when
+// the bonds leave to the right, centers the symbol and writes H to its left ("HO").
 function labelBox(m, a, meIds, carbonLabels, size) {
   const me = meIds.has(a.id);
   if (!me && a.element === "C" && !carbonLabels.has(a.id)) return null;
@@ -520,7 +520,7 @@ function addFusionH(m, letters, carbonLabels, warnings, plan = false) {
       warnings.push(`Fusion CH ${a.id}: ${stereo.length} stereo bonds start there, so no H was drawn; look at it.`);
       continue;
     }
-    // Start along the fused bond, away from the neighbour that shares both rings (else the
+    // Start along the fused bond, away from the neighbor that shares both rings (else the
     // widest gap), then turn up to 37.5 degrees either way, staying 35 degrees clear of every
     // bond at the atom, to the direction and length whose H label is furthest from labels and bonds.
     const nbs = m.neighbours(a.id).map((id) => m.atoms.get(id));
@@ -659,8 +659,8 @@ function ringMethyls(m, letters) {
 const isStereoBond = (b) => b.display?.bondStyle === "wedge" || b.display?.bondStyle === "hashed";
 const det3 = (u, v, w) => u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0]);
 
-/** Handedness a tetrahedral centre is drawn with: +1, -1, or 0 when the drawing does not say.
- * Its wedge or hash (narrow end at the centre) lifts that neighbour out of the page. */
+/** Handedness a tetrahedral center is drawn with: +1, -1, or 0 when the drawing does not say.
+ * Its wedge or hash (narrow end at the center) lifts that neighbor out of the page. */
 function parity(m, c, L) {
   const a = m.atoms.get(c);
   const v = [...m.neighbours(c)].sort().map((id) => {
@@ -693,7 +693,7 @@ function doubleBondSides(m, rings) {
 }
 const sameMap = (a, b) => a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
 
-/** Put a wedge or hash on one bond of each stereocentre so it is drawn with the wanted
+/** Put a wedge or hash on one bond of each stereocenter so it is drawn with the wanted
  * handedness: a bond to a terminal, non-ring, non-stereo atom first; among ring bonds, the one
  * in the fewest rings and closest to a standard length. */
 function assignWedges(m, want, rings) {
@@ -723,7 +723,7 @@ function assignWedges(m, want, rings) {
   return null;
 }
 
-/** Draw every ring double bond's second line inside its smallest ring; others toward their neighbours. */
+/** Draw every ring double bond's second line inside its smallest ring; others toward their neighbors. */
 function sideDoubleBonds(m, rings) {
   const L = m.mol.style?.bondLengthPx ?? 28;
   for (const b of m.mol.bonds) {
@@ -766,7 +766,7 @@ export function parseMolfile(text) {
   return { atoms, bonds };
 }
 
-/** Heavy-atom graph: element, charge, heavy neighbours and hydrogen count per atom. */
+/** Heavy-atom graph: element, charge, heavy neighbors and hydrogen count per atom. */
 function heavyGraph(atoms, bonds, implicitH = () => 0) {
   const keep = atoms.map((a, i) => a.element !== "H" ? i : -1).filter((i) => i >= 0);
   const index = new Map(keep.map((i, k) => [i, k]));
@@ -895,7 +895,7 @@ function groupOnFills(m, g, fills, labels) {
 }
 
 /** Crowding a placement causes: near atoms and touching labels, a bond squeezed against its
- * neighbours at the attachment atom. `blocked` when an atom lands on another or a bond crosses one:
+ * neighbors at the attachment atom. `blocked` when an atom lands on another or a bond crosses one:
  * a crossing is never traded for a fill. */
 function crowding(m, g, labels, L) {
   let cost = 0, blocked = false;
@@ -943,7 +943,7 @@ function restore(m, s) {
 }
 /** Turn (degrees, clockwise on the page) or mirror (across the line through the attachment
  * atom at `axis` degrees) a group from its snapshot. A mirror image swaps every wedge and hash
- * that starts inside the group, so the group's own stereocentres keep their handedness, and
+ * that starts inside the group, so the group's own stereocenters keep their handedness, and
  * flips each double bond's side. */
 function place(m, g, s, kind, degrees) {
   restore(m, s);
@@ -1129,7 +1129,7 @@ export function ringShapes(m, letters) {
   });
 }
 
-/** Fusion CH stereocentres (a CH carbon in two lettered rings with a wedge or hash starting there)
+/** Fusion CH stereocenters (a CH carbon in two lettered rings with a wedge or hash starting there)
  * drawn without their H: the stereo stays on a ring bond. */
 export function fusionHMissing(m, letters) {
   const lettered = letters.map(([, r]) => r);
@@ -1539,7 +1539,7 @@ function polygonPathFaces(d) {
   return faces.filter((points) => points.length >= 3);
 }
 
-/** Every emitted ring fill must be its single, closed atom-centre polygon. Reject holes,
+/** Every emitted ring fill must be its single, closed atom-center polygon. Reject holes,
  * evenodd notches, extra vertices and moved vertices, including fills with no visible labels.
  * ringAtomsByKey must iterate each ring's atom IDs in cyclic boundary order. */
 export function invalidRingFillPaths(svg, ringAtomsByKey, atoms = []) {
@@ -1702,7 +1702,7 @@ export function chemdraftCli(checkout) {
 }
 
 /** verify(mol) for style(): null when render-document reads the drawing exactly as it reads the
- * build's own drawing (canonical SMILES, specified and unspecified stereocentres), else why.
+ * build's own drawing (canonical SMILES, specified and unspecified stereocenters), else why.
  * Explicit H atoms (the fusion H) change the SMILES string but not the molecule: when the drawing
  * reads with [H] atoms, the standard InChIKeys (from `inchiKey`, if given) are compared instead. */
 export function identityVerifier(identity, doc, molId, inchiKey) {
@@ -1722,7 +1722,7 @@ export function identityVerifier(identity, doc, molId, inchiKey) {
       if (!sameKey) return `reads ${b.canonicalSmiles}, not ${a.canonicalSmiles}`;
     }
     if (b.stereoCenters !== a.stereoCenters || b.unspecifiedStereoCenters !== a.unspecifiedStereoCenters) {
-      return `counts ${b.stereoCenters} specified / ${b.unspecifiedStereoCenters} unspecified stereocentres, not ${a.stereoCenters} / ${a.unspecifiedStereoCenters}`;
+      return `counts ${b.stereoCenters} specified / ${b.unspecifiedStereoCenters} unspecified stereocenters, not ${a.stereoCenters} / ${a.unspecifiedStereoCenters}`;
     }
     return null;
   };
@@ -1820,7 +1820,7 @@ function printFigureVerdict(failures) {
   console.log(`Figure checks FAILED (${failures.length}):`);
   for (const f of failures) console.log(`  FAILED ${f}`);
   console.log("This figure is not finished: do not deliver it as finished. Say exactly what failed, and offer the plain (unfilled) drawing, " +
-    "or the coloured one with these failures named. A forced layout (options \"layout\": \"build\", \"canonical\" or \"pubchem\") may clear them; check again.");
+    "or the colored one with these failures named. A forced layout (options \"layout\": \"build\", \"canonical\" or \"pubchem\") may clear them; check again.");
 }
 const figureChecksText = () => `no sliver ring (area >= ${LIMITS.ringArea} of regular, smallest angle >= ${LIMITS.ringAngle} of regular), ` +
   `no bond over ${LIMITS.bondStretch}x or wedge over ${LIMITS.wedgeStretch}x the median, letters >= ${LIMITS.letterPx} px, ` +
@@ -1916,7 +1916,7 @@ function check(dir, name) {
       if (!a) failures.push(`${job}: no analyze result; run identity-jobs and analyze again`);
       else if (key !== ref.InChIKey) failures.push(`${row.document} -> ${row.files.join(", ")}: InChIKey ${key} differs from PubChem ${ref.InChIKey}`);
       if (!l.picture && ref.DefinedAtomStereoCount !== undefined && (mol.stereoCenters !== ref.DefinedAtomStereoCount || mol.unspecifiedStereoCenters !== ref.UndefinedAtomStereoCount)) {
-        failures.push(`${row.files.join(", ")}: stereocentres ${mol.stereoCenters} specified / ${mol.unspecifiedStereoCenters} unspecified; PubChem ${ref.DefinedAtomStereoCount} / ${ref.UndefinedAtomStereoCount}`);
+        failures.push(`${row.files.join(", ")}: stereocenters ${mol.stereoCenters} specified / ${mol.unspecifiedStereoCenters} unspecified; PubChem ${ref.DefinedAtomStereoCount} / ${ref.UndefinedAtomStereoCount}`);
       }
     });
     // Name each label by its atom id and the atom it hangs from, ready for options.rotate.
@@ -1941,7 +1941,7 @@ function check(dir, name) {
   }
   const figure = [...documentFaults(dir, name, renders)].map(([text, files]) => `${text} (${files.join(", ")})`);
   writeJson(path.join(dir, `${name}-check.json`), { ...result, failures, figureFailures: figure, limits: LIMITS });
-  console.log(`PubChem CID ${ref.CID} ${ref.Title}: InChIKey ${ref.InChIKey}, stereocentres ${ref.DefinedAtomStereoCount} defined / ${ref.UndefinedAtomStereoCount} undefined`);
+  console.log(`PubChem CID ${ref.CID} ${ref.Title}: InChIKey ${ref.InChIKey}, stereocenters ${ref.DefinedAtomStereoCount} defined / ${ref.UndefinedAtomStereoCount} undefined`);
   for (const r of result.renders) {
     console.log(`${r.inchiKeyMatches ? "same" : "DIFFERENT"} InChIKey  ${r.files.join(", ")}${r.picture ? " (picture: Me read as C; its stereo counts are the carbon document's)" : `  stereo ${r.stereoCenters} specified / ${r.unspecifiedStereoCenters} unspecified, ${r.unspecifiedDoubleBonds} unspecified double bonds`}`);
   }

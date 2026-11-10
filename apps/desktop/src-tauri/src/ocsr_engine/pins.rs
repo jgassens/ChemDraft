@@ -16,16 +16,23 @@ pub const MOLSCRIBE_SOURCE_SHA256: &str =
     "8e323f473b96c80ff88112f2653a064a443fcfd918654a0d7e0f7866bd5ee2d6";
 pub const MOLSCRIBE_SOURCE_FILENAME: &str =
     "molscribe-7296a30413eb55436702011efdff78131f66d162.tar.gz";
-/// The versions `resources/ocsr/requirements.txt` locks (with hashes) for the three packages the
+/// The versions `resources/ocsr/requirements.txt` locks (with hashes) for the packages the
 /// engine is reviewed against; a test asserts the lock agrees.
 pub const TORCH_VERSION: &str = "2.14.0";
 pub const TORCHVISION_VERSION: &str = "0.29.0";
 pub const NUMPY_VERSION: &str = "1.26.4";
+pub const RDKIT_VERSION: &str = "2026.3.6";
+pub const OPENCV_VERSION: &str = "4.11.0.86";
 /// SHA-256 of the bundled, hash-locked `resources/ocsr/requirements.txt`, taken with line endings
 /// normalized to LF (a Windows checkout may write CRLF). The installer refuses a requirements file
 /// that differs, and a test fails until this is updated after a re-lock.
 pub const REQUIREMENTS_LOCK_SHA256: &str =
     "6c71c47f1bf1ee6c419948121ab3923b50dff75488445e4dbd3c0a84b08d7383";
+/// SHA-256 of the bundled, hash-locked `resources/ocsr/requirements-macos-x86_64.txt`, taken with
+/// line endings normalized to LF (a Windows checkout may write CRLF). The installer refuses a
+/// requirements file that differs, and a test fails until this is updated after a re-lock.
+pub const REQUIREMENTS_LOCK_SHA256_MACOS_X86_64: &str =
+    "28413a92463e53747917d84d7c469fb59b44ddcd637bb382b82f70d15e643b20";
 pub const MODEL_REVISION: &str = "a0189776b7415b82795c7ee81eed311bf5c8724b";
 pub const MODEL_URL: &str = "https://huggingface.co/yujieq/MolScribe/resolve/a0189776b7415b82795c7ee81eed311bf5c8724b/swin_base_char_aux_1m.pth";
 pub const MODEL_FILENAME: &str = "swin_base_char_aux_1m.pth";

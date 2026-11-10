@@ -1,4 +1,5 @@
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
+import { MoleculeObjectSchema } from "@chemdraft/chem-core";
 import {
   PluginApiVersion,
   parsePluginManifest,
@@ -35,6 +36,8 @@ import type {
 } from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+const writeMolecule = () => MoleculeObjectSchema.parse({ id: "mol_001", type: "molecule",
+  x: 0, y: 0, width: 10, height: 10, structureFormat: "smiles", structure: "C" });
 
 const carbonMonoxideMolfile = [
   "Recognized carbon monoxide",
@@ -494,7 +497,7 @@ describe("desktop plugin runtime", () => {
             await gate;
             return context.documents.applyPatch!({
               reason: "typed name",
-              patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+              patch: { op: "addObject", pageId: "page_001", object: writeMolecule() }
             });
           }
         }
@@ -540,7 +543,7 @@ describe("desktop plugin runtime", () => {
             session += 1; // File > New while the plugin runs
             return context.documents.applyPatch!({
               reason: "typed name",
-              patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+              patch: { op: "addObject", pageId: "page_001", object: writeMolecule() }
             });
           }
         }
@@ -734,7 +737,7 @@ describe("selection warnings are scoped to the command invocation that read the 
           });
           await context.documents.applyPatch!({
             reason: "typed name",
-            patch: { op: "addObject", pageId: "page_001", object: { id: "mol_001" } as never }
+            patch: { op: "addObject", pageId: "page_001", object: writeMolecule() }
           });
           await context.selection!.getSelection();
         }

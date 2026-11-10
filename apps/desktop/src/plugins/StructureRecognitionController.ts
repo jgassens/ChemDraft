@@ -695,7 +695,7 @@ function followedRunEnd(
   run: InstallRunState,
   status: StructureRecognitionEngineStatus
 ): StructureRecognitionInstallError {
-  if (run.cancelRequested) return { code: "cancelled", message: "Installation was cancelled." };
+  if (run.cancelRequested) return { code: "cancelled", message: "Installation was canceled." };
   const detail = status.detail?.trim();
   if (status.state === "unsupported") {
     return { code: "unsupported", message: detail || "This computer isn’t supported by the MolScribe recognition engine." };

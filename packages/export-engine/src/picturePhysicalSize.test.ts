@@ -3,6 +3,7 @@ import { createEmptyDocument, createImageGraphicObject, deserializeDocument, ser
 import { applyDocumentStyle } from "@chemdraft/document-workflow-core";
 import { DocumentStyleScale } from "@chemdraft/layout-engine";
 import { JSDOM } from "jsdom";
+import { Resvg } from "@resvg/resvg-js";
 import { describe, expect, it } from "vitest";
 import { documentStyleSvg, exportDocumentToSvg } from "./svg";
 
@@ -31,6 +32,29 @@ function imageFrame(svg: string) {
 }
 
 describe("picture physical size on export", () => {
+  it.each([undefined, 0, 0.35, 1])("paints a picture with object opacity %s exactly once in SVG", opacity => {
+    const source = '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>';
+    const dataBase64 = Buffer.from(new Resvg(source).render().asPng()).toString("base64");
+    const document = createEmptyDocument();
+    const picture = createImageGraphicObject({ id: "opacity-picture", mimeType: "image/png", dataBase64,
+      center: { x: 100, y: 100 } });
+    picture.width = picture.height = 40;
+    picture.x = picture.y = 80;
+    if (opacity !== undefined) picture.style.opacity = opacity;
+    document.pages[0]!.objects = [picture];
+    // Includes physical SVG, explicit raster sizing and the document-style Copy As conversion.
+    const physical = exportDocumentToSvg(document, { background: "transparent" }).contents;
+    const raster = exportDocumentToSvg(document, { background: "transparent", outputWidth: 816, outputHeight: 1056 }).contents;
+    const styled = documentStyleSvg(physical, { x: 75, y: 75, width: 50, height: 50 }).svg;
+    for (const svg of [physical, raster, styled]) {
+      const result = new Resvg(svg).render();
+      const pixels = result.pixels;
+      let maxAlpha = 0;
+      for (let i = 3; i < pixels.length; i += 4) maxAlpha = Math.max(maxAlpha, pixels[i]!);
+      expect(maxAlpha).toBeCloseTo(Math.round((opacity ?? 1) * 255), 0);
+    }
+  });
+
   it.each([22, 44])("retains physical dimensions through save and document styling with %s-unit bonds", bondLength => {
     const document = savedPictureDocument(bondLength);
     const picture = document.pages[0]!.objects[1]!;

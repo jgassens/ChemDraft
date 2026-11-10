@@ -60,7 +60,7 @@ The rest are triarylmethane dyes losing N-substituents (ethyl, benzyl) or sulfon
 
 Declining is handled **well for metals**: Cu (38/38), Co (31/31), Hg (23/23), Ni, Zn, Cd, Mn, Cr, Sb,
 Sn, Fe, Ce, Bi, Ti, Th, V, Zr, Pt — 100% declined, no metal misnamed. Ferrocene, cisplatin, and SeO₂
-also decline. That is correct behaviour and worth crediting.
+also decline. That is correct behavior and worth crediting.
 
 **Arsenic is the exception, and it is the shape of the problem:**
 
@@ -75,7 +75,7 @@ would be usable with a documented gap; this one cannot be trusted to tell you wh
 
 ## Adversarial set (26 entries)
 
-**Stereochemistry is a strength.** Every stereo case round-tripped exactly — R/S centres, E/Z alkenes,
+**Stereochemistry is a strength.** Every stereo case round-tripped exactly — R/S centers, E/Z alkenes,
 the meso tartaric acid distinguished from (R,R) and (S,S), and ring stereochemistry. §8's
 "correct stereodescriptors and locants" criterion is met on this evidence. One case
 (a cyclohexanepentaol) produced a name OPSIN could not parse, which is as much an OPSIN coverage
@@ -100,7 +100,7 @@ Salts and zwitterions are handled (sodium benzoate, glycine as "2-ammonioacetate
 ## Upstream
 
 Active: created 2026-05-08, last push 2026-08-01 (the day of this run), 69 stars, MIT. Development
-velocity is high, which is a point in its favour for the "contribute fixes upstream" step.
+velocity is high, which is a point in its favor for the "contribute fixes upstream" step.
 
 One provenance wrinkle worth recording: **pip installs 0.2.0 but `openclatura.__version__` reports
 0.1.5.** The package disagrees with itself about its own version, so neither string alone identifies

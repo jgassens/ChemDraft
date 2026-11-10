@@ -233,6 +233,9 @@ export const RegisteredToolsetSchema = ToolsetDefinitionSchema.extend({
 export const ToolsetLayoutStateSchema = z
   .object({
     version: z.literal(1),
+    // In-memory only: desktop persistence puts this in toolbar-layout-state.v2.json, never the
+    // strict toolbar-layout-state.json read by v1.1.1. Earlier inline 1.2 saves still parse here.
+    mainToolbarDefaultsRevision: z.number().int().positive().optional(),
     toolsetOrder: z.array(NonEmptyStringSchema).optional(),
     toolsetOverrides: z.array(UserToolsetOverrideSchema).default([]),
     userToolsets: z.array(UserToolsetDefinitionSchema).default([])

@@ -319,7 +319,7 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     const left = menu().querySelector<HTMLButtonElement>('[data-command-id="table.column.align.left"]')!;
     expect(document.activeElement).toBe(left);
     await key("ArrowDown", {}, left);
-    expect(document.activeElement?.textContent).toBe("Centre");
+    expect(document.activeElement?.textContent).toBe("Center");
     await key("ArrowDown", {}, document.activeElement!);
     await key("ArrowDown", {}, document.activeElement!);
     await key("Enter", {}, document.activeElement!);

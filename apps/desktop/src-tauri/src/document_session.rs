@@ -39,10 +39,12 @@ fn check_saved_file(path: &Path) -> Result<(), String> {
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| {
-            ext.eq_ignore_ascii_case("chemdraft") || ext.eq_ignore_ascii_case("cdxml")
+            ext.eq_ignore_ascii_case("chemdraft")
+                || ext.eq_ignore_ascii_case("cdxml")
+                || ext.eq_ignore_ascii_case("cdx")
         })
     {
-        return Err("the saved path is not a ChemDraft or CDXML file".into());
+        return Err("the saved path is not a ChemDraft, CDXML or CDX file".into());
     }
     // Inspect every component, so a symlinked parent cannot redirect an otherwise ordinary file.
     // On Windows also reject junctions and other reparse points. Never canonicalize and grant a
@@ -179,11 +181,12 @@ mod tests {
         let files = Files::new();
         let a = files.file("a.chemdraft");
         let b = files.file("b.CDXML");
+        let c = files.file("c.CDX");
         let mirror = files.file("mirror.chemdraft");
         let unrecorded = files.file("unrecorded.chemdraft");
-        let mut session = json!({ "version": 1, "tabs": [tab(&a), tab(&b)],
+        let mut session = json!({ "version": 1, "tabs": [tab(&a), tab(&b), tab(&c)],
             "activeTabIndex": 1, "path": mirror, "other": { "path": unrecorded } });
-        assert_eq!(grants(&mut session), vec![a.clone(), b]);
+        assert_eq!(grants(&mut session), vec![a.clone(), b, c]);
         assert_eq!(grants(&mut tab(&a)), vec![a.clone()]); // legacy single-document session
         let mut unnamed = tab(&a);
         unnamed.as_object_mut().unwrap().remove("path");
@@ -199,7 +202,6 @@ mod tests {
         for path in [
             PathBuf::from("relative.chemdraft"),
             files.file("data.json"),
-            files.file("drawing.cdx"),
             files.0.join("missing.chemdraft"),
             directory,
         ] {

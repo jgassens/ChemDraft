@@ -132,8 +132,9 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
       await command("document.new");
     } else if (navigation === "open") {
       const fileInput = container.querySelector<HTMLInputElement>('[aria-label="Open native ChemDraft document"]')!;
+      const bytes = new TextEncoder().encode(createNativeSavePayload(createPhase4Document("Another")).contents);
       Object.defineProperty(fileInput, "files", { configurable: true, value: [{
-        name: "Another.chemdraft", text: async () => createNativeSavePayload(createPhase4Document("Another")).contents
+        name: "Another.chemdraft", size: bytes.length, arrayBuffer: async () => bytes.buffer
       }] });
       await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
     } else {

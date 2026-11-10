@@ -80,7 +80,7 @@ export function structureTemplateMolecule(
 ): MoleculeObject {
   const { document, centre, reservedObjectIds } = options;
   if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) {
-    throw new Error("Cannot place a structure template: centre must be finite.");
+    throw new Error("Cannot place a structure template: center must be finite.");
   }
   const defaults = documentDrawingDefaults(document);
   const style = { ...defaults.objectStyle, ...options.style };

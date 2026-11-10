@@ -20,11 +20,11 @@ current document and selection and place results directly on the page through ty
 - The host owns CLI discovery, pinning, install, sign-in, consent, command rendering, process
   lifetime, and local MCP; the plugin owns provider choice, prompt, transcript, and UI.
 - Results land directly, with no approval window. Send fixes the write scope: selected objects and
-  objects inserted by that request. Each request is one labelled undo entry, selects what changed,
+  objects inserted by that request. Each request is one labeled undo entry, selects what changed,
   and redo never calls AI.
 - A canvas overlay is allowed alongside the floating assistant panel. Consent names the receiving
   company and says document/page content leaves the computer.
-- PRs B/C update AGENTS.md §4.4 and §12 with their corresponding behaviour.
+- PRs B/C update AGENTS.md §4.4 and §12 with their corresponding behavior.
 
 ## Delivery sequence
 
