@@ -927,7 +927,7 @@ function RecognitionEngineRow({
       ? run?.engineCheck && runError.code === "failed"
         ? runError.message
         : cancelled
-          ? "Installation was cancelled."
+          ? "Installation was canceled."
           : naming
             ? `The naming engine could not be installed: ${runError.message}`
             : recognitionInstallErrorMessage(runError, status)
@@ -970,7 +970,7 @@ function RecognitionEngineRow({
             className="plugin-manager-button"
             data-action={naming ? "cancel-naming-engine-install" : "cancel-recognition-engine-install"}
             disabled={working}
-            onClick={() => perform(onCancel, "The install could not be cancelled")}
+            onClick={() => perform(onCancel, "The install could not be canceled")}
             type="button"
           >
             Cancel install

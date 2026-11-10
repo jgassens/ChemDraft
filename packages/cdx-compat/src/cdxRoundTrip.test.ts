@@ -832,7 +832,7 @@ describe("chemical and drawing round trips", () => {
     }));
     expect(exported.warnings).toContainEqual({
       code: "cdxml.unknown_objects_not_saved",
-      message: "1 unrecognised object from the original file was not saved (ids bg_crossing)."
+      message: "1 unrecognized object from the original file was not saved (ids bg_crossing)."
     });
     expect(exported.warnings.find(item => item.code === "cdxml.bracket_group_preserved")?.message)
       .toContain("this file has no embedded ChemDraft data");

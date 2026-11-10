@@ -84,7 +84,7 @@ impl InstallError {
     fn cancelled() -> Self {
         Self {
             code: InstallErrorCode::Cancelled,
-            message: "MolScribe installation was cancelled.".to_string(),
+            message: "MolScribe installation was canceled.".to_string(),
         }
     }
 
@@ -797,7 +797,7 @@ where
                 eprintln!("[chemdraft ocsr] the installed engine does not match this build: {detail}")
             }
             Err(UpgradeError::Cancelled) => {
-                eprintln!("[chemdraft ocsr] the engine check was cancelled")
+                eprintln!("[chemdraft ocsr] the engine check was canceled")
             }
         }
         // Remembered before `installing` clears, so no status call sees neither.

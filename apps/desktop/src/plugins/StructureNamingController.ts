@@ -82,7 +82,7 @@ export class StructureNamingController {
     }).catch((error: unknown) => {
       const normalized = isStructureRecognitionInstallError(error)
         ? error.code === "cancelled"
-          ? { code: "cancelled" as const, message: "Installation was cancelled." }
+          ? { code: "cancelled" as const, message: "Installation was canceled." }
           : error
         : { code: "failed" as const, message: messageOf(error) };
       this.run = { ...(this.run ?? run), running: false, error: normalized };
@@ -191,7 +191,7 @@ export class StructureNamingController {
     active.engineRunning = true;
     const engine = Object.create(this.engine) as StructureNamingEngine;
     engine.name = smiles => {
-      if (active.stop.signal.aborted) return Promise.reject({ code: "cancelled", message: "Naming cancelled." });
+      if (active.stop.signal.aborted) return Promise.reject({ code: "cancelled", message: "Naming canceled." });
       return this.engine.name(smiles);
     };
     try { return await nameStructureForPlugin(molecule, engine, status, this.canonicalizer); }

@@ -441,7 +441,7 @@ describe("stereochemistry", () => {
       runId: "stereo-2",
       startedAt: "2026-07-30T12:00:00.000Z"
     });
-    expect(detailed.stereochemistry).toEqual(["1 unspecified stereocentre"]);
+    expect(detailed.stereochemistry).toEqual(["1 unspecified stereocenter"]);
   });
 });
 

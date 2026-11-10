@@ -336,7 +336,7 @@ function nativeAtomDiagnostic(
         valid: false,
         ...(resolution.unresolvedAtomIds.has(atom.id) ? { unresolvedAromatic: true as const } : {}),
         invalidReason: `${element} states ${hint} H, but its bonds and charge give ${resolvedHydrogens}.`,
-        invalidDetail: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
+        invalidDetail: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honored.`
       };
     }
   }

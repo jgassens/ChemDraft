@@ -152,7 +152,7 @@ export class AssistantToolsController implements PluginHostAssistant {
         },
         write: async (patch, signal, checkPreconditions, expectedSmiles) => {
           this.running(plugin, requestId);
-          if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+          if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was canceled.");
           const plannedDocument = request.context.getDocument()!;
           const growth = approvedGrowth?.growth;
           // Verify the plugin's scoped patch before the host-owned page translation. Consent
@@ -188,7 +188,7 @@ export class AssistantToolsController implements PluginHostAssistant {
           const verified = await verifyNormalizedAssistantWrite(request.context, plannedDocument, patchDocument(plannedDocument), scope, expectedSmiles);
           const apply = () => {
             this.running(plugin, requestId);
-            if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+            if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was canceled.");
             checkPreconditions?.(request.context.getDocument()!);
             if (approvedGrowth && !assistantDocumentContentUnchanged(approvedGrowth.document, request.context.getDocument()!)) {
               throw new Error("The document changed while the page confirmation was open; read it again and retry.");
@@ -203,7 +203,7 @@ export class AssistantToolsController implements PluginHostAssistant {
                 getDocument: request.context.getDocument,
                 apply: application => {
                   this.running(plugin, requestId);
-                  if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was cancelled.");
+                  if (abort.signal.aborted || signal?.aborted) throw new Error("Assistant tool call was canceled.");
                   const before = request.context.getDocument()!;
                   const touched = writePatchOps(application.patch.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
                     op.op === "addAnnotation" ? [op.annotation.id] : "objectId" in op ? [op.objectId] : op.op === "setObjectOrder" ? op.objectIds : []);
@@ -230,7 +230,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       // Keep its concurrency slot until the bounded tool invocation actually settles.
       void work.then(() => { this.activeCalls--; }, () => { this.activeCalls--; });
       return await Promise.race([work, new Promise<never>((_, reject) => {
-        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was cancelled.")), { once: true });
+        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was canceled.")), { once: true });
       })]);
     } finally {
       if (!work) this.activeCalls--;
@@ -324,7 +324,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       this.activeCalls++; started = true;
       request.cancellations.set(callId, abort);
       const cancelled = new Promise<never>((_, reject) => {
-        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was cancelled.")), { once: true });
+        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was canceled.")), { once: true });
       });
       deadline = setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded (120 s).")), assistantToolDeadlineMs(input.name));
       work = this.options.host().invokeAssistantTool(plugin.id, { sessionId, ...input }, abort.signal,

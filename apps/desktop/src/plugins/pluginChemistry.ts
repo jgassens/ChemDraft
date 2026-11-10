@@ -140,7 +140,7 @@ export async function structureFromSmilesForPlugin(
     // engine's fallback and error reporting for non-template input.
   }
   if (object && signal?.aborted) {
-    return { available: true, built: false, reason: "2D depiction cancelled." };
+    return { available: true, built: false, reason: "2D depiction canceled." };
   }
 
   if (!object) {

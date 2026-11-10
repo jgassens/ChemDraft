@@ -522,7 +522,7 @@ async fn deadlines_busy_fifth_call_cancellation_and_close_mid_call() {
     assert_eq!(cancelled.request_id, "1");
     assert_eq!(
         calls.remove(0).await.unwrap().json()["error"]["message"],
-        "ChemDraft request cancelled"
+        "ChemDraft request canceled"
     );
     f.manager.close(&f.session_id);
     for call in calls {

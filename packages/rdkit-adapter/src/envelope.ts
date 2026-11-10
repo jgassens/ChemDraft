@@ -59,7 +59,7 @@ const ISOSPEC_ENGINE = "isospec-wasm";
  * have to rediscover.
  */
 export const ISOSPEC_ABUNDANCE_CONVENTION =
-  "natural abundances from IsoSpec's built-in tables (292 isotopic entries, each element normalised to " +
+  "natural abundances from IsoSpec's built-in tables (292 isotopic entries, each element normalized to " +
   "sum to 1). These differ from the commonly quoted CIAAW representative values — ¹³C is 0.010788 " +
   "against CIAAW's 0.0107, 0.82% relatively higher, which raises M+1 by the same fraction. IsoSpec " +
   "records no provenance for these tables upstream; the values are read back from the shipped binary.";
@@ -119,7 +119,7 @@ export function isotopeEnvelopeContract(
       ISOSPEC_ABUNDANCE_CONVENTION,
       `truncated at a relative-intensity threshold of ${threshold}: peaks below that fraction of the ` +
         "base peak are dropped, and the probability the retained peaks account for is reported alongside them",
-      "intensities are normalised to the base peak at 100%, not absolute probabilities — the covered " +
+      "intensities are normalized to the base peak at 100%, not absolute probabilities — the covered " +
         "probability is what carries the absolute scale",
       ION_ENVELOPE_CONVENTION,
       "no adduct and no fragmentation. An ion's envelope is the drawn ion's own isotope pattern; it is " +
@@ -128,8 +128,8 @@ export function isotopeEnvelopeContract(
       "A THEORETICAL DISTRIBUTION, NOT A PREDICTED SPECTRUM — no instrument response, no fragmentation, " +
         "and no claim that any of these peaks would be observed at these ratios",
       "an atom the drawing labels is taken as that isotope with certainty, not as an enrichment: " +
-        "[13C] contributes one isotope at probability 1. Unlabelled atoms of the same element keep " +
-        "their natural abundances, so a partially labelled molecule still shows the satellites of the " +
+        "[13C] contributes one isotope at probability 1. Unlabeled atoms of the same element keep " +
+        "their natural abundances, so a partially labeled molecule still shows the satellites of the " +
         "positions that were left alone. Isotopic purity is not modelled — a 99% ¹³C reagent is " +
         "reported as if it were 100%."
     ],
@@ -144,9 +144,9 @@ export function isotopeEnvelopeContract(
       "isotopes absent from those tables, including any the drawing invents"
     ],
     declinesWhen: [
-      "IsoSpec does not recognise an element in the formula",
-      "a labelled atom names an isotope IsoSpec's tables do not carry: it cannot be given a mass, and " +
-        "reporting the unlabelled envelope instead would describe a different molecule"
+      "IsoSpec does not recognize an element in the formula",
+      "a labeled atom names an isotope IsoSpec's tables do not carry: it cannot be given a mass, and " +
+        "reporting the unlabeled envelope instead would describe a different molecule"
     ],
     accuracyClaims: [],
     citations: [
@@ -170,7 +170,7 @@ export function isotopeEnvelopeContract(
     versionIncrementTriggers: [
       "any change to the relative-intensity threshold",
       "an IsoSpec release that revises the isotope tables",
-      "a change in how intensities are normalised",
+      "a change in how intensities are normalized",
       "a change in what the positions mean — mass against m/z, or the electron bookkeeping behind either"
     ],
     tautomerSensitive: false
@@ -216,8 +216,8 @@ export function dimensionsForComposition(
         return {
           ok: false,
           reason:
-            `IsoSpec's tables carry no ${element.isotope}${element.symbol}, so the labelled atoms cannot ` +
-            "be given a mass. Reporting the unlabelled envelope instead would describe a different molecule.",
+            `IsoSpec's tables carry no ${element.isotope}${element.symbol}, so the labeled atoms cannot ` +
+            "be given a mass. Reporting the unlabeled envelope instead would describe a different molecule.",
           unsupportedFeature: `unknown isotope ${element.isotope}${element.symbol}`
         };
       }

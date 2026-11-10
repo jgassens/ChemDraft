@@ -69,7 +69,7 @@ export function createDepictionWorkerClient<T extends WarnableDepiction>(
     active = true;
     void task.start().finally(() => { active = false; pump(); });
   };
-  const abortError = (): Error => Object.assign(new Error("2D depiction cancelled."), { name: "AbortError" });
+  const abortError = (): Error => Object.assign(new Error("2D depiction canceled."), { name: "AbortError" });
   const warned = (result: T, warning: string): T => ({ ...result, warnings: [...(result.warnings ?? []), warning] });
 
   return (smiles, options = {}) => new Promise<T>((resolve, reject) => {

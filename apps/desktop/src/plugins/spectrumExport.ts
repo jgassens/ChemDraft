@@ -199,7 +199,7 @@ function spectrumNote(
   hasOtherPrimary: boolean
 ): string {
   return `Height = predicted equivalent nuclei (not experimental integration)${
-    hasEstimated ? " · grey dashed = rule-estimated" : ""
+    hasEstimated ? " · gray dashed = rule-estimated" : ""
   }${
     hasVisibleAlternative ? ` · dashed orange = ${alternativeLabel}` : ""
   }${

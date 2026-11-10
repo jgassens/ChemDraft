@@ -602,7 +602,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("check_stereo", {
-    description: `Inspect specified and unspecified tetrahedral stereocentres and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
+    description: `Inspect specified and unspecified tetrahedral stereocenters and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
     inputSchema: { smiles: z.string().min(1) }
   }, async ({ smiles }) => runTool(async () => {
     await outputDirectory(runtime, undefined);

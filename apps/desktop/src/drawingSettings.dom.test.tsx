@@ -22,7 +22,7 @@ it("persists and broadcasts one choice in StrictMode and reflects it after reope
     await act(async () => root.render(createElement(StrictMode, null, createElement(PreferencesWindow))));
     expect(container.textContent).toContain("Default double bond");
     expect(radio("offset").checked).toBe(true);
-    expect(radio("centred").closest("label")?.textContent).toContain("Centred");
+    expect(radio("centred").closest("label")?.textContent).toContain("Centered");
     await act(async () => radio("centred").click());
     expect(loadDrawingSettings()).toEqual({ defaultDoubleBond: "centred" });
     expect(handler).toHaveBeenCalledExactlyOnceWith({ defaultDoubleBond: "centred" });

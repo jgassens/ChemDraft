@@ -618,7 +618,7 @@ export function stereochemistryLabels(stereoTagsJson: string, unspecifiedCentres
       .map(([begin, end, descriptor]) => `bond ${begin}-${end} ${descriptor}`)
   ];
   if (unspecifiedCentres > 0) {
-    labels.push(`${unspecifiedCentres} unspecified stereocentre${unspecifiedCentres === 1 ? "" : "s"}`);
+    labels.push(`${unspecifiedCentres} unspecified stereocenter${unspecifiedCentres === 1 ? "" : "s"}`);
   }
   return labels;
 }

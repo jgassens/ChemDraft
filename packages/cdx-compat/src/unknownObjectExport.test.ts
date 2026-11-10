@@ -31,13 +31,13 @@ describe("unknown compatibility object export warnings", () => {
       ...unknownObjects.map((object, index) => ({
         code: "cdxml.object_export_unsupported",
         sourceObjectId: object.id,
-        message: `Unrecognised <scheme> object ${index < 2 ? "52" : object.id} from the original file ${embedded
+        message: `Unrecognized <scheme> object ${index < 2 ? "52" : object.id} from the original file ${embedded
           ? "is kept in the embedded ChemDraft data but is not drawn in this file."
           : "was not saved: this file has no embedded ChemDraft data."}`
       })),
       ...(embedded ? [] : [{
         code: "cdxml.unknown_objects_not_saved",
-        message: "4 unrecognised objects from the original file were not saved (ids 52, unknown_2, unknown_3)."
+        message: "4 unrecognized objects from the original file were not saved (ids 52, unknown_2, unknown_3)."
       }])
     ]);
   });
@@ -64,16 +64,16 @@ describe("unknown compatibility object export warnings", () => {
       {
         code: "cdxml.object_export_unsupported",
         sourceObjectId: unknownObjects[0].id,
-        message: `Unrecognised <scheme> object 52 from the original file ${outcome}`
+        message: `Unrecognized <scheme> object 52 from the original file ${outcome}`
       },
       {
         code: "cdxml.object_export_unsupported",
         sourceObjectId: unknownObjects[1].id,
-        message: `Unrecognised <spectrum> object 57 from the original file ${outcome}`
+        message: `Unrecognized <spectrum> object 57 from the original file ${outcome}`
       },
       ...(embedded ? [] : [{
         code: "cdxml.unknown_objects_not_saved",
-        message: "2 unrecognised objects from the original file were not saved (ids 52, 57)."
+        message: "2 unrecognized objects from the original file were not saved (ids 52, 57)."
       }])
     ]);
     const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
@@ -226,7 +226,7 @@ describe("native object export warnings", () => {
     const exported = exportDocumentToCdx(document, { embedNativePayload: false });
     const unknownWarnings = (embedded: boolean) => Array.from({ length: 22 }, (_, index) => ({
       code: "cdxml.object_export_unsupported", sourceObjectId: `unknown_${index}`,
-      message: `Unrecognised <scheme> object ${index + 100} from the original file ${embedded
+      message: `Unrecognized <scheme> object ${index + 100} from the original file ${embedded
         ? "is kept in the embedded ChemDraft data but is not drawn in this file."
         : "was not saved: this file has no embedded ChemDraft data."}`
     }));

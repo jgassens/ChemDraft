@@ -682,7 +682,7 @@ export function LinkedFigureView({
         </div>
       ) : null}
       {exportStatus ? <span className="lf-status" role="status">{exportStatus === "saved" ? "Spectrum saved."
-        : exportStatus === "cancelled" ? "Export cancelled." : "Spectrum export failed."}</span> : null}
+        : exportStatus === "cancelled" ? "Export canceled." : "Spectrum export failed."}</span> : null}
       {fullSizeNotice ? <span className="lf-status" role="status">{fullSizeNotice}</span> : null}
 
       <div className="lf-meta">
@@ -755,7 +755,7 @@ export function LinkedFigureView({
           <line className="lf-axis" x1={MARGIN.left} y1={BASE_Y} x2={MARGIN.left + PLOT_W} y2={BASE_Y} />
           <text className="lf-spectrum-note" x={MARGIN.left} y={11}>
             Height = predicted equivalent nuclei (not experimental integration)
-            {renderPeaks.some((peak) => peak.estimated) ? " · grey dashed = rule-estimated" : ""}
+            {renderPeaks.some((peak) => peak.estimated) ? " · gray dashed = rule-estimated" : ""}
             {effectiveComparisonMode === "both" && hasAlternative
               ? ` · dashed orange = ${comparison.alternativeLabel}`
               : ""}
