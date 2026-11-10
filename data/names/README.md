@@ -2,8 +2,7 @@
 
 # Offline chemical name dictionary
 
-The rebuilt candidate (`tmp/dictionary.tsv.gz`, awaiting integration as
-`dictionary.tsv.gz`) is the Wikidata snapshot from the 9 November 2026 response
+The committed dictionary (`dictionary.tsv.gz`) is the Wikidata snapshot from the 9 November 2026 response
 cache: 28,933 compounds, 108,023 column-2 names, 23,217 column-5 names,
 and 27,073 CAS registry numbers. Its gzip size is 1,881,198 bytes and its SHA-256 is
 `1afd4b4cf7b828a3e4cf9669e5328838d9d840f6392fb1681761b018c1ae1c11`.
