@@ -34,7 +34,10 @@ const count = mapping.readUInt16BE(6) / 2;
 const starts = 16 + count * 2, deltas = starts + count * 2, offsets = deltas + count * 2;
 const head = table("head"), hmtx = table("hmtx"), hhea = table("hhea");
 const em = head.readUInt16BE(18), metricCount = hhea.readUInt16BE(34);
-const advances = {}, ranges = [];
+const loca = table("loca"), glyf = table("glyf");
+const glyphOffset = glyph => head.readInt16BE(50) === 0
+  ? loca.readUInt16BE(glyph * 2) * 2 : loca.readUInt32BE(glyph * 4);
+const advances = {}, inkBounds = {}, ranges = [];
 for (let i = 0; i < count; i++) {
   const start = mapping.readUInt16BE(starts + i * 2), end = mapping.readUInt16BE(14 + i * 2);
   const address = offsets + i * 2, offset = mapping.readUInt16BE(address);
@@ -44,6 +47,10 @@ for (let i = 0; i < count; i++) {
     if (!offset || glyph) glyph = (glyph + delta) & 0xffff;
     if (!glyph) continue;
     advances[code] = hmtx.readUInt16BE(Math.min(glyph, metricCount - 1) * 4) / em;
+    const start = glyphOffset(glyph);
+    // glyf boxes enclose simple and composite outlines, including negative side bearings.
+    inkBounds[code] = start === glyphOffset(glyph + 1) ? [0, 0, 0, 0]
+      : [2, 4, 6, 8].map(offset => glyf.readInt16BE(start + offset) / em);
     if (ranges.length && ranges.at(-1) + 1 === code) ranges[ranges.length - 1] = code;
     else ranges.push(code, code);
   }
@@ -54,7 +61,10 @@ writeFileSync(new URL("PatrickHand-Regular.ts", import.meta.url),
 writeFileSync(new URL("patrickHandCoverage.generated.ts", import.meta.url), header +
   `export const patrickHandCoverage: readonly number[] = ${JSON.stringify(ranges)};\n`);
 writeFileSync(new URL("packages/layout-engine/src/patrickHandMetrics.generated.ts", root), header +
-  `export const patrickHandAdvances: Readonly<Record<number, number>> = ${JSON.stringify(advances, null, 2)};\n`);
+  `export const patrickHandAdvances: Readonly<Record<number, number>> = ${JSON.stringify(advances, null, 2)};\n` +
+  `/** Outline bounds in em: xMin, yMin, xMax, yMax; y increases upwards. */\n` +
+  `export const patrickHandInkBounds: Readonly<Record<number, readonly [number, number, number, number]>> = {\n` +
+  Object.entries(inkBounds).map(([code, bounds]) => `  "${code}": ${JSON.stringify(bounds)}`).join(",\n") + `\n};\n`);
 // Restore this family if the existing Noto/DejaVu coverage generator was run first.
 const coverageFile = new URL("coverage.ts", import.meta.url);
 const existing = readFileSync(coverageFile, "utf8")

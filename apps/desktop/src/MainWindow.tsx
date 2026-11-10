@@ -253,6 +253,7 @@ import {
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
+  moleculeSelectionBounds,
   recordedLabelBondSide,
   planPageSvgRender,
   planTableLayout,
@@ -1719,7 +1720,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.09.21.07-codex";
+const CURRENT_BUILD_STAMP = "11.10.09.58-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -26357,21 +26358,17 @@ export function nativeMoleculeObjectAtPoint(
 
 function moleculeTransformFrameForSelection(
   object: MoleculeObject,
-  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined
+  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined,
+  selectedAtomIds?: ReadonlySet<string>
 ): MoleculeTransformFrame {
-  const rawFrame = selectedPartBounds
-    ? {
-        x: selectedPartBounds.x - object.x,
-        y: selectedPartBounds.y - object.y,
-        width: selectedPartBounds.width,
-        height: selectedPartBounds.height
-      }
-    : {
-        x: 0,
-        y: 0,
-        width: object.width,
-        height: object.height
-      };
+  const bounds = moleculeSelectionBounds(object, selectedPartBounds ?? object,
+    selectedPartBounds ? selectedAtomIds : undefined);
+  const rawFrame = {
+    x: bounds.x - object.x,
+    y: bounds.y - object.y,
+    width: bounds.width,
+    height: bounds.height
+  };
   const minSize = 28;
   const width = Math.max(rawFrame.width, minSize);
   const height = Math.max(rawFrame.height, minSize);
@@ -28417,7 +28414,7 @@ function DocumentObjectViewContent({
         ? nativeMoleculePartBounds(object, transformableSelectedPart)
         : undefined;
       const transformFrame = transformHandlesEnabled && !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
-        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
+        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds, selectedAtomIds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
       const canProjectedPlaneTilt = transformFrame !== undefined;
