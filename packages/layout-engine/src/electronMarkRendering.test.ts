@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Resvg } from "@resvg/resvg-js";
 import { createEmptyDocument, type ElectronMarkObject } from "@chemdraft/chem-core";
 import { electronMarkHitCatcherAttributes, planPageSvgRender } from "./index";
@@ -19,6 +22,25 @@ const plan = (object: ElectronMarkObject, directElectronMarkEditing = false) =>
   planPageSvgRender({ ...createEmptyDocument({ title: "legacy" }).pages[0], objects: [object] }, { directElectronMarkEditing });
 
 describe("electron-mark rendering preferences", () => {
+  let fontDirectory: string | undefined;
+  const fontFiles: string[] = [];
+  beforeAll(() => {
+    fontDirectory = mkdtempSync(join(tmpdir(), "chemdraft-electron-mark-fonts-"));
+    for (const name of ["DejaVuSans", "DejaVuSans-Bold"]) {
+      // Read fixture data without adding a layout-engine dependency on export-engine.
+      const source = readFileSync(new URL(`../../export-engine/src/fonts/${name}.ts`, import.meta.url), "utf8");
+      const base64 = source.match(/export default "([A-Za-z0-9+/=]+)"/)?.[1];
+      if (!base64) throw new Error(`Bundled font ${name} has no base64 TTF export`);
+      const path = join(fontDirectory, `${name}.ttf`);
+      // Native resvg 2.6.2 accepts fontFiles; fontBuffers is a WASM-only option.
+      writeFileSync(path, Buffer.from(base64, "base64"));
+      fontFiles.push(path);
+    }
+  });
+  afterAll(() => {
+    if (fontDirectory) rmSync(fontDirectory, { recursive: true, force: true });
+  });
+
   it.each(Object.entries(legacyElectronMarkHashes))("matches origin/main's entire default render plan for %s", (key, hashes) => {
     for (const [index, rotation] of [0, 37].entries()) {
       const object = markFor(key, rotation);
@@ -69,12 +91,9 @@ describe("electron-mark rendering preferences", () => {
       // Rasterize only the text, so circle widths cannot conceal an unchanged numeral/sign.
       const ink = texts.map(text => {
         const attrs = Object.entries(text.attrs).map(([name, value]) => `${name}="${value}"`).join(" ");
-        // resvg's default sans-serif family is Arial, which Linux CI lacks. Its last-resort
-        // fallback can select the same face for 400 and 700, unlike browser font matching.
-        // Map the generic family to Linux's installed regular/bold pair; Arial still wins
-        // earlier in the authored font stack on macOS and Windows.
+        // Use only the bundled regular/bold pair so face selection is identical on every host.
         const pixels = new Resvg(`<svg xmlns="http://www.w3.org/2000/svg" width="280" height="280" viewBox="95 95 28 28"><text ${attrs}>${Math.abs(markFor(key).charge!)}${markFor(key).charge! > 0 ? "+" : "−"}</text></svg>`,
-          { font: { sansSerifFamily: "DejaVu Sans" } })
+          { font: { fontFiles, loadSystemFonts: false, defaultFontFamily: "DejaVu Sans", sansSerifFamily: "DejaVu Sans" } })
           .render().pixels;
         let coverage = 0;
         for (let i = 3; i < pixels.length; i += 4) coverage += pixels[i];
