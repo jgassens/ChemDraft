@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyPatch, createEmptyDocument, type TextObject } from "@chemdraft/chem-core";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { ASSISTANT_PREVIEW_MAX_LENGTH, runThumbnail } from "./runThumbnail";
 
 const caption = (id: string, x: number, width = 100): TextObject => ({
@@ -13,6 +14,29 @@ function documentWith(...objects: TextObject[]) {
 const svg = (uri: string | undefined) => decodeURIComponent(uri!.split(",").slice(1).join(","));
 
 describe("run thumbnail", () => {
+  it("uses the canvas fallback for Sketch thumbnails while full SVG exports embed the font", async () => {
+    const document = documentWith({ ...caption("sketch", 50),
+      style: { fontFamily: "'Patrick Hand', Arial, Helvetica, sans-serif" } });
+    const before = structuredClone(document);
+    const uri = await runThumbnail(document, ["sketch"]);
+    expect(uri).toBeDefined();
+    expect(uri!.length).toBeLessThanOrEqual(ASSISTANT_PREVIEW_MAX_LENGTH);
+    expect(svg(uri)).toContain('font-family="Arial, Helvetica, sans-serif"');
+    expect(svg(uri)).not.toContain("@font-face");
+    expect(svg(uri)).not.toContain("data:font/");
+    expect(document).toEqual(before);
+    await ensureSvgFontsLoaded(document);
+    expect(exportDocumentToSvg(document).contents).toContain("data:font/ttf;base64,");
+  });
+
+  it("keeps a non-Sketch thumbnail byte-for-byte unchanged", async () => {
+    const document = documentWith(caption("one", 50));
+    const exported = exportDocumentToSvg(document, { pageIndex: 0, background: "transparent" }).contents;
+    const body = exported.slice(exported.indexOf(">") + 1, exported.lastIndexOf("</svg>"));
+    const expected = `<svg xmlns="http://www.w3.org/2000/svg" width="124" height="44" viewBox="0 0 124 44" role="img" aria-label="Assistant changes"><rect width="100%" height="100%" fill="white"/><g transform="scale(1)"><svg x="0" y="0" width="124" height="44" viewBox="38 48 124 44">${body}</svg></g></svg>`;
+    expect(await runThumbnail(document, ["one"])).toBe(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(expected)}`);
+  });
+
   it("omits an oversized SVG instead of returning a truncated data URI", async () => {
     const document = documentWith({ ...caption("large", 50), text: "x".repeat(ASSISTANT_PREVIEW_MAX_LENGTH) });
     expect((await runThumbnail(document, ["large"]))).toBeUndefined();
