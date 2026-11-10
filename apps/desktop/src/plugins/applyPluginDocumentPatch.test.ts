@@ -273,15 +273,17 @@ describe("desktop direct plugin patch application", () => {
     expect(result.document.selection).toMatchObject({ pageId: "second", objectIds: result.receipt.objectIds });
   });
 
-  it("refuses an off-page oversized batch atomically instead of clipping or rescaling a complex", () => {
+  it("preserves an oversized batch for the host page question without clipping or rescaling", () => {
     const document = createEmptyDocument();
     const page = document.pages[0];
-    expect(() => applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "oversize", patch: {
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "oversize", patch: {
       op: "batch", patches: [
         { op: "addObject", pageId: page.id, object: { ...moleculeObject(), id: "would_fit" } },
         { op: "addObject", pageId: page.id, object: { ...moleculeObject(), x: -10, width: page.width + 1 } }
       ]
-    } }))).toThrow("Plugin insertion is larger than the page");
+    } }));
+    expect(result.document.pages[0].objects).toHaveLength(2);
+    expect(result.document.pages[0].width).toBe(page.width);
     expect(document.pages[0].objects).toEqual([]);
   });
 

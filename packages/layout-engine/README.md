@@ -2,6 +2,11 @@
 
 Owns page and object layout operations such as align, distribute, group, rotate, flip, z-order, guides, and page sizing.
 
+`textVisualBoundsForPageFit` measures both a text object's stored frame and the explicit lines SVG
+paints beyond that frame, using the shared font/script metrics, alignment and original rotation
+pivot. The desktop uses it before a page-enlargement question. The existing arrangement helper
+continues to measure the stored frame; neither helper changes text or document geometry.
+
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
 
 `src/labelGrammar.ts` is the one atom-label grammar: what a label's text means (an element, one heavy

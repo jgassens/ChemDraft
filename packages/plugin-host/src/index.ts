@@ -262,6 +262,8 @@ export interface PluginPatchApplicationRequest {
   command: { id: string; title: string };
   patch: NormalizedProposedDocumentPatch;
   undoLabel: string;
+  /** Host-only command lifetime. Stable across this invocation's writes; aborted on end/unregister. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -1127,7 +1129,8 @@ export class PluginHost {
       plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
-      undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`
+      undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`,
+      signal: invocation.writeStop.signal
     });
     const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
     // Only a successful write grows the scope; use actual ids returned by the host after rebasing.
@@ -1263,6 +1266,7 @@ export class PluginHost {
               documentKey,
               writeScope: new Set(selectedIds),
               recognized: false,
+              writeStop: new AbortController(),
               recognizedImages: []
             });
             try {
@@ -1677,6 +1681,7 @@ export class PluginHost {
   }
 
   private finishCommandInvocation(invocationToken: symbol): void {
+    this.activeCommandInvocations.get(invocationToken)?.writeStop.abort();
     const pluginId = this.activeCommandInvocations.get(invocationToken)?.pluginId;
     if (pluginId) this.chemistry3dQueue.cancelQueued(pluginId);
     for (const controller of this.openChemistry3dRequests.get(invocationToken) ?? []) controller.abort();
@@ -1710,6 +1715,7 @@ export class PluginHost {
     this.chemistry3dQueue.cancelQueued(pluginId);
     for (const [invocationToken, invocation] of this.activeCommandInvocations) {
       if (invocation.pluginId !== pluginId) continue;
+      invocation.writeStop.abort();
       for (const controller of this.openChemistry3dRequests.get(invocationToken) ?? []) controller.abort();
       this.openChemistry3dRequests.delete(invocationToken);
       for (const controller of this.openImageRequests.get(invocationToken) ?? []) {
@@ -1758,6 +1764,7 @@ export class PluginHost {
 }
 
 interface ActiveCommandInvocation {
+  writeStop: AbortController;
   writeScope: Set<string>;
   pluginId: string;
   commandId: string;

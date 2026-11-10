@@ -1,19 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
-import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
+import { applyPluginDocumentPatch, createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { commitWithPageFit } from "../pageEnlargement";
 import { objectRect } from "./placement";
-import { buildMoveObjects } from "./writeBuilder";
+import { buildMoveObjects, translateObject } from "./writeBuilder";
 import { applyChargeToolAtPoint } from "../documentWorkflow";
 
-function setup() {
+function setup(platform?: "macos" | "windows") {
   const fixture = testContext();
   const { context, replace } = fixture;
   replace(toEngineDocument(context.getDocument()!));
@@ -42,7 +43,7 @@ function setup() {
     close: vi.fn(async (_sessionId: string) => {}), respond: vi.fn(async (_sessionId: string, _requestId: string, _response: McpBridgeResponse) => {}),
     status: vi.fn(async () => ({ listening: true, sessionCount: listeners.size }))
   };
-  const controller = new AssistantToolsController({ host: (): PluginHost => host, engine,
+  const controller = new AssistantToolsController({ platform, host: (): PluginHost => host, engine,
     getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
     readDocument: port.read, transactions: () => transactions, createContext: () => context });
   const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }) });
@@ -61,7 +62,7 @@ function setup() {
     return engine.respond.mock.calls.find(call => call[0] === sessionId && call[1] === requestId)![2];
   };
   return { ...fixture, host, controller, engine, plugin, context, listeners, history, port, commandContext, bridge,
-    gesture, gate, getSelectionIds, userEdits,
+    gesture, gate, getSelectionIds, userEdits, transactions,
     select: (ids: string[]) => { selection = ids; }, activate: (tabId: string) => { activeTabId = tabId; },
     finishCommand: async () => { release(); await command; },
     finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command; transactions.dispose(); } };
@@ -142,8 +143,8 @@ describe("assistant write structural sharing", () => {
   });
 });
 
-function placementSetup() {
-  const s = setup();
+function placementSetup(platform?: "macos" | "windows") {
+  const s = setup(platform);
   const document = s.context.getDocument()!;
   const page = document.pages[0]!;
   s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [] }] }, {
@@ -162,13 +163,48 @@ function placementSetup() {
   return s;
 }
 
-describe("assistant host page enlargement", () => {
+describe.each(["macos", "windows"] as const)("assistant host page enlargement on %s", platform => {
+  it("shifts unselected content with the page after scoped verification, keeping only request insertions selected", async () => {
+    const s = setup(platform);
+    const document = s.context.getDocument()!, page = document.pages[0]!;
+    const molecule = translateObject(s.molecule, -24 - s.molecule.x, -32 - s.molecule.y);
+    s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [molecule, s.text] },
+      { ...page, id: "unaffected", objects: [{ ...s.text, id: "other-text" }] }] }, {
+      op: "updatePageLayout", pageId: page.id, layout: createCustomPageLayout(400, 300, "css-px", page.margin)
+    }));
+    s.select([]);
+    const before = s.context.getDocument()!;
+    const prompt = vi.fn(async () => "enlarge"), restore = setNativePromptProvider(prompt);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Long caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption\n".repeat(100) } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const inserted = result.structuredContent!.objectIds as string[];
+      const after = s.context.getDocument()!;
+      expect(after.selection.objectIds).toEqual(inserted);
+      expect(after.pages[1]).toEqual(before.pages[1]);
+      const moved = after.pages[0]!.objects.find(object => object.id === molecule.id)!;
+      expect(moved).toMatchObject({ x: 0, y: 0, atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 24, y: atom.y + 32 })),
+        bonds: molecule.bonds, chemistry: molecule.chemistry });
+      const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Second caption" } });
+      expect(caption.isError, JSON.stringify(caption)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      const final = s.context.getDocument()!;
+      expect(final.selection.objectIds).not.toContain(molecule.id);
+      expect(final.selection.objectIds).not.toContain(s.text.id);
+      expect(s.history).toHaveLength(1);
+      const history = { past: [s.history[0]!.before], present: final, future: [] as typeof final[] };
+      expect(undo(history).present).toEqual(before); expect(redo(undo(history)).present).toEqual(final);
+    } finally { restore(); await s.finish(); }
+  });
+
   it.each([false, true])("applies the same page-growth decision to native group labels (accepted: %s)", async accepted => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const document = s.context.getDocument()!;
     s.replace(applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0]!.id,
       layout: createCustomPageLayout(200, 160, "css-px", { top: 36, right: 36, bottom: 36, left: 36 }) }));
-    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
     const restore = setNativePromptProvider(prompt);
     try {
       const before = structuredClone(s.context.getDocument()!.pages[0]!);
@@ -185,14 +221,16 @@ describe("assistant host page enlargement", () => {
       } else {
         expect(page.width).toBe(before.width); expect(page.height).toBe(before.height);
         expect(page.objects.length).toBeGreaterThan(0);
-        expect(page.objects.length).toBeLessThan(24);
-        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page", declined: expect.any(Array) });
+        expect(page.objects).toHaveLength(24);
+        expect(result.structuredContent?.reason).toBeUndefined();
       }
       for (const object of page.objects) {
         expect(object).toMatchObject({ type: "molecule", atoms: [expect.objectContaining({ labelLiteral: true })], bonds: [] });
         const rect = objectRect(object);
-        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
-        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+        if (accepted) {
+          expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+          expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+        }
       }
       // The answer has returned control to the request; Stop can immediately cancel it again.
       await s.controller.endRequest(s.plugin, { requestId });
@@ -200,8 +238,33 @@ describe("assistant host page enlargement", () => {
     } finally { restore(); await s.finish(); }
   });
 
+  it.each([false, true])("shares the answer across tool calls and direct writes for one request (%s)", async accepted => {
+    const s = placementSetup(platform);
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Large structure and a long caption" });
+      const structure = await s.controller.callTool(s.plugin, { name: "insert_structures", input: { items: [{ kind: "molecule", smiles: "CC" }] } });
+      const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption line\n".repeat(100) } });
+      expect(structure.isError).not.toBe(true); expect(caption.isError).not.toBe(true);
+      // documents.applyPatch in MainWindow reads this same transaction-owned consent.
+      expect(await s.transactions.pageEnlargementConsent(requestId, platform).confirm()).toBe(accepted ? "enlarge" : "keep");
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      expect(s.history).toHaveLength(1);
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toHaveLength(2);
+      if (accepted) expect(after.pages[0]!.height).toBeGreaterThan(before.pages[0]!.height);
+      else expect(after.pages[0]!.layout).toEqual(before.pages[0]!.layout);
+      const history = { past: [s.history[0]!.before], present: after, future: [] as typeof after[] };
+      expect(undo(history).present).toEqual(before);
+      expect(redo(undo(history)).present).toEqual(after);
+    } finally { restore(); await s.finish(); }
+  });
+
   it("does not prompt for a fitting insertion", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const prompt = vi.fn(async () => "enlarge");
     const restore = setNativePromptProvider(prompt);
     try {
@@ -214,7 +277,7 @@ describe("assistant host page enlargement", () => {
   });
 
   it("grows through the host with empty Send scope; one undo/redo restores page and all request objects", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const prompt = vi.fn(async (_prompt: NativePromptOptions) => "enlarge");
     const restore = setNativePromptProvider(prompt);
     const scopedWrite = vi.spyOn(s.host, "applyPatchForPlugin");
@@ -231,8 +294,8 @@ describe("assistant host page enlargement", () => {
       expect(page.height).toBe(before.pages[0]!.height);
       expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
       expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
-        message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
-        choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
+        message: "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.",
+        choices: [{ id: "enlarge", label: "Enlarge" }, { id: "keep", label: "Keep Page Size", cancel: true }]
       });
       const molecule = page.objects.find(object => object.type === "molecule")!;
       if (molecule.type !== "molecule") throw new Error("Expected molecule");
@@ -261,9 +324,9 @@ describe("assistant host page enlargement", () => {
     } finally { restore(); await s.finish(); }
   });
 
-  it.each([false, true].flatMap(mixed => ["decline", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
-    "$answer omits the oversized item and its label, retaining fitting items ($mixed)", async ({ mixed, answer }) => {
-    const s = placementSetup();
+  it.each([false, true].flatMap(mixed => ["keep", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
+    "$answer keeps every item and its placement on the original page ($mixed)", async ({ mixed, answer }) => {
+    const s = placementSetup(platform);
     const prompt = vi.fn(async (options: NativePromptOptions, fallback: (options: NativePromptOptions) => Promise<string>) =>
       answer === "fallback" ? fallback(options) : answer);
     const restore = setNativePromptProvider(prompt);
@@ -275,30 +338,28 @@ describe("assistant host page enlargement", () => {
           ...(mixed ? [{ kind: "molecule", smiles: "CC", label: "Ethane" }] : [])]
       } });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(result.structuredContent).toMatchObject({ declined: ["Olympiadane"],
-        reason: "declined: the user chose not to enlarge the page", warnings: [] });
-      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("declined: the user chose not to enlarge the page") })]);
+      expect(result.structuredContent?.reason).toBeUndefined();
       expect(prompt).toHaveBeenCalledOnce();
       const page = s.context.getDocument()!.pages[0]!;
       expect({ ...page, objects: [] }).toEqual(before);
-      expect(page.objects).toHaveLength(mixed ? 2 : 0);
-      expect(page.objects.some(object => object.type === "text" && object.text === "Olympiadane")).toBe(false);
+      expect(page.objects).toHaveLength(mixed ? 4 : 2);
+      expect(page.objects.some(object => object.type === "text" && object.text === "Olympiadane")).toBe(true);
       if (mixed) expect(page.objects.some(object => object.type === "text" && object.text === "Ethane")).toBe(true);
-      expect(s.history).toHaveLength(mixed ? 1 : 0);
+      expect(s.history).toHaveLength(1);
     } finally { restore(); await s.finish(); }
   });
 
   it.each(["insert_reaction", "insert_text"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
     "asks once for non-fitting $name (accepted: $accepted)", async ({ name, accepted }) => {
-    const s = placementSetup();
-    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const s = placementSetup(platform);
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
     const restore = setNativePromptProvider(prompt);
     try {
       await s.controller.beginRequest(s.plugin, { prompt: "insert" });
       const input = name === "insert_text" ? { text: "A line\n".repeat(100) } : { reactants: ["CC"], products: ["CC"] };
       const result = await s.controller.callTool(s.plugin, { name, input });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(result.structuredContent?.reason).toBe(accepted ? undefined : "declined: the user chose not to enlarge the page");
+      expect(result.structuredContent?.reason).toBeUndefined();
       expect(prompt).toHaveBeenCalledOnce();
       const page = s.context.getDocument()!.pages[0]!;
       if (accepted) {
@@ -308,13 +369,16 @@ describe("assistant host page enlargement", () => {
           expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
           expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
         }
-      } else expect(page.objects).toHaveLength(0);
-      expect(s.history).toHaveLength(accepted ? 1 : 0);
+      } else {
+        expect(page.objects.length).toBeGreaterThan(0);
+        expect(page.width).toBe(400); expect(page.height).toBe(300);
+      }
+      expect(s.history).toHaveLength(1);
     } finally { restore(); await s.finish(); }
   });
 
   it("wraps real widths first, then asks once to grow the height for the whole set", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true, object: s.molecule });
     const prompt = vi.fn(async () => "enlarge");
     const restore = setNativePromptProvider(prompt);
@@ -339,7 +403,7 @@ describe("assistant host page enlargement", () => {
 
   it("waits for a human answer beyond the tool deadlines", async () => {
     vi.useFakeTimers();
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -360,7 +424,7 @@ describe("assistant host page enlargement", () => {
 
   it.each([false, true])("declines through the MCP bridge after five minutes and ignores a late Yes (fitting item: %s)", async includeFitting => {
     vi.useFakeTimers();
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -392,12 +456,67 @@ describe("assistant host page enlargement", () => {
       expect(s.context.getDocument()).toEqual(after);
       expect(s.history).toHaveLength(includeFitting ? 1 : 0);
       expect(s.engine.respond).toHaveBeenCalledTimes(1);
+      // Another tool in the same request must not reinterpret the timeout as explicit Keep.
+      const second = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      expect(second.structuredContent?.reason).toBe(reason);
+      expect(second.structuredContent?.objectIds).toEqual([]);
+      // MainWindow uses this same preflight for direct documents.applyPatch writes.
+      const proposed = applyPluginDocumentPatch(after, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: after.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      await expect(commitWithPageFit(after, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).rejects.toThrow("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toEqual(after);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      expect(prompt).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     } finally { answer?.("decline"); restore(); await s.finish(); }
   });
 
+  it("honours the tool's five-minute deadline when a direct plugin write opened the shared prompt first", async () => {
+    vi.useFakeTimers();
+    const s = placementSetup(platform);
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Mixed writes" });
+      const before = s.context.getDocument()!;
+      const proposed = applyPluginDocumentPatch(before, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: before.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-first", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      // This caller has no human-decision deadline. The later tool still has its own.
+      const direct = Promise.resolve(commitWithPageFit(before, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).then(() => "committed", error => (error as Error).message);
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect((await pending).structuredContent?.reason).toBe("declined: no answer to the enlarge-page question within 5 minutes");
+      expect(await direct).toContain("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+      answer("enlarge");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(s.context.getDocument()).toBe(before);
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("keep"); restore(); await s.finish(); }
+  });
+
   it("ignores a late Enlarge answer after host cancellation and draws none of the pending call's items", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -419,7 +538,7 @@ describe("assistant host page enlargement", () => {
   });
 
   it("rejects a stale plan if the document changes while confirmation is open", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const restore = setNativePromptProvider(async () => {
       const before = s.context.getDocument()!;
       s.replace(applyPatch(before, { op: "updatePageLayout", pageId: before.pages[0]!.id,

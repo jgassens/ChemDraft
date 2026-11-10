@@ -480,8 +480,22 @@ the page. A group overlapping the page but sticking out is nudged by the smalles
 that brings the whole group inside. A group entirely outside the page is translated to the visible
 page center, clamped inside page bounds, before that commit. A group referencing any object that
 existed before the patch (including atom-anchored charges and arrows) is never moved. Relative positions are preserved and
-changed objects stay selected. Only groups needing translation can be refused as too large, atomically with
-`Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.`
+changed objects stay selected. Oversized groups retain their authored geometry for the host's page
+question, rather than being rejected or rescaled. After placement, an insertion or geometry edit that
+still extends beyond the page opens a native message box: “This doesn't fit on the page. Enlarge the
+page to fit? Content on the page may shift to make room.” **Enlarge** records the larger layout with
+the patch in its existing undo entry. For left/top overflow, the host translates every object on the
+affected page right/down by the overflow, including pre-existing content and the new objects.
+It grows the opposite sides as needed to keep all content on the page. Chemical identity and relative
+positions stay intact; other pages stay unchanged. Only the patch's inserted/edited objects remain
+selected, and host-shifted objects do not enter the plugin's editable scope. Undo restores the original
+page size and all positions exactly; redo restores the saved result without another question.
+**Keep Page Size** applies the same objects at the same coordinates without resizing. A command asks
+at most once across all its patch calls (each call still has its own undo entry), and its receipt is returned only after the answer and commit. A changed or closed
+drawing invalidates a pending plan. Assistant tool calls and direct patches share one decision for
+the entire request and retain the request's single undo entry; an explicit Keep Page Size now keeps
+all requested content. Cancellation and unanswered assistant questions retain their refusal behavior.
+See [the page-enlargement inventory and translation policy](../architecture/page-enlargement.md).
 Colliding inserted object ids are rebased to fresh ids. All native references within the batch,
 including attachment points on superatoms and R-groups (standalone or inside molecules), follow
 the rebased objects, including self and forward insertion references. Atom and bond ids remain local

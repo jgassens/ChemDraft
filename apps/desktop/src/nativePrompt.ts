@@ -8,8 +8,9 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
- * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
+ * title, without key equivalents), so prompts normally label their cancel choice "Cancel".
+ * Page enlargement uses the owner-required "Keep Page Size" instead; on macOS that choice is
+ * clicked explicitly (AppKit cannot bind Escape by that title). A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -17,7 +18,7 @@ export type NativePromptChoice =
   | { id: string; label: string; cancel?: false; destructive?: boolean }
   | {
       id: string;
-      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL;
+      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL | "Keep Page Size";
       cancel: true;
       destructive?: false;
     };
@@ -56,7 +57,7 @@ export function nativePromptButtons(prompt: NativePromptOptions,
     if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
     return { ok: cancel.label };
   }
-  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
+  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL && cancel.label !== "Keep Page Size") {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
   // The first button (ok/yes) is the Return default. AppKit finds Escape's button by its literal

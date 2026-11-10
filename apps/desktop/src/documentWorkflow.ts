@@ -5236,13 +5236,21 @@ export function visibleSkippedItems<T>(skippedItems: readonly T[]): T[] {
 export function insertSmilesMoleculeGridStatus(
   result: ReturnType<typeof insertSmilesMoleculeGrid>,
   skipped: number,
-  skippedItems: readonly { line: number; token: string; reason?: string }[] = []
+  skippedItems: readonly { line: number; token: string; reason?: string }[] = [],
+  outcome: { document: ChemDraftDocument; decision: "fits" | "enlarge" | "keep"; overflowObjectIds: readonly string[] } =
+    { document: result.document, decision: "fits", overflowObjectIds: [] }
 ): string {
   let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
-  if (result.pageResized) {
-    const page = firstPage(result.document);
+  if (outcome.decision === "enlarge") {
+    const page = firstPage(outcome.document);
     const unit = pageLayoutSourceUnit(page.layout);
     status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
+  } else if (outcome.decision === "keep") {
+    const page = firstPage(outcome.document);
+    const title = PageSizePresets.find(preset => preset.id === page.layout.presetId)?.title ?? page.layout.presetId;
+    const overflow = new Set(outcome.overflowObjectIds);
+    const count = result.objectIds.filter(id => overflow.has(id)).length;
+    status += ` (page kept at ${title}${count ? `; ${count} structure${count === 1 ? "" : "s"} extend${count === 1 ? "s" : ""} past it` : ""})`;
   }
   if (skippedItems.length > 0) {
     const visibleItems = visibleSkippedItems(skippedItems);
@@ -14108,6 +14116,35 @@ export function translateInsertedDocumentObjects(
         object.anchor.objectId !== undefined && inserted.has(object.anchor.objectId)
     }) : []));
   return patches.length ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
+/** Host-owned page enlargement: translate every frame and absolute coordinate exactly once.
+ * References still point to the same atoms/objects; no clamping, normalization or selection edit.
+ * Reuse the group translation math, including graphic paths and anchored arrow controls. */
+export function translateDocumentPage(
+  document: ChemDraftDocument, pageId: string, dx: number, dy: number
+): ChemDraftDocument {
+  const page = document.pages.find(candidate => candidate.id === pageId);
+  if (!page || (dx === 0 && dy === 0)) return document;
+  const attachmentPoints = <T extends { attachmentPoints: Anchor[] }>(value: T): T => ({ ...value,
+    attachmentPoints: value.attachmentPoints.map(anchor => offsetAnchorPoint(anchor, dx, dy)) });
+  const patches = page.objects.flatMap(object => {
+    const moves = translateDocumentObjectByPatches(document, object.id, dx, dy, {
+      translateAnchoredGeometry: true, preserveChargeAnchor: true
+    });
+    // These absolute attachment coordinates are not part of ordinary selection movement.
+    // Point-anchored electron marks also need their stored point to follow their frame.
+    if (object.type === "electron-mark") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { anchor: offsetAnchorPoint(object.anchor, dx, dy) } });
+    if (object.type === "molecule") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { superatoms: object.superatoms.map(attachmentPoints), rGroups: object.rGroups.map(attachmentPoints) } });
+    if (object.type === "superatom") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { metadata: attachmentPoints(object.metadata) } });
+    if (object.type === "r-group-label") moves.push({ op: "updateObject", objectId: object.id,
+      changes: { display: attachmentPoints(object.display) } });
+    return moves;
+  });
+  return applyPatches(document, patches, { now: phase4Timestamp });
 }
 
 export type DocumentAlignMode = "left" | "center" | "right" | "top" | "middle" | "bottom";

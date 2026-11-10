@@ -42,6 +42,26 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it("gives all writes one live signal per command and aborts it when the command ends", async () => {
+    let index = 0;
+    const f = fixture([], async ctx => {
+      for (let i = 0; i < 2; i++) await ctx.documents.applyPatch!({ reason: "Insert", patch: {
+        op: "addObject", pageId: f.pageId, object: text(`insert_${++index}`)
+      } });
+    });
+    const apply = f.applyDocumentPatch.getMockImplementation()!;
+    f.applyDocumentPatch.mockImplementation(request => {
+      expect(request.signal?.aborted).toBe(false);
+      return apply(request);
+    });
+    await f.host.invokeCommand("plugin.scope.run");
+    const first = f.applyDocumentPatch.mock.calls[0]![0].signal!;
+    expect(f.applyDocumentPatch.mock.calls[1]![0].signal).toBe(first);
+    expect(first.aborted).toBe(true);
+    await f.host.invokeCommand("plugin.scope.run");
+    expect(f.applyDocumentPatch.mock.calls[2]![0].signal).not.toBe(first);
+    expect(f.applyDocumentPatch.mock.calls[2]![0].signal?.aborted).toBe(true);
+  });
   it.each(["addObject", "addAnnotation"])("rejects a malformed %s batch with a validation error before applying anything", async op => {
     const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "malformed", patch: {
       op: "batch", patches: [
