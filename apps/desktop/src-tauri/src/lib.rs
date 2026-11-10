@@ -9749,7 +9749,11 @@ mod tests {
                     expected.push("create");
                 }
                 expected.extend(["monitor", "frame", "raise"]);
-                assert_eq!(*events.borrow(), expected, "{platform}, retained={retained}");
+                assert_eq!(
+                    *events.borrow(),
+                    expected,
+                    "{platform}, retained={retained}"
+                );
             }
         }
     }
@@ -9787,7 +9791,9 @@ mod tests {
                         || panic!("Quitting must not restore the document"),
                     )
                 },
-                || -> Result<(), String> { panic!("Quitting must not create or raise Preferences") },
+                || -> Result<(), String> {
+                    panic!("Quitting must not create or raise Preferences")
+                },
             );
             assert_eq!(result, Err(QUITTING_WINDOW_REFUSAL.to_string()));
         }
@@ -9817,7 +9823,11 @@ mod tests {
 
     #[test]
     fn preferences_owner_restore_failure_prevents_create_and_retained_reveal() {
-        for error in ["unminimize failed", "show failed", "main thread unavailable"] {
+        for error in [
+            "unminimize failed",
+            "show failed",
+            "main thread unavailable",
+        ] {
             let continued = std::cell::Cell::new(false);
             let result = with_preferences_owner_restored(
                 || {
@@ -9835,7 +9845,9 @@ mod tests {
             );
             assert_eq!(
                 result,
-                Err(format!("Could not restore document for Preferences: {error}"))
+                Err(format!(
+                    "Could not restore document for Preferences: {error}"
+                ))
             );
             assert!(!continued.get());
         }
