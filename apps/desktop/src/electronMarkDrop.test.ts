@@ -141,7 +141,7 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(dropMark(result.document)).toMatchObject({ x: 591, y: 491,
       anchor: { kind: "atom", objectId: originalMolecule.id, atomId: sourceAtom.id }, atomAssociation: "explicit" });
     expect(dropMolecule(result.document)).toEqual(originalMolecule);
-    expect(result.status).toContain("no atom within capture radius");
+    expect(result.status).toContain("no other atom close enough to move it to");
     const reopened = workflow.normalizeCommittedDocument(deserializeDocument(serializeDocument(result.document)));
     expect(reopened.pages).toEqual(result.document.pages);
   });
