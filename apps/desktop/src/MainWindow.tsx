@@ -1769,7 +1769,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.14.20-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7676,7 +7676,7 @@ export function MainWindow({
         return;
       }
       case "clipboard.copyAs.svg": {
-        const svgContents = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false })).contents;
+        const svgContents = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false, title: stripExportFileExtension(documentTabsRef.current.find(tab => tab.id === activeDocumentTabIdRef.current)?.title ?? "Untitled") })).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
         // picture from public.svg-image, while text editors still get the source via text/plain.
         // A bare text/plain write pasted into Illustrator as literal markup.
@@ -11120,7 +11120,8 @@ export function MainWindow({
       // The dialog may not have received the preference change yet. The owner decides
       // whether sizing is enabled at export time, including after the progress await.
       if (!exportPreviewEnabledRef.current) options = { ...options, presentation: undefined };
-      const result = await createDialogExportResult(source, { ...options, busy: false });
+      const title = stripExportFileExtension(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled");
+      const result = await createDialogExportResult(source, { ...options, busy: false }, false, title);
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
       const filename = exportDefaultPath(options.filename, descriptor.extensions);
       if (!isDesktopRuntime()) downloadExportResult(filename, result);
@@ -33573,7 +33574,8 @@ export async function createDialogExportPreview(document: ChemDraftDocument, opt
 export async function createDialogExportResult(
   document: ChemDraftDocument,
   state: ExportDialogState,
-  preview = false
+  preview = false,
+  title?: string
 ): Promise<ExportResult> {
   const descriptor = getExportFormatDescriptor(state.format);
   const presentation = state.presentation ?? { width: document.pages[0].width, dpi: 96, crop: "page" as const, background: "white" as const };
@@ -33600,6 +33602,7 @@ export async function createDialogExportResult(
 
   if (state.format === "svg") {
     const result = (await exportPhase4Svg(document, {
+      title,
       ...(sized || preview ? { outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
       outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
       outputUnit: preview ? undefined : "mm" as const } : {}),
