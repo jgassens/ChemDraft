@@ -1,4 +1,5 @@
 mod assistant_mcp;
+mod canvas_context_menu;
 mod clipboard_formats;
 mod clipboard_images;
 mod clipboard_limits;
@@ -958,6 +959,7 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(canvas_context_menu::PopupState::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
@@ -1026,6 +1028,9 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
+            if canvas_context_menu::menu_event(app, event.id().as_ref()) {
+                return;
+            }
             // Single brain: every menu click (toolset toggles included) routes to the JS
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
@@ -1325,6 +1330,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            canvas_context_menu::popup_canvas_context_menu,
             assistant_mcp::assistant_mcp_session_open,
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
@@ -1445,6 +1451,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
+            RunEvent::MainEventsCleared => canvas_context_menu::events_cleared(app),
             RunEvent::ExitRequested { code, api, .. } => {
                 if should_flush_exit_request(
                     cfg!(target_os = "macos"),

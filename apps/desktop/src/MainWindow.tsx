@@ -1,3 +1,5 @@
+import { CanvasContextMenu } from "./CanvasContextMenu";
+import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
@@ -434,7 +436,6 @@ import {
   textScriptForCommand,
   textStylePatchForCommand,
   copyAsActions,
-  copyAsMenuItems,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -1607,10 +1608,6 @@ export interface LayerCommandSelectionResult {
   bondDepthCommandId?: BondDepthCommandId;
   bondDepthContext?: BondDepthContext;
 }
-type LayerContextMenuItem = {
-  commandId: string;
-  label: string;
-};
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
   /** Identifies this open operation even when consecutive files have the same basename. */
@@ -1769,7 +1766,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.11.35-codex";
+const CURRENT_BUILD_STAMP = "11.10.14.48-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -1969,16 +1966,6 @@ function isTransformHandleDoublePress(
 }
 /** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
 const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
-/** Handled by applyArrowStyleDefaultCommand inside `invoke` (and the object context menu, which
- *  passes the right-clicked object), not via the command registry. */
-const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
-
-const layerContextMenuItems: readonly LayerContextMenuItem[] = [
-  { commandId: "layout.bringForward", label: "Move Object Forward" },
-  { commandId: "layout.bringToFront", label: "Move Object to Front" },
-  { commandId: "layout.sendBackward", label: "Move Object Backward" },
-  { commandId: "layout.sendToBack", label: "Move Object to Back" }
-];
 const nativeOpenDocumentEvent = "chemdraft://open-document";
 // Window for coalescing the multi-channel delivery (Tauri event + pending-document poll)
 // of a single OS file-open, while still allowing a deliberate later re-open.
@@ -26153,24 +26140,7 @@ function ArtStyleQaLayer({
   );
 }
 
-export function ObjectLayerContextMenu({
-  arrowActions = [],
-  bracketActions = [],
-  layoutActions = [],
-  tableActions = [],
-  bondStereoActions = [],
-  objectId,
-  objectIndex,
-  objectCount,
-  targetKind,
-  bondDepthContext,
-  atomWarning,
-  arrowStyleSource,
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function ObjectLayerContextMenu(props: {
   arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
@@ -26182,507 +26152,27 @@ export function ObjectLayerContextMenu({
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
   atomWarning?: ObjectContextMenuState["atomWarning"];
-  /** Present when the clicked object is an arrow whose look can become the tool's default. */
   arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const layerLabel = contextMenuLayerLabel(targetKind, objectIndex, objectCount);
-  const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
-  const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
-
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-
-  // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
-  // the right edge would clip it and slides up when the bottom would.
-  const [copyAsOpen, setCopyAsOpen] = useState(false);
-  const [arrangeOpen, setArrangeOpen] = useState(false);
-  const [tableAlignOpen, setTableAlignOpen] = useState(false);
-  const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
-  const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [tableAlignStyle, setTableAlignStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    const parent = tableAlignParentRef.current, flyout = tableAlignFlyoutRef.current;
-    if (!tableAlignOpen || !parent || !flyout) return;
-    const rect = parent.getBoundingClientRect(), menuRect = flyout.getBoundingClientRect();
-    setTableAlignStyle({
-      ...(rect.right + menuRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, rect.top + menuRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [tableAlignOpen, clampedPosition]);
-  const tableRowColumnIds = ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
-    "table.column.insertLeft", "table.column.insertRight", "table.column.delete"];
-  const tableRowColumnActions = tableActions.filter(action => tableRowColumnIds.includes(action.id));
-  const tableAlignActions = tableActions.filter(action => action.id.startsWith("table.column.align."));
-  const arrangeParentRef = useRef<HTMLDivElement | null>(null);
-  const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const pendingSubmenuFocusRef = useRef(false);
-  const [arrangeFlyoutStyle, setArrangeFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (layoutActions.length === 0) { setArrangeOpen(false); return; }
-    if (!arrangeOpen) return;
-    const parent = arrangeParentRef.current;
-    const flyout = arrangeFlyoutRef.current;
-    if (!parent || !flyout) return;
-    const parentRect = parent.getBoundingClientRect();
-    const flyoutRect = flyout.getBoundingClientRect();
-    setArrangeFlyoutStyle({
-      ...(parentRect.right + flyoutRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, parentRect.top + flyoutRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [arrangeOpen, clampedPosition, layoutActions.length]);
-  const copyAsParentRef = useRef<HTMLDivElement | null>(null);
-  const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [copyAsFlyoutStyle, setCopyAsFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (!copyAsOpen) {
-      return;
-    }
-    const parentElement = copyAsParentRef.current;
-    const flyoutElement = copyAsFlyoutRef.current;
-    if (!parentElement || !flyoutElement) {
-      return;
-    }
-    const margin = 8;
-    const parentRect = parentElement.getBoundingClientRect();
-    const flyoutRect = flyoutElement.getBoundingClientRect();
-    const opensLeft = parentRect.right + flyoutRect.width + margin > window.innerWidth;
-    const overflowY = Math.max(0, parentRect.top + flyoutRect.height + margin - window.innerHeight);
-    setCopyAsFlyoutStyle({
-      ...(opensLeft ? { right: "100%" } : { left: "100%" }),
-      top: `${-overflowY}px`
-    });
-  }, [copyAsOpen, clampedPosition]);
-
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
-    setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(false);
-  });
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Object layer options"
-      data-context-object-id={objectId}
-      data-context-target-kind={targetKind}
-      data-context-layer-index={objectIndex >= 0 ? objectIndex : undefined}
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {bracketActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-        data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
-        onClick={() => onInvoke(action.id)}>{action.title}</button>)}
-      {tableRowColumnActions.map(action => (
-        <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-          data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
-          onClick={() => onInvoke(action.id)}>{action.title}</button>
-      ))}
-      {tableAlignActions.length > 0 ? <>
-        <div className="object-context-menu-submenu" ref={tableAlignParentRef}
-          onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(true); }}
-          onPointerLeave={() => setTableAlignOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={tableAlignOpen}
-            aria-controls={tableAlignOpen ? "canvas-table-align-menu" : undefined}
-            disabled={tableAlignActions.every(action => action.enabled === false)}
-            className="object-context-menu-item object-context-menu-submenu-trigger"
-            onClick={() => {
-              setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(open => !open);
-            }}>
-            <span>Align Column</span><span aria-hidden="true">›</span>
-          </button>
-          {tableAlignOpen ? <div id="canvas-table-align-menu" role="menu" aria-label="Align Column"
-            className="object-context-menu object-context-menu-flyout"
-            ref={tableAlignFlyoutRef} style={tableAlignStyle}>
-            {tableAlignActions.map(action => <button type="button" role="menuitem" key={action.id}
-              className="object-context-menu-item" data-command-id={action.id}
-              disabled={action.enabled === false} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as
-                Record<string, string>)[action.id.split(".").at(-1)!]}
-            </button>)}
-          </div> : null}
-        </div>
-        <div className="object-context-menu-separator" role="separator" />
-      </> : null}
-      {arrowActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-        data-command-id={action.id} disabled={action.enabled === false} onClick={() => onInvoke(action.id)}>{action.title}</button>)}
-      {arrowActions.length > 0 ? <div className="object-context-menu-separator" role="separator" /> : null}
-      {layoutActions.length > 0 ? (
-        <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
-          onPointerLeave={() => setArrangeOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
-            aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
-            className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => {
-              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
-            }}>
-            <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-          </button>
-          {arrangeOpen ? (
-            <div id="canvas-arrange-menu" className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
-              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}>
-              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
-                <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-                  data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                  {action.title.replace(/^Arrange in (?:a|an) /, "")}
-                </button>
-              ))}
-              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
-                <Fragment key={action.id}>
-                  <div className="object-context-menu-separator" role="separator" />
-                  <button type="button" role="menuitem" className="object-context-menu-item"
-                    data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                    Adjust spacing…
-                  </button>
-                </Fragment>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {(["clipboard.cut", "clipboard.copy", "clipboard.paste"] as const).map((clipboardCommandId) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={clipboardCommandId}
-          data-command-id={clipboardCommandId}
-          onClick={() => onInvoke(clipboardCommandId)}
-        >
-          {clipboardCommandId === "clipboard.cut" ? "Cut" : clipboardCommandId === "clipboard.copy" ? "Copy" : "Paste"}
-        </button>
-      ))}
-      <div
-        className="object-context-menu-submenu"
-        ref={copyAsParentRef}
-        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
-        onPointerLeave={() => setCopyAsOpen(false)}
-      >
-        <button
-          type="button"
-          role="menuitem"
-          aria-haspopup="menu"
-          aria-expanded={copyAsOpen}
-          aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
-          className="object-context-menu-item object-context-menu-submenu-trigger"
-          data-context-submenu="copy-as"
-          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
-        >
-          <span>Copy As</span>
-          <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-        </button>
-        {copyAsOpen ? (
-          <div
-            className="object-context-menu object-context-menu-flyout"
-            id="canvas-copy-as-menu"
-            role="menu"
-            aria-label="Copy As formats"
-            ref={copyAsFlyoutRef}
-            style={copyAsFlyoutStyle}
-          >
-            {copyAsMenuItems.map((item) => (
-              <button
-                type="button"
-                role="menuitem"
-                className="object-context-menu-item"
-                key={item.commandId}
-                data-command-id={item.commandId}
-                onClick={() => onInvoke(item.commandId)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      <div className="object-context-menu-separator" role="separator" />
-      {atomWarning ? (
-        <>
-          {atomWarning.problemCommandId && <button type="button" role="menuitem" className="object-context-menu-item"
-            data-command-id={atomWarning.problemCommandId} onClick={() => onInvoke(atomWarning.problemCommandId!)}>Atom problem…</button>}
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="atom.toggleWarningSuppression"
-            onClick={() => onInvoke("atom.toggleWarningSuppression")}
-          >
-            {atomWarning.suppressed
-              ? atomWarning.count === 1 ? "Restore Warning" : "Restore Warnings"
-              : atomWarning.count === 1 ? "Clear Warning" : "Clear Warnings"}
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {arrowStyleSource ? (
-        <>
-          <div className="object-context-menu-title">{arrowStyleSource.title}</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id={SET_DEFAULT_ARROW_STYLE_COMMAND_ID}
-            onClick={() => onInvoke(SET_DEFAULT_ARROW_STYLE_COMMAND_ID)}
-          >
-            Set as Default Arrow Style
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {bondStereoActions.length > 0 ? (
-        <>
-          {bondStereoActions.map(action => (
-            <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-              data-command-id={action.id} disabled={!action.enabled} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {action.title}
-            </button>
-          ))}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {hasBondDepthContext ? (
-        <>
-          <div className="object-context-menu-title">Bond depth</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.bringInFront"
-            onClick={() => onInvoke("bondDepth.bringInFront")}
-          >
-            {hasMultipleBondTargets ? "Bring Selected Bonds In Front" : "Bring Bond In Front"}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.sendBehind"
-            onClick={() => onInvoke("bondDepth.sendBehind")}
-          >
-            {hasMultipleBondTargets ? "Send Selected Bonds Behind" : "Send Bond Behind"}
-          </button>
-          {bondDepthContext?.hasOverrides ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="object-context-menu-item"
-              data-command-id="bondDepth.useDefault"
-              onClick={() => onInvoke("bondDepth.useDefault")}
-            >
-              Use Default Bond Depth
-            </button>
-          ) : null}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      <div className="object-context-menu-title">{layerLabel}</div>
-      {layerContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          data-command-id={item.commandId}
-          key={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <CanvasContextMenu key={`${props.objectId}:${props.position.x}:${props.position.y}`}
+    {...props} items={buildObjectCanvasMenu(props)} label="Object layer options"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
-
-/**
- * A context menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
- * elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
- * bottom edge opens the menu ABOVE the cursor instead of clipping.
- */
-function useClampedContextMenuPosition(
-  position: ClientPoint,
-  menuRef: RefObject<HTMLDivElement | null>
-): ClientPoint {
-  const [clampedPosition, setClampedPosition] = useState(position);
-  useLayoutEffect(() => {
-    const menuElement = menuRef.current;
-    if (!menuElement) {
-      setClampedPosition(position);
-      return;
-    }
-    const margin = 8;
-    const rect = menuElement.getBoundingClientRect();
-    setClampedPosition({
-      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
-      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
-    });
-  }, [menuRef, position]);
-  return clampedPosition;
-}
-
-// Navigate only the direct items of each menu; a flyout has its own wrapping loop.
-function useCanvasContextMenuKeyboard(
-  menuRef: RefObject<HTMLDivElement | null>,
-  onDismiss: () => void,
-  onFocusReturn?: () => void,
-  pendingSubmenuFocusRef?: RefObject<boolean>,
-  closeSubmenus?: () => void
-) {
-  const dismissRef = useRef(onDismiss);
-  dismissRef.current = onDismiss;
-  const focusReturnRef = useRef(onFocusReturn);
-  focusReturnRef.current = onFocusReturn;
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    root.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')?.focus();
-    const outside = (event: globalThis.PointerEvent) => {
-      if (!root.contains(event.target as Node)) dismissRef.current();
-    };
-    window.addEventListener("pointerdown", outside, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      if (root.contains(globalThis.document.activeElement) && globalThis.document.hasFocus()) {
-        focusReturnRef.current?.();
-      }
-    };
-  }, [menuRef]);
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    for (const button of root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')) {
-      button.tabIndex = button === globalThis.document.activeElement ? 0 : -1;
-    }
-    if (pendingSubmenuFocusRef?.current) {
-      const owner = globalThis.document.activeElement;
-      const submenu = owner?.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-      const first = submenu?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)');
-      if (first) { first.tabIndex = 0; first.focus(); }
-      pendingSubmenuFocusRef.current = false;
-    }
-  });
-  return (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const button = event.target instanceof HTMLButtonElement ? event.target : null;
-    const menu = button?.closest<HTMLElement>('[role="menu"]');
-    if (!button || !menu) return;
-    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')]
-      .filter(item => item.closest('[role="menu"]') === menu);
-    const focus = (item: HTMLButtonElement | undefined) => {
-      if (!item) return;
-      button.tabIndex = -1; item.tabIndex = 0; item.focus();
-    };
-    const index = buttons.indexOf(button);
-    switch (event.key) {
-      case "ArrowDown": case "ArrowUp":
-        event.preventDefault(); event.stopPropagation();
-        focus(buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]);
-        break;
-      case "Home": case "End":
-        event.preventDefault(); event.stopPropagation();
-        focus(event.key === "Home" ? buttons[0] : buttons[buttons.length - 1]);
-        break;
-      case "ArrowRight":
-        if (button.getAttribute("aria-haspopup") === "menu") {
-          event.preventDefault(); event.stopPropagation();
-          const submenu = button.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-          if (submenu) focus(submenu.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? undefined);
-          else { if (pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true; button.click(); }
-        }
-        break;
-      case "ArrowLeft": case "Escape":
-        if (menu !== menuRef.current) {
-          event.preventDefault(); event.stopPropagation();
-          const owner = menu.parentElement?.querySelector<HTMLButtonElement>(':scope > button[role="menuitem"]');
-          closeSubmenus?.(); focus(owner ?? undefined);
-        } else if (event.key === "Escape") {
-          event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        }
-        break;
-      case "Tab":
-        event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        break;
-      case "Delete": case "Backspace":
-        event.preventDefault(); event.stopPropagation();
-        break;
-      case "Enter": case " ":
-        event.preventDefault(); event.stopPropagation();
-        if (button.getAttribute("aria-haspopup") === "menu" && pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true;
-        button.click();
-        break;
-    }
-  };
-}
-
-const pageContextMenuItems = [
-  { commandId: "clipboard.paste", label: "Paste" },
-  { commandId: "edit.selectAll", label: "Select All" }
-] as const;
 
 /** Right-click menu for bare page: what you can still do when nothing is under the pointer. */
-export function PageContextMenu({
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function PageContextMenu(props: {
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn);
-
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Page options"
-      data-context-target-kind="page"
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {pageContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={item.commandId}
-          data-command-id={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function contextMenuLayerLabel(
-  targetKind: ObjectContextMenuState["targetKind"],
-  objectIndex: number,
-  objectCount: number
-): string {
-  if (targetKind === "atom" || targetKind === "bond" || targetKind === "parts") {
-    return "Molecule layer";
-  }
-
-  return objectIndex >= 0 ? `Layer ${objectIndex + 1} of ${objectCount}` : "Layer options";
+  return <CanvasContextMenu key={`${props.position.x}:${props.position.y}`}
+    {...props} items={pageCanvasMenu} label="Page options" targetKind="page"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
 
 function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {
