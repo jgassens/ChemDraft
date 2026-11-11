@@ -13,6 +13,8 @@ const MAX_PREVIEW_BYTES: usize = 5 * 1024 * 1024;
 // Tauri 2.11.2 queues JSON >= 8192 bytes app-wide, outside receiver authentication.
 // Measure the complete delivery after JSON escaping, well below that threshold.
 const MAX_CHANNEL_BYTES: usize = 4096;
+// Matches the 320px document min-width in App.css, in logical pixels.
+const DIALOG_CONTENT_MIN_WIDTH: f64 = 320.0;
 const OVERSIZED_ERROR: &str = "Dialog operation failed; error details exceeded the delivery limit.";
 
 struct DialogKindSpec {
@@ -326,9 +328,11 @@ impl MeasuredContent {
             .max(min_height)
     }
     fn logical_width(self) -> Option<f64> {
-        self.fit
-            .content_width
-            .map(|width| (width * self.fit.pixel_ratio / self.scale_at_ready).ceil())
+        self.fit.content_width.map(|width| {
+            (width * self.fit.pixel_ratio / self.scale_at_ready)
+                .ceil()
+                .max(DIALOG_CONTENT_MIN_WIDTH)
+        })
     }
 }
 #[derive(Deserialize)]
@@ -6582,6 +6586,69 @@ mod tests {
             dialog_client_size(&page, None, Some(&saved), true),
             (600.0, 200.0)
         );
+    }
+    #[test]
+    fn reaction_conditions_content_fit_keeps_document_width_floor() {
+        use std::cell::RefCell;
+        let spec = kind_spec("reactionConditions").unwrap();
+        assert!(spec.fit_content);
+        for (macos, border, title_bar) in [(true, 0.0, 28.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "screen".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1600.0,
+                    height: 1000.0,
+                    scale,
+                };
+                let saved = SavedPosition {
+                    size: Some((250.0, 540.0)),
+                    monitor: work.id.clone(),
+                    x: 100.0,
+                    y: 100.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                };
+                for (width, expected) in [(250.0, 320.0), (420.0, 420.0)] {
+                    // Measure at 2x, then place at the destination's scale on either platform.
+                    let content = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({
+                            "contentWidth": width, "contentHeight": 540, "pixelRatio": 2
+                        })),
+                        Some(2.0),
+                    );
+                    let client_size = dialog_client_size(&spec, content, Some(&saved), false);
+                    assert_eq!(client_size, (expected, 540.0));
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(250.0, 540.0),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(border, title_bar),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size,
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    let native = dialog.borrow();
+                    assert_eq!(native.frame().client.0, (expected * scale).ceil() as u32);
+                    assert_eq!(native.frame().client.1, (540.0 * scale).ceil() as u32);
+                    assert_eq!(native.minimum.width, expected);
+                }
+            }
+        }
     }
     #[test]
     fn custom_color_refits_shrink_removed_content_but_keep_user_sizes() {
