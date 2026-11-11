@@ -163,17 +163,24 @@ it("exposes only the current live Export session for picker focus restoration", 
   expect(h.coordinator.exportSessionId("tab-origin")).toBeUndefined();
 });
 
-it("allows a new format export in the same session after success, while replaying each receipt once", async () => {
+it.each(["pdf", "svg"] as const)("publishes the native reservation release before another %s export in the same session", async format => {
   const h = await setup();
   try {
     const first = { action: "export", options: exportFixture() };
     await h.deliver("action", first, "pdf");
-    const second = { action: "export", options: { ...exportFixture(), filename: "Drawing.svg", format: "svg" } };
-    await h.deliver("action", second, "svg");
+    expect(h.transport.publish).toHaveBeenCalledWith("host", expect.objectContaining({
+      type: "result", dialogKind: "export", requestId: "pdf", data: { status: "exported", notice: "Exported PDF" }
+    }));
+    expect(h.transport.close).not.toHaveBeenCalled();
+    const second = { action: "export", options: { ...exportFixture(), filename: `Drawing.${format}`, format } };
+    await h.deliver("action", second, "next-export");
     expect(h.owner.export).toHaveBeenCalledTimes(2);
-    expect(h.owner.export.mock.calls[1][1]).toMatchObject({ filename: "Drawing.svg", format: "svg" });
+    expect(h.owner.export.mock.calls[1][1]).toMatchObject({ filename: `Drawing.${format}`, format });
+    expect(h.transport.publish).toHaveBeenCalledWith("host", expect.objectContaining({
+      type: "result", dialogKind: "export", requestId: "next-export", data: { status: "exported", notice: "Exported PDF" }
+    }));
     await h.deliver("action", first, "pdf");
-    await h.deliver("action", second, "svg");
+    await h.deliver("action", second, "next-export");
     expect(h.owner.export).toHaveBeenCalledTimes(2);
   } finally { await h.coordinator.dispose(); }
 });
