@@ -55,46 +55,63 @@ describe("Windows installer scopes", () => {
 
 describe("Windows release workflow", () => {
   it("builds and stages both variants before either is overwritten", () => {
-    const build = step("Build, verify and stage stable NSIS installers without updater signing");
+    const build = step("Build stable NSIS installer without updater signing");
     expect(build).toContain("CHEMDRAFT_STABLE_BUILD: '1'");
     expect(build).toContain("CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'");
-    expect(build).toContain("@{ Suffix = ''; Config = ''; Feed = 'latest.json' }");
-    expect(build).toContain("@{ Suffix = '-allusers'; Config = 'src-tauri/tauri.allusers.conf.json'; Feed = 'latest-allusers.json' }");
-    expect(build).toContain("foreach ($variant in $variants)");
-    expect(build).toContain("$buildArgs += @('--config', $variant.Config)");
-    expect(build).toContain("pnpm @buildArgs");
-    expect(build).toContain('$original = "ChemDraft_$($config.version)_x64-setup.exe"');
-    expect(build).toContain('$expected = "ChemDraft_$($config.version)_x64$($variant.Suffix)-setup.exe"');
-    expect(build).toContain("-Destination (Join-Path release-assets $expected)");
-    expect(build).toContain("$artifacts += @{ Installer = $expected; Feed = $variant.Feed }");
-    expect(build).toContain("Bundle has a development identity.");
-    expect(build).toContain("Native build has a worktree label.");
-    expect(build).toContain("Frontend build stamp missing or labelled.");
-    expect(build).toContain("Updater signing ran before Authenticode.");
+    expect(build).toContain("pnpm --filter @chemdraft/desktop build --bundles nsis");
+    const stage = step("Verify stable bundle identity and stage unsigned installer");
+    expect(stage).toContain("CHEMDRAFT_STABLE_BUILD: '1'");
+    expect(stage).toContain("CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'");
+    expect(workflow.indexOf(build)).toBeLessThan(workflow.indexOf(stage));
+    expect(stage).toContain("@{ Suffix = ''; Config = ''; Feed = 'latest.json' }");
+    expect(stage).toContain("@{ Suffix = '-allusers'; Config = 'src-tauri/tauri.allusers.conf.json'; Feed = 'latest-allusers.json' }");
+    expect(stage).toContain("foreach ($variant in $variants)");
+    expect(stage).toMatch(/if \(\$variant\.Config\) \{\s+if \(Test-Path -LiteralPath \$bundleDir\)/);
+    expect(stage).toContain("$buildArgs += @('--config', $variant.Config)");
+    expect(stage).toContain("pnpm @buildArgs");
+    expect(stage).toContain('$original = "ChemDraft_$($config.version)_x64-setup.exe"');
+    expect(stage).toContain('$expected = "ChemDraft_$($config.version)_x64$($variant.Suffix)-setup.exe"');
+    expect(stage).toContain("-Destination (Join-Path $stagingDir $expected)");
+    expect(stage).toContain("$artifacts += @{ Installer = $expected; Feed = $variant.Feed }");
+    expect(stage).toContain("Move-Item -LiteralPath $stagingDir -Destination release-assets");
+    expect(stage).toContain("Bundle has a development identity.");
+    expect(stage).toContain("Native build has a worktree label.");
+    expect(stage).toContain("Frontend build stamp missing or labelled.");
+    expect(stage).toContain("Updater signing ran before Authenticode.");
     expect(build).not.toContain("offline");
+    expect(stage).not.toContain("offline");
   });
 
   it("requires Authenticode and updater verification for every staged installer", () => {
-    const authenticode = step("Verify Authenticode and replace unsigned installers");
+    const authenticode = step("Verify Authenticode and replace unsigned installer");
+    expect(authenticode).toContain("INSTALLER: ${{ steps.bundle.outputs.installer }}");
+    expect(authenticode).toContain("ALLUSERS_INSTALLER: ${{ steps.bundle.outputs.allusers_installer }}");
+    expect(authenticode).toContain("$installers = @(@{ Installer = $env:INSTALLER })");
+    expect(authenticode).toContain("if ($env:ALLUSERS_INSTALLER) { $installers += @{ Installer = $env:ALLUSERS_INSTALLER } }");
     expect(authenticode).toContain("$signed.Count -ne $installers.Count");
     expect(authenticode).toContain("foreach ($installer in $installers)");
     expect(authenticode).toContain("$match.Count -ne 1");
     expect(authenticode).toContain("$signature.Status -ne 'Valid'");
     expect(authenticode).toContain("$signature.SignerCertificate.Subject.Contains($env:EXPECTED_AUTHENTICODE_SUBJECT)");
-    const sign = step("Sign final installers for the Tauri updater");
+    const sign = step("Sign final installer for the Tauri updater");
+    expect(sign).toContain("INSTALLERS: ${{ steps.bundle.outputs.installers }}");
     expect(sign).toContain("foreach ($artifact in ($env:INSTALLERS | ConvertFrom-Json))");
     expect(sign).toContain("signer sign --password '' $installer");
-    const updater = step("Verify updater signatures and generate latest.json and latest-allusers.json");
+    const updater = step("Verify updater signature and generate latest.json");
+    expect(updater).toContain("INSTALLERS: ${{ steps.bundle.outputs.installers }}");
     expect(updater).toContain("foreach ($artifact in ($env:INSTALLERS | ConvertFrom-Json))");
     expect(updater).toContain("pnpm exec tsx tools/release/verify-windows-updater.ts $installer");
-    expect(updater).toContain("'--out', (Join-Path release-assets $artifact.Feed)");
+    expect(updater).toContain("'--out', 'release-assets/latest.json'");
+    expect(updater).toContain("if ($artifact.Feed -cne 'latest.json') { $manifestArgs[-1] = Join-Path release-assets $artifact.Feed }");
     expect(updater).toContain("pnpm -s release:windows-manifest @manifestArgs");
     expect(updater.indexOf("'signed=true'")).toBeGreaterThan(updater.indexOf("Windows update manifest generation failed"));
   });
 
   it("retains missing-key and draft-only upload guards for the whole artifact set", () => {
-    expect(step("Check signing availability")).toContain("Skipping updater .sig files, latest.json and latest-allusers.json");
-    expect(step("Upload unsigned installers for SignPath provenance")).toContain("path: release-assets/*.exe");
+    expect(step("Check signing availability")).toContain("Skipping updater .sig and latest.json; installer cannot be published as an update.");
+    expect(step("Sign final installer for the Tauri updater")).toContain("if: steps.signing.outputs.updater == 'true'");
+    expect(step("Verify updater signature and generate latest.json")).toContain("if: steps.signing.outputs.updater == 'true'");
+    expect(step("Upload unsigned installer for SignPath provenance")).toMatch(/path: \|\s+release-assets\/\*\.exe\s+release-assets\/\*\.exe\.build\.json/);
     expect(step("Upload final release artifacts")).toContain("path: release-assets/*");
     expect(step("Require verified signatures before release upload")).toContain("$env:AUTHENTICODE_SIGNED -ne 'true' -or $env:UPDATER_SIGNED -ne 'true'");
     const upload = step("Upload only to an existing draft release");
