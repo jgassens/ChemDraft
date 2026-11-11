@@ -4169,6 +4169,20 @@ export interface LonePairPlacementPlan {
   rotation: number;
 }
 
+/** Page-coordinate direction from the atom, snapped to 15° unless freeAngle (Alt) is held.
+ * A pointer at the atom center or non-finite coordinates have no direction. */
+export function lonePairDragDirection(
+  atom: LayoutPoint,
+  pointer: LayoutPoint,
+  freeAngle = false
+): number | undefined {
+  const dx = pointer.x - atom.x, dy = pointer.y - atom.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < 1e-10) return undefined;
+  const angle = Math.atan2(dy, dx);
+  const step = Math.PI / 12;
+  return freeAngle ? angle : Math.round(angle / step) * step;
+}
+
 /**
  * Lone pairs use the largest gap between bonds and marks anchored to this exact atom.
  * No occupied directions defaults to page-up (-π/2); one direction uses its opposite.

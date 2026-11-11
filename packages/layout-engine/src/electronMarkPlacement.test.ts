@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { ElectronMarkObject, MoleculeObject } from "@chemdraft/chem-core";
-import { electronMarkPlacementPointForAtom, lonePairPlacementPlanForAtom, moleculeLayoutLabelBoxes } from "./index";
+import { electronMarkPlacementPointForAtom, lonePairDragDirection, lonePairPlacementPlanForAtom, moleculeLayoutLabelBoxes } from "./index";
+
+describe("lone-pair drag direction", () => {
+  const atom = { x: 210, y: 175 };
+  const pointer = (degrees: number) => ({ x: atom.x + 40 * Math.cos(degrees * Math.PI / 180),
+    y: atom.y + 40 * Math.sin(degrees * Math.PI / 180) });
+  it.each([[100, 105], [-100, -105], [179, 180], [-179, -180], [0, 0], [7, 0], [8, 15]])(
+    "snaps %s° to %s° about the atom", (degrees, snapped) => {
+    expect(lonePairDragDirection(atom, pointer(degrees))).toBeCloseTo(snapped * Math.PI / 180, 10);
+  });
+  it.each([100, -100, 7])("retains the free %s° angle with Alt", degrees => {
+    expect(lonePairDragDirection(atom, pointer(degrees), true)).toBeCloseTo(degrees * Math.PI / 180, 10);
+  });
+  it("has no direction at the center or for non-finite coordinates", () => {
+    expect(lonePairDragDirection(atom, atom)).toBeUndefined();
+    expect(lonePairDragDirection(atom, { x: NaN, y: 1 })).toBeUndefined();
+    expect(lonePairDragDirection({ x: Infinity, y: 1 }, pointer(100))).toBeUndefined();
+  });
+});
 
 describe.each(["growth slot", "open angle"])("electron-mark placement via %s", route => {
   it.each([0, 37])("clears updated H labels with an authored size and rotation %s", rotation => {
