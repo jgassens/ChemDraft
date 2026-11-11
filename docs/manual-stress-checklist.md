@@ -455,7 +455,12 @@ while ChemDraft's `e` arms the eraser; charge stacking
 by hotkey and by the charge tool up to ±9 and back down to mark removal;
 with **Direct electron-mark editing** off (the default), check painted-ink-only picking over
 atoms, bonds and filled rings, repeated radical/lone-pair tool placement on existing ink, and
-absence of mark resize/rotation handles. Enable the preference live, then drag circled/plain
+absence of mark resize/rotation handles.
+With the Lone Pair tool, click an atom to auto-place in its largest free gap; repeat for a second pair.
+Press an atom and drag: check the live tangent pair follows in 15° steps; hold Alt/Option for a free angle.
+Release once, then Undo/Redo once to remove/restore the exact pair; confirm molecular identity is unchanged.
+Escape, pointer cancellation or lost capture during placement must remove the preview without an Undo entry.
+Enable the preference live, then drag circled/plain
 charges, radical ions, radical dots and lone pairs from blank corners of their rotated frames
 with Select and electron tools; check overlap picking and no duplicates. Resize with corners,
 rotate with handles and typed entry, and check one labeled Undo/Redo per gesture. Adjust Art

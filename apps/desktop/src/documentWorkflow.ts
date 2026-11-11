@@ -1,4 +1,4 @@
-import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
+import { electronMarkPlacementPointForAtom, lonePairPlacementPlanForAtom } from "@chemdraft/layout-engine";
 import {
   assertMolfileExportIdentity, type ComputeStructureIdentifiers, moleculeToInteropMolfile,
   atomProblem, readNativeDocumentContents, formulaSpansFromText,
@@ -7490,7 +7490,9 @@ function normalizeElectronMarkSpec(spec: NativeElectronMarkSpec | NativeChargeVa
 export function applyChargeToolAtNativeAtom(
   document: ChemDraftDocument,
   spec: NativeElectronMarkSpec | NativeChargeValue,
-  target: NativeMoleculeDeleteTarget
+  target: NativeMoleculeDeleteTarget,
+  /** Optional page-coordinate angle in radians for lone-pair placement. */
+  directionRadians?: number
 ): ChemDraftDocument {
   if (target.kind !== "atom") {
     return document;
@@ -7542,12 +7544,16 @@ export function applyChargeToolAtNativeAtom(
     );
   }
 
-  const point = nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
+  const placement = normalized.kind === "lone-pair"
+    ? lonePairPlacementPlanForAtom(molecule, target.atomId, page.objects, page.width, page.height, directionRadians)
+    : undefined;
+  const point = normalized.kind === "lone-pair" ? placement?.center
+    : nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
   return point
     ? addChargeMarkAtPoint(document, page.id, normalized, point, {
         objectId: molecule.id,
         atomId: target.atomId
-      })
+      }, placement?.rotation)
     : document;
 }
 
@@ -8211,7 +8217,8 @@ function addChargeMarkAtPoint(
   pageId: string,
   spec: NativeElectronMarkSpec,
   point: PagePoint,
-  anchorAtom?: { objectId: string; atomId: string }
+  anchorAtom?: { objectId: string; atomId: string },
+  rotation = 0
 ): ChemDraftDocument {
   const page = firstPage(document);
   const halfSize = nativeChargeMarkSizePx / 2;
@@ -8228,7 +8235,7 @@ function addChargeMarkAtPoint(
     y,
     width: nativeChargeMarkSizePx,
     height: nativeChargeMarkSizePx,
-    rotation: 0,
+    rotation,
     style: {
       source: "chemdraft-native-charge"
     },
@@ -8238,6 +8245,8 @@ function addChargeMarkAtPoint(
     anchor: anchorAtom
       ? { kind: "atom" as const, objectId: anchorAtom.objectId, atomId: anchorAtom.atomId }
       : { kind: "point" as const, point: center },
+    // Label clearance can exceed the legacy capture radius; the clicked atom stays explicit.
+    ...(spec.kind === "lone-pair" && anchorAtom ? { atomAssociation: "explicit" as const } : {}),
     ...(spec.kind === "charge"
       ? {
           charge: spec.charge,

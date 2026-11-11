@@ -3,7 +3,7 @@ import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
-import { bracketLabelPlan, bracketLabelContainsPoint } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, bracketLabelContainsPoint, lonePairDragDirection } from "@chemdraft/layout-engine";
 import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
@@ -1096,7 +1096,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital" | "bracket";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital" | "bracket" | "lone-pair";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -1114,6 +1114,7 @@ type NativePlacementDragState = {
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
   orbitalCommandId?: string;
+  lonePairTarget?: NativeMoleculeDeleteTarget;
   shiftKey?: boolean;
   dragging: boolean;
   altKey: boolean;
@@ -1779,7 +1780,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.08.15-codex";
+const CURRENT_BUILD_STAMP = "11.11.09.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -4989,7 +4990,9 @@ export function MainWindow({
       const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
       setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : `Cannot place ${noun} on hovered atom`);
+        : markSpec.kind === "lone-pair"
+          ? "Cannot place a lone pair on this atom: there is no room inside the page."
+          : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -14114,6 +14117,7 @@ export function MainWindow({
       return;
     }
     nativePlacementDragRef.current = null;
+    placementMachineRef.current = initialInteractionState();
     releaseGesturePointer(drag.pointerId);
     replacePresentDocument(drag.startDocument);
   }, [releaseGesturePointer, replacePresentDocument]);
@@ -15470,9 +15474,12 @@ export function MainWindow({
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
       | { kind: "orbital"; commandId: string }
+      | { kind: "lone-pair"; target: NativeMoleculeDeleteTarget }
   ): boolean => {
     const startDocument = documentRef.current;
-    const placementDocument = placement.kind === "bracket"
+    const placementDocument = placement.kind === "lone-pair"
+      ? applyChargeToolAtNativeAtom(startDocument, { kind: "lone-pair" }, placement.target)
+      : placement.kind === "bracket"
       ? insertNativeBracket(startDocument, point, placement.bracketKind)
       : placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
@@ -15485,10 +15492,12 @@ export function MainWindow({
             : placement.kind === "orbital"
               ? insertNativeArtGraphicObject(startDocument, point, placement.commandId)
               : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle, bondOrder: placement.bondOrder });
-    const objectId = placementDocument.selection.objectIds[0];
+    const objectId = placement.kind === "lone-pair" ? placement.target.objectId : placementDocument.selection.objectIds[0];
+    // Lone pairs can start even when the automatic gap has no room: a dragged direction may fit.
+    // Their objectId names the target molecule; other placements name the newly placed object.
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
-    if (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId))) {
+    if (placement.kind !== "lone-pair" && (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId)))) {
       return false;
     }
 
@@ -15510,16 +15519,17 @@ export function MainWindow({
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
       orbitalCommandId: placement.kind === "orbital" ? placement.commandId : undefined,
+      lonePairTarget: placement.kind === "lone-pair" ? placement.target : undefined,
       shiftKey: event.shiftKey,
       altKey: event.altKey,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
-    // Arrows of every family — art lines and the legacy reaction arrows alike — paint nothing on the
-    // initial press: the arrow appears once the pointer moves (custom length/angle) or the press is
-    // released (default-length arrow). Bonds, templates, and chains keep their press-time preview,
+    // Arrows and atom-anchored lone pairs paint nothing on the initial press: a preview appears
+    // once the pointer moves, or the press is released for automatic placement.
+    // Bonds, templates, and chains keep their press-time preview,
     // where seeing the placement under the cursor is the point.
-    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow";
+    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow" && placement.kind !== "lone-pair";
     replacePresentDocument(paintsOnPress ? placementDocument : startDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -15966,6 +15976,13 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "lone-pair" && drag.lonePairTarget?.kind === "atom") {
+      const target = drag.lonePairTarget;
+      const molecule = findDocumentObject(drag.startDocument, target.objectId);
+      const atom = molecule?.type === "molecule" ? molecule.atoms.find(atom => atom.id === target.atomId) : undefined;
+      return atom ? applyChargeToolAtNativeAtom(drag.startDocument, { kind: "lone-pair" }, target,
+        lonePairDragDirection(atom, point, drag.altKey)) : drag.startDocument;
+    }
     if (drag.kind === "bracket" && drag.bracketKind) {
       return insertNativeBracket(drag.startDocument, drag.startPoint, drag.bracketKind, point);
     }
@@ -16025,7 +16042,7 @@ export function MainWindow({
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
-    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket" ? releasePoint : drag.latestPoint;
+    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket" || drag.kind === "lone-pair" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -16038,7 +16055,8 @@ export function MainWindow({
       (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
       commitInsertionHistoryWithPageFit(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
     } else {
-      commitDocumentHistoryFrom(drag.startDocument, placed);
+      commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "lone-pair"
+        ? electronMarkUndoLabel(drag.startDocument, placed, { kind: "lone-pair" }) : undefined);
     }
     return true;
   }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);
@@ -16081,6 +16099,7 @@ export function MainWindow({
   const finishNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
     event.stopPropagation();
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
+    if (drag.kind === "lone-pair") drag.altKey = event.altKey;
     const changed = commitNativePlacementDrag(drag, point);
     const label = nativePlacementStatusLabel(drag);
     const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
@@ -16102,10 +16121,15 @@ export function MainWindow({
       setActiveToolState(selectToolState);
       void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
     }
-    setStatus(changed
+    setStatus(drag.kind === "lone-pair"
+      ? changed ? "Placed lone pair on hovered atom" : drag.dragging
+        ? "Cannot place the lone pair there: it would fall outside the page. Drag toward the page."
+        : "Cannot place a lone pair on this atom: there is no room inside the page."
+      : changed
       ? drag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
       : `${capitalizeLabel(label)} not placed`);
     clearNativePlacementDrag(event);
+    if (drag.kind === "lone-pair" && changed) rederiveNativeCanvasHoverRef.current(documentRef.current);
   }, [clearNativePlacementDrag, commitNativePlacementDrag, pagePointFromPointerEvent]);
 
   const startNativeFreehandArtDrag = useCallback((
@@ -17734,7 +17758,11 @@ export function MainWindow({
       // vertex has no DOM glyph and the press lands on the page — honor it before dropping a
       // floating annotation mark at the raw point.
       if (hoveredNativeDeleteTargetRef.current?.kind === "atom") {
-        addChargeToHoveredNativeAtom(activeChargeToolValue);
+        if (activeChargeToolValue.kind === "lone-pair") {
+          startNativePlacementDrag(event, point, { kind: "lone-pair", target: hoveredNativeDeleteTargetRef.current });
+        } else {
+          addChargeToHoveredNativeAtom(activeChargeToolValue);
+        }
         return;
       }
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
@@ -19171,7 +19199,12 @@ export function MainWindow({
     if (activeChargeToolValue && point && !electronMarkActive) {
       event.stopPropagation();
       if (nativeMoleculeHit?.kind === "atom") {
-        addChargeToHoveredNativeAtom(activeChargeToolValue, { objectId, ...nativeMoleculeHit });
+        if (activeChargeToolValue.kind === "lone-pair") {
+          event.preventDefault();
+          startNativePlacementDrag(event, point, { kind: "lone-pair", target: { objectId, ...nativeMoleculeHit } });
+        } else {
+          addChargeToHoveredNativeAtom(activeChargeToolValue, { objectId, ...nativeMoleculeHit });
+        }
         return;
       }
 
@@ -19900,6 +19933,7 @@ export function MainWindow({
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativeArtLineDrawOrDefault,
+    startNativePlacementDrag,
     startSelectionLasso,
     startTapeMeasureDrag,
     toggleDocumentObjectSelection
@@ -22473,6 +22507,10 @@ export function MainWindow({
               event.stopPropagation();
             }
           }}
+          onLostPointerCaptureCapture={event => {
+            const drag = nativePlacementDragRef.current;
+            if (drag?.kind === "lone-pair" && drag.pointerId === event.pointerId) cancelNativePlacementDrag();
+          }}
           onMouseDownCapture={event => {
             if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
           }}
@@ -24634,6 +24672,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "lone-pair") return "lone pair";
   if (drag.kind === "bracket") return `${drag.bracketKind} bracket pair`;
   if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
