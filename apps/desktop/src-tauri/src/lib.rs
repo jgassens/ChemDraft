@@ -1348,6 +1348,7 @@ pub fn run() {
             dialog_windows::dialog_open,
             dialog_windows::dialog_request,
             dialog_windows::dialog_send,
+            dialog_windows::dialog_fit_trace,
             dialog_windows::dialog_publish,
             dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,

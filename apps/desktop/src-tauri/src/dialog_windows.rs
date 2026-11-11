@@ -1987,6 +1987,39 @@ pub(crate) fn dialog_request(
 }
 
 #[tauri::command]
+pub(crate) fn dialog_fit_trace(
+    window: tauri::WebviewWindow,
+    host_id: String,
+    trace: Value,
+) -> Result<(), String> {
+    if serde_json::to_vec(&trace).map_err(|e| e.to_string())?.len() > MAX_BYTES {
+        return Err("Dialog DOM trace exceeds the diagnostic limit".into());
+    }
+    let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let session = registry
+        .sessions
+        .get(&host_id)
+        .ok_or("Unknown dialog host")?;
+    authorize(session, window.label(), false, None)?;
+    eprintln!(
+        "{}",
+        format_dialog_fit_trace(
+            &session.snapshot.dialog_kind,
+            &session.snapshot.session_id,
+            &trace
+        )
+    );
+    Ok(())
+}
+
+fn format_dialog_fit_trace(kind: &str, session: &str, trace: &Value) -> String {
+    format!(
+        "[dialog-fit-dom] {}",
+        json!({ "kind": kind, "session": session, "trace": trace })
+    )
+}
+
+#[tauri::command]
 pub(crate) async fn dialog_send(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -4048,6 +4081,19 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dialog_fit_dom_trace_formats_one_line_with_authenticated_identity_and_json() {
+        let trace = json!({"phase": "resize", "innerHeight": 271, "note": "one\ntwo"});
+        let line = format_dialog_fit_trace("pageSize", "session-1", &trace);
+        assert_eq!(line.lines().count(), 1);
+        let logged: Value =
+            serde_json::from_str(line.strip_prefix("[dialog-fit-dom] ").unwrap()).unwrap();
+        assert_eq!(
+            logged,
+            json!({"kind": "pageSize", "session": "session-1", "trace": trace})
+        );
+    }
+
     #[test]
     fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
         let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});

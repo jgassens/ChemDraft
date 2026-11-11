@@ -3,7 +3,7 @@ import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { perfHook, perfProbe, perfSurfaceReady } from "../perf/runtime";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
-import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
+import { sendDialogFitTrace, sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
 import { performFocusedFieldSelectAll } from "../editHistoryRouting";
 import { ReactionConditionsForm } from "./ReactionConditionsForm";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
@@ -15,7 +15,7 @@ import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
 import { InsertTableForm } from "./InsertTableForm";
 import { AtomProblemForm } from "./AtomProblemForm";
-import { measureDialogContentWhenFontsReady, observeDialogContent, type DialogContentFit } from "./dialogContentFit";
+import { measureDialogContentWhenFontsReady, observeDialogContent, observeDialogFitDomTrace, type DialogContentFit } from "./dialogContentFit";
 const VibeCodeGuideForm = lazy(() => import("./VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 const CustomColorForm = lazy(() => import("./CustomColorForm").then(module => ({ default: module.CustomColorForm })));
@@ -59,12 +59,13 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   const pendingRequestId = useRef<string | undefined>(undefined);
   const readySession = useRef<string | undefined>(undefined);
   const contentObservation = useRef<(() => void) | undefined>(undefined);
+  const contentTrace = useRef<(() => void) | undefined>(undefined);
   const remeasureContent = useRef<((request: DialogMessage) => void) | undefined>(undefined);
   const contentGeneration = useRef(0);
   const contentHost = useRef<string | undefined>(hostId);
   useEffect(() => {
     contentHost.current = hostId;
-    return () => { contentHost.current = undefined; contentObservation.current?.(); remeasureContent.current = undefined; };
+    return () => { contentHost.current = undefined; contentObservation.current?.(); contentTrace.current?.(); remeasureContent.current = undefined; };
   }, [hostId]);
   const startAcceptanceDeadline = () => {
     clearTimeout(actionTimer.current);
@@ -168,12 +169,19 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     remeasureContent.current = retry => reportReady(fitElement, true, retry);
     readySession.current = snapshot.sessionId;
     contentObservation.current?.();
+    contentTrace.current?.();
     const generation = ++contentGeneration.current;
-    const sendFit = (fit: DialogContentFit | undefined) =>
-      sendDialogMessage(hostId, { ...dialogEnvelope(request ?? snapshot), requestId: crypto.randomUUID(), type: "ready", data: fit ?? {} });
+    let sentContentHeight: number | undefined;
+    const sendFit = (fit: DialogContentFit | undefined) => {
+      sentContentHeight = fit?.contentHeight;
+      return sendDialogMessage(hostId, { ...dialogEnvelope(request ?? snapshot), requestId: crypto.randomUUID(), type: "ready", data: fit ?? {} });
+    };
     const sending = (fitElement ? measureDialogContentWhenFontsReady(fitElement) : Promise.resolve(undefined)).then(async fit => {
       if (generation !== contentGeneration.current || contentHost.current !== hostId) return;
       if (!fit) console.warn(`[dialog-fit] kind=${snapshot.dialogKind} session=${snapshot.sessionId} ready without fit: ${fitElement ? "measurement unavailable (see measurement diagnostic)" : "no content element supplied"}`);
+      if (fitElement) contentTrace.current = observeDialogFitDomTrace(fitElement, () => sentContentHeight, trace => {
+        void sendDialogFitTrace(hostId, trace).catch(e => console.warn(`[dialog-fit-dom] trace failed: ${String(e)}`));
+      });
       await sendFit(fit);
       if (fitElement && generation === contentGeneration.current && contentHost.current === hostId && fitElement.isConnected) {
         contentObservation.current = observeDialogContent(fitElement, fit, next => {

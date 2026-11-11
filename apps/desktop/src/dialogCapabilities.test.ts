@@ -33,7 +33,7 @@ describe("dialog capabilities", () => {
     // Each native dialog kind gets only the same validated request/send transport.
     expect(host.windows).toEqual(["dialog-main-reactionConditions-*", "dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-customColor-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*", "dialog-main-vibeCodeGuide-*"]);
     expect(host.permissions.slice().sort()).toEqual([
-      "allow-dialog-request", "allow-dialog-send"
+      "allow-dialog-fit-trace", "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
     expect(owner.windows).toEqual(["main"]);

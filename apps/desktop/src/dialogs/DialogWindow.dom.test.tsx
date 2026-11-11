@@ -8,8 +8,8 @@ import { parseDialogMessage, validateDialogDelivery, type DialogMessage } from "
 import { installSecondaryWindowEditHistory } from "../editHistoryRouting";
 import { DOM_COMMAND_EVENT } from "../window-manager";
 vi.mock("../window-manager", async original => ({ ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true }));
-const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
-vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
+const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), trace: vi.fn(), stop: vi.fn() }));
+vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send, sendDialogFitTrace: host.trace }));
 import { DialogWindow } from "./DialogWindow";
 import { DialogCoordinator } from "./DialogCoordinator";
 import type { DialogTransport } from "./dialogTransport";
@@ -19,7 +19,7 @@ const snapshot: Extract<DialogMessage, { type: "snapshot" }> = { protocolVersion
 let root: Root; let container: HTMLDivElement; let stopEditRouting: () => void;
 beforeEach(async () => {
   vi.stubGlobal("localStorage", new MemoryStorage());
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.useFakeTimers(); vi.clearAllMocks(); host.send.mockResolvedValue(undefined);
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.useFakeTimers(); vi.clearAllMocks(); host.send.mockResolvedValue(undefined); host.trace.mockResolvedValue(undefined);
   vi.stubGlobal("requestAnimationFrame", vi.fn(() => { throw new Error("hidden rAF must never be used"); }));
   stopEditRouting = installSecondaryWindowEditHistory({ forwardToMain: () => {} });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -27,6 +27,61 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it.each(["pageSize", "export"] as const)("sends %s DOM diagnostics at native resize and 500 ms later without applying the original-layout height", async kind => {
+  const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const height = this.style.height === "auto" ? (this.style.gridAutoRows === "max-content" ? 271 : 334) : 271;
+    return { top: 0, height, bottom: height, width: 420 } as DOMRect;
+  });
+  vi.stubGlobal("innerHeight", 271);
+  vi.stubGlobal("innerWidth", 420);
+  vi.stubGlobal("devicePixelRatio", 2);
+  try {
+    act(() => root.unmount()); root = createRoot(container);
+    host.send.mockClear(); host.trace.mockClear();
+    // The native event can land while the ready invoke is still awaiting its result.
+    let finishReady!: () => void;
+    host.send.mockImplementationOnce(() => new Promise<void>(resolve => { finishReady = resolve; }));
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "trace-host" })));
+    const message: Extract<DialogMessage, { type: "snapshot" }> = kind === "export"
+      ? { ...snapshot, dialogKind: "export", data: { title: "Drawing A", options: exportFixture() } } : snapshot;
+    await act(async () => { host.receive!(message); if (kind === "export") await import("./ExportForm"); });
+    const form = container.querySelector<HTMLElement>(kind === "export" ? "form" : "section")!;
+    const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+    const savedStyle = form.getAttribute("style");
+    const savedBodyStyle = body.getAttribute("style");
+    expect(host.trace).not.toHaveBeenCalled();
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    const expected = {
+      innerWidth: 420, innerHeight: 271, devicePixelRatio: 2, documentElementClientHeight: 0,
+      root: { top: 0, height: 271, bottom: 271, scrollHeight: 0, clientHeight: 0 },
+      scrollingBodies: [{ scrollHeight: 0, clientHeight: 0 }],
+      footer: { bottom: 271, innerHeight: 271, bottomMinusInnerHeight: 0 },
+      gridProbeHeight: 271, originalLayoutHeight: 334, contentHeight: 271
+    };
+    expect(host.trace).toHaveBeenCalledExactlyOnceWith("trace-host", { ...expected, phase: "resize" });
+    await act(async () => { finishReady(); await vi.advanceTimersByTimeAsync(499); });
+    expect(host.trace).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(host.trace).toHaveBeenLastCalledWith("trace-host", { ...expected, phase: "settled" });
+    expect(host.trace).toHaveBeenCalledTimes(2);
+    expect(form.getAttribute("style")).toBe(savedStyle);
+    expect(body.getAttribute("style")).toBe(savedBodyStyle);
+    await act(async () => { window.dispatchEvent(new Event("resize")); await vi.advanceTimersByTimeAsync(1000); });
+    expect(host.trace).toHaveBeenCalledTimes(2);
+    const fits = host.send.mock.calls.map(([, message]) => message as DialogMessage).filter(message => message.type === "ready");
+    expect(fits).toHaveLength(1);
+    expect(fits[0]!.data).toEqual({ contentHeight: 271, contentWidth: 420, pixelRatio: 2 });
+  } finally { layout.mockRestore(); }
+});
+
+it("cancels delayed DOM diagnostics when the dialog unmounts", async () => {
+  await act(async () => window.dispatchEvent(new Event("resize")));
+  expect(host.trace).toHaveBeenCalledTimes(1);
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => vi.advanceTimersByTimeAsync(500));
+  expect(host.trace).toHaveBeenCalledTimes(1);
+});
+
 it.each(["macos", "windows"] as const)("re-measures an unchanged fit on explicit native retry on %s", async platform => {
   vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
   vi.stubGlobal("devicePixelRatio", platform === "macos" ? 2 : 1.5);

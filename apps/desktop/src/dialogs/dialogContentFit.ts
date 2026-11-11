@@ -45,6 +45,71 @@ function overrideStyles(element: HTMLElement, overrides: Record<string, string>)
   };
 }
 
+const unconstrainedRootStyles = { height: "auto", "min-height": "0px", "max-height": "none" };
+const gridProbeStyles = { display: "grid", "grid-template-columns": "minmax(0, 1fr)", "grid-template-rows": "none", "grid-auto-rows": "max-content", "align-content": "start", ...unconstrainedRootStyles };
+const unconstrainedBodyStyles = { height: "max-content", "max-height": "none", "flex-grow": "0", "flex-shrink": "0", "flex-basis": "auto", "min-height": "0px", overflow: "visible" };
+// Diagnostic probes must not turn their temporary style writes into content-change notifications.
+const pauseContentMutations = new WeakMap<HTMLElement, (read: () => void) => void>();
+
+/** DIAGNOSTIC ONLY: neither probe here supplies a fit or changes the native window size. */
+export function readDialogFitDomTrace(element: HTMLElement, contentHeight: number | undefined, phase: "resize" | "settled") {
+  const read = () => {
+    const document = element.ownerDocument;
+    const view = document.defaultView!;
+    const bodies = Array.from(element.querySelectorAll<HTMLElement>(".cd-dialog-fit-body"));
+    const rect = element.getBoundingClientRect();
+    // Export's inline-styled footer is the last direct child; other fit forms mark theirs.
+    const footer = element.querySelector<HTMLElement>(".cd-dialog-fit-footer, footer") ??
+      (element.matches(".cd-export-fit") ? element.lastElementChild as HTMLElement | null : null);
+    const footerBottom = footer?.getBoundingClientRect().bottom ?? null;
+    const live = {
+      phase, innerWidth: view.innerWidth, innerHeight: view.innerHeight, devicePixelRatio: view.devicePixelRatio,
+      documentElementClientHeight: document.documentElement.clientHeight,
+      root: { top: rect.top, height: rect.height, bottom: rect.bottom, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight },
+      scrollingBodies: bodies.map(body => ({ scrollHeight: body.scrollHeight, clientHeight: body.clientHeight })),
+      footer: { bottom: footerBottom, innerHeight: view.innerHeight, bottomMinusInnerHeight: footerBottom === null ? null : footerBottom - view.innerHeight },
+      contentHeight: contentHeight ?? null
+    };
+    const probe = (rootStyles: Record<string, string>) => {
+      const restores = [overrideStyles(element, rootStyles), ...bodies.map(body => overrideStyles(body, unconstrainedBodyStyles))];
+      try {
+        const probeRect = element.getBoundingClientRect();
+        const marginBottom = Number.parseFloat(view.getComputedStyle(element).marginBottom) || 0;
+        return Math.ceil(probeRect.top + view.scrollY + Math.max(probeRect.height, element.scrollHeight) + marginBottom);
+      } finally { for (const restore of restores.reverse()) restore(); }
+    };
+    return { ...live, gridProbeHeight: probe(gridProbeStyles), originalLayoutHeight: probe(unconstrainedRootStyles) };
+  };
+  let trace: ReturnType<typeof read> | undefined;
+  const capture = () => { trace = read(); };
+  const pause = pauseContentMutations.get(element);
+  if (pause) pause(capture); else capture();
+  return trace!;
+}
+
+/** Arm before ready IPC: the resize may arrive before that IPC resolves. One pair per ready. */
+export function observeDialogFitDomTrace(
+  element: HTMLElement,
+  getContentHeight: () => number | undefined,
+  send: (trace: ReturnType<typeof readDialogFitDomTrace>) => void
+): () => void {
+  const view = element.ownerDocument.defaultView;
+  let captured = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const capture = (phase: "resize" | "settled") => {
+    if (element.isConnected) send(readDialogFitDomTrace(element, getContentHeight(), phase));
+  };
+  const resized = () => {
+    if (captured) return;
+    captured = true;
+    view?.removeEventListener("resize", resized);
+    capture("resize");
+    timer = setTimeout(() => capture("settled"), 500);
+  };
+  view?.addEventListener("resize", resized);
+  return () => { view?.removeEventListener("resize", resized); clearTimeout(timer); };
+}
+
 /**
  * The element's natural height, from the top of the viewport: its CSS height and minimum height
  * (`100vh`) are lifted while measuring, so a window taller than the content does not measure as
@@ -77,8 +142,8 @@ export function measureDialogContent(element: HTMLElement): DialogContentFit | u
   const restores = [
     // Intrinsic grid rows avoid WebKit's viewport-constrained flex cross/track sizes, including
     // nested labels and native closed selects. Keep the actual width, gaps, margins and padding.
-    overrideStyles(element, { display: "grid", "grid-template-columns": "minmax(0, 1fr)", "grid-template-rows": "none", "grid-auto-rows": "max-content", "align-content": "start", height: "auto", "min-height": "0px", "max-height": "none" }),
-    ...bodies.map(body => overrideStyles(body, { height: "max-content", "max-height": "none", "flex-grow": "0", "flex-shrink": "0", "flex-basis": "auto", "min-height": "0px", overflow: "visible" }))
+    overrideStyles(element, gridProbeStyles),
+    ...bodies.map(body => overrideStyles(body, unconstrainedBodyStyles))
   ];
   try {
     const rect = element.getBoundingClientRect();
@@ -173,11 +238,18 @@ export function observeDialogContent(
     mutations?.observe(element, { subtree: true, childList: true, characterData: true, attributes: true });
   };
   watch();
+  pauseContentMutations.set(element, read => {
+    // Preserve any real content change queued before the diagnostic probe.
+    if (mutations?.takeRecords().length) schedule();
+    mutations?.disconnect();
+    try { read(); } finally { if (!stopped) watch(); }
+  });
   element.ownerDocument.defaultView?.addEventListener("resize", schedule);
   // Covers changes committed while the initial ready IPC was in flight.
   schedule();
   return () => {
     stopped = true;
+    pauseContentMutations.delete(element);
     clearTimeout(timer);
     sizes?.disconnect();
     mutations?.disconnect();

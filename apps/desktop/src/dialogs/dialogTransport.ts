@@ -1,5 +1,11 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DIALOG_PREVIEW_MAX_BYTES, parseDialogMessage, type DialogMessage, type DialogRegistration, type DialogCloseReason } from "./dialogProtocol";
+import type { readDialogFitDomTrace } from "./dialogContentFit";
+
+/** Measurement-build diagnostics go to native stderr alongside the existing fit logs. */
+export function sendDialogFitTrace(hostId: string, trace: ReturnType<typeof readDialogFitDomTrace>): Promise<void> {
+  return invoke("dialog_fit_trace", { hostId, trace });
+}
 
 /** Only the per-invoke IPC channel supplies these deliveries; never subscribe to the event bus. */
 export interface DialogDelivery { senderWindowId: string; windowLabel: string; message: unknown }

@@ -9,9 +9,64 @@ import { ExportForm } from "./ExportForm";
 import { exportFixture } from "./exportTestFixtures";
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
-import { measureDialogContent, measureDialogContentWhenFontsReady, validDialogContentFit } from "./dialogContentFit";
+import { measureDialogContent, measureDialogContentWhenFontsReady, observeDialogContent, readDialogFitDomTrace, validDialogContentFit } from "./dialogContentFit";
 
 afterEach(() => vi.unstubAllGlobals());
+
+it.each(["flex", "grid"])("traces live clipping and both intrinsic probes while preserving the original %s layout", display => {
+  const form = document.createElement("form");
+  form.style.cssText = `display: ${display}; height: 100vh; min-height: 100vh; max-height: 100vh; margin-bottom: 4px`;
+  form.innerHTML = '<div class="cd-dialog-fit-body" style="overflow: auto"></div><div class="cd-dialog-fit-footer"></div>';
+  document.body.append(form);
+  const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+  const footer = form.querySelector<HTMLElement>(".cd-dialog-fit-footer")!;
+  vi.stubGlobal("innerHeight", 271);
+  vi.stubGlobal("innerWidth", 420);
+  vi.stubGlobal("devicePixelRatio", 2);
+  const savedStyles = [form.getAttribute("style"), body.getAttribute("style")];
+  form.getBoundingClientRect = () => {
+    const height = form.style.height !== "auto" ? 271 : form.style.gridAutoRows === "max-content" ? 260 : 340;
+    return { top: 3, height, bottom: height + 3 } as DOMRect;
+  };
+  footer.getBoundingClientRect = () => ({ bottom: 330 } as DOMRect);
+  Object.defineProperties(form, { scrollHeight: { value: 271 }, clientHeight: { value: 271 } });
+  Object.defineProperties(body, { scrollHeight: { value: 300 }, clientHeight: { value: 210 } });
+  try {
+    expect(readDialogFitDomTrace(form, 267, "resize")).toEqual({
+      phase: "resize", innerWidth: 420, innerHeight: 271, devicePixelRatio: 2, documentElementClientHeight: 0,
+      root: { top: 3, height: 271, bottom: 274, scrollHeight: 271, clientHeight: 271 },
+      scrollingBodies: [{ scrollHeight: 300, clientHeight: 210 }],
+      footer: { bottom: 330, innerHeight: 271, bottomMinusInnerHeight: 59 },
+      gridProbeHeight: 278, originalLayoutHeight: 347, contentHeight: 267
+    });
+    expect([form.getAttribute("style"), body.getAttribute("style")]).toEqual(savedStyles);
+    expect(form.getBoundingClientRect().height).toBe(271);
+  } finally { form.remove(); }
+});
+
+it("does not observe diagnostic style writes or lose a real content mutation queued before a trace", async () => {
+  vi.useFakeTimers();
+  const form = document.createElement("form");
+  form.innerHTML = '<div class="cd-dialog-fit-body">Short</div>';
+  document.body.append(form);
+  const layout = vi.fn(() => ({ top: 0, height: form.textContent === "Long" ? 300 : 200, width: 420 } as DOMRect));
+  form.getBoundingClientRect = layout;
+  const changed = vi.fn();
+  const stop = observeDialogContent(form, measureDialogContent(form), changed);
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    layout.mockClear();
+    readDialogFitDomTrace(form, 200, "resize");
+    await vi.advanceTimersByTimeAsync(0);
+    // The trace reads the root once live and once per probe, without a fourth sizing pass.
+    expect(layout).toHaveBeenCalledTimes(3);
+    expect(changed).not.toHaveBeenCalled();
+    form.firstElementChild!.textContent = "Long";
+    readDialogFitDomTrace(form, 200, "settled");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(changed).toHaveBeenCalledExactlyOnceWith({ contentHeight: 300, contentWidth: 420, pixelRatio: 1 });
+  } finally { stop(); form.remove(); vi.useRealTimers(); }
+});
 
 it.each([
   { height: 0, ratio: 2, reason: "contentHeight" },
