@@ -76,10 +76,37 @@ quoted, using `SHCTX` (HKCU per-user, HKLM all-users):
 "C:\Program Files\ChemDraft\chemdraft.exe" "%1"
 ```
 
-The template calls `NSIS_HOOK_POSTINSTALL` after associations and shortcuts (`:727`–`729`). The hook
-is wired by the Windows config for both installers, and changes only the `ChemDraft Document` class's open
-command. The existing uninstaller removes that class. No `.cdxml` association is added. The config
-test checks the hook wiring and resulting command with spaces in both paths.
+The template calls `NSIS_HOOK_POSTINSTALL` after associations and shortcuts (`:727`–`729`). The
+post-install hook is wired by the Windows config for both installers and changes only the
+`ChemDraft Document` class's open command. No `.cdxml` association is added. The config test checks
+the hook wiring and resulting command with spaces in both paths.
+
+## File association uninstall cleanup: both installers
+
+Tauri CLI 2.11.2 supports `NSIS_HOOK_PREUNINSTALL` and `NSIS_HOOK_POSTUNINSTALL`
+(`installer-tauri-cli-v2.11.2.nsi:772`–`774`, `:880`–`882`). Its `APP_UNASSOCIATE`
+macro restores `.chemdraft`'s default from `ChemDraft Document_backup` and deletes the
+`ChemDraft Document` ProgID key, but leaves the extension key and backup value behind
+(`FileAssociation-tauri-cli-v2.11.2.nsh:108`–`114`). A reinstall can save ChemDraft's own
+ProgID as the backup, so uninstall restores a default pointing to the removed program.
+The macro also restores the backup even if another program has since claimed the extension.
+
+The shared pre-uninstall hook records the current default and whether it exists. After Tauri's
+cleanup, the post-uninstall hook restores that state before checking ownership. It resets Tauri's
+shell context with `SetContext`, since optional app-data deletion switches it to the current user.
+All registry operations use `SHCTX`: HKCU for per-user installs, HKLM for all-users installs.
+The hook deletes the `ChemDraft Document` ProgID tree, its backup value, and only its named
+`OpenWithProgids` value. It deletes the `.chemdraft` key only when its default still matches
+`ChemDraft Document` exactly, using case-sensitive `StrCmpS`. A different program's default and
+OpenWith entries survive; a missing default stays missing. No other extension is touched.
+Finally, Tauri's `UPDATEFILEASSOC` macro calls
+`SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_FLUSH, 0, 0)` to refresh the shell.
+
+Source-text tests cover these guards; they do not execute NSIS. The uninstall fix still requires
+Vitest verification by the integrator and real Windows tests of both CI-built installers. Check
+silent `/S` uninstall after a clean install and reinstall, a changed or missing default, another
+program's OpenWith entry, and uninstall with app-data removal selected. Confirm cleanup in the
+correct registry hive and preservation of associations owned by another program.
 
 ## Updates require administrator rights for the machine install
 
