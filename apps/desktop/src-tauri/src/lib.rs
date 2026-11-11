@@ -1678,10 +1678,15 @@ fn configure_document_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> R
 enum MainWindowFocusMode {
     Force,
     OnlyIfAppActive,
+    RestoreForPreferences,
 }
 
 fn should_raise_main_window(mode: MainWindowFocusMode, foreground_is_ours: bool) -> bool {
-    matches!(mode, MainWindowFocusMode::Force) || foreground_is_ours
+    !matches!(mode, MainWindowFocusMode::OnlyIfAppActive) || foreground_is_ours
+}
+
+fn should_focus_main_window(mode: MainWindowFocusMode) -> bool {
+    !matches!(mode, MainWindowFocusMode::RestoreForPreferences)
 }
 
 #[cfg(windows)]
@@ -1730,6 +1735,11 @@ fn focus_main_document_window_impl<R: Runtime>(
         .get_webview_window(MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
 
+    if !should_focus_main_window(mode) {
+        clear_document_key_after_unhide_for_preferences();
+        restore_main_document_window_without_focus(&window)?;
+        return Ok(true);
+    }
     window
         .set_focusable(true)
         .map_err(|error| error.to_string())?;
@@ -1741,6 +1751,210 @@ fn focus_main_document_window_impl<R: Runtime>(
     focus_native_document_window(&window)?;
     window.set_focus().map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+#[cfg(any(windows, test))]
+trait WindowEnabledState {
+    fn is_enabled(&self) -> Result<bool, String>;
+    fn set_enabled(&self, enabled: bool) -> Result<(), String>;
+}
+
+#[cfg(windows)]
+impl<R: Runtime> WindowEnabledState for tauri::WebviewWindow<R> {
+    fn is_enabled(&self) -> Result<bool, String> {
+        tauri::WebviewWindow::is_enabled(self).map_err(|error| error.to_string())
+    }
+
+    fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        tauri::WebviewWindow::set_enabled(self, enabled).map_err(|error| error.to_string())
+    }
+}
+
+/// Restores the prior enabled state even if owner restoration exits early or unwinds.
+#[cfg(any(windows, test))]
+struct WindowEnabledGuard<'a, W: WindowEnabledState> {
+    window: &'a W,
+    restore_enabled: Option<bool>,
+}
+
+#[cfg(any(windows, test))]
+impl<'a, W: WindowEnabledState> WindowEnabledGuard<'a, W> {
+    fn disable(window: &'a W) -> Result<Self, String> {
+        let enabled = window.is_enabled()?;
+        window.set_enabled(false)?;
+        // Arm immediately after a successful disable; no fallible work may intervene.
+        Ok(Self {
+            window,
+            restore_enabled: Some(enabled),
+        })
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if let Some(enabled) = self.restore_enabled {
+            self.window.set_enabled(enabled)?;
+            self.restore_enabled = None;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
+impl<W: WindowEnabledState> Drop for WindowEnabledGuard<'_, W> {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore() {
+            eprintln!("ChemDraft: could not restore document window enabled state: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_enabled_guard_tests {
+    use super::{WindowEnabledGuard, WindowEnabledState};
+    use std::cell::{Cell, RefCell};
+
+    struct FakeWindow {
+        enabled: Cell<bool>,
+        fail_next_set: Cell<bool>,
+        set_calls: RefCell<Vec<bool>>,
+    }
+
+    impl FakeWindow {
+        fn new(enabled: bool) -> Self {
+            Self {
+                enabled: Cell::new(enabled),
+                fail_next_set: Cell::new(false),
+                set_calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl WindowEnabledState for FakeWindow {
+        fn is_enabled(&self) -> Result<bool, String> {
+            Ok(self.enabled.get())
+        }
+
+        fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+            self.set_calls.borrow_mut().push(enabled);
+            if self.fail_next_set.replace(false) {
+                return Err("set_enabled failed".into());
+            }
+            self.enabled.set(enabled);
+            Ok(())
+        }
+    }
+
+    fn restore_owner(
+        window: &FakeWindow,
+        skip_restore: bool,
+        restore: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut guard = WindowEnabledGuard::disable(window)?;
+        assert!(!window.enabled.get());
+        if skip_restore {
+            return Ok(());
+        }
+        restore()?;
+        guard.restore()
+    }
+
+    #[test]
+    fn restores_prior_enabled_state_after_success() {
+        for enabled in [true, false] {
+            let window = FakeWindow::new(enabled);
+            assert!(restore_owner(&window, false, || Ok(())).is_ok());
+            assert_eq!(window.enabled.get(), enabled);
+            assert_eq!(*window.set_calls.borrow(), [false, enabled]);
+        }
+    }
+
+    #[test]
+    fn restores_prior_enabled_state_after_restore_error() {
+        for enabled in [true, false] {
+            let window = FakeWindow::new(enabled);
+            let result = restore_owner(&window, false, || Err("owner restore failed".into()));
+            assert_eq!(result, Err("owner restore failed".into()));
+            assert_eq!(window.enabled.get(), enabled);
+            assert_eq!(*window.set_calls.borrow(), [false, enabled]);
+        }
+    }
+
+    #[test]
+    fn restores_prior_enabled_state_after_early_return() {
+        for enabled in [true, false] {
+            let window = FakeWindow::new(enabled);
+            assert!(restore_owner(&window, true, || panic!("must return early")).is_ok());
+            assert_eq!(window.enabled.get(), enabled);
+            assert_eq!(*window.set_calls.borrow(), [false, enabled]);
+        }
+    }
+
+    #[test]
+    fn restores_prior_enabled_state_after_panic() {
+        for enabled in [true, false] {
+            let window = FakeWindow::new(enabled);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                restore_owner(&window, false, || panic!("owner restore panicked"))
+            }));
+            assert!(result.is_err());
+            assert_eq!(window.enabled.get(), enabled);
+            assert_eq!(*window.set_calls.borrow(), [false, enabled]);
+        }
+    }
+
+    #[test]
+    fn failed_disable_leaves_state_unchanged_and_does_not_arm_guard() {
+        for enabled in [true, false] {
+            let window = FakeWindow::new(enabled);
+            window.fail_next_set.set(true);
+            assert!(WindowEnabledGuard::disable(&window).is_err());
+            assert_eq!(window.enabled.get(), enabled);
+            assert_eq!(*window.set_calls.borrow(), [false]);
+        }
+    }
+
+    #[test]
+    fn failed_explicit_reenable_returns_error_and_drop_retries() {
+        let window = FakeWindow::new(true);
+        let result = restore_owner(&window, false, || {
+            window.fail_next_set.set(true);
+            Ok(())
+        });
+        assert_eq!(result, Err("set_enabled failed".into()));
+        assert!(window.enabled.get());
+        assert_eq!(*window.set_calls.borrow(), [false, true, true]);
+    }
+}
+
+/// Main-thread-only. Tauri's show() makes the document key on macOS, and its Windows
+/// unminimize path can activate the owner. Preferences needs only a restored, visible owner.
+fn restore_main_document_window_without_focus<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let ptr = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let native =
+            unsafe { ptr.as_ref() }.ok_or("Could not access native ChemDraft document window.")?;
+        if native.isMiniaturized() {
+            native.deminiaturize(None);
+        }
+        native.orderFront(None);
+    }
+    #[cfg(windows)]
+    {
+        // A disabled HWND cannot receive focus. Use Tauri for restoration so Tao's cached
+        // visible/minimized flags stay in sync, and always restore the prior enabled state.
+        let mut enabled_guard = WindowEnabledGuard::disable(window)?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        enabled_guard.restore()?;
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -5248,14 +5462,14 @@ fn configure_analysis_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 /// document it picks the report — so typing after Cmd+H and back went to the report, not the
 /// canvas. The decision is platform-neutral so it is tested everywhere; only the hide/activate
 /// notifications that drive it are AppKit's (`observe_hide_for_document_key_restore`).
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct DocumentKeyAfterUnhide {
     /// `Some` between a hide and the next activation: whether the document was key when hidden.
     document_was_key_at_hide: Option<bool>,
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 impl DocumentKeyAfterUnhide {
     fn will_hide(&mut self, document_was_key: bool) {
         self.document_was_key_at_hide = Some(document_was_key);
@@ -5266,6 +5480,10 @@ impl DocumentKeyAfterUnhide {
     fn take_restore(&mut self, document_visible: bool, document_is_key: bool) -> bool {
         self.document_was_key_at_hide.take() == Some(true) && document_visible && !document_is_key
     }
+
+    fn preferences_raised(&mut self) {
+        self.document_was_key_at_hide = None;
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5273,6 +5491,18 @@ static DOCUMENT_KEY_AFTER_UNHIDE: Mutex<DocumentKeyAfterUnhide> =
     Mutex::new(DocumentKeyAfterUnhide {
         document_was_key_at_hide: None,
     });
+
+#[cfg(target_os = "macos")]
+fn clear_document_key_after_unhide_for_preferences() {
+    if let Ok(mut state) = DOCUMENT_KEY_AFTER_UNHIDE.lock() {
+        state.preferences_raised();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_document_key_after_unhide_for_preferences() {
+    // There is no document-key-after-unhide observer on other platforms.
+}
 
 #[cfg(test)]
 mod document_key_after_unhide_tests {
@@ -5308,6 +5538,21 @@ mod document_key_after_unhide_tests {
     }
 
     #[test]
+    fn explicit_preferences_raise_clears_pending_document_key_restore() {
+        for was_key in [false, true] {
+            let mut state = DocumentKeyAfterUnhide::default();
+            state.will_hide(was_key);
+            state.preferences_raised();
+            assert_eq!(state.document_was_key_at_hide, None);
+            assert!(!state.take_restore(true, false));
+            assert!(!state.take_restore(true, false));
+            // A later hide still records the user's new choice normally.
+            state.will_hide(true);
+            assert!(state.take_restore(true, false));
+        }
+    }
+
+    #[test]
     fn does_nothing_when_the_document_is_already_key_or_hidden() {
         let mut state = DocumentKeyAfterUnhide::default();
         state.will_hide(true);
@@ -5328,8 +5573,8 @@ fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWi
 }
 
 /// Records whether the document was key at Cmd+H, and restores it after the app is active again.
-/// The restore is deferred one turn of the event loop so it lands after AppKit's own key-window
-/// choice during activation. It uses `makeKeyWindow` (no reordering): layering is already right.
+/// The main-thread callback can run inline during activation. Explicit Preferences requests
+/// clear its pending restore before activation; `makeKeyWindow` preserves the existing layering.
 #[cfg(target_os = "macos")]
 fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
     use objc2_app_kit::{
@@ -6837,8 +7082,11 @@ fn ensure_preferences_window<R: Runtime>(
                         ))
                     },
                     || {
-                        focus_main_document_window_impl(&target, MainWindowFocusMode::Force)
-                            .map(|_| ())
+                        focus_main_document_window_impl(
+                            &target,
+                            MainWindowFocusMode::RestoreForPreferences,
+                        )
+                        .map(|_| ())
                     },
                 )
             })
@@ -6859,6 +7107,10 @@ fn with_preferences_owner_restored<T>(
     create_or_raise()
 }
 
+fn preferences_owner_needs_restoration(minimized: bool, visible: bool) -> bool {
+    minimized || !visible
+}
+
 /// Main-thread-only in production. Leave visible documents in their current stacking order;
 /// suspended reveals continue through the shared dialog path, which defers them until release.
 fn restore_preferences_owner_if_needed(
@@ -6875,7 +7127,7 @@ fn restore_preferences_owner_if_needed(
     }
     let restore_error = |error| format!("Could not restore document for Preferences: {error}");
     let (minimized, visible) = owner_state().map_err(restore_error)?;
-    if minimized || !visible {
+    if preferences_owner_needs_restoration(minimized, visible) {
         restore_owner().map_err(restore_error)?;
     }
     Ok(())
@@ -10154,10 +10406,34 @@ mod tests {
                 MainWindowFocusMode::Force,
                 foreground_is_ours
             ));
+            assert!(should_focus_main_window(MainWindowFocusMode::Force));
+            assert!(should_focus_main_window(
+                MainWindowFocusMode::OnlyIfAppActive
+            ));
             assert_eq!(
                 should_raise_main_window(MainWindowFocusMode::OnlyIfAppActive, foreground_is_ours),
                 foreground_is_ours
             );
+        }
+    }
+
+    #[test]
+    fn preferences_restores_minimized_or_hidden_owner_without_requesting_key() {
+        for (minimized, visible, needs_restoration) in [
+            (true, true, true),
+            (true, false, true),
+            (false, false, true),
+            (false, true, false),
+        ] {
+            assert_eq!(
+                preferences_owner_needs_restoration(minimized, visible),
+                needs_restoration
+            );
+            for foreground_is_ours in [false, true] {
+                let mode = MainWindowFocusMode::RestoreForPreferences;
+                assert!(should_raise_main_window(mode, foreground_is_ours));
+                assert!(!should_focus_main_window(mode));
+            }
         }
     }
 
