@@ -2071,6 +2071,36 @@ fn export_focus_label(registry: &Registry, session_id: &str) -> Option<String> {
         .map(|session| session.registration.window_label.clone())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OwnerRevealDecision {
+    Proceed,
+    RestoreThenProceed,
+    RejectHidden,
+}
+
+fn owner_reveal_decision(macos: bool, minimized: bool, visible: bool) -> OwnerRevealDecision {
+    // AppKit reports a miniaturized NSWindow as not visible. Windows retains WS_VISIBLE
+    // while iconic and already reveals through the placement fallback without restoring.
+    if macos && minimized {
+        OwnerRevealDecision::RestoreThenProceed
+    } else if visible {
+        OwnerRevealDecision::Proceed
+    } else {
+        OwnerRevealDecision::RejectHidden
+    }
+}
+
+fn prepare_owner_for_dialog(
+    decision: OwnerRevealDecision,
+    restore: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match decision {
+        OwnerRevealDecision::Proceed => Ok(()),
+        OwnerRevealDecision::RestoreThenProceed => restore(),
+        OwnerRevealDecision::RejectHidden => Err("Dialog owner is hidden".into()),
+    }
+}
+
 /// Reopening focuses without replacing the draft, resizing, or moving a user-positioned dialog.
 fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     if super::quit_in_progress() {
@@ -2083,13 +2113,20 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             .defer_show(window.label().into());
         return Ok(());
     }
-    if window
+    let owner = window
         .app_handle()
         .get_webview_window(super::MAIN_WINDOW_LABEL)
-        .is_none_or(|owner| !owner.is_visible().unwrap_or(false))
-    {
-        return Err("Dialog owner is hidden".into());
-    }
+        .ok_or("Dialog owner is hidden")?;
+    // Do not add a minimized-state read or change restore behavior on Windows.
+    let minimized = cfg!(target_os = "macos") && owner.is_minimized().unwrap_or(false);
+    prepare_owner_for_dialog(
+        owner_reveal_decision(
+            cfg!(target_os = "macos"),
+            minimized,
+            owner.is_visible().unwrap_or(false),
+        ),
+        || owner.unminimize().map_err(|e| e.to_string()),
+    )?;
     let preferences = window.label() == super::PREFERENCES_WINDOW_LABEL;
     if preferences {
         if let Some(state) = REGISTRY
@@ -2966,19 +3003,14 @@ fn place_content_window_from_frame<R: Runtime>(
             )?;
             applied_client.set(Some((width, height)));
             if window.label() == super::PREFERENCES_WINDOW_LABEL {
-                match window.outer_position() {
-                    Ok(position) => {
-                        mark_preferences_position(window.label(), (position.x, position.y));
-                    }
-                    Err(error) if !cfg!(windows) => return Err(error.to_string()),
-                    Err(_) => {}
+                if let Ok(position) = window.outer_position() {
+                    mark_preferences_position(window.label(), (position.x, position.y));
                 }
             }
             Ok(())
         },
         || {
             measure_placement_frame(
-                cfg!(windows),
                 sample_normal_frame(window).map(|normal| DialogFrame {
                     unmeasured: false,
                     outer: normal.physical.outer,
@@ -3013,21 +3045,18 @@ fn place_content_window_from_frame<R: Runtime>(
         |size| window.set_min_size(Some(size)).map_err(|e| e.to_string()),
     )?;
     mark_transient(window.label());
-    // Persistence bookkeeping must not turn an otherwise placed Windows dialog into an
+    // Persistence bookkeeping must not turn an otherwise placed dialog into an
     // error when the same native measurements that required fallback are still unavailable.
     match window.inner_size() {
         Ok(client) => remember_programmatic_client(window.label(), (client.width, client.height)),
-        Err(error) if !cfg!(windows) => return Err(error.to_string()),
         Err(_) => {
             if let Some(client) = applied_client.get() {
                 remember_programmatic_client(window.label(), client);
             }
         }
     }
-    match window.outer_position() {
-        Ok(position) => remember_programmatic_position(window.label(), (position.x, position.y)),
-        Err(error) if !cfg!(windows) => return Err(error.to_string()),
-        Err(_) => {}
+    if let Ok(position) = window.outer_position() {
+        remember_programmatic_position(window.label(), (position.x, position.y));
     }
     if kind == "preferences" {
         if let Some(normal) = sample_normal_frame(window) {
@@ -3135,7 +3164,6 @@ impl DialogFrame {
     }
 }
 fn measure_placement_frame(
-    windows: bool,
     sampled: Option<DialogFrame>,
     applied_client: Option<(u32, u32)>,
     destination_scale: f64,
@@ -3145,34 +3173,32 @@ fn measure_placement_frame(
     if let Some(frame) = sampled {
         return Ok(frame);
     }
-    if windows {
-        // The owner may be iconic while the dialog still exposes usable native sizes.
-        // Read after moving to the destination DPI, before fitting or clamping. Saved
-        // client sizes must never replace the size just applied (including a fitted size).
-        let native = read_sizes();
-        let decorations = native
-            .as_ref()
-            .ok()
-            .and_then(|frame| frame.decorations_at_scale(destination_scale, destination_scale))
-            .or_else(cached_decorations);
-        let client = applied_client.or_else(|| {
-            native.as_ref().ok().and_then(|frame| {
-                frame
-                    .decorations_at_scale(destination_scale, destination_scale)
-                    .map(|_| frame.client)
-            })
-        });
-        return Ok(match (client, decorations) {
-            (Some(client), Some(decorations)) => DialogFrame::from_client(client, decorations),
-            // Measurement cannot cancel a ready Windows dialog. The placement driver will
-            // replace this provisional frame with a centred, fitted template-size window.
-            _ => DialogFrame {
-                unmeasured: true,
-                ..DialogFrame::from_client(client.unwrap_or((1, 1)), (0, 0))
-            },
-        });
-    }
-    Err("Dialog frame is not yet a stable normal frame".into())
+    // On both platforms a minimized owner prevents normal-frame sampling, even when the
+    // dialog still exposes usable sizes. Read after moving to the destination DPI, before
+    // fitting or clamping. Saved client sizes must never replace the size just applied
+    // (including a fitted size). Persistence still requires a stable normal-frame sample.
+    let native = read_sizes();
+    let decorations = native
+        .as_ref()
+        .ok()
+        .and_then(|frame| frame.decorations_at_scale(destination_scale, destination_scale))
+        .or_else(cached_decorations);
+    let client = applied_client.or_else(|| {
+        native.as_ref().ok().and_then(|frame| {
+            frame
+                .decorations_at_scale(destination_scale, destination_scale)
+                .map(|_| frame.client)
+        })
+    });
+    Ok(match (client, decorations) {
+        (Some(client), Some(decorations)) => DialogFrame::from_client(client, decorations),
+        // Measurement cannot cancel a ready dialog. The placement driver will replace
+        // this provisional frame with a centred, fitted template-size window.
+        _ => DialogFrame {
+            unmeasured: true,
+            ..DialogFrame::from_client(client.unwrap_or((1, 1)), (0, 0))
+        },
+    })
 }
 struct DialogPlacement<'a> {
     position: (f64, f64, f64),
@@ -5842,6 +5868,176 @@ mod tests {
     }
 
     #[test]
+    fn owner_reveal_decision_restores_only_minimized_macos_owners() {
+        for visible in [false, true] {
+            assert_eq!(
+                owner_reveal_decision(true, true, visible),
+                OwnerRevealDecision::RestoreThenProceed
+            );
+        }
+        for macos in [false, true] {
+            assert_eq!(
+                owner_reveal_decision(macos, false, false),
+                OwnerRevealDecision::RejectHidden
+            );
+            assert_eq!(
+                owner_reveal_decision(macos, false, true),
+                OwnerRevealDecision::Proceed
+            );
+        }
+        // Iconic Windows owners retain WS_VISIBLE; preserve the existing reveal path.
+        assert_eq!(
+            owner_reveal_decision(false, true, true),
+            OwnerRevealDecision::Proceed
+        );
+        assert_eq!(
+            owner_reveal_decision(false, true, false),
+            OwnerRevealDecision::RejectHidden
+        );
+    }
+
+    #[test]
+    fn owner_reveal_preparation_rejects_hidden_and_propagates_restore_errors() {
+        for macos in [false, true] {
+            assert_eq!(
+                prepare_owner_for_dialog(owner_reveal_decision(macos, false, false), || {
+                    panic!("a hidden owner must not be restored")
+                }),
+                Err("Dialog owner is hidden".into())
+            );
+            assert_eq!(
+                prepare_owner_for_dialog(owner_reveal_decision(macos, false, true), || {
+                    panic!("a normal owner must not be restored")
+                }),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            prepare_owner_for_dialog(owner_reveal_decision(false, true, true), || {
+                panic!("an iconic Windows owner must not be restored")
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            prepare_owner_for_dialog(owner_reveal_decision(true, true, false), || {
+                Err("restore failed".into())
+            }),
+            Err("restore failed".into())
+        );
+    }
+
+    #[test]
+    fn minimized_owner_custom_page_size_placement_restores_before_reveal() {
+        use std::cell::Cell;
+        for scale in [1.0, 2.0] {
+            for (width, height) in [(900.0, 700.0), (360.0, 280.0)] {
+                for (native_readable, cache_available) in
+                    [(true, false), (false, true), (false, false)]
+                {
+                    let work = WorkArea {
+                        id: "screen".into(),
+                        x: -800.0,
+                        y: 50.0,
+                        width,
+                        height,
+                        scale,
+                    };
+                    let spec = kind_spec("pageSize").unwrap();
+                    let client = Cell::new(None);
+                    let position = Cell::new((0.0, 0.0));
+                    let owner_minimized = Cell::new(true);
+                    let revealed = Cell::new(false);
+                    let decorations = ((16.0 * scale) as u32, (40.0 * scale) as u32);
+                    let result = DialogPlacement {
+                        position: (work.x * scale, work.y * scale, scale),
+                        client_size: dialog_client_size(&spec, None, None, false),
+                        content: None,
+                        work: &work,
+                        spec: &spec,
+                        fit_content: false,
+                        template: Some(TemplatePlacement {
+                            saved: None,
+                            // The owner's last known frame extends outside this work area.
+                            owner_rect: (-900.0, 0.0, 1000.0, 700.0),
+                        }),
+                    }
+                    .apply(
+                        |x, y| {
+                            position.set((x, y));
+                            Ok(())
+                        },
+                        |width, height| {
+                            client.set(Some((width, height)));
+                            Ok(())
+                        },
+                        || {
+                            measure_placement_frame(
+                                // macOS native_normal_geometry rejects a minimized owner.
+                                None,
+                                client.get(),
+                                scale,
+                                || cache_available.then_some(decorations),
+                                || {
+                                    if native_readable {
+                                        Ok(DialogFrame::from_client(
+                                            client.get().unwrap(),
+                                            decorations,
+                                        ))
+                                    } else {
+                                        Err("native geometry unavailable".into())
+                                    }
+                                },
+                            )
+                        },
+                        |_| Ok(()),
+                    )
+                    .and_then(|()| {
+                        // reveal_on_main places first, then show_on_main prepares the owner.
+                        // Placement may fall back while minimized, but must not persist a frame.
+                        assert!(owner_minimized.get());
+                        assert!(!should_persist(
+                            true,
+                            owner_minimized.get(),
+                            (false, false),
+                            false,
+                            false,
+                            true,
+                            false,
+                        ));
+                        prepare_owner_for_dialog(
+                            owner_reveal_decision(true, owner_minimized.get(), false),
+                            || {
+                                owner_minimized.set(false);
+                                Ok(())
+                            },
+                        )?;
+                        assert!(!owner_minimized.get(), "restore must precede dialog reveal");
+                        revealed.set(true);
+                        Ok(())
+                    });
+                    assert!(result.is_ok(), "minimized macOS owner: {result:?}");
+                    assert!(revealed.get());
+                    let frame = DialogFrame::from_client(client.get().unwrap(), decorations);
+                    assert!(frame.client.0 > 0 && frame.client.1 > 0);
+                    assert_placed_bounds_inside(position.get(), frame, &work);
+                    if !native_readable && !cache_available {
+                        // With no usable geometry, the template is centred on the monitor.
+                        assert_eq!(
+                            position.get(),
+                            (
+                                (work.x + work.width / 2.0) * scale
+                                    - f64::from(frame.outer.0) / 2.0,
+                                (work.y + work.height / 2.0) * scale
+                                    - f64::from(frame.outer.1) / 2.0,
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn windows_first_placement_survives_an_iconic_owner_or_unstable_frame() {
         for scale in [1.0, 1.5, 2.0] {
             let work = WorkArea {
@@ -5906,7 +6102,6 @@ mod tests {
                             },
                             || {
                                 measure_placement_frame(
-                                    true,
                                     sample.as_ref().map(|normal| DialogFrame {
                                         unmeasured: false,
                                         outer: normal.physical.outer,
@@ -5963,7 +6158,6 @@ mod tests {
         };
         assert_eq!(
             measure_placement_frame(
-                true,
                 Some(stable),
                 Some((600, 700)),
                 1.0,
@@ -5975,7 +6169,6 @@ mod tests {
         );
         assert_eq!(
             measure_placement_frame(
-                true,
                 None,
                 Some((600, 700)),
                 1.0,
@@ -5990,12 +6183,11 @@ mod tests {
             }
         );
         assert_eq!(
-            measure_placement_frame(true, None, None, 1.0, || None, || Ok(plain)).unwrap(),
+            measure_placement_frame(None, None, 1.0, || None, || Ok(plain)).unwrap(),
             plain
         );
         assert_eq!(
             measure_placement_frame(
-                true,
                 None,
                 Some((600, 700)),
                 1.0,
@@ -6012,19 +6204,9 @@ mod tests {
     }
 
     #[test]
-    fn placement_measurement_keeps_macos_sampling_but_survives_windows_read_errors() {
-        assert!(measure_placement_frame(
-            false,
-            None,
-            Some((600, 700)),
-            1.0,
-            || panic!("macOS must not use fallbacks"),
-            || panic!("macOS must not read plain sizes")
-        )
-        .is_err());
+    fn placement_measurement_survives_read_errors() {
         assert!(
             measure_placement_frame(
-                true,
                 None,
                 Some((600, 700)),
                 1.0,
@@ -6050,7 +6232,6 @@ mod tests {
                 (size.1 * scale).ceil() as u32,
             );
             let frame = measure_placement_frame(
-                true,
                 None,
                 Some(client),
                 scale,
@@ -6132,7 +6313,6 @@ mod tests {
                         || {
                             // A minimized owner prevents any stable normal-frame sample.
                             measure_placement_frame(
-                                true,
                                 None,
                                 client.get(),
                                 scale,
@@ -6263,7 +6443,6 @@ mod tests {
                                 let actual =
                                     DialogFrame::from_client(actual_client.get(), decorations);
                                 let measured = measure_placement_frame(
-                                    true,
                                     None,
                                     applied_client.get(),
                                     scale,
@@ -6333,13 +6512,12 @@ mod tests {
             },
         ] {
             assert!(
-                measure_placement_frame(true, None, Some((600, 700)), 1.0, || None, || Ok(frame))
+                measure_placement_frame(None, Some((600, 700)), 1.0, || None, || Ok(frame))
                     .unwrap()
                     .unmeasured
             );
             assert_eq!(
                 measure_placement_frame(
-                    true,
                     None,
                     Some((600, 700)),
                     1.0,
