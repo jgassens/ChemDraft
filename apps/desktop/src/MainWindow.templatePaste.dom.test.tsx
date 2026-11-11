@@ -18,6 +18,8 @@ import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MainWindow } from "./MainWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createSelectionClipboardPayload, documentObjectVisualBounds,
+  insertSmilesMolecule, serializeSelectionClipboardPayload } from "./documentWorkflow";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
@@ -41,10 +43,155 @@ describe("template SMILES paste", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-  async function mount(drawing: ChemDraftDocument) {
-    await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+  async function mount(drawing: ChemDraftDocument, platform?: "macos" | "windows") {
+    await act(async () => root.render(<MainWindow initialDocument={drawing} shortcutPlatform={platform} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     return { port: getAssistantHistoryPort() };
   }
+  async function command(commandId: string) {
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
+  }
+  describe.each(["macos", "windows"] as const)("repeat paste (%s clipboard)", platform => {
+    const strings = ["[2H]C", "[3H]C", "C[13CH3]", "[18OH2]", "[15NH3]"];
+    async function setup(edge: false | true | "bottom-right" = false) {
+      const { port } = await mount(createEmptyDocument(), platform);
+      if (edge) for (let i = 0; i < 5; i++) await command("view.zoomIn");
+      const scale = edge ? 1.25 ** 5 : 1;
+      const page = port.read("initial")!.pages[0]!;
+      // jsdom has no layout. Model a scrolled viewport whose visible centre is x=5
+      // on the page, and use the real zoom commands for its page-to-client scale.
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      Object.defineProperties(canvas, { clientWidth: { value: 600 }, clientHeight: { value: 600 } });
+      vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0 } as DOMRect);
+      vi.spyOn(container.querySelector(".page")!, "getBoundingClientRect").mockReturnValue({
+        left: edge ? 300 - (edge === "bottom-right" ? page.width - 5 : 5) * scale : 0,
+        top: edge ? 300 - (edge === "bottom-right" ? page.height - 5 : 300) * scale : 0
+      } as DOMRect);
+      const read = vi.spyOn(clipboard, "readClipboardPayload");
+      async function paste(text: string, type = platform === "macos" ? "public.utf8-plain-text" : "text/plain") {
+        const count = port.read("initial")!.pages[0]!.objects.length;
+        read.mockResolvedValueOnce({ types: [type], textItems: [{ type, text }] });
+        await command("clipboard.paste");
+        await act(async () => {
+          await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects,
+            container.querySelector("[role=status]")?.textContent ?? "missing status").toHaveLength(count + 1), { timeout: 5_000 });
+        });
+        const after = port.read("initial")!;
+        const object = after.pages[0]!.objects.at(-1)!;
+        expect(after.selection.objectIds).toEqual([object.id]);
+        const bounds = documentObjectVisualBounds(object, after.pages[0]!.objects);
+        expect(bounds.x).toBeGreaterThanOrEqual(0);
+        expect(bounds.y).toBeGreaterThanOrEqual(0);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(after.pages[0]!.width);
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(after.pages[0]!.height);
+        expect(container.textContent).not.toContain("Enlarge page");
+        return { object, centre: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 } };
+      }
+      return { port, paste };
+    }
+    it("offsets the same asynchronous SMILES pasted twice through clipboard.paste", async () => {
+      const { paste, port } = await setup();
+      const first = await paste(strings[0]!);
+      const second = await paste(strings[0]!);
+      expect(second.centre.x - first.centre.x).toBeCloseTo(24, 6);
+      expect(second.centre.y - first.centre.y).toBeCloseTo(24, 6);
+      if (first.object.type !== "molecule" || second.object.type !== "molecule") throw new Error("Expected molecules");
+      expect(second.object.structure).toBe(first.object.structure);
+      expect(second.object.bonds).toEqual(first.object.bonds);
+      expect(second.object.atoms).toEqual(first.object.atoms.map(atom => ({ ...atom, x: atom.x + 24, y: atom.y + 24 })));
+      await command("edit.undo");
+      expect(port.read("initial")!.pages[0]!.objects).toEqual([first.object]);
+      await command("edit.redo");
+      expect(port.read("initial")!.pages[0]!.objects).toEqual([first.object, second.object]);
+    });
+    it.each([false, true])("offsets five different SMILES, fully on page (zoomed/scrolled edge=%s)", async edge => {
+      const { paste } = await setup(edge);
+      let previous: { x: number; y: number } | undefined;
+      for (const smiles of strings) {
+        const { object, centre } = await paste(smiles);
+        expect(object).toMatchObject({ type: "molecule", compatibility: { unknown: { smiles } } });
+        if (previous) {
+          expect(centre.x - previous.x).toBeCloseTo(24, 6);
+          expect(centre.y - previous.y).toBeCloseTo(24, 6);
+        }
+        previous = centre;
+      }
+    });
+    it("continues the offset from a native selection to SMILES", async () => {
+      const { paste } = await setup();
+      const source = insertSmilesMolecule(createEmptyDocument(), { x: 300, y: 300 }, ocl.depictSmiles2D("CC"), "CC");
+      const native = await paste(serializeSelectionClipboardPayload(createSelectionClipboardPayload(source)!), CHEMDRAFT_SELECTION_CLIPBOARD_TYPE);
+      const smiles = await paste(strings[0]!);
+      expect(smiles.centre.x - native.centre.x).toBeCloseTo(24, 6);
+      expect(smiles.centre.y - native.centre.y).toBeCloseTo(24, 6);
+    });
+    it("continues across SMILES, editable text, MOL and different native selections", async () => {
+      const { paste } = await setup();
+      let previous = await paste(strings[0]!);
+      const source = insertSmilesMolecule(createEmptyDocument(), { x: 100, y: 100 }, ocl.depictSmiles2D("CCO"), "CCO");
+      const molecule = source.pages[0]!.objects[0]!;
+      if (molecule.type !== "molecule") throw new Error("Expected molecule");
+      for (const [text, type] of [
+        ["Hello", "text/plain"], [molecule.structure, "chemical/x-mdl-molfile"],
+        [serializeSelectionClipboardPayload(createSelectionClipboardPayload(source)!), CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
+        [serializeSelectionClipboardPayload(createSelectionClipboardPayload(insertSmilesMolecule(
+          createEmptyDocument(), { x: 500, y: 500 }, ocl.depictSmiles2D("CCN"), "CCN"))!), CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]
+      ]) {
+        const next = await paste(text!, type!);
+        expect(next.centre.x - previous.centre.x).toBeCloseTo(24, 6);
+        expect(next.centre.y - previous.centre.y).toBeCloseTo(24, 6);
+        previous = next;
+      }
+    });
+    it("keeps five edge pastes on page without bouncing back onto an earlier paste", async () => {
+      const { paste } = await setup("bottom-right");
+      const centres: { x: number; y: number }[] = [];
+      for (const smiles of strings) {
+        const next = await paste(smiles);
+        expect(centres.some(point => Math.hypot(point.x - next.centre.x, point.y - next.centre.y) < 1)).toBe(false);
+        centres.push(next.centre);
+      }
+    });
+    it.each(["selection.nudge.right.large", "edit.undo", "selection.delete"])("resets after %s of the last pasted structure", async reset => {
+      const { paste, port } = await setup();
+      const first = await paste(strings[0]!);
+      const second = await paste(strings[0]!);
+      if (reset === "selection.delete") {
+        await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true })));
+      } else await command(reset);
+      const afterReset = port.read("initial")!.pages[0]!.objects;
+      if (reset === "selection.nudge.right.large") {
+        expect(afterReset.at(-1)!.x).toBeCloseTo(second.object.x + 10, 6);
+      } else expect(afterReset).toEqual([first.object]);
+      const next = await paste(strings[0]!);
+      expect(next.centre.x).toBeCloseTo(first.centre.x, 6);
+      expect(next.centre.y).toBeCloseTo(first.centre.y, 6);
+    });
+    it("resets an explicit context-menu paste even when the pointer stays at the same point", async () => {
+      const { paste, port } = await setup();
+      await paste(strings[0]!);
+      await paste(strings[0]!);
+      const read = vi.mocked(clipboard.readClipboardPayload);
+      const placed: { x: number; y: number }[] = [];
+      for (let index = 0; index < 2; index++) {
+        read.mockResolvedValueOnce({ types: ["text/plain"], textItems: [{ type: "text/plain", text: strings[0]! }] });
+        await act(async () => container.querySelector(".page")!.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 240
+        })));
+        const button = container.querySelector<HTMLButtonElement>('[data-context-target-kind="page"] [data-command-id="clipboard.paste"]')!;
+        expect(button).not.toBeNull();
+        await act(async () => {
+          button.click();
+          await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(3 + index));
+        });
+        const object = port.read("initial")!.pages[0]!.objects.at(-1)!;
+        const bounds = documentObjectVisualBounds(object);
+        placed.push({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 });
+      }
+      expect(placed[0]!.x).toBeCloseTo(180, 6);
+      expect(placed[0]!.y).toBeCloseTo(240, 6);
+      expect(placed[1]).toEqual(placed[0]);
+    });
+  });
   it.each([
     ["THF", "text/plain"], ["Hello", "text/plain"],
     ["THF", "chemical/x-daylight-smiles"], ["Hello", "chemical/x-daylight-smiles"]

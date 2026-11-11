@@ -675,6 +675,7 @@ import {
   moveDocumentObject,
   moveDocumentObjects,
   moveCanvasSelection,
+  translateInsertedDocumentObjects,
   documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
@@ -1626,6 +1627,10 @@ export interface SelectionClipboardPasteState {
   sourceAction: SelectionClipboardSourceAction;
   /** Page point the last paste was aimed at, when it was aimed at the pointer. */
   anchor?: ClientPoint;
+  /** First clamped centre in this run, shared by native and imported clipboard content. */
+  origin?: ClientPoint;
+  /** Any intervening document edit, selection change or history navigation ends the run. */
+  document?: ChemDraftDocument;
 }
 // Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
 // they are parsed + validated on Apply.
@@ -1771,7 +1776,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.13.36-codex";
+const CURRENT_BUILD_STAMP = "11.10.16.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3566,6 +3571,9 @@ export function MainWindow({
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
     if (history === previous) return;
+    if (selectionClipboardPasteStateRef.current?.document && history.present !== previous.present) {
+      selectionClipboardPasteStateRef.current = undefined;
+    }
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
       const recorded = assistantRecordedAfterRef.current.get(previous.present);
@@ -7183,6 +7191,31 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
   }, [assignHoveredNativeDeleteTarget]);
 
+  // All clipboard insertions share the native repeat-paste placement and one undo entry.
+  // Record the committed snapshot only after insertion; async SMILES preparation must not
+  // clear the preceding paste's placement while loading/verifying its depiction.
+  const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, label?: string,
+    nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
+    const before = documentRef.current;
+    if (nextDocument === before) return false;
+    const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
+    if (!payload) return false;
+    const page = before.pages[0]!;
+    if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
+      setStatus("Couldn't paste: the clipboard content is larger than the page. Choose a larger page before pasting.");
+      return false;
+    }
+    const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
+      page, pastePointerPagePoint(), nativePayload ? 1 : 0);
+    const existingIds = new Set(page.objects.map(object => object.id));
+    const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+    const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
+      placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
+    if (!commitDocumentChange(placed, label)) return false;
+    selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
+    return true;
+  }, [commitDocumentChange, pastePointerPagePoint]);
+
   const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const result = applyClipboardPastePayload(
@@ -7192,7 +7225,7 @@ export function MainWindow({
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChangeWithPageFit(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+      if (!commitClipboardPaste(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -7202,7 +7235,7 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
+  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
@@ -7272,7 +7305,7 @@ export function MainWindow({
       terminal = terminalResult();
       if (terminal) return terminal;
       if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-      commitDocumentChangeWithPageFit(nextDocument, "Paste SMILES");
+      if (!commitClipboardPaste(nextDocument, "Paste SMILES")) return { outcome: "terminal" };
       resetPasteUiState();
       setPageFitPrompt(undefined);
       const pasteStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
@@ -7291,7 +7324,7 @@ export function MainWindow({
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState]);
 
   const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7300,13 +7333,13 @@ export function MainWindow({
     try {
       const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
         prefix => `${prefix}-${crypto.randomUUID()}`);
-      commitDocumentChangeWithPageFit(result.document, "Paste table");
+      if (!commitClipboardPaste(result.document, "Paste table")) return;
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
       setStatus(tableValidationMessage(error));
     }
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
@@ -7365,12 +7398,8 @@ export function MainWindow({
       };
       const status = makeStatus("No SMILES structures were pasted");
       if (result.objectIds.length > 0) {
-        commitDocumentChangeWithPageFit(result.document, "Paste SMILES list", (document, outcome) => {
-          setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems, {
-            document, decision: outcome.decision,
-            overflowObjectIds: outcome.plan.growth.flatMap(growth => growth.objectIds ?? [])
-          })));
-        });
+        if (!commitClipboardPaste(result.document, "Paste SMILES list")) return { outcome: "terminal" as const, pasteAsText: false };
+        setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems)));
         resetPasteUiState();
         setPageFitPrompt(undefined);
       }
@@ -7387,7 +7416,7 @@ export function MainWindow({
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
     });
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7502,17 +7531,11 @@ export function MainWindow({
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
-    const placement = nextSelectionClipboardPastePlacement(
-      payload,
-      selectionClipboardPasteStateRef.current,
-      activePage,
-      pastePointerPagePoint()
-    );
     const warnings: string[] = [];
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      placement.point,
+      { x: payload.bounds.centerX, y: payload.bounds.centerY },
       warnings
     );
     if (nextDocument === documentRef.current) {
@@ -7520,8 +7543,7 @@ export function MainWindow({
       return;
     }
 
-    selectionClipboardPasteStateRef.current = placement.state;
-    commitDocumentChangeWithPageFit(nextDocument);
+    if (!commitClipboardPaste(nextDocument, undefined, payload)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7530,7 +7552,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
-  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, pastePointerPagePoint]);
+  }, [assignHoveredNativeDeleteTarget, commitClipboardPaste]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
@@ -17836,6 +17858,7 @@ export function MainWindow({
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
+    selectionClipboardPasteStateRef.current = undefined;
     // Paste from this menu lands where the menu was opened, not where the mouse drifted while
     // reading it.
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
@@ -20891,6 +20914,7 @@ export function MainWindow({
     })();
     setPageContextMenu(undefined);
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
+    selectionClipboardPasteStateRef.current = undefined;
     setObjectContextMenu({
       objectId,
       targetKind,
@@ -24998,54 +25022,41 @@ export function initialSelectionClipboardPasteState(
 }
 
 /**
- * Where a pasted ChemDraft selection lands. With `anchor` — the page point under the pointer —
- * the selection is centred there, the way ChemDraw pastes at the cursor. Pasting again WITHOUT
- * moving the pointer steps the copy aside instead of burying it exactly on top of the last one.
- * Without an anchor (no pointer has been over the canvas yet) it falls back to the copy's own
- * position, offset once per repeat.
+ * One placement sequence for every clipboard format, independent of clipboard identity.
+ * The first native copy retains its source-position offset; imports start at their prepared
+ * viewport position. Subsequent pastes step from the first clamped centre until placement resets.
+ * Keep that origin fixed so a run at a page edge does not bounce between two positions.
  */
 export function nextSelectionClipboardPastePlacement(
   payload: ChemDraftSelectionClipboardPayload,
   previousState: SelectionClipboardPasteState | undefined,
   page: DocumentPage,
-  anchor?: ClientPoint
+  anchor?: ClientPoint,
+  initialOffset = 1
 ): { point: ClientPoint; state: SelectionClipboardPasteState } {
   const key = selectionClipboardPayloadKey(payload);
-  const samePayload = previousState?.key === key;
-  const sourceAction = samePayload ? previousState.sourceAction : "external";
-  const previousPasteCount = samePayload ? previousState.pasteCount : 0;
-
-  if (anchor) {
-    const previousAnchor = samePayload ? previousState.anchor : undefined;
-    const pointerStayedPut = previousAnchor !== undefined &&
-      Math.abs(previousAnchor.x - anchor.x) < 1 &&
-      Math.abs(previousAnchor.y - anchor.y) < 1;
-    const anchoredBounds: SelectionBounds = {
-      ...payload.bounds,
-      x: anchor.x - payload.bounds.width / 2,
-      y: anchor.y - payload.bounds.height / 2,
-      centerX: anchor.x,
-      centerY: anchor.y
-    };
-    const point = clampSelectionClipboardPastePoint(
-      selectionClipboardPastePoint(anchoredBounds, page, pointerStayedPut ? previousPasteCount : 0),
-      anchoredBounds,
-      page
-    );
-    return {
-      point,
-      state: { key, sourceAction, pasteCount: previousPasteCount + 1, anchor }
-    };
-  }
-
-  const offsetIndex = sourceAction === "cut" ? previousPasteCount : previousPasteCount + 1;
+  const sourceAction = previousState?.key === key ? previousState.sourceAction : "external";
+  const previousAnchor = previousState?.anchor;
+  const pointerStayedPut = anchor && previousAnchor
+    ? Math.abs(previousAnchor.x - anchor.x) < 1 && Math.abs(previousAnchor.y - anchor.y) < 1
+    : anchor === undefined && previousAnchor === undefined;
+  const continues = previousState?.origin !== undefined && previousState.pasteCount > 0 && pointerStayedPut;
+  const centre = continues ? previousState.origin! : anchor ?? {
+    x: payload.bounds.centerX, y: payload.bounds.centerY
+  };
+  const bounds: SelectionBounds = {
+    ...payload.bounds,
+    x: centre.x - payload.bounds.width / 2,
+    y: centre.y - payload.bounds.height / 2,
+    centerX: centre.x,
+    centerY: centre.y
+  };
+  const offsetIndex = continues ? previousState.pasteCount : (anchor || sourceAction === "cut" ? 0 : initialOffset);
+  const point = clampSelectionClipboardPastePoint(selectionClipboardPastePoint(bounds, page, offsetIndex), bounds, page);
   return {
-    point: selectionClipboardPastePoint(payload.bounds, page, offsetIndex),
-    state: {
-      key,
-      sourceAction,
-      pasteCount: previousPasteCount + 1
-    }
+    point,
+    state: { key, sourceAction, pasteCount: continues ? previousState.pasteCount + 1 : 1, anchor,
+      origin: continues ? previousState.origin : point }
   };
 }
 
