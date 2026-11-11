@@ -196,15 +196,93 @@ enum QuitPromptPhase {
     Flushing,
 }
 
-// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
-// system termination: never block logout/shutdown/restart with a save prompt.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
-    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AppkitQuitDecision {
+    TerminateNow,
+    Prompt,
+    DeferReply,
+    WaitForReply,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_quit_decision(
+    is_macos: bool,
+    enabled: bool,
+    quitting: bool,
+    reply_pending: bool,
+    reason: u32,
+) -> AppkitQuitDecision {
+    if !is_macos {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if reply_pending {
+        return AppkitQuitDecision::WaitForReply;
+    }
+    if quitting {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if enabled {
+        // System termination must never wait for a save prompt.
+        return if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
+            AppkitQuitDecision::Prompt
+        } else {
+            AppkitQuitDecision::TerminateNow
+        };
+    }
+    AppkitQuitDecision::DeferReply
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppkitReplyState {
+    Idle,
+    Pending,
+    Claimed,
+    Delivered,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl AppkitReplyState {
+    fn awaiting_delivery(self) -> bool {
+        matches!(self, Self::Pending | Self::Claimed)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+type AppkitReplyTask = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// A dispatch failure leaves the reply claimed until the native fallback actually runs it.
+/// Both dispatchers share one consumable reply, even if a failed dispatcher retained its task.
+#[cfg(any(target_os = "macos", test))]
+fn dispatch_appkit_reply_with<E>(
+    flow: &'static QuitFlow,
+    on_main_thread: bool,
+    dispatch: impl FnOnce(AppkitReplyTask) -> Result<(), E>,
+    fallback: impl FnOnce(AppkitReplyTask),
+    reply: impl FnOnce() + Send + 'static,
+) -> Result<(), E> {
+    let reply = Mutex::new(Some(reply));
+    let deliver: AppkitReplyTask = std::sync::Arc::new(move || {
+        let reply = reply.lock().unwrap().take();
+        if let Some(reply) = reply {
+            reply();
+            *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Delivered;
+        }
+    });
+    if on_main_thread {
+        deliver();
+        return Ok(());
+    }
+    if let Err(error) = dispatch(deliver.clone()) {
+        fallback(deliver);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
-/// once `quitting` is set, the exit watchdog remains unchanged.
+/// AppKit termination uses its reply handshake, while menu quits retain the exit watchdog.
 struct QuitFlow {
     /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
@@ -214,6 +292,9 @@ struct QuitFlow {
     watchdog_armed: AtomicBool,
     /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
     prompt: Mutex<(u64, QuitPromptPhase)>,
+    /// Claiming a reply and delivering it on the main thread are separate transitions.
+    #[cfg(any(target_os = "macos", test))]
+    appkit_reply: Mutex<AppkitReplyState>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -227,6 +308,8 @@ impl QuitFlow {
         Self {
             requested: AtomicBool::new(false),
             prompt: Mutex::new((0, QuitPromptPhase::Idle)),
+            #[cfg(any(target_os = "macos", test))]
+            appkit_reply: Mutex::new(AppkitReplyState::Idle),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -280,6 +363,11 @@ trait QuitHost: Clone + Send + 'static {
     }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
+    /// Completes the pending AppKit termination handshake on the main thread.
+    #[cfg(any(target_os = "macos", test))]
+    fn reply_to_appkit_termination(&self, _flow: &'static QuitFlow) {
+        unreachable!("AppKit termination is only available on macOS");
+    }
     /// Ends the process now, from the watchdog thread.
     fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
@@ -303,6 +391,11 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 
     fn exit(&self) {
         tauri::AppHandle::exit(self, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reply_to_appkit_termination(&self, flow: &'static QuitFlow) {
+        macos_quit::reply_to_termination(self, flow);
     }
 
     /// Windows: `exit` only asks the event loop to stop, and the event loop runs on the main thread,
@@ -391,8 +484,30 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        expire_quit_flush_with(flow, &host);
     });
+}
+
+fn expire_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    quit_now_with(flow, host, QuitReason::GraceExpired);
+}
+
+/// AppKit keeps the original Dock/AppleScript/system termination request open while we flush.
+/// If a menu quit already requested a flush, reuse it and its existing deadline.
+/// False means another quit was already decided, so the delegate must return TerminateNow.
+#[cfg(any(target_os = "macos", test))]
+fn request_appkit_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> bool {
+    let mut reply = flow.appkit_reply.lock().unwrap();
+    if *reply != AppkitReplyState::Idle {
+        return true;
+    }
+    if flow.quitting.load(Ordering::SeqCst) {
+        return false;
+    }
+    *reply = AppkitReplyState::Pending;
+    drop(reply);
+    request_quit_with(flow, host, false);
+    true
 }
 
 fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
@@ -452,11 +567,43 @@ fn resume_prompted_quit_with<H: QuitHost>(
     true
 }
 
-/// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
-/// armed here and nowhere else, so it can never end a process whose session has not been flushed
-/// or given its grace. Only the first decision arms it, so its `reason` is the path that decided.
+/// The session is written, or its grace has run out. Reply to a deferred AppKit termination;
+/// otherwise arm the exit watchdog here and nowhere else, then request event-loop exit.
 fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
+    #[cfg(any(target_os = "macos", test))]
+    {
+        let mut reply = flow.appkit_reply.lock().unwrap();
+        // Confirmation and deadline race for this transition. Late confirmations/timeouts
+        // must neither reply again nor fall through to AppHandle::exit.
+        match *reply {
+            AppkitReplyState::Claimed | AppkitReplyState::Delivered => return,
+            AppkitReplyState::Pending => {
+                // A menu repeat must not complete AppKit's handshake before the flush/deadline.
+                if reason == QuitReason::RepeatedRequest {
+                    return;
+                }
+                *reply = AppkitReplyState::Claimed;
+                // Let Tao's applicationWillTerminate -> RunEvent::Exit do normal cleanup.
+                // Any ExitRequested in between must also pass without requesting a new flush.
+                flow.quitting.store(true, Ordering::SeqCst);
+                drop(reply);
+                if reason == QuitReason::NoDocument {
+                    // This path can run inside applicationShouldTerminate. Dispatch from a
+                    // worker so its TerminateLater return precedes the main-thread YES.
+                    let host = host.clone();
+                    thread::spawn(move || host.reply_to_appkit_termination(flow));
+                } else {
+                    host.reply_to_appkit_termination(flow);
+                }
+                return;
+            }
+            AppkitReplyState::Idle => {
+                flow.quitting.store(true, Ordering::SeqCst);
+            }
+        }
+    }
     // Raised first so the palette teardown that follows isn't recorded as user closes.
+    #[cfg(not(any(target_os = "macos", test)))]
     flow.quitting.store(true, Ordering::SeqCst);
     if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
         let host = host.clone();
@@ -472,8 +619,7 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
 /// `async`, so it runs on a worker: a sync command runs on the main thread, and when a window build
 /// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
-/// 3 s grace ran out. Deciding here touches atomics, starts the watchdog and posts the exit request,
-/// none of which needs the main thread.
+/// 3 s grace ran out. Deciding here posts the exit request or AppKit reply to the main thread.
 #[tauri::command]
 async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
@@ -1512,9 +1658,7 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
-                // only when the preference is enabled. System termination and preference-off
-                // AppKit quit still reach this final, non-blocking cleanup as before.
+                // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -11044,6 +11188,11 @@ mod tests {
             }
         }
 
+        fn reply_to_appkit_termination(&self, flow: &'static QuitFlow) {
+            self.calls.lock().unwrap().push("reply YES");
+            *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Delivered;
+        }
+
         fn force_exit(&self, _waited: Duration, reason: QuitReason) {
             *self.forced_reason.lock().unwrap() = Some(reason);
             self.calls.lock().unwrap().push("force exit");
@@ -11157,22 +11306,249 @@ mod tests {
     }
 
     #[test]
-    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
-        assert!(should_prompt_appkit_quit(true, false, 0));
-        assert!(should_prompt_appkit_quit(
-            true,
-            false,
-            u32::from_be_bytes(*b"quit")
-        ));
-        assert!(!should_prompt_appkit_quit(false, false, 0));
-        assert!(!should_prompt_appkit_quit(true, true, 0));
+    fn appkit_quit_checks_platform_preference_and_pending_reply() {
+        for reason in [0, u32::from_be_bytes(*b"quit")] {
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, reason),
+                AppkitQuitDecision::DeferReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, reason),
+                AppkitQuitDecision::Prompt
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, true, reason),
+                AppkitQuitDecision::WaitForReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, true, reason),
+                AppkitQuitDecision::WaitForReply
+            );
+            for enabled in [false, true] {
+                for pending in [false, true] {
+                    assert_eq!(
+                        appkit_quit_decision(true, enabled, true, pending, reason),
+                        if pending {
+                            AppkitQuitDecision::WaitForReply
+                        } else {
+                            AppkitQuitDecision::TerminateNow
+                        }
+                    );
+                    assert_eq!(
+                        appkit_quit_decision(false, enabled, false, pending, reason),
+                        AppkitQuitDecision::TerminateNow
+                    );
+                }
+            }
+        }
         for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
-            assert!(!should_prompt_appkit_quit(
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::DeferReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, true, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::WaitForReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::TerminateNow
+            );
+        }
+    }
+
+    #[test]
+    fn appkit_quit_replies_once_on_confirmation() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host);
+        // A duplicate delegate callback reuses the pending handshake and flush.
+        for _ in 0..2 {
+            assert_eq!(
+                appkit_quit_decision(
+                    true,
+                    false,
+                    flow.quitting.load(Ordering::SeqCst),
+                    flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                    0
+                ),
+                AppkitQuitDecision::WaitForReply
+            );
+            request_appkit_quit_with(flow, &host);
+            assert_eq!(host.calls(), ["ask to flush"]);
+        }
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        assert!(!should_flush_exit_request(
+            true,
+            None,
+            flow.quitting.load(Ordering::SeqCst)
+        ));
+        assert_eq!(
+            appkit_quit_decision(
                 true,
                 false,
-                u32::from_be_bytes(reason)
-            ));
+                flow.quitting.load(Ordering::SeqCst),
+                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
+    }
+
+    #[test]
+    fn appkit_quit_replies_once_on_timeout_and_ignores_late_confirmation() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        // Fire the production timeout callback without waiting on a clock.
+        expire_quit_flush_with(flow, &host);
+        expire_quit_flush_with(flow, &host);
+        // A renderer finishing after the deadline must not reply again or post an exit.
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(
+            appkit_quit_decision(
+                true,
+                false,
+                flow.quitting.load(Ordering::SeqCst),
+                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
+    }
+
+    #[test]
+    fn appkit_confirmation_and_timeout_race_for_one_reply() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        assert!(request_appkit_quit_with(flow, &host));
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = [QuitReason::FlushConfirmed, QuitReason::GraceExpired]
+            .into_iter()
+            .map(|reason| {
+                let host = host.clone();
+                let start = start.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    quit_now_with(flow, &host, reason);
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
         }
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn appkit_quit_reuses_an_existing_menu_flush() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, true);
+        assert!(request_appkit_quit_with(flow, &host));
+        request_quit_with(flow, &host, true);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_quit_without_a_document_replies_once() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(false);
+        assert!(request_appkit_quit_with(flow, &host));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.wait_for_calls(2), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_failed_dispatch_uses_native_fallback_and_delivers_exactly_once() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Claimed;
+        let primary_task = Mutex::new(None);
+        let fallback_task = Mutex::new(None);
+        let replies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = replies.clone();
+        let result = dispatch_appkit_reply_with(
+            flow,
+            false,
+            |task| {
+                // Even a dispatcher that retains a task before failing cannot double-reply.
+                *primary_task.lock().unwrap() = Some(task);
+                Err("event proxy closed")
+            },
+            |task| *fallback_task.lock().unwrap() = Some(task),
+            move || {
+                delivered.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(result, Err("event proxy closed"));
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Claimed
+        );
+        assert!(flow.appkit_reply.lock().unwrap().awaiting_delivery());
+        assert_eq!(replies.load(Ordering::SeqCst), 0);
+
+        let host = StuckAppHost::new(true);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        expire_quit_flush_with(flow, &host);
+        assert!(host.calls().is_empty());
+
+        let fallback = fallback_task.into_inner().unwrap().unwrap();
+        fallback();
+        fallback();
+        primary_task.into_inner().unwrap().unwrap()();
+        assert_eq!(replies.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Delivered
+        );
+        assert!(!flow.appkit_reply.lock().unwrap().awaiting_delivery());
+    }
+
+    #[test]
+    fn appkit_reply_on_main_thread_delivers_without_dispatch() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Claimed;
+        let replies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = replies.clone();
+        assert_eq!(
+            dispatch_appkit_reply_with(
+                flow,
+                true,
+                |_| -> Result<(), ()> { panic!("already on the main thread") },
+                |_| panic!("already on the main thread"),
+                move || {
+                    delivered.fetch_add(1, Ordering::SeqCst);
+                },
+            ),
+            Ok(())
+        );
+        assert_eq!(replies.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Delivered
+        );
+    }
+
+    #[test]
+    fn appkit_quit_does_not_defer_an_already_decided_menu_exit() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert!(!request_appkit_quit_with(flow, &host));
+        assert_eq!(host.calls(), ["exit"]);
     }
 
     #[test]
