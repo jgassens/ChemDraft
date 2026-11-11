@@ -62,9 +62,15 @@ const charsetCode = new Map([...charsets].map(([code, name]) => [name, code]));
 // The style records' four parts, as CDXML splits them (LabelFont, LabelFace, LabelSize, LabelColor).
 const STYLE_PARTS = ["Font", "Face", "Size", "Color"];
 
-// Keep the historical writer's uncoloured style bytes. In text runs only, slot 3 means
-// no explicit colour, irrespective of the palette or document foreground attribute.
+// Slot 3 is the file's foreground colour. Preserve the historical uncoloured style
+// bytes only when that slot is the default black.
 const TEXT_FOREGROUND = 3;
+
+function textForegroundIsBlack(root: CdxElement): boolean {
+  const definition = root.kids.find(child => child.name === "colortable")
+    ?.kids.filter(child => child.name === "color")[TEXT_FOREGROUND - 2];
+  return !definition || ["r", "g", "b"].every(channel => Number(definition.attrs[channel] ?? 0) === 0);
+}
 
 function prepareTextColors(root: CdxElement): void {
   const table = root.kids.find(child => child.name === "colortable");
@@ -416,7 +422,7 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       const s: CdxElement = { name: "s", attrs: Object.create(null), kids: [], text: "" };
       if (run && run[1] !== 0xffff) s.attrs.font = String(run[1]);
       if (run && run[3]) s.attrs.size = String(run[3] / 20);
-      if (run && run[4] !== TEXT_FOREGROUND) s.attrs.color = String(run[4]);
+      if (run && (run[4] !== TEXT_FOREGROUND || !textForegroundIsBlack(root!))) s.attrs.color = String(run[4]);
       if (run && run[2]) s.attrs.face = String(run[2]);
       s.text = decode(b2, unicode ? 65001 : runs.length ? charsetOf(run?.[1] ?? -1, el) : LATIN1, el).replace(/\r\n?/g, "\n");
       return s;
@@ -663,6 +669,7 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
   const emitWarning = warningSink(warnings);
   root = prepareCdxTree(root, emitWarning);
   prepareTextColors(root);
+  const defaultTextColor = textForegroundIsBlack(root) ? TEXT_FOREGROUND : 0;
   // A named producer or native envelope could otherwise identify this newly written file as
   // legacy on reopen. prepareCdxTree made a copy, so adding the marker never mutates the caller.
   if (root.attrs.CreationProgram !== undefined || root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] !== undefined
@@ -773,14 +780,14 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
   // Each run uses its declared/default font charset alongside the UTF-8 copy.
   const textProps = (runs: CdxElement[], owner: CdxElement) => {
     const legacy: number[][] = [], unicode: number[][] = [], legacyBytes: number[] = [], unicodeBytes: number[] = [];
-    // CDX requires a colour per run. Its reserved foreground slot represents no explicit
-    // colour; a parent's explicit colour still supplies the inherited palette entry.
+    // CDX requires a colour per run. Use reserved black when the file's foreground
+    // is coloured; a parent's explicit colour still supplies the inherited palette entry.
     const inheritedColor = Number.parseInt(owner.attrs.color ?? "", 10);
     for (const s of runs) {
       checkAttrs(s, ["font", "size", "color", "face"]);
       const text = s.text.replace(/\r\n?|\n/g, "\r"), font = Number.parseInt(s.attrs.font ?? "", 10), size = real(s.attrs.size), colour = Number.parseInt(s.attrs.color ?? "", 10), face = Number.parseInt(s.attrs.face ?? "", 10);
       const style = [Number.isFinite(font) ? font : 0xffff, Number.isFinite(face) ? face : 0, size ? Math.round(size * 20) : 0,
-        Number.isFinite(colour) ? colour : Number.isFinite(inheritedColor) ? inheritedColor : TEXT_FOREGROUND];
+        Number.isFinite(colour) ? colour : Number.isFinite(inheritedColor) ? inheritedColor : defaultTextColor];
       const u = enc.encode(text);
       unicode.push([unicodeBytes.length, ...style]);
       for (const byte of u) unicodeBytes.push(byte);

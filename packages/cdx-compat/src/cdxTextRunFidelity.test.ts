@@ -44,6 +44,8 @@ describe("payload-less text run fidelity", () => {
         </colortable><page id="1"><t id="2" p="30 40"><s color="2">Na</s> <s color="3">Cl</s></t></page></CDXML>`);
       const original = textOf(imported);
       const spans = structuredClone(original.spans);
+      // With the source palette, slot 3 is purple: the uncoloured space needs reserved black.
+      if (preserveSource) spans[1].style.color = "#000000";
       if (!preserveSource) delete original.compatibility;
       const exported = exportDocumentToCdx(imported.document!, { embedNativePayload: false });
       expect(textOf(importCdx(exported.bytes)).spans).toEqual(spans);
@@ -72,12 +74,14 @@ describe("payload-less text run fidelity", () => {
         expect(exported.warnings).toEqual([]);
       });
 
-      it(`keeps an uncoloured run drawn #111111 with red at source index 3 through ${format} (${preserveSource ? "source" : "native"} runs)`, () => {
+      it(`keeps an uncoloured run black with red at source index 3 through ${format} (${preserveSource ? "source" : "native"} runs)`, () => {
         const imported = openChemDraftPayload(`<CDXML><colortable>
           <color r="1" g="1" b="1"/><color r="1" g="0" b="0"/><color r="0" g="0" b="0"/>
           </colortable><page id="1"><t id="2" p="30 40"><s>default</s><s color="4">black</s></t></page></CDXML>`);
         const original = textOf(imported);
         const spans = structuredClone(original.spans);
+        // Binary CDX requires a colour: reserved black avoids the red foreground.
+        if (format === "CDX" && preserveSource) spans[0].style.color = "#000000";
         if (!preserveSource) delete original.compatibility;
         const exported = format === "CDX"
           ? exportDocumentToCdx(imported.document!, { embedNativePayload: false })
@@ -85,13 +89,27 @@ describe("payload-less text run fidelity", () => {
         const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
         const actual = textOf(reopened);
         expect(actual.spans).toEqual(spans);
-        expect(actual.spans[0].style).not.toHaveProperty("color");
-        expect(actual.spans[0].style.color ?? actual.style.color ?? DefaultNativeTextStyle.color).toBe("#111111");
+        expect(actual.spans[0].style.color).toBe(format === "CDX" && preserveSource ? "#000000" : undefined);
+        expect(actual.spans[0].style.color ?? actual.style.color ?? DefaultNativeTextStyle.color).toBe(format === "CDX" && preserveSource ? "#000000" : "#111111");
         expect(actual.spans[1].style.color).toBe("#000000");
         expect(exported.warnings).toEqual([]);
       });
     }
   }
+
+  it("keeps an uncoloured native run with a preserved red foreground through embedded CDX", () => {
+    const imported = openChemDraftPayload(`<CDXML><colortable>
+      <color r="1" g="1" b="1"/><color r="1" g="0" b="0"/>
+      </colortable><page id="1"><t id="2" p="30 40"><s>default</s></t></page></CDXML>`);
+    const original = textOf(imported);
+    expect(original.spans[0].style).not.toHaveProperty("color");
+    const exported = exportDocumentToCdx(imported.document!, { embedNativePayload: true });
+    expect(textOf(importCdx(exported.bytes)).spans).toEqual(original.spans);
+    const visible = exportDocumentToCdx(imported.document!, { embedNativePayload: false });
+    expect(textOf(importCdx(visible.bytes)).spans[0].style.color).toBe("#000000");
+    expect(exported.warnings).toEqual([]);
+    expect(visible.warnings).toEqual([]);
+  });
 
   for (const runColor of [undefined, 0, 3]) {
     it(`reads an independently built binary run colour ${runColor ?? "absent"} using its own foreground and palette`, () => {
@@ -105,14 +123,14 @@ describe("payload-less text run fidelity", () => {
         ...new TextEncoder().encode(MAGIC), 4, 3, 2, 1, ...Array(10).fill(0),
         ...object(0x8000, 0, [
           ...object(0x8001, 1, object(0x8006, 2, property(0x0700, [...runs, ...text]))),
-          // Metadata deliberately follows the text. Slot 3 remains uncoloured even
-          // when the document foreground names red; reserved slot 0 is explicit black.
+          // Metadata deliberately follows the text. Slot 3 resolves through the
+          // file palette to red; reserved slot 0 remains explicit black.
           ...property(0x0301, u16(4)),
-          ...property(0x0300, [...u16(3), ...[65535, 65535, 65535, 0, 0, 0, 65535, 0, 0].flatMap(u16)])
+          ...property(0x0300, [...u16(3), ...[65535, 65535, 65535, 65535, 0, 0, 0, 0, 0].flatMap(u16)])
         ])
       ]);
       const actual = textOf(importCdx(bytes));
-      expect(actual.spans).toEqual([{ text: "test", script: "normal", style: runColor === 0 ? { color: "#000000" } : {} }]);
+      expect(actual.spans).toEqual([{ text: "test", script: "normal", style: runColor === 0 ? { color: "#000000" } : runColor === 3 ? { color: "#ff0000" } : {} }]);
     });
   }
 
