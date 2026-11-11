@@ -1540,10 +1540,23 @@ fn update_snapshot(session: &mut Session, message: &Message) {
 }
 fn releases_action_reservation(message: &Message) -> bool {
     (message.dialog_kind == "atomProblem" && message.data["status"] == "applied")
+        // Export keeps its window open for another explicit export after a successful write.
+        || (message.dialog_kind == "export" && message.data["status"] == "exported")
         || matches!(
             message.data["status"].as_str(),
             Some("error" | "picked" | "cancelled" | "inserted")
         )
+}
+
+fn complete_action(session: &mut Session, message: &Message) {
+    if releases_action_reservation(message)
+        && session.terminal_request.as_ref() == Some(&message.request_id)
+    {
+        session.terminal_request = None;
+    }
+    session
+        .receipts
+        .insert(message.request_id.clone(), message.clone());
 }
 
 fn register(
@@ -1890,14 +1903,7 @@ pub(crate) fn dialog_publish(
         if let Some(previous) = session.receipts.get(&message.request_id) {
             return send_host(session, previous);
         }
-        if releases_action_reservation(&message)
-            && session.terminal_request.as_ref() == Some(&message.request_id)
-        {
-            session.terminal_request = None;
-        }
-        session
-            .receipts
-            .insert(message.request_id.clone(), message.clone());
+        complete_action(session, &message);
     } else if message.message_type == "snapshot" {
         update_snapshot(session, &message);
     }
@@ -4842,8 +4848,17 @@ mod tests {
         assert!(!reserve_action(session, &action).unwrap());
         action.request_id = "second".into();
         assert!(reserve_action(session, &action).is_err());
-        session.terminal_request = None; // An error result releases the reservation.
+        let mut receipt = snapshot();
+        receipt.message_type = "result".into();
+        receipt.data = json!({"status":"error","error":"Try again"});
+        complete_action(session, &receipt);
         assert!(reserve_action(session, &action).unwrap());
+        // A successful Apply stays terminal; only an error permits a retry.
+        receipt.request_id = action.request_id.clone();
+        receipt.data = json!({"status":"applied"});
+        complete_action(session, &receipt);
+        action.request_id = "third".into();
+        assert!(reserve_action(session, &action).is_err());
     }
     #[test]
     fn template_placement_fits_oversized_frames_at_destination_dpi_and_negative_origins() {
@@ -7593,7 +7608,7 @@ mod tests {
         assert_eq!(bounded["message"]["data"]["error"], OVERSIZED_ERROR);
     }
     #[test]
-    fn completed_export_allows_only_cancel_and_replays_duplicates() {
+    fn completed_export_releases_reservation_and_replays_duplicates() {
         let mut registry = Registry::default();
         let mut m = export_snapshot();
         let (r, _) = register(&mut registry, m.clone(), false).unwrap();
@@ -7605,11 +7620,34 @@ mod tests {
         let mut receipt = m.clone();
         receipt.message_type = "result".into();
         receipt.data = json!({"status":"exported","notice":"Exported PDF"});
-        session.receipts.insert(m.request_id.clone(), receipt);
-        m.request_id = "second-press".into();
-        assert!(reserve_action(session, &m).is_err());
-        m.data = json!({"action":"cancel"});
-        assert!(reserve_action(session, &m).unwrap());
+        complete_action(session, &receipt);
+        assert!(session.terminal_request.is_none());
+        assert!(!reserve_action(session, &m).unwrap());
+        assert_eq!(session.receipts[&m.request_id].data, receipt.data);
+
+        // Each successful write permits an explicit same-format or changed-format export.
+        for (request_id, format, filename) in [
+            ("second-pdf", "pdf", "Drawing.pdf"),
+            ("third-svg", "svg", "Drawing.svg"),
+        ] {
+            let mut next = m.clone();
+            next.request_id = request_id.into();
+            next.data["options"]["format"] = json!(format);
+            next.data["options"]["filename"] = json!(filename);
+            assert!(next.validate().is_ok());
+            assert!(reserve_action(session, &next).unwrap());
+            assert!(!reserve_action(session, &m).unwrap());
+            // Replaying the previous success must not release the new pending write.
+            complete_action(session, &receipt);
+            assert_eq!(session.terminal_request.as_ref(), Some(&next.request_id));
+            let mut overlapping = next.clone();
+            overlapping.request_id = "overlapping".into();
+            assert!(reserve_action(session, &overlapping).is_err());
+            receipt.request_id = next.request_id.clone();
+            complete_action(session, &receipt);
+            assert!(session.terminal_request.is_none());
+            assert!(!reserve_action(session, &next).unwrap());
+        }
     }
     #[test]
     fn pending_export_allows_cancel_without_releasing_write_reservation() {
@@ -7625,6 +7663,11 @@ mod tests {
         cancel.data = json!({"action":"cancel"});
         assert!(reserve_action(session, &cancel).unwrap());
         assert!(!reserve_action(session, &cancel).unwrap());
+        let mut receipt = m.clone();
+        receipt.message_type = "result".into();
+        receipt.data = json!({"status":"exported"});
+        complete_action(session, &receipt);
+        assert_eq!(session.terminal_request.as_ref(), Some(&cancel.request_id));
         m.request_id = "second-export".into();
         assert!(reserve_action(session, &m).is_err());
     }
