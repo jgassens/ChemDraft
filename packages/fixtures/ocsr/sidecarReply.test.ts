@@ -8,7 +8,6 @@ const python = ["python3", "python"].find((command) => {
     { encoding: "utf8", timeout: 3000 });
   return !probe.error && probe.status === 0;
 });
-if (!python) throw new Error("Python 3 is required: neither python3 nor python found a working Python 3 interpreter");
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const expected = JSON.parse(readFileSync(new URL("expected.json", import.meta.url), "utf8"))
@@ -52,7 +51,7 @@ print(json.dumps(answer))
   return JSON.parse(child.stdout);
 }
 
-describe("sidecar reply", () => {
+describe.skipIf(!python)("sidecar reply (requires Python 3 via python3 or python)", () => {
   it("reads the logged 4/5 winner after all progress, leaving the next reply queued", () => {
     const next = { ...result, id: "brevetoxin-a / retina-2x-on-white" };
     const actual = readReply([...[1, 2, 3, 4, 5].map((run) => progress(run)), result, next]);

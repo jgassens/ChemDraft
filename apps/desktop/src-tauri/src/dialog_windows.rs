@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, Condvar, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -3781,6 +3781,7 @@ static POSITION_WORKER: LazyLock<std::sync::mpsc::SyncSender<std::path::PathBuf>
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             debounce_positions(receiver, Duration::from_millis(200), |path| {
+                let _pending = POSITION_WRITES.register();
                 // Serialize final close flushes with worker writes. Take the snapshot under REGISTRY,
                 // then release REGISTRY before any file reads or writes.
                 let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
@@ -3823,33 +3824,93 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
     if writes.is_empty() {
         return;
     }
-    if path
-        .parent()
-        .is_some_and(|parent| std::fs::create_dir_all(parent).is_err())
-    {
-        return;
-    }
     let mut positions: HashMap<String, SavedPosition> = std::fs::read(path)
         .ok()
         .filter(|b| b.len() <= MAX_BYTES)
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     merge_positions(&mut positions, writes);
-    if let Ok(bytes) = serde_json::to_vec(&positions) {
-        use std::io::Write;
-        if let Err(error) = std::fs::File::create(path)
-            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
-        {
+    if let Ok(contents) = serde_json::to_string(&positions) {
+        // The deadline can abandon this worker. Publish only a complete replacement.
+        if let Err(error) = super::write_file_atomic(path, &contents) {
             eprintln!("Could not persist dialog frames: {error}");
         }
     }
 }
 fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
     if let Some((_, saved)) = session.pending_move.take() {
-        let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
-        if let Ok(path) = saved_path(app) {
-            write_positions(&path, vec![(session.snapshot.dialog_kind.clone(), saved)]);
-        }
+        let app = app.clone();
+        let kind = session.snapshot.dialog_kind.clone();
+        persist_close_with(defer_quit_close_persistence(), move || {
+            let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+            if let Ok(path) = saved_path(&app) {
+                write_positions(&path, vec![(kind, saved)]);
+            }
+        });
+    }
+}
+
+/// Quit callbacks on either platform must leave POSITION_IO and filesystem work to a worker.
+fn defer_quit_close_persistence() -> bool {
+    super::quit_in_progress()
+}
+
+#[derive(Default)]
+struct PositionWriteTracker {
+    pending: Mutex<usize>,
+    finished: Condvar,
+}
+
+impl PositionWriteTracker {
+    fn register(self: &Arc<Self>) -> PositionWriteGuard {
+        *self.pending.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        PositionWriteGuard(self.clone())
+    }
+
+    fn drain(&self) {
+        let pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        drop(
+            self.finished
+                .wait_while(pending, |pending| *pending != 0)
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+    }
+}
+
+struct PositionWriteGuard(Arc<PositionWriteTracker>);
+
+impl Drop for PositionWriteGuard {
+    fn drop(&mut self) {
+        *self.0.pending.lock().unwrap_or_else(|p| p.into_inner()) -= 1;
+        self.0.finished.notify_all();
+    }
+}
+
+static POSITION_WRITES: LazyLock<Arc<PositionWriteTracker>> = LazyLock::new(Default::default);
+
+/// Only confirmation workers wait here. The quit deadline and exit watchdog never do.
+pub(crate) fn drain_pending_position_writes() {
+    POSITION_WRITES.drain();
+}
+
+fn persist_close_with(defer: bool, persist: impl FnOnce() + Send + 'static) {
+    persist_close_tracked_with(&POSITION_WRITES, defer, persist);
+}
+
+fn persist_close_tracked_with(
+    tracker: &Arc<PositionWriteTracker>,
+    defer: bool,
+    persist: impl FnOnce() + Send + 'static,
+) {
+    // Register before dispatch so a fast session confirmation includes unscheduled writes.
+    let pending = tracker.register();
+    if defer {
+        std::thread::spawn(move || {
+            let _pending = pending;
+            persist();
+        });
+    } else {
+        persist();
     }
 }
 
@@ -3898,12 +3959,19 @@ fn flush_preferences_to(
     }
 }
 pub(crate) fn flush_preferences<R: Runtime>(app: &tauri::AppHandle<R>, close: PreferencesClose) {
-    if let Ok(path) = saved_path(app) {
-        flush_preferences_to(&REGISTRY, &path, close, || {
-            app.get_webview_window(super::PREFERENCES_WINDOW_LABEL)
-                .and_then(|window| sample_preferences_position(&window))
-        });
-    }
+    // Native reads stay on the caller's main-thread capture; path resolution and I/O move together.
+    let current = if close == PreferencesClose::Destroyed {
+        None
+    } else {
+        app.get_webview_window(super::PREFERENCES_WINDOW_LABEL)
+            .and_then(|window| sample_preferences_position(&window))
+    };
+    let app = app.clone();
+    persist_close_with(defer_quit_close_persistence(), move || {
+        if let Ok(path) = saved_path(&app) {
+            flush_preferences_to(&REGISTRY, &path, close, || current);
+        }
+    });
 }
 /// Native close/destroy settles even if the renderer crashes or never executes cleanup.
 pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &WindowEvent) {
@@ -3974,6 +4042,81 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quit_close_never_takes_position_io_on_the_capture_thread_and_drain_tracks_both_writes() {
+        let tracker = Arc::new(PositionWriteTracker::default());
+        let held = POSITION_IO.lock().unwrap();
+        let capture_thread = std::thread::current().id();
+        let (started, starting) = std::sync::mpsc::channel();
+        let (finished, finishing) = std::sync::mpsc::channel();
+        for _kind in ["preferences", "export"] {
+            let started = started.clone();
+            let finished = finished.clone();
+            persist_close_tracked_with(&tracker, true, move || {
+                started.send(std::thread::current().id()).unwrap();
+                let _io = POSITION_IO.lock().unwrap();
+                finished.send(()).unwrap();
+            });
+        }
+        for _ in 0..2 {
+            assert_ne!(
+                starting.recv_timeout(Duration::from_secs(2)).unwrap(),
+                capture_thread
+            );
+        }
+        assert_eq!(*tracker.pending.lock().unwrap(), 2);
+        assert!(finishing.try_recv().is_err());
+        let draining = tracker.clone();
+        let (drained, drain_done) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            draining.drain();
+            drained.send(()).unwrap();
+        });
+        assert!(drain_done.try_recv().is_err());
+        drop(held);
+        drain_done.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(finishing.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn ordinary_close_remains_synchronous_and_quit_publication_keeps_the_old_file_whole() {
+        let tracker = Arc::new(PositionWriteTracker::default());
+        let synchronous = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saved = synchronous.clone();
+        persist_close_tracked_with(&tracker, false, move || {
+            saved.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(synchronous.load(std::sync::atomic::Ordering::SeqCst));
+        for platform in ["macos", "windows"] {
+            let path = preferences_test_path(platform);
+            let expected = preferences_native_frame(platform, 1.5, false).unwrap();
+            write_positions(&path, vec![("preferences".into(), expected.clone())]);
+            let original = std::fs::read(&path).unwrap();
+            let held = POSITION_IO.lock().unwrap();
+            let worker_path = path.clone();
+            let (started, starting) = std::sync::mpsc::channel();
+            persist_close_tracked_with(&tracker, true, move || {
+                started.send(()).unwrap();
+                let _io = POSITION_IO.lock().unwrap();
+                write_positions(&worker_path, vec![("export".into(), expected)]);
+            });
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            // A deadline can exit here without exposing a partially overwritten frame file.
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            drop(held);
+            tracker.drain();
+            let positions: HashMap<String, SavedPosition> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(positions.len(), 2);
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
     #[test]
     fn atom_problem_fits_short_content_at_each_monitor_scale() {
         for scale in [1.0, 1.5, 2.0] {
