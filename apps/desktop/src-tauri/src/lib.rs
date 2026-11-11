@@ -11511,9 +11511,9 @@ mod tests {
         let long = "L".repeat(64_000);
 
         let mut handles = Vec::new();
-        for index in 0..8 {
+        for index in 0usize..8 {
             let path = path.clone();
-            let payload = if index % 2 == 0 {
+            let payload = if index.is_multiple_of(2) {
                 short.clone()
             } else {
                 long.clone()

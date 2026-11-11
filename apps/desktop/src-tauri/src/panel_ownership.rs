@@ -14,7 +14,7 @@ pub(crate) fn owner_id(label: &str) -> Option<String> {
     }
     let decode = |hex: &str| -> Option<String> {
         if hex.is_empty()
-            || hex.len() % 2 != 0
+            || !hex.len().is_multiple_of(2)
             || !hex
                 .bytes()
                 .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))

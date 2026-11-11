@@ -798,7 +798,7 @@ fn native_open_label(target: &str) -> Option<String> {
     } else if let Some(ids) = target.strip_prefix("panel:") {
         let (plugin, panel) = ids.split_once('/')?;
         (!plugin.is_empty() && !panel.is_empty() && ids.len() <= 512)
-            .then(|| super::plugin_panel_identity_window_label(plugin, panel))
+            .then(|| super::plugin_panel_owned_identity_window_label(plugin, panel, "main"))
     } else {
         None
     }
