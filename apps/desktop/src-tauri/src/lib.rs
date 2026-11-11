@@ -173,11 +173,39 @@ enum QuitPromptPhase {
     Flushing,
 }
 
-// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
-// system termination: never block logout/shutdown/restart with a save prompt.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
-    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AppkitQuitDecision {
+    TerminateNow,
+    Prompt,
+    Flush,
+    WaitForFlush,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_quit_decision(
+    is_macos: bool,
+    enabled: bool,
+    quitting: bool,
+    flush_pending: bool,
+    reason: u32,
+) -> AppkitQuitDecision {
+    if !is_macos || quitting {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if enabled {
+        // System termination must never wait for a save prompt.
+        return if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
+            AppkitQuitDecision::Prompt
+        } else {
+            AppkitQuitDecision::TerminateNow
+        };
+    }
+    if flush_pending {
+        AppkitQuitDecision::WaitForFlush
+    } else {
+        AppkitQuitDecision::Flush
+    }
 }
 
 /// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
@@ -368,8 +396,12 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        expire_quit_flush_with(flow, &host);
     });
+}
+
+fn expire_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    quit_now_with(flow, host, QuitReason::GraceExpired);
 }
 
 fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
@@ -1465,9 +1497,7 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
-                // only when the preference is enabled. System termination and preference-off
-                // AppKit quit still reach this final, non-blocking cleanup as before.
+                // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -10697,22 +10727,98 @@ mod tests {
     }
 
     #[test]
-    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
-        assert!(should_prompt_appkit_quit(true, false, 0));
-        assert!(should_prompt_appkit_quit(
-            true,
-            false,
-            u32::from_be_bytes(*b"quit")
-        ));
-        assert!(!should_prompt_appkit_quit(false, false, 0));
-        assert!(!should_prompt_appkit_quit(true, true, 0));
+    fn appkit_quit_checks_platform_preference_and_pending_flush() {
+        for reason in [0, u32::from_be_bytes(*b"quit")] {
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, reason),
+                AppkitQuitDecision::Flush
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, reason),
+                AppkitQuitDecision::Prompt
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, true, reason),
+                AppkitQuitDecision::Prompt
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, true, reason),
+                AppkitQuitDecision::WaitForFlush
+            );
+            for enabled in [false, true] {
+                for pending in [false, true] {
+                    assert_eq!(
+                        appkit_quit_decision(true, enabled, true, pending, reason),
+                        AppkitQuitDecision::TerminateNow
+                    );
+                    assert_eq!(
+                        appkit_quit_decision(false, enabled, false, pending, reason),
+                        AppkitQuitDecision::TerminateNow
+                    );
+                }
+            }
+        }
         for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
-            assert!(!should_prompt_appkit_quit(
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::TerminateNow
+            );
+        }
+    }
+
+    #[test]
+    fn appkit_quit_waits_for_one_flush_then_allows_the_confirmed_exit() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, true);
+        // Further AppKit terminate callbacks cancel without requesting another quit.
+        for _ in 0..2 {
+            assert_eq!(
+                appkit_quit_decision(
+                    true,
+                    false,
+                    flow.quitting.load(Ordering::SeqCst),
+                    flow.requested.load(Ordering::SeqCst),
+                    0
+                ),
+                AppkitQuitDecision::WaitForFlush
+            );
+            assert_eq!(host.calls(), ["ask to flush"]);
+        }
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.calls(), ["ask to flush", "exit"]);
+        assert_eq!(
+            appkit_quit_decision(
                 true,
                 false,
-                u32::from_be_bytes(reason)
-            ));
-        }
+                flow.quitting.load(Ordering::SeqCst),
+                flow.requested.load(Ordering::SeqCst),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
+    }
+
+    #[test]
+    fn appkit_quit_allows_exit_when_the_flush_deadline_expires() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, true);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        // Fire the production timeout callback without waiting on a clock.
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "exit"]);
+        assert!(flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(
+            appkit_quit_decision(
+                true,
+                false,
+                flow.quitting.load(Ordering::SeqCst),
+                flow.requested.load(Ordering::SeqCst),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
     }
 
     #[test]

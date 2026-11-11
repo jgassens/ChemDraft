@@ -72,15 +72,25 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
-    if super::should_prompt_appkit_quit(
+    match super::appkit_quit_decision(
+        cfg!(target_os = "macos"),
         super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
         super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+        super::QUIT
+            .requested
+            .load(std::sync::atomic::Ordering::SeqCst),
         reason,
     ) {
-        if let Some(app) = APP.get() {
-            super::request_quit(app);
-            return NSApplicationTerminateReply::TerminateCancel; // Return to the event loop while the user chooses.
+        super::AppkitQuitDecision::Prompt | super::AppkitQuitDecision::Flush => {
+            if let Some(app) = APP.get() {
+                super::request_quit(app);
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
         }
+        super::AppkitQuitDecision::WaitForFlush => {
+            return NSApplicationTerminateReply::TerminateCancel;
+        }
+        super::AppkitQuitDecision::TerminateNow => {}
     }
-    NSApplicationTerminateReply::TerminateNow // Preference off, decided exit, or system termination.
+    NSApplicationTerminateReply::TerminateNow
 }
