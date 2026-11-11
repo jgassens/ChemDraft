@@ -125,18 +125,20 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       const x = left + (corner.endsWith("left") ? Number.parseFloat(css.left) : width - Number.parseFloat(css.right) - w);
       const y = top + (corner.startsWith("top") ? Number.parseFloat(css.top) : height - Number.parseFloat(css.bottom) - h);
       expect([x, y, w, h].every(Number.isFinite)).toBe(true);
-      return { handle, x, y, width: w, height: h };
+      return { handle, x, y, width: w, height: h, frame: { x: left, y: top, width, height } };
     });
   }
-  function targetAt(point: { x: number; y: number }, zoom: number) {
+  function resizeHandleAt(point: { x: number; y: number }, zoom: number) {
     // Resolve HTML corner hit boxes using production offsets. Dispatching straight to the
     // SVG would bypass the bug: jsdom does not implement elementFromPoint/layout.
-    const box = handleBoxes(zoom).reverse().find(box => point.x >= box.x && point.x <= box.x + box.width &&
-      point.y >= box.y && point.y <= box.y + box.height);
+    return handleBoxes(zoom).reverse().find(box => point.x >= box.x && point.x <= box.x + box.width &&
+      point.y >= box.y && point.y <= box.y + box.height)?.handle;
+  }
+  function targetAt(point: { x: number; y: number }, zoom: number) {
     const mark = dropMark(snapshot());
     // With direct editing OFF there is no rectangular catcher. The plus sign's
     // painted vertical stroke crosses the center; the unfilled circle does not.
-    return box?.handle ?? container.querySelector(`[data-electron-mark-hit-target="${mark.id}"]`) ??
+    return resizeHandleAt(point, zoom) ?? container.querySelector(`[data-electron-mark-hit-target="${mark.id}"]`) ??
       container.querySelector(`[data-page-svg-object-visual="${mark.id}"] line:last-child`)!;
   }
   async function exactUndoRedo(before: ChemDraftDocument, after: ChemDraftDocument, label: string) {
@@ -179,8 +181,13 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
   it.runIf(enabled).each(cornerViews)("resizes a selected mark from $corner at zoom $zoom, rotation $rotation in one undo step", async ({ zoom, rotation, corner }) => {
     const before = await selectedMark(zoom, rotation), mark = dropMark(before);
     const box = handleBoxes(zoom).find(box => box.handle.dataset.objectResizeCorner === corner)!;
-    expect(box).toMatchObject({ width: 18, height: 18 });
-    const point = { x: box.x + 9, y: box.y + 9 };
+    // Review P2-a/P2-b: 18px at -15px -> 11px at -8px preserves the 3px
+    // overlap while restoring the ordinary reach beside atoms and page edges.
+    expect(box).toMatchObject({ width: 11, height: 11 });
+    const css = getComputedStyle(box.handle);
+    expect(corner.endsWith("left") ? css.left : css.right).toBe("-8px");
+    expect(corner.startsWith("top") ? css.top : css.bottom).toBe("-8px");
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     expect(targetAt(point, zoom)).toBe(box.handle);
     const center = { x: (mark.x + mark.width / 2) * zoom, y: (mark.y + mark.height / 2) * zoom };
     const end = { x: center.x + 1.5 * (point.x - center.x), y: center.y + 1.5 * (point.y - center.y) };
@@ -193,6 +200,19 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     expect(status()).toBe("Resized electron mark");
     expect(dropMolecule(after)).toEqual(dropMolecule(before));
     await exactUndoRedo(before, after, "Resize electron mark");
+  });
+
+  it.runIf(enabled).each(markViews)("leaves a press 12px outside the bottom-left corner clear of resize handles at zoom $zoom, rotation $rotation", async ({ zoom, rotation }) => {
+    const before = await selectedMark(zoom, rotation);
+    const boxes = handleBoxes(zoom);
+    expect(boxes).toHaveLength(4);
+    const { frame } = boxes[0];
+    const point = { x: frame.x - 12, y: frame.y + frame.height + 12 };
+    // An adjacent atom here was covered by the old -15px compact targets (P2-a).
+    expect(resizeHandleAt(point, zoom)).toBeUndefined();
+    await act(async () => pointer(page(), "pointerdown", point));
+    await act(async () => pointer(page(), "pointerup", point));
+    expect(dropMark(snapshot())).toEqual(dropMark(before));
   });
 
   it.runIf(enabled).each([
