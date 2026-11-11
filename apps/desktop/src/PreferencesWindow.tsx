@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { measureDialogContentWhenFontsReady, observeDialogContent } from "./dialogs/dialogContentFit";
+import { isDesktopRuntime } from "./window-manager";
+import { useEffect, useRef, useState } from "react";
+import { loadStructureSearchEnabled, saveStructureSearchEnabled } from "./structureSearchSettings";
 import { loadStartWithFreshDocument, saveStartWithFreshDocument } from "./startupSettings";
 import { loadExportPreviewEnabled, saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { loadAutomaticPluginUpdates, saveAutomaticPluginUpdates, broadcastPluginUpdateSettings } from "./pluginUpdateSettings";
@@ -17,7 +20,11 @@ import {
   type KeybindingScheme,
   type KeybindingSettings
 } from "./keybindingSettings";
-import { loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { compoundLayoutFeatures, loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { loadDrawingSettings, saveDrawingSettings, type DefaultDoubleBond } from "./drawingSettings";
+import { broadcastDrawingSettings, listenForDrawingSettings } from "./window-manager";
+import { loadDirectElectronMarkEditing, saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
+import { broadcastElectronMarkEditingSettings } from "./window-manager";
 import { broadcastCompoundLayoutSettings, broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings, broadcastExportPreviewSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
@@ -30,6 +37,11 @@ const MODES: RadioOption<Spin3dRefinementMode>[] = [
   { value: "fast", title: "Fast", description: "Embedded conformer only. Fastest; least polished geometry." },
   { value: "balanced", title: "Balanced", description: "Quick force-field cleanup. Good default for large structures." },
   { value: "quality", title: "Quality", description: "Longer force-field cleanup. Best geometry." }
+];
+
+const DOUBLE_BONDS: RadioOption<DefaultDoubleBond>[] = [
+  { value: "offset", title: "Offset", description: "Use the usual automatic placement, toward the ring interior or substituents." },
+  { value: "centred", title: "Centered", description: "Use equal lines on either side of the bond axis." }
 ];
 
 const ENGINES: RadioOption<Spin3dEnginePreference>[] = [
@@ -46,9 +58,9 @@ const KEYBINDING_SCHEMES: RadioOption<KeybindingScheme>[] = [
   },
   {
     value: "chemdraw",
-    title: "ChemDraw-compatible",
+    title: "Classic desktop-compatible",
     description:
-      "Shortcuts and hover hotkeys that mirror ChemDraw's defaults (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, \"l\" for Cl, \"b\" for Br…). Case matters for element keys: B = boron, b = Br. For users transitioning from ChemDraw."
+      "Classic desktop shortcuts and hover hotkeys (Space for select, X for the bond tool, hover an atom and press 2 for a carbonyl, \"l\" for Cl, \"b\" for Br…). Case matters for element keys: B = boron, b = Br."
   }
 ];
 
@@ -97,13 +109,45 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const shell = useRef<HTMLElement>(null);
+  useEffect(() => {
+    let stopped = false;
+    let stopObserving: (() => void) | undefined;
+    const element = shell.current;
+    if (isDesktopRuntime() && element) {
+      void measureDialogContentWhenFontsReady(element).then(async data => {
+        if (!stopped) {
+          const { invoke } = await import("@tauri-apps/api/core");
+          if (!stopped) {
+            await invoke("preferences_ready", { data: data ?? {} });
+            if (!stopped) stopObserving = observeDialogContent(element, data, fit => {
+              void invoke("preferences_ready", { data: fit }).catch(error => console.error("Could not size Preferences:", error));
+            });
+          }
+        }
+      }).catch(error => console.error("Could not size Preferences:", error));
+    }
+    return () => { stopped = true; stopObserving?.(); };
+  }, []);
+  const [structureSearchEnabled, setStructureSearchEnabled] = useState(loadStructureSearchEnabled);
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
+  const [drawing, setDrawing] = useState(loadDrawingSettings);
+  const [directElectronMarkEditing, setDirectElectronMarkEditing] = useState(loadDirectElectronMarkEditing);
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
   const [automaticPluginUpdates, setAutomaticPluginUpdates] = useState(loadAutomaticPluginUpdates);
   const [askToSave, setAskToSave] = useState(loadAskToSaveBeforeQuit);
   const [settings, setSettings] = useState<Spin3dSettings>(() => loadSpin3dSettings());
   const [keybindings, setKeybindings] = useState<KeybindingSettings>(() => loadKeybindingSettings());
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForDrawingSettings(next => setDrawing(next)).then(listener => {
+      if (disposed) listener(); else unlisten = listener;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("preferences-window-html");
@@ -138,22 +182,63 @@ export function PreferencesWindow() {
   };
 
   return (
-    <main className="preferences-shell">
+    <main ref={shell} className="preferences-shell cd-dialog-fit">
+      <div className="cd-dialog-fit-body">
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
+
+      <section className="preferences-section">
+        <h2>Online search</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={structureSearchEnabled} onChange={event => {
+            const enabled = event.currentTarget.checked;
+            setStructureSearchEnabled(enabled);
+            void saveStructureSearchEnabled(enabled).catch(error => console.error("Could not broadcast online structure search preference:", error));
+          }} />
+          <span className="preferences-radio-body"><span>Online structure search</span>
+            <small>Search selected structures in PubChem or Reaxys using your browser</small></span>
+        </label>
+      </section>
 
       <section className="preferences-section" aria-labelledby="compound-layout-tools">
         <h2 id="compound-layout-tools">Compound layout tools</h2>
         <label className="preferences-radio">
           <input type="checkbox" checked={compoundLayouts.enabled} onChange={event => {
-            const next = { enabled: event.currentTarget.checked };
+            const next = { ...compoundLayouts, enabled: event.currentTarget.checked };
             setCompoundLayouts(next);
             saveCompoundLayoutSettings(next);
             void broadcastCompoundLayoutSettings(next);
           }} />
           <span className="preferences-radio-body"><strong>Compound layout tools</strong>
             <small>Enable circle, oval, grid, row and column layouts and a spacing preview. Off by default.</small></span>
+        </label>
+        <fieldset className="preferences-compound-layout-features" disabled={!compoundLayouts.enabled}>
+          <legend>Optional conditions editor (off by default)</legend>
+          {compoundLayoutFeatures.map(({ key, title, description }) => <label className="preferences-radio" key={key}>
+            <input type="checkbox" disabled={!compoundLayouts.enabled} aria-describedby={!compoundLayouts.enabled ? `pref-${key}-prerequisite` : undefined} checked={compoundLayouts[key] === true} onChange={event => {
+              const next = { ...compoundLayouts, [key]: event.currentTarget.checked };
+              setCompoundLayouts(next);
+              saveCompoundLayoutSettings(next);
+              void broadcastCompoundLayoutSettings(next);
+            }} />
+            <span className="preferences-radio-body"><strong>{title}</strong><small>{description}</small>
+              {!compoundLayouts.enabled && <small id={`pref-${key}-prerequisite`}>Turn on Compound layout tools first.</small>}
+            </span>
+          </label>)}
+        </fieldset>
+      </section>
+      <section className="preferences-section">
+        <h2>Drawing and editing</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={directElectronMarkEditing} onChange={event => {
+            const enabled = event.currentTarget.checked;
+            setDirectElectronMarkEditing(enabled);
+            saveDirectElectronMarkEditing(enabled);
+            void broadcastElectronMarkEditingSettings(enabled);
+          }} />
+          <span className="preferences-radio-body"><span>Direct electron-mark editing</span>
+            <small>Grab marks anywhere in their frame, drag them with electron tools, and resize or rotate them with handles. Use scaled symbol rendering. Off by default.</small></span>
         </label>
       </section>
       <section className="preferences-section">
@@ -206,6 +291,20 @@ export function PreferencesWindow() {
       </section>
 
       <PreferenceRadioGroup
+        legend="Default double bond"
+        hint="Applies to newly drawn double bonds. Ring and structure templates keep their own placement."
+        name="default-double-bond"
+        options={DOUBLE_BONDS}
+        value={drawing.defaultDoubleBond}
+        onSelect={defaultDoubleBond => {
+          const next = { defaultDoubleBond };
+          setDrawing(next);
+          saveDrawingSettings(next);
+          void broadcastDrawingSettings(next);
+        }}
+      />
+
+      <PreferenceRadioGroup
         legend="Keyboard shortcuts"
         hint="Which keyboard scheme the drawing tools and hover hotkeys use. Takes effect immediately."
         name="keybinding-scheme"
@@ -240,6 +339,7 @@ export function PreferencesWindow() {
         value={settings.forceField}
         onSelect={(forceField) => update({ forceField })}
       />
+      </div>
     </main>
   );
 }

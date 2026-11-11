@@ -1776,7 +1776,7 @@ describe("ChemDraft desktop shell", () => {
     expect(commands.some((command) => command.id === "tool.atom")).toBe(true);
     expect(commands.some((command) => command.id === "tool.art.circle")).toBe(true);
     expect(commands.some((command) => command.id === "atom.setHoveredElement.O")).toBe(true);
-    expect(markup).toContain(".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json");
+    expect(markup).toContain(".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json");
     expect(markup).not.toContain("Open Native Document");
     expect(markup).not.toContain("Validate Selected Structure");
   });
@@ -1864,7 +1864,7 @@ describe("ChemDraft desktop shell", () => {
     expect(exportFormSource).toContain("Creation program");
     expect(mainWindowSource).toContain("async function createDialogExportResult(");
     expect(mainWindowSource).toContain("async function writeNativeExportResult(");
-    expect(mainWindowSource).toContain("const result = await createDialogExportResult(source, { ...options, busy: false })");
+    expect(mainWindowSource).toContain("const result = await createDialogExportResult(source, { ...options, busy: false }, false, title)");
     expect(mainWindowSource).toContain("nativePathJoin(lastExportDirectoryRef.current, options.filename)");
     expect(mainWindowSource).toContain("await pickNativeExportPath(defaultPath, descriptor.menuLabel, descriptor.extensions, dialogCoordinatorRef.current?.exportSessionId(tabId))");
     expect(mainWindowSource).toContain("await writeNativeExportResult(path, result)");
@@ -1900,9 +1900,9 @@ describe("ChemDraft desktop shell", () => {
   });
 
   it("also offers the page-size choice when a pasted structure overflows the current page", () => {
-    // The SMILES paste path runs the same page-fit recommendation as the CDXML import path.
-    expect(mainWindowSource).toContain("recommendImportedPageFit(nextDocument)");
-    expect(mainWindowSource).toContain('displayName: "The pasted structure"');
+    // Paste now uses the shared pre-commit check and the insert's existing undo entry.
+    expect(mainWindowSource).toContain("commitWithPageFit(before, proposed");
+    expect(mainWindowSource).not.toContain("recommendImportedPageFit(nextDocument)");
   });
 
   it("passes the pressed key to the global shortcut guard", () => {
@@ -2054,7 +2054,7 @@ describe("ChemDraft desktop shell", () => {
 
     expect(tooltipFor("tool.select")?.shortcutLabel).toBe("Space");
     expect(tooltipFor("tool.bond")?.shortcutLabel).toBe("X");
-    expect(tooltipFor("tool.chain")?.shortcutLabel).toBe("⇧X");
+    expect(createDesktopShortcutRegistry(commands, "macos").resolve({ key: "X", shiftKey: true })).toBe("tool.chain");
     expect(tooltipFor("tool.text")?.shortcutLabel).toBe("T");
     // Unbound keys show no shortcut at all — not the stale ChemDraft key.
     expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
@@ -2070,7 +2070,7 @@ describe("ChemDraft desktop shell", () => {
     ).flat();
     const chemdraftTooltip = (id: string) => chemdraftItems.find((item) => item.id === id)?.tooltip;
     expect(chemdraftTooltip("tool.select")?.shortcutLabel).toBe("V");
-    expect(chemdraftTooltip("tool.chain")?.shortcutLabel).toBe("C");
+    expect(createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), "macos").resolve({ key: "c" })).toBe("tool.chain");
     expect(chemdraftTooltip("tool.lasso")?.shortcutLabel).toBe("L");
   });
 
@@ -2433,6 +2433,11 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "1")).toBe("bond.setHoveredBondOrder.single");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "2")).toBe("bond.setHoveredBondOrder.double");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "3")).toBe("bond.setHoveredBondOrder.triple");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "w")).toBe("bond.setHoveredBondDisplay.wedge");
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "W")).toBe("bond.setHoveredBondDisplay.hashed");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "w")).toBeUndefined();
+    expect(hoveredNativeTargetShortcutCommand(undefined, "w")).toBeUndefined();
+    expect(hoveredNativeTargetShortcutCommand(bondTarget, "e")).toBeUndefined();
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "k")).toBe("atom.addCarbonylToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "K")).toBe("atom.addCarbonylToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "c")).toBe("atom.setHoveredElement.C");
@@ -2588,7 +2593,11 @@ describe("ChemDraft desktop shell", () => {
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
+    // The atom-problem fix path also normalizes commits into inactive tabs.
+    // Inactive-tab spacing keeps its original direct normalization; insertion tab commits
+    // share preparation, and plugin/proposal preflight also normalizes before checking fit.
+    // The conditions editor also commits to its original tab while it is inactive.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(14);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(
@@ -2606,13 +2615,13 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("labelBondSide: state.initialLabelBondSide");
     expect(mainWindowSource).toContain("applyNativeAtomLabelDraft(current,");
     expect(mainWindowSource).toContain("finishNativeAtomLabelEdit(baseline,");
-    expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
+    expect(mainWindowSource).toContain("const clean = stripped === current ? current : normalizeCommittedDocument(stripped);");
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
     expect(mainWindowSource).toContain("const savedDocument = active ? documentForFlush() : savingDocument;");
-    expect(mainWindowSource).toContain("const payload = createNativeSavePayload(savedDocument);");
+    expect(mainWindowSource).toContain("createDocumentFileSave(savedDocument, finalPath)");
     expect(mainWindowSource).toContain("tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present");
-    expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false })");
+    expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false }, false, title)");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);
   });
 
@@ -2664,14 +2673,11 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
-  it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
-    // A refused increment used to read "Cannot place positive charge on hovered atom" even though
-    // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the
-    // element can carry. The query itself is covered in documentWorkflow.test.ts; this guards the
-    // MainWindow wiring of both messages.
+  it("keeps the charge-hotkey format cap without a valence-refusal status", () => {
+    // The representation cap still has its own message; valence no longer vetoes charge edits.
     expect(mainWindowSource).toContain("nativeChargeStackRefusal(currentDocument, markSpec, target)");
     expect(mainWindowSource).toContain("Charge is already at the ±");
-    expect(mainWindowSource).toContain("cannot carry ${noun} at its current valence");
+    expect(mainWindowSource).not.toContain("cannot carry ${noun} at its current valence");
   });
 
   it("names the stacked magnitude in the charge status noun", () => {
@@ -2856,6 +2862,8 @@ describe("ChemDraft desktop shell", () => {
       "tool.eraser",
       "tool.text",
       "tool.bond",
+      "tool.doubleBond",
+      "tool.tripleBond",
       "tool.wedgeBond",
       "tool.hashedBond",
       "tool.dashedBond",
@@ -2901,6 +2909,7 @@ describe("ChemDraft desktop shell", () => {
       "tool.sOrbital",
       "tool.bracket",
       "tool.squareBracket",
+      "tool.roundBracket",
       "tool.chain",
       "style.formulaText",
       "layout.bringToFront",
@@ -2916,7 +2925,9 @@ describe("ChemDraft desktop shell", () => {
     ]);
     const disabledTools = paletteGroups.flat().filter((command) => !enabledToolIds.has(command.id));
 
-    expect(paletteGroups.flat().find((command) => command.id === "tool.bond")).toMatchObject({ enabled: true });
+    for (const id of ["tool.bond", "tool.doubleBond", "tool.tripleBond"]) {
+      expect(paletteGroups.flat().find((command) => command.id === id)).toMatchObject({ enabled: true });
+    }
     expect(paletteGroups.flat().find((command) => command.id === "tool.text")).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanupCommandId)).toMatchObject({ enabled: true });
     expect(paletteGroups.flat().find((command) => command.id === structureCleanup3dCommandId)).toMatchObject({
@@ -4629,7 +4640,7 @@ describe("ChemDraft desktop shell", () => {
     );
     expect(ellipseMarkup).toContain('data-graphic-kind="ellipse"');
     expect(ellipseMarkup).not.toContain('data-graphic-corner-radius-handle="true"');
-    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage)");
+    expect(mainWindowSource).toContain("planPageSvgRender(plannedDisplayPage, { directElectronMarkEditing })");
     expect(mainWindowSource).toContain('return object.type !== "molecule" || !isNativeMoleculeGraph(object);');
     expect(mainWindowSource).toContain('planNativeArtVisual(object, { coordinateSpace: "local" })');
     expect(mainWindowSource).toContain("left: pageScaledCssPx(plan.frameBounds.x)");
@@ -6043,7 +6054,7 @@ describe("ChemDraft desktop shell", () => {
     // with the graphic arrowhead marker. Its chemical identity is preserved for CDXML re-export.
     expect(markup).toContain("graphic-marker-end-");
     expect(markup).toContain("graphic-object");
-    expect(markup).toContain('data-graphic-kind="unknown"');
+    expect(markup).toContain('data-bracket-kind="round"');
     expect(markup).toContain("generic-object");
     expect(markup).toContain('data-atom-count="5"');
   });
@@ -6355,6 +6366,9 @@ describe("ChemDraft desktop shell", () => {
       expect(clearedMolecule?.atoms.find((atom) => atom.id === selectedAtomIds[index])?.warningSuppressed).toBe(true);
       expect(clearedMolecule?.atoms.find((atom) => atom.id === molecule.atoms[1].id)?.warningSuppressed).toBeUndefined();
       expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule).map((state) => state.atomId) : [])
+        .toEqual(molecule.atoms.map(atom => atom.id));
+      expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule)
+        .filter(state => !state.warningSuppressed).map(state => state.atomId) : [])
         .toEqual([molecule.atoms[1].id]);
     }
   });
@@ -7030,4 +7044,11 @@ describe("ChemDraft desktop shell", () => {
     expect(resized.pages[0].objects[0]).toEqual(moleculeBefore);
     expect(resized.selection).toEqual(document.selection);
   });
+});
+
+it("registers a customizable ordinary-arrow conditions command behind the opt-in gate",()=>{
+  const doc=createPhase4Document();
+  const command=allShellCommands(doc).find(command=>command.id==="arrow.conditions");
+  expect(command).toMatchObject({title:"Reaction conditions…",enabled:false,disabledReason:"Enable Compound layout tools in Settings"});
+  expect(isValidToolsetCommandId("arrow.conditions")).toBe(true);
 });

@@ -2,3 +2,4 @@
 export * from "./depictionWorkerClient";
 export * from "./depictionEngines";
 export * from "./relayout2d";
+export * from "./reactionAlignment";

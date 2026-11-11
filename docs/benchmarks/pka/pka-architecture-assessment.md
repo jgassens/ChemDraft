@@ -19,7 +19,7 @@ magnitudes rather than severity labels.
 
 **My own last three commits treated symptoms of the root defect.** The tautomer fix in `4e1527b8` is a
 special case of exactly the problem Codex identifies. The measurements were real and the azole numbers
-did improve, but I patched a symptom and should have recognised the pattern when the ylide appeared.
+did improve, but I patched a symptom and should have recognized the pattern when the ylide appeared.
 
 ---
 

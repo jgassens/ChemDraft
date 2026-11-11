@@ -94,10 +94,11 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => { await import("./dialogs/StructureTemplatePicker"); });
     await command("template.insertDialog");
     const template = resolveStructureTemplateName("18-crown-6")!;
+    // Rendering the lazy picker can take longer on a slow Windows CI runner.
     await vi.waitFor(async () => {
       await act(async () => {});
       expect(container.querySelector(`[data-template-id="${template.id}"]`)).not.toBeNull();
-    });
+    }, { timeout: 15_000 });
     expect(editor()?.value).toBe("O");
     const finalize = vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft");
     await act(async () => {
@@ -132,7 +133,7 @@ describe("template insertion during an atom-label edit", () => {
     expect(status()).toBe(`Redid Insert ${template.name}`);
     expect(current().selection.objectIds).toEqual([inserted.id]);
     expect(editor()).toBeNull();
-  });
+  }, 30_000); // Allow React rendering time on a slow Windows CI runner.
 
   it("commits a Text-tool N label before inserting, retaining selection and separate undo labels", async () => {
     const initial = applyNativeChainTool(createEmptyDocument(), { x: 200, y: 200 }, { x: 280, y: 200 });
@@ -168,10 +169,11 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => { await import("./dialogs/StructureTemplatePicker"); });
     await command("template.insertDialog");
     const template = resolveStructureTemplateName("18-crown-6")!;
+    // Rendering the lazy picker can take longer on a slow Windows CI runner.
     await vi.waitFor(async () => {
       await act(async () => {});
       expect(container.querySelector(`[data-template-id="${template.id}"]`)).not.toBeNull();
-    });
+    }, { timeout: 15_000 });
     expect(editor()?.value).toBe("N");
     const finalize = vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft");
     await act(async () => {
@@ -212,7 +214,7 @@ describe("template insertion during an atom-label edit", () => {
     expect(status()).toBe(`Redid Insert ${template.name}`);
     expect(current().selection.objectIds).toEqual([inserted.id]);
     expect(editor()).toBeNull();
-  });
+  }, 30_000); // Allow React rendering time on a slow Windows CI runner.
 
   it.each(["tool.text", "tool.select"])("plain insertion sets selection with %s active; chrome follows the shared tool policy", async tool => {
     await act(async () => root.render(<MainWindow initialDocument={createEmptyDocument()} initialActiveToolCommandId={tool}

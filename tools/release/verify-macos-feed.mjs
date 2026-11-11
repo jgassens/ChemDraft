@@ -3,37 +3,35 @@
 // Historical entries receive URL/notes/hardware checks; each supplied DMG is mounted read-only
 // and every app inside it receives the full final-app gate. Supply all DMGs being published.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { dmgArchitecture, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
 import { targetArchitecture } from "./macos-mach-o.mjs";
-import { verifyApp } from "./verify-macos-app.mjs";
+import { readAppPlist, verifyApp, verifySourceCommit } from "./verify-macos-app.mjs";
+import { refuseUnsignedBuild, withDmgApps } from "./macos-dmg.mjs";
 
 export function verifyDmg(dmg, target, {
-  run = spawnSync, checkApp = verifyApp, makeTemp = () => mkdtempSync(join(tmpdir(), "chemdraft-dmg-")),
-  entries = readdirSync, cleanup = (path) => rmSync(path, { recursive: true, force: true })
+  run = spawnSync, checkApp = (app, appTarget) => {
+    refuseUnsignedBuild(readAppPlist(app, run));
+    verifyApp(app, appTarget, { run });
+  }, ...options
 } = {}) {
   if (dmgArchitecture(basename(dmg)) !== targetArchitecture(target)) throw new Error(`${dmg}: filename does not match feed architecture`);
-  const mount = makeTemp();
-  let mounted = false;
-  try {
-    const attach = run("/usr/bin/hdiutil", ["attach", "-readonly", "-nobrowse", "-mountpoint", mount, dmg], { encoding: "utf8" });
-    if (attach.status !== 0) throw new Error(`Cannot mount ${dmg}: ${attach.stderr || attach.error?.message}`);
-    mounted = true;
-    const apps = entries(mount).filter((name) => name.endsWith(".app"));
-    if (!apps.length) throw new Error(`${dmg}: no app bundle found`);
-    for (const app of apps) checkApp(join(mount, app), target);
-  } finally {
-    if (mounted) {
-      const detach = run("/usr/bin/hdiutil", ["detach", mount], { encoding: "utf8" });
-      // Never recursively remove a mountpoint if detach failed.
-      if (detach.status !== 0) throw new Error(`Cannot detach ${mount}: ${detach.stderr || detach.error?.message}`);
+  return withDmgApps(dmg, (app) => checkApp(app, target), { ...options, run });
+}
+
+// Release provenance must come from the payload, never an adjacent build record.
+export function verifyDmgCommit(dmg, target, commit, { run = spawnSync, ...options } = {}) {
+  verifyDmg(dmg, target, {
+    ...options, run,
+    checkApp: (app) => {
+      const plist = readAppPlist(app, run);
+      refuseUnsignedBuild(plist);
+      verifySourceCommit(plist, commit);
     }
-    cleanup(mount);
-  }
+  });
 }
 
 export function verifyFeedArtifacts({ xml, target, dmgs = [], apps = [] }, { checkDmg = verifyDmg, checkApp = verifyApp } = {}) {

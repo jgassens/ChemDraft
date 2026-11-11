@@ -26,14 +26,14 @@ naming-engine.discard-*/        interrupted deletions, swept at startup
 
 `local_engine::install::install::<NamingSpec>` downloads the shared pinned uv, installs managed
 Python, creates a relocatable venv, then runs `uv pip install --python <venv-python>
---require-hashes --compile-bytecode --requirement <lock>`. It downloads and verifies centres,
+--require-hashes --compile-bytecode --requirement <lock>`. It downloads and verifies centers,
 copies Orthonym's LICENSE and NOTICE from installed dist-info and the bundled
 `resources/naming/licenses/*` into `LICENSES/`, swaps, relocates and probes in the final location.
 The probe runs `python -I -B -c`, imports orthonym, rdkit and jpype, prints Orthonym's version and
 requires exactly `1.0.8`. Failure rolls back the whole tree. Download caches are removed.
 
 The receipt records `receiptVersion: 1`, engine directory name, uv asset/version/hash, Python
-version, Orthonym version/commit/wheel hash, requirements hash, centres URL/size/hash, installed-at
+version, Orthonym version/commit/wheel hash, requirements hash, centers URL/size/hash, installed-at
 timestamp and disk bytes. An unreadable, malformed, mismatched or newer receipt reports `broken`
 with a detail string. Only Intel Mac receipts add `requirementsProfile: "macos-x86_64"`; it is
 optional when parsing and omitted on Apple silicon and Windows, preserving their existing v1
@@ -53,7 +53,7 @@ and no receipt upgrade from another engine is attempted.
 | Apple silicon / Windows requirements SHA-256 (LF) | `ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a` |
 | Intel Mac requirements SHA-256 (LF) | `c3488fe10418a1417efe4c4ddbbbb164b280165642690ff6f78284d351946b43` |
 | centres | `https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar` |
-| centres size / SHA-256 | 2,291,742 bytes / `6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb` |
+| centers size / SHA-256 | 2,291,742 bytes / `6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb` |
 | Free-space requirement | 1,000,000,000 bytes (800 MB update peak plus 25% margin) |
 
 The original lock includes rdkit 2026.3.5, jpype1 1.7.1, lxml 6.1.3, numpy 2.5.4, pillow 13.0.0
@@ -111,7 +111,7 @@ variants mean the component totals need not add up exactly.
 | --- | --- |
 | Total download | About 100 MB |
 | Wheels | About 56 MB: rdkit 29.9, numpy 12.0, pillow 4.9, lxml about 4.6–8.6, Orthonym 4.1, jpype 0.4, packaging 0.1 |
-| uv archive / Python 3.12 / centres | About 20 MB / 20 MB / 2.3 MB |
+| uv archive / Python 3.12 / centers | About 20 MB / 20 MB / 2.3 MB |
 | Fresh-install peak | 490 MB of staging, including the 179 MB download cache |
 | Final engine | 310 MB: venv 205, Python 67, uv 35, jars 2.2 |
 | Update peak | About 800 MB: the 490 MB install peak plus the previous 310 MB engine |
@@ -149,7 +149,7 @@ removal. macOS keeps a single attempt.
 ## Spawn environment and integrity
 
 The shared process manager starts `<venv-python> -I -B <bundled>/naming/orthonym_sidecar.py` with
-the engine directory as cwd. It rechecks the centres jar's size and SHA-256 before **every** spawn,
+the engine directory as cwd. It rechecks the centers jar's size and SHA-256 before **every** spawn,
 including a crash retry, and refuses a mismatch. OPSIN's bundled jar is covered by the existing
 `opsin::tests::jar_bytes_match_the_hash_recorded_in_build_md` check and the app signature.
 
@@ -228,7 +228,7 @@ Cancellation or an engine stop returns an error instead of a raw result with a r
 The controller waits for the native cancel acknowledgement before reporting `cancelled` and
 clearing its active request. Calls during that wait remain `busy`; a retry after `cancelled`
 cannot race the old native read-back. If cancellation IPC fails, it waits for the original request
-to settle before releasing controller state. Late results from a cancelled call are discarded.
+to settle before releasing controller state. Late results from a canceled call are discarded.
 Known limitation: a cancel in the sub-millisecond window after the request is sent but before native
 registration can let that request finish and make an immediate retry report `busy` (pre-existing
 ordering window; `StructureNamingController.ts` ~173–175, `naming_engine/mod.rs` ~470–472).
@@ -247,7 +247,7 @@ Naming error codes: `notInstalled`, `invalidSmiles`, `namingFailed`, `engineCras
 - `SidecarProtocol::START_TIMEOUT` defaults to `None`, preserving the existing shared deadline
   for startup plus request. Naming selects 60 seconds separately from its 30 second request budget.
 - Existing streaming `pins::sha256_reader` / `verify_reader` helpers are available in production,
-  allowing the adapter to reverify centres without a second hash implementation.
+  allowing the adapter to reverify centers without a second hash implementation.
 
 Existing MolScribe source, tests, install arguments and effective deadlines are unchanged.
 

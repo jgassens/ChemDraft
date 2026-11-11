@@ -8,6 +8,14 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components requiring attribution
 --------------------------------------------------------------------------------
 
+Octet Draw - Copyright 2026 Sam Ellis - Apache-2.0
+  Portions of structure search URL building (apps/desktop/src-tauri/src/structure_search.rs),
+  offline name/CAS lookup (packages/document-workflow-core), and CDX binary reader/writer
+  and tag table (packages/cdx-compat/src/cdxBinary.ts, cdxTags.ts), adapted.
+  https://github.com/SamChemMan/Octet-Draw
+  Modified for ChemDraft: fixed-host browser links, native preference enforcement, rate limiting,
+  injected lazy loading, OPSIN-first resolution and provenance, and binary compatibility mapping.
+
 Network transport and diagnostics (locked Rust dependencies)
   webpki-roots 1.0.9: CDLA-Permissive-2.0 (Mozilla root certificate list).
   rustls-native-certs 0.8.4: Apache-2.0 OR ISC OR MIT (MIT elected).
@@ -52,6 +60,15 @@ distributed without this file; that all modifications to this file or any of
 the AFM files are prominently noted in the modified file(s); and that this
 paragraph is not modified. Adobe Systems has no responsibility or obligation
 to support the use of the AFM files.
+
+Patrick Hand Regular 1.003 (Sketch handwriting for canvas, SVG and PDF)
+  SIL Open Font License 1.1; no Reserved Font Name.
+  Copyright (c) 2010-2012 Patrick Wagesreiter (mail@patrickwagesreiter.at)
+  Unmodified owner-provided TrueType font, bundled locally. SVG includes the
+  original font; PDF embeds used outlines. No runtime network font access.
+  Provenance and SHA-256: packages/export-engine/src/fonts/README.md
+  Installed licence (macOS and Windows): licenses/LICENSE_PATRICK_HAND.txt
+  Source of truth: apps/desktop/src/assets/fonts/OFL.txt
 
 Noto Sans 2.015 (primary regular, bold, italic, bold-italic PDF fonts)
   SIL Open Font License 1.1.
@@ -572,3 +589,8 @@ A.6 Stax2 API 4.2.2 -- BSD-2-Clause (Simplified BSD), (c) 2010- FasterXML.com
     CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
     ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
+
+Wikidata chemical names and structures
+  Data licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).
+  Source: https://www.wikidata.org, snapshot 27 October 2026.
+  See data/names/NOTICE.txt. This data licence is separate from the lookup code licence.

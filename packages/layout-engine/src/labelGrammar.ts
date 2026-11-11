@@ -9,6 +9,7 @@ import {
   abbreviationBondedSpellings,
   abbreviationForBondedElementLabel,
   abbreviationForLabel,
+  schemeSodiumHydroxideAbbreviation,
   abbreviationSpellings,
   abbreviationSpellingSuggestion,
   isBondedGenericAtomLabel,
@@ -16,7 +17,7 @@ import {
   type AbbreviationDefinition
 } from "@chemdraft/template-library";
 
-import { nativeElementFromAtomLabel, type NativeElementSymbol } from "./valence";
+import { nativeElementFromAtomLabel, nativeElementSymbols, type NativeElementSymbol } from "./valence";
 
 export const nativeAtomValence: Partial<Record<NativeElementSymbol, number>> = {
   H: 1,
@@ -128,6 +129,8 @@ export type NativeAtomLabelReading =
 export interface NativeAtomLabelContext {
   /** The atom has at least one bond. Decides "Ar": aryl when bonded, argon when not. */
   bonded?: boolean;
+  /** Explicit scheme-created abbreviation; never inferred from typed text. */
+  schemeAbbreviation?: "NaOH";
   /**
    * The label was entered as text — typed in the label editor or text tool, or a file's text label —
    * rather than stored as an element of a structure. Only a typed "Ar", "Ac", "Pr" or "Ts" means a
@@ -190,7 +193,8 @@ export function nativeAtomLabelReading(label: string, context: NativeAtomLabelCo
   if (element) {
     return { kind: "element", element };
   }
-  const definition = abbreviationForLabel(trimmed);
+  const definition = !context.typed && trimmed === context.schemeAbbreviation
+    ? schemeSodiumHydroxideAbbreviation : abbreviationForLabel(trimmed);
   if (definition && !(context.bondSide === "right" && sideDependentSpellings.has(trimmed))) {
     return { kind: "group", group: { kind: "abbreviation", label: trimmed, definition } };
   }
@@ -220,6 +224,70 @@ const splitHeadHalogens: ReadonlySet<string> = new Set(["F", "I"]);
 /** Every spelling a composite's substituent can take, longest first: "CO2Me" before "Me". */
 const compositeTokenSpellings: readonly string[] = [...abbreviationSpellings, ...abbreviationBondedSpellings]
   .sort((left, right) => right.length - left.length || left.localeCompare(right));
+
+const hoverLabelTokens = [...compositeTokenSpellings, ...nativeElementSymbols];
+const longestHoverLabelToken = Math.max(...hoverLabelTokens.map(token => token.length));
+
+/**
+ * Resolve hover typing through the ordinary grammar and table. Hover keys supply an implicit
+ * initial capital; that must not turn n,o into the exact element symbol No. The grammar's
+ * existing case-folding exceptions decide these ambiguous symbols. Explicit label-tool typing
+ * still accepts every element in its exact case.
+ *
+ * Lower-case continuation can complete a known spelling (o,m,e -> OMe, o,b,n -> OBn). Every
+ * candidate is checked by the ordinary grammar; this adds no second definition of a formula or
+ * composite. Explicit capitals are retained, so CF3 cannot become Cf3.
+ */
+export function nativeHoverAtomLabelCompletion(label: string): string | undefined {
+  if (!label.trim()) return undefined;
+  const matchesTypedCase = (typed: string, canonical: string) => typed.toLowerCase() === canonical.toLowerCase() &&
+    ![...typed].some((letter, at) => /[A-Z]/.test(letter) && canonical[at] !== letter);
+  const spelling = compositeTokenSpellings.find(token => matchesTypedCase(label, token));
+  if (spelling) return spelling;
+  const reading = nativeAtomLabelReading(label, { bonded: true });
+  if (reading.kind === "element" && !nativeElementFromAtomLabel(label.toLowerCase())) return undefined;
+  const ambiguousFormula = reading.kind === "formula" &&
+    [...reading.counts.keys()].some(element => !nativeElementFromAtomLabel(element.toLowerCase()));
+  if (reading.kind !== "unrecognized" && !ambiguousFormula) return label;
+
+  const candidatesAt = new Map<number, string[]>([[label.length, [""]]]);
+  for (let index = label.length - 1; index >= 0; index -= 1) {
+    const candidates: string[] = [];
+    for (const token of hoverLabelTokens) {
+      const typed = label.slice(index, index + token.length);
+      if (!matchesTypedCase(typed, token)) continue;
+      const digits = /^\d*/.exec(label.slice(index + token.length))![0];
+      for (const tail of candidatesAt.get(index + token.length + digits.length) ?? []) {
+        candidates.push(token + digits + tail);
+        // Bound work on unusually long or ambiguous text.
+        if (candidates.length >= 32) break;
+      }
+      if (candidates.length >= 32) break;
+    }
+    candidatesAt.set(index, candidates);
+  }
+  return candidatesAt.get(0)?.find(candidate => {
+    const result = nativeAtomLabelReading(candidate, { bonded: true });
+    return result.kind !== "unrecognized" &&
+      (result.kind !== "formula" || /\d/.test(label)) &&
+      (result.kind !== "formula" || [...result.counts.keys()].every(element => nativeElementFromAtomLabel(element.toLowerCase()))) &&
+      (result.kind !== "element" || nativeElementFromAtomLabel(candidate.toLowerCase()) !== undefined);
+  });
+}
+
+/** Whether the pending hover text is complete or can still finish a grammar/table token. */
+export function nativeHoverAtomLabelCanContinue(label: string): boolean {
+  if (!label.trim()) return true;
+  if (nativeHoverAtomLabelCompletion(label) !== undefined) return true;
+  for (let start = Math.max(0, label.length - longestHoverLabelToken + 1); start < label.length; start += 1) {
+    const tail = label.slice(start).toLowerCase();
+    for (const token of hoverLabelTokens) {
+      if (token.length > tail.length && token.toLowerCase().startsWith(tail) &&
+        nativeHoverAtomLabelCompletion(label + token.slice(tail.length)) !== undefined) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Spellings whose meaning depends on which end faces the bond. Cyano is "CN" with its C toward the

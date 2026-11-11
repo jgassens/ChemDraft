@@ -12,6 +12,12 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+Content-fit dialogs measure intrinsic minimum width in the shared dialog host. Text styled with
+`text-overflow: ellipsis` and horizontal `overflow: hidden` or `clip` contributes its declared
+minimum width or a small 32px floor instead of its full text width. Measurement overrides are
+temporary. Width reports are capped at 4096 CSS pixels; native placement further caps both
+dimensions to the destination work area, keeping the footer accessible.
+
 Ring templates are grouped under the benzene button in Main and Structure. Long-press or
 press Arrow Down for saturated 3–8-membered rings, benzene and the two chair cyclohexanes.
 
@@ -124,3 +130,27 @@ Turning the option off cannot recover an older session after new work has replac
 The preference uses the same localStorage mechanism as other boolean preferences. It is captured
 synchronously once by the document window before its asynchronous session read; no live document
 broadcast is needed for a next-launch-only option. No native command or session migration is added.
+
+## Formatted reaction conditions
+
+Enable **Compound layout tools**, then **Formatted Reaction Conditions** in Settings/Preferences;
+both start off. Right-click an ordinary arrow and choose **Reaction conditions…**. The registered
+command can also be added through toolbar customization. Double-click an existing conditions label
+to reopen its editor; a bare arrow does not open the editor on double-click.
+
+The movable native editor supports symbol insertion, normal/subscript/superscript text, a formatted
+preview, and Top / inside or Bottom / outside placement. Straight-arrow Top follows page top
+(left for an exactly vertical shaft). Save creates one Undo entry; Cancel leaves the drawing alone,
+and blank Save removes the label. Labels are editable native text, follow their arrow through
+transforms and clipboard operations, and can be dragged to adjust their placement. Disabling
+authoring keeps existing labels visible and attached. SVG and PDF use the canvas rendering plan.
+
+## Adjustable wavy lines
+
+Select a Wavy Line and open Object Settings to adjust **Wave smoothness**, **Wave height** and
+**Wave width** with sliders. Height is peak-to-trough; width is wave spacing in document pixels.
+Dragging previews the shape and release saves one Undo step. Settings survive native save/reopen
+and use the same geometry for canvas and export. Escape or cancelling a drag restores the starting
+shape. Width fits whole cycles between the endpoints, so actual spacing may differ on short lines.
+Only selected wavy art paths change, including in mixed selections; molecules and other graphics
+stay unchanged. Existing lines keep their legacy shape until a wave slider is explicitly adjusted.

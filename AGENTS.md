@@ -102,7 +102,10 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.20`. For a 0.x version the minor is the compatibility boundary, so additive
+`PluginApiVersion` is `0.1.25`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
+plugin chemistry properties and plugin assistant tools; 0.1.22 adds name-to-structure result
+source and dictionary match provenance; 0.1.23 adds native wavy single bonds;
+0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
@@ -169,11 +172,11 @@ commit checkpoints or present a recognition as certain.
 ### 4.6 NMR claims (absolute)
 
 The shipped backend is the OCL-native provider: HOSE-fragment lookup over statistics from NMRShiftDB2
-experimental assignments. Never describe it as fixture-backed or synthetic (fixtures are test-only
-and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
+assignments (the database does not mark which are experimental). Never describe it as fixture-backed
+or synthetic (fixtures are test-only and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
 multiplicity and J are first-order estimates, labelled so. Stick height is equivalent nuclei, not
 integration; lineshape and field are simulation parameters. Never fabricate a shift for an unmatched
-environment; partial results carry warnings. No calibrated confidence percentages, only honest tiers.
+environment; partial results carry warnings. Rule-based estimates are allowed only when visibly labelled as estimates, per owner 2026-11-09. No calibrated confidence percentages, only honest tiers.
 
 ### 4.7 Licensing and redistribution
 

@@ -4,13 +4,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
-import type { ToolsetPopoverContentPayload } from "./window-manager";
+import type { ToolsetFlyoutKey, ToolsetPopoverContentPayload } from "./window-manager";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
+  key: undefined as undefined | ((payload: ToolsetFlyoutKey) => void),
   release: undefined as undefined | ((payload: { toolsetId: string; releasedAt: number }) => void),
   resized: undefined as undefined | (() => void),
-  show: vi.fn(async () => {}), size: vi.fn(async () => {}), invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {})
+  show: vi.fn(async () => {}), size: vi.fn(async () => {}), invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {}),
+  command: vi.fn(async () => {}), closed: vi.fn(async () => {}), flyoutClosed: vi.fn(async () => {})
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => {}, setFocus: async () => {} }) }));
@@ -23,6 +25,9 @@ vi.mock("./window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("./window-manager")>(),
   listenForToolsetPopoverContent: vi.fn(async handler => { native.content = handler; return () => {}; }),
   listenForToolsetPopoverRelease: vi.fn(async handler => { native.release = handler; return () => {}; }),
+  listenForToolsetFlyoutKeys: vi.fn(async handler => { native.key = handler; return () => {}; }),
+  notifyToolsetPopoverClosed: native.closed, notifyToolsetFlyoutClosed: native.flyoutClosed,
+  sendPaletteCommand: native.command,
   listenForToolsetPopoverDismiss: vi.fn(async () => () => {}),
   listenForBondStereoPopoverActions: vi.fn(async () => () => {}),
   listenForToolsetTextStyle: vi.fn(async () => () => {}),
@@ -94,7 +99,7 @@ it("clears retained document/root/shell scrolling on content update, fit and rev
   await act(async () => native.resized?.());
   expectReset();
   offset();
-  await act(async () => native.content?.({ ...rings, flyout: { ...rings.flyout, title: "Updated rings" } }));
+  await act(async () => native.content?.({ ...rings, generation: 2, flyout: { ...rings.flyout, title: "Updated rings" } }));
   expectReset();
 });
 
@@ -132,12 +137,39 @@ it("keeps scroll guards active but diagnostics silent in an unlabelled stable bu
 it("sends the live content kind on each reveal of a prewarmed Art popover", async () => {
   await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.art", kind: "artColor", prewarm: true })));
   expect(native.show).not.toHaveBeenCalled();
-  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor", openedAt: 0 }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
   await act(async () => native.content?.({ ...rings, toolsetId: "core.art" }));
-  expect(native.show).toHaveBeenLastCalledWith("focus", "flyout");
-  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  // Command navigation is routed from the document; even a failed native reveal
+  // must not fall back to an activating show for this flyout.
+  expect(native.show).toHaveBeenLastCalledWith("preserve", "flyout");
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor", openedAt: 2 }));
   expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
+});
+
+it("closes both flyout channels and resets keyboard navigation for a newer opening at the same timestamp", async () => {
+  await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.main", kind: "flyout", prewarm: true })));
+  const first = { ...rings, generation: 1 };
+  const key = { toolsetId: "core.main", flyoutId: "rings", openedAt: 1, key: "ArrowDown" };
+  await act(async () => native.content?.(first));
+  await act(async () => native.key?.(key));
+  expect(container.querySelector('[data-keyboard-highlighted="true"]')?.getAttribute("data-command-id")).toBe("ring-0");
+  await act(async () => {
+    native.key?.({ ...key, key: "Enter" });
+    native.key?.({ ...key, key: "Enter" });
+  });
+  expect(native.command).toHaveBeenCalledExactlyOnceWith("ring-0");
+  expect(native.closed).toHaveBeenCalledExactlyOnceWith("core.main", 1, 1);
+  expect(native.flyoutClosed).toHaveBeenCalledExactlyOnceWith({ toolsetId: "core.main", flyoutId: "rings", openedAt: 1 });
+  const reveals = native.show.mock.calls.length;
+  await act(async () => native.content?.(first));
+  expect(native.show).toHaveBeenCalledTimes(reveals);
+  await act(async () => native.content?.({ ...first, generation: 2 }));
+  expect(native.show).toHaveBeenCalledTimes(reveals + 1);
+  expect(native.show).toHaveBeenLastCalledWith("preserve", "flyout");
+  expect(container.querySelector('[data-keyboard-highlighted="true"]')).toBeNull();
+  await act(async () => native.key?.(key));
+  expect(container.querySelector('[data-keyboard-highlighted="true"]')?.getAttribute("data-command-id")).toBe("ring-0");
 });
 
 it("focuses keyboard flyout choices and traverses Tab without scrolling", async () => {

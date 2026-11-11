@@ -73,7 +73,8 @@ async function invoke(args: string[], env: Record<string, string | undefined> = 
 
 afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
-describe('stress runner', { timeout: 30_000 }, () => {
+// Each integration case starts real processes and may perform multiple runs on loaded CI.
+describe('stress runner', { timeout: 120_000 }, () => {
   it('resolves Windows npm shims and preserves a quoted prompt without starting cmd.exe', () => {
     const prompt = `Draw (S)-ibuprofen & say "R" or 'S' 100% $HOME`;
     const shim = 'C:\\Users\\chemist\\AppData\\Roaming\\npm\\codex.CMD';
@@ -141,10 +142,18 @@ describe('stress runner', { timeout: 30_000 }, () => {
 
   it('resumes completed cases without calling Claude again', async () => {
     const cases = await fixtureCases(); const out = await outDirectory(); const trace = path.join(out, 'trace.json');
-    await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_TRACE: trace });
+    // A live checkout can change while another test/build runs. Such an isolation failure
+    // correctly reruns, but says nothing about the resume rule under test here.
+    const checkout = await fakeCheckout(false);
+    const args = ['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout];
+    const first = await invoke(args, { FAKE_CLAUDE_TRACE: trace });
+    expect(first.code, first.stderr).toBe(0);
+    const completed = await readFile(path.join(out, 'S01/meta.json'), 'utf8');
+    expect(JSON.parse(completed)).toMatchObject({ agent: 'claude', status: 'complete' });
     await rm(trace);
-    const resumed = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root], { FAKE_CLAUDE_TRACE: trace });
-    expect(resumed.code).toBe(0); expect(existsSync(trace)).toBe(false);
+    const resumed = await invoke(args, { FAKE_CLAUDE_TRACE: trace });
+    expect(resumed.code, resumed.stderr).toBe(0); expect(existsSync(trace)).toBe(false);
+    expect(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).toBe(completed);
   });
 
   it('times out a stuck process', async () => {
@@ -767,12 +776,22 @@ describe('stress runner', { timeout: 30_000 }, () => {
 
   it('resumes Codex cases but reruns a case completed by the other agent', async () => {
     const { out, args, env, cases } = await codexFixture();
-    await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', root]);
-    await invoke(args, env);
+    const checkout = await fakeCheckout(false);
+    const codexArgs = args.map(value => value === root ? checkout : value);
+    const claude = await invoke(['--cases', cases, '--out', out, '--ids', 'S01', '--checkout', checkout]);
+    expect(claude.code, claude.stderr).toBe(0);
+    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')))
+      .toMatchObject({ agent: 'claude', status: 'complete' });
+    const codex = await invoke(codexArgs, env);
+    expect(codex.code, codex.stderr).toBe(0);
     expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(true);
+    const completed = await readFile(path.join(out, 'S01/meta.json'), 'utf8');
+    expect(JSON.parse(completed)).toMatchObject({ agent: 'codex', status: 'complete' });
     await rm(env.FAKE_CODEX_TRACE);
-    await invoke(args, env);
+    // invoke resolves on child close: the absence assertion covers the entire resumed run.
+    const resumed = await invoke(codexArgs, env);
+    expect(resumed.code, resumed.stderr).toBe(0);
     expect(existsSync(env.FAKE_CODEX_TRACE)).toBe(false);
-    expect(JSON.parse(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).agent).toBe('codex');
+    expect(await readFile(path.join(out, 'S01/meta.json'), 'utf8')).toBe(completed);
   });
 });

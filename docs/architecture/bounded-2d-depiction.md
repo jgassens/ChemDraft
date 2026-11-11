@@ -130,7 +130,7 @@ Review regression coverage:
 | 7. Guard/fallback/retry documentation | Limits above match `coordGenWithinSizeGuard`: atom/bond totals are over the whole input; ring-membership limits remain per component. Bootstrap fallback and the transient-load purpose of retry are documented above. |
 
 The build stamp remains `10.26.22.10-codex` in this review fix. MainWindow changes add one abort
-controller ref with unmount cleanup, pass its signal to list depiction, ignore cancelled completions,
+controller ref with unmount cleanup, pass its signal to list depiction, ignore canceled completions,
 and abort at existing paste and document-session/close entry points (12 additions, one deletion).
 
 ## Verification limits

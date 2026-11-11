@@ -55,6 +55,77 @@ function setup(results: readonly PluginUpdateCheckResult[] = [available], storag
 afterEach(() => vi.useRealTimers());
 
 describe("daily official-plugin checks", () => {
+  it("retains an existing offer on a quiet metadata outage without refreshing its timestamp", async () => {
+    const { checker, deps, advance } = setup([available]);
+    await checker.check(installed);
+    const saved = deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY);
+    advance(1000);
+    deps.check.mockResolvedValue([{ status: "unavailable", pluginId, installedVersion: "0.1.0" }]);
+    await checker.check(installed);
+    expect(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)).toBe(saved);
+    expect(deps.onResults.mock.lastCall?.[0].results).toEqual([available]);
+  });
+
+  it("keeps a retained offer's original cache time when another source succeeds", async () => {
+    const { checker, deps, advance } = setup([available]);
+    await checker.check(installed);
+    const checkedAt = deps.now();
+    advance(1000);
+    deps.check.mockResolvedValue([
+      { status: "unavailable", pluginId, installedVersion: "0.1.0" },
+      { ...upToDate, pluginId: "org.chemdraft.opsin.nameToStructure" }
+    ]);
+    await checker.check(installed);
+    expect(JSON.parse(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)!).checkedAt).toBe(checkedAt);
+    expect(deps.onResults.mock.lastCall?.[0].checkedAt).toBe(checkedAt);
+  });
+
+  it("bounds quiet metadata outage retries and never announces an error", async () => {
+    const { checker, deps } = setup([{ status: "unavailable", pluginId, installedVersion: "0.1.0" }]);
+    await checker.automatic(context);
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledOnce();
+    expect(deps.log).not.toHaveBeenCalled();
+    expect(deps.setStatus).not.toHaveBeenCalled();
+    expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBeNull();
+  });
+
+  it("rechecks offers cached before release compatibility checks even with a recent timestamp", async () => {
+    const { checker, deps } = setup([upToDate]);
+    const oldCatalogKey = JSON.stringify(installed.map(({ record }) => ({
+      id: record.id, version: record.version, sourceChecksum: record.sourceChecksum,
+      stagedPath: record.stagedPath, installedAt: record.installedAt
+    })));
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now()));
+    deps.storage.setItem(LAST_PLUGIN_RESULTS_KEY, JSON.stringify({
+      catalogKey: oldCatalogKey, checkedAt: deps.now(), results: [available]
+    }));
+    checker.restore(installed);
+    expect(deps.onResults).not.toHaveBeenCalled();
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(installed);
+  });
+
+  it("caches and restores incompatible releases as successful checks without announcements", async () => {
+    const incompatible: PluginUpdateCheckResult = {
+      status: "incompatible", pluginId, installedVersion: "0.1.0", latestVersion: "0.3.0",
+      message: "Needs ChemDraft 1.9.0 or later"
+    };
+    const { checker, deps } = setup([incompatible]);
+    await checker.automatic(context);
+    expect(deps.setStatus).not.toHaveBeenCalled();
+    expect(deps.log).not.toHaveBeenCalled();
+    expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBe(String(deps.now()));
+    deps.onResults.mockClear();
+    const nextLaunch = createPluginUpdateChecker(deps);
+    nextLaunch.restore(installed);
+    await nextLaunch.automatic(context);
+    expect(deps.check).toHaveBeenCalledOnce();
+    expect(deps.onResults).toHaveBeenCalledExactlyOnceWith({
+      catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [incompatible]
+    });
+  });
+
   it.each(["manual", "automatic"])("persists successful %s results with their catalog and check time, replacing older results", async mode => {
     const { checker, deps, advance } = setup([available, failed, unsupported]);
     const run = () => mode === "manual" ? checker.check(installed) : checker.automatic(context);
