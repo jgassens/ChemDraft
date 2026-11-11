@@ -2548,6 +2548,8 @@ export function MainWindow({
   const [quitPromptOpen, setQuitPromptOpen] = useState<number>();
   const [quitPromptReady, setQuitPromptReady] = useState<number>();
   const quitRequestRef = useRef<number | undefined>(undefined);
+  const closingWindowRef = useRef(false);
+  const [closingWindow, setClosingWindow] = useState(false);
   const quitPromptBusyRef = useRef(false);
   const [quitSaveBusy, setQuitSaveBusy] = useState(false);
   const [closeTabPrompt, setCloseTabPrompt] = useState<string>();
@@ -10732,10 +10734,15 @@ export function MainWindow({
     }
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void listenForQuitFlushRequest(async () => {
-      await dialogCoordinatorRef.current?.dispose("quit");
-      await writeDocumentSessionNow({ flush: true });
-      await confirmQuitAfterFlush();
+    void listenForQuitFlushRequest(async (requestId) => {
+      await dialogCoordinatorRef.current?.settleForWindowClose("quit");
+      try {
+        await writeDocumentSessionNow({ strict: true, flush: true });
+        if (requestId === undefined) await confirmQuitAfterFlush();
+        else await confirmQuitAfterFlush(requestId);
+      } catch (error) {
+        if (requestId !== undefined) await confirmQuitAfterFlush(requestId, String(error));
+      }
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -10755,8 +10762,10 @@ export function MainWindow({
     const listeners: (() => void)[] = [];
     const keep = (listener: () => void) => { if (disposed) listener(); else listeners.push(listener); };
     void (async () => {
-      keep(await listenForQuitPromptRequest(async (requestId) => {
-        if (disposed || (quitRequestRef.current !== undefined && requestId <= quitRequestRef.current)) return;
+      keep(await listenForQuitPromptRequest(async (requestId, isWindowClose = false) => {
+        if (disposed || (quitRequestRef.current === requestId)) return;
+        closingWindowRef.current = isWindowClose;
+        setClosingWindow(isWindowClose);
         quitRequestRef.current = requestId;
         quitMutationFrozenRef.current = false;
         quitPromptBusyRef.current = false;
@@ -10781,14 +10790,28 @@ export function MainWindow({
         if (!dirty) {
           quitMutationFrozenRef.current = true;
           if (await resumeQuitAfterPrompt(requestId)) {
-            await writeDocumentSessionNow({ flush: true });
-            await confirmPromptedQuit(requestId);
+            try {
+              await dialogCoordinatorRef.current?.settleForWindowClose(isWindowClose ? "ownerClose" : "quit");
+              await writeDocumentSessionNow({ strict: true, flush: true });
+              await confirmPromptedQuit(requestId);
+            } catch (error) {
+              await cancelQuit(requestId, "failed");
+              quitInteractionRef.current = false;
+              quitMutationFrozenRef.current = false;
+              setStatus("Could not save the document session: " + String(error));
+              return;
+            }
           }
           return;
         }
         if (await prepareQuitPrompt(requestId) && quitRequestRef.current === requestId && !disposed) {
           setQuitPromptOpen(requestId);
         }
+      }, (cancelledRequestId) => {
+        if (quitRequestRef.current === undefined || quitRequestRef.current > cancelledRequestId) return;
+        quitInteractionRef.current = false;
+        quitMutationFrozenRef.current = false;
+        setQuitPromptOpen(undefined);
       }));
       keep(await listenForQuitSettings((enabled) => { void setQuitPromptEnabled(enabled); }));
       if (!disposed) await setQuitPromptEnabled(loadAskToSaveBeforeQuit());
@@ -10799,7 +10822,7 @@ export function MainWindow({
   useEffect(() => {
     if (closeTabPrompt || !pendingQuitAfterCloseRef.current) return;
     pendingQuitAfterCloseRef.current = false;
-    void requestQuitAfterClose().catch((error: unknown) => {
+    void requestQuitAfterClose(closingWindowRef.current).catch((error: unknown) => {
       quitInteractionRef.current = false;
       setStatus("Could not resume quit after closing the tab prompt: " + String(error));
     });
@@ -11196,8 +11219,10 @@ export function MainWindow({
       }
       // Re-arm grace before session IPC so a stalled flush still arms #99's exit watchdog.
       if (!await resumeQuitAfterPrompt(requestId)) return;
-      await writeDocumentSessionNow({ flush: true });
+      await dialogCoordinatorRef.current?.settleForWindowClose(closingWindowRef.current ? "ownerClose" : "quit");
+      await writeDocumentSessionNow({ strict: true, flush: true });
       await confirmPromptedQuit(requestId);
+      setQuitPromptOpen(undefined);
     } catch (error) {
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
       await cancelQuitPrompt(requestId, "failed");
@@ -11210,7 +11235,7 @@ export function MainWindow({
   }, [saveDocumentTabById, writeDocumentSessionNow, cancelQuitPrompt]);
 
   const quitPrompt = useNativePrompt({
-    title: "Save changes before quitting?",
+    title: closingWindow ? "Save changes before closing?" : "Save changes before quitting?",
     message: "Your documents have unsaved changes.",
     kind: "warning",
     choices: [

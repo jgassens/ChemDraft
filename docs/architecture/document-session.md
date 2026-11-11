@@ -74,15 +74,56 @@ for that window. Stale/duplicate submissions cannot roll back any window; a stal
 flushes the latest accepted merged state. Windows retain their insertion order. `set_active` and
 `set_frame` record native metadata; frame capture shares the existing minimized/fullscreen/normal
 frame guards. `close_window` removes an actual closed window and tombstones its id against late
-snapshots. Hiding the migrated main window and process teardown keep its saved entry, preserving
-the existing single-window behavior. A7 owns the subsequent close-versus-quit lifecycle split.
+snapshots. Application quit and process teardown keep the saved entries, preserving
+the quit-time restore behavior. A7 destroys closed document windows; only application quit keeps
+the open windows in the session.
 
 The renderer keeps its 800 ms debounce and per-window serializer WeakMap. Native writes occur at
 most every 800 ms across **all** windows, with one coordinator timer to publish pending changes.
 `flush = true` bypasses the limit; strict update flushes propagate disk/backup errors. Quit handlers
 submit with `flush = true` before confirmation. Native quit also calls `flush()` to drain accepted
-snapshots when a renderer misses its grace period. This does not replace A7's future all-renderer
-flush barrier: another renderer's unsubmitted edits still require its acknowledgement there.
+snapshots when a renderer misses its grace period. The A7 barrier also waits for each renderer's
+unsubmitted edits, using an operation ticket and the authenticated window label for acknowledgements.
+
+## Window close, application quit and update (A7)
+
+Native close requests enter `request_close_window`, separately from application Quit. Closing a
+document always settles its drafts and asks about dirty tabs, even with ask-to-save-on-quit off.
+The existing native Save / Don't Save / Cancel prompt is shared with quit. Window closes have
+their own cancellable request identity and never time out into discarding a drawing. A failed
+strict snapshot or close write leaves the window editable, including its native dialog coordinator.
+
+For a non-last document on either OS, and the last document on macOS, the final snapshot goes to
+the coordinator. `close_window` removes that entry and flushes immediately, bypassing the 800 ms
+timer, before native destruction. A failed replacement rolls back the removal. If the bounded close
+wait expires while its worker finishes a disk write, the accepted window snapshot and its revision
+authority are restored; a failed native destruction rolls back the close too. Late snapshots for
+the closed incarnation are refused. Recreating the first window resets its revision sequence and
+returns no closed tabs. Windows' last document instead enters the existing A6 application quit flow
+with a mandatory save choice; its final state is retained for quit-time session restore.
+
+`DocumentWindowRegistry` is the only source of window counts; runtime, palettes, popovers,
+tooltips, dialogs and plugin panels do not count. Approved closes serialize with window creation
+and recheck the count at commit. Shared palettes are hidden with zero documents on macOS and
+re-owned before a Windows document owner is destroyed. The plugin runtime, coordinator, recognition,
+naming, external tools and assistant services survive document destruction; their shutdown remains
+on application exit. Document-bound dialogs and plugin panels close with their own owner.
+
+macOS stays alive without a tray icon and without a document window. Dock reopen, a second launch,
+and OS file opens use the existing reveal/open queue path to recreate the migrated first window.
+A10 alone enables more than one native document window. The app-wide native menu and Sparkle
+remain available with zero documents; Sparkle termination drains the coordinator through A6's
+existing AppKit TerminateLater handshake, including the zero-window case.
+
+Application Quit visits every document. Preference-off quits request all final snapshots together;
+preference-on quits visit each window's dirty choices in sequence. No first acknowledgement can
+finish the application. Each choice has a fresh request id, and cancellation releases documents
+that already answered. The existing bounded grace, AppKit single reply and Windows teardown
+watchdog remain authoritative. Failed flushes wait for that grace instead of claiming confirmation.
+Windows update installation uses the same renderer flush event, operation tickets and coordinator
+drain, but refuses installation on a window error or missing acknowledgement. An update cannot
+supersede an active quit question. A zero-document barrier completes immediately and still drains
+the coordinator.
 
 ## OS file-open queue
 
@@ -103,7 +144,10 @@ accepts only the destination once; `release(from, receipt)` accepts only the sou
 installation and retires the receipt. Duplicate offers for a tab, foreign acknowledgements,
 early release and replay are refused. Closing either window cancels its offers. A stub-client
 Rust test transfers complete opaque history/baseline metadata without parsing or serialization
-through chemistry formats. These hooks expose no renderer command and move no tabs; A10b remains held.
+through chemistry formats. `can_close_after_handoff` validates an installed destination and its live
+registry entry before the future no-prompt empty-source close; `close_quits` counts the documents
+after that installation, including on Windows. These hooks expose no renderer command and move no
+tabs; A10b remains held.
 
 Rust tests cover exact migration/backup, one-window parity, two-window interleaved revisions,
 800 ms throttling, immediate flush, per-window distribution, the temporary combined restore,
@@ -112,13 +156,8 @@ Native queue tests cover three files and a failed batch member. TypeScript tests
 opens during hydration on macOS/Windows parameters, effect replay, wake-up races, increasing IPC
 revisions, strict failures, fresh-start parity, readable-tab future metadata and existing recovery.
 
-Worker verification passed 59 session/queue unit cases, 9 quit IPC cases, 7 startup-preference
-cases and 13 focused MainWindow session cases. The broad `App.test.ts` run passed 228 cases and
-failed two pre-existing panel source assertions (the expected parent/title patterns are absent in
-HEAD). The general tab and save-mid-edit runs were stopped before completion; scoped session
-regressions were run separately. These are scoped results, not a full-gauntlet claim.
-
-The worker ran no Cargo command, native build or application launch, per task instruction.
-macOS Apple silicon, macOS Intel and Windows native behavior remains unverified. The integrating
-coordinator must run Rust fmt/clippy/tests, launch the worktree build, and exercise migration,
-backup failure, crash/relaunch, quit/update, fresh startup and multi-file Finder/Explorer opens.
+A7 adds platform-parameterized close-count tests, immediate removal/reopen and failure-retry disk
+tests, multi-document barrier and zero-document update tests, mandatory dirty-close DOM tests and
+dialog reuse after a failed close. Native hands-on checks still need macOS Apple silicon, macOS
+Intel and Windows: close-first/last, Cancel/Save/Don't Save, Dock reopen, file open with no documents,
+shared palette survival, all-window quit and update (including a zero-document Sparkle update).

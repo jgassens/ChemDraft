@@ -207,8 +207,17 @@ impl DocumentWindowRegistry {
                 .and_then(|id| windows.get(&id).cloned());
         }
         if label.starts_with("toolset-") || label == "spin3d-debugger" {
-            // Palette and panel ownership belongs to the later multi-window tasks.
-            return windows.get("main").cloned();
+            return windows
+                .values()
+                .filter(|window| window.lifecycle == DocumentWindowLifecycle::Ready)
+                .max_by_key(|window| (window.last_activated_at, window.created_at))
+                // The config window exists before its first ready notification at startup.
+                .or_else(|| {
+                    windows
+                        .get("main")
+                        .filter(|window| window.lifecycle == DocumentWindowLifecycle::Creating)
+                })
+                .cloned();
         }
         None
     }

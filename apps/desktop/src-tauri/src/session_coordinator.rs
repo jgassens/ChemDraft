@@ -47,6 +47,7 @@ struct SessionState {
     revisions: HashMap<String, u64>,
     frames: HashMap<String, Value>,
     closed: HashSet<String>,
+    close_backups: HashMap<String, (Value, usize, bool)>,
     fresh_start_guard: bool,
     dirty: bool,
     last_write: Option<Instant>,
@@ -178,6 +179,42 @@ fn window_restore(window: &Value) -> Value {
 }
 
 impl SessionCoordinator {
+    /// Consult the live registry at commit time, after an A10b destination has installed the tab.
+    /// Session entries are not a window count: they can include preserved, unhydrated recovery data.
+    pub(crate) fn close_quits(
+        &self,
+        documents: &super::document_windows::DocumentWindowRegistry,
+        is_macos: bool,
+    ) -> bool {
+        !is_macos
+            && documents
+                .all_document_windows()
+                .iter()
+                .filter(|window| {
+                    window.lifecycle != super::document_windows::DocumentWindowLifecycle::Closing
+                })
+                .count()
+                == 1
+    }
+
+    /// Held A10b hook: only an installed destination permits closing the empty source without
+    /// another save choice. This validates the receipt; it neither moves nor serializes a tab.
+    #[allow(dead_code)]
+    pub(crate) fn can_close_after_handoff(
+        &self,
+        from: &str,
+        receipt: u64,
+        documents: &super::document_windows::DocumentWindowRegistry,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.offers.get(&receipt).is_some_and(|offer| {
+            offer.from == from
+                && offer.installed
+                && documents.document_window(&offer.to).is_some()
+                && documents.document_window(from).is_some()
+        })
+    }
+
     /// Called once in setup. Read errors are sticky: even another renderer cannot reopen writes.
     pub(crate) fn initialize(&self, path: PathBuf, first_id: &str, collapse: bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -226,6 +263,14 @@ impl SessionCoordinator {
     ) -> Result<Option<Value>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         state.check_read()?;
+        // A7 reuses only the first native label until A10. A closed window never resurrects tabs,
+        // and its new webview starts a new revision sequence.
+        if state.closed.remove(id) {
+            state.close_backups.remove(id);
+            state.revisions.remove(id);
+            state.frames.remove(id);
+            state.restores.remove(id);
+        }
         // Only the first startup read establishes the whole-session fresh-start preference.
         if state.hydrated.is_empty() {
             state.fresh_start_guard = fresh_start;
@@ -373,6 +418,10 @@ impl SessionCoordinator {
     /// Actual close, not hide or process teardown. Tombstone the id to refuse late snapshots.
     pub(crate) fn close_window(&self, id: &str) -> Result<Option<Duration>, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.check_read()?;
+        let previous = state.envelope.clone();
+        let previous_offers = state.offers.clone();
+        let was_dirty = state.dirty;
         state.closed.insert(id.into());
         state
             .offers
@@ -393,7 +442,56 @@ impl SessionCoordinator {
                 state.dirty = true;
             }
         }
-        state.persist(Instant::now(), false)
+        // A close must be on disk before native destruction, including during the debounce.
+        match state.persist(Instant::now(), true) {
+            Ok(result) => {
+                if let Some(envelope) = previous {
+                    if let Some((index, window)) = envelope["windows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, window)| window["id"] == id)
+                    {
+                        state.close_backups.insert(
+                            id.into(),
+                            (window.clone(), index, envelope["activeWindowId"] == id),
+                        );
+                    }
+                }
+                state.restores.remove(id);
+                Ok(result)
+            }
+            Err(error) => {
+                state.envelope = previous;
+                state.dirty = was_dirty;
+                state.closed.remove(id);
+                state.offers = previous_offers;
+                Err(error)
+            }
+        }
+    }
+
+    /// A bounded close may time out while disk I/O finishes on its worker. The native window
+    /// stays alive; restore its accepted snapshot and revision authority before editing resumes.
+    pub(crate) fn cancel_window_close(&self, id: &str) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        state.closed.remove(id);
+        if let Some((window, index, was_active)) = state.close_backups.remove(id) {
+            let envelope = state.envelope.as_mut().unwrap();
+            let windows = envelope["windows"].as_array_mut().unwrap();
+            let index = index.min(windows.len());
+            windows.insert(index, window);
+            if was_active {
+                envelope["activeWindowId"] = json!(id);
+            }
+            state.dirty = true;
+        }
+        state.persist(Instant::now(), true).map(|_| ())
+    }
+
+    pub(crate) fn finish_window_close(&self, id: &str) {
+        self.state.lock().unwrap().close_backups.remove(id);
     }
 
     // Held A10b: transport-neutral, one-use hand-off receipts. They deliberately do not edit tabs.
@@ -850,7 +948,7 @@ mod tests {
             (
                 "quit decision / Windows last-window close",
                 lib,
-                "    fn exit(&self) {",
+                "    fn prepare_exit(&self) {",
                 "    /// Windows:",
                 "flush_session_before_exit(self)",
             ),
@@ -931,14 +1029,16 @@ mod tests {
                 "{route}"
             );
         }
+        // A7 routes close through the platform decision, retaining the same A6 quit drain.
         let windows_close = lib
-            .split_once("// Elsewhere there is no Dock")
+            .split_once("fn request_close_window<R: Runtime>")
             .unwrap()
             .1
-            .split_once("WindowEvent::Destroyed =>")
+            .split_once("async fn finish_close_window")
             .unwrap()
             .0;
-        assert!(windows_close.contains("request_quit(window.app_handle())"));
+        assert!(windows_close.contains(".close_quits(&registry, cfg!(target_os = \"macos\"))"));
+        assert!(windows_close.contains("request_prompted_quit_with(&QUIT, app)"));
         let update_command = lib
             .split_once("fn flush_document_session(")
             .unwrap()
@@ -1091,12 +1191,161 @@ mod tests {
         coordinator.restore_window("a", false).unwrap();
         coordinator.restore_window("b", false).unwrap();
         coordinator.close_window("b").unwrap();
+        // A7 close is immediate; do not rely on a later snapshot to drain the debounce.
+        assert_eq!(files.read()["windows"].as_array().unwrap().len(), 1);
         coordinator
             .submit("b", 999, snapshot("late"), true, true, Instant::now())
             .unwrap();
         assert_eq!(files.read()["windows"].as_array().unwrap().len(), 1);
         assert_eq!(files.read()["windows"][0]["id"], "a");
         assert_eq!(files.read()["activeWindowId"], "a");
+    }
+
+    #[test]
+    fn close_bypasses_the_debounce_and_reopen_does_not_resurrect_tabs_or_reject_new_revisions() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("closed drawing"), true);
+        coordinator.restore_window("main", false).unwrap();
+        coordinator
+            .submit(
+                "main",
+                42,
+                snapshot("last edit"),
+                true,
+                false,
+                Instant::now(),
+            )
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+        assert!(files.read()["activeWindowId"].is_null());
+        assert_eq!(coordinator.restore_window("main", false).unwrap(), None);
+        coordinator
+            .submit(
+                "main",
+                1,
+                snapshot("new empty window"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(
+            files.read()["windows"][0]["tabs"][0],
+            tab("new empty window")
+        );
+    }
+
+    #[test]
+    fn a_failed_close_keeps_the_window_writable_for_retry() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("keep"), true);
+        coordinator.restore_window("main", false).unwrap();
+        fs::remove_file(files.path()).unwrap();
+        fs::create_dir(files.path()).unwrap();
+        assert!(coordinator.close_window("main").is_err());
+        fs::remove_dir(files.path()).unwrap();
+        coordinator
+            .submit(
+                "main",
+                1,
+                snapshot("still editing"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("still editing"));
+    }
+
+    #[test]
+    fn macos_zero_window_update_drains_the_coordinator_after_the_last_close() {
+        use super::super::window_lifecycle::{DocumentLifecycle, FlushPurpose};
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("last drawing"), true);
+        coordinator.restore_window("main", false).unwrap();
+        coordinator.close_window("main").unwrap();
+        let lifecycle = DocumentLifecycle::default();
+        let id = lifecycle.begin_flush(FlushPurpose::Update, vec![]);
+        lifecycle.wait_for_update(id, Duration::ZERO).unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+    }
+
+    #[test]
+    fn a_late_close_write_can_be_rolled_back_without_resetting_a_live_windows_revision() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("keep"), true);
+        coordinator.restore_window("main", false).unwrap();
+        coordinator
+            .submit("main", 42, snapshot("latest"), true, true, Instant::now())
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+        coordinator.cancel_window_close("main").unwrap();
+        coordinator.cancel_window_close("main").unwrap(); // timeout worker/caller can both retire it
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+        coordinator
+            .submit("main", 41, snapshot("stale"), true, true, Instant::now())
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+        coordinator
+            .submit("main", 43, snapshot("editing"), true, true, Instant::now())
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("editing"));
+        coordinator.close_window("main").unwrap();
+        coordinator.finish_window_close("main");
+        assert!(coordinator.state.lock().unwrap().close_backups.is_empty());
+    }
+
+    #[test]
+    fn platform_close_counts_only_live_documents_after_the_handoff_destination_exists() {
+        use super::super::document_windows::DocumentWindowRegistry;
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("source"), true);
+        let documents = DocumentWindowRegistry::with_main();
+        documents.set_ready("main");
+        for is_macos in [true, false] {
+            assert_eq!(coordinator.close_quits(&documents, is_macos), !is_macos);
+        }
+        for utility in [
+            "runtime",
+            "toolset-main",
+            "preferences",
+            "dialog-main-pageSize-1",
+            "plugin-panel-example",
+        ] {
+            assert!(documents.register(utility, utility).is_err());
+        }
+        coordinator.restore_window("main", false).unwrap();
+        coordinator
+            .restore_window("doc-destination", false)
+            .unwrap();
+        let receipt = coordinator
+            .offer(
+                "main",
+                "doc-destination",
+                "stable-tab",
+                json!({"history": "opaque"}),
+            )
+            .unwrap();
+        assert!(!coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        documents
+            .register("doc-destination", "doc-destination")
+            .unwrap();
+        documents.set_ready("doc-destination");
+        coordinator
+            .installed("doc-destination", receipt.id)
+            .unwrap();
+        assert!(coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        for is_macos in [true, false] {
+            assert!(!coordinator.close_quits(&documents, is_macos));
+        }
+        coordinator.release("main", receipt.id).unwrap();
+        assert!(!coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        documents.remove("main");
+        assert!(coordinator.close_quits(&documents, false));
+        assert!(!coordinator.close_quits(&documents, true));
     }
 
     #[test]

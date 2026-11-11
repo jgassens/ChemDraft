@@ -494,11 +494,15 @@ export class DialogCoordinator {
   }
   async dispose(reason: "quit" | "ownerClose" = "ownerClose"): Promise<void> {
     this.stopped = true;
-    await Promise.all([...this.sessions.values()].map(s => this.settle(s, reason)));
+    await this.settleForWindowClose(reason);
     const subscription = this.subscription;
     this.subscription = undefined;
     if (subscription) {
       try { (await subscription)(); } catch { /* A failed subscription installed no listener. */ }
     }
+  }
+  /** A failed session flush or another window's Cancel can keep this document alive. */
+  async settleForWindowClose(reason: "quit" | "ownerClose"): Promise<void> {
+    await Promise.all([...this.sessions.values()].map(s => this.settle(s, reason)));
   }
 }

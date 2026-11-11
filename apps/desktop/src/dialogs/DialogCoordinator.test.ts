@@ -24,6 +24,16 @@ function host(options: { timeout?: number; ownerWindowId?: string } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("settles pending dialogs without disposing the owner when a window close can still fail", async () => {
+    const h = host();
+    await h.open();
+    await h.deliver(h.message("ready", {}));
+    await h.coordinator.settleForWindowClose("ownerClose");
+    expect(h.transport.close).toHaveBeenCalledWith("opaque", "ownerClose");
+    await h.open();
+    expect(h.transport.open).toHaveBeenCalledTimes(2);
+    await h.coordinator.dispose();
+  });
   it("keeps two owners' same-tab sessions independent when A is dismissed", async () => {
     const a = host({ ownerWindowId: "doc-a" }), b = host({ ownerWindowId: "doc-b" });
     await Promise.all([a.open(), b.open()]);

@@ -3,11 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => {
-  const listeners = new Map<string, (event: { event: string; id: number; payload: undefined }) => void>();
+  const listeners = new Map<string, (event: { event: string; id: number; payload: unknown }) => void>();
   return {
     listeners,
     invoke: vi.fn<(...args: unknown[]) => Promise<void>>(),
-    listen: vi.fn(async (eventName: string, handler: (event: { event: string; id: number; payload: undefined }) => void) => {
+    listen: vi.fn(async (eventName: string, handler: (event: { event: string; id: number; payload: unknown }) => void) => {
       listeners.set(eventName, handler);
       return () => { listeners.delete(eventName); };
     })
@@ -19,11 +19,11 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen: native.listen })
 }));
 
-import { cancelQuit, confirmQuitAfterFlush, listenForQuitFlushRequest, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
+import { cancelQuit, confirmQuitAfterFlush, listenForQuitFlushRequest, listenForQuitPromptRequest, QUIT_PROMPT_REQUEST_EVENT, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
 import { runUpdateFlow, tauriUpdateFlowDeps, UPDATE_SESSION_DRAIN_TIMEOUT_MS } from "../appUpdates";
 
 function requestFlush() {
-  native.listeners.get(QUIT_FLUSH_REQUEST_EVENT)?.({ event: QUIT_FLUSH_REQUEST_EVENT, id: 1, payload: undefined });
+  native.listeners.get(QUIT_FLUSH_REQUEST_EVENT)?.({ event: QUIT_FLUSH_REQUEST_EVENT, id: 1, payload: 42 });
 }
 
 beforeEach(() => {
@@ -50,10 +50,10 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
       if (command === "save_document_session") await pendingWrite;
     });
     const session = { lastEdit: "inside the autosave debounce" };
-    const stop = await listenForQuitFlushRequest(async () => {
+    const stop = await listenForQuitFlushRequest(async (requestId) => {
       // The document window uses this same write-then-confirm handshake on either platform.
       await saveDocumentSession(session, { flush: true });
-      await confirmQuitAfterFlush();
+      await confirmQuitAfterFlush(requestId);
     });
     expect(native.listen).toHaveBeenCalledWith(QUIT_FLUSH_REQUEST_EVENT, expect.any(Function));
     requestFlush();
@@ -62,7 +62,8 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     }));
     expect(native.invoke).toHaveBeenCalledTimes(1);
     finishWrite();
-    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_after_flush"));
+    // A7 correlates each acknowledgment so a stale quit cannot finish a later update barrier.
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_after_flush", { requestId: 42 }));
     expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["save_document_session", "quit_after_flush"]);
     stop();
     requestFlush();
@@ -78,10 +79,26 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     stop();
   });
 
-  it("contains a failed quit confirmation IPC", async () => {
+  it("reports a failed confirmation IPC to the caller", async () => {
     native.invoke.mockRejectedValue(new Error("native exit unavailable"));
-    await expect(confirmQuitAfterFlush()).resolves.toBeUndefined();
-    expect(native.invoke).toHaveBeenCalledWith("quit_after_flush");
+    // A7 must surface failed acknowledgments instead of treating an unwritten close as complete.
+    await expect(confirmQuitAfterFlush(42)).rejects.toThrow("native exit unavailable");
+    expect(native.invoke).toHaveBeenCalledWith("quit_after_flush", { requestId: 42 });
+  });
+
+  it("distinguishes mandatory window close choices and releases earlier windows when quit is cancelled", async () => {
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    const cancelled = vi.fn();
+    const stop = await listenForQuitPromptRequest(prompt, cancelled);
+    native.listeners.get(QUIT_PROMPT_REQUEST_EVENT)!({ event: QUIT_PROMPT_REQUEST_EVENT, id: 1,
+      payload: { requestId: 4294967297, closingWindow: true } });
+    expect(prompt).toHaveBeenCalledWith(4294967297, true);
+    native.listeners.get(QUIT_PROMPT_REQUEST_EVENT)!({ event: QUIT_PROMPT_REQUEST_EVENT, id: 1, payload: 3 });
+    expect(prompt).toHaveBeenLastCalledWith(3, false);
+    native.listeners.get("chemdraft://quit-cancelled")!({ event: "chemdraft://quit-cancelled", id: 1, payload: 3 });
+    expect(cancelled).toHaveBeenCalledExactlyOnceWith(3);
+    stop();
+    expect(native.listeners.size).toBe(0);
   });
 
   it("distinguishes the user's Cancel from an internal prompt deferral or failure", async () => {

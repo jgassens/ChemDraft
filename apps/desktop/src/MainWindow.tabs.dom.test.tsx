@@ -63,7 +63,7 @@ const native = vi.hoisted(() => ({
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
   quit: vi.fn(),
-  promptQuit: undefined as undefined | ((id: number) => Promise<void>),
+  promptQuit: undefined as undefined | ((id: number, closingWindow?: boolean) => Promise<void>),
   quitId: 0,
   prepareQuit: vi.fn(),
   resumeQuit: vi.fn(),
@@ -111,7 +111,7 @@ vi.mock("./window-manager", async (original) => ({
     return () => { if (native.quitFlush === handler) native.quitFlush = undefined; };
   },
   confirmQuitAfterFlush: native.quit,
-  listenForQuitPromptRequest: async (handler: (id: number) => Promise<void>) => {
+  listenForQuitPromptRequest: async (handler: (id: number, closingWindow?: boolean) => Promise<void>) => {
     native.promptQuit = handler;
     return () => { if (native.promptQuit === handler) native.promptQuit = undefined; };
   },
@@ -210,6 +210,7 @@ describe("documents in one window", () => {
     saveAskToSaveBeforeQuit(false);
     native.promptShowing.mockImplementation(async () => {
       expect(pendingPrompt?.prompt.title === "Save changes before quitting?" ||
+        pendingPrompt?.prompt.title === "Save changes before closing?" ||
         document.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]') !== null).toBe(true);
       return true;
     });
@@ -2312,6 +2313,36 @@ describe("documents in one window", () => {
     await flush();
     expect(native.quit).toHaveBeenCalledTimes(1);
     expect(native.promptShowing).not.toHaveBeenCalled();
+  });
+
+  it.each(["macos", "windows"] as const)("a dirty window close on %s always asks with ask-to-save-on-quit off", async (platform) => {
+    await mountForShortcutPlatform(platform);
+    await paste("Dirty background drawing");
+    await command("document.new");
+    expect(loadAskToSaveBeforeQuit()).toBe(false);
+    await act(async () => native.promptQuit!(4294967297, true));
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before closing?");
+    expect(native.quit).not.toHaveBeenCalled();
+    await modalButton("Cancel");
+    expect(tabs()).toHaveLength(2);
+    await activate(0);
+    expect(drawnText()).toContain("Dirty background drawing");
+    await paste("Still editable after Cancel");
+    expect(drawnText()).toContain("Still editable after Cancel");
+    expect(native.quit).not.toHaveBeenCalled();
+  });
+
+  it("keeps a closing window editable and its dialogs usable when the final disk flush fails", async () => {
+    await paste("Keep this drawing");
+    await act(async () => native.promptQuit!(4294967297, true));
+    native.saveSession.mockRejectedValueOnce(new Error("disk full"));
+    await modalButton("Don't Save");
+    expect(native.quit).not.toHaveBeenCalled();
+    expect(native.cancelQuit).toHaveBeenCalledWith(4294967297, "failed");
+    await paste("Editing after failed close");
+    expect(drawnText()).toContain("Editing after failed close");
+    await command("page.setSizeCustom");
+    expect(native.dialogSnapshot?.dialogKind).toBe("pageSize");
   });
 
   it("uses the native quit question without rendering an in-window dialog", async () => {

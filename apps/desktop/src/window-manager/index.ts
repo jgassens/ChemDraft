@@ -766,31 +766,41 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
  *  calls `confirmQuitAfterFlush`; Rust quits anyway after a short grace period. */
 export const QUIT_FLUSH_REQUEST_EVENT = "chemdraft://flush-before-quit";
 
-export async function listenForQuitFlushRequest(handler: () => Promise<void>): Promise<Unlisten> {
+export async function listenForQuitFlushRequest(handler: (requestId?: number) => Promise<void>): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenCurrentWindowEvent(QUIT_FLUSH_REQUEST_EVENT, () => {
-    void handler().catch(() => undefined);
+  return listenCurrentWindowEvent<number>(QUIT_FLUSH_REQUEST_EVENT, (event) => {
+    void handler(event.payload).catch(() => undefined);
   });
 }
 
-export async function confirmQuitAfterFlush(): Promise<void> {
+export async function confirmQuitAfterFlush(requestId?: number, error?: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("quit_after_flush").catch(() => undefined);
+  await invoke("quit_after_flush", { requestId, ...(error ? { error } : {}) });
 }
 
 export const QUIT_PROMPT_REQUEST_EVENT = "chemdraft://prompt-before-quit";
 const EXPORT_PREVIEW_SETTINGS_EVENT = "chemdraft://export-preview-settings";
 const QUIT_SETTINGS_EVENT = "chemdraft://quit-settings";
-export async function listenForQuitPromptRequest(handler: (requestId: number) => Promise<void>): Promise<Unlisten> {
+export async function listenForQuitPromptRequest(handler: (requestId: number, closingWindow?: boolean) => Promise<void>, onCancelled?: (requestId: number) => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) return () => {};
-  return listenCurrentWindowEvent<number>(QUIT_PROMPT_REQUEST_EVENT, (event) => {
-    if (Number.isSafeInteger(event.payload) && event.payload > 0) void handler(event.payload).catch(() => {});
+  const stop = await listenCurrentWindowEvent<number | { requestId: number; closingWindow: true }>(QUIT_PROMPT_REQUEST_EVENT, (event) => {
+    const id = typeof event.payload === "number" ? event.payload : event.payload?.requestId;
+    if (Number.isSafeInteger(id) && id > 0) {
+      void handler(id, typeof event.payload === "object" && event.payload?.closingWindow === true).catch(() => {});
+    }
   });
+  if (!onCancelled) return stop;
+  try {
+    const stopCancellation = await listenCurrentWindowEvent<number>("chemdraft://quit-cancelled", event => {
+      if (Number.isSafeInteger(event.payload) && event.payload > 0) onCancelled(event.payload);
+    });
+    return () => { stop(); stopCancellation(); };
+  } catch (error) { stop(); throw error; }
 }
 export async function broadcastQuitSettings(enabled: boolean): Promise<void> {
   dispatchDomToolsetEvent(QUIT_SETTINGS_EVENT, enabled);
@@ -850,9 +860,9 @@ export const cancelQuit = (id: number, disposition?: "deferred" | "failed"): Pro
   quitPromptCommand("cancel_quit", id, disposition ? { disposition } : undefined);
 export const resumeQuitAfterPrompt = (id: number): Promise<boolean> => quitPromptCommand("resume_quit_after_prompt", id);
 export const confirmPromptedQuit = (id: number): Promise<void> => quitPromptCommand("confirm_prompted_quit", id);
-export async function requestQuitAfterClose(): Promise<void> {
+export async function requestQuitAfterClose(closingWindow = false): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("request_quit_after_close");
+  await invoke("request_quit_after_close", { closingWindow });
 }
 
 /** One row of the native Toolbars menu, pushed from the TS toolbar registry. */

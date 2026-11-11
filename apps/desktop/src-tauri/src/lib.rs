@@ -43,6 +43,7 @@ mod webview_context_menus;
 #[cfg(test)]
 mod webview_context_menus_tests;
 mod window_drag;
+mod window_lifecycle;
 mod windows_clipboard;
 
 use clipboard_formats::{
@@ -209,6 +210,7 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
 static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
 const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
+const QUIT_CANCELLED_EVENT: &str = "chemdraft://quit-cancelled";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum QuitPromptPhase {
@@ -561,6 +563,7 @@ fn drain_quit_persistence_with(
     result
 }
 
+#[cfg(test)]
 fn visit_quit_documents(
     registry: &document_windows::DocumentWindowRegistry,
     mut deliver: impl FnMut(&str) -> bool,
@@ -576,25 +579,27 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
         // Native sessions settle before the final document flush, even with an unresponsive renderer.
         dialog_windows::dismiss_all(self, "quit");
-        visit_quit_documents(
-            &self.state::<document_windows::DocumentWindowRegistry>(),
-            |label| {
-                self.get_webview_window(label).is_some()
-                    && self.emit_to(label, QUIT_FLUSH_REQUEST_EVENT, ()).is_ok()
-            },
-        )
+        begin_document_flush(self, window_lifecycle::FlushPurpose::Quit).1
     }
 
     fn ask_document_to_prompt(&self, request_id: u64) -> bool {
-        visit_quit_documents(
-            &self.state::<document_windows::DocumentWindowRegistry>(),
-            |label| {
-                self.get_webview_window(label).is_some()
-                    && self
-                        .emit_to(label, QUIT_PROMPT_REQUEST_EVENT, request_id)
-                        .is_ok()
-            },
-        )
+        let first = self
+            .state::<window_lifecycle::DocumentLifecycle>()
+            .begin_prompts(document_labels(self));
+        // Every renderer gets its flush request even if the first save-choice window stalls.
+        begin_document_flush(self, window_lifecycle::FlushPurpose::PromptedQuit);
+        first.is_some_and(|label| {
+            let payload = if self
+                .state::<window_lifecycle::DocumentLifecycle>()
+                .last_window_close()
+            {
+                serde_json::json!({"requestId": request_id, "closingWindow": true})
+            } else {
+                serde_json::json!(request_id)
+            };
+            self.emit_to(&label, QUIT_PROMPT_REQUEST_EVENT, payload)
+                .is_ok()
+        })
     }
 
     fn exit(&self) {
@@ -661,11 +666,43 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 }
 
+fn document_labels<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .all_document_windows()
+        .into_iter()
+        .filter(|window| window.lifecycle != document_windows::DocumentWindowLifecycle::Closing)
+        .map(|window| window.native_label)
+        .collect()
+}
+
+/// Quit and updater share the exact same renderer flush/acknowledgment protocol and disk drain.
+fn begin_document_flush<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    purpose: window_lifecycle::FlushPurpose,
+) -> (u64, bool) {
+    let labels = document_labels(app);
+    let any = !labels.is_empty();
+    let id = app
+        .state::<window_lifecycle::DocumentLifecycle>()
+        .begin_flush(purpose, labels.clone());
+    for label in labels {
+        if let Err(error) = app.emit_to(&label, QUIT_FLUSH_REQUEST_EVENT, id) {
+            app.state::<window_lifecycle::DocumentLifecycle>()
+                .acknowledge_flush(id, &label, Some(error.to_string()));
+        }
+    }
+    (id, any)
+}
+
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
 /// webview, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if !prompt_waits_for_user(&QUIT) {
+        app.state::<window_lifecycle::DocumentLifecycle>()
+            .set_last_window_close(false);
+    }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
@@ -997,8 +1034,27 @@ fn quit_now_locked_with<H: QuitHost>(
 /// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
 /// 3 s grace ran out. Deciding here posts the exit request or AppKit reply to the main thread.
 #[tauri::command]
-async fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+async fn quit_after_flush(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+    error: Option<String>,
+) -> Result<(), String> {
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let lifecycle = app.state::<window_lifecycle::DocumentLifecycle>();
+    let completed = lifecycle.acknowledge_flush(request_id, window.label(), error);
+    let quit_ready = completed == Some(window_lifecycle::FlushPurpose::Quit)
+        && lifecycle.flush_succeeded(request_id);
+    let prompted_ready = completed == Some(window_lifecycle::FlushPurpose::PromptedQuit)
+        && lifecycle.prompted_flush_finished()
+        && QUIT.requested.load(Ordering::SeqCst);
+    if quit_ready || prompted_ready {
+        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(())
 }
 
 fn authorize_quit_window(
@@ -1088,14 +1144,22 @@ async fn prepare_quit_prompt(
         &window.state::<document_windows::DocumentWindowRegistry>(),
         window.label(),
     )?;
-    if QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow)
+    let closing = app
+        .state::<window_lifecycle::DocumentLifecycle>()
+        .is_close(window.label(), request_id);
+    if !closing
+        && (!app
+            .state::<window_lifecycle::DocumentLifecycle>()
+            .is_prompt_owner(window.label())
+            || QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow))
         || QUIT.quitting.load(Ordering::SeqCst)
     {
         return Ok(false);
     }
     let reveal = window.clone();
     run_on_main_thread_blocking(&window, move || {
-        if QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow)
+        if !closing
+            && QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow)
             || QUIT.quitting.load(Ordering::SeqCst)
         {
             return Ok(false);
@@ -1119,6 +1183,13 @@ async fn quit_prompt_showing(
         window.label(),
     )?;
     let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.is_close(window.label(), request_id) {
+        return Ok(visible);
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
     Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
 }
 
@@ -1133,31 +1204,42 @@ async fn cancel_quit(
         window.label(),
     )?;
     let disposition = disposition.unwrap_or(QuitPromptCancellation::UserCancelled);
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.cancel_close(window.label(), request_id) {
+        return Ok(!matches!(disposition, QuitPromptCancellation::Failed));
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
     #[cfg(target_os = "macos")]
-    {
-        Ok(cancel_appkit_prompt_with(
-            &QUIT,
-            window.app_handle(),
-            request_id,
-            disposition,
-        ))
-    }
+    let cancelled = cancel_appkit_prompt_with(&QUIT, window.app_handle(), request_id, disposition);
     #[cfg(not(target_os = "macos"))]
-    {
-        Ok(cancel_prompt_without_appkit(&QUIT, request_id, disposition))
+    let cancelled = cancel_prompt_without_appkit(&QUIT, request_id, disposition);
+    if QUIT.state.lock().unwrap().prompt == (request_id, QuitPromptPhase::Idle) {
+        for label in document_labels(window.app_handle()) {
+            let _ = window
+                .app_handle()
+                .emit_to(&label, QUIT_CANCELLED_EVENT, request_id);
+        }
     }
+    Ok(cancelled)
 }
 
 #[tauri::command]
 async fn request_quit_after_close(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    closing_window: Option<bool>,
 ) -> Result<(), String> {
     authorize_quit_window(
         &window.state::<document_windows::DocumentWindowRegistry>(),
         window.label(),
     )?;
-    request_quit(&app);
+    if closing_window.unwrap_or(false) {
+        request_close_window(&app, window.label());
+    } else {
+        request_quit(&app);
+    }
     Ok(())
 }
 
@@ -1171,6 +1253,13 @@ async fn resume_quit_after_prompt(
         &window.state::<document_windows::DocumentWindowRegistry>(),
         window.label(),
     )?;
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.is_close(window.label(), request_id) {
+        return Ok(lifecycle.resume_close(window.label(), request_id));
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
     Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
 }
 
@@ -1184,11 +1273,206 @@ async fn confirm_prompted_quit(
         &window.state::<document_windows::DocumentWindowRegistry>(),
         window.label(),
     )?;
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.close_confirmed(window.label(), request_id) {
+        finish_close_window(&app, &window).await?;
+        lifecycle.cancel_close(window.label(), request_id);
+        return Ok(());
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(());
+    }
     let state = QUIT.state.lock().unwrap();
     if state.prompt == (request_id, QuitPromptPhase::Flushing)
         && !QUIT.quitting.load(Ordering::SeqCst)
     {
-        quit_now_locked_with(&QUIT, &app, QuitReason::FlushConfirmed, state);
+        if let Some(next) = lifecycle.complete_prompt(window.label()) {
+            let mut state = state;
+            state.prompt.0 += 1;
+            state.prompt.1 = QuitPromptPhase::AwaitingWindow;
+            let next_request = state.prompt.0;
+            QUIT.requested.store(false, Ordering::SeqCst);
+            drop(state);
+            arm_prompt_grace(&QUIT, &app, next_request, QuitPromptPhase::AwaitingWindow);
+            app.emit_to(&next, QUIT_PROMPT_REQUEST_EVENT, next_request)
+                .map_err(|error| error.to_string())?;
+        } else if lifecycle.prompted_flush_finished() {
+            quit_now_locked_with(&QUIT, &app, QuitReason::FlushConfirmed, state);
+        }
+    }
+    Ok(())
+}
+
+/// A close always uses the dirty-choice protocol, independently of the quit preference.
+/// Windows' last document uses the existing all-window quit, including its bounded exit drain.
+fn request_close_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    if QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+        || prompt_waits_for_user(&QUIT)
+    {
+        return;
+    }
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    if !registry.is_document_window(label) {
+        return;
+    }
+    if app
+        .state::<session_coordinator::SessionCoordinator>()
+        .close_quits(&registry, cfg!(target_os = "macos"))
+    {
+        app.state::<window_lifecycle::DocumentLifecycle>()
+            .set_last_window_close(true);
+        request_prompted_quit_with(&QUIT, app);
+        return;
+    }
+    let lifecycle = app.state::<window_lifecycle::DocumentLifecycle>();
+    if let Some(id) = lifecycle.begin_close(label) {
+        if let Err(error) = app.emit_to(
+            label,
+            QUIT_PROMPT_REQUEST_EVENT,
+            serde_json::json!({"requestId": id, "closingWindow": true}),
+        ) {
+            lifecycle.cancel_close(label, id);
+            eprintln!("Could not request document window close: {error}");
+        }
+    }
+}
+
+async fn finish_close_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    // Commit closes serially with window construction. Two already-approved closes must not both
+    // decide they are non-last before either document has left the registry.
+    let _creation = lock_window_creation()?;
+    if QUIT.requested.load(Ordering::SeqCst) || APP_QUITTING.load(Ordering::SeqCst) {
+        return Err("Application quit superseded this window close".into());
+    }
+    let owner = window
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is no longer registered")?;
+    if app
+        .state::<session_coordinator::SessionCoordinator>()
+        .close_quits(
+            &window.state::<document_windows::DocumentWindowRegistry>(),
+            cfg!(target_os = "macos"),
+        )
+    {
+        // Its mandatory save choice is complete. Use A6's all-window flush/exit, without asking twice.
+        request_quit_with(&QUIT, app, false);
+        return Ok(());
+    }
+    // Move shared HWND ownership before destroying the old owner (Windows destroys owned HWNDs).
+    preserve_shared_utilities(app, window)?;
+    let writer = app.clone();
+    let id = owner.window_id.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = cancelled.clone();
+    let result = session_coordinator::with_timeout(QUIT_FLUSH_GRACE, move || {
+        dialog_windows::dismiss_owned(&writer, &id, "ownerClose");
+        if worker_cancelled.load(Ordering::SeqCst) {
+            return Err("The document window close was cancelled".into());
+        }
+        let coordinator = writer.state::<session_coordinator::SessionCoordinator>();
+        coordinator.close_window(&id)?;
+        if worker_cancelled.load(Ordering::SeqCst) {
+            coordinator.cancel_window_close(&id)?;
+        }
+        drain_persistence(&writer)
+    });
+    if let Err(error) = result {
+        cancelled.store(true, Ordering::SeqCst);
+        // Serialize behind any late disk write, without extending the close's bounded wait.
+        let app = app.clone();
+        let id = owner.window_id;
+        thread::spawn(move || {
+            let _ = app
+                .state::<session_coordinator::SessionCoordinator>()
+                .cancel_window_close(&id);
+        });
+        return Err(error);
+    }
+    let registry = window.state::<document_windows::DocumentWindowRegistry>();
+    registry.begin_closing(&owner.window_id);
+    if let Err(error) = window.destroy() {
+        registry.remove(&owner.window_id);
+        registry.register(&owner.window_id, &owner.native_label)?;
+        registry.set_ready(&owner.window_id);
+        app.state::<session_coordinator::SessionCoordinator>()
+            .cancel_window_close(&owner.window_id)?;
+        return Err(error.to_string());
+    }
+    app.state::<session_coordinator::SessionCoordinator>()
+        .finish_window_close(&owner.window_id);
+    Ok(())
+}
+
+fn is_shared_utility(label: &str) -> bool {
+    label.starts_with("toolset-") || label == SPIN3D_DEBUGGER_WINDOW_LABEL
+}
+
+fn preserve_shared_utilities<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    closing: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let survivor = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .all_document_windows()
+        .into_iter()
+        .find(|document| {
+            document.native_label != closing.label()
+                && document.lifecycle == document_windows::DocumentWindowLifecycle::Ready
+        })
+        .and_then(|document| app.get_webview_window(&document.native_label));
+    for (label, utility) in app.webview_windows() {
+        if !is_shared_utility(&label) {
+            continue;
+        }
+        if survivor.is_none() {
+            panel_window::end_for_hide(app, &label);
+            utility.hide().map_err(|error| error.to_string())?;
+        }
+        #[cfg(windows)]
+        {
+            let target = utility.clone();
+            let old_owner = closing.hwnd().map_err(|error| error.to_string())?.0 as isize;
+            let new_owner = survivor
+                .as_ref()
+                .map(|owner| owner.hwnd().map(|handle| handle.0 as isize))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or(0);
+            run_on_main_thread_blocking(&utility, move || {
+                use windows_sys::Win32::{
+                    Foundation::{GetLastError, SetLastError},
+                    UI::WindowsAndMessaging::{
+                        GetWindow, SetWindowLongPtrW, GWLP_HWNDPARENT, GW_OWNER,
+                    },
+                };
+                let hwnd = target.hwnd().map_err(|error| error.to_string())?.0 as _;
+                // SAFETY: both owners and the utility are live top-level HWNDs, on the main thread.
+                unsafe {
+                    if GetWindow(hwnd, GW_OWNER) as isize == old_owner {
+                        SetLastError(0);
+                        if SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, new_owner) == 0
+                            && GetLastError() != 0
+                        {
+                            return Err(format!(
+                                "Could not preserve shared utility {label}: {}",
+                                GetLastError()
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .and_then(|result| result)?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = utility;
+        }
     }
     Ok(())
 }
@@ -1578,6 +1862,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(session_coordinator::SessionCoordinator::default())
+        .manage(window_lifecycle::DocumentLifecycle::default())
         .manage(document_windows::DocumentWindowRegistry::with_main())
         .manage(runtime_broker::State::default())
         .manage(palette_routing::PaletteRouting::default())
@@ -1684,70 +1969,21 @@ pub fn run() {
             }
             if is_document_window(window.app_handle(), window.label()) {
                 match event {
-                    // macOS: closing the document window hides it and the app lives on in the
-                    // Dock (RunEvent::Reopen brings it back).
-                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if !prompt_waits_for_user(&QUIT) {
-                            if let Some(owner) = window
-                                .state::<document_windows::DocumentWindowRegistry>()
-                                .owner_of(window.label())
-                            {
-                                dialog_windows::dismiss_owned(
-                                    window.app_handle(),
-                                    &owner.window_id,
-                                    "ownerClose",
-                                );
-                            }
-                            if let Err(error) = window.hide() {
-                                eprintln!("Could not hide ChemDraft main window: {error}");
-                            }
-                        }
-                    }
-                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
-                    // prewarmed popovers would keep a windowless process alive: closing the
-                    // document window quits — after the document flushes its pending autosave.
-                    #[cfg(not(target_os = "macos"))]
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        request_quit(window.app_handle());
+                        request_close_window(window.app_handle(), window.label());
                     }
                     WindowEvent::Destroyed => {
-                        if !APP_QUITTING.load(Ordering::SeqCst)
-                            && !QUIT.requested.load(Ordering::SeqCst)
-                            && window.label() != "main"
+                        // Application services belong to the process. An approved close has already
+                        // removed/flushed its session; process teardown preserves the quit session.
+                        if let Some(owner) = window
+                            .state::<document_windows::DocumentWindowRegistry>()
+                            .owner_of(window.label())
                         {
-                            if let Some(owner) = window
+                            window
                                 .state::<document_windows::DocumentWindowRegistry>()
-                                .owner_of(window.label())
-                            {
-                                match window
-                                    .state::<session_coordinator::SessionCoordinator>()
-                                    .close_window(&owner.window_id)
-                                {
-                                    Ok(delay) => {
-                                        session_coordinator::schedule(window.app_handle(), delay)
-                                    }
-                                    Err(error) => {
-                                        eprintln!("Could not remove closed session window: {error}")
-                                    }
-                                }
-                            }
+                                .remove(&owner.window_id);
                         }
-                        // The close button only hides the main window, so its actual destruction
-                        // means the app is dying — including SIGTERM teardowns that never fire
-                        // ExitRequested. Raise the quit flag so palette destruction that follows
-                        // isn't recorded as user closes.
-                        APP_QUITTING.store(true, Ordering::SeqCst);
-                        panel_full_size::restore_all(window.app_handle());
-                        dialog_windows::dismiss_all(window.app_handle(), "quit");
-                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
-                        external_tools::shutdown(window.app_handle());
-                        assistant_mcp::shutdown();
-                        window
-                            .state::<naming_engine::NamingEngineState>()
-                            .shutdown();
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
@@ -2168,7 +2404,12 @@ pub fn run() {
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
             RunEvent::ExitRequested { code, api, .. } => {
-                if should_flush_exit_request(
+                if cfg!(target_os = "macos")
+                    && code.is_none()
+                    && !APP_QUITTING.load(Ordering::SeqCst)
+                {
+                    api.prevent_exit();
+                } else if should_flush_exit_request(
                     cfg!(target_os = "macos"),
                     code,
                     APP_QUITTING.load(Ordering::SeqCst),
@@ -2318,13 +2559,29 @@ fn main_window_frame_action(visible: bool, has_saved_frame: bool) -> MainWindowF
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    if quit_in_progress() {
+        return Err(QUITTING_WINDOW_REFUSAL.into());
+    }
     let window = if let Some(window) = active_document_webview(app) {
         window
     } else {
-        // Startup creates/restores the first config window under its migrated identity only.
+        // A7 recreates only the migrated first window; A10 alone enables additional windows.
+        let documents = app.state::<document_windows::DocumentWindowRegistry>();
+        if documents
+            .registered_document_window(MAIN_WINDOW_LABEL)
+            .is_none()
+        {
+            documents.register(MAIN_WINDOW_LABEL, MAIN_WINDOW_LABEL)?;
+        }
         let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
             Some(window) => window,
-            None => create_main_window(app)?,
+            None => match create_main_window(app) {
+                Ok(window) => window,
+                Err(error) => {
+                    documents.remove(MAIN_WINDOW_LABEL);
+                    return Err(error);
+                }
+            },
         };
         app.state::<document_windows::DocumentWindowRegistry>()
             .set_ready(MAIN_WINDOW_LABEL);
@@ -4029,6 +4286,15 @@ async fn flush_document_session(
     if !is_document_window(&app, window.label()) {
         return Err("Only a registered document window can flush its session".into());
     }
+    if QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+        || prompt_waits_for_user(&QUIT)
+    {
+        return Err("ChemDraft is quitting; the update was cancelled".into());
+    }
+    let (id, _) = begin_document_flush(&app, window_lifecycle::FlushPurpose::Update);
+    app.state::<window_lifecycle::DocumentLifecycle>()
+        .wait_for_update(id, QUIT_FLUSH_GRACE)?;
     flush_session(&app)
 }
 
@@ -6235,10 +6501,11 @@ mod document_key_after_unhide_tests {
 }
 
 #[cfg(target_os = "macos")]
-fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
+fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<objc2::rc::Retained<NSWindow>> {
     let pointer = active_document_webview(app)?.ns_window().ok()?;
-    // The main window is never destroyed while the app runs (closing only hides it).
-    unsafe { (pointer as *mut NSWindow).as_ref() }
+    // Called on AppKit's main thread. Retain only for this operation: the document may close
+    // while the application remains alive, so no borrowed 'static NSWindow may escape.
+    unsafe { objc2::rc::Retained::retain(pointer.cast::<NSWindow>()) }
 }
 
 /// Records whether the document was key at Cmd+H, and restores it after the app is active again.
@@ -12580,7 +12847,8 @@ mod tests {
         let lines: Vec<&str> = include_str!("lib.rs").lines().map(str::trim).collect();
         let declared_async = lines.windows(2).any(|pair| {
             pair[0] == "#[tauri::command]"
-                && pair[1] == "async fn quit_after_flush(app: tauri::AppHandle) {"
+                // A7 adds caller identity and a barrier ticket; the command must remain async.
+                && pair[1].starts_with("async fn quit_after_flush(")
         });
         assert!(declared_async);
     }
