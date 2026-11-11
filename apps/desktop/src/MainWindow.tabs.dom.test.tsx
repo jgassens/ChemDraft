@@ -24,6 +24,7 @@ import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
 import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+import { createRuntimeDocumentPort } from "./plugins/runtimeDocumentPort";
 import { applyPatches, type DocumentPatch, type MoleculeObject } from "@chemdraft/chem-core";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT, ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID,
@@ -173,6 +174,10 @@ vi.mock("@tauri-apps/plugin-fs", async (original) => ({
     };
   }
 }));
+vi.mock("./plugins/runtimeDocumentPort", async (original) => {
+  const actual = await original<typeof import("./plugins/runtimeDocumentPort")>();
+  return { ...actual, createRuntimeDocumentPort: vi.fn(actual.createRuntimeDocumentPort) };
+});
 vi.mock("./plugins/createPluginRuntime", async (original) => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
   return { ...actual, createPluginRuntime: vi.fn(actual.createPluginRuntime) };
@@ -407,34 +412,40 @@ describe("documents in one window", () => {
     .filter((object) => object.type === "text").map((object) => object.text).join("\n");
   const tabs = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
   const active = () => tabs().findIndex((tab) => tab.getAttribute("aria-selected") === "true");
-  const pluginDocumentKey = () => vi.mocked(createPluginRuntime).mock.calls[0]![0].getActiveDocumentKey!();
+  const documentPort = () => vi.mocked(createRuntimeDocumentPort).mock.results.at(-1)!.value;
+  const pluginDocumentKey = () => documentPort().read(documentPort().activeTabId())!.documentKey;
 
-  it("uses stable UUID tab ids and composite plugin keys through switches and replacement", async () => {
+  // A5's captured drawing lifetime is independent of activation; UI revisions remain separate.
+  it("uses stable UUID tab ids and drawing keys through switches, invalidating replacement", async () => {
     const uuid = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
     const first = initialDocumentTabId();
     expect(first).toMatch(uuid);
     const initialKey = pluginDocumentKey();
-    expect(initialKey).toBe(`main:${first}:0`);
+    expect(documentPort().windowId).toBe("main");
+    expect(initialKey).toMatch(uuid);
     await command("document.new");
     const second = container.querySelector<HTMLElement>('[data-active="true"][data-tab-id]')!.dataset.tabId!;
     expect(second).toMatch(uuid);
     expect(second).not.toBe(first);
     const secondKey = pluginDocumentKey();
-    expect(secondKey).toBe(`main:${second}:1`);
+    expect(secondKey).toMatch(uuid);
+    expect(secondKey).not.toBe(initialKey);
     await command(`document.activateTab.${first}`);
     expect(initialDocumentTabId()).toBe(first);
-    expect(pluginDocumentKey()).toBe(`main:${first}:1`);
+    expect(pluginDocumentKey()).toBe(initialKey);
     await command(`document.activateTab.${second}`);
-    expect(pluginDocumentKey()).toBe(`main:${second}:2`);
+    expect(pluginDocumentKey()).toBe(secondKey);
     await command("document.closeTab");
-    expect(pluginDocumentKey()).toBe(`main:${first}:2`);
+    expect(documentPort().read(second)).toBeUndefined();
+    expect(pluginDocumentKey()).toBe(initialKey);
     // Opening into a pristine tab replaces its document, retaining the tab id.
     await open("Replacement");
-    expect(pluginDocumentKey()).toBe(`main:${first}:3`);
+    expect(documentPort().activeTabId()).toBe(first);
+    expect(pluginDocumentKey()).not.toBe(initialKey);
     expect(vi.mocked(createPluginRuntime)).toHaveBeenCalledTimes(1);
   });
 
-  it.each([false, true])("refuses a plugin write captured before a tab switch (switch back: %s)", async switchBack => {
+  it.each([false, true])("keeps a plugin write bound to its captured drawing across a tab switch (switch back: %s)", async switchBack => {
     const first = initialDocumentTabId();
     const before = structuredClone(bridge().snapshot().document);
     let release!: () => void;
@@ -453,15 +464,43 @@ describe("documents in one window", () => {
       } });
     } } });
     const pending = runtime().invokeCommand("plugin.tabWrite.insert");
-    const rejected = expect(pending).rejects.toThrow(/document changed/);
-    await captured;
+    await settles(captured, "Captured plugin command");
     await command("document.new");
     if (switchBack) await command(`document.activateTab.${first}`);
     const destination = structuredClone(bridge().snapshot().document);
-    await act(async () => { release(); await rejected; });
-    expect(bridge().snapshot().document).toEqual(destination);
+    await act(async () => { release(); await expect(pending).resolves.toMatchObject({ applied: true }); });
+    if (!switchBack) expect(bridge().snapshot().document).toEqual(destination);
     await command(`document.activateTab.${first}`);
+    expect(drawnText()).toBe("Delayed");
+    await command("edit.undo");
     expect(bridge().snapshot().document).toEqual(before);
+  });
+
+  it.each(["closed", "replaced"])("refuses a captured plugin write after its drawing is %s", async change => {
+    const before = bridge().snapshot().document;
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const captured = new Promise<void>(resolve => { started = resolve; });
+    runtime().registerPlugin({
+      id: "org.test.retired-write", name: "Retired write", version: "0.0.1", apiVersion: "^0.1.8",
+      entry: "test.js", permissions: ["document.write"],
+      contributes: { commands: [{ id: "plugin.retiredWrite.insert", title: "Insert" }] }
+    }, { commandHandlers: { "plugin.retiredWrite.insert": async context => {
+      started(); await waiting;
+      return context.documents.applyPatch!({ reason: "Delayed insert", patch: {
+        op: "addObject", pageId: before.pages[0]!.id,
+        object: createNativeTextObject(before, { x: 100, y: 100 }, "Retired result")
+      } });
+    } } });
+    const pending = runtime().invokeCommand("plugin.retiredWrite.insert");
+    const refused = expect(pending).rejects.toThrow(/closed|changed|unavailable/i);
+    await settles(captured, "Captured plugin command");
+    if (change === "closed") await closeTab();
+    else await open("Replacement drawing");
+    const destination = structuredClone(bridge().snapshot().document);
+    await settles(act(async () => { release(); await refused; }), "Retired drawing write");
+    expect(bridge().snapshot().document).toEqual(destination);
   });
 
   it("refuses a timed-out SMILES check without inserting a molecule or fallback text", async () => {
@@ -647,6 +686,14 @@ describe("documents in one window", () => {
       else await native.quitFlush!();
     });
     return parseDocumentSessionEnvelope(native.session)!;
+  }
+  async function settles<T>(pending: PromiseLike<T>, description: string): Promise<T> {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([pending, new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error(`${description} did not settle`)), 5_000);
+      })]);
+    } finally { if (deadline !== undefined) clearTimeout(deadline); }
   }
   async function quitButton(label: string) {
     expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
@@ -1071,7 +1118,7 @@ describe("documents in one window", () => {
   });
 
   it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
-    const invoke = vi.spyOn(runtime().host, "invokeCommand");
+    const invoke = vi.spyOn(documentPort().commandRegistry, "invoke");
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="New tab"]')!;
     expect(button.title).toBe("New tab");
     expect(button.tabIndex).toBe(0);
@@ -1079,7 +1126,7 @@ describe("documents in one window", () => {
     expect(document.activeElement).toBe(button);
     expect(container.querySelector(".document-tab-strip")!.lastElementChild).toBe(button);
     await act(async () => button.click());
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("document.new");
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("document.new", expect.any(Object));
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(1);
     expect(tabs()[1]!.textContent).toBe("Untitled");
@@ -1559,9 +1606,9 @@ describe("documents in one window", () => {
     await paste("Keep the first drawing");
     await command("document.new");
     await paste("Second dirty drawing");
-    const invoke = vi.spyOn(runtime().host, "invokeCommand");
+    const invoke = vi.spyOn(documentPort().commandRegistry, "invoke");
     await closeTab();
-    expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./));
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^document\.closeTab\./), expect.any(Object));
     expect(pendingPrompt?.prompt).toMatchObject({
       title: "Save changes before closing?", kind: "warning",
       choices: [{ id: "save", label: "Save" }, { id: "discard", label: "Don't Save", destructive: true },
@@ -2219,7 +2266,7 @@ describe("documents in one window", () => {
       expect(bridge().snapshot().document).toEqual(saved);
       expect(bridge().snapshot().file.dirty).toBe(false);
       expect(native.quit).not.toHaveBeenCalled();
-      await act(async () => { finishFlush(); });
+      await settles(act(async () => { finishFlush(); }), "Quit session flush");
       expect(native.quit).toHaveBeenCalledTimes(1);
   }, 20_000);
 
@@ -3439,15 +3486,16 @@ describe("documents in one window", () => {
     expect(native.saveSession).not.toHaveBeenCalled();
   });
 
-  it("creates one plugin runtime across switches, with callbacks and agent snapshot following the active document", async () => {
-    const options = vi.mocked(createPluginRuntime).mock.calls[0]![0]!;
+  it("keeps one runtime across switches, with its document port and agent snapshot following the active document", async () => {
+    const port = documentPort();
+    const read = () => port.read(port.activeTabId())!.document;
     await paste("Plugin first drawing");
-    const firstDocument = options.getActiveDocument!();
+    const firstDocument = read();
     await command("document.new");
-    expect(options.getActiveDocument!()).not.toBe(firstDocument);
+    expect(read()).not.toBe(firstDocument);
     await paste("Plugin second drawing");
     await activate(0);
-    expect(options.getActiveDocument!()).toBe(firstDocument);
+    expect(read()).toBe(firstDocument);
     expect(bridge().snapshot().document).toEqual(firstDocument);
     expect(createPluginRuntime).toHaveBeenCalledTimes(1);
   });

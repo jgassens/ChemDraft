@@ -208,7 +208,14 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
         if (args[1] !== undefined && (!current || restoreTokens.get(current) !== args[1])) return false;
         return runtime.clearCanvasOverlayDraftRestore(args[0] as string, current, windowId);
       }
-      case "closeProposalDocumentTab": return runtime.closeProposalDocumentTab(args[0] as string, args[1] as string, windowId);
+      case "closeProposalDocumentTab": {
+        runtime.closeProposalDocumentTab(args[0] as string, args[1] as string, windowId);
+        // Metadata can arrive before this asynchronous close action. Publish the retained title
+        // even when closing the last tab produces no further runtime notification.
+        publishState();
+        void broker.broadcastView([windowId], "proposalsChanged", null).catch(() => undefined);
+        return;
+      }
       case "proposalDocumentTab": return proposalWindow(args[0] as string) === windowId ? runtime.proposalDocumentTab(args[0] as string) : undefined;
       case "listCanvasOverlays": return runtime.listCanvasOverlays();
       case "screenCaptureOf": {

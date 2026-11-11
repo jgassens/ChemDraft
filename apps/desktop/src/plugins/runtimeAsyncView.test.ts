@@ -20,6 +20,34 @@ class AsyncChannels extends RuntimeTestChannels {
   }
 }
 
+it("coalesces document command registration and bounds startup completion", async () => {
+  const channels = new AsyncChannels();
+  const runtime = new RuntimeBroker("runtime", channels.transport("runtime"));
+  const document = new RuntimeBroker("main", channels.transport("main"));
+  const registry = new CommandRegistry();
+  const snapshots: Array<{ commands: unknown[]; revision: number }> = [];
+  const receive = runtime.handle("setCoreCommands", snapshot => { snapshots.push(snapshot); return null; });
+  const core = bindRuntimeCoreCommands(document, registry);
+  stops.push(() => runtime.dispose(), () => document.dispose(), receive, core);
+  // An entire synchronous registrar pass must produce one final snapshot, rather than one
+  // increasingly large RPC per command. Real MainWindow startup performs many such passes.
+  for (let i = 0; i < 500; i++) registry.register({ id: `core.batch.${i}`, title: `Command ${i}` }, () => {});
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      runtime.call("main", "getCoreCommands", {}).then(commands => expect(commands).toHaveLength(500)),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Core command startup did not settle")), 2_000); })
+    ]);
+    expect(snapshots).toHaveLength(2); // Initial empty view, then the complete registrar pass.
+    expect(snapshots[1]).toMatchObject({ commands: expect.any(Array), revision: 2 });
+    expect(snapshots[1]!.commands).toHaveLength(500);
+    registry.unregister("core.batch.0");
+    core(); // Disposing cancels the queued publication, including under StrictMode teardown.
+    await Promise.resolve();
+    expect(snapshots).toHaveLength(2);
+  } finally { if (deadline !== undefined) clearTimeout(deadline); }
+});
+
 it("initializes views, declarations and exact bounded recognition previews without immediate calls", async () => {
   vi.stubGlobal("localStorage", new MemoryStorage());
   const channels = new AsyncChannels(), runtime = new RuntimeBroker("runtime", channels.transport("runtime")),

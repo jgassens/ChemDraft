@@ -19,6 +19,7 @@ import type { AssistantToolContext } from "./assistant/AssistantToolContext";
 import { pluginPanelWindowId, requestPluginPanelAction } from "./plugins/panelBridge";
 import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+import { createRuntimeDocumentPort } from "./plugins/runtimeDocumentPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
@@ -43,6 +44,10 @@ vi.mock("./plugins/createPluginRuntime", async original => {
       ...(captured.assistantContext ? { assistantContext: captured.assistantContext } : {}) });
     return captured.runtime;
   } };
+});
+vi.mock("./plugins/runtimeDocumentPort", async original => {
+  const actual = await original<typeof import("./plugins/runtimeDocumentPort")>();
+  return { ...actual, createRuntimeDocumentPort: vi.fn(actual.createRuntimeDocumentPort) };
 });
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
@@ -923,7 +928,9 @@ describe("MainWindow canvas overlays", () => {
     expect(document.activeElement).toBe(textarea);
     const activeTool = container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool");
     expect(activeTool).toBeTruthy();
-    const invoke = vi.spyOn(captured.runtime!.host.commands, "invoke");
+    // A5 keeps drawing shortcuts in the document registry; the host owns plugin handlers only.
+    const port = vi.mocked(createRuntimeDocumentPort).mock.results.at(-1)!.value;
+    const invoke = vi.spyOn(port.commandRegistry, "invoke");
     const keys = vi.fn();
     document.addEventListener("keydown", keys, true);
     try { await typeAtFocus("draw aspirin"); }

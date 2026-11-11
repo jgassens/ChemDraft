@@ -164,8 +164,13 @@ OS file opens. See [document-session.md](document-session.md) for the format and
 `11.11.03.00-codex`. No Cargo command or native launch ran in this worker session. Integration must
 run Rust fmt/clippy/tests and packaged checks on macOS Apple silicon, macOS Intel and Windows,
 including exact migration/backup retention, fresh-start preservation, crash/relaunch, strict update
-flush and three-file Finder/Explorer opens. The source assertions in `App.test.ts` for the old
-panel parent/title remain baseline failures from before A6; their expected patterns are absent in HEAD.
+flush and three-file Finder/Explorer opens. The App/MainWindow/window-manager regression pass is
+complete at build `11.11.04.00-codex`: 40 requested files pass (1,845 passed tests, one existing skip),
+plus 21 adjacent runtime tests. The unchanged closed-proposal assertions exposed a missing
+view/queue notification; the full tab-suite stall came from publishing every partial core
+registration. Both product paths are fixed. Obsolete host-observation fixtures now exercise
+captured document ports and local core registries. See [the bisect table and per-file results](multi-window-regression-review.md)
+for every first-bad commit, test-change rationale and the bounded completion checks.
 
 Remaining implementation is A7's close/quit and all-renderer flush barrier, A8/A9 menus/focus,
 A10 native window creation and separate-window restore, A11 diagnostics, A12 final docs, and

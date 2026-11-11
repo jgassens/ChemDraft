@@ -43,6 +43,8 @@ export function bindRuntimeCoreCommands(broker: RuntimeBroker, registry: Command
     ({ id, title, source: "core" as const, category, description, requiredPermissions, defaultShortcut, enabled });
   let revision = 0;
   let previous = "";
+  let pending = false;
+  let disposed = false;
   const publish = () => {
     const commands = registry.list().filter(command => command.source !== "plugin" && !command.pluginId).map(describe);
     const value = JSON.stringify(commands);
@@ -51,7 +53,16 @@ export function bindRuntimeCoreCommands(broker: RuntimeBroker, registry: Command
     void broker.call("runtime", "setCoreCommands", { commands, revision: ++revision }).catch(() => undefined);
   };
   const stops = [
-    registry.subscribe(publish),
+    // Core registration replaces a whole command set synchronously. Publish its final state,
+    // rather than serializing thousands of partial snapshots during each document render.
+    registry.subscribe(() => {
+      if (pending || disposed) return;
+      pending = true;
+      void Promise.resolve().then(() => {
+        pending = false;
+        if (!disposed) publish();
+      });
+    }),
     broker.handle("getCoreCommands", () => registry.list().filter(command => command.source !== "plugin" && !command.pluginId)
       .map(describe)),
     broker.handle("getCoreCommand", ({ commandId }) => {
@@ -65,5 +76,5 @@ export function bindRuntimeCoreCommands(broker: RuntimeBroker, registry: Command
     })
   ];
   publish();
-  return Object.assign(() => { for (const stop of stops) stop(); }, { publish });
+  return Object.assign(() => { disposed = true; for (const stop of stops) stop(); }, { publish });
 }

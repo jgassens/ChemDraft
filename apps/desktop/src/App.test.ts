@@ -365,8 +365,11 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).not.toContain("onOpenAsWindow=");
   });
 
-  it("associates analysis windows with the main document instead of global always-on-top", () => {
-    expect(desktopNativeSource).toContain("builder.parent(&main)");
+  it("associates analysis windows with their owning document instead of global always-on-top", () => {
+    const panelBuilder = desktopNativeSource.slice(desktopNativeSource.indexOf("async fn open_plugin_panel_window("),
+      desktopNativeSource.indexOf("fn configure_analysis_window"));
+    expect(panelBuilder).toContain("builder.parent(&owner)");
+    expect(desktopNativeSource).toContain("let Some(main) = owned_document_webview(app, label)");
     expect(desktopNativeSource).toContain("ns_window.setLevel(NSNormalWindowLevel)");
     expect(desktopNativeSource).toContain("analysis_window_initial_position");
     expect(desktopNativeSource).not.toMatch(
@@ -382,7 +385,8 @@ describe("ChemDraft desktop shell", () => {
     expect(desktopNativeSource).toContain("validate_plugin_panel_focus_caller(window.label())?");
     expect(desktopNativeSource).toMatch(/async fn set_plugin_panel_input_focus\(/);
     expect(mainWindowSource).toContain("showProposalReview(false);");
-    expect(mainWindowSource).toMatch(/title: panel\.report\.title \|\| panel\.title,\s*focus: false/);
+    expect(mainWindowSource).toContain('title: `${panel.report.title || panel.title}${panel.documentName ? ` — ${panel.documentName}` : ""}`');
+    expect(mainWindowSource).toMatch(/title: `[^\n]+`,\s*focus: false/);
   });
 
   it("opens proposal review on arrival, updates it in place, and closes it when the queue empties", () => {

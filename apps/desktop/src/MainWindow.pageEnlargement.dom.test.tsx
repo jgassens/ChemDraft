@@ -260,14 +260,20 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     const object = createSmilesMolecule(before, { x: 600, y: 600 }, depictSmiles2D("CCCCCCCCCCCC"), "CCCCCCCCCCCC");
     await act(async () => {
       runtime.registerPlugin({ id: "org.chemdraft.pageReview", name: "Page review", version: "0.1.0", apiVersion: "^0.1.20",
-        entry: "test.js", permissions: ["document.proposePatch"] });
-      runtime.host.proposePatch("org.chemdraft.pageReview", { reason: "Review", patch: { op: "addObject", pageId: before.pages[0]!.id, object } });
+        entry: "test.js", permissions: ["document.proposePatch"],
+        contributes: { commands: [{ id: "plugin.pageReview.propose", title: "Propose" }] }
+      }, { commandHandlers: { "plugin.pageReview.propose": context => context.documents.proposePatch({
+        reason: "Review", patch: { op: "addObject", pageId: before.pages[0]!.id, object }
+      }) } });
+      // The hidden host has no active drawing: the command supplies its captured source target.
+      await runtime.invokeCommand("plugin.pageReview.propose");
     });
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
     await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
     expect(current()).toEqual(before);
     expect(runtime.host.listProposedPatches("pending")).toHaveLength(1);
     const external = setDocumentCustomPageSize(before, { width: 80, height: 80, unit: "css-px" });
+    expect(answer).toBeTypeOf("function");
     await act(async () => { getAssistantHistoryPort().push(initialDocumentTabId(), before, external, "External edit"); });
     await act(async () => { answer("enlarge"); });
     expect(current()).toEqual(external);

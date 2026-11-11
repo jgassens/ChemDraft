@@ -117,7 +117,8 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     const before = structuredClone(objects());
     const id = objectWaveCommandId("width", 24);
     await command(id);
-    expect(invokeSpy).toHaveBeenCalledWith(id);
+    // Core commands now enter the document registry with an explicit invocation context.
+    expect(invokeSpy).toHaveBeenCalledWith(id, expect.any(Object));
     expect(waves().every(object => object.data.waveWidth === 24)).toBe(true);
     const after = structuredClone(objects());
     await command("edit.undo");
@@ -262,7 +263,7 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
     });
     const invocations = invokeSpy.mock.calls.filter(([id]) => id.startsWith("object.wave."));
     if (ending === "release") {
-      expect(invocations).toEqual([[objectWaveCommandId("height", 24)]]);
+      expect(invocations.map(([id]) => id)).toEqual([objectWaveCommandId("height", 24)]);
       const after = structuredClone(objects());
       await command("edit.undo");
       expect(objects()).toEqual(before);

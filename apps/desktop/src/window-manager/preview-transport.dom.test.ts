@@ -86,9 +86,10 @@ describe("window-manager palette preview transport", () => {
     await sendPaletteCommandCommit("molecule.structure.bondLength:96");
     await sendPaletteCommandCancel("palette.preview.cancel");
 
-    expect(preview).toHaveBeenCalledWith("molecule.structure.bondLength:96");
-    expect(commit).toHaveBeenCalledWith("molecule.structure.bondLength:96");
-    expect(cancel).toHaveBeenCalledWith("palette.preview.cancel");
+    // A3 carries the captured document target alongside the command on both transports.
+    expect(preview).toHaveBeenCalledExactlyOnceWith("molecule.structure.bondLength:96", currentPaletteTarget());
+    expect(commit).toHaveBeenCalledExactlyOnceWith("molecule.structure.bondLength:96", currentPaletteTarget());
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel", currentPaletteTarget());
 
     unlistenPreview();
     unlistenCommit();
