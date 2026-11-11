@@ -41,8 +41,9 @@ export interface PluginRuntimeClient extends Pick<DesktopPluginRuntime,
   unregisterFixture(): void;
   discardPreparedPackages(): void;
   /** Authorization at Send needs the owner's live declaration, beyond the render snapshot. */
-  readCanvasOverlays(): Promise<ReturnType<DesktopPluginRuntime["listCanvasOverlays"]>>;
-  prepareCommand?: (id: string, options?: { input?: import("@chemdraft/plugin-api").PluginCommandInput; selectionWarnings?: string[] }) => () => Promise<unknown>;
+  readCanvasOverlays(): ReturnType<DesktopPluginRuntime["listCanvasOverlays"]> | Promise<ReturnType<DesktopPluginRuntime["listCanvasOverlays"]>>;
+  prepareCommand?: (id: string, options?: { input?: import("@chemdraft/plugin-api").PluginCommandInput; selectionWarnings?: string[] },
+    invoke?: () => Promise<unknown>) => () => Promise<unknown>;
   /** The callback remains in the committing document; only its one-use receipt is sent. */
   acceptPreparedProposal(id: string, target: RuntimeTarget, documentKey: string, commit: () => void): Promise<void>;
 }
@@ -78,7 +79,7 @@ export class RuntimeViewClient {
   private readonly isPluginCommand = (id: string): boolean => {
     const local = this.commandRegistry?.get(id);
     return local ? local.source === "plugin" || !!local.pluginId
-      : id.startsWith("plugin.") || this.state.commands.some(command => command.id === id && !!command.pluginId);
+      : this.state.commands.some(command => command.id === id && !!command.pluginId);
   };
   private readonly stop: () => void;
   private readonly preparations = new Map<string, { request: RuntimeRequest<"commitProposal">; commit(): void }>();
@@ -184,11 +185,11 @@ export class RuntimeViewClient {
     const call = <T>(action: RuntimeViewAction["action"], ...args: unknown[]): Promise<T> => this.call<T>(action, ...args);
     const subscribe = (listener: () => void) => this.subscribe("contributions", listener);
     this.runtime = {
-      prepareCommand: prepareCommand && ((id, options) => {
+      prepareCommand: prepareCommand && ((id, options, invoke) => {
         try {
           if (!this.isPluginCommand(id)) return () => this.runtime.invokeCommand(id, options);
           if (!this.initialized) throw this.startupFailure ?? new Error("Plugin runtime host is starting. Try the plugin command again when it is ready.");
-          return prepareCommand(id, options);
+          return prepareCommand(id, options, invoke);
         } catch (error) { return () => Promise.reject(error); }
       }),
       host: {
@@ -234,8 +235,9 @@ export class RuntimeViewClient {
       proposalDocumentTab: id => this.asynchronous ? new Map(this.state.proposalTabs).get(id) : immediate("proposalDocumentTab", id),
       closeProposalDocumentTab: (id, title) => { immediate("closeProposalDocumentTab", id, title); },
       invokeCommand: (id, options) => {
-        if (!this.isPluginCommand(id)) return this.commandRegistry
+        if (!this.isPluginCommand(id)) return this.commandRegistry?.get(id)
           ? this.commandRegistry.invoke(id, { input: options?.input })
+          : invokeCommand ? invokeCommand(id, options)
           : Promise.reject(new Error("The document command registry is unavailable."));
         if (!this.initialized) return Promise.reject(this.startupFailure ?? new Error("Plugin runtime host is starting. Try the plugin command again when it is ready."));
         return invokeCommand ? invokeCommand(id, options) : call<{ result?: unknown; error?: Extract<Reply, { ok: false }>["error"]; warnings: string[] }>("invokePluginCommand", id, options?.input, !!options?.selectionWarnings).then(({ result, warnings, error }) => {
@@ -245,7 +247,7 @@ export class RuntimeViewClient {
         });
       },
       listCanvasOverlays: () => this.asynchronous ? [...this.state.canvasOverlays] : immediate("listCanvasOverlays"),
-      readCanvasOverlays: () => call("listCanvasOverlays"),
+      readCanvasOverlays: () => this.asynchronous ? call("listCanvasOverlays") : immediate("listCanvasOverlays"),
       getCanvasOverlayStatuses: () => new Map(this.topic("overlayStatus")),
       subscribeCanvasOverlayStatus: listener => this.subscribe("overlayStatus", listener),
       getCanvasOverlayTranscripts: () => new Map(this.topic("overlayTranscript")),

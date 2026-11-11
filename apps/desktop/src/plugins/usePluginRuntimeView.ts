@@ -16,11 +16,19 @@ export function useRuntimeView(client: RuntimeViewClient) {
 export function usePluginRuntimeView(providers: RuntimeDocumentProviders) {
   // The browser preview is an explicit local embedding, never a desktop startup fallback.
   const session = isTauriHost() ? runtimeDocumentSession(providers) : browserSession(providers);
+  if (!isTauriHost()) {
+    if (!browserHook || !providers.documentPort) throw new Error("The browser document runtime requires its document port.");
+    const port = providers.documentPort;
+    return browserHook.usePluginRuntime({ ...providers, documentPort: port,
+      getActiveDocument: () => port.read(port.activeTabId())?.document,
+      getSelection: warnings => port.selection(port.activeTabId(), warnings) });
+  }
   const view = useRuntimeView(session.client);
   useEffect(() => { session.start(); }, [session]);
   return view;
 }
 const browser = isTauriHost() ? undefined : await import("./localPluginRuntime");
+const browserHook = isTauriHost() ? undefined : await import("./usePluginRuntime");
 function browserSession(providers: RuntimeDocumentProviders) {
   if (!browser) throw new Error("The desktop plugin runtime requires its hidden host.");
   return browser.localPluginRuntimeSession(providers);

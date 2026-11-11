@@ -61,7 +61,7 @@ export function createRuntimeDocumentSession(providers: RuntimeDocumentProviders
     throw runtimeStartupError(error);
   });
   const client = new RuntimeViewClient(broker, (id, options) => document.invokeCommand(id, options?.input, options), true, startup,
-    (id, options) => document.prepareCommand(id, options?.input, options), port.commandRegistry, port);
+    (id, options, invoke) => document.prepareCommand(id, options?.input, options, invoke), port.commandRegistry, port);
   void client.ready.catch(error => current.onPluginUpdateStatus?.(error instanceof Error ? error.message : String(error)));
   let stopActivity: (() => void) | undefined;
   let started = false;

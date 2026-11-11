@@ -81,8 +81,12 @@ export function createLocalPluginRuntimeSession(providers: RuntimeDocumentProvid
     // installs contributions as proxies after the runtime's permission/rollback gates complete.
     documentPort: undefined,
     commandRegistry: coreRegistry,
-    getActiveDocument: () => undefined,
-    getSelection: () => ({ objectIds: [], molecules: [] }),
+    getActiveDocument: () => port.read(port.activeTabId())?.document,
+    getActiveDocumentKey: () => port.read(port.activeTabId())?.documentKey,
+    getActiveDocumentTab: () => ({ id: port.activeTabId() }),
+    getDocumentTabTitle: tabId => documentProviders.current.documentTabs?.find(tab => tab.id === tabId)?.title
+      ?? documentProviders.current.getDocumentTabTitle?.(tabId),
+    getSelection: warnings => port.selection(port.activeTabId(), warnings),
     onNameResolutionStatus: text => publish("nameResolutionStatus", text),
     onPluginUpdateStatus: text => publish("pluginUpdateStatus", text),
     onProposedPatchesChanged: () => publish("proposalsChanged", null)
@@ -91,8 +95,12 @@ export function createLocalPluginRuntimeSession(providers: RuntimeDocumentProvid
   const document = new RuntimeBrokerDocument(documentBroker, port);
   void host.broadcastContributions().catch(() => undefined);
   const unbind = bindRuntimeViewOwner(owner, hostBroker, () => [windowId]);
-  const client = new RuntimeViewClient(documentBroker, remote ? ((id, options) => document.invokeCommand(id, options?.input, options)) : undefined, remote,
-    Promise.resolve(), remote ? ((id, options) => document.prepareCommand(id, options?.input, options)) : undefined, port.commandRegistry, port);
+  // These addressed channels deliver synchronously in one webview. Keep live reads synchronous
+  // too; only the native document session needs an asynchronous view/authorization round trip.
+  const client = new RuntimeViewClient(documentBroker, remote ? ((id, options) => port.commandRegistry.get(id)?.pluginId
+    ? document.invokeCommand(id, options?.input, options) : owner.runtime.invokeCommand(id, options)) : undefined, false,
+    Promise.resolve(), remote ? ((id, options, invoke) => document.prepareCommand(id, options?.input, options, invoke)) : undefined,
+    port.commandRegistry, port);
   if (remote) unbind.publish();
   const initialTab = port.activeTabId(), initialState = port.read(initialTab);
   if (initialState) void documentBroker.call("runtime", "setDocumentMetadata", {

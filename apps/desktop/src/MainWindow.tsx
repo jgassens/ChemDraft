@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.06.15-codex";
+const CURRENT_BUILD_STAMP = "11.11.06.32-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -13379,13 +13379,15 @@ export function MainWindow({
       pluginCommandGenerationsRef.current.set(queueKey, generation);
       const previous = pluginCommandQueuesRef.current.get(queueKey) ?? Promise.resolve();
       const selectionWarnings: string[] = [];
-      const capturedCommand = pluginRuntime.runtime.prepareCommand?.(commandId, { selectionWarnings, input: options?.input });
+      const input = options?.input === undefined ? undefined : structuredClone(options.input);
+      const capturedCommand = pluginRuntime.runtime.prepareCommand?.(commandId, { selectionWarnings, input },
+        () => invokePluginCommand(commandId, { selectionWarnings, input }));
       setPendingPluginCommands(current => new Set(current).add(queueKey));
       const run = previous
         .catch(() => undefined)
         .then(async () => {
           // Collected per invocation: only this command's own selection reads can add to it.
-          const result = await (capturedCommand ? capturedCommand() : invokePluginCommand(commandId, { selectionWarnings, input: options?.input }));
+          const result = await (capturedCommand ? capturedCommand() : invokePluginCommand(commandId, { selectionWarnings, input }));
           if (!mountedRef.current || pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
@@ -13479,7 +13481,10 @@ export function MainWindow({
     request: PluginPanelActionRequest): Promise<PluginPanelActionResult> => {
     const runtime = pluginRuntime.runtime;
     let declaration: Awaited<ReturnType<typeof readRuntimeOverlayDeclaration>>;
-    try { declaration = await readRuntimeOverlayDeclaration(runtimeDocumentPort, runtime, pluginId, overlayId); }
+    try {
+      const pending = readRuntimeOverlayDeclaration(runtimeDocumentPort, runtime, pluginId, overlayId);
+      declaration = pending instanceof Promise ? await pending : pending;
+    }
     catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; }
     if (!declaration) return { ok: false, message: "This overlay is no longer available." };
     const overlay = declaration.overlay;
@@ -34182,7 +34187,10 @@ async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayloa
 async function listenForNativeOpenDocuments(
   handler: (payload?: NativeOpenDocumentPayload) => void
 ): Promise<() => void> {
-  return listenCurrentWindowEvent<unknown>(nativeOpenDocumentEvent, (event) => {
+  // Native opens remain targeted to their document window. Browser/local embeddings have no
+  // native window metadata and use the existing application event port instead.
+  const listen = isTauriHost() ? listenCurrentWindowEvent : listenTauriEvent;
+  return listen<unknown>(nativeOpenDocumentEvent, (event) => {
     if (event.payload === null || event.payload === undefined) handler();
     else if (isNativeOpenDocumentPayload(event.payload)) handler(event.payload);
   });

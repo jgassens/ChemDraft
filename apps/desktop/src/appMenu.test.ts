@@ -140,7 +140,7 @@ describe("app menu model", () => {
     const install = source.split("fn install_app_menu<R: Runtime>")[1]?.split("fn reinstall_app_menu")[0];
     expect(install).toContain('#[cfg(target_os = "macos")]\n    app.set_menu(menu)?;');
     expect(install).toContain('#[cfg(not(target_os = "macos"))]');
-    expect(install).toContain("app.get_webview_window(MAIN_WINDOW_LABEL)");
+    expect(install).toContain("active_document_webview(app)");
     expect(install).toContain("window.set_menu(menu)?;");
   });
 

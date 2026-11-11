@@ -179,8 +179,11 @@ export class RuntimeBrokerDocument {
   private preparedInvocation?: RuntimeInvocation;
 
   /** Capture at the UI's Send/click boundary, before its per-command queue waits. The returned
-   * closure still enters the ordinary registry and all live permission/ownership/write checks. */
-  prepareCommand(commandId: string, input?: PluginCommandInput, options?: { selectionWarnings?: string[] }): () => Promise<unknown> {
+   * closure still enters the ordinary registry and all live permission/ownership/write checks.
+   * An embedding's invoke callback must enter that registry synchronously, just as invokeCommand
+   * does, so capture wraps the normal UI dispatch rather than replacing its invocation path. */
+  prepareCommand(commandId: string, input?: PluginCommandInput, options?: { selectionWarnings?: string[] },
+    invoke?: () => Promise<unknown>): () => Promise<unknown> {
     const pluginId = this.ownedCommands.get(commandId);
     const tabId = this.port.activeTabId(), state = this.port.read(tabId);
     if (!pluginId || !state || this.disposed) throw new Error("The plugin command's document is unavailable.");
@@ -194,7 +197,7 @@ export class RuntimeBrokerDocument {
       used = true;
       const previous = this.preparedInvocation;
       this.preparedInvocation = invocation;
-      try { return this.invokeCommand(commandId, snapshot, options); }
+      try { return invoke ? invoke() : this.invokeCommand(commandId, snapshot, options); }
       finally { this.preparedInvocation = previous; }
     };
   }

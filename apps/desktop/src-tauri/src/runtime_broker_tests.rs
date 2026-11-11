@@ -597,6 +597,7 @@ fn cutover_adapter_directions_and_nested_targets_remain_authenticated() {
         ("assistantEnd", false, "session"),
         ("assistantUndo", false, "root"),
         ("commitProposal", false, "root"),
+        ("retireProposalCommits", false, "data"),
         ("getCoreCommands", false, "empty"),
         ("getCoreCommand", false, "data"),
         ("invokeCoreCommand", false, "data"),

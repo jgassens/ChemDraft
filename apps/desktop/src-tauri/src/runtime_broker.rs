@@ -183,6 +183,7 @@ fn authorize_message(sender: &str, recipient: &str, bytes: &[u8]) -> Result<(), 
         | "assistantEnd"
         | "assistantUndo"
         | "commitProposal"
+        | "retireProposalCommits"
         | "getCoreCommands"
         | "getCoreCommand"
         | "invokeCoreCommand"
@@ -217,6 +218,7 @@ fn authorize_message(sender: &str, recipient: &str, bytes: &[u8]) -> Result<(), 
                     | "getCoreCommand"
                     | "invokeCoreCommand"
                     | "runtimeViewAction"
+                    | "retireProposalCommits"
                     | "chooseRuntimeFile"
             ) {
                 if !payload.is_object() {
