@@ -151,6 +151,19 @@ fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> St
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_dialog_title_bar_style() -> tauri::TitleBarStyle {
+    // Tauri 2.11.2's Visible style enables NSWindowStyleMask::FullSizeContentView.
+    // With that mask, setContentSize includes the title bar: a 271pt request produces
+    // a 271pt frame and only 239pt of usable WebKit content. Tauri's inner_size can
+    // still report 271pt, hiding the loss from work-area fitting and persistence.
+    // Transparent is its only decorated style without FullSizeContentView. Select it
+    // at construction so initial size, setContentSize, minimums and saved client sizes
+    // all exclude decorations. configure_on_main restores the opaque appearance before
+    // reveal without changing the style mask or the size units.
+    tauri::TitleBarStyle::Transparent
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Message {
@@ -1661,7 +1674,9 @@ pub(crate) async fn dialog_open(
     // Let the activation click reach dialog controls on macOS. Other platforms retain
     // their existing click behavior; first-mouse acceptance is an AppKit policy.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder
+        .accept_first_mouse(true)
+        .title_bar_style(macos_dialog_title_bar_style());
     #[cfg(not(target_os = "macos"))]
     let builder = builder;
     // On Windows .parent is a top-level OWNER, never a child control. macOS stays unparented.
@@ -2117,6 +2132,8 @@ pub(crate) fn configure_on_main<R: Runtime>(
         use objc2_app_kit::NSWindow;
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
+        // Keep the ordinary opaque title bar without re-enabling FullSizeContentView.
+        native.setTitlebarAppearsTransparent(false);
         // AppKit children adopt the document's normal level and deactivate visibility.
         // Stay unparented, like floating toolbars; registry ownership handles dismissal.
         native.setLevel(dialog_window_level());
@@ -5288,6 +5305,19 @@ mod tests {
         calls: Vec<&'static str>,
     }
     impl SimulatedDialog {
+        fn set_appkit_content_size(&mut self, size: tauri::LogicalSize<f64>) {
+            // Model the AppKit/WebKit distinction that Tauri's default Visible style hides:
+            // FullSizeContentView makes the requested content view include the title bar,
+            // while the DOM viewport excludes it. Transparent disables that mask.
+            self.client = if macos_dialog_title_bar_style() == tauri::TitleBarStyle::Transparent {
+                size
+            } else {
+                tauri::LogicalSize::new(
+                    size.width - self.decoration.width,
+                    size.height - self.decoration.height,
+                )
+            };
+        }
         fn frame(&self) -> DialogFrame {
             let client = self.client.to_physical::<u32>(self.scale);
             let outer = tauri::LogicalSize::new(
@@ -5326,7 +5356,7 @@ mod tests {
                             tauri::PhysicalSize::new(width, height),
                             work.scale,
                             |logical| {
-                                dialog.borrow_mut().client = logical;
+                                dialog.borrow_mut().set_appkit_content_size(logical);
                                 Ok(())
                             },
                             |physical| {
@@ -5368,6 +5398,225 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn macos_dialog_builders_exclude_title_bar_from_initial_and_fitted_client_sizes() {
+        // The mock runtime cannot expose NSWindow style masks. Guard both construction
+        // paths as well as the math below; Preferences has a separate builder/protocol.
+        let source = include_str!("dialog_windows.rs");
+        let dialog_builder = source
+            .split("let builder = WebviewWindowBuilder::new(")
+            .nth(1)
+            .unwrap()
+            .split("let dialog_window = match builder.build()")
+            .next()
+            .unwrap();
+        assert!(dialog_builder.contains(".title_bar_style(macos_dialog_title_bar_style())"));
+        let lib = include_str!("lib.rs");
+        let preferences_builder = lib
+            .split("fn create_or_raise_preferences_window<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("let window = builder.build()")
+            .next()
+            .unwrap();
+        assert!(preferences_builder
+            .contains(".title_bar_style(dialog_windows::macos_dialog_title_bar_style())"));
+
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let mut native = SimulatedDialog {
+                    scale,
+                    client: tauri::LogicalSize::new(1.0, 1.0),
+                    minimum: tauri::LogicalSize::new(1.0, 1.0),
+                    position: tauri::LogicalPosition::new(0.0, 0.0),
+                    decoration: tauri::LogicalSize::new(border, title_bar),
+                    queue: Vec::new(),
+                    calls: Vec::new(),
+                };
+                // Initial builder dimensions, followed by the four measured ready/refit sizes.
+                for (width, height) in [
+                    (640.0, 600.0),
+                    (420.0, 271.0),
+                    (480.0, 357.0),
+                    (520.0, 618.0),
+                    (480.0, 235.0),
+                ] {
+                    let request = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+                    let client = std::cell::RefCell::new(&mut native);
+                    resize_dialog_client(
+                        macos,
+                        request,
+                        scale,
+                        |size| {
+                            client.borrow_mut().set_appkit_content_size(size);
+                            Ok(())
+                        },
+                        |size| {
+                            // Windows must receive exactly the same physical client request.
+                            assert_eq!(size, request);
+                            client.borrow_mut().client = size.to_logical(scale);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    let frame = native.frame();
+                    assert_eq!(frame.client, (request.width, request.height));
+                    assert_eq!(
+                        frame.outer,
+                        (
+                            request.width + (border * scale) as u32,
+                            request.height + (title_bar * scale) as u32,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_content_fit_kind_requests_at_least_its_measured_client_height() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "screen".into(),
+                    x: 12.0,
+                    y: 42.0,
+                    width: 2536.0,
+                    height: 936.0,
+                    scale,
+                };
+                for (kind, height) in [
+                    ("preferences", 700.0),
+                    ("pageSize", 271.0),
+                    ("vibeCodeGuide", 357.0),
+                    ("export", 618.0),
+                    ("insertTable", 235.0),
+                    ("customColor", 320.0),
+                    ("arrangementSpacing", 400.0),
+                    ("engineInstall", 480.0),
+                    ("toolInstall", 460.0),
+                ] {
+                    let spec = kind_spec(kind).unwrap();
+                    assert!(spec.fit_content);
+                    let content = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({"contentHeight":height,"pixelRatio":scale})),
+                        Some(scale),
+                    );
+                    let client_size = dialog_client_size(&spec, content, None, false);
+                    assert!(client_size.1 >= height, "{kind}: requested {client_size:?}");
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(border, title_bar),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size,
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    let frame = dialog.borrow().frame();
+                    assert!(f64::from(frame.client.1) >= height * scale, "{kind}");
+                    assert_eq!(frame.client.1, (height * scale).ceil() as u32, "{kind}");
+                    assert_eq!(frame.outer.1, frame.client.1 + (title_bar * scale) as u32);
+                    assert!(f64::from(frame.outer.1) <= work.height * scale);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_and_dialog_reopens_persist_client_height_without_accumulating_title_bars() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for kind in ["preferences", "pageSize", "export", "insertTable"] {
+                let spec = kind_spec(kind).unwrap();
+                let mut saved = None;
+                // Reopen on displays with different backing scales, always in client units.
+                for scale in [2.0, 1.0, 1.5, 2.0] {
+                    let work = WorkArea {
+                        id: "screen".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1600.0,
+                        height: 1000.0,
+                        scale,
+                    };
+                    let mut preferences = PreferencesLayout::default();
+                    // Preferences fits on first open, then preserves a saved user viewport
+                    // even when a later ready reports more content than that viewport holds.
+                    let height = if kind == "preferences" && saved.is_some() {
+                        800.0
+                    } else {
+                        356.0
+                    };
+                    let content = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({"contentHeight":height,"pixelRatio":scale})),
+                        Some(scale),
+                    );
+                    assert!(preferences.report_content(content));
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(border, title_bar),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size: dialog_client_size(&spec, content, saved.as_ref(), false),
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    // preferences_ready must not refit subsequent content reports.
+                    assert!(!preferences.report_content(content));
+                    let frame = dialog.borrow().frame();
+                    assert_eq!(frame.client.1, (356.0 * scale) as u32, "{kind}");
+                    assert_eq!(frame.outer.1, ((356.0 + title_bar) * scale) as u32);
+                    let normal = NormalFrame::validated(
+                        &work,
+                        PhysicalNormalFrame {
+                            position: ((100.0 * scale) as i32, (100.0 * scale) as i32),
+                            client: frame.client,
+                            outer: frame.outer,
+                            scale,
+                        },
+                    )
+                    .unwrap();
+                    saved = Some(
+                        serde_json::from_slice::<SavedPosition>(
+                            &serde_json::to_vec(&normal.close_frame(None, None).unwrap()).unwrap(),
+                        )
+                        .unwrap(),
+                    );
+                    assert_eq!(saved.as_ref().unwrap().size.unwrap().1, 356.0);
+                }
+            }
+        }
+    }
+
     fn normal_test_frame(scale: f64) -> PhysicalNormalFrame {
         PhysicalNormalFrame {
             position: ((240.0 * scale) as i32, (180.0 * scale) as i32),
