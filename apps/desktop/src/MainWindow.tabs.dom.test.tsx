@@ -1305,6 +1305,41 @@ describe("documents in one window", () => {
     }
   });
 
+  it.each(["picker", "pending drain"])("keeps the middle-file failure after a three-file %s finishes", async source => {
+    const payloads = [
+      { path: "/drawings/first.chemdraft", displayName: "first.chemdraft", contents: fileContents("First good drawing") },
+      { path: "/drawings/notes.txt", displayName: "notes.txt", contents: "not a document" },
+      { path: "/drawings/third.chemdraft", displayName: "third.chemdraft", contents: fileContents("Last good drawing") }
+    ];
+    if (source === "picker") {
+      native.picker.mockResolvedValueOnce(payloads.map(payload => payload.path));
+      for (const payload of payloads) native.readFile.mockResolvedValueOnce(new TextEncoder().encode(payload.contents));
+      await command("document.open");
+    } else {
+      native.drainOpenDocuments.mockResolvedValueOnce(payloads);
+      await remount();
+    }
+    expect(tabs().map(tab => tab.textContent)).toEqual(["first.chemdraft", "third.chemdraft"]);
+    expect(bridge().snapshot().document.title).toBe("Last good drawing");
+    const status = container.querySelector('[role="status"]')?.textContent;
+    expect(status).toContain("Opened 2 of 3 files. Could not open notes.txt:");
+    expect(status).toContain("not JSON");
+    expect(status).not.toContain("/drawings/");
+    // Flush later work after the last successful open; its status must not replace the summary.
+    await flush();
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(status);
+  });
+
+  it("names the file in a single-file picker failure", async () => {
+    native.picker.mockResolvedValueOnce("C:\\Drawings\\notes.txt");
+    native.readFile.mockResolvedValueOnce(new TextEncoder().encode("not a document"));
+    await command("document.open");
+    expect(tabs()).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Could not open notes.txt:");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("not JSON");
+  });
+
   it("drains live notifications overlapping the initial read without duplicate opens or lost files", async () => {
     const paths = ["/drawings/cold-A.chemdraft", "/drawings/cold-B.chemdraft", "/drawings/live-C.chemdraft"];
     const payloads = paths.map((path, index) => ({ path, displayName: path.split("/").at(-1)!, contents: fileContents(`Payload ${index}`) }));
@@ -1374,6 +1409,22 @@ describe("documents in one window", () => {
       const label = pendingPrompt!.prompt.choices.find(candidate => candidate.id === choice)!.label;
       await modalButton(label);
     }
+
+    it("finishes the failure summary only after the last resize prompt is canceled, counting that open as successful", async () => {
+      native.drainOpenDocuments.mockResolvedValueOnce([
+        { path: "/drawings/first.chemdraft", displayName: "first.chemdraft", contents: fileContents("First") },
+        { path: "/drawings/notes.txt", displayName: "notes.txt", contents: "not a document" },
+        { path: "/drawings/last.cdxml", displayName: "last.cdxml", contents: oversized }
+      ]);
+      await remount();
+      expectPageFit("last.cdxml");
+      expect(tabs()).toHaveLength(2);
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Opened 2 of 3 files.");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Opened 2 of 3 files. Could not open notes.txt:");
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Could not open last.cdxml");
+    });
 
     it("cold-start drains three launch files in order with one prompt and per-document Enlarge, Cancel, Enlarge answers", async () => {
       const paths = ["/drawings/launch-A.cdxml", "/drawings/launch-B.cdxml", "/drawings/launch-C.cdxml"];
@@ -2522,7 +2573,7 @@ describe("documents in one window", () => {
       expect(tabs()).toHaveLength(count);
       expect(bridge().snapshot().document).toEqual(before.document);
       expect(bridge().snapshot().file).toEqual(before.file);
-      expect(container.querySelector('[role="status"]')?.textContent).toContain("Open failed:");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Could not open invalid.chemdraft:");
     });
 
     it("captures opt-in before a slow read, keeps early work, and ignores a live toggle", async () => {
