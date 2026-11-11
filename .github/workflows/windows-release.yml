@@ -74,7 +74,7 @@ jobs:
           }
           $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           if ($env:RELEASE_TAG -and $env:RELEASE_TAG -cne "v$($config.version)") {
-            throw 'upload_to_release must be v<app version>, matching both update feeds.'
+            throw 'upload_to_release must be v<app version>, matching latest.json download URLs.'
           }
           if ($env:NOTES_FILE) {
             $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE) + [IO.Path]::DirectorySeparatorChar
@@ -105,7 +105,13 @@ jobs:
       - name: Build host-native OPSIN runtime and smoke test benzene
         run: node scripts/build-opsin-runtime.mjs
 
-      - name: Build, verify and stage stable NSIS installers without updater signing
+      - name: Build stable NSIS installer without updater signing
+        env:
+          CHEMDRAFT_STABLE_BUILD: '1'
+          CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'
+        run: pnpm --filter @chemdraft/desktop build --bundles nsis
+
+      - name: Verify stable bundle identity and stage unsigned installer
         id: bundle
         env:
           CHEMDRAFT_STABLE_BUILD: '1'
@@ -122,12 +128,15 @@ jobs:
           New-Item -ItemType Directory -Path $stagingDir | Out-Null
           $artifacts = @()
           foreach ($variant in $variants) {
-            # Tauri gives each variant the same original filename. Stage it before the next build.
-            if (Test-Path -LiteralPath $bundleDir) { Remove-Item -LiteralPath $bundleDir -Recurse -Force }
-            $buildArgs = @('--filter', '@chemdraft/desktop', 'build', '--bundles', 'nsis')
-            if ($variant.Config) { $buildArgs += @('--config', $variant.Config) }
-            pnpm @buildArgs
-            if ($LASTEXITCODE -ne 0) { throw "NSIS build failed for suffix '$($variant.Suffix)'." }
+            # The preceding step built per-user. Stage it before building the all-users variant,
+            # which Tauri writes with the same original filename in the same bundle directory.
+            if ($variant.Config) {
+              if (Test-Path -LiteralPath $bundleDir) { Remove-Item -LiteralPath $bundleDir -Recurse -Force }
+              $buildArgs = @('--filter', '@chemdraft/desktop', 'build', '--bundles', 'nsis')
+              if ($variant.Config) { $buildArgs += @('--config', $variant.Config) }
+              pnpm @buildArgs
+              if ($LASTEXITCODE -ne 0) { throw "NSIS build failed for suffix '$($variant.Suffix)'." }
+            }
             # tauri-build copies resource targets beside the release executable, which NSIS bundles.
             node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release
             if ($LASTEXITCODE -ne 0) { throw 'Required bundled licenses are missing from the release resource staging directory.' }
@@ -164,6 +173,8 @@ jobs:
           Move-Item -LiteralPath $stagingDir -Destination release-assets
           "version=$($config.version)" >> $env:GITHUB_OUTPUT
           "commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_OUTPUT
+          "installer=$($artifacts[0].Installer)" >> $env:GITHUB_OUTPUT
+          "allusers_installer=$($artifacts[1].Installer)" >> $env:GITHUB_OUTPUT
           "installers=$(ConvertTo-Json -InputObject $artifacts -Compress)" >> $env:GITHUB_OUTPUT
 
       # Signing secrets are step-scoped: no setup/cache/artifact action receives them.
@@ -187,10 +198,10 @@ jobs:
           if ($env:TAURI_SIGNING_PRIVATE_KEY) {
             'updater=true' >> $env:GITHUB_OUTPUT
           } else {
-            Write-Host '::warning::TAURI_SIGNING_PRIVATE_KEY is missing. Skipping updater .sig files, latest.json and latest-allusers.json; neither installer can be published as an update.'
+            Write-Host '::warning::TAURI_SIGNING_PRIVATE_KEY is missing. Skipping updater .sig and latest.json; installer cannot be published as an update.'
           }
 
-      - name: Upload unsigned installers for SignPath provenance
+      - name: Upload unsigned installer for SignPath provenance
         id: unsigned
         uses: actions/upload-artifact@v4
         with:
@@ -200,7 +211,7 @@ jobs:
             release-assets/*.exe.build.json
           if-no-files-found: error
 
-      - name: Authenticode-sign and download final installers
+      - name: Authenticode-sign and download final installer
         if: steps.signing.outputs.authenticode == 'true'
         # https://github.com/SignPath/github-action-submit-signing-request/releases/tag/v2
         uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
@@ -214,14 +225,16 @@ jobs:
           wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: signpath-signed
 
-      - name: Verify Authenticode and replace unsigned installers
+      - name: Verify Authenticode and replace unsigned installer
         id: authenticode
         if: steps.signing.outputs.authenticode == 'true'
         env:
           EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
-          INSTALLERS: ${{ steps.bundle.outputs.installers }}
+          INSTALLER: ${{ steps.bundle.outputs.installer }}
+          ALLUSERS_INSTALLER: ${{ steps.bundle.outputs.allusers_installer }}
         run: |
-          $installers = @($env:INSTALLERS | ConvertFrom-Json)
+          $installers = @(@{ Installer = $env:INSTALLER })
+          if ($env:ALLUSERS_INSTALLER) { $installers += @{ Installer = $env:ALLUSERS_INSTALLER } }
           # Keep original source records; only final hash and size are rebound below.
           $recordNames = @($installers | ForEach-Object { "$($_.Installer).build.json" })
           $signed = @(Get-ChildItem signpath-signed -Recurse -File | Where-Object { $recordNames -cnotcontains $_.Name })
@@ -243,7 +256,7 @@ jobs:
           'signed=true' >> $env:GITHUB_OUTPUT
 
       # No operation may change any .exe after this point. Minisign covers the FINAL installers.
-      - name: Sign final installers for the Tauri updater
+      - name: Sign final installer for the Tauri updater
         if: steps.signing.outputs.updater == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -257,7 +270,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Tauri updater signing failed for $installer." }
           }
 
-      - name: Verify updater signatures and generate latest.json and latest-allusers.json
+      - name: Verify updater signature and generate latest.json
         id: updater
         if: steps.signing.outputs.updater == 'true'
         env:
@@ -271,7 +284,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Updater signature verification failed for $installer." }
             # A variant without a feed still gets signed and uploaded.
             if ($artifact.Feed) {
-              $manifestArgs = @('--version', $env:VERSION, '--installer', $installer, '--out', (Join-Path release-assets $artifact.Feed))
+              $manifestArgs = @('--version', $env:VERSION, '--installer', $installer, '--out', 'release-assets/latest.json')
+              if ($artifact.Feed -cne 'latest.json') { $manifestArgs[-1] = Join-Path release-assets $artifact.Feed }
               if ($env:NOTES_FILE) { $manifestArgs += @('--notes', $env:NOTES_FILE) }
               pnpm -s release:windows-manifest @manifestArgs
               if ($LASTEXITCODE -ne 0) { throw "Windows update manifest generation failed for $($artifact.Feed)." }
@@ -279,7 +293,7 @@ jobs:
           }
           'signed=true' >> $env:GITHUB_OUTPUT
 
-      - name: Bind build records to final signed installer bytes
+      - name: Bind build record to final signed installer bytes
         env:
           INSTALLERS: ${{ steps.bundle.outputs.installers }}
         run: |

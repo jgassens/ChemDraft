@@ -142,12 +142,12 @@ test("Windows records each variant before staging and carries both records throu
   assert.ok(recording < stageInstaller && stageInstaller < stageRecord && stageRecord < loopEnd);
   assert.match(workflow.slice(recording, stageInstaller), /\$expected = "ChemDraft_\$\(\$config\.version\)_x64\$\(\$variant\.Suffix\)-setup\.exe"/);
   const staging = workflow.indexOf("Move-Item -LiteralPath $stagingDir -Destination release-assets");
-  assert.ok(staging > loopEnd && staging < workflow.indexOf("name: Upload unsigned installers for SignPath provenance"));
+  assert.ok(staging > loopEnd && staging < workflow.indexOf("name: Upload unsigned installer for SignPath provenance"));
   assert.match(workflow, /name: windows-nsis-unsigned\n\s+path: \|\n\s+release-assets\/\*\.exe\n\s+release-assets\/\*\.exe\.build\.json/);
   assert.match(workflow, /name: windows-release\n\s+path: release-assets\/\*/);
   assert.match(workflow, /Get-ChildItem release-assets -File[\s\S]+gh release upload \$env:RELEASE_TAG @assets/);
-  const finalRecord = workflow.indexOf("name: Bind build records to final signed installer bytes");
-  assert.ok(finalRecord > workflow.indexOf("name: Verify Authenticode and replace unsigned installers"));
+  const finalRecord = workflow.indexOf("name: Bind build record to final signed installer bytes");
+  assert.ok(finalRecord > workflow.indexOf("name: Verify Authenticode and replace unsigned installer"));
   assert.ok(finalRecord < workflow.indexOf("name: Print SHA-256 and sizes and write checksums"));
   assert.match(workflow.slice(finalRecord), /foreach \(\$artifact in \(\$env:INSTALLERS \| ConvertFrom-Json\)\) \{\s+\$installer = Join-Path release-assets \$artifact\.Installer\s+\$recordPath = "\$installer\.build\.json"/);
   assert.match(workflow, /\$record\.sha256 = \(Get-FileHash -LiteralPath \$installer -Algorithm SHA256\)/);
