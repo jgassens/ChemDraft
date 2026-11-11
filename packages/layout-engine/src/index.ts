@@ -4184,10 +4184,11 @@ export function lonePairDragDirection(
 }
 
 /**
- * Lone pairs use the largest gap between bonds and marks anchored to this exact atom.
+ * Lone pairs try gaps between bonds and marks anchored to this exact atom, largest first,
+ * using the first bisector that clears the label inside the page.
  * No occupied directions defaults to page-up (-π/2); one direction uses its opposite.
  * Equal gaps (within 1e-10 radians) choose the smallest bisector in [0, 2π).
- * An explicit direction is in page-coordinate radians and bypasses gap selection only.
+ * An explicit direction is in page-coordinate radians and is refused rather than redirected if it cannot fit.
  */
 export function lonePairPlacementPlanForAtom(
   molecule: MoleculeObject,
@@ -4218,18 +4219,28 @@ export function lonePairPlacementPlanForAtom(
     const gap = (index === normalized.length - 1 ? next + Math.PI * 2 : next) - angle;
     return { gap, bisector: normalizeAngle(angle + gap / 2) };
   });
-  const largestGap = Math.max(...gaps.map(candidate => candidate.gap));
-  const direction = normalizeAngle(directionRadians ?? (gaps
-    .filter(candidate => largestGap - candidate.gap < 1e-10)
-    .sort((left, right) => left.bisector - right.bisector)[0]?.bisector ?? -Math.PI / 2));
-  const rotation = normalizeAngle(direction + Math.PI / 2) * 180 / Math.PI;
+  const directions: number[] = [];
+  if (directionRadians !== undefined) directions.push(directionRadians);
+  else if (gaps.length === 0) directions.push(-Math.PI / 2);
+  else while (gaps.length > 0) {
+    const largestGap = Math.max(...gaps.map(candidate => candidate.gap));
+    const candidate = gaps.filter(candidate => largestGap - candidate.gap < 1e-10)
+      .sort((left, right) => left.bisector - right.bisector)[0];
+    directions.push(candidate.bisector);
+    gaps.splice(gaps.indexOf(candidate), 1);
+  }
   const radius = Math.max(18 * 1.35, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 0.55);
-  const center = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight,
-    { width: 18, height: 18, rotation }, true, false)({
-    x: atom.x + Math.cos(direction) * radius,
-    y: atom.y + Math.sin(direction) * radius
-  });
-  return center ? { center, rotation } : undefined;
+  for (const angle of directions) {
+    const direction = normalizeAngle(angle);
+    const rotation = normalizeAngle(direction + Math.PI / 2) * 180 / Math.PI;
+    const center = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight,
+      { width: 18, height: 18, rotation }, true, false)({
+      x: atom.x + Math.cos(direction) * radius,
+      y: atom.y + Math.sin(direction) * radius
+    });
+    if (center) return { center, rotation };
+  }
+  return undefined;
 }
 
 /**

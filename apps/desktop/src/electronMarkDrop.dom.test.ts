@@ -108,13 +108,20 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     afterAll(() => resetRdkitForTesting());
     const pairs = () => snapshot().pages[0].objects.filter((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "lone-pair");
-    async function pressAtom(route: "object" | "page" = "object") {
+    async function pressAtom(route: "object" | "page" = "object", offset = { x: 0, y: 0 }) {
       const fixture = electronMarkDropFixture({ kind: "lone-pair" });
-      const initial = workflow.normalizeCommittedDocument(applyPatch(fixture.document,
-        { op: "removeObject", objectId: dropMark(fixture.document).id }, { now: phase4Timestamp }));
+      const withoutMark = applyPatch(fixture.document,
+        { op: "removeObject", objectId: dropMark(fixture.document).id }, { now: phase4Timestamp });
+      const initial = workflow.normalizeCommittedDocument({ ...withoutMark, pages: withoutMark.pages.map(page => ({
+        ...page, objects: page.objects.map(object => object.type === "molecule" ? { ...object,
+          x: object.x + offset.x, y: object.y + offset.y,
+          atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + offset.x, y: atom.y + offset.y }))
+        } : object)
+      })) });
       await mount(initial);
       await command("tool.lonePair");
-      const atom = fixture.carbonylOxygen;
+      const atom = { ...fixture.carbonylOxygen, x: fixture.carbonylOxygen.x + offset.x,
+        y: fixture.carbonylOxygen.y + offset.y };
       // The page route covers bare vertices whose hover resolves the atom before the press.
       await act(async () => pointer(page(), "pointermove", atom));
       const target = route === "page" ? page() : container.querySelector(`[data-hit-target="atom"][data-atom-id="${atom.id}"]`)!;
@@ -148,6 +155,31 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
       expect(workflow.nativeChargeMarkCenter(pairs()[0])).toEqual(expected.center);
       expect(pairs()[0].rotation).toBe(expected.rotation);
       await assertSingleUndo(before, snapshot());
+    });
+    it("explains when a click has no gap that fits inside the page", async () => {
+      const { before, target, atom } = await pressAtom("object", { x: 0, y: -226 });
+      await act(async () => pointer(target, "pointerup", atom));
+      expect(status()).toBe("Cannot place a lone pair on this atom: there is no room inside the page.");
+      expect(snapshot()).toEqual(before);
+      expect(pairs()).toHaveLength(0);
+      await command("edit.undo");
+      expect(snapshot()).toEqual(before);
+    });
+    it("refuses an off-page drag without substituting an automatic direction and explains how to fix it", async () => {
+      const fixture = electronMarkDropFixture({ kind: "lone-pair" });
+      const { before, target, end } = await pressAtom("object", {
+        x: fixture.document.pages[0].width - 12 - fixture.carbonylOxygen.x, y: 0
+      });
+      const molecule = dropMolecule(before), pageBefore = before.pages[0];
+      expect(lonePairPlacementPlanForAtom(molecule, molecule.atoms[10].id, pageBefore.objects,
+        pageBefore.width, pageBefore.height)).toBeDefined();
+      await act(async () => pointer(target, "pointermove", end(0)));
+      expect(pairs()).toHaveLength(0);
+      await act(async () => pointer(target, "pointerup", end(0)));
+      expect(status()).toBe("Cannot place the lone pair there: it would fall outside the page. Drag toward the page.");
+      expect(snapshot()).toEqual(before);
+      await command("edit.undo");
+      expect(snapshot()).toEqual(before);
     });
     it.each([false, true])("previews a 100° drag (Alt %s), commits once and preserves chemistry", async altKey => {
       const { before, target, atom, end } = await pressAtom();

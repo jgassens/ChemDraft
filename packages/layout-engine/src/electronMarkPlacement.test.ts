@@ -136,6 +136,23 @@ describe("lone-pair placement plans", () => {
     expect(plan.center.x - 9).toBeGreaterThan(label.x + label.width);
   });
 
+  it("tries the next-largest gap when the largest bisector cannot clear the label inside the page", () => {
+    const molecule = oxygen([3 * Math.PI / 4, 5 * Math.PI / 4], "O", 48);
+    expectDirection(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 210, 612), Math.PI);
+    // The same off-page ray is refused when the user explicitly chooses it.
+    expect(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 210, 612, 0)).toBeUndefined();
+  });
+
+  it("preserves smallest-positive-bisector tie order when falling back at a page edge", () => {
+    const molecule = oxygen([0, 2 * Math.PI / 3, 4 * Math.PI / 3]);
+    expectDirection(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 210, 612), Math.PI);
+  });
+
+  it("refuses automatic placement when none of the gap bisectors fits inside the page", () => {
+    const molecule = oxygen([-Math.PI / 4, Math.PI / 4]);
+    expect(lonePairPlacementPlanForAtom(molecule, "oxygen", [molecule], 200, 200)).toBeUndefined();
+  });
+
   it("refuses a missing atom, non-finite direction or a ray that cannot clear the label inside the page", () => {
     const molecule = oxygen([]);
     expect(lonePairPlacementPlanForAtom(molecule, "missing", [molecule], 792, 612)).toBeUndefined();

@@ -1780,7 +1780,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.11.09.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -4990,7 +4990,9 @@ export function MainWindow({
       const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
       setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : `Cannot place ${noun} on hovered atom`);
+        : markSpec.kind === "lone-pair"
+          ? "Cannot place a lone pair on this atom: there is no room inside the page."
+          : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -16120,7 +16122,9 @@ export function MainWindow({
       void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
     }
     setStatus(drag.kind === "lone-pair"
-      ? changed ? "Placed lone pair on hovered atom" : "Cannot place lone pair on hovered atom"
+      ? changed ? "Placed lone pair on hovered atom" : drag.dragging
+        ? "Cannot place the lone pair there: it would fall outside the page. Drag toward the page."
+        : "Cannot place a lone pair on this atom: there is no room inside the page."
       : changed
       ? drag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
       : `${capitalizeLabel(label)} not placed`);
