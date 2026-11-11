@@ -907,7 +907,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       text: "H2O",
       spans: [
         { text: "H", script: "normal", style: {} },
-        { text: "2", script: "subscript", style: { fontWeight: 700 } },
+        { text: "2", script: "subscript", style: { fontWeight: 700, fontSizePx: 18 } },
         { text: "O", script: "normal", style: {} }
       ]
     }, {

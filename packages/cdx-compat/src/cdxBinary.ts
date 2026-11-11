@@ -379,7 +379,9 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       if (runs[0][0] > 0) parts.push({ bytes: text.subarray(0, runs[0][0]) });
       runs.forEach((r, k) => parts.push({ run: r, bytes: text.subarray(Math.min(r[0], text.length), Math.min(k + 1 < runs.length ? Math.max(r[0], runs[k + 1][0]) : text.length, text.length)) }));
     }
-    return parts.filter((p) => p.bytes.length).map(({ run, bytes: b2 }) => {
+    // Equal offsets represent empty styled runs. Keep their script and boundary rather than
+    // shifting the following runs in the native spans array; unstyled empty prefixes add nothing.
+    return parts.filter((p) => p.run || p.bytes.length).map(({ run, bytes: b2 }) => {
       const s: CdxElement = { name: "s", attrs: Object.create(null), kids: [], text: "" };
       if (run && run[1] !== 0xffff) s.attrs.font = String(run[1]);
       if (run && run[3]) s.attrs.size = String(run[3] / 20);
@@ -739,16 +741,19 @@ export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Ar
   // Each run uses its declared/default font charset alongside the UTF-8 copy.
   const textProps = (runs: CdxElement[], owner: CdxElement) => {
     const legacy: number[][] = [], unicode: number[][] = [], legacyBytes: number[] = [], unicodeBytes: number[] = [];
+    // CDX requires a colour per run. Writing its inherited/default colour explicitly
+    // preserves the drawn appearance and is not a lossy conversion to warn about.
+    const inheritedColor = Number.parseInt(owner.attrs.color ?? "", 10);
     for (const s of runs) {
       checkAttrs(s, ["font", "size", "color", "face"]);
       const text = s.text.replace(/\r\n?|\n/g, "\r"), font = Number.parseInt(s.attrs.font ?? "", 10), size = real(s.attrs.size), colour = Number.parseInt(s.attrs.color ?? "", 10), face = Number.parseInt(s.attrs.face ?? "", 10);
-      const style = [Number.isFinite(font) ? font : 0xffff, Number.isFinite(face) ? face : 0, size ? Math.round(size * 20) : 0, Number.isFinite(colour) ? colour : 3];
-      if (!text) continue;
+      const style = [Number.isFinite(font) ? font : 0xffff, Number.isFinite(face) ? face : 0, size ? Math.round(size * 20) : 0,
+        Number.isFinite(colour) ? colour : Number.isFinite(inheritedColor) ? inheritedColor : 3];
       const u = enc.encode(text);
       unicode.push([unicodeBytes.length, ...style]);
       for (const byte of u) unicodeBytes.push(byte);
       const mac = stringBytes(text, owner, charsetOf(font, owner));
-      if (mac.length) { legacy.push([legacyBytes.length, ...style]); for (const byte of mac) legacyBytes.push(byte); }
+      if (mac.length || !text) { legacy.push([legacyBytes.length, ...style]); for (const byte of mac) legacyBytes.push(byte); }
     }
     if (unicode.length > 65535 || unicode.some((run) => run[0] > 65535)) throw new Error("CDX export failed: styled text exceeds the 65535-byte run-offset limit");
     const pack = (rs: number[][], b: number[]) => new Uint8Array([...le(2, rs.length), ...rs.flatMap((r) => [...le(2, ...r)]), ...b]);
