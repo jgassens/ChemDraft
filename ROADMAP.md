@@ -30,9 +30,8 @@ ChemDraft is free, open source, and runs on macOS and Windows. This page shows w
 - Asks before enlarging the page when a structure doesn't fit.
 
 **Windows and Mac**
-- Mac: a version for Intel Macs.
+- Mac: a version for Intel Macs, with Name from Structure.
 - Dialogs fit their contents; Preferences reopens where you left it; Esc closes toolbar flyouts.
-- Name from Structure on Intel Macs is planned for an update.
 
 **Plugins and assistant**
 - Plugins can use chemical properties and offer assistant tools, subject to their permissions.
