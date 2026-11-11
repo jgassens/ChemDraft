@@ -3901,10 +3901,35 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
 }
 fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
     if let Some((_, saved)) = session.pending_move.take() {
-        let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
-        if let Ok(path) = saved_path(app) {
-            write_positions(&path, vec![(session.snapshot.dialog_kind.clone(), saved)]);
-        }
+        let app = app.clone();
+        let kind = session.snapshot.dialog_kind.clone();
+        persist_close_with(defer_quit_close_persistence(), move || {
+            let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+            if let Ok(path) = saved_path(&app) {
+                write_positions(&path, vec![(kind, saved)]);
+            }
+        });
+    }
+}
+
+/// Quit can destroy dialogs on the event loop while an earlier position write is stuck.
+/// Never make AppKit's reply queue wait for POSITION_IO or filesystem I/O in those callbacks.
+fn defer_quit_close_persistence() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        super::quit_in_progress() && objc2::MainThreadMarker::new().is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+fn persist_close_with(defer: bool, persist: impl FnOnce() + Send + 'static) {
+    if defer {
+        std::thread::spawn(persist);
+    } else {
+        persist();
     }
 }
 
@@ -3954,9 +3979,16 @@ fn flush_preferences_to(
 }
 pub(crate) fn flush_preferences<R: Runtime>(app: &tauri::AppHandle<R>, close: PreferencesClose) {
     if let Ok(path) = saved_path(app) {
-        flush_preferences_to(&REGISTRY, &path, close, || {
+        // Sample the live frame before the caller destroys the window. Only the POSITION_IO
+        // wait and disk transaction move to a worker during quit.
+        let current = if close == PreferencesClose::Destroyed {
+            None
+        } else {
             app.get_webview_window(super::PREFERENCES_WINDOW_LABEL)
                 .and_then(|window| sample_preferences_position(&window))
+        };
+        persist_close_with(defer_quit_close_persistence(), move || {
+            flush_preferences_to(&REGISTRY, &path, close, || current);
         });
     }
 }
@@ -4029,6 +4061,34 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quit_close_persistence_never_waits_on_a_stalled_position_writer() {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let held = io.lock().unwrap();
+        let worker_io = io.clone();
+        let (started, starting) = std::sync::mpsc::channel();
+        let (finished, finishing) = std::sync::mpsc::channel();
+        // Both Preferences and ordinary dialog close/destroy use this production helper.
+        persist_close_with(true, move || {
+            started.send(()).unwrap();
+            drop(worker_io.lock().unwrap());
+            finished.send(()).unwrap();
+        });
+        starting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(finishing.try_recv().is_err());
+        drop(held);
+        finishing.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn ordinary_close_persistence_still_finishes_before_reopening() {
+        use std::sync::atomic::Ordering;
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = finished.clone();
+        persist_close_with(false, move || writer.store(true, Ordering::SeqCst));
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
         let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});

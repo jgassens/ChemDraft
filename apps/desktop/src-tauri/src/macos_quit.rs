@@ -101,7 +101,12 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
-    let reply_pending = super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery();
+    let reply_pending = super::QUIT
+        .state
+        .lock()
+        .unwrap()
+        .appkit_reply
+        .awaiting_delivery();
     match super::appkit_quit_decision(
         cfg!(target_os = "macos"),
         super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
@@ -124,6 +129,11 @@ unsafe extern "C" fn should_terminate(
             }
         }
         super::AppkitQuitDecision::WaitForReply => {
+            // A failed save retires the document interaction without answering NO. A later
+            // ordinary Quit can show a fresh question on that same pending AppKit request.
+            if let Some(app) = APP.get() {
+                super::request_appkit_quit_with(&super::QUIT, app, true);
+            }
             return NSApplicationTerminateReply::TerminateLater;
         }
         super::AppkitQuitDecision::TerminateNow => {}

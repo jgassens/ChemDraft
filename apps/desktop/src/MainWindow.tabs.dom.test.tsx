@@ -213,7 +213,8 @@ describe("documents in one window", () => {
         document.querySelector('[role="dialog"][aria-modal="true"][aria-labelledby="quit-prompt-title"]') !== null).toBe(true);
       return true;
     });
-    native.cancelQuit.mockResolvedValue(true);
+    // Match native: Failed retires the interaction without accepting a user-cancellation reply.
+    native.cancelQuit.mockImplementation(async (_requestId: number, disposition?: string) => disposition !== "failed");
     native.prepareQuit.mockResolvedValue(true);
     native.resumeQuit.mockResolvedValue(true);
     native.quitId = 0;
@@ -2270,7 +2271,12 @@ describe("documents in one window", () => {
       expect(native.quit).toHaveBeenCalledTimes(1);
   }, 20_000);
 
-  it.each(["picker cancelled", "write failed"])("remains editable after quit Save is %s", async (failure) => {
+  it.each([
+    ["MacIntel", "picker cancelled"], ["MacIntel", "write failed"],
+    ["Win32", "picker cancelled"], ["Win32", "write failed"]
+  ])("remains editable on %s after quit Save is %s", async (platform, failure) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    native.suspendUtilities = true;
     await paste("Existing drawing");
     saveAskToSaveBeforeQuit(true);
     if (failure === "write failed") {
@@ -2281,6 +2287,8 @@ describe("documents in one window", () => {
     await quitButton("Save");
     expect(native.cancelQuit).toHaveBeenCalledWith(1, "failed");
     expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
+    expect(pendingPrompt).toBeUndefined();
+    expect(native.suspensionDepth).toBe(0);
     await paste("Editable after cancelled quit");
     expect(drawnText()).toContain("Editable after cancelled quit");
     expect(bridge().snapshot().file.dirty).toBe(true);

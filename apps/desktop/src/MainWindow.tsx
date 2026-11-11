@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.08.10-codex";
+const CURRENT_BUILD_STAMP = "11.11.08.40-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -11120,8 +11120,8 @@ export function MainWindow({
     let disposed = false;
     const suspension = acquireNativeUtilitySuspension();
     const retirePrompt = () => {
-      void cancelQuit(requestId, "failed").then((cancelled) => {
-        if (!cancelled) return;
+      void cancelQuit(requestId, "failed").then(() => {
+        // Failed is an internal retirement, not a user Cancel; native returns false on macOS.
         if (quitRequestRef.current === requestId) {
           quitInteractionRef.current = false;
           quitMutationFrozenRef.current = false;
@@ -11153,7 +11153,8 @@ export function MainWindow({
     }
     try {
       const cancelled = disposition ? await cancelQuit(requestId, disposition) : await cancelQuit(requestId);
-      if (cancelled) {
+      if (cancelled || disposition === "failed") {
+        // A failed/cancelled save must release editing even though it never answers AppKit NO.
         if (quitRequestRef.current === requestId) {
           quitInteractionRef.current = false;
           quitMutationFrozenRef.current = false;
