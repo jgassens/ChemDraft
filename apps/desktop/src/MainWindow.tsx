@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.22.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -28417,11 +28417,14 @@ function selectionStatusLabel(selection: {
   /** Phase 7: when a selection spans several molecules, the aggregate drives the label. */
   nativeSelections?: readonly NativeMoleculeSelectionPart[];
 }): string {
-  if (selection.nativeSelections && selection.nativeSelections.length > 1) {
+  const nativeSelections = selection.nativeSelections ?? (selection.nativeSelection ? [selection.nativeSelection] : []);
+  const partHostIds = new Set(nativeSelections.map(part => part.objectId));
+  const wholeObjectCount = selection.objectIds.filter(objectId => !partHostIds.has(objectId)).length;
+  if (nativeSelections.length > 1 || (nativeSelections.length > 0 && wholeObjectCount > 0)) {
     let atoms = 0;
     let bonds = 0;
     let rings = 0;
-    for (const part of selection.nativeSelections) {
+    for (const part of nativeSelections) {
       if (part.kind === "atom") {
         atoms += 1;
       } else if (part.kind === "bond") {
@@ -28434,6 +28437,10 @@ function selectionStatusLabel(selection: {
         atoms += part.atomIds.length;
         bonds += part.bondIds.length;
       }
+    }
+    if (wholeObjectCount > 0) {
+      const count = atoms + bonds + rings;
+      return `Selected ${count} molecule ${count === 1 ? "part" : "parts"} and ${wholeObjectCount} ${wholeObjectCount === 1 ? "object" : "objects"}`;
     }
     if (rings > 0 && atoms === 0 && bonds === 0) {
       return `Selected ${rings} rings`;

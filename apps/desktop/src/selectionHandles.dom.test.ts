@@ -69,11 +69,18 @@ describe("selection handles and additive molecule picks", () => {
   const selectedAtoms = () => [...container.querySelectorAll("[data-selected-atom-id]")]
     .map(element => element.getAttribute("data-selected-atom-id"));
 
-  async function mount(platform: ShortcutPlatform = "macos", scale = 1) {
+  async function mount(platform: ShortcutPlatform = "macos", scale = 1, moleculeCount = 1) {
     let inserted = insertNativeSingleBondMolecule(createPhase4Document("Selection handle overlap"), { x: 300, y: 300 });
     if (scale !== 1) inserted = scaleDocumentObjectsAroundPoint(
       inserted, [inserted.pages[0].objects[0].id], { x: 300, y: 300 }, scale, scale
     );
+    for (let index = 1; index < moleculeCount; index += 1) {
+      const point = { x: 300, y: 300 + index * 180 };
+      inserted = insertNativeSingleBondMolecule(inserted, point);
+      inserted = scaleDocumentObjectsAroundPoint(
+        inserted, [inserted.pages[0].objects.at(-1)!.id], point, scale, scale
+      );
+    }
     const initialDocument = selectDocumentObjects(inserted, inserted.pages[0].id, []);
     molecule = initialDocument.pages[0].objects[0] as MoleculeObject;
     await act(async () => root.render(createElement(MainWindow, {
@@ -124,7 +131,13 @@ describe("selection handles and additive molecule picks", () => {
         && point.y >= rect.y && point.y <= rect.y + rect.height;
     });
     if (handle) return handle;
-    return hitTestDocument(snapshot(), point) ? wrapper() : page();
+    const hit = hitTestDocument(snapshot(), point);
+    const body = [...snapshot().pages[0].objects].reverse().find(object =>
+      point.x >= object.x && point.x <= object.x + object.width
+      && point.y >= object.y && point.y <= object.y + object.height
+    );
+    const objectId = hit?.objectId ?? body?.id;
+    return objectId ? container.querySelector<HTMLElement>(`.native-molecule-object[data-object-id="${objectId}"]`)! : page();
   }
 
   function pointer(target: EventTarget, type: string, point: Point, shiftKey = false) {
@@ -160,6 +173,38 @@ describe("selection handles and additive molecule picks", () => {
     expect(selectedAtoms()).toEqual(molecule.atoms.map(atom => atom.id));
     expect(container.querySelector('[data-whole-molecule-selection="true"]')).toBeNull();
     expect(snapshot().pages[0].objects).toEqual(before);
+  });
+
+  describe.each<ShortcutPlatform>(["macos", "windows"])("selection status (%s)", platform => {
+    it.each([
+      { parts: 1, objects: 1, label: "Selected 1 molecule part and 1 object" },
+      { parts: 2, objects: 1, label: "Selected 2 molecule parts and 1 object" },
+      { parts: 1, objects: 2, label: "Selected 1 molecule part and 2 objects" },
+      { parts: 1, objects: 0, label: "Selected atom" },
+      { parts: 2, objects: 0, label: "Selected 2 molecule parts" },
+      { parts: 0, objects: 2, label: "Selected 2 objects" }
+    ])("reports $parts parts and $objects whole objects", async ({ parts, objects, label }) => {
+      await mount(platform, 4, objects + 1);
+      const before = snapshot().pages[0].objects;
+      const wholeMolecules = before.slice(1) as MoleculeObject[];
+      for (let index = 0; index < parts; index += 1) {
+        await clickAt(molecule.atoms[index], index > 0);
+      }
+      for (let index = 0; index < objects; index += 1) {
+        const whole = wholeMolecules[index];
+        // Inside the body bounds, away from either atom and the diagonal bond; no rings.
+        const point = { x: whole.x + whole.width * 0.2, y: whole.y + whole.height * 0.2 };
+        expect(hitTestDocument(snapshot(), point)).toBeUndefined();
+        expect(targetAt(point).dataset.objectId).toBe(whole.id);
+        await clickAt(point, true);
+      }
+      expect([...snapshot().selection.objectIds].sort()).toEqual([
+        ...(parts > 0 ? [molecule.id] : []), ...wholeMolecules.map(whole => whole.id)
+      ].sort());
+      if (parts > 0) expect(wrapper().dataset.selectedNativeKind).toBe(parts === 1 ? "atom" : "parts");
+      expect(snapshot().pages[0].objects).toEqual(before);
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(label);
+    });
   });
 
   it("Shift-click adds a bond through an overlapping resize handle", async () => {
