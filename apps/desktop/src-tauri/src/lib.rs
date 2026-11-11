@@ -6910,6 +6910,10 @@ fn create_or_raise_preferences_window<R: Runtime>(
     .skip_taskbar(true)
     .accept_first_mouse(true)
     .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(dialog_windows::macos_dialog_title_bar_style());
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder;
     #[cfg(windows)]
     let builder = builder.parent(&owner).map_err(|error| error.to_string())?;
     #[cfg(not(windows))]
