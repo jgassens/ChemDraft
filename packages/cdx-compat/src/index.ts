@@ -2771,22 +2771,23 @@ function cdxmlRectangleTypeForGraphic(graphic: GraphicObject): string | undefine
   const roundEdge = typeof graphic.data.cornerRadiusPx === "number" && graphic.data.cornerRadiusPx > 0;
   const dashed = Boolean(graphic.style.strokeDasharray);
   const shadow = graphic.style.effect === "shadow";
-  if (roundEdge && shadow) {
-    return "RoundEdge Shadow";
-  }
-  if (roundEdge && dashed) {
-    return "RoundEdge Dashed";
-  }
-  if (roundEdge) {
-    return "RoundEdge";
-  }
-  if (shadow) {
-    return "Shadow";
-  }
-  if (graphicHasVisibleFill(graphic)) {
-    return "Filled";
-  }
-  return dashed ? "Dashed" : undefined;
+  return [
+    roundEdge && "RoundEdge",
+    shadow && "Shadow",
+    dashed && "Dashed",
+    cdxmlRectangleHasRepresentableFill(graphic) && "Filled"
+  ].filter(Boolean).join(" ") || undefined;
+}
+
+function cdxmlRectangleHasRepresentableFill(graphic: GraphicObject): boolean {
+  if (!cdxmlRectanglePreservesOutline(graphic)) return graphicHasVisibleFill(graphic);
+  const stroke = normalizeHexColor(graphic.style.strokeColor ?? graphic.style.color ?? defaultCdxmlStrokeColor);
+  return graphicHasVisibleFill(graphic) && stroke !== undefined && stroke === normalizeHexColorValue(graphic.style.fillColor);
+}
+
+function cdxmlRectanglePreservesOutline(graphic: GraphicObject): boolean {
+  return (typeof graphic.data.cornerRadiusPx === "number" && graphic.data.cornerRadiusPx > 0) ||
+    graphic.style.effect === "shadow";
 }
 
 function cdxmlLineTypeAttributes(graphic: GraphicObject): string[] {
@@ -2824,25 +2825,28 @@ function cdxmlGraphicColorIndex(
   warnings: CompatibilityConversionWarning[],
   colors: ExportColorTable
 ): number | undefined {
-  // CDXML graphics carry a single color attribute. On import it becomes the stroke color, and only
-  // for "Filled"/"Shaded" subtypes does it also become the fill. So those shapes must export their
-  // fill color (not stroke) to round-trip the visible fill; every other subtype keeps the stroke.
+  // The single color becomes the stroke on import, plus the fill for Filled/Shaded subtypes.
+  // Rounded/shadowed rectangles keep the outline; plain rectangles retain the release-1.2 fill color.
   const subtype = cdxmlShapeSubtypeForColor(graphic);
   const fillDerivedFromColor = subtype.includes("filled") || subtype.includes("shaded");
   const strokeColor = graphic.style.strokeColor ?? graphic.style.color;
   const fillColor = graphic.style.fillColor;
-  const color = fillDerivedFromColor
+  const preserveRectangleOutline = graphic.graphicKind === "rect" && cdxmlRectanglePreservesOutline(graphic);
+  const droppedRectangleFill = preserveRectangleOutline && graphicHasVisibleFill(graphic) && !cdxmlRectangleHasRepresentableFill(graphic);
+  const color = preserveRectangleOutline ? strokeColor ?? defaultCdxmlStrokeColor : fillDerivedFromColor
     ? fillColor ?? graphic.style.color ?? strokeColor
     : strokeColor ?? fillColor;
   if (
-    fillDerivedFromColor &&
+    droppedRectangleFill || fillDerivedFromColor &&
     strokeColor &&
     fillColor &&
     normalizeHexColor(strokeColor) !== normalizeHexColor(fillColor)
   ) {
     warnings.push({
       code: "cdxml.graphic_single_color",
-      message: "CDXML graphics store a single color; the visible fill was preserved and the distinct stroke color was dropped.",
+      message: droppedRectangleFill
+        ? "CDXML graphics store a single color; the outline color was preserved and the distinct fill was not written."
+        : "CDXML graphics store a single color; the visible fill was preserved and the distinct stroke color was dropped.",
       sourceObjectId: graphic.id
     });
   }
@@ -5069,14 +5073,16 @@ function graphicStyleFromCdxmlShape(
     style.fillColor = strokeColor;
     style.fillMode = "solid";
   }
-  if (ovalType.includes("shaded")) {
+  if (ovalType.includes("shaded") || rectangleType.includes("shaded")) {
     style.fillColor = strokeColor;
     style.fillMode = "gloss";
     style.strokeWidth = 1.5;
   }
   if (ovalType.includes("shadow") || rectangleType.includes("shadow")) {
     style.effect = "shadow";
-    style.fillColor = rectangleType.includes("shadow") ? "#ffffff" : defaultCdxmlFillColor;
+    if (!rectangleType.includes("filled") && !rectangleType.includes("shaded") && normalizedCdxmlToken(element.attributes.FillType) !== "none") {
+      style.fillColor = rectangleType.includes("shadow") ? "#ffffff" : defaultCdxmlFillColor;
+    }
   }
 
   return style;
