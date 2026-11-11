@@ -402,7 +402,7 @@
   {
     "file": "lib.rs",
     "name": "save_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value,",
     "returnType": "Result<(), String>"
