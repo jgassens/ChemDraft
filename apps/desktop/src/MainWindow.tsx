@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.21.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -20643,14 +20643,20 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    const point = pagePointFromPointerEvent(event);
     if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
       return;
     }
     if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
-      openObjectResizeInput(objectId, corner);
+      // The corner handle can cover the repeat label. A first press still starts
+      // resizing; only a double-press edits the label instead of opening Stretch.
+      if (object.type === "bracket" && point && bracketLabelContainsPoint(object, point)) {
+        void invokeCommandRef.current("bracket.label.edit");
+      } else {
+        openObjectResizeInput(objectId, corner);
+      }
       return;
     }
-    const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
       ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;

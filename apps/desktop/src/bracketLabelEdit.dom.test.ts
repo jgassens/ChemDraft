@@ -6,7 +6,7 @@ import { MainWindow } from "./MainWindow";
 import { applySingleBondToolAtPoint, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { DOM_COMMAND_EVENT } from "./window-manager";
-import { bracketLabelPlan } from "@chemdraft/layout-engine";
+import { bracketLabelContainsPoint, bracketLabelPlan } from "@chemdraft/layout-engine";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOCUMENT_SESSION_SAVE_DEBOUNCE_MS, type DocumentSessionEnvelope } from "./documentSession";
@@ -95,9 +95,9 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
   const editor = () => container.querySelector<HTMLInputElement>("[data-bracket-label-editor]");
   const label = () => container.querySelector<SVGElement>(`.page-svg-visual-layer [data-page-svg-object-visual="${closingId}"] .bracket-repeat-label`)!;
-  async function mount(selected: boolean, tool = "tool.select", empty = false) {
+  async function mount(selected: boolean, tool = "tool.select", empty = false, end = { x: 260, y: 200 }) {
     let doc = empty ? createPhase4Document("Placement") : toggleBracketRepeatUnit(insertNativeBracket(createPhase4Document("Label"),
-      { x: 100, y: 100 }, "round", { x: 260, y: 200 }));
+      { x: 100, y: 100 }, "round", end));
     closingId = doc.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")?.id ?? "";
     if (!selected) doc = selectDocumentObjects(doc, doc.pages[0].id, []);
     await act(async () => root.render(createElement(MainWindow, {
@@ -109,9 +109,13 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
   }
   async function mouse(target: Element, type: string, detail = 0, point = { x: 264, y: 199 }) {
     const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
-      buttons: type.endsWith("down") ? 1 : 0, detail, clientX: point.x, clientY: point.y });
+      buttons: type.endsWith("down") || type === "pointermove" ? 1 : 0, detail, clientX: point.x, clientY: point.y });
     Object.defineProperties(event, { pointerId: { value: 8 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
-    await act(async () => { target.dispatchEvent(event); });
+    await act(async () => {
+      target.dispatchEvent(event);
+      // Browsers implicitly release capture after dispatching pointerup/cancel; jsdom does not.
+      if ((type === "pointerup" || type === "pointercancel") && target.hasPointerCapture(8)) target.releasePointerCapture(8);
+    });
     return event.defaultPrevented;
   }
   async function click(count: number) {
@@ -123,6 +127,74 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
       if (!await mouse(target, "mousedown", count)) await act(async () => target.focus());
     }
     for (const type of ["pointerup", "mouseup", "click"]) await mouse(target, type, type === "pointerup" ? 0 : count);
+  }
+  function trackPointerCapture() {
+    let captured: Element | undefined;
+    Object.defineProperty(Element.prototype, "setPointerCapture", { configurable: true,
+      value(this: Element) { captured = this; } });
+    Object.defineProperty(Element.prototype, "releasePointerCapture", { configurable: true,
+      value() { captured = undefined; } });
+    Object.defineProperty(Element.prototype, "hasPointerCapture", { configurable: true,
+      value(this: Element) { return captured === this; } });
+    return () => captured;
+  }
+  const closingBracket = () => {
+    const object = snapshot().document.pages[0].objects.find(object => object.id === closingId);
+    if (object?.type !== "bracket") throw new Error("Missing closing bracket");
+    return object;
+  };
+  const bottomRightHandle = () => container.querySelector<HTMLButtonElement>(
+    `[data-object-controls="${closingId}"] [data-object-resize-corner="bottom-right"]`);
+  const stretchEditor = () => container.querySelector('[aria-label="X stretch percent"]');
+  async function mountHandleFixture(scale: number) {
+    await mount(false, "tool.select", false, { x: 260, y: 164 });
+    if (scale !== 1) {
+      await act(async () => { container.querySelector(".canvas-region")!.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, ctrlKey: true, deltaY: -Math.log(scale) / 0.002
+      })); });
+    }
+    expect((snapshot().viewport as { scale: number }).scale).toBeCloseTo(scale);
+    const page = snapshot().document.pages[0];
+    const rect = { left: 73, top: 41, width: page.width * scale, height: page.height * scale };
+    container.querySelector(".page")!.getBoundingClientRect = () => ({ ...rect,
+      x: rect.left, y: rect.top, right: rect.left + rect.width, bottom: rect.top + rect.height, toJSON: () => ({}) });
+    const client = (point: { x: number; y: number }) => ({ x: rect.left + point.x * scale, y: rect.top + point.y * scale });
+    return { client, captured: trackPointerCapture() };
+  }
+  async function press(target: Element, point: { x: number; y: number }, detail = 0, count = 1) {
+    if (!await mouse(target, "pointerdown", detail, point)) {
+      if (!await mouse(target, "mousedown", count, point)) await act(async () => {
+        if (target instanceof HTMLElement || target instanceof SVGElement) target.focus();
+      });
+    }
+  }
+  async function release(target: Element, point: { x: number; y: number }, count = 1) {
+    for (const type of ["pointerup", "mouseup", "click"]) await mouse(target, type, type === "pointerup" ? 0 : count, point);
+  }
+  async function selectByLabel(client: (point: { x: number; y: number }) => { x: number; y: number }, captured: () => Element | undefined) {
+    const bracket = closingBracket();
+    const bounds = bracketLabelPlan(bracket)!.bounds;
+    // Near the label's left edge, inside the fixed 18px handle even at 200% zoom.
+    const pagePoint = { x: bracket.x + bounds.x + 1, y: bracket.y + bounds.y + bounds.height / 2 };
+    expect(bracketLabelContainsPoint(bracket, pagePoint)).toBe(true);
+    const point = client(pagePoint);
+    const corner = client({ x: bracket.x + bracket.width, y: bracket.y + bracket.height });
+    // App.css places the 18px hit box 8px beyond the frame's bottom/right edges.
+    expect(point.x).toBeGreaterThan(corner.x - 10);
+    expect(point.x).toBeLessThan(corner.x + 8);
+    expect(point.y).toBeGreaterThan(corner.y - 10);
+    expect(point.y).toBeLessThan(corner.y + 8);
+    expect(snapshot().document.selection.objectIds).toEqual([]);
+    expect(bottomRightHandle()).toBeNull();
+    await press(label(), point);
+    expect(snapshot().document.selection.objectIds).toEqual([closingId]);
+    expect(bottomRightHandle()).not.toBeNull();
+    expect(container.querySelectorAll(`[data-object-controls="${closingId}"] [data-object-resize-corner]`)).toHaveLength(4);
+    expect(captured()).toBe(label().closest("[data-page-svg-object-visual]"));
+    await release(captured()!, point);
+    expect(captured()).toBeUndefined();
+    expect(editor()).toBeNull();
+    return { point, pagePoint };
   }
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
@@ -327,6 +399,143 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     await key("Escape");
     expect(editor()).toBeNull();
     expect(label().textContent).toBe("n");
+  });
+  it.each([0.5, 1, 2].flatMap(scale => [0, 1, 2].map(detail => ({ scale, detail }))))(
+    "edits the label on a double-click through its newly mounted handle (zoom $scale, pointer detail $detail)", async ({ scale, detail }) => {
+      const { client, captured } = await mountHandleFixture(scale);
+      const objects = snapshot().document.pages[0].objects;
+      const { point } = await selectByLabel(client, captured);
+      const handle = bottomRightHandle()!;
+      // A real second press hits this newly mounted HTML button, above the SVG label.
+      // Sending both presses to the label/canvas misses the WebKit regression.
+      await press(handle, point, detail, 2);
+      expect(stretchEditor()).toBeNull();
+      expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Stretch entry");
+      // Changed from ordinary object capture/no resize: hand check: a drag in the overlap
+      // must resize. Without a recognized second press, start the normal handle gesture.
+      if (detail < 2) {
+        expect(container.querySelector("[data-status-message]")?.textContent).toBe("Resize selected art object");
+        expect(captured()).toBe(container.querySelector(".page"));
+        expect(editor()).toBeNull();
+      } else {
+        expect(captured()).toBeUndefined();
+        expect(editor()?.value).toBe("n");
+        expect(document.activeElement).toBe(editor());
+      }
+      const clickTarget = captured() ?? handle;
+      for (const type of ["pointerup", "mouseup", "click", "dblclick"]) {
+        await mouse(clickTarget, type, type === "pointerup" ? 0 : 2, point);
+        expect(stretchEditor()).toBeNull();
+        expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Stretch entry");
+      }
+      expect(captured()).toBeUndefined();
+      expect(editor()?.value).toBe("n");
+      expect(document.activeElement).toBe(editor());
+      expect(snapshot().document.pages[0].objects).toEqual(objects);
+    });
+  it.each([0.5, 1, 2])("leaves an overlap click unchanged and edits on a repeated detail-0 handle press (zoom %s)", async scale => {
+    const { client, captured } = await mountHandleFixture(scale);
+    const { point } = await selectByLabel(client, captured);
+    const before = snapshot().document.pages[0].objects;
+    const handle = bottomRightHandle()!;
+    await press(handle, point, 0);
+    expect(captured()).toBe(container.querySelector(".page"));
+    await release(captured()!, point);
+    expect(captured()).toBeUndefined();
+    expect(snapshot().document.pages[0].objects).toEqual(before);
+    expect(snapshot().document.selection.objectIds).toEqual([closingId]);
+    expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
+    expect(editor()).toBeNull();
+    expect(stretchEditor()).toBeNull();
+    // Both pointerdowns can have detail 0 in WebKit; the recorded handle presses
+    // must open the label editor before dblclick, never the Stretch editor.
+    await press(handle, point, 0, 2);
+    expect(captured()).toBeUndefined();
+    expect(editor()?.value).toBe("n");
+    expect(document.activeElement).toBe(editor());
+    for (const type of ["pointerup", "mouseup", "click", "dblclick"]) {
+      await mouse(handle, type, type === "pointerup" ? 0 : 2, point);
+      expect(stretchEditor()).toBeNull();
+      expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Stretch entry");
+    }
+    expect(document.activeElement).toBe(editor());
+    expect(snapshot().document.pages[0].objects).toEqual(before);
+  });
+  it.each([0.5, 1, 2].flatMap(scale => [false, true].map(overlap => ({ scale, overlap }))))(
+    "resizes from the handle in one ordinary undo step (zoom $scale, label overlap $overlap)", async ({ scale, overlap }) => {
+      const { client, captured } = await mountHandleFixture(scale);
+      const labelHit = await selectByLabel(client, captured);
+      const before = snapshot().document.pages[0].objects;
+      const bracket = closingBracket();
+      const pagePoint = overlap ? labelHit.pagePoint : { x: bracket.x + bracket.width, y: bracket.y + bracket.height };
+      expect(bracketLabelContainsPoint(bracket, pagePoint)).toBe(overlap);
+      const start = client(pagePoint);
+      const center = { x: bracket.x + bracket.width / 2, y: bracket.y + bracket.height / 2 };
+      const scaledPoint = (factor: number) => client({
+        x: center.x + (pagePoint.x - center.x) * factor,
+        y: center.y + (pagePoint.y - center.y) * factor
+      });
+      await press(bottomRightHandle()!, start);
+      expect(captured()).toBe(container.querySelector(".page"));
+      const captureTarget = captured()!;
+      // Several previews must still commit as a single change on release.
+      for (const factor of [1.25, 1.5]) {
+        await mouse(captureTarget, "pointermove", 0, scaledPoint(factor));
+      }
+      await release(captureTarget, scaledPoint(1.5));
+      expect(captured()).toBeUndefined();
+      expect(closingBracket().width).toBeCloseTo(bracket.width * 1.5);
+      expect(closingBracket().height).toBeCloseTo(bracket.height * 1.5);
+      // Resize preserves the centre; a body move would keep the old dimensions.
+      expect(closingBracket().x + closingBracket().width / 2).toBeCloseTo(center.x);
+      expect(closingBracket().y + closingBracket().height / 2).toBeCloseTo(center.y);
+      expect(editor()).toBeNull();
+      expect(stretchEditor()).toBeNull();
+      const after = snapshot().document.pages[0].objects;
+      await command("edit.undo");
+      expect(snapshot().document.pages[0].objects).toEqual(before);
+      // Ordinary bracket resizes use the generic history label; the overlap must match.
+      expect(container.querySelector("[data-status-message]")?.textContent).toBe("Undid last document change");
+      expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
+      await command("edit.redo");
+      expect(snapshot().document.pages[0].objects).toEqual(after);
+    });
+  it.each([0.5, 1, 2])("still opens Stretch on a double-press outside the label (zoom %s)", async scale => {
+    const { client, captured } = await mountHandleFixture(scale);
+    await selectByLabel(client, captured);
+    const bracket = closingBracket();
+    const pagePoint = { x: bracket.x + bracket.width, y: bracket.y + bracket.height };
+    expect(bracketLabelContainsPoint(bracket, pagePoint)).toBe(false);
+    const point = client(pagePoint);
+    const handle = bottomRightHandle()!;
+    await press(handle, point);
+    await release(captured()!, point);
+    expect(stretchEditor()).toBeNull();
+    // WebKit pointerdown can report zero on both presses; the recorded presses still count.
+    await press(handle, point, 0, 2);
+    expect(container.querySelector("[data-status-message]")?.textContent).toBe("Stretch entry");
+    expect(stretchEditor()).not.toBeNull();
+    await release(handle, point, 2);
+    await mouse(handle, "dblclick", 2, point);
+    expect(stretchEditor()).not.toBeNull();
+    expect(editor()).toBeNull();
+  });
+  it.each([0.5, 1, 2])("still moves a bracket dragged from its painted body (zoom %s)", async scale => {
+    const { client, captured } = await mountHandleFixture(scale);
+    const bracket = closingBracket();
+    const point = { x: bracket.x + bracket.width - 4, y: bracket.y + bracket.height / 2 };
+    expect(bracketLabelContainsPoint(bracket, point)).toBe(false);
+    const body = container.querySelector(`[data-page-svg-object-visual="${closingId}"] path`)!;
+    await press(body, client(point));
+    const captureTarget = captured()!;
+    expect(captureTarget).toBe(body.closest("[data-page-svg-object-visual]"));
+    const end = client({ x: point.x + 30, y: point.y + 20 });
+    await mouse(captureTarget, "pointermove", 0, end);
+    await release(captureTarget, end);
+    expect(captured()).toBeUndefined();
+    expect(closingBracket()).toMatchObject({ x: bracket.x + 30, y: bracket.y + 20, width: bracket.width, height: bracket.height });
+    expect(editor()).toBeNull();
+    expect(stretchEditor()).toBeNull();
   });
   it.each([false, true])("edits via the full canvas double-click sequence (initially selected: %s)", async selected => {
     await mount(selected);
