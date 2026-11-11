@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preferences-ready"
+description = "Enables the preferences_ready command without any pre-configured scope."
+commands.allow = ["preferences_ready"]
+
+[[permission]]
+identifier = "deny-preferences-ready"
+description = "Denies the preferences_ready command without any pre-configured scope."
+commands.deny = ["preferences_ready"]

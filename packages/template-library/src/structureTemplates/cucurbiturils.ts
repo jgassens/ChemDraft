@@ -19,7 +19,7 @@ export const cucurbiturilsTemplates: readonly StructureTemplate[] = [
       "database": "PubChem",
       "cid": 6096206
     },
-    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
+    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
     "layout": {
       "atoms": [
         { "element": "C", "x": 0.4256, "y": 2.598 },
@@ -180,7 +180,7 @@ export const cucurbiturilsTemplates: readonly StructureTemplate[] = [
       "database": "PubChem",
       "cid": 196163
     },
-    "note": "PubChem's record title is the historical name 'cucurbituril' for the n = 6 homologue. Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
+    "note": "PubChem's record title is the historical name 'cucurbituril' for the n = 6 homologue. Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
     "layout": {
       "atoms": [
         { "element": "C", "x": 0.4495, "y": 3.4782 },
@@ -367,7 +367,7 @@ export const cucurbiturilsTemplates: readonly StructureTemplate[] = [
       "database": "PubChem",
       "cid": 6096207
     },
-    "note": "PubChem's record title mentions a hydrate; the stored formula and SMILES describe the anhydrous host. Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
+    "note": "PubChem's record title mentions a hydrate; the stored formula and SMILES describe the anhydrous host. Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
     "layout": {
       "atoms": [
         { "element": "C", "x": 0.5265, "y": 3.3989 },
@@ -581,7 +581,7 @@ export const cucurbiturilsTemplates: readonly StructureTemplate[] = [
       "database": "PubChem",
       "cid": 16133299
     },
-    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
+    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
     "layout": {
       "atoms": [
         { "element": "C", "x": 0.4892, "y": 3.9381 },
@@ -822,7 +822,7 @@ export const cucurbiturilsTemplates: readonly StructureTemplate[] = [
       "database": "PubChem",
       "cid": 16150917
     },
-    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
+    "note": "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity.",
     "layout": {
       "atoms": [
         { "element": "C", "x": 0.5, "y": 5.2617 },

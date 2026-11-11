@@ -121,6 +121,33 @@
       ]
     },
     {
+      "identifier": "fs:allow-open",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
+      ]
+    },
+    "fs:allow-read",
+    {
       "identifier": "fs:allow-stat",
       "allow": [
         {

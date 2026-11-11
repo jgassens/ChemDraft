@@ -76,6 +76,37 @@ const chiral = molecule(
   ]
 );
 
+describe.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("single-only display stereo", write => {
+  it.each(["wedge", "hashed", "wavy"] as const)("ignores stale %s on multiple bonds", bondStyle => {
+    for (const order of ["double", "triple"] as const) {
+      // Bypass schema validation to exercise the writer's defensive boundary.
+      const source = molecule([
+        { id: "a0", element: "C", x: 0, y: 0 },
+        { id: "a1", element: "C", x: 1, y: 0 }
+      ], [{ id: "b0", from: "a0", to: "a1", order }]);
+      source.bonds[0]!.display = { bondStyle };
+      const { contents } = write(source, { kekuleBondOrders: new Map() });
+      if (contents.includes("V3000")) {
+        expect(contents).not.toContain("CFG=");
+      } else {
+        expect(contents.split("\n")[6]!.slice(9, 12)).toBe("  0");
+        expect(contents.split("\n")[3]!.slice(12, 15)).toBe("  0");
+      }
+    }
+  });
+
+  it("retains explicit either on a double bond even with a stale single-bond style", () => {
+    const source = molecule([
+      { id: "a0", element: "C", x: 0, y: 0 },
+      { id: "a1", element: "C", x: 1, y: 0 }
+    ], [{ id: "b0", from: "a0", to: "a1", order: "double", style: "wedge" }]);
+    source.bonds[0]!.stereo = "either";
+    const { contents } = write(source, { kekuleBondOrders: new Map() });
+    if (contents.includes("V3000")) expect(contents).toContain("M  V30 1 2 1 2 CFG=2");
+    else expect(contents.split("\n")[6]!.slice(6, 12)).toBe("  2  3");
+  });
+});
+
 describe.each([moleculeToMolfileV2000, moleculeToMolfileV3000])("MDL radical counts", (write) => {
   it.each([0, 1, 2, 3, 4])("reports an unrepresentable count of %i without substituting triplet", (count) => {
     const source = molecule([{ id: "radical_atom", element: "C", x: 0, y: 0, markRadicals: count }], []);

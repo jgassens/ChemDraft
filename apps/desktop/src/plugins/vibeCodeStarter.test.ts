@@ -119,7 +119,7 @@ describe("plugin starter command", () => {
     expect(main).toContain("pickSavePath: pickNativeExportPath");
     expect(main).toContain("writeText: writeNativeTextFile");
     expect(main).toContain("download: downloadText");
-    expect(main).toContain("}), vibeCodeStarterCommand]");
+    expect(main).toContain("}).map(command => customSwatchActions.find(action => action.id === command.id) ?? command), vibeCodeStarterCommand]");
     expect(main).toContain("for (const command of shellCommandSpecs)");
   });
 });

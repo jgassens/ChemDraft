@@ -163,7 +163,7 @@ async function inspectJob(job: StereoJob, io: CliIo): Promise<boolean> {
     const doubleBondUnspecified = doubleBonds.filter((bond) => bond.descriptor === "unspecified").length;
     const unspecifiedCount = tetrahedralUnspecified + doubleBondUnspecified;
     if (tetrahedralUnspecified > 0) {
-      warnings.push(`${tetrahedralUnspecified} stereocentre(s) left unspecified`);
+      warnings.push(`${tetrahedralUnspecified} stereocenter(s) left unspecified`);
     }
     if (doubleBondUnspecified > 0) {
       warnings.push(`${doubleBondUnspecified} stereogenic double bond(s) left unspecified`);

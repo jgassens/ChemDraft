@@ -20,7 +20,7 @@ individual tools also check their own permissions. Declare `apiVersion: "^0.1.9"
 
 Keep the plugin's submit command pending for the whole run. At Send, call
 `assistant.beginRequest({ prompt, label? })`: the host captures the document tab and selection
-and opens a labelled transaction. Tools may change only that selection plus objects inserted
+and opens a labeled transaction. Tools may change only that selection plus objects inserted
 earlier in the same request. Changing the selection during a run never widens its scope; an empty
 selection permits additions only. Results land directly on the page, with no approval window.
 
@@ -47,6 +47,78 @@ try {
 }
 ```
 
+## Chemistry properties and plugin assistant tools (0.1.21)
+
+Declare `apiVersion: "^0.1.21"` for these additions. Neither adds a permission.
+
+### Chemistry properties
+
+With `chemistry.compute`, `context.chemistry?.properties?.({ format, structure })` returns
+`PluginChemistryPropertiesResult`. Format is `"smiles" | "molfile"`; input is limited to
+5,000 characters and 500 heavy atoms. Molfile V2000/V3000 is detected
+without modifying its contents. Invalid, oversized, or unavailable-engine input returns
+`{ available: false, reason }`.
+
+A successful result contains `formula`, `averageMass` (g/mol), `monoisotopicMass` (Da),
+`formalCharge`, `isotopeLabelled`, and `method: { engine: "RDKit", version, conventions }`.
+These are the property panel's source-composition and RDKit mass results, using its existing lazy
+analysis worker. The whole drawn input is analyzed: sodium benzoate stays sodium benzoate.
+Charge and explicit isotopes are preserved. Carry the method and conventions with displayed numbers.
+
+```ts
+const properties = await context.chemistry?.properties?.({ format: "smiles", structure: "CC(=O)Oc1ccccc1C(=O)O" });
+if (properties?.available) {
+  // Formula C9H8O4; values and their units/conventions are supplied by the host.
+  console.log(properties.formula, properties.averageMass, properties.method);
+}
+```
+
+### Session-local assistant tools
+
+`assistant.createToolSession({ requestId, extraTools? })` accepts up to eight
+`{ name, description, inputSchema }` descriptors. Names match
+`/^[a-z][a-z0-9_]{0,47}$/` and are unique within the session, including the host's names.
+Descriptions have at most 1,000 characters. Each input schema must be a JSON Schema object whose
+UTF-8 JSON is at most 16 KiB. Invalid descriptors reject the entire request before opening a session,
+with an error naming the invalid field or colliding name. Definitions are snapshotted on creation.
+
+Register `onAssistantToolCall: PluginAssistantToolHandler` alongside `commandHandlers` and
+`onPanelClosed` in `runPluginWorker`. The callback receives
+`(context, { sessionId, name, input }, signal)` and returns `PluginAssistantToolResult` (or a promise).
+Validate the call's input against your tool's schema in this handler. It executes in your worker,
+using only your declared host capabilities; those calls work while the tool invocation is active.
+The host never evaluates the callback. The in-process registration has the same hook for hosts
+that embed trusted plugins directly.
+
+```ts
+import { runPluginWorker, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
+
+const onAssistantToolCall: PluginAssistantToolHandler = async (context, call, signal) => {
+  signal.throwIfAborted();
+  if (call.name !== "lookup_record") throw new Error("Unknown record tool");
+  // Validate call.input and perform the plugin's own lookup here.
+  return { content: [{ type: "text", text: "The requested record was found." }] };
+};
+runPluginWorker({ manifest, commandHandlers, onAssistantToolCall });
+
+// Inside one of this plugin's commands, after beginRequest:
+const session = await context.assistant!.createToolSession({
+  requestId,
+  extraTools: [{ name: "lookup_record", description: "Look up a plugin-owned record",
+    inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } }]
+});
+```
+
+MCP `tools/list` includes these descriptors alongside host tools for that session only.
+`assistant.listTools()` and `assistant.callTool()` retain their host-tool behavior.
+A different session, request, or plugin cannot see or call your extra tools. The host checks ownership
+again on every MCP message. Tool calls share the host's four-call concurrency limit and default
+120-second deadline; results are validated and capped at 8 MiB of UTF-8 JSON.
+A thrown error or timeout is returned to the model as a tool result with `isError: true`.
+Closing a session, ending a request, closing its tab, or unregistering its plugin cancels pending
+calls, aborts their signals, invalidates their capability invocation, and ignores late settlements.
+Check the signal during longer work and release your own resources on abort.
+
 ## The one rule
 
 Runtime source may import `@chemdraft/plugin-api` and ordinary npm packages (e.g. `openchemlib`,
@@ -69,14 +141,23 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.20`). API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
+`0.1.25`). API 0.1.21 adds plugin chemistry properties and plugin assistant tools (#310).
+API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
+API 0.1.23 adds native wavy single bonds (#327).
+Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
+`fromAtomId` is the explicitly unknown stereocenter. Preserve both endpoints when copying; never
+assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plugins using wavy bonds
+should declare `^0.1.23`.
+API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
+and binary CDX import/export (#316). API 0.1.25 adds optional bracketUsage, repeatCount and scoped crossingBondIds (#338 bracketed groups).
+API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
 API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
 patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
-`isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
+`isotope` field; other labeled atoms (including hydrogen-1) carry the mass number in `isotope`.
 Plugins using isotope fields should declare `^0.1.16`.
 API 0.1.18 adds command-scoped `documents.insertTable`; plugins using it should declare `^0.1.18`.
 API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
@@ -90,11 +171,16 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.20` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.25` packages remain compatible, each on a host at or above the version
 it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.25 | Optional bracketUsage, repeatCount and crossingBondIds (scoped objectId/bondId references); legacy repeatUnit remains supported | No new permission |
+| 0.1.24 | Binary CDX import/export (#316) and optional reaction `arrowObjectIds`/`plusObjectIds` (#335); shared scheme arrows and plus signs are referenced by id, never copied | No new permission |
+| 0.1.23 | bondStyle 'wavy' (single-bond either stereo) | No new permission |
+| 0.1.22 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
+| 0.1.21 | `chemistry.properties` and session-local extra assistant tools | Existing `chemistry.compute` / assistant permissions |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
@@ -149,6 +235,16 @@ const runWidget: PluginCommandHandler = async (context) => {
 
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
+
+For rule-based shift estimates, set `linkedFigure.spectrum.peaks[i].estimated: true` on each
+estimated peak (`PluginLinkedFigurePeak` already includes this optional boolean). A report caption
+alone does not identify the estimated rows to the host; map any provider-specific `source:
+"rule-estimate"` flag to `estimated: true` when building the report. For example:
+`{ id: "c0", ppm: 42.5, intensity: 1, atomIndices: [0], estimated: true }`.
+The host retains this disclosure in JCAMP-DX comments listing ppm and zero-based structure atom
+indices, and in SVG captions shared by PNG, PDF and image clipboard exports. Method labels apply
+only to non-estimated primary peaks when estimates are present. Exports without estimates retain
+their existing output. There is no spectrum CSV export in the host.
 
 ### Panel report limits
 
@@ -372,7 +468,7 @@ Every result status is significant: `declined` means no name passed host policy;
 `noVerifiedName`, `notFullyVerified`, `unsupportedElement`, `unnameable`, `engineLimit`,
 `structureNotExact`, and `tooLarge` (the raw naming-engine limit is available as `limitCode` where
 applicable). `engineNotInstalled` means the user declined or did not finish host-owned installation;
-`cancelled` means the user cancelled or abandoned the invocation and the plugin should stay silent;
+`cancelled` means the user canceled or abandoned the invocation and the plugin should stay silent;
 `unsupported` identifies a platform, host, or OPSIN-runtime limitation; and `failed` has one of
 `engineCrashed`, `timeout`, `busy`, `installFailed`, or `invalidResult` plus a message. Never show a
 partial or unverified name: only `named` carries a name. A failed engine install is `failed` with `installFailed`, rather than a chemical decline.
@@ -384,7 +480,7 @@ proof beyond that limitation.
 
 **`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
 laid out against the active document — its page id, an object id derived from the document's object
-count, and page-centre coordinates. A plugin that did not declare `document.read` must not learn those,
+count, and page-center coordinates. A plugin that did not declare `document.read` must not learn those,
 so it receives `proposedPatch.patch` as an opaque `{ op: "hostHeldRecognition", ref }`
 (`HostHeldRecognitionPatchOp` in `@chemdraft/plugin-api`). Pass the `proposedPatch` to
 `documents.proposePatch` unchanged — adding warnings is fine; the host's reason, warnings, and review
@@ -468,10 +564,10 @@ These atom indices are one-based in the complete model; component numbers are on
 The model includes a host-signed `modelToken` over its atoms and bonds. A plugin may change its
 coordinates, but never its chemical graph. `flatten3d({ model, view })` accepts an orthonormal,
 row-major 3×3 rotation (nine numbers) or `"auto"`; it returns one native molecule per component,
-2D coordinates, wedges/hashes for input-specified centres, `depthByAtom`, and warnings. It uses the same
+2D coordinates, wedges/hashes for input-specified centers, `depthByAtom`, and warnings. It uses the same
 flattening as Spin 3D and refuses a component whose stereochemistry would not survive. It returns
 `{ objects, depthByAtom, method, warnings }`: inserting them requires `document.write` and
-`documents.applyPatch`, so each call (including one batch) creates one labelled undo entry.
+`documents.applyPatch`, so each call (including one batch) creates one labeled undo entry.
 Returned molecule frames use the same padded atom/label bounds as SMILES paste, without changing
 projected atoms or `depthByAtom`. Placement measures molecules by the union of their frame and atom
 extents, even for plugin-supplied objects with inconsistent frames; other objects use their existing bounds.
@@ -480,8 +576,22 @@ the page. A group overlapping the page but sticking out is nudged by the smalles
 that brings the whole group inside. A group entirely outside the page is translated to the visible
 page center, clamped inside page bounds, before that commit. A group referencing any object that
 existed before the patch (including atom-anchored charges and arrows) is never moved. Relative positions are preserved and
-changed objects stay selected. Only groups needing translation can be refused as too large, atomically with
-`Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.`
+changed objects stay selected. Oversized groups retain their authored geometry for the host's page
+question, rather than being rejected or rescaled. After placement, an insertion or geometry edit that
+still extends beyond the page opens a native message box: “This doesn't fit on the page. Enlarge the
+page to fit? Content on the page may shift to make room.” **Enlarge** records the larger layout with
+the patch in its existing undo entry. For left/top overflow, the host translates every object on the
+affected page right/down by the overflow, including pre-existing content and the new objects.
+It grows the opposite sides as needed to keep all content on the page. Chemical identity and relative
+positions stay intact; other pages stay unchanged. Only the patch's inserted/edited objects remain
+selected, and host-shifted objects do not enter the plugin's editable scope. Undo restores the original
+page size and all positions exactly; redo restores the saved result without another question.
+**Keep Page Size** applies the same objects at the same coordinates without resizing. A command asks
+at most once across all its patch calls (each call still has its own undo entry), and its receipt is returned only after the answer and commit. A changed or closed
+drawing invalidates a pending plan. Assistant tool calls and direct patches share one decision for
+the entire request and retain the request's single undo entry; an explicit Keep Page Size now keeps
+all requested content. Cancellation and unanswered assistant questions retain their refusal behavior.
+See [the page-enlargement inventory and translation policy](../architecture/page-enlargement.md).
 Colliding inserted object ids are rebased to fresh ids. All native references within the batch,
 including attachment points on superatoms and R-groups (standalone or inside molecules), follow
 the rebased objects, including self and forward insertion references. Atom and bond ids remain local
@@ -506,9 +616,9 @@ Each plugin may run one 3D call and queue eight; further calls
 fail with `Plugin "<id>" 3D chemistry is busy: at most 1 running call and 8 queued calls are allowed.`
 The app shares at most two reusable RDKit 3D workers. Command end cancels running work and clears
 that plugin's queue; timeout or cancellation terminates the affected worker.
-Minimization checks only the tetrahedral centres and E/Z bonds explicitly specified in each
+Minimization checks only the tetrahedral centers and E/Z bonds explicitly specified in each
 component's signed SMILES, both before and after optimization. Unspecified sites are ignored.
-Refusals identify the component and one-based centre or bond, for example
+Refusals identify the component and one-based center or bond, for example
 `Component 1: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry.`
 or `Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.`
 Flattening checks incoming geometry by the same rule (phase `flatten3d input`), keeps specified
@@ -724,8 +834,14 @@ const receipt = await context.documents.applyPatch?.({
 `applyPatch` is absent without `document.write`, and a retained method reference rejects after the
 command invocation ends. It may insert objects and annotations, and update, move, remove, or reorder
 only objects selected when that command started plus its accepted insertions. Flat batches of
-1–256 operations are atomic. The direct write is one undo entry labelled with the plugin and command;
+1–256 operations are atomic. The direct write is one undo entry labeled with the plugin and command;
 it does not open the proposal review tray/window. Assistant writes join one transaction per request.
+
+The host also refuses indirect changes outside that scope. For example, removing a selected molecule
+is refused if it would remove membership references from an unselected bracket; select the bracket
+as well. Editing a selected bracket's label or repeat count may refresh derived warnings on enclosed
+molecules without selecting them. The host checks again against the commit-time document after any
+canvas gesture wait. Writes are refused when no active document is available to validate the scope.
 
 ### Native tables (0.1.18)
 
@@ -734,9 +850,9 @@ Plugins may read the optional `tableStyle.autoColumnMinEm` minimum auto column w
 
 Declare `document.write` and `apiVersion: "^0.1.18"`. The optional
 `context.documents.insertTable(spec: PluginTableSpec)` validates untrusted input with the shared
-table builder, places it beside the command's selection (or at the viewport centre), and uses the
+table builder, places it beside the command's selection (or at the viewport center), and uses the
 same command-scoped direct-patch path. It returns `AppliedPatchReceipt`, leaves the native table
-selected, and creates one undo entry labelled **Insert table**. The inserted table is in scope for
+selected, and creates one undo entry labeled **Insert table**. The inserted table is in scope for
 later `applyPatch` calls during that command. A retained method rejects after the command ends.
 
 ```ts
@@ -908,12 +1024,60 @@ each plugin's id, display name, description, exact GitHub repository, and releas
 no network discovery. The **Available** section of **Add or Remove Plugins** lists every catalog entry
 that is not installed and offers a one-click **Install** action.
 
-The desktop host fetches the latest stable release only from that catalog entry's repository and
+The desktop host fetches stable releases only from that catalog entry's repository and
 requires the exact versioned ZIP and `.zip.sha256` asset names. It applies the same redirect-host,
 download-size, checksum, archive, manifest, API, permission, and worker-handshake gates used by
 manual package installs and updates. Before either an official install or an update is committed, the
 ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
 its same-origin-only CSP and receives no network or filesystem capability for this workflow.
+
+**Release body markers (required for official releases).** Every official plugin release,
+including **NMR Shift Predictor**, **MolScribe OCSR**, and **Orthonym**, MUST include both
+machine-readable lines in its GitHub release body. The exact format is
+`ChemDraft-Plugin-API: <manifest apiVersion>` and `ChemDraft-Min-App: <minimum app version>`,
+each on its own line with one space after the colon. For example:
+
+```text
+ChemDraft-Plugin-API: ^0.1.25
+ChemDraft-Min-App: 1.2.0
+```
+
+Set `ChemDraft-Plugin-API` to the manifest's `apiVersion` (an exact Semantic Version, caret range,
+or tilde range, as supported by the install gate). `ChemDraft-Min-App` is the minimum ChemDraft
+version to display to users, as a plain `MAJOR.MINOR.PATCH` release version without a prerelease
+or build suffix. Each marker value is limited to 64 characters; longer, missing, malformed, or
+duplicate markers are treated as unknown.
+When the host API is too old, an incompatible marker says **Needs ChemDraft 1.2.0 or later**, or
+**Needs a newer ChemDraft** without a valid minimum app version. When the host API is newer than
+the release supports, it says **Not yet available for this ChemDraft version**. Neither case
+offers or downloads that release when metadata is available; the host first looks for a compatible
+fallback. An installed version equal to or newer than the latest release stays **Up to date**
+regardless of markers. A release without a valid API marker keeps the existing version-based flow.
+The install-time gate remains the real compatibility check, even when release markers are present.
+
+For a fresh catalog install or installed-plugin update whose latest release is incompatible, the
+host checks only the first 20 releases at
+`https://api.github.com/repos/<repository>/releases?per_page=20`, skipping drafts and prereleases.
+It chooses the newest version with a compatible API marker, or the newest release with
+unknown compatibility only if no usable marked compatible release exists. Installed-plugin updates
+consider only versions newer than the installed version. A candidate with malformed or missing
+assets is skipped in favor of the next candidate; if none is usable, the existing asset error is
+reported. Fresh-install package review explains the selected version and reason. If no compatible
+or unknown candidate exists, the appropriate incompatibility message is shown without downloading.
+All selected packages still pass the unchanged install gates; an installed plugin is never changed
+by checking or preparing a package.
+
+GitHub rate limits (HTTP 403 with `x-ratelimit-remaining: 0`, or HTTP 429), offline/network failures,
+and metadata timeouts stay silent during background automatic checks and are not retried in a loop.
+User-initiated **Check for updates** shows **Couldn't reach GitHub to check for plugin updates. Try again later.**
+**Install from the catalog** shows **Couldn't reach GitHub to download the plugin. Try again later.**
+Metadata failures are logged with the URL host and error kind, including allowlist denials.
+If the release list is unavailable,
+the host falls back to the latest release by version and leaves compatibility enforcement to the
+install-time gate. If latest metadata itself is unavailable, existing offers remain unchanged;
+without version and asset metadata, a new offer or fresh install waits for a later check. These
+metadata outages open no error dialog. A successful fallback still shows the inline metadata status
+for a user-initiated action. Package download and validation failures still report errors.
 
 On macOS and Windows, ChemDraft automatically checks installed official plugins daily, starting
 15 seconds after the installed catalog is ready. **Check for plugin updates automatically** in

@@ -208,7 +208,7 @@ describe("3D chemistry conformer worker lifetime", () => {
   it("ignores a cancelled job's late reply after a new call starts on the same pool", async () => {
     const controller = new AbortController();
     const cancelled = pool.run(jobs[0], controller.signal);
-    const rejected = expect(cancelled).rejects.toThrow("cancelled because the plugin command ended");
+    const rejected = expect(cancelled).rejects.toThrow("canceled because the plugin command ended");
     const previousWorker = TestWorker.instances[0];
     const previousId = previousWorker.request.id;
     controller.abort();
@@ -315,7 +315,7 @@ describe("3D chemistry conformer worker lifetime", () => {
   it.each(jobs)("terminates $method on command cancellation", async job => {
     const controller = new AbortController();
     const result = runInConformerWorker(job, controller.signal);
-    const failed = expect(result).rejects.toThrow(`chemistry.${job.method} cancelled because the plugin command ended.`);
+    const failed = expect(result).rejects.toThrow(`chemistry.${job.method} canceled because the plugin command ended.`);
     const worker = TestWorker.instances[0];
     expect(worker.url.pathname).toMatch(/conformerWorker.ts$/);
     expect(worker.options).toEqual({ type: "module" });

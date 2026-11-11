@@ -104,6 +104,10 @@ pub trait EngineSpec: Send + Sync + 'static {
     fn python_version() -> &'static str;
     fn required_disk_bytes() -> u64;
     fn requirements() -> (&'static str, &'static str);
+    /// Defaults to the engine's existing lock; adapters may select a target-specific profile.
+    fn requirements_for(_platform: &dyn platform::EnginePlatform) -> (&'static str, &'static str) {
+        Self::requirements()
+    }
     fn python_growth_bytes() -> u64;
     fn packages_growth_bytes() -> u64;
     /// Extra flags before the requirements argument; empty preserves existing install argv.

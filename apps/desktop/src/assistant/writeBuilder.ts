@@ -3,10 +3,10 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, buildTableObject, createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
+  assertMoleculeMatchesSmiles, chemicalIdentityMolfile, buildTableObject, createNativeTextObject, layoutReactionSchemeAsync, nextObjectId,
+  nativeTextObjectSizeForText, documentDrawingDefaults,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
-  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
+  normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform, type ReactionAlignmentWarning
 } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
@@ -23,6 +23,7 @@ import { toolSchemas, type ToolInput } from "./tools/schemas";
 
 export interface AssistantWrite {
   patch: DocumentPatch; summary: string; warnings: string[];
+  alignmentWarnings?: ReactionAlignmentWarning[];
   /** Input SMILES keyed by the actual new molecule id, checked again after patch normalization. */
   expectedSmiles?: ReadonlyMap<string, string>;
   /** Captured before preparation; also checked inside the desktop write gate. */
@@ -72,7 +73,7 @@ export async function inspectSmiles(context: AssistantToolContext, smiles: strin
 }
 export async function inspectMolecule(context: AssistantToolContext, molecule: MoleculeObject) {
   const warnings: string[] = [];
-  const molfile = stereoPerceptionMolfile(molecule, warnings);
+  const molfile = chemicalIdentityMolfile(molecule, warnings);
   if (warnings.length) throw new Error(warnings.join(" "));
   const result = await context.chemistry.inspectStructure("molfile", molfile);
   if (!result.valid) throw new Error(result.reason);
@@ -123,7 +124,14 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   if (built.patch.op !== "batch" || built.patch.patches.length === 0 || built.patch.patches.length > 256) {
     throw new Error("An assistant write must contain 1..256 operations in one flat batch.");
   }
+  let patch: Extract<DocumentPatch, { op: "batch" }> = built.patch;
   const validated = applyPatch(document, built.patch, { now: context.now() });
+  // Replacement, movement, restyling and cleanup use the same check as insertion plans.
+  if (!built.pageGrowth) {
+    const pages = context.planPageGrowth(document, validated);
+    const growth = pages[0];
+    if (growth) built = { ...built, pageGrowth: { ...growth, pages, description: "This content", itemCount: 1, items: [] } };
+  }
   for (const [id, smiles] of built.expectedSmiles ?? []) {
     const { object } = findObject(validated, id);
     if (object.type !== "molecule") throw new Error(`Expected molecule ${id}.`);
@@ -131,17 +139,19 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
   }
   let declined: string[] = [];
   let declineReason = PAGE_GROWTH_DECLINED;
-  let patch = built.patch;
   let summary = built.summary;
   if (built.pageGrowth) {
     context.signal?.throwIfAborted();
     const accepted = await context.confirmPageGrowth(built.pageGrowth, context.signal);
     context.signal?.throwIfAborted();
-    if (accepted !== true) {
-      if (accepted !== false) declineReason = accepted.reason;
-      declined = built.pageGrowth.items.map(item => item.label);
+    // Keep Page Size commits the original placement. Timeout/cancellation retains the existing
+    // assistant refusal behaviour and never turns an unanswered question into an insertion.
+    if (accepted !== true && accepted !== false) {
+      declineReason = accepted.reason;
+      declined = built.pageGrowth.items.length ? built.pageGrowth.items.map(item => item.label) : ["This content"];
       const ids = new Set(built.pageGrowth.items.flatMap(item => item.objectIds));
-      patch = { op: "batch", patches: patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) };
+      patch = { op: "batch", patches: built.pageGrowth.items.length
+        ? patch.patches.filter(op => op.op !== "addObject" || !ids.has(op.object.id)) : [] };
       summary = `Inserted ${patch.patches.length} fitting objects; ${declineReason}: ${declined.join(", ")}.`;
     }
   }
@@ -159,6 +169,7 @@ export async function applyAssistantWrite(context: AssistantToolContext, built: 
     recordAssistantInsertions(context, result.objectIds.filter(id => insertedIds.has(id) || !document.pages.some(page => page.objects.some(object => object.id === id))));
   }
   return { ...result, summary, warnings: built.warnings,
+    ...(built.alignmentWarnings ? { alignmentWarnings: built.alignmentWarnings } : {}),
     ...(declined.length ? { declined, reason: declineReason } : {}) };
 }
 
@@ -226,16 +237,26 @@ function insertWrite(pageId: string, objects: DocumentObject[], summary: string,
 }
 
 /** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
-function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
+function insertionPlan(context: AssistantToolContext, document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
   pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
+  // Text SVG can paint beyond a constrained stored frame. Include those cells in the same
+  // decision/timeout grouping, measuring through the shared check rather than a second bounds rule.
+  const measured = context.planPageGrowth(document, applyPatch(document, write.patch)).find(page => page.pageId === pageId);
+  const ids = new Set(measured?.objectIds);
+  const nonFitting = [...new Set([...plan.nonFitting, ...cells.flatMap((cell, index) => cell.some(object => ids.has(object.id)) ? [index] : [])])];
+  const page = document.pages.find(page => page.id === pageId)!;
+  const requiredSize = plan.requiredSize || measured ? {
+    width: Math.max(page.width, plan.requiredSize?.width ?? 0, measured?.width ?? 0),
+    height: Math.max(page.height, plan.requiredSize?.height ?? 0, measured?.height ?? 0)
+  } : undefined;
   return { ...write,
-    checkPreconditions: plan.requiredSize ? latest => {
+    checkPreconditions: requiredSize ? latest => {
       if (!assistantDocumentContentUnchanged(document, latest)) {
         throw new Error("The document changed while the assistant prepared this write; read it again and retry.");
       }
     } : undefined,
-    ...(plan.requiredSize ? { pageGrowth: { pageId, ...plan.requiredSize, description, itemCount: plan.nonFitting.length,
-      items: plan.nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
+    ...(requiredSize ? { pageGrowth: { pageId, ...requiredSize, description, itemCount: nonFitting.length,
+      items: nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
 }
 
 export async function buildInsertStructures(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
@@ -271,7 +292,7 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
     : needsRoom.length <= 3 && needsRoom.every(item => item.kind !== "text" && item.label)
       ? needsRoom.map(item => item.kind !== "text" ? item.label : "").join(", ")
       : `These ${needsRoom.length} structures`;
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects,
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects,
     `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`,
     sourceMolecules.flatMap(molecule => molecule.chemistry?.warnings?.map(warning => warning.message) ?? []), expected),
   placed.plan, placed.page.id, cells, labels, description);
@@ -310,11 +331,18 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   }
   const molecules: MoleculeObject[] = [];
   for (const smiles of [...input.reactants, ...input.products]) molecules.push(await buildMolecule(context, smiles));
-  const components = molecules.map(molecule => { const rect = objectRect(molecule);
-    return { molecule, bounds: { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height } };
-  });
+  const components = molecules.map(molecule => ({ molecule }));
   const defaults = documentDrawingDefaults(document);
-  const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+  // The host owns engine loading; this tool passes the injected adapter to the shared planner.
+  let alignProduct: Parameters<typeof layoutReactionSchemeAsync>[0]["alignProduct"];
+  const layoutWarnings: string[] = [];
+  try {
+    alignProduct = await context.chemistry.reactionProductAligner?.();
+  } catch (error) {
+    layoutWarnings.push(`Shared-core orientation unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const scheme = await layoutReactionSchemeAsync({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
+    alignProduct,
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
     above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],
     caption: input.caption, textStyle: defaults.textStyle,
@@ -324,8 +352,9 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
+  const plan = insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [...layoutWarnings, ...scheme.warnings], expected),
     placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction");
+  return { ...plan, alignmentWarnings: scheme.alignmentWarnings };
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
   const input = toolSchemas.insert_text.parse(raw);
@@ -334,7 +363,7 @@ export function buildInsertText(context: AssistantToolContext, raw: unknown): As
   const textDocument = pageId ? { ...document, pages: [document.pages.find(page => page.id === pageId)!] } : document;
   const object = freshObjects(document, [assistantText(textDocument, input.text, nativeTextStyle(input.style))]);
   const placed = placement(context, object, pageId, input.relativeTo);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
     placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
 }
 export function buildInsertTable(context: AssistantToolContext, raw: unknown): AssistantWrite {
@@ -353,7 +382,7 @@ export function buildInsertTable(context: AssistantToolContext, raw: unknown): A
   const relative = besideObjectId ? { objectId: besideObjectId, side: "right" as const } : undefined;
   const pageId = besideObjectId ? findObject(document, besideObjectId).page.id : undefined;
   const placed = placement(context, [object], pageId, relative);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
+  return insertionPlan(context, document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
     placed.plan, placed.page.id, [[object]], ["table"], "This table");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
@@ -369,7 +398,6 @@ export async function buildEditStructure(context: AssistantToolContext, raw: unk
       old.y + old.height / 2 - object.y - object.height / 2);
   } else {
     const placed = placement(context, [object], page.id, undefined, [old.id]);
-    if (placed.plan.requiredSize) throw new Error("The replacement does not fit on this page; enlarge it with Page Setup first.");
     object = placed.objects[0] as MoleculeObject;
   }
   return { patch: { op: "batch", patches: [{ op: "removeObject", objectId: old.id }, { op: "addObject", pageId: page.id, object }] },
@@ -439,7 +467,6 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
     }
     return { op: "updateObject", objectId: object.id, changes };
   });
-  if (placed.plan.requiredSize) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
   return { patch: { op: "batch", patches }, summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions };
 }
 

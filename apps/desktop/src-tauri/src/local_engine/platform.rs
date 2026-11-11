@@ -3,24 +3,47 @@ use std::process::Command;
 
 use super::pins;
 
+/// The Rust build target, also passed explicitly by tests for each supported platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineTarget {
+    MacosAarch64,
+    MacosX86_64,
+    WindowsX86_64,
+    Unsupported,
+}
+
+impl EngineTarget {
+    pub fn current() -> Self {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => Self::MacosAarch64,
+            ("macos", "x86_64") => Self::MacosX86_64,
+            ("windows", "x86_64") => Self::WindowsX86_64,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
 /// Shared process platform without the individual engines' package restrictions.
 pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return Ok(Box::new(MacPlatform::new(MacArchitecture::Aarch64)));
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return Ok(Box::new(MacPlatform::new(MacArchitecture::X86_64)));
-    #[cfg(all(windows, target_arch = "x86_64"))]
-    return Ok(Box::new(WindowsPlatform));
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(windows, target_arch = "x86_64")
-    )))]
-    Err(format!(
-        "Local tools are unsupported on {}-{}.",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    ))
+    for_target(EngineTarget::current()).map_err(|_| {
+        format!(
+            "Local tools are unsupported on {}-{}.",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    })
+}
+
+pub fn for_target(target: EngineTarget) -> Result<Box<dyn EnginePlatform>, String> {
+    match target {
+        #[cfg(any(target_os = "macos", test))]
+        EngineTarget::MacosAarch64 => Ok(Box::new(MacPlatform::new(MacArchitecture::Aarch64))),
+        #[cfg(any(target_os = "macos", test))]
+        EngineTarget::MacosX86_64 => Ok(Box::new(MacPlatform::new(MacArchitecture::X86_64))),
+        #[cfg(any(target_os = "windows", test))]
+        EngineTarget::WindowsX86_64 => Ok(Box::new(WindowsPlatform)),
+        _ => Err(format!("Local tools are unsupported on {target:?}.")),
+    }
 }
 
 /// Everything about a local engine that differs by operating system: which pinned uv archive to
@@ -28,6 +51,7 @@ pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
 /// target means one more implementation plus its reviewed pins in `pins.rs`; nothing else in the
 /// installer or process manager branches on the OS.
 pub trait EnginePlatform: Send + Sync {
+    fn target(&self) -> EngineTarget;
     fn uv_asset(&self) -> &'static str;
     fn uv_sha256(&self) -> &'static str;
     fn uv_executable(&self, root: &Path) -> PathBuf;
@@ -60,6 +84,13 @@ impl MacPlatform {
 
 #[cfg(any(target_os = "macos", test))]
 impl EnginePlatform for MacPlatform {
+    fn target(&self) -> EngineTarget {
+        match self.architecture {
+            MacArchitecture::Aarch64 => EngineTarget::MacosAarch64,
+            MacArchitecture::X86_64 => EngineTarget::MacosX86_64,
+        }
+    }
+
     fn uv_asset(&self) -> &'static str {
         match self.architecture {
             MacArchitecture::Aarch64 => pins::UV_AARCH64_APPLE_ASSET,
@@ -100,6 +131,10 @@ pub struct WindowsPlatform;
 
 #[cfg(any(target_os = "windows", test))]
 impl EnginePlatform for WindowsPlatform {
+    fn target(&self) -> EngineTarget {
+        EngineTarget::WindowsX86_64
+    }
+
     fn uv_asset(&self) -> &'static str {
         pins::UV_X86_64_WINDOWS_ASSET
     }

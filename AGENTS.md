@@ -7,9 +7,9 @@ agent and human contributor, on every branch. It is repo-wide: scope for one sli
 
 ## 1. Both platforms, every change
 
-**ChemDraft ships for macOS and Windows together, from the same commit, under one version number.**
-Every code change must work on both. A change that works on one platform is not finished, and "the
-other platform is a follow-up" is not an acceptable state to merge.
+**ChemDraft ships macOS Apple silicon, macOS Intel, and Windows x64 builds together, from the same commit, under one version number.**
+Every code change must work on all three. A change that works on only one build is not finished, and
+"the other builds are a follow-up" is not an acceptable state to merge.
 
 - **Shared code by default.** Branch on the platform only where the operating system forces it, and
   write both sides in the same change. Rust: every `#[cfg(target_os = "macos")]` gets its
@@ -17,7 +17,8 @@ other platform is a follow-up" is not an acceptable state to merge.
   both, so code dead on one side fails there. TypeScript: take the platform as a parameter that
   defaults to detection (`ShortcutPlatform` / `detectDesktopShortcutPlatform()` in
   `keyboardShortcuts.ts`), so one test host can exercise both branches. Tauri: platform-only
-  capabilities carry `"platforms": [...]`; Windows-only config lives in `tauri.windows.conf.json`.
+  capabilities carry `"platforms": [...]`; Windows-only config lives in `tauri.windows.conf.json`,
+  with `tauri.allusers.conf.json` as the all-users overlay.
 - **Known differences you must respect:**
   - App origin: `tauri://localhost` on macOS, `http://tauri.localhost` on Windows (WebView2). Anything
     served same-origin, such as installed plugins, must accept both (`installed_plugins.rs`).
@@ -29,7 +30,8 @@ other platform is a follow-up" is not an acceptable state to merge.
   - Shortcuts: `CmdOrCtrl`, a Ctrl+Y redo alternate off macOS, Mac glyph labels only on macOS, and
     F5/Ctrl+R must never reload the webview (a reload discards the document).
   - Quitting: on Windows, closing the document window quits after flushing the session.
-  - Updates: Sparkle and `appcast.xml` on macOS; `tauri-plugin-updater` and `latest.json` on Windows.
+  - Updates: Sparkle and `appcast.xml` on macOS; `tauri-plugin-updater` with `latest.json` on
+    Windows, plus `latest-allusers.json` for the all-users installer.
   - Clipboard: Windows formats are handled in `windows_clipboard.rs` (UTF-16, CRLF, Office formats).
   - Files: Windows registers `.chemdraft` only; it must never take over `.cdxml`.
   - Paths and tools: backslashes, 8.3 temp paths, no bash, no `zip`, symlinks need privileges. Use
@@ -45,11 +47,12 @@ other platform is a follow-up" is not an acceptable state to merge.
   serving, check it on both platforms. If you can run only one, the report must name the other as
   unverified and say exactly what needs checking there. Never report a platform as verified that you
   did not run.
-- **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
-  the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
-  version the other does not. See `docs/releasing/`. The Windows installer is
-  built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
-  2026-10-22), never on a local machine or VM; the Windows session tests the installer CI built.
+- **Releases** are joint: the Apple-silicon DMG, Intel DMG, and per-user and all-users Windows NSIS
+  installers are built from the same commit and version. The GitHub release body has
+  `## macOS (Apple silicon)`, `## macOS (Intel)`, and `## Windows` sections.
+  See `docs/releasing/`. Both Windows installers are built only by
+  `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule, 2026-10-22),
+  never on a local machine or VM; the Windows session tests the installers CI built.
 
 ## 2. Orientation
 
@@ -102,7 +105,10 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.20`. For a 0.x version the minor is the compatibility boundary, so additive
+`PluginApiVersion` is `0.1.25`. API 0.1.20 added `tableStyle.autoColumnMinEm`; 0.1.21 adds
+plugin chemistry properties and plugin assistant tools; 0.1.22 adds name-to-structure result
+source and dictionary match provenance; 0.1.23 adds native wavy single bonds;
+0.1.24 adds reaction schemes and binary CDX; 0.1.25 adds bracketed groups. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
@@ -169,11 +175,11 @@ commit checkpoints or present a recognition as certain.
 ### 4.6 NMR claims (absolute)
 
 The shipped backend is the OCL-native provider: HOSE-fragment lookup over statistics from NMRShiftDB2
-experimental assignments. Never describe it as fixture-backed or synthetic (fixtures are test-only
-and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
+assignments (the database does not mark which are experimental). Never describe it as fixture-backed
+or synthetic (fixtures are test-only and labelled synthetic). Accuracy figures stay checksum-gated to the benchmarked corpus. ¹H
 multiplicity and J are first-order estimates, labelled so. Stick height is equivalent nuclei, not
 integration; lineshape and field are simulation parameters. Never fabricate a shift for an unmatched
-environment; partial results carry warnings. No calibrated confidence percentages, only honest tiers.
+environment; partial results carry warnings. Rule-based estimates are allowed only when visibly labelled as estimates, per owner 2026-11-09. No calibrated confidence percentages, only honest tiers.
 
 ### 4.7 Licensing and redistribution
 
@@ -388,7 +394,7 @@ surface, and never replace it with a slice-scoped one.
 
 ## 15. Builds, launching, and the stable app
 
-- **Launch from this worktree.** macOS: `./run-app` (packaged build) or `./run-app --dev` (Tauri plus
+- **Launch from this worktree.** macOS Apple silicon: `./run-app` (packaged build); macOS Intel: `./run-app -t x86_64-apple-darwin`; macOS development: `./run-app --dev` (Tauri plus
   Vite hot reload). Windows: `pnpm dev`, or `pnpm --filter @chemdraft/desktop build --bundles nsis`
   for an installer. An app that was already running, or `cargo run`, is not proof. Stop other
   instances from the same checkout first, and report the exact command and the success signal
@@ -404,8 +410,9 @@ the label you saw. Only a stable build (on `main`, or `CHEMDRAFT_STABLE_BUILD=1`
 
 ### 15.2 The stable app is never replaced (do not remove)
 
-The stable app (`/Applications/ChemDraft.app`; `%LOCALAPPDATA%\ChemDraft` on Windows) is built from
-`main` as `org.chemdraft.desktop`. Branch builds are a different application, `ChemDraft (dev)` with
+The stable app (`/Applications/ChemDraft.app`; `%LOCALAPPDATA%\ChemDraft` per-user or
+`C:\Program Files\ChemDraft` all-users on Windows) is built from `main` as `org.chemdraft.desktop`.
+Branch builds are a different application, `ChemDraft (dev)` with
 the shared identifier `org.chemdraft.desktop.dev`, one shared app-data folder (settings and installed
 plugins), and one shared single-instance lock. Only one dev build runs at a time; quit it before
 launching another worktree's build. Stable app data and its lock stay separate.

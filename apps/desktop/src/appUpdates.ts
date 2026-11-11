@@ -38,9 +38,18 @@ export function appUpdatesSupported(info: Pick<UpdateBuildInfo, "isDesktop" | "p
   return info.isDesktop && info.platform === "windows";
 }
 
+/** Notice for the Windows webview's refused-check status line; also gates automatic checks by build identity. */
+// This text and Rust's DEVELOPMENT_UPDATES_MESSAGE in src-tauri/src/lib.rs must match.
+export function appUpdateChannelNotice(info: Pick<UpdateBuildInfo, "identifier" | "isDevServer">): string | undefined {
+  if (!info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER) {
+    return undefined;
+  }
+  return "Updates are off in development builds. Install the released ChemDraft to get updates.";
+}
+
 /** Whether this particular build may check: supported, released, and not a dev or branch build. */
 export function appUpdateChecksAllowed(info: UpdateBuildInfo): boolean {
-  return appUpdatesSupported(info) && !info.isDevServer && info.identifier === STABLE_APP_IDENTIFIER;
+  return appUpdatesSupported(info) && appUpdateChannelNotice(info) === undefined;
 }
 
 /** An automatic check is due when none has succeeded within the interval. A timestamp from the future

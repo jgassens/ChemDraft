@@ -28,7 +28,7 @@ import type {
   PluginUpdateOffer,
   PreparedPluginUpdate
 } from "./pluginUpdates";
-import { EXPERIMENTAL_PLUGIN_NOTICE, isNetworkDownloadFailure, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { EXPERIMENTAL_PLUGIN_NOTICE, isNetworkDownloadFailure, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG, PLUGIN_INSTALL_METADATA_UNAVAILABLE_MESSAGE, PLUGIN_METADATA_UNAVAILABLE_MESSAGE, PluginReleaseMetadataUnavailableError } from "./pluginUpdates";
 import { installedPluginCatalogKey, type TimedPluginUpdateCheckResult } from "./pluginUpdateAutoCheck";
 import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
@@ -335,7 +335,9 @@ export function PluginManagerDialog({
       await action();
       setError(undefined);
     } catch (cause: unknown) {
-      setError(messageOf(cause));
+      if (cause instanceof PluginReleaseMetadataUnavailableError) {
+        setNoticeState({ text: PLUGIN_METADATA_UNAVAILABLE_MESSAGE });
+      } else setError(messageOf(cause));
     } finally {
       setBusyOperation(undefined);
     }
@@ -399,6 +401,10 @@ export function PluginManagerDialog({
         if (requiredEngine(pluginId) === "structureNaming") void runtime.naming.refreshStatus().catch(() => undefined);
       })
       .catch((cause: unknown) => {
+        if (cause instanceof PluginReleaseMetadataUnavailableError) {
+          setNoticeState({ text: PLUGIN_INSTALL_METADATA_UNAVAILABLE_MESSAGE });
+          return;
+        }
         setOfficialInstallErrors((current) => new Map(current).set(pluginId, messageOf(cause)));
       })
       .finally(() => setBusyOperation(undefined));
@@ -459,7 +465,13 @@ export function PluginManagerDialog({
       setUpdateResultsState({
         catalogKey: installedCatalogKey,
         cacheAtCheck: cachedPluginUpdateResults,
-        results: new Map(results.map((result) => [result.pluginId, { ...result, checkedAt }]))
+        results: new Map(results.flatMap((result) => {
+          // An optional metadata outage neither clears an offer nor refreshes its check time.
+          const previous = updateResults.get(result.pluginId);
+          return result.status === "unavailable"
+            ? previous ? [[result.pluginId, previous] as const] : []
+            : [[result.pluginId, { ...result, checkedAt }] as const];
+        }))
       });
       setNoticeState({
         catalogKey: installedCatalogKey,
@@ -927,7 +939,7 @@ function RecognitionEngineRow({
       ? run?.engineCheck && runError.code === "failed"
         ? runError.message
         : cancelled
-          ? "Installation was cancelled."
+          ? "Installation was canceled."
           : naming
             ? `The naming engine could not be installed: ${runError.message}`
             : recognitionInstallErrorMessage(runError, status)
@@ -970,7 +982,7 @@ function RecognitionEngineRow({
             className="plugin-manager-button"
             data-action={naming ? "cancel-naming-engine-install" : "cancel-recognition-engine-install"}
             disabled={working}
-            onClick={() => perform(onCancel, "The install could not be cancelled")}
+            onClick={() => perform(onCancel, "The install could not be canceled")}
             type="button"
           >
             Cancel install
@@ -1119,7 +1131,7 @@ function PackageReview({
   /** Present when installing this plugin also installs the recognition engine. */
   engine?: { kind?: "structureRecognition" | "structureNaming"; status?: EngineRowStatus };
   mode: "install" | "update";
-  subject: Pick<PickedPluginPackage, "inspection" | "checksumVerified">;
+  subject: Pick<PickedPluginPackage, "inspection" | "checksumVerified"> & { selectionMessage?: string };
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1143,6 +1155,7 @@ function PackageReview({
           </p>
         ) : null}
         <div className="plugin-manager-id">{manifest.id}</div>
+        {subject.selectionMessage ? <p data-testid="plugin-release-selection">{subject.selectionMessage}</p> : null}
         {manifest.description ? <p data-testid="plugin-package-description">{manifest.description}</p> : null}
         {experimental ? (
           <p className="plugin-manager-experimental-note" data-testid="plugin-experimental-note">
@@ -1215,6 +1228,10 @@ function PackageReview({
 }
 
 function PluginUpdateStatus({ result }: { result: TimedPluginUpdateCheckResult }) {
+  if (result.status === "unavailable") return <p className="plugin-manager-update-status">{PLUGIN_METADATA_UNAVAILABLE_MESSAGE}</p>;
+  if (result.status === "incompatible") {
+    return <p className="plugin-manager-update-status" data-update-status="incompatible">{result.message}</p>;
+  }
   if (result.status === "available") {
     return (
       <p className="plugin-manager-update-status" data-update-status="available">
@@ -1261,10 +1278,15 @@ function pluginUpdateCheckSummary(
     return "No installed plugins to check.";
   }
 
+  const metadataNotice = results.some(result => result.status === "unavailable" ||
+    (result.status === "available" && result.metadataUnavailable)) ? PLUGIN_METADATA_UNAVAILABLE_MESSAGE : "";
+
   const available = results.filter((result) => result.status === "available").length;
   const failed = results.filter((result) => result.status === "failed").length;
-  if (available > 0 || failed > 0) {
+  const incompatible = results.filter((result) => result.status === "incompatible").length;
+  if (available > 0 || failed > 0 || incompatible > 0) {
     const parts: string[] = [];
+    if (metadataNotice) parts.push(metadataNotice);
     if (available > 0) {
       parts.push(
         available === 1
@@ -1280,9 +1302,13 @@ function pluginUpdateCheckSummary(
       );
       parts.push("See the plugin list for details.");
     }
+    if (incompatible > 0) {
+      parts.push(incompatible === 1 ? "1 plugin release is not compatible with this ChemDraft version." : `${incompatible} plugin releases are not compatible with this ChemDraft version.`);
+    }
     return parts.join(" ");
   }
 
+  if (metadataNotice) return metadataNotice;
   const supported = results.some((result) => result.status !== "unsupported");
   return supported
     ? "All supported installed plugins are up to date."

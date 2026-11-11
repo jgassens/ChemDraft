@@ -29,7 +29,7 @@ native tables cannot open a file containing one.
 column, row and rule geometry. It uses generated Core 14 Helvetica regular/bold and Symbol Greek and
 arrow advance metrics. Auto columns size to their content; fixed columns retain their specified width
 and may overflow. Cells do not wrap. Decimal body values split at the decimal point into two text
-pieces meeting at a shared anchor; the column's decimal block is centred under its header when it
+pieces meeting at a shared anchor; the column's decimal block is centered under its header when it
 fits, and starts at the inner left edge when it does not. The layout becomes one shared page SVG
 fragment for canvas, SVG and PDF, keeping the drawing geometry in step across those surfaces. Layout,
 SVG fragments and bounds are cached by table object identity. Undo history keeps each prior object's

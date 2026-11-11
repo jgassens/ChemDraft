@@ -223,12 +223,12 @@ describe("atom-aware numeric sprouts", () => {
     if (count === 3) expect(after.atoms.slice(before.atoms.length).some(atom => incident(after, atom.id).length === 3)).toBe(true);
   });
 
-  it("key 9 on a quaternary carbon is refused by today's gate without a partial sprout", () => {
+  it("key 9 leaves quaternary carbon unchanged to honor its never-pentavalent contract", () => {
     const { document, target, before } = fixture("C", ["C", "C", "C"]);
     const filled = nativeBranchedHotkeyTarget(document, target).document;
     const result = nativeBranchedHotkeyTarget(filled, target);
     expect(result.document).toBe(filled);
-    expect(result.refusal).toBe("atom-no-free-valence");
+    expect(result.refusal).toBe("branched-carbon-full");
     expect(molecule(filled).atoms.length).toBe(before.atoms.length + 3);
   });
 });

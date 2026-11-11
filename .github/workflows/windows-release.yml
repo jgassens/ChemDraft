@@ -42,6 +42,7 @@ jobs:
       run:
         shell: pwsh
     outputs:
+      commit: ${{ steps.bundle.outputs.commit }}
       version: ${{ steps.bundle.outputs.version }}
       authenticode_signed: ${{ steps.authenticode.outputs.signed || 'false' }}
       updater_signed: ${{ steps.updater.outputs.signed || 'false' }}
@@ -112,32 +113,69 @@ jobs:
 
       - name: Verify stable bundle identity and stage unsigned installer
         id: bundle
+        env:
+          CHEMDRAFT_STABLE_BUILD: '1'
+          CHEMDRAFT_SKIP_UPDATER_SIGNING: '1'
         run: |
-          $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          $windows = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
-          $identifier = if ($windows.identifier) { $windows.identifier } else { $config.identifier }
-          $product = if ($windows.productName) { $windows.productName } else { $config.productName }
-          if ($identifier -cne 'org.chemdraft.desktop' -or $product -cne 'ChemDraft') { throw 'Bundle has a development identity.' }
-          # build.rs re-emits the label into the compiled native title. Inspect the latest build output.
-          $output = Get-ChildItem apps/desktop/src-tauri/target/release/build/chemdraft-*/output |
-            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-          if (-not $output) { throw 'No native build output to verify.' }
-          $labels = @(Get-Content $output.FullName | Where-Object { $_ -like 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=*' })
-          if ($labels.Count -ne 1 -or $labels[0] -cne 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=') { throw 'Native build has a worktree label.' }
-          $shortSha = (git rev-parse --short HEAD).Trim()
-          $assets = (Get-ChildItem apps/desktop/dist/assets/*.js | Get-Content -Raw) -join "`n"
-          if ($assets -notmatch "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} $shortSha" -or
-              $assets -match '\[[^\]\r\n]+\] (?:·|\\x[bB]7|\\u00[bB]7) \d{4}-\d{2}-\d{2}') { throw 'Frontend build stamp missing or labelled.' }
+          # Add future variants here; build/rename, signing and upload share this list.
+          $variants = @(
+            @{ Suffix = ''; Config = ''; Feed = 'latest.json' },
+            @{ Suffix = '-allusers'; Config = 'src-tauri/tauri.allusers.conf.json'; Feed = 'latest-allusers.json' }
+          )
           $bundleDir = 'apps/desktop/src-tauri/target/release/bundle/nsis'
-          $installers = @(Get-ChildItem "$bundleDir/*.exe")
-          $expected = "ChemDraft_$($config.version)_x64-setup.exe"
-          if ($installers.Count -ne 1 -or $installers[0].Name -cne $expected) { throw 'Expected exactly one stable x64 installer.' }
-          if (Get-ChildItem "$bundleDir/*.sig") { throw 'Updater signing ran before Authenticode.' }
-          New-Item -ItemType Directory -Path release-assets | Out-Null
-          Copy-Item -LiteralPath $installers[0].FullName -Destination release-assets
+          # Keep staging outside the checkout so every record-build clean-tree check can pass.
+          $stagingDir = Join-Path $env:RUNNER_TEMP ("chemdraft-windows-release-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $stagingDir | Out-Null
+          $artifacts = @()
+          foreach ($variant in $variants) {
+            # The preceding step built per-user. Stage it before building the all-users variant,
+            # which Tauri writes with the same original filename in the same bundle directory.
+            if ($variant.Config) {
+              if (Test-Path -LiteralPath $bundleDir) { Remove-Item -LiteralPath $bundleDir -Recurse -Force }
+              $buildArgs = @('--filter', '@chemdraft/desktop', 'build', '--bundles', 'nsis')
+              if ($variant.Config) { $buildArgs += @('--config', $variant.Config) }
+              pnpm @buildArgs
+              if ($LASTEXITCODE -ne 0) { throw "NSIS build failed for suffix '$($variant.Suffix)'." }
+            }
+            # tauri-build copies resource targets beside the release executable, which NSIS bundles.
+            node tools/release/verify-bundle-licenses.mjs apps/desktop/src-tauri/target/release
+            if ($LASTEXITCODE -ne 0) { throw 'Required bundled licenses are missing from the release resource staging directory.' }
+            $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+            $windows = Get-Content apps/desktop/src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+            $identifier = if ($windows.identifier) { $windows.identifier } else { $config.identifier }
+            $product = if ($windows.productName) { $windows.productName } else { $config.productName }
+            if ($identifier -cne 'org.chemdraft.desktop' -or $product -cne 'ChemDraft') { throw 'Bundle has a development identity.' }
+            # build.rs re-emits the label into the compiled native title. Inspect the latest build output.
+            $output = Get-ChildItem apps/desktop/src-tauri/target/release/build/chemdraft-*/output |
+              Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if (-not $output) { throw 'No native build output to verify.' }
+            $labels = @(Get-Content $output.FullName | Where-Object { $_ -like 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=*' })
+            if ($labels.Count -ne 1 -or $labels[0] -cne 'cargo:rustc-env=CHEMDRAFT_WORKTREE_LABEL=') { throw 'Native build has a worktree label.' }
+            $shortSha = (git rev-parse --short HEAD).Trim()
+            $assets = (Get-ChildItem apps/desktop/dist/assets/*.js | Get-Content -Raw) -join "`n"
+            if ($assets -notmatch "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} $shortSha" -or
+                $assets -match '\[[^\]\r\n]+\] (?:·|\\x[bB]7|\\u00[bB]7) \d{4}-\d{2}-\d{2}') { throw 'Frontend build stamp missing or labelled.' }
+            $installers = @(Get-ChildItem "$bundleDir/*.exe")
+            $original = "ChemDraft_$($config.version)_x64-setup.exe"
+            if ($installers.Count -ne 1 -or $installers[0].Name -cne $original) { throw 'Expected exactly one stable x64 installer per variant.' }
+            if (Get-ChildItem "$bundleDir/*.sig") { throw 'Updater signing ran before Authenticode.' }
+            # Record the original Tauri filename before applying the variant suffix.
+            # record-build resolves HEAD and refuses a dirty tree for every installer.
+            node tools/release/record-build.mjs --artifact $installers[0].FullName --target x86_64-pc-windows-msvc
+            if ($LASTEXITCODE -ne 0) { throw "Release build record failed for suffix '$($variant.Suffix)'." }
+            $expected = "ChemDraft_$($config.version)_x64$($variant.Suffix)-setup.exe"
+            Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path $stagingDir $expected)
+            Copy-Item -LiteralPath "$($installers[0].FullName).build.json" -Destination (Join-Path $stagingDir "$expected.build.json")
+            $artifacts += @{ Installer = $expected; Feed = $variant.Feed }
+            Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha; installer=$expected"
+          }
+          # All clean-tree records exist before the checkout gains an untracked staging directory.
+          Move-Item -LiteralPath $stagingDir -Destination release-assets
           "version=$($config.version)" >> $env:GITHUB_OUTPUT
-          "installer=$expected" >> $env:GITHUB_OUTPUT
-          Write-Host "Verified identifier=$identifier; product=$product; worktree label=<empty>; frontend commit=$shortSha"
+          "commit=$((git rev-parse HEAD).Trim())" >> $env:GITHUB_OUTPUT
+          "installer=$($artifacts[0].Installer)" >> $env:GITHUB_OUTPUT
+          "allusers_installer=$($artifacts[1].Installer)" >> $env:GITHUB_OUTPUT
+          "installers=$(ConvertTo-Json -InputObject $artifacts -Compress)" >> $env:GITHUB_OUTPUT
 
       # Signing secrets are step-scoped: no setup/cache/artifact action receives them.
       - name: Check signing availability
@@ -168,7 +206,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-nsis-unsigned
-          path: release-assets/*.exe
+          path: |
+            release-assets/*.exe
+            release-assets/*.exe.build.json
           if-no-files-found: error
 
       - name: Authenticode-sign and download final installer
@@ -191,50 +231,80 @@ jobs:
         env:
           EXPECTED_AUTHENTICODE_SUBJECT: ${{ vars.EXPECTED_AUTHENTICODE_SUBJECT }}
           INSTALLER: ${{ steps.bundle.outputs.installer }}
+          ALLUSERS_INSTALLER: ${{ steps.bundle.outputs.allusers_installer }}
         run: |
-          $signed = @(Get-ChildItem signpath-signed -Recurse -File)
-          if ($signed.Count -ne 1 -or $signed[0].Name -cne $env:INSTALLER) { throw 'SignPath must return exactly the expected installer.' }
-          $signature = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
-          if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
-          Write-Host "Authenticode: Valid; publisher=$($signature.SignerCertificate.Subject)"
+          $installers = @(@{ Installer = $env:INSTALLER })
+          if ($env:ALLUSERS_INSTALLER) { $installers += @{ Installer = $env:ALLUSERS_INSTALLER } }
+          # Keep original source records; only final hash and size are rebound below.
+          $recordNames = @($installers | ForEach-Object { "$($_.Installer).build.json" })
+          $signed = @(Get-ChildItem signpath-signed -Recurse -File | Where-Object { $recordNames -cnotcontains $_.Name })
+          if ($signed.Count -ne $installers.Count) { throw 'SignPath must return exactly the expected installers.' }
           if ([string]::IsNullOrWhiteSpace($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
             throw 'EXPECTED_AUTHENTICODE_SUBJECT repository variable is required when Authenticode signing runs. Set it to the expected signer certificate subject substring.'
           }
-          if (-not $signature.SignerCertificate.Subject.Contains($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
-            throw "Authenticode signer subject does not contain EXPECTED_AUTHENTICODE_SUBJECT: $($signature.SignerCertificate.Subject)"
+          foreach ($installer in $installers) {
+            $match = @($signed | Where-Object { $_.Name -ceq $installer.Installer })
+            if ($match.Count -ne 1) { throw "SignPath did not return exactly one $($installer.Installer)." }
+            $signature = Get-AuthenticodeSignature -LiteralPath $match[0].FullName
+            if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed for $($installer.Installer): $($signature.Status)" }
+            Write-Host "Authenticode: Valid; installer=$($installer.Installer); publisher=$($signature.SignerCertificate.Subject)"
+            if (-not $signature.SignerCertificate.Subject.Contains($env:EXPECTED_AUTHENTICODE_SUBJECT)) {
+              throw "Authenticode signer subject does not contain EXPECTED_AUTHENTICODE_SUBJECT: $($signature.SignerCertificate.Subject)"
+            }
+            Copy-Item -LiteralPath $match[0].FullName -Destination (Join-Path release-assets $installer.Installer) -Force
           }
-          Copy-Item -LiteralPath $signed[0].FullName -Destination (Join-Path release-assets $env:INSTALLER) -Force
           'signed=true' >> $env:GITHUB_OUTPUT
 
-      # No operation may change the .exe after this point. Minisign covers the FINAL installer.
+      # No operation may change any .exe after this point. Minisign covers the FINAL installers.
       - name: Sign final installer for the Tauri updater
         if: steps.signing.outputs.updater == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          INSTALLER: ${{ steps.bundle.outputs.installer }}
+          INSTALLERS: ${{ steps.bundle.outputs.installers }}
         run: |
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
-          $installer = Join-Path release-assets $env:INSTALLER
-          # Call Node directly so cmd.exe/pnpm.cmd cannot discard the empty password argument.
-          node apps/desktop/node_modules/@tauri-apps/cli/tauri.js signer sign --password '' $installer
-          if ($LASTEXITCODE -ne 0) { throw 'Tauri updater signing failed.' }
+          foreach ($artifact in ($env:INSTALLERS | ConvertFrom-Json)) {
+            $installer = Join-Path release-assets $artifact.Installer
+            # Call Node directly so cmd.exe/pnpm.cmd cannot discard the empty password argument.
+            node apps/desktop/node_modules/@tauri-apps/cli/tauri.js signer sign --password '' $installer
+            if ($LASTEXITCODE -ne 0) { throw "Tauri updater signing failed for $installer." }
+          }
 
       - name: Verify updater signature and generate latest.json
         id: updater
         if: steps.signing.outputs.updater == 'true'
         env:
-          INSTALLER: ${{ steps.bundle.outputs.installer }}
+          INSTALLERS: ${{ steps.bundle.outputs.installers }}
           VERSION: ${{ steps.bundle.outputs.version }}
           NOTES_FILE: ${{ inputs.notes_file }}
         run: |
-          $installer = Join-Path release-assets $env:INSTALLER
-          pnpm exec tsx tools/release/verify-windows-updater.ts $installer
-          if ($LASTEXITCODE -ne 0) { throw 'Updater signature verification failed.' }
-          $manifestArgs = @('--version', $env:VERSION, '--installer', $installer, '--out', 'release-assets/latest.json')
-          if ($env:NOTES_FILE) { $manifestArgs += @('--notes', $env:NOTES_FILE) }
-          pnpm -s release:windows-manifest @manifestArgs
-          if ($LASTEXITCODE -ne 0) { throw 'Windows update manifest generation failed.' }
+          foreach ($artifact in ($env:INSTALLERS | ConvertFrom-Json)) {
+            $installer = Join-Path release-assets $artifact.Installer
+            pnpm exec tsx tools/release/verify-windows-updater.ts $installer
+            if ($LASTEXITCODE -ne 0) { throw "Updater signature verification failed for $installer." }
+            # A variant without a feed still gets signed and uploaded.
+            if ($artifact.Feed) {
+              $manifestArgs = @('--version', $env:VERSION, '--installer', $installer, '--out', 'release-assets/latest.json')
+              if ($artifact.Feed -cne 'latest.json') { $manifestArgs[-1] = Join-Path release-assets $artifact.Feed }
+              if ($env:NOTES_FILE) { $manifestArgs += @('--notes', $env:NOTES_FILE) }
+              pnpm -s release:windows-manifest @manifestArgs
+              if ($LASTEXITCODE -ne 0) { throw "Windows update manifest generation failed for $($artifact.Feed)." }
+            }
+          }
           'signed=true' >> $env:GITHUB_OUTPUT
+
+      - name: Bind build record to final signed installer bytes
+        env:
+          INSTALLERS: ${{ steps.bundle.outputs.installers }}
+        run: |
+          foreach ($artifact in ($env:INSTALLERS | ConvertFrom-Json)) {
+            $installer = Join-Path release-assets $artifact.Installer
+            $recordPath = "$installer.build.json"
+            $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+            $record.sha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            $record.size = (Get-Item -LiteralPath $installer).Length
+            $record | ConvertTo-Json | Set-Content -LiteralPath $recordPath -Encoding utf8NoBOM
+          }
 
       - name: Print SHA-256 and sizes and write checksums
         run: |
@@ -256,9 +326,14 @@ jobs:
     if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
     runs-on: windows-latest
     permissions:
-      contents: write # Only this job can upload release assets; no source code executes here.
+      contents: write # Upload and validate draft assets here; all other jobs stay read-only.
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Require verified signatures before release upload
         shell: pwsh
         env:
@@ -283,8 +358,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.upload_to_release }}
           VERSION: ${{ needs.build.outputs.version }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           if ($env:RELEASE_TAG -cne "v$env:VERSION") { throw 'Release tag must match the installer version.' }
+          # Fetch the destination tag immediately before upload, and peel annotated tags.
+          git fetch --no-tags origin "+refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch destination release tag.' }
+          $destinationCommit = git rev-parse --verify "refs/tags/$($env:RELEASE_TAG)^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $destinationCommit.Trim() -cne $env:BUILD_COMMIT) { throw 'Destination release tag does not match the built commit.' }
           $releaseJson = gh release view $env:RELEASE_TAG --json isDraft,tagName
           if ($LASTEXITCODE -ne 0) { throw 'Target release must already exist.' }
           $release = $releaseJson | ConvertFrom-Json
@@ -292,3 +373,19 @@ jobs:
           $assets = @(Get-ChildItem release-assets -File | ForEach-Object { $_.FullName })
           gh release upload $env:RELEASE_TAG @assets --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          token: ''
+      - name: Check all attached release builds when complete
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.upload_to_release }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
+        # Draft assets need this upload job's token. A Windows-only result is not a publishing pass.
+        run: |
+          node tools/release/check-release-assets.mjs --tag "$env:RELEASE_TAG" --commit "$env:BUILD_COMMIT" --allow-incomplete --skip-dmg-provenance
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset validation failed.' }

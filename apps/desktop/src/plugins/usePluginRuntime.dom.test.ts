@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { massAnalyzeCommandId } from "@chemdraft/plugin-mass-fragment";
 import type { AppliedPatchReceipt, PluginManifest } from "@chemdraft/plugin-api";
 import { CommandRegistry, type PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
@@ -75,7 +75,7 @@ function Probe({
 }) {
   capture(
     usePluginRuntime({
-      getActiveDocument: () => undefined,
+      getActiveDocument: () => createEmptyDocument({ now: "2026-11-10T00:00:00.000Z" }),
       getActiveDocumentKey,
       getSelection: () => ({ objectIds: [], molecules: [] }),
       commandRegistry: registry,

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { reactionArrowHeadLengthPx } from "@chemdraft/layout-engine";
+import { moleculeInkBounds, reactionArrowHeadLengthPx,
+  reactionArrowInkBounds, reactionSchemeDrawingMetrics } from "@chemdraft/layout-engine";
 
-import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
+import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, layoutReactionSchemeAsync, nativeTextObjectSizeForText,
+  type LayoutBounds } from "../src/index";
 
 function molecule(id: string, width = 40, height = 20): MoleculeObject {
   return {
@@ -23,6 +25,52 @@ function overlaps(left: { x: number; y: number; width: number; height: number },
 }
 
 describe("shared reaction and grid layout", () => {
+  it("preserves isotope, radical and nonstandard hydrogen annotations when choosing scheme labels", () => {
+    const base = molecule("salt");
+    const sodium = { id: "na", element: "Na", x: 0, y: 0, formalCharge: 1 };
+    const hydroxide = { id: "o", element: "O", x: 22, y: 0, formalCharge: -1 };
+    const variants: MoleculeObject["atoms"][] = [
+      [{ ...sodium, isotope: 23 }, hydroxide], [sodium, { ...hydroxide, isotope: 18 }],
+      [sodium, { ...hydroxide, markRadicals: 1 }], [sodium, { ...hydroxide, hydrogenCount: 0 }],
+      [{ ...sodium, hydrogenCount: 1 }, hydroxide]
+    ];
+    for (const atoms of variants) {
+      const result = layoutReactionScheme({ reactants: [{ molecule: { ...base, atoms } }], products: [],
+        arrowKind: "forward", anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24 });
+      expect(result.molecules[0]!.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
+        .toEqual(atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+    }
+  });
+  it("shares a 1500 ms budget across products and yields before alignment", async () => {
+    let now = 0, calls = 0, yields = 0;
+    const result = await layoutReactionSchemeAsync({
+      reactants: [{ molecule: molecule("r") }], products: ["p1", "p2", "p3"].map(id => ({ molecule: molecule(id) })),
+      arrowKind: "forward", anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24,
+      alignmentScheduler: { now: () => now, yieldControl: async () => { yields++; } },
+      alignProduct: (_references, _product, budget) => {
+        expect(budget!.deadline).toBe(1500);
+        expect(yields).toBeGreaterThan(calls);
+        calls++; now += 1500;
+        return undefined;
+      }
+    });
+    expect(calls).toBe(1);
+    expect(result.molecules).toHaveLength(4);
+    expect(result.alignmentWarnings.map(warning => [warning.code, warning.component.index])).toEqual([
+      ["reaction.alignment_skipped", 0], ["reaction.alignment_timeout", 1], ["reaction.alignment_timeout", 2]
+    ]);
+  });
+  it("passes adapter timeout diagnostics through the layout and does not align without reactants", async () => {
+    const options = {
+      reactants: [{ molecule: molecule("r") }], products: [{ molecule: molecule("p") }],
+      arrowKind: "forward" as const, anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24,
+      alignProduct: () => ({ matchedAtomCount: 0, warnings: ["timeout" as const] })
+    };
+    expect((await layoutReactionSchemeAsync(options)).alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_timeout", component: { role: "product", index: 0 } })
+    ]);
+    expect((await layoutReactionSchemeAsync({ ...options, reactants: [] })).alignmentWarnings).toEqual([]);
+  });
   it("places a reaction deterministically at its anchor without molecule overlaps", () => {
     const options = {
       reactants: [{ molecule: molecule("reactant"), bounds: bounds() }],
@@ -38,8 +86,10 @@ describe("shared reaction and grid layout", () => {
     const second = layoutReactionScheme(options);
 
     expect(first.document).toEqual(second.document);
-    expect(first.molecules[0]).toMatchObject({ x: 80, y: 110 });
-    expect(first.arrow.start).toEqual({ kind: "point", point: { x: 144, y: 120 } });
+    const ink = moleculeInkBounds(first.molecules[0]!);
+    expect(ink.x).toBe(80);
+    expect(ink.y + ink.height / 2).toBeCloseTo(120);
+    expect(first.arrow.start.point!.x - Number(first.arrow.style.strokeWidth) / 2 - ink.x - ink.width).toBeCloseTo(1.25 * 30);
     expect(overlaps(first.molecules[0]!, first.molecules[1]!)).toBe(false);
     expect(first.above?.y).toBeLessThan(first.arrow.y);
   });
@@ -123,29 +173,31 @@ describe("shared reaction and grid layout", () => {
     const condition = layout.above!;
     const plus = layout.pluses[0]!;
     const conditionSize = nativeTextObjectSizeForText(options.conditionText, DocumentTextStyle);
-    const plusSize = nativeTextObjectSizeForText("+", DocumentTextStyle);
+    const drawing = reactionSchemeDrawingMetrics(layout.molecules[0]!);
 
     expect(nativeTextStyleFromObjectStyle(condition.style)).toMatchObject(DocumentTextStyle);
-    expect(nativeTextStyleFromObjectStyle(plus.style)).toMatchObject(DocumentTextStyle);
+    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(drawing.fontSizePx);
+    expect(plus.width).toBe(drawing.plusSize);
+    expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
     expect(condition).toMatchObject({ width: conditionSize.width, height: conditionSize.height });
     expect(layout.arrow.width).toBeCloseTo(estimateNativeTextLineWidth(options.conditionText,
       nativeTextStyleFromObjectStyle(condition.style)) + 2 * (reactionArrowHeadLengthPx + 0.25 * DocumentTextStyle.fontSizePx));
-    expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
+    const firstInk = moleculeInkBounds(layout.molecules[0]!), secondInk = moleculeInkBounds(layout.molecules[1]!);
+    expect(secondInk.x - firstInk.x).toBeCloseTo(firstInk.width + 2 * 1.25 * 22 + plus.width);
     const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
     expect(condition.y + conditionStyle.fontSizePx).toBeCloseTo(
-      120 - 0.75 - (0.3 + 0.21) * conditionStyle.fontSizePx
+      120 - drawing.strokeWidth / 2 - (0.3 + 0.21) * conditionStyle.fontSizePx
     );
     const page = layout.document.pages[0]!;
-    expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);
+    expect(page.width).toBeGreaterThanOrEqual(layout.molecules[2]!.x + layout.molecules[2]!.width + 24);
     expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
     expect(options).toEqual(original);
 
     const textStyle = { fontSizePx: 24, fontWeight: 700 };
     const styled = layoutReactionScheme({ ...options, style: "document", textStyle });
     expect(styled.arrow.width).toBeGreaterThan(layout.arrow.width);
-    for (const text of [styled.above!, ...styled.pluses]) {
-      expect(nativeTextStyleFromObjectStyle(text.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
-    }
+    expect(nativeTextStyleFromObjectStyle(styled.above!.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
+    expect(nativeTextStyleFromObjectStyle(styled.pluses[0]!.style).fontSizePx).toBe(drawing.fontSizePx);
   });
 
   it("adapts legacy conditions before above lines without splitting punctuation or changing text", () => {
@@ -183,28 +235,30 @@ describe("shared reaction and grid layout", () => {
     }
     expect(layout.arrow.start.kind).toBe("point");
     if (layout.arrow.start.kind !== "point") throw new Error("Expected a point anchor");
-    expect(layout.molecules[0]!.x + 40 + 24).toBe(layout.arrow.start.point.x);
-    expect(layout.molecules[0]!.y + 40).toBe(layout.arrow.start.point.y);
+    const ink = moleculeInkBounds(layout.molecules[0]!);
+    expect(ink.x + ink.width + 1.25 * 22 + Number(layout.arrow.style.strokeWidth) / 2).toBeCloseTo(layout.arrow.start.point!.x);
+    expect(ink.y + ink.height / 2).toBeCloseTo(layout.arrow.start.point!.y);
     expect(layout.caption!.text).toContain("\n");
     expect(layout.caption!.spans.every((span) => span.script === "normal")).toBe(true);
     expect(layout.caption!.text).toContain("CH2Cl2");
     expect(layout.caption!.y).toBeCloseTo(Math.max(
-      ...layout.molecules.map((entry) => entry.y + entry.height), layout.below!.y + layout.below!.height
+      ...layout.molecules.map(moleculeInkBounds).map(b => b.y + b.height), layout.below!.y + layout.below!.height
     ) + 0.8 * 15);
-    const left = Math.min(...layout.molecules.map((entry) => entry.x));
-    const right = Math.max(...layout.molecules.map((entry) => entry.x + entry.width));
+    const left = Math.min(...layout.molecules.map(moleculeInkBounds).map(b => b.x));
+    const right = Math.max(...layout.molecules.map(moleculeInkBounds).map(b => b.x + b.width));
     expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((left + right) / 2);
     expect(component).toEqual(original);
   });
 
-  it("centres the caption using supplied visible molecule bounds, including label overhangs", () => {
+  it("centres the caption using measured ink rather than a stale supplied frame", () => {
     const layout = layoutReactionScheme({
       reactants: [{ molecule: molecule("reactant", 20, 20), bounds: bounds(80, 100) }],
       products: [], arrowKind: "forward", caption: "Product",
       anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
     });
     if (layout.arrow.end.kind !== "point") throw new Error("Expected a point anchor");
-    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((24 + layout.arrow.end.point.x) / 2);
-    expect(layout.caption!.y).toBeCloseTo(170 + 0.8 * 14);
+    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((24 + layout.arrow.end.point!.x) / 2);
+    const ink = moleculeInkBounds(layout.molecules[0]!);
+    expect(layout.caption!.y).toBeCloseTo(Math.max(ink.y + ink.height, layout.arrow.y + layout.arrow.height) + 0.8 * 14);
   });
 });

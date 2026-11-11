@@ -1,3 +1,4 @@
+import { computePropertiesForPlugin } from "./pluginProperties";
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import { inspectStructureOffThread } from "../depiction2d/identityClient";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
@@ -358,16 +359,27 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let proposingTabId: string | undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
+      return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
+    }
+
+    override async invokeAssistantTool(...args: Parameters<PluginHost["invokeAssistantTool"]>) {
+      return this.withInvocationFrame(() => super.invokeAssistantTool(...args), args[2]);
+    }
+
+    private async withInvocationFrame<Result>(run: () => Promise<Result>, signal?: AbortSignal): Promise<Result> {
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
       const previousFrame = commandFrame;
       commandFrame = tokens;
+      const cancel = () => { for (const token of tokens) commandInvocations.get(token)?.stop.abort(); };
+      signal?.addEventListener("abort", cancel, { once: true });
       try {
-        const call = super.invokeCommand<Result>(commandId, invokeOptions);
-        commandFrame = previousFrame;
+        let call: Promise<Result>;
+        try { call = run(); } finally { commandFrame = previousFrame; }
         return await call;
       } finally {
+        signal?.removeEventListener("abort", cancel);
         for (const token of tokens) { commandInvocations.get(token)?.stop.abort(); commandInvocations.delete(token); }
         if (tabId) {
           const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
@@ -544,6 +556,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
     externalTools,
     assistant,
+    computeProperties: computePropertiesForPlugin,
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),

@@ -5,7 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentSnapshot } from "../agentBridge";
-import { createPhase4Document } from "../documentWorkflow";
+import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createPhase4Document, insertNativeTemplateMolecule } from "../documentWorkflow";
+import { getAssistantHistoryPort } from "../assistant/historyPort";
+import { objectRect, overlaps } from "../assistant/placement";
 import { MainWindow } from "../MainWindow";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
@@ -145,7 +148,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderMainWindow(options: { initialActiveToolCommandId?: string } = {}): Promise<Bridge> {
+async function renderMainWindow(options: { initialActiveToolCommandId?: string; initialDocument?: ChemDraftDocument;
+  shortcutPlatform?: "macos" | "windows" } = {}): Promise<Bridge> {
   installDomMocks();
   window.history.replaceState(null, "", "/?agentBridge=1");
   container = document.createElement("div");
@@ -154,7 +158,8 @@ async function renderMainWindow(options: { initialActiveToolCommandId?: string }
     root = createRoot(container!);
     root.render(
       createElement(MainWindow, {
-        initialDocument: createPhase4Document("Recognition Accept"),
+        initialDocument: options.initialDocument ?? createPhase4Document("Recognition Accept"),
+        shortcutPlatform: options.shortcutPlatform,
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: false,
@@ -207,6 +212,38 @@ function moleculeIds(bridge: Bridge): string[] {
 }
 
 describe("accepting a recognition proposal from the review window", () => {
+  it.each(["macos", "windows"] as const)("places mocked recognition beside benzene on %s only after review, selected in one undo", async platform => {
+    const blank = createEmptyDocument();
+    const page = blank.pages[0]!;
+    const drawing = insertNativeTemplateMolecule(blank, { x: page.width / 2, y: page.height / 2 }, "benzene");
+    const bridge = await renderMainWindow({ initialDocument: drawing, shortcutPlatform: platform });
+    const port = getAssistantHistoryPort();
+    const before = port.read("initial")!;
+    const proposal = await recognizeIntoProposal(bridge);
+    expect(proposal.proposal.recognition).toBeDefined();
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
+    const after = port.read("initial")!;
+    expect(after.pages[0]!.objects).toHaveLength(2);
+    const existing = after.pages[0]!.objects[0]!;
+    const inserted = after.pages[0]!.objects[1]! as MoleculeObject;
+    expect(existing).toEqual(before.pages[0]!.objects[0]);
+    expect(overlaps(objectRect(inserted), objectRect(existing))).toBe(false);
+    expect(inserted.atoms.map(atom => atom.element)).toEqual(["C", "O"]);
+    expect(inserted.bonds).toHaveLength(1);
+    expect(inserted.bonds[0]!.order).toBe("double");
+    expect(after.selection.objectIds).toEqual([inserted.id]);
+    expect(harness.runtime!.host.listProposedPatches("pending")).toHaveLength(0);
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(statusText()).toBe("Undid Recognition Fixture: Insert Recognized Structure");
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(statusText()).toBe("Nothing to undo");
+    await act(async () => { await bridge.command("edit.redo"); });
+    expect(port.read("initial")!.pages).toEqual(after.pages);
+    expect(port.read("initial")!.selection.objectIds).toEqual([inserted.id]);
+  });
+
   it("inserts the recognized structure as one undoable, selected edit and says so", async () => {
     const bridge = await renderMainWindow();
     const before = moleculeIds(bridge);
@@ -344,19 +381,19 @@ const DIRECT_WRITE_COMMAND_ID = "plugin.directWriteFixture.insert";
 const DIRECT_TEXT_WRITE_PLUGIN_ID = "org.chemdraft.test.direct-text-write";
 const DIRECT_TEXT_WRITE_COMMAND_ID = "plugin.directTextWriteFixture.insert";
 
-function registerDirectWritePlugin(pageId: string): { release: () => void } {
+function registerDirectWritePlugin(pageId: string, resolveName = false): { release: () => void } {
   let release!: () => void;
   const released = new Promise<void>((resolve) => {
     release = resolve;
   });
   harness.runtime!.registerPlugin(
     {
-      id: DIRECT_WRITE_PLUGIN_ID,
+      id: resolveName ? "org.chemdraft.opsin.nameToStructure" : DIRECT_WRITE_PLUGIN_ID,
       name: "Direct Write Fixture",
       version: "0.0.1",
       apiVersion: "^0.1.6",
       entry: "test:direct-write",
-      permissions: ["document.write"],
+      permissions: resolveName ? ["document.write", "chemistry.compute", "native.execute"] : ["document.write"],
       contributes: {
         commands: [{ id: DIRECT_WRITE_COMMAND_ID, title: "Insert Named Structure", requiredPermissions: ["document.write"] }]
       }
@@ -365,6 +402,11 @@ function registerDirectWritePlugin(pageId: string): { release: () => void } {
       commandHandlers: {
         [DIRECT_WRITE_COMMAND_ID]: async (context) => {
           await released;
+          if (resolveName) {
+            const nameToStructure = context.chemistry?.nameToStructure;
+            if (!nameToStructure) throw new Error("Name resolution capability is unavailable in the direct-write fixture.");
+            await nameToStructure({ name: "β-CD" });
+          }
           return context.documents.applyPatch!({
             reason: "deterministic result for a name the user typed",
             patch: {
@@ -524,6 +566,17 @@ describe("a plugin's direct write that lands during a canvas drag", () => {
     expect(receipt).toEqual({ applied: true, objectIds: ["mol_named_001"] });
     expect(objectIds(bridge)).toEqual(["mol_named_001"]);
     expect(statusText()).toBe("Direct Write Fixture: inserted structure");
+  });
+
+  it("retains the name resolution source after inserting the structure", async () => {
+    const bridge = await renderMainWindow();
+    const { release } = registerDirectWritePlugin(bridge.snapshot().document.pages[0]!.id, true);
+    release();
+    await act(async () => {
+      await harness.runtime!.host.invokeCommand(DIRECT_WRITE_COMMAND_ID);
+    });
+    expect(objectIds(bridge)).toContain("mol_named_001");
+    expect(statusText()).toContain("built-in template");
   });
 
   it.each([

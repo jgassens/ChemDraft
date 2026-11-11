@@ -1,4 +1,5 @@
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
+export { rotatedGraphicLocalBounds } from "@chemdraft/layout-engine";
 import type { GraphicObject } from "@chemdraft/chem-core";
 
 // Shared by MainWindow (which draws the handles) and documentWorkflow (which
@@ -45,45 +46,6 @@ export function graphicVisualLocalCenter(object: GraphicObject): GraphicHandlePo
   };
 }
 
-/** Bounds of the rotated frame, in local coordinates, as the transform frame draws them. */
-export function rotatedGraphicLocalBounds(
-  object: GraphicObject,
-  bounds: GraphicHandleBounds,
-  rotationDegrees: number
-): GraphicHandleBounds {
-  if (Math.abs(rotationDegrees) < 0.001) {
-    return bounds;
-  }
-  if (
-    object.graphicKind === "ellipse" &&
-    Math.abs(Math.max(object.width, 1) - Math.max(object.height, 1)) < 0.001
-  ) {
-    return bounds;
-  }
-
-  const center = graphicVisualLocalCenter(object);
-  const rotationRad = rotationDegrees * Math.PI / 180;
-  const cos = Math.cos(rotationRad);
-  const sin = Math.sin(rotationRad);
-  const corners = [
-    { x: bounds.x, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y },
-    { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
-    { x: bounds.x, y: bounds.y + bounds.height }
-  ].map((point) => rotatePointAroundCenter(point, center, cos, sin));
-
-  const minX = Math.min(...corners.map((point) => point.x));
-  const maxX = Math.max(...corners.map((point) => point.x));
-  const minY = Math.min(...corners.map((point) => point.y));
-  const maxY = Math.max(...corners.map((point) => point.y));
-  return {
-    x: roundCssCoordinate(minX),
-    y: roundCssCoordinate(minY),
-    width: roundCssCoordinate(maxX - minX),
-    height: roundCssCoordinate(maxY - minY)
-  };
-}
-
 /** Project a page point through the graphic's plane and then its visual rotation. */
 export function projectGraphicVisualPagePoint(object: GraphicObject, point: GraphicHandlePoint): GraphicHandlePoint {
   const projected = projectGraphicObjectPoint(object, point);
@@ -117,8 +79,4 @@ export function unrotateGraphicVisualPagePoint(object: GraphicObject, point: Gra
   const center = { x: object.x + local.x, y: object.y + local.y };
   const rotationRad = -object.rotation * Math.PI / 180;
   return rotatePointAroundCenter(point, center, Math.cos(rotationRad), Math.sin(rotationRad));
-}
-
-function roundCssCoordinate(value: number): number {
-  return Number(value.toFixed(4));
 }
