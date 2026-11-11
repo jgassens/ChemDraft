@@ -20644,17 +20644,17 @@ export function MainWindow({
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     const point = pagePointFromPointerEvent(event);
-    // Selecting a bracket mounts a corner handle over part of its repeat label. Keep
-    // label presses on the ordinary object path so the page's dblclick capture can edit it.
-    if (object?.type === "bracket" && point && bracketLabelContainsPoint(object, point)) {
-      handleObjectPointerDown(objectId, event);
-      return;
-    }
     if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
       return;
     }
     if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
-      openObjectResizeInput(objectId, corner);
+      // The corner handle can cover the repeat label. A first press still starts
+      // resizing; only a double-press edits the label instead of opening Stretch.
+      if (object.type === "bracket" && point && bracketLabelContainsPoint(object, point)) {
+        void invokeCommandRef.current("bracket.label.edit");
+      } else {
+        openObjectResizeInput(objectId, corner);
+      }
       return;
     }
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
@@ -20722,7 +20722,6 @@ export function MainWindow({
     directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
-    handleObjectPointerDown,
     handleObjectResizeInputKeep,
     handleRotationInputKeep,
     openObjectResizeInput,

@@ -194,7 +194,7 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     await release(captured()!, point);
     expect(captured()).toBeUndefined();
     expect(editor()).toBeNull();
-    return point;
+    return { point, pagePoint };
   }
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
@@ -401,19 +401,28 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     expect(label().textContent).toBe("n");
   });
   it.each([0.5, 1, 2].flatMap(scale => [0, 1, 2].map(detail => ({ scale, detail }))))(
-    "gives the repeat label priority over its newly mounted handle (zoom $scale, pointer detail $detail)", async ({ scale, detail }) => {
+    "edits the label on a double-click through its newly mounted handle (zoom $scale, pointer detail $detail)", async ({ scale, detail }) => {
       const { client, captured } = await mountHandleFixture(scale);
       const objects = snapshot().document.pages[0].objects;
-      const point = await selectByLabel(client, captured);
+      const { point } = await selectByLabel(client, captured);
       const handle = bottomRightHandle()!;
       // A real second press hits this newly mounted HTML button, above the SVG label.
       // Sending both presses to the label/canvas misses the WebKit regression.
       await press(handle, point, detail, 2);
       expect(stretchEditor()).toBeNull();
       expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Stretch entry");
-      expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Resize selected art object");
-      expect(captured()).toBe(handle); // Ordinary object press, rather than a page-captured resize.
-      const clickTarget = captured()!;
+      // Changed from ordinary object capture/no resize: hand check: a drag in the overlap
+      // must resize. Without a recognized second press, start the normal handle gesture.
+      if (detail < 2) {
+        expect(container.querySelector("[data-status-message]")?.textContent).toBe("Resize selected art object");
+        expect(captured()).toBe(container.querySelector(".page"));
+        expect(editor()).toBeNull();
+      } else {
+        expect(captured()).toBeUndefined();
+        expect(editor()?.value).toBe("n");
+        expect(document.activeElement).toBe(editor());
+      }
+      const clickTarget = captured() ?? handle;
       for (const type of ["pointerup", "mouseup", "click", "dblclick"]) {
         await mouse(clickTarget, type, type === "pointerup" ? 0 : 2, point);
         expect(stretchEditor()).toBeNull();
@@ -424,36 +433,73 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
       expect(document.activeElement).toBe(editor());
       expect(snapshot().document.pages[0].objects).toEqual(objects);
     });
-  it.each([0.5, 1, 2])("still resizes from the handle outside the label in one undo step (zoom %s)", async scale => {
+  it.each([0.5, 1, 2])("leaves an overlap click unchanged and edits on a repeated detail-0 handle press (zoom %s)", async scale => {
     const { client, captured } = await mountHandleFixture(scale);
-    await selectByLabel(client, captured);
+    const { point } = await selectByLabel(client, captured);
     const before = snapshot().document.pages[0].objects;
-    const bracket = closingBracket();
-    const pagePoint = { x: bracket.x + bracket.width, y: bracket.y + bracket.height };
-    expect(bracketLabelContainsPoint(bracket, pagePoint)).toBe(false);
-    const start = client(pagePoint);
-    await press(bottomRightHandle()!, start);
+    const handle = bottomRightHandle()!;
+    await press(handle, point, 0);
     expect(captured()).toBe(container.querySelector(".page"));
-    const captureTarget = captured()!;
-    // Several previews must still commit as a single change on release.
-    for (const factor of [1.25, 1.5]) {
-      await mouse(captureTarget, "pointermove", 0, client({
-        x: bracket.x + bracket.width / 2 + bracket.width / 2 * factor,
-        y: bracket.y + bracket.height / 2 + bracket.height / 2 * factor
-      }));
-    }
-    await release(captureTarget, client({ x: pagePoint.x + bracket.width / 4, y: pagePoint.y + bracket.height / 4 }));
+    await release(captured()!, point);
     expect(captured()).toBeUndefined();
-    expect(closingBracket().width).toBeCloseTo(bracket.width * 1.5);
-    expect(closingBracket().height).toBeCloseTo(bracket.height * 1.5);
+    expect(snapshot().document.pages[0].objects).toEqual(before);
+    expect(snapshot().document.selection.objectIds).toEqual([closingId]);
+    expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
     expect(editor()).toBeNull();
     expect(stretchEditor()).toBeNull();
-    const after = snapshot().document.pages[0].objects;
-    await command("edit.undo");
+    // Both pointerdowns can have detail 0 in WebKit; the recorded handle presses
+    // must open the label editor before dblclick, never the Stretch editor.
+    await press(handle, point, 0, 2);
+    expect(captured()).toBeUndefined();
+    expect(editor()?.value).toBe("n");
+    expect(document.activeElement).toBe(editor());
+    for (const type of ["pointerup", "mouseup", "click", "dblclick"]) {
+      await mouse(handle, type, type === "pointerup" ? 0 : 2, point);
+      expect(stretchEditor()).toBeNull();
+      expect(container.querySelector("[data-status-message]")?.textContent).not.toBe("Stretch entry");
+    }
+    expect(document.activeElement).toBe(editor());
     expect(snapshot().document.pages[0].objects).toEqual(before);
-    await command("edit.redo");
-    expect(snapshot().document.pages[0].objects).toEqual(after);
   });
+  it.each([0.5, 1, 2].flatMap(scale => [false, true].map(overlap => ({ scale, overlap }))))(
+    "resizes from the handle in one ordinary undo step (zoom $scale, label overlap $overlap)", async ({ scale, overlap }) => {
+      const { client, captured } = await mountHandleFixture(scale);
+      const labelHit = await selectByLabel(client, captured);
+      const before = snapshot().document.pages[0].objects;
+      const bracket = closingBracket();
+      const pagePoint = overlap ? labelHit.pagePoint : { x: bracket.x + bracket.width, y: bracket.y + bracket.height };
+      expect(bracketLabelContainsPoint(bracket, pagePoint)).toBe(overlap);
+      const start = client(pagePoint);
+      const center = { x: bracket.x + bracket.width / 2, y: bracket.y + bracket.height / 2 };
+      const scaledPoint = (factor: number) => client({
+        x: center.x + (pagePoint.x - center.x) * factor,
+        y: center.y + (pagePoint.y - center.y) * factor
+      });
+      await press(bottomRightHandle()!, start);
+      expect(captured()).toBe(container.querySelector(".page"));
+      const captureTarget = captured()!;
+      // Several previews must still commit as a single change on release.
+      for (const factor of [1.25, 1.5]) {
+        await mouse(captureTarget, "pointermove", 0, scaledPoint(factor));
+      }
+      await release(captureTarget, scaledPoint(1.5));
+      expect(captured()).toBeUndefined();
+      expect(closingBracket().width).toBeCloseTo(bracket.width * 1.5);
+      expect(closingBracket().height).toBeCloseTo(bracket.height * 1.5);
+      // Resize preserves the centre; a body move would keep the old dimensions.
+      expect(closingBracket().x + closingBracket().width / 2).toBeCloseTo(center.x);
+      expect(closingBracket().y + closingBracket().height / 2).toBeCloseTo(center.y);
+      expect(editor()).toBeNull();
+      expect(stretchEditor()).toBeNull();
+      const after = snapshot().document.pages[0].objects;
+      await command("edit.undo");
+      expect(snapshot().document.pages[0].objects).toEqual(before);
+      // Ordinary bracket resizes use the generic history label; the overlap must match.
+      expect(container.querySelector("[data-status-message]")?.textContent).toBe("Undid last document change");
+      expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
+      await command("edit.redo");
+      expect(snapshot().document.pages[0].objects).toEqual(after);
+    });
   it.each([0.5, 1, 2])("still opens Stretch on a double-press outside the label (zoom %s)", async scale => {
     const { client, captured } = await mountHandleFixture(scale);
     await selectByLabel(client, captured);
