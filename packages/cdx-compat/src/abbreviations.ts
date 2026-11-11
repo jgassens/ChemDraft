@@ -2,6 +2,7 @@ import { atomicNumberForElementSymbol, ChemDraftSyntheticStylePreset, elementSym
 import { bondedElementLabelMeaning, schemeSodiumHydroxideAbbreviation } from "@chemdraft/template-library";
 import type { CompatibilityConversionWarning } from "./index";
 import { cdxElementFromOrderedTree, type CdxElement } from "./cdxBinary";
+import { formatPoint } from "./coordinates";
 
 /** Shared structural gate for import and source measurements. No chemistry is inferred here. */
 export function abbreviationExpansionIssue(
@@ -334,7 +335,7 @@ export function restoreCdxmlAbbreviations(
     const body = element("fragment", { id: nextId() }, definition.atoms.map(part => element("n", {
       id: nextId(), Element: String(atomicNumberForElementSymbol(part.element)),
       Charge: String(part.charge ?? 0), NumHydrogens: String(part.hydrogens),
-      p: `${atom.x + part.x * bondLength} ${atom.y + part.y * bondLength}`
+      p: formatPoint({ x: atom.x + part.x * bondLength, y: atom.y + part.y * bondLength })
     })));
     const { id, p, color } = node.attrs;
     node.attrs = { id, p, NodeType: "Nickname", ...(color ? { color } : {}) };
