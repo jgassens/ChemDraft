@@ -1228,26 +1228,26 @@ export async function focusCurrentWindowAndWebview(
   ]);
 }
 
-export async function listenForPaletteCommands(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommands(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   return listenForToolsetCommands(handler);
 }
 
-export async function listenForToolsetCommands(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForToolsetCommands(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   // Native palette clicks arrive as the `native-command` DOM event that Rust `route_toolset_command`
   // dispatches into the main window (see `routeToolsetCommand`). That is now the single delivery path,
   // so a plain DOM listener receives each command exactly once — no tauri-bus fan-out, no dedupe.
   return listenForDomToolsetCommands(handler);
 }
 
-export async function listenForPaletteCommandPreviews(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandPreviews(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_PREVIEW_EVENT, handler);
 }
 
-export async function listenForPaletteCommandCommits(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandCommits(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_COMMIT_EVENT, handler);
 }
 
-export async function listenForPaletteCommandCancels(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForPaletteCommandCancels(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(PALETTE_COMMAND_CANCEL_EVENT, handler);
 }
 
@@ -1286,7 +1286,7 @@ function isPaletteInspectorAction(payload: unknown): payload is PaletteInspector
   return false;
 }
 
-export async function listenForToolsetActiveTool(handler: (commandId: string) => void): Promise<Unlisten> {
+export async function listenForToolsetActiveTool(handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   return listenForToolsetCommandPayload(TOOLSET_ACTIVE_TOOL_EVENT, handler);
 }
 
@@ -1722,7 +1722,7 @@ export async function listenForToolsetTextStyleRequests(handler: () => void): Pr
   };
 }
 
-function listenForDomToolsetCommands(handler: (commandId: string) => void): Unlisten {
+function listenForDomToolsetCommands(handler: (commandId: string, target?: PaletteTarget) => void): Unlisten {
   return listenForDomToolsetCommandPayload(DOM_COMMAND_EVENT, handler);
 }
 
@@ -1739,23 +1739,23 @@ function listenForDomToolsetEvent(eventName: string, handler: (event: CustomEven
   return () => window.removeEventListener(eventName, listener);
 }
 
-function listenForDomToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Unlisten {
+function listenForDomToolsetCommandPayload(eventName: string, handler: (commandId: string, target?: PaletteTarget) => void): Unlisten {
   return listenForDomToolsetEvent(eventName, (event) => {
     const payload = event.detail as Partial<ToolsetCommandPayload> | undefined;
     if (typeof payload?.commandId === "string") {
-      handler(payload.commandId);
+      handler(payload.commandId, payload.target);
     }
   });
 }
 
-async function listenForToolsetCommandPayload(eventName: string, handler: (commandId: string) => void): Promise<Unlisten> {
+async function listenForToolsetCommandPayload(eventName: string, handler: (commandId: string, target?: PaletteTarget) => void): Promise<Unlisten> {
   const unlistenDom = listenForDomToolsetCommandPayload(eventName, handler);
   if (!isDesktopRuntime()) {
     return unlistenDom;
   }
   const unlistenTauri = await listenTauriEvent<ToolsetCommandPayload>(eventName, (event) => {
     if (typeof event.payload?.commandId === "string") {
-      handler(event.payload.commandId);
+      handler(event.payload.commandId, event.payload.target);
     }
   });
   return () => {

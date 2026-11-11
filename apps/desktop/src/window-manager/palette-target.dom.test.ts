@@ -30,9 +30,13 @@ async function webview(target?: PaletteTarget) {
   const routing = await import("./paletteTarget");
   const events = await import("./tauriEvents");
   const tabs = new Set(target ? [target.tabId] : []);
-  const release = target ? routing.bindPaletteDocument({ getTarget: () => target, hasTab: id => tabs.has(id) }) : undefined;
+  let current = target;
+  const revisions = new Map<string, number>();
+  const refused = vi.fn();
+  const release = target ? routing.bindPaletteDocument({ getTarget: () => current!, hasTab: id => tabs.has(id),
+    getRevision: id => revisions.get(id) ?? 0, onRefused: refused }) : undefined;
   routing.setActivePaletteWindow("A");
-  return { manager, routing, events, tabs, release };
+  return { manager, routing, events, tabs, release, revisions, refused, activate: (next: PaletteTarget) => { current = next; } };
 }
 afterEach(() => {
   bus.listeners.clear(); bus.emit.mockClear(); native.invoke.mockReset();
@@ -40,6 +44,36 @@ afterEach(() => {
 });
 
 describe("palette document targets", () => {
+  it("delivers inactive-tab actions on both transports, but reports closed and replaced drawings", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const target = { ...A, documentRevision: 0 };
+    const a = await webview(target);
+    const next = { ...A, tabId: "next-tab", documentRevision: 0 };
+    a.tabs.add(next.tabId); a.activate(next);
+    for (const kind of ["preview", "commit", "cancel"]) {
+      const event = `chemdraft://palette-command-${kind}`;
+      const native = vi.fn(), dom = vi.fn();
+      const stopNative = await a.events.listenTauriEvent(event, native);
+      const stopDom = await (kind === "preview" ? a.manager.listenForPaletteCommandPreviews
+        : kind === "commit" ? a.manager.listenForPaletteCommandCommits : a.manager.listenForPaletteCommandCancels)(dom);
+      const payload = { target, commandId: "object.opacity:0.4" };
+      await bus.emit(event, payload);
+      window.dispatchEvent(new CustomEvent(event, { detail: payload }));
+      expect(native).toHaveBeenCalledOnce();
+      expect(dom).toHaveBeenCalledTimes(2);
+      expect(dom).toHaveBeenLastCalledWith(payload.commandId, target);
+      stopNative(); stopDom();
+    }
+    expect(a.refused).not.toHaveBeenCalled();
+    a.revisions.set(target.tabId, 1);
+    expect(a.routing.acceptsPaletteEvent("chemdraft://palette-command-commit", { target })).toBe(false);
+    expect(a.refused).toHaveBeenLastCalledWith("revision");
+    a.tabs.delete(target.tabId);
+    expect(a.routing.acceptsPaletteEvent("chemdraft://palette-command-commit", { target })).toBe(false);
+    expect(a.refused).toHaveBeenLastCalledWith("closed");
+    a.release?.();
+  });
+
   it.each(["commit", "cancel", "settled commit"])("settles a preview in A after B activates: %s", async ending => {
     vi.stubGlobal("__TAURI__", {});
     const a = await webview(A), b = await webview(B), palette = await webview();

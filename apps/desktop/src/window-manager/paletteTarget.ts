@@ -1,6 +1,6 @@
 import { documentWindowId } from "../documentIdentity";
 
-export interface PaletteTarget { windowId: string; tabId: string }
+export interface PaletteTarget { windowId: string; tabId: string; documentRevision?: number }
 export interface PaletteMessage { target: PaletteTarget }
 export const ACTIVE_DOCUMENT_EVENT = "chemdraft://active-document-window";
 export const PALETTE_SNAPSHOT_EVENTS = new Set([
@@ -17,6 +17,8 @@ const actions = new Set([
 interface DocumentBinding {
   getTarget: () => PaletteTarget;
   hasTab: (tabId: string) => boolean;
+  getRevision?: (tabId: string) => number;
+  onRefused?: (reason: "closed" | "revision") => void;
 }
 let documentBinding: DocumentBinding | undefined;
 let activeWindowId: string | undefined;
@@ -28,7 +30,8 @@ let bindingRevision = 0;
 export function isPaletteTarget(value: unknown): value is PaletteTarget {
   const target = value as Partial<PaletteTarget> | null;
   return !!target && typeof target.windowId === "string" && target.windowId.length > 0 &&
-    typeof target.tabId === "string" && target.tabId.length > 0;
+    typeof target.tabId === "string" && target.tabId.length > 0 &&
+    (target.documentRevision === undefined || (Number.isSafeInteger(target.documentRevision) && target.documentRevision >= 0));
 }
 export function samePaletteTarget(a: PaletteTarget | undefined, b: PaletteTarget | undefined): boolean {
   return !!a && !!b && a.windowId === b.windowId && a.tabId === b.tabId;
@@ -61,7 +64,7 @@ export function currentPaletteTarget(): PaletteTarget {
 }
 export function paletteTargetRevision(): number { return bindingRevision; }
 export function bindPaletteSnapshot(target: PaletteTarget): void {
-  if (!samePaletteTarget(paletteTarget, target)) bindingRevision++;
+  if (!samePaletteTarget(paletteTarget, target) || paletteTarget?.documentRevision !== target.documentRevision) bindingRevision++;
   paletteTarget = { ...target };
 }
 
@@ -86,10 +89,17 @@ export function acceptsPaletteEvent(eventName: string, payload: unknown): boolea
   if (documentBinding && !snapshot) {
     const current = documentBinding.getTarget();
     if (target.windowId !== current.windowId) return refuse(eventName, "foreign window");
-    if (!documentBinding.hasTab(target.tabId)) return refuse(eventName, "stale tab");
-    // Tab switches settle previews first. A late release must never mutate the replacement tab.
-    if (target.tabId !== current.tabId) return refuse(eventName, "inactive tab");
-    if (request && !paletteDocumentIsActive()) return false;
+    if (!documentBinding.hasTab(target.tabId)) {
+      if (!request) documentBinding.onRefused?.("closed");
+      return refuse(eventName, "stale tab");
+    }
+    if (target.documentRevision !== undefined && documentBinding.getRevision &&
+        target.documentRevision !== documentBinding.getRevision(target.tabId)) {
+      if (!request) documentBinding.onRefused?.("revision");
+      return refuse(eventName, "document revision");
+    }
+    // Actions retain their captured tab. Requests still describe only the visible tab.
+    if (request && (target.tabId !== current.tabId || !paletteDocumentIsActive())) return false;
     return true;
   }
   if (snapshot) {

@@ -7,11 +7,13 @@ use std::{collections::BTreeMap, sync::Mutex};
 pub struct PaletteTarget {
     pub window_id: String,
     pub tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_revision: Option<u64>,
 }
 
 #[derive(Default)]
 pub struct PaletteRouting {
-    tabs: Mutex<BTreeMap<String, String>>,
+    tabs: Mutex<BTreeMap<String, PaletteTarget>>,
 }
 
 #[derive(serde::Serialize)]
@@ -28,7 +30,7 @@ impl PaletteRouting {
         self.tabs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(target.window_id.clone(), target.tab_id.clone());
+            .insert(target.window_id.clone(), target.clone());
     }
 
     pub fn state(&self, registry: &DocumentWindowRegistry) -> PaletteRoutingState {
@@ -36,12 +38,7 @@ impl PaletteRouting {
             .active_document_window()
             .map(|window| window.window_id);
         let tabs = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
-        let target = window_id.as_ref().and_then(|id| {
-            tabs.get(id).map(|tab_id| PaletteTarget {
-                window_id: id.clone(),
-                tab_id: tab_id.clone(),
-            })
-        });
+        let target = window_id.as_ref().and_then(|id| tabs.get(id).cloned());
         PaletteRoutingState { window_id, target }
     }
 }
@@ -91,6 +88,7 @@ mod tests {
             target: PaletteTarget {
                 window_id: "A".into(),
                 tab_id: "tab-a".into(),
+                document_revision: None,
             },
         };
         assert_eq!(
@@ -112,6 +110,7 @@ mod tests {
         let target = PaletteTarget {
             window_id: "main".into(),
             tab_id: "tab-a".into(),
+            document_revision: None,
         };
         assert!(!can_publish(&registry, "main", &target));
         assert!(target_label(&registry, &target).is_none());
@@ -157,6 +156,7 @@ mod tests {
         let target = PaletteTarget {
             window_id: "main".into(),
             tab_id: "tab-a".into(),
+            document_revision: None,
         };
         assert!(can_publish(&registry, "main", &target));
         registry.mark_activated("doc-b");
@@ -167,7 +167,8 @@ mod tests {
             &registry,
             &PaletteTarget {
                 window_id: "toolset-main".into(),
-                tab_id: "tab-a".into()
+                tab_id: "tab-a".into(),
+                document_revision: None,
             }
         )
         .is_none());
@@ -184,6 +185,7 @@ mod tests {
         let target = PaletteTarget {
             window_id: "main".into(),
             tab_id: "tab-a".into(),
+            document_revision: None,
         };
         routing.remember(&target);
         assert_eq!(routing.state(&registry).target, Some(target));
@@ -194,8 +196,30 @@ mod tests {
         let target = PaletteTarget {
             window_id: "B".into(),
             tab_id: "tab-b".into(),
+            document_revision: None,
         };
         routing.remember(&target);
         assert_eq!(routing.state(&registry).target, Some(target));
+    }
+
+    #[test]
+    fn replacement_revision_survives_snapshot_bootstrap_and_command_serialization() {
+        let registry = DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        let routing = PaletteRouting::default();
+        let target: PaletteTarget = serde_json::from_value(serde_json::json!({
+            "windowId": "main", "tabId": "tab-a", "documentRevision": 7
+        }))
+        .unwrap();
+        routing.remember(&target);
+        assert_eq!(routing.state(&registry).target, Some(target.clone()));
+        let payload = crate::ToolsetCommandPayload {
+            command_id: "object.opacity:0.4".into(),
+            target,
+        };
+        assert_eq!(
+            serde_json::to_value(payload).unwrap()["target"]["documentRevision"],
+            7
+        );
     }
 }
