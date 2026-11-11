@@ -11,7 +11,8 @@ import { createLocalPluginRuntimeSession } from "./localPluginRuntime";
 import { createPluginRuntimeOwner, type PluginRuntimeOwner, type PluginRuntimeProviders } from "./pluginRuntimeOwner";
 import { useRuntimeView } from "./usePluginRuntimeView";
 import { encodeRuntimeView, decodeRuntimeView, RuntimeViewActionSchema } from "./runtimeViewProtocol";
-import type { BrokerPluginRuntimeView } from "./runtimeViewClient";
+import { RuntimeViewClient, type BrokerPluginRuntimeView } from "./runtimeViewClient";
+import { RuntimeBroker } from "./runtimeBroker";
 import { recognitionInstallProgressStore } from "./structureRecognitionInstallProgress";
 import type { PluginPackageInspection } from "./installPluginPackage";
 
@@ -48,6 +49,45 @@ function setup(run: (context: PluginCommandContext) => unknown = () => "done", p
 }
 
 describe("the single-webview runtime owner and broker view", () => {
+  it.each([false, true])("guards unknown plugin commands during startup and keeps core commands local (startup fails: %s)", async fails => {
+    const { channels } = setup();
+    const broker = new RuntimeBroker("doc-startup", channels.transport("doc-startup"));
+    const registry = new CommandRegistry();
+    const core = vi.fn(() => "core result");
+    registry.register({ id: "plugin.core.draw", title: "Core drawing command" }, core);
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const startup = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    const invoke = vi.fn(async () => "fallback result");
+    const prepare = vi.fn(() => invoke);
+    const client = new RuntimeViewClient(broker, invoke, true, startup, prepare, registry);
+    cleanup.push(() => { client.dispose(); broker.dispose(); });
+    expect(client.read().isPluginCommand("plugin.unknown.run")).toBe(true);
+    expect(client.read().isPluginCommand("plugin.core.draw")).toBe(false);
+    await expect(client.runtime.invokeCommand("plugin.unknown.run")).rejects.toThrow("Plugin runtime host is starting");
+    await expect(client.runtime.prepareCommand!("plugin.unknown.run")()).rejects.toThrow("Plugin runtime host is starting");
+    await expect(client.runtime.prepareCommand!("plugin.core.draw")()).resolves.toBe("core result");
+    await expect(client.runtime.invokeCommand("document.missing")).rejects.toThrow("not registered");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    if (fails) {
+      reject(new Error("Plugin runtime host failed to start: startup refused."));
+      await expect(client.ready).rejects.toThrow("startup refused");
+      await expect(client.runtime.prepareCommand!("plugin.unknown.run")()).rejects.toThrow("startup refused");
+      expect(invoke).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+    } else {
+      resolve();
+      await client.ready;
+      expect(client.read().isPluginCommand("plugin.unknown.run")).toBe(false);
+      expect(client.read().isPluginCommand("plugin.owner.run")).toBe(true);
+      await expect(client.runtime.prepareCommand!("plugin.unknown.run")()).resolves.toBe("fallback result");
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("plugin.unknown.run", undefined);
+      expect(prepare).not.toHaveBeenCalled();
+    }
+    await expect(client.runtime.invokeCommand("plugin.core.draw")).resolves.toBe("core result");
+    expect(core).toHaveBeenCalledTimes(2);
+  });
+
   it("constructs the owner once across StrictMode view remounts and keeps host objects out of the view", async () => {
     const { session, owner, factory, channels } = setup();
     const container = document.createElement("div");

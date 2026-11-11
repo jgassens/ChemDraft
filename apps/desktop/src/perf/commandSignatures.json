@@ -244,7 +244,7 @@
     "name": "cancel_quit",
     "async": true,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, request_id: u64",
+    "parameters": "window: tauri::WebviewWindow, request_id: u64, disposition: Option<QuitPromptCancellation>,",
     "returnType": "Result<bool, String>"
   },
   {
@@ -322,7 +322,7 @@
   {
     "file": "lib.rs",
     "name": "load_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, fresh_start: Option<bool>,",
     "returnType": "Result<Option<serde_json::Value>, String>"
@@ -330,7 +330,7 @@
   {
     "file": "lib.rs",
     "name": "save_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value, revision: u64, flush: bool, replace_preserved: bool,",
     "returnType": "Result<(), String>"
@@ -338,7 +338,7 @@
   {
     "file": "lib.rs",
     "name": "flush_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
     "returnType": "Result<(), String>"

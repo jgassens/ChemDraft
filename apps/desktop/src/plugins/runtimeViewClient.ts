@@ -79,7 +79,10 @@ export class RuntimeViewClient {
   private readonly isPluginCommand = (id: string): boolean => {
     const local = this.commandRegistry?.get(id);
     return local ? local.source === "plugin" || !!local.pluginId
-      : this.state.commands.some(command => command.id === id && !!command.pluginId);
+      : this.state.commands.some(command => command.id === id && !!command.pluginId)
+        // Until startup completes, contributions cannot identify plugin commands. Route their
+        // namespace to the startup guard, including its specific failure, without dispatching.
+        || (!this.initialized && id.startsWith("plugin."));
   };
   private readonly stop: () => void;
   private readonly preparations = new Map<string, { request: RuntimeRequest<"commitProposal">; commit(): void }>();
@@ -235,7 +238,9 @@ export class RuntimeViewClient {
       proposalDocumentTab: id => this.asynchronous ? new Map(this.state.proposalTabs).get(id) : immediate("proposalDocumentTab", id),
       closeProposalDocumentTab: (id, title) => { immediate("closeProposalDocumentTab", id, title); },
       invokeCommand: (id, options) => {
-        if (!this.isPluginCommand(id)) return this.commandRegistry?.get(id)
+        // Unknown core IDs still belong to the document registry. Only unknown plugin IDs
+        // use the embedding's fallback dispatch once startup has completed.
+        if (!this.isPluginCommand(id)) return this.commandRegistry && (this.commandRegistry.get(id) || !id.startsWith("plugin."))
           ? this.commandRegistry.invoke(id, { input: options?.input })
           : invokeCommand ? invokeCommand(id, options)
           : Promise.reject(new Error("The document command registry is unavailable."));
