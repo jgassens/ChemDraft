@@ -2449,7 +2449,6 @@ export function MainWindow({
     [analysisReportFingerprint]
   );
   const [analysisBusy, setAnalysisBusy] = useState(false);
-  const [molecularInspectorOpen, setMolecularInspectorOpen] = useState(false);
   const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
 
   // Every document entering the app is normalized so charge marks near atoms carry their
@@ -3022,19 +3021,6 @@ export function MainWindow({
   toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
-  const liveAnalysisSubject = selectedMolecule ? analysisSubjectKey(selectedMolecule, document) : undefined;
-  useEffect(() => {
-    if (!molecularInspectorOpen) return;
-    const molecule = getSelectedMolecule(documentRef.current);
-    if (molecule) void runMolecularProperties(molecule, analysisInterpretation);
-    else {
-      analysisClient()?.cancel("selection");
-      setAnalysisBusy(false);
-    }
-    // Selection and chemistry drive refreshes; report/busy updates must not start another run.
-    // Interpretation changes already run explicitly through recomputeAnalysisFor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [molecularInspectorOpen, liveAnalysisSubject, runMolecularProperties]);
   /**
    * The report describes something other than what is selected now.
    *
@@ -11704,7 +11690,6 @@ export function MainWindow({
           // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
           // analysis-window host before starting the worker so progress/empty state is visible.
           if (isDesktopRuntime()) {
-            setMolecularInspectorOpen(true);
             publishAnalysisWindow(
               MOLECULAR_INSPECTOR_WINDOW_ID,
               "Molecular Inspector",
@@ -11724,7 +11709,7 @@ export function MainWindow({
             setStatus("Molecular Inspector opened — select a structure to analyze it");
             return;
           }
-          if (!isDesktopRuntime() || molecularInspectorOpen) await runMolecularProperties(molecule, analysisInterpretation);
+          await runMolecularProperties(molecule, analysisInterpretation);
           return;
         }
         if (action.id === "chemistry.validateSelection") {
@@ -12324,7 +12309,6 @@ export function MainWindow({
     openWarnings,
     activeToolState,
     analysisBusy,
-    molecularInspectorOpen,
     analysisInterpretation,
     analysisReport,
     analysisReportIsStale,
@@ -12754,7 +12738,6 @@ export function MainWindow({
     const runtime = pluginRuntime.runtime;
     return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
       if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
-        if (panelId === MOLECULAR_INSPECTOR_WINDOW_ID) setMolecularInspectorOpen(false);
         if (panelId === PLUGIN_DIAGNOSTICS_WINDOW_ID) setPluginDiagnosticsOpen(false);
         if (panelId === PATCH_REVIEW_WINDOW_ID) setProposalReview((current) => ({ ...current, windowOpen: false }));
         return;
@@ -13019,7 +13002,6 @@ export function MainWindow({
         }
         switch (action.kind) {
           case "close":
-            if (action.windowId === MOLECULAR_INSPECTOR_WINDOW_ID) setMolecularInspectorOpen(false);
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
               setPluginDiagnosticsOpen(false);
             }
