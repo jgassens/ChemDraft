@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { ChemDraftSyntheticStylePreset, type DocumentObject, type ElectronMarkObject, type MoleculeAtom,
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ChemDraftSyntheticStylePreset, type ChemDraftDocument, type DocumentObject, type ElectronMarkObject, type MoleculeAtom,
   type MoleculeObject } from "@chemdraft/chem-core";
-import { clamp, distance, type LayoutPoint } from "@chemdraft/layout-engine";
-import { nativeChargeMarkCenter, nativeChargeMarkSizePx, nativeChargePlacementPointForAtom,
-  previewNativeMoleculeBondGrowth } from "./documentWorkflow";
+import { clamp, distance, lonePairPlacementPlanForAtom, type LayoutPoint } from "@chemdraft/layout-engine";
+import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { ensureRdkit, resetRdkitForTesting } from "../../../packages/rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
+import { inspectStructureInWorker } from "./depiction2d/identityInspect";
+import { applyChargeToolAtNativeAtom, createPhase4Document, nativeChargeMarkCenter, nativeChargeMarkSizePx,
+  nativeChargePlacementPointForAtom, normalizeCommittedDocument, previewNativeMoleculeBondGrowth } from "./documentWorkflow";
 
 const nativeBondLength = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
 
@@ -136,5 +140,110 @@ describe("charge-tool placement equivalence with ee50d782", () => {
   it("returns no point for a missing atom", () => {
     const molecule = placementFixture("terminal", "N", { x: 300, y: 300 }, 0, 15);
     expect(nativeChargePlacementPointForAtom(molecule, "missing", [molecule], 792, 612)).toBeUndefined();
+  });
+});
+
+function ketoneFixture() {
+  const molecule: MoleculeObject = {
+    id: "ketone", type: "molecule", x: 178, y: 178, width: 44, height: 44, rotation: 0, style: {},
+    structureFormat: "smiles", structure: "",
+    atoms: [
+      { id: "carbonyl", element: "C", formalCharge: 0, x: 200, y: 200 },
+      { id: "oxygen", element: "O", formalCharge: 0, x: 222, y: 200 },
+      { id: "methyl-1", element: "C", formalCharge: 0, x: 189, y: 181 },
+      { id: "methyl-2", element: "C", formalCharge: 0, x: 189, y: 219 }
+    ],
+    bonds: [
+      { id: "carbonyl-bond", fromAtomId: "carbonyl", toAtomId: "oxygen", order: "double" },
+      { id: "methyl-bond-1", fromAtomId: "carbonyl", toAtomId: "methyl-1", order: "single" },
+      { id: "methyl-bond-2", fromAtomId: "carbonyl", toAtomId: "methyl-2", order: "single" }
+    ], superatoms: [], rGroups: []
+  };
+  molecule.structure = nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds);
+  molecule.chemistry = nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds);
+  const empty = createPhase4Document("Ketone lone pairs");
+  const document = normalizeCommittedDocument({ ...empty, pages: [{ ...empty.pages[0], objects: [molecule] }] });
+  const target = { kind: "atom" as const, objectId: molecule.id, atomId: "oxygen", distanceToPointer: 0 };
+  return { document, molecule, target };
+}
+
+const pairsIn = (document: ChemDraftDocument) => document.pages[0].objects.filter(
+  (object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "lone-pair");
+
+describe("lone-pair tool placement", () => {
+  beforeAll(() => installRealRdkitModuleLoader());
+  afterAll(() => resetRdkitForTesting());
+
+  it("intentionally replaces the frozen growth-slot placement with opposite-bond and tangent geometry", () => {
+    const { document, molecule, target } = ketoneFixture();
+    const first = normalizeCommittedDocument(applyChargeToolAtNativeAtom(document, { kind: "lone-pair" }, target));
+    const [pair] = pairsIn(first);
+    const center = nativeChargeMarkCenter(pair);
+    // Lone pairs deliberately leave the legacy charge growth slot to clear label ink on the largest-gap ray.
+    expect(center).not.toEqual(legacyPlacementPoint(molecule, "oxygen", [molecule], 792, 612));
+    expect(center.x).toBeGreaterThan(222);
+    expect(center.y).toBeCloseTo(200, 10);
+    expect(pair.rotation).toBeCloseTo(90, 10);
+    expect(pair.anchor).toEqual({ kind: "atom", objectId: molecule.id, atomId: "oxygen" });
+    expect(first.selection.objectIds).toEqual([pair.id]);
+
+    const second = normalizeCommittedDocument(applyChargeToolAtNativeAtom(first, { kind: "lone-pair" }, target));
+    const next = pairsIn(second)[1];
+    expect(nativeChargeMarkCenter(next).x).toBeCloseTo(222, 10);
+    expect(nativeChargeMarkCenter(next).y).toBeGreaterThan(200);
+    expect(next.rotation).toBeCloseTo(180, 10);
+    expect(pairsIn(second)[0]).toEqual(pair);
+  });
+
+  it("passes an explicit direction through the workflow, retaining clearance and tangent rotation", () => {
+    const { document, molecule, target } = ketoneFixture();
+    const enlarged = { ...molecule, style: { ...molecule.style, atomLabelFontSizePx: 48 } };
+    const withLargeLabel = { ...document, pages: [{ ...document.pages[0], objects: [enlarged] }] };
+    const direction = -Math.PI / 4;
+    const expected = lonePairPlacementPlanForAtom(enlarged, "oxygen", [enlarged], document.pages[0].width,
+      document.pages[0].height, direction)!;
+    const updated = normalizeCommittedDocument(applyChargeToolAtNativeAtom(withLargeLabel, { kind: "lone-pair" }, target, direction));
+    const [pair] = pairsIn(updated);
+    expect(nativeChargeMarkCenter(pair)).toEqual(expected.center);
+    expect(pair.rotation).toBeCloseTo(45, 10);
+    expect(pair.rotation).toBe(expected.rotation);
+    expect(pair).toMatchObject({ atomAssociation: "explicit", anchor: { kind: "atom", atomId: "oxygen" } });
+    expect(distance(nativeChargeMarkCenter(pair), enlarged.atoms[1])).toBeGreaterThan(22 * 1.15);
+    expect(normalizeCommittedDocument(updated)).toBe(updated);
+    const next = normalizeCommittedDocument(applyChargeToolAtNativeAtom(updated, { kind: "lone-pair" }, target));
+    expect(pairsIn(next)[1].rotation).toBeCloseTo(157.5, 10);
+    expect(pairsIn(next)[1].anchor).toEqual(pair.anchor);
+  });
+
+  it("leaves legacy radical placement and its zero rotation unchanged", () => {
+    const { document, molecule, target } = ketoneFixture();
+    const updated = applyChargeToolAtNativeAtom(document, { kind: "radical-dot" }, target);
+    const mark = updated.pages[0].objects.find((object): object is ElectronMarkObject => object.type === "electron-mark")!;
+    expect(nativeChargeMarkCenter(mark)).toEqual(legacyPlacementPoint(molecule, "oxygen", [molecule], 792, 612));
+    expect(mark.rotation).toBe(0);
+  });
+
+  it("preserves RDKit canonical SMILES, formula, charge, atom/bond counts and the entire native graph after two pairs", async () => {
+    const { document, target } = ketoneFixture();
+    const module = await ensureRdkit();
+    const moleculeIn = (doc: ChemDraftDocument) => doc.pages[0].objects.find(
+      (object): object is MoleculeObject => object.type === "molecule")!;
+    const before = moleculeIn(document);
+    const identity = inspectStructureInWorker(module, stereoPerceptionMolfile(before));
+    expect(identity).toMatchObject({ valid: true, formula: "C3H6O", heavyAtoms: 4 });
+    if (!identity.valid) throw new Error(identity.reason);
+    expect(identity.canonicalSmiles).toBe("CC(C)=O");
+    let updated = document;
+    for (let index = 0; index < 2; index++) {
+      updated = normalizeCommittedDocument(applyChargeToolAtNativeAtom(updated, { kind: "lone-pair" }, target));
+      const after = moleculeIn(updated);
+      expect(inspectStructureInWorker(module, stereoPerceptionMolfile(after))).toEqual(identity);
+      expect(after.atoms).toHaveLength(before.atoms.length);
+      expect(after.bonds).toHaveLength(before.bonds.length);
+      expect(after.atoms.map(atom => atom.formalCharge)).toEqual(before.atoms.map(atom => atom.formalCharge));
+      expect(after.chemistry).toMatchObject({ formula: "C3H6O", totalCharge: 0 });
+      expect(after).toEqual(before);
+    }
+    expect(pairsIn(updated)).toHaveLength(2);
   });
 });

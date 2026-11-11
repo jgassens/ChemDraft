@@ -12326,7 +12326,8 @@ describe("Phase 4 document workflow", () => {
     const rotatedCenter = rotatedMark ? nativeChargeMarkCenter(rotatedMark) : undefined;
     expect(rotatedCenter?.x).toBeCloseTo(pivot.x - (markStart.y - pivot.y), 5);
     expect(rotatedCenter?.y).toBeCloseTo(pivot.y + (markStart.x - pivot.x), 5);
-    expect(rotatedMark?.rotation).toBe(90);
+    // New lone pairs start tangent to their atom, so group rotation adds to that authored angle.
+    expect(rotatedMark?.rotation).toBe(Number(((mark.rotation + 90) % 360).toFixed(3)));
     expect(rotatedMark?.anchor).toEqual(mark.anchor);
 
     const flipped = flipDocumentObjectsAroundPoint(withLonePair, [molecule.id, mark.id], pivot, "vertical");
@@ -12336,8 +12337,8 @@ describe("Phase 4 document workflow", () => {
     const flippedCenter = flippedMark ? nativeChargeMarkCenter(flippedMark) : undefined;
     expect(flippedCenter?.x).toBeCloseTo(markStart.x, 5);
     expect(flippedCenter?.y).toBeCloseTo(2 * pivot.y - markStart.y, 5);
-    // Vertical-axis mirror of a glyph at 0° stays 0° (−θ rule) — and must not pick up a stray turn.
-    expect(flippedMark?.rotation).toBe(0);
+    // New lone pairs start tangent to their atom, so a vertical flip negates that authored angle.
+    expect(flippedMark?.rotation).toBe(Number(((360 - mark.rotation) % 360).toFixed(3)));
   });
 
   it("still group-transforms a selected mark whose atom anchor is stale instead of freezing it", () => {

@@ -4119,6 +4119,105 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   return [{ text: object.text, script: "normal", style: {} }];
 }
 
+/** Clear the whole rotated mark frame from label ink along its radial direction. */
+function electronMarkLabelClearer(
+  molecule: MoleculeObject,
+  atom: MoleculeAtom,
+  pageWidth: number,
+  pageHeight: number,
+  mark: Pick<ElectronMarkObject, "width" | "height" | "rotation">,
+  avoidLabelOverlap: boolean,
+  clampToPage = true
+): (point: LayoutPoint) => LayoutPoint | undefined {
+  const radians = degreesToRadians(mark.rotation);
+  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
+  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atom.id) : undefined;
+  const glyph = plan && atomLabelGlyphBounds(plan);
+  const clearance = 2;
+  const exclusion = plan && glyph ? {
+    left: plan.anchor.x + glyph.x - halfWidth - clearance,
+    right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
+    top: plan.anchor.y + glyph.y - halfHeight - clearance,
+    bottom: plan.anchor.y + glyph.y + glyph.height + halfHeight + clearance
+  } : undefined;
+  const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
+    point.y > exclusion.top && point.y < exclusion.bottom;
+  return (point: LayoutPoint): LayoutPoint | undefined => {
+    if (exclusion && insideLabel(point)) {
+      const length = distance(atom, point);
+      const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
+      const dy = length > 0.0001 ? (point.y - atom.y) / length : -Math.SQRT1_2;
+      const exitX = Math.abs(dx) < 0.0001 ? Infinity : ((dx > 0 ? exclusion.right : exclusion.left) - atom.x) / dx;
+      const exitY = Math.abs(dy) < 0.0001 ? Infinity : ((dy > 0 ? exclusion.bottom : exclusion.top) - atom.y) / dy;
+      const radius = Math.min(exitX, exitY) + 0.001;
+      point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
+    }
+    const bounded = {
+      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+    };
+    // A lone pair must retain its chosen ray and tangent; refuse if it cannot fit on-page.
+    if (!clampToPage && (bounded.x !== point.x || bounded.y !== point.y)) return undefined;
+    return insideLabel(bounded) ? undefined : bounded;
+  };
+}
+
+export interface LonePairPlacementPlan {
+  center: LayoutPoint;
+  /** Tangent orientation in degrees, normalized to [0, 360). */
+  rotation: number;
+}
+
+/**
+ * Lone pairs use the largest gap between bonds and marks anchored to this exact atom.
+ * No occupied directions defaults to page-up (-π/2); one direction uses its opposite.
+ * Equal gaps (within 1e-10 radians) choose the smallest bisector in [0, 2π).
+ * An explicit direction is in page-coordinate radians and bypasses gap selection only.
+ */
+export function lonePairPlacementPlanForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  directionRadians?: number
+): LonePairPlacementPlan | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom || (directionRadians !== undefined && !Number.isFinite(directionRadians))) return undefined;
+  const angles = molecule.bonds
+    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map(bond => molecule.atoms.find(candidate => candidate.id ===
+      (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
+    .filter((neighbor): neighbor is MoleculeAtom => neighbor !== undefined)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  for (const object of objects) {
+    if (object.type !== "electron-mark" || object.anchor.kind !== "atom" ||
+      object.anchor.objectId !== molecule.id || object.anchor.atomId !== atomId) continue;
+    const dx = object.x + object.width / 2 - atom.x;
+    const dy = object.y + object.height / 2 - atom.y;
+    if (Math.hypot(dx, dy) > 1e-10) angles.push(Math.atan2(dy, dx));
+  }
+  const normalized = angles.map(normalizeAngle).sort((left, right) => left - right);
+  const gaps = normalized.map((angle, index) => {
+    const next = normalized[(index + 1) % normalized.length];
+    const gap = (index === normalized.length - 1 ? next + Math.PI * 2 : next) - angle;
+    return { gap, bisector: normalizeAngle(angle + gap / 2) };
+  });
+  const largestGap = Math.max(...gaps.map(candidate => candidate.gap));
+  const direction = normalizeAngle(directionRadians ?? (gaps
+    .filter(candidate => largestGap - candidate.gap < 1e-10)
+    .sort((left, right) => left.bisector - right.bisector)[0]?.bisector ?? -Math.PI / 2));
+  const rotation = normalizeAngle(direction + Math.PI / 2) * 180 / Math.PI;
+  const radius = Math.max(18 * 1.35, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 0.55);
+  const center = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight,
+    { width: 18, height: 18, rotation }, true, false)({
+    x: atom.x + Math.cos(direction) * radius,
+    y: atom.y + Math.sin(direction) * radius
+  });
+  return center ? { center, rotation } : undefined;
+}
+
 /**
  * Shared charge-tool/drop placement. The caller supplies its chain-growth slot, if any;
  * Drops clear the mark's whole rotated frame from the current atom-label ink; the charge tool
@@ -4140,39 +4239,10 @@ export function electronMarkPlacementPointForAtom(
   const atom = molecule.atoms.find(candidate => candidate.id === atomId);
   if (!atom) return undefined;
   const avoidLabelOverlap = options.avoidLabelOverlap !== false;
-  // Tool placements must use the growth slot verbatim, even at a page edge.
+  // Charge/radical tool placements retain the legacy growth slot, even at a page edge.
   if (!avoidLabelOverlap && options.growthPoint) return options.growthPoint;
   const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
-  const radians = degreesToRadians(mark.rotation);
-  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
-  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
-  const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atomId) : undefined;
-  const glyph = plan && atomLabelGlyphBounds(plan);
-  const clearance = 2;
-  const exclusion = plan && glyph ? {
-    left: plan.anchor.x + glyph.x - halfWidth - clearance,
-    right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
-    top: plan.anchor.y + glyph.y - halfHeight - clearance,
-    bottom: plan.anchor.y + glyph.y + glyph.height + halfHeight + clearance
-  } : undefined;
-  const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
-    point.y > exclusion.top && point.y < exclusion.bottom;
-  const clearPoint = (point: LayoutPoint): LayoutPoint | undefined => {
-    if (exclusion && insideLabel(point)) {
-      const length = distance(atom, point);
-      const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
-      const dy = length > 0.0001 ? (point.y - atom.y) / length : -Math.SQRT1_2;
-      const exitX = Math.abs(dx) < 0.0001 ? Infinity : ((dx > 0 ? exclusion.right : exclusion.left) - atom.x) / dx;
-      const exitY = Math.abs(dy) < 0.0001 ? Infinity : ((dy > 0 ? exclusion.bottom : exclusion.top) - atom.y) / dy;
-      const radius = Math.min(exitX, exitY) + 0.001;
-      point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
-    }
-    const bounded = {
-      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
-      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
-    };
-    return insideLabel(bounded) ? undefined : bounded;
-  };
+  const clearPoint = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight, mark, avoidLabelOverlap);
   // The natural home is the same open slot the bond tool would use.
   if (options.growthPoint) {
     const point = clearPoint(options.growthPoint);
