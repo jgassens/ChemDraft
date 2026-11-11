@@ -143,6 +143,23 @@ it("loads a fresh thumbnail when a filtered-out tile mounts again", async () => 
   expect(remountedImage.src).toBe(originalImage.src);
   expect(document.activeElement).toBe(input);
 });
+it.each(["macos", "windows"] as const)("finds template families and disables text correction on %s", async platform => {
+  await act(async () => root.render(createElement(StructureTemplatePicker, {
+    title: "A", templateIds: structureTemplates.map(template => template.id), onInsert: vi.fn(), onClose: vi.fn(), platform
+  })));
+  const input = container.querySelector("input")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "cyclophane");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const matches = structureTemplates.filter(template => template.family === "cyclophanes");
+  expect([...container.querySelectorAll<HTMLElement>("[data-template-id]")].map(tile => tile.dataset.templateId))
+    .toEqual(matches.map(template => template.id));
+  expect(document.activeElement).toBe(input);
+  expect(input.getAttribute("autocorrect")).toBe("off");
+  expect(input.getAttribute("autocapitalize")).toBe("off");
+  expect(input.getAttribute("spellcheck")).toBe("false");
+});
 it("filters while retaining search focus and exposes the empty state", async () => {
   await act(async () => root.render(createElement(StructureTemplatePicker, { title: "A", templateIds: structureTemplates.map(template => template.id), onInsert: vi.fn(), onClose: vi.fn() })));
   const input = container.querySelector("input")!;

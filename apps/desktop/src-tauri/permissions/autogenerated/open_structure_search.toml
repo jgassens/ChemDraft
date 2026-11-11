@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-structure-search"
+description = "Enables the open_structure_search command without any pre-configured scope."
+commands.allow = ["open_structure_search"]
+
+[[permission]]
+identifier = "deny-open-structure-search"
+description = "Denies the open_structure_search command without any pre-configured scope."
+commands.deny = ["open_structure_search"]

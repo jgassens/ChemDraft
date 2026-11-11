@@ -1,0 +1,135 @@
+# Intel Mac (macOS x86_64) input; Python stays 3.10 and NumPy stays 1.26.4.
+# torch 2.2.2 is the last release with Intel Mac wheels; torchvision 0.17.2 matches it.
+# rdkit 2023.9.6 supplies the compatible Python 3.10 Intel Mac wheel.
+# opencv-python and opencv-python-headless 4.9.0.80 keep macOS 11 support:
+# their 4.11 Intel wheels require macOS 13.
+# All other versions are retained from requirements.txt in the exact pins below.
+# Re-lock from this directory with exactly:
+#
+#   uv pip compile requirements-macos-x86_64.in --python-version 3.10 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
+#
+# Then set REQUIREMENTS_LOCK_SHA256_MACOS_X86_64 in src/ocsr_engine/pins.rs
+# to the LF-normalized lock SHA-256; the lock-hash test fails until it matches.
+# See docs/architecture/ocsr-engine.md.
+
+# The reviewed engine versions.
+torch==2.2.2
+torchvision==0.17.2
+numpy==1.26.4
+
+# MolScribe's own install_requires (setup.py at 7296a30413eb55436702011efdff78131f66d162).
+# MolScribe itself is installed afterwards, with --no-deps, from its SHA-256-verified tarball.
+numpy>=1.19.5,<2.0
+pandas
+matplotlib
+opencv-python==4.9.0.80
+opencv-python-headless==4.9.0.80
+SmilesPE==0.0.3
+OpenNMT-py==2.2.0
+rdkit==2023.9.6
+albumentations==1.1.0
+timm==0.4.12
+
+# Builds the MolScribe sdist in the venv (--no-build-isolation), so the build backend is locked too.
+setuptools
+
+# Keep every other current lock pin, including transitive dependencies.
+absl-py==2.5.0
+anyio==4.15.1
+beautifulsoup4==4.15.0
+blinker==1.9.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.5.0
+cloudpickle==3.1.2
+colorama==0.4.6 ; sys_platform == 'win32'
+configargparse==1.7.7
+contourpy==1.3.2
+cuda-bindings==13.4.3 ; python_full_version < '3.15' and sys_platform == 'linux'
+cuda-pathfinder==1.8.2 ; python_full_version < '3.15' and sys_platform == 'linux'
+cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
+cycler==0.12.1
+exceptiongroup==1.3.1 ; python_full_version < '3.11'
+fastcore==2.2.30
+fastprogress==1.1.6
+filelock==4.0.3
+flask==3.1.3
+fonttools==4.65.0
+fsspec==2026.9.0
+gensim==4.4.0
+grpcio==1.84.0
+h11==0.16.0
+httpcore2==2.13.1 ; sys_platform != 'emscripten'
+httptools==0.8.0
+httpx2==2.13.1
+httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
+idna==3.20
+imageio==2.37.4
+itsdangerous==2.2.0
+jinja2==3.1.6
+joblib==1.6.0
+kiwisolver==1.5.1
+lazy-loader==0.6
+markdown==3.10.3
+markupsafe==3.0.3
+matplotlib==3.10.9
+mpmath==1.3.0
+networkx==3.4.2
+nvidia-cublas==13.1.1.3 ; sys_platform == 'linux'
+nvidia-cuda-cupti==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
+nvidia-cuda-runtime==13.0.96 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cudnn-cu13==9.24.0.43 ; sys_platform == 'linux'
+nvidia-cufft==12.0.0.61 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cufile==1.15.1.6 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-curand==10.4.0.35 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cusolver==12.0.4.66 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cusparse==12.6.3.3 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
+nvidia-nccl-cu13==2.30.7 ; sys_platform == 'linux'
+nvidia-nvjitlink==13.4.92 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+nvidia-nvtx==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+oauthlib==3.3.1
+packaging==26.3
+pandas==2.3.3
+pillow==12.3.0
+protobuf==7.36.2
+pyonmttok==1.38.1 ; sys_platform == 'darwin' or sys_platform == 'linux'
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+python-fasthtml==0.14.13
+python-multipart==0.0.32
+pytz==2026.4
+pyyaml==6.0.3
+qudida==0.0.4
+requests==2.34.2
+scikit-image==0.25.2
+scikit-learn==1.7.2
+scipy==1.15.3
+sentencepiece==0.2.2
+setuptools==84.0.0
+six==1.17.0
+smart-open==8.0.1
+soupsieve==2.10
+starlette==1.7.0
+sympy==1.14.0
+tensorboard==2.21.0
+tensorboard-data-server==0.7.2
+threadpoolctl==3.7.0
+tifffile==2025.5.10
+torchtext==0.5.0
+tqdm==4.70.1
+triton==3.8.0 ; python_full_version < '3.15' and sys_platform == 'linux'
+truststore==0.10.4 ; sys_platform != 'emscripten'
+typing-extensions==4.16.0
+tzdata==2026.4
+urllib3==2.8.0
+uvicorn==0.53.0
+uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+waitress==3.0.2
+watchfiles==1.3.0
+websockets==16.1.1
+werkzeug==3.1.8
+wrapt==2.4.1

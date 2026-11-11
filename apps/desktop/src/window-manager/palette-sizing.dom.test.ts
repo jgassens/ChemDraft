@@ -75,4 +75,33 @@ describe("palette work-area sizing", () => {
       "window_logical_position", "window_logical_position"
     ]);
   });
+
+  it("routes native content fitting through the gesture-guarded palette command", async () => {
+    await fitCurrentPaletteWindow({ width: 553, height: 1214 }, { left: 0, top: 24, right: 1920, bottom: 1040 }, true);
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("fit_toolset_window", { width: 553, height: 1214 });
+    expect(native.setSize).not.toHaveBeenCalled();
+  });
+
+  it("switches fitting paths when the preference changes", async () => {
+    const size = { width: 520, height: 600 };
+    const area = { left: 0, top: 24, right: 1920, bottom: 1040 };
+    await fitCurrentPaletteWindow(size, area, false);
+    expect(native.setSize).toHaveBeenCalledTimes(1);
+    expect(native.invoke).not.toHaveBeenCalledWith("fit_toolset_window", expect.anything());
+    native.invoke.mockClear();
+    await fitCurrentPaletteWindow(size, area, true);
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("fit_toolset_window", size);
+    expect(native.setSize).toHaveBeenCalledTimes(1);
+    native.invoke.mockClear();
+    await fitCurrentPaletteWindow(size, area, false);
+    expect(native.setSize).toHaveBeenCalledTimes(2);
+    expect(native.invoke).not.toHaveBeenCalledWith("fit_toolset_window", expect.anything());
+  });
+
+  it("keeps browser content fitting available", async () => {
+    vi.stubGlobal("__TAURI__", undefined);
+    await fitCurrentPaletteWindow({ width: 520, height: 600 }, { left: 0, top: 24, right: 1920, bottom: 1040 });
+    expect(native.invoke).not.toHaveBeenCalled();
+    expect(native.setSize).not.toHaveBeenCalled();
+  });
 });

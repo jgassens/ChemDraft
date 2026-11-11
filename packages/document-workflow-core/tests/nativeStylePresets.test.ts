@@ -1,0 +1,419 @@
+import { beforeAll, describe, expect, it } from "vitest";
+import { Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset, ChemDraftSyntheticStylePreset, applyPatches, createEmptyDocument,
+  ChemDraftDocumentSchema, snapshotChemicalIdentity, NativeStylePresets, type CompatibilityWarning, type ElectronMarkObject, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
+import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
+import { applyNativeStylePreset, documentDrawingDefaults, createSmilesMolecule,
+  pastedStructureDepictionFromMolfile, nativeSingleBondGraphMetadata, expandNativeMoleculeLabelGroups,
+  createNativeTextObject, nativeElectronMarkAssignments, nativeElectronMarkAtomKey } from "../src/index";
+import { ensureRdkit, generateSmiles2DMolfile } from "../../rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
+
+beforeAll(() => installRealRdkitModuleLoader());
+
+async function fixture() {
+  const document = createEmptyDocument();
+  for (const [index, smiles] of ["C[NH3+]", "[13CH3]CO", "[CH2]C", "N[C@@H](C)C(=O)O", "C/C=C/C", "CC(=O)Oc1ccccc1C(=O)O"].entries()) {
+    const molfile = await generateSmiles2DMolfile(smiles);
+    const object = createSmilesMolecule(document, { x: 140 + index * 90, y: 150 },
+      pastedStructureDepictionFromMolfile(molfile), smiles, undefined, { bondLengthPx: 30 });
+    object.id = `m${index}`;
+    if (index === 2) object.atoms[0]!.markRadicals = 1;
+    object.atoms[0]!.labelOffset = { x: 3, y: -2 };
+    document.pages[0]!.objects.push(object);
+  }
+  const stereo = structuredClone(document.pages[0]!.objects[3]) as MoleculeObject;
+  stereo.id = "hashed";
+  stereo.bonds = stereo.bonds.map(bond => ["wedge", "hashed"].includes(bond.display?.bondStyle ?? "")
+    ? { ...bond, display: { ...bond.display, bondStyle: bond.display?.bondStyle === "wedge" ? "hashed" as const : "wedge" as const } } : bond);
+  document.pages[0]!.objects.push(stereo);
+  const superatom = structuredClone(document.pages[0]!.objects[0]) as MoleculeObject;
+  superatom.id = "superatom";
+  superatom.atoms[0]!.element = "Me";
+  superatom.superatoms = [{ label: "Me", attachmentPoints: [], warnings: [], expandedStructureFormat: "smiles", expandedStructure: "C" }];
+  superatom.rGroups = [{ label: "R1", querySemantics: "display-only", attachmentPoints: [], warnings: [] }];
+  document.pages[0]!.objects.push(superatom);
+  document.pages[0]!.objects.push(
+    { id: "caption", type: "text", x: 100, y: 250, width: 90, height: 30, rotation: 12,
+      text: "H2O", style: { color: "blue" }, spans: [
+        { text: "H", script: "normal", style: { fontFamily: "Courier", fontSizePx: 28, fontWeight: 700 } },
+        { text: "2", script: "subscript", style: {} }, { text: "O", script: "normal", style: {} }] },
+    { id: "reaction", type: "reaction", x: 50, y: 90, width: 400, height: 100, rotation: 0, style: {},
+      components: [{ role: "reactant", objectId: "m0" }, { role: "agent", objectId: "m1" }, { role: "product", objectId: "m3" }],
+      conditionsTextObjectIds: ["caption"], mappingState: "absent" },
+    { id: "mechanism", type: "mechanism-arrow", x: 100, y: 110, width: 60, height: 40, rotation: 0, style: {},
+      arrowKind: "full-headed", source: { kind: "point", point: { x: 100, y: 110 } },
+      target: { kind: "point", point: { x: 160, y: 150 } }, controlPoints: [{ x: 125, y: 90 }], warnings: [] }
+  );
+  const radical = document.pages[0]!.objects.find(object => object.id === "m2") as MoleculeObject;
+  document.pages[0]!.objects.push({
+    id: "radical-mark", type: "electron-mark", x: radical.atoms[0]!.x - 6,
+    y: radical.atoms[0]!.y - 16, width: 12, height: 12, rotation: 0, style: {},
+    markKind: "radical-dot", anchor: { kind: "atom", objectId: radical.id, atomId: radical.atoms[0]!.id }
+  });
+  return ChemDraftDocumentSchema.parse(document);
+}
+
+function apply(document: ChemDraftDocument, presetId: string, scope: "document" | "selection") {
+  const batch = applyNativeStylePreset(document, presetId, scope);
+  expect(batch.op).toBe("batch");
+  return applyPatches(document, batch.patches, { now: document.updatedAt });
+}
+
+/** Exact reported coordinates and legacy anchor (no separate association metadata). */
+function markedChain() {
+  const document = createEmptyDocument();
+  const molecule: MoleculeObject = {
+    id: "chain", type: "molecule", x: 100, y: 100, width: 200, height: 0, rotation: 0,
+    style: { bondLengthPx: 40 }, structureFormat: "smiles", structure: "[CH2-]CCCCC",
+    atoms: Array.from({ length: 6 }, (_, index) => ({
+      id: `a${index}`, element: "C", x: 100 + index * 40, y: 100,
+      formalCharge: index === 0 ? -1 : 0, ...(index === 0 ? { markCharge: -1 } : {})
+    })),
+    bonds: Array.from({ length: 5 }, (_, index) => ({
+      id: `b${index}`, fromAtomId: `a${index}`, toAtomId: `a${index + 1}`, order: "single"
+    })), superatoms: [], rGroups: []
+  };
+  document.pages[0]!.objects = [molecule, {
+    id: "negative", type: "electron-mark", x: 74, y: 94, width: 12, height: 12, rotation: 0,
+    style: {}, markKind: "charge", charge: -1, anchor: { kind: "atom", objectId: "chain", atomId: "a0" }
+  }];
+  document.selection.objectIds = [molecule.id];
+  return document;
+}
+
+function commitPreset(document: ChemDraftDocument, presetId: string, warnings: CompatibilityWarning[] = []) {
+  const patch = applyNativeStylePreset(document, presetId, "selection", warnings);
+  return applyPatches(document, patch.patches);
+}
+
+function chain(document: ChemDraftDocument) {
+  return document.pages[0]!.objects.find(object => object.id === "chain") as MoleculeObject;
+}
+
+function electronMark(document: ChemDraftDocument, id = "negative") {
+  return document.pages[0]!.objects.find(object => object.id === id) as ElectronMarkObject;
+}
+
+function atomChemistry(molecule: MoleculeObject) {
+  return molecule.atoms.map(atom => ({ id: atom.id, formalCharge: atom.formalCharge,
+    markCharge: atom.markCharge ?? 0, markRadicals: atom.markRadicals ?? 0 }));
+}
+
+function expectAssignedChemistry(document: ChemDraftDocument, molecule: MoleculeObject) {
+  const assignments = nativeElectronMarkAssignments(document.pages[0]!);
+  for (const atom of molecule.atoms) {
+    const key = nativeElectronMarkAtomKey(molecule.id, atom.id);
+    expect(assignments.assignedChargeByAtomKey.get(key) ?? 0).toBe(atom.markCharge ?? 0);
+    expect(assignments.assignedRadicalsByAtomKey.get(key) ?? 0).toBe(atom.markRadicals ?? 0);
+  }
+}
+
+async function canonical(molecule: MoleculeObject) {
+  const module = await ensureRdkit();
+  const expanded = expandNativeMoleculeLabelGroups(molecule).molecule;
+  const raw = module.get_mol(moleculeToMolfileV2000(expanded, {
+    fromDocFrame: true, kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders
+  }).contents);
+  if (!raw) throw new Error("Fixture molfile could not be parsed");
+  try { return raw.get_smiles!(); } finally { raw.delete(); }
+}
+
+describe("applyNativeStylePreset", () => {
+  it.each(NativeStylePresets)("keeps charge/radical marks and scaled offsets through commit for $id", preset => {
+    const document = markedChain();
+    const molecule = chain(document);
+    molecule.atoms[5]!.markRadicals = 1;
+    const radical: ElectronMarkObject = {
+      ...electronMark(document), id: "radical", markKind: "radical-dot", charge: undefined,
+      x: 314, y: 104, anchor: { kind: "atom", objectId: molecule.id, atomId: "a5" }
+    };
+    document.pages[0]!.objects.push(radical);
+    const before = structuredClone(document);
+    expectAssignedChemistry(document, molecule);
+    const warnings: CompatibilityWarning[] = [];
+    const result = commitPreset(document, preset.id, warnings);
+    expect(warnings).toEqual([]);
+    expect(document).toEqual(before);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(molecule));
+    const scale = preset.drawing.bondLengthPx / 40;
+    for (const [id, index, offset] of [["negative", 0, { x: -20, y: 0 }], ["radical", 5, { x: 20, y: 10 }]] as const) {
+      const mark = electronMark(result, id);
+      const atom = chain(result).atoms[index]!;
+      expect(mark.x + mark.width / 2 - atom.x).toBeCloseTo(offset.x * scale, 9);
+      expect(mark.y + mark.height / 2 - atom.y).toBeCloseTo(offset.y * scale, 9);
+      expect(mark.anchor).toEqual({ kind: "atom", objectId: molecule.id, atomId: atom.id });
+    }
+    expectAssignedChemistry(result, chain(result));
+    expect(applyNativeStylePreset(result, preset.id, "selection", warnings).patches).toEqual([]);
+  });
+
+  it("resolves point-anchored marks before scaling and leaves out-of-range floating marks unchanged", () => {
+    const document = markedChain();
+    electronMark(document).anchor = { kind: "point", point: { x: 80, y: 100 } };
+    const floating: ElectronMarkObject = {
+      ...electronMark(document), id: "floating", x: 594, y: 594,
+      anchor: { kind: "point", point: { x: 600, y: 600 } }
+    };
+    document.pages[0]!.objects.push(floating);
+    const result = commitPreset(document, Acs1996StylePreset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(electronMark(result).x + electronMark(result).width / 2).toBe(134);
+    expect(electronMark(result).anchor).toEqual({ kind: "atom", objectId: "chain", atomId: "a0" });
+    expect(electronMark(result, floating.id)).toEqual(floating);
+  });
+
+  it("keeps a radical ion's charge and radical contribution together", () => {
+    const document = markedChain();
+    electronMark(document).radical = true;
+    chain(document).atoms[0]!.markRadicals = 1;
+    const result = commitPreset(document, RscJournalStylePreset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(electronMark(result)).toMatchObject({ radical: true, charge: -1,
+      anchor: { kind: "atom", objectId: "chain", atomId: "a0" } });
+  });
+
+  it.each(NativeStylePresets)("carries an explicitly anchored far mark without changing chemistry for $id", preset => {
+    const document = markedChain();
+    const mark = electronMark(document);
+    mark.x = 494; // Centre 500: 400 px from the explicitly chosen atom, beyond every preset radius.
+    mark.atomAssociation = "explicit";
+    mark.radical = true;
+    chain(document).atoms[0]!.markRadicals = 1;
+    const warnings: CompatibilityWarning[] = [];
+    const result = commitPreset(document, preset.id, warnings);
+    const styledMark = electronMark(result);
+    expect(warnings).toEqual([]);
+    expect(chain(result).style.stylePresetId).toBe(preset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(styledMark).toMatchObject({ anchor: mark.anchor, atomAssociation: "explicit", radical: true, charge: -1 });
+    expect(styledMark.x + styledMark.width / 2 - chain(result).atoms[0]!.x)
+      .toBeCloseTo(400 * preset.drawing.bondLengthPx / 40, 9);
+    expectAssignedChemistry(result, chain(result));
+  });
+
+  it.each(NativeStylePresets)("carries an over-valent mark without reassigning its atom for $id", preset => {
+    const document = markedChain();
+    // A drawn O- with a double bond exceeds its charge-dependent valence. Association preserves
+    // the drawing; it must not move the mark to a carbon with more available valence.
+    chain(document).atoms[0]!.element = "O";
+    chain(document).bonds[0]!.order = "double";
+    const mark = electronMark(document);
+    const warnings: CompatibilityWarning[] = [];
+    const result = commitPreset(document, preset.id, warnings);
+    const styledMark = electronMark(result);
+    expect(warnings).toEqual([]);
+    expect(chain(result).style.stylePresetId).toBe(preset.id);
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(chain(document)));
+    expect(chain(result).bonds).toEqual(chain(document).bonds);
+    expect(styledMark.anchor).toEqual(mark.anchor);
+    expect(styledMark.x + styledMark.width / 2 - chain(result).atoms[0]!.x)
+      .toBeCloseTo(-20 * preset.drawing.bondLengthPx / 40, 9);
+    expectAssignedChemistry(result, chain(result));
+  });
+
+  it("refuses a molecule when scaled offsets would lose charge at commit and warns with the atom and field", () => {
+    const document = markedChain();
+    const molecule = chain(document);
+    // The stored style admits this mark, but the actual short bonds require an upscale that
+    // would put its scaled offset outside the new style's association radius.
+    molecule.atoms.forEach((atom, index) => { atom.x = 100 + index * 10; });
+    electronMark(document).x = 54; // centre 60: 40 px from a0, within the old 46 px radius.
+    expectAssignedChemistry(document, molecule);
+    const warnings: CompatibilityWarning[] = [];
+    const patch = applyNativeStylePreset(document, Acs1996StylePreset.id, "selection", warnings);
+    expect(patch.patches).toEqual([]);
+    expect(warnings).toEqual([{
+      code: "style_preset.chemistry_change_refused", objectId: molecule.id,
+      message: "Skipped a structure because it would change a charge."
+    }]);
+    const result = applyPatches(document, patch.patches);
+    expect(chain(result)).toEqual(molecule);
+    expect(electronMark(result)).toEqual(electronMark(document));
+  });
+
+  it("refuses a resize that would give an initially floating mark a chemical contribution", () => {
+    const document = markedChain();
+    const molecule = chain(document);
+    molecule.atoms[0]!.formalCharge = 0;
+    delete molecule.atoms[0]!.markCharge;
+    // Short actual bonds and a small old style radius; ACS expansion puts the right atom at 330.
+    molecule.style.bondLengthPx = 10;
+    const warnings: CompatibilityWarning[] = [];
+    molecule.atoms.forEach((atom, index) => { atom.x = 270 + index * 2; });
+    electronMark(document).x = 329; // centre 335, outside old radius and inside resized radius.
+    electronMark(document).anchor = { kind: "point", point: { x: 335, y: 100 } };
+    const result = commitPreset(document, Acs1996StylePreset.id, warnings);
+    expect(warnings).toHaveLength(1);
+    expect(chain(result)).toEqual(molecule);
+    expect(electronMark(result)).toEqual(electronMark(document));
+    expect(atomChemistry(chain(result))).toEqual(atomChemistry(molecule));
+  });
+
+  it.each([Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset])("preserves chemistry and scales uniformly about each centre: $id", async preset => {
+    const document = await fixture();
+    const before = structuredClone(document);
+    const result = apply(document, preset.id, "document");
+    expect(document).toEqual(before);
+    expect(ChemDraftDocumentSchema.safeParse(result).success).toBe(true);
+    const molecules = document.pages[0]!.objects.filter((object): object is MoleculeObject => object.type === "molecule");
+    expect(molecules.some(molecule => molecule.atoms.some(atom => atom.formalCharge !== 0))).toBe(true);
+    expect(molecules.some(molecule => molecule.atoms.some(atom => atom.isotope))).toBe(true);
+    expect(molecules.some(molecule => molecule.atoms.some(atom => atom.markRadicals))).toBe(true);
+    expect(molecules.some(molecule => molecule.bonds.some(bond => bond.display?.bondStyle === "wedge"))).toBe(true);
+    expect(molecules.some(molecule => molecule.bonds.some(bond => bond.display?.bondStyle === "hashed"))).toBe(true);
+    for (const original of molecules) {
+      const styled = result.pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
+      expect(snapshotChemicalIdentity(styled)).toEqual(snapshotChemicalIdentity(original));
+      expect(nativeSingleBondGraphMetadata(styled.atoms, styled.bonds)).toEqual(nativeSingleBondGraphMetadata(original.atoms, original.bonds));
+      expect(await canonical(styled)).toBe(await canonical(original));
+      expect(styled.bonds).toEqual(original.bonds);
+      expect(styled.superatoms).toEqual(original.superatoms);
+      expect(styled.rGroups).toEqual(original.rGroups);
+      expect(styled.atoms).toHaveLength(original.atoms.length);
+      expect(styled.bonds).toHaveLength(original.bonds.length);
+      expect(nativeSingleBondGraphMetadata(styled.atoms, styled.bonds).formula)
+        .toBe(nativeSingleBondGraphMetadata(original.atoms, original.bonds).formula);
+      expect(styled.atoms.reduce((charge, atom) => charge + atom.formalCharge, 0))
+        .toBe(original.atoms.reduce((charge, atom) => charge + atom.formalCharge, 0));
+      const centre = (axis: "x" | "y") => (Math.min(...original.atoms.map(atom => atom[axis])) + Math.max(...original.atoms.map(atom => atom[axis]))) / 2;
+      const bondLengths = (molecule: MoleculeObject) => molecule.bonds.map(bond => {
+        const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+        const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+        return Math.hypot(to.x - from.x, to.y - from.y);
+      }).sort((a, b) => a - b);
+      const lengths = bondLengths(styled);
+      const median = (lengths[Math.floor((lengths.length - 1) / 2)]! + lengths[Math.floor(lengths.length / 2)]!) / 2;
+      expect(median).toBeCloseTo(preset.drawing.bondLengthPx, 9);
+      const scale = lengths[0]! / bondLengths(original)[0]!;
+      original.atoms.forEach((atom, index) => {
+        const next = styled.atoms[index]!;
+        for (const axis of ["x", "y"] as const) expect(next[axis]).toBeCloseTo(centre(axis) + (atom[axis] - centre(axis)) * scale, 9);
+        const { x: _x, y: _y, labelOffset: _offset, ...identity } = atom;
+        const { x: _nx, y: _ny, labelOffset: _nextOffset, ...nextIdentity } = next;
+        expect(nextIdentity).toEqual(identity);
+        if (atom.labelOffset) {
+          expect(next.labelOffset!.x).toBeCloseTo(atom.labelOffset.x * scale, 9);
+          expect(next.labelOffset!.y).toBeCloseTo(atom.labelOffset.y * scale, 9);
+        }
+      });
+    }
+    for (const id of ["reaction", "mechanism"]) {
+      expect(result.pages[0]!.objects.find(object => object.id === id)).toEqual(document.pages[0]!.objects.find(object => object.id === id));
+    }
+    expect(result.selection.objectIds).toEqual(molecules.flatMap(molecule => molecule.id === "m2"
+      ? [molecule.id, "radical-mark"] : [molecule.id]).concat("caption"));
+    expect(documentDrawingDefaults(result).drawing).toEqual(preset.drawing);
+    expect(documentDrawingDefaults(result).textStyle).toMatchObject({ fontSizePx: preset.drawing.atomLabelFontSizePx, fontWeight: 400 });
+    expect(applyNativeStylePreset(result, preset.id, "document").patches).toEqual([]);
+    expect(apply(result, preset.id, "document")).toBe(result);
+  });
+
+  it("uses Sketch for new molecules and captions, is idempotent and restores Synthetic without losing other effects", async () => {
+    const document = await fixture();
+    document.pages[0]!.objects[0]!.style.visualEffects = [{ kind: "shadow", blurPx: 2 }];
+    document.pages[0]!.objects[0]!.style.effects = [{ kind: "sketch", roughness: 0.5 }];
+    const caption = document.pages[0]!.objects.find(object => object.type === "text")!;
+    caption.style.fontStyle = "italic";
+    const sketch = apply(document, SketchStylePreset.id, "document");
+    expect(sketch.pages[0]!.objects[0]!.style.visualEffects).toEqual([
+      { kind: "shadow", blurPx: 2 }, ...SketchStylePreset.drawing.visualEffects
+    ]);
+    expect(applyNativeStylePreset(sketch, SketchStylePreset.id, "document").patches).toEqual([]);
+    expect(documentDrawingDefaults(sketch).objectStyle).toMatchObject(SketchStylePreset.drawing);
+    expect(createNativeTextObject(sketch, { x: 20, y: 20 }, "Handwriting").style.fontFamily)
+      .toBe(SketchStylePreset.drawing.atomLabelFontFamily);
+    expect(sketch.pages[0]!.objects.find(object => object.type === "text")!.style.fontStyle).toBe("normal");
+    const inserted = createSmilesMolecule(sketch, { x: 60, y: 60 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    expect(inserted.style).toMatchObject(SketchStylePreset.drawing);
+    const restored = apply(sketch, ChemDraftSyntheticStylePreset.id, "document");
+    expect(documentDrawingDefaults(restored).drawing).toEqual(ChemDraftSyntheticStylePreset.drawing);
+    expect(restored.pages[0]!.objects[0]!.style.visualEffects).toEqual([{ kind: "shadow", blurPx: 2 }]);
+    for (const object of restored.pages[0]!.objects) {
+      if (object.type === "molecule") {
+        expect(object.style.atomLabelFontFamily).toBe(ChemDraftSyntheticStylePreset.drawing.atomLabelFontFamily);
+        expect((object.style.visualEffects ?? [])).not.toContainEqual(expect.objectContaining({ kind: "sketch" }));
+      } else if (object.type === "text") {
+        expect(object.style.fontFamily).toBe(ChemDraftSyntheticStylePreset.drawing.atomLabelFontFamily);
+        expect(object.spans.every(span => span.style.fontFamily === object.style.fontFamily)).toBe(true);
+      }
+    }
+  });
+
+  it.each([
+    { effects: null, expected: null },
+    { effects: "sketch", expected: "sketch" },
+    { effects: { kind: "sketch" }, expected: { kind: "sketch" } },
+    { effects: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }, { kind: "sketch" }],
+      expected: [null, "sketch", 1, {}, { kind: "shadow", blurPx: 2 }] },
+    { effects: [{ kind: "sketch" }], expected: undefined }
+  ])("removes only sketch entries from legacy effect arrays: $effects", ({ effects, expected }) => {
+    const document = createEmptyDocument();
+    const molecule = createSmilesMolecule(document, { x: 100, y: 100 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    molecule.style.effects = effects;
+    document.pages[0]!.objects.push(molecule);
+    const result = apply(document, ChemDraftSyntheticStylePreset.id, "document");
+    expect(result.pages[0]!.objects[0]!.style.effects).toEqual(expected);
+    expect(molecule.style.effects).toEqual(effects);
+  });
+
+  it("styles only selected molecules/text and keeps all other objects and defaults untouched", async () => {
+    const document = await fixture();
+    document.selection = { pageId: document.pages[0]!.id, objectIds: ["m0", "caption", "mechanism"] };
+    const result = apply(document, Acs1996StylePreset.id, "selection");
+    for (const original of document.pages[0]!.objects) {
+      const next = result.pages[0]!.objects.find(object => object.id === original.id)!;
+      if (!["m0", "caption"].includes(original.id)) expect(next).toEqual(original);
+    }
+    expect(result.styles).toEqual(document.styles);
+    expect(result.selection.objectIds).toEqual(["m0", "caption"]);
+    const caption = result.pages[0]!.objects.find(object => object.id === "caption")!;
+    if (caption.type !== "text") throw new Error("Expected text");
+    expect(caption.spans[1]!.script).toBe("subscript");
+    expect(caption.spans[0]!.style).toMatchObject({ fontSizePx: Acs1996StylePreset.drawing.atomLabelFontSizePx, fontWeight: 400 });
+    expect(caption.style.color).toBe("blue");
+    expect(applyNativeStylePreset(result, Acs1996StylePreset.id, "selection").patches).toEqual([]);
+  });
+
+  it("sets insertion defaults on an empty document and refuses unknown presets", () => {
+    const document = createEmptyDocument();
+    expect(applyNativeStylePreset(document, Acs1996StylePreset.id, "selection").patches).toEqual([]);
+    const styled = apply(document, Acs1996StylePreset.id, "document");
+    expect(documentDrawingDefaults(styled).drawing).toEqual(Acs1996StylePreset.drawing);
+    expect(createNativeTextObject(styled, { x: 100, y: 100 }, "New caption").style)
+      .toMatchObject({ fontFamily: Acs1996StylePreset.drawing.atomLabelFontFamily,
+        fontSizePx: Acs1996StylePreset.drawing.atomLabelFontSizePx, fontWeight: 400 });
+    const molecule = createSmilesMolecule(styled, { x: 100, y: 100 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "C", x: 1, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CC");
+    expect(molecule.style).toMatchObject(Acs1996StylePreset.drawing);
+    expect(() => applyNativeStylePreset(document, "missing", "document")).toThrow("Unknown native style preset");
+  });
+
+  it("handles grouped selections, all pages, and native edits larger than an external batch", () => {
+    const document = createEmptyDocument();
+    const first = document.pages[0]!;
+    first.objects = [createNativeTextObject(document, { x: 100, y: 100 }, "First")];
+    first.objects.push({ id: "group", type: "group", x: 0, y: 0, width: 200, height: 200, rotation: 0,
+      style: {}, childObjectIds: [first.objects[0]!.id] });
+    document.pages.push({ ...first, id: "second", objects: Array.from({ length: 300 }, (_, index) => ({
+      ...first.objects[0]!, id: `text-${index}`
+    })) });
+    document.selection = { pageId: first.id, objectIds: ["group"] };
+    const selected = apply(document, RscJournalStylePreset.id, "selection");
+    expect(selected.pages[1]).toEqual(document.pages[1]);
+    expect(selected.pages[0]!.objects[0]!.style.stylePresetId).toBe(RscJournalStylePreset.id);
+    expect(selected.pages[0]!.objects[1]).toEqual(first.objects[1]);
+    const all = apply(document, RscJournalStylePreset.id, "document");
+    expect(all.pages[1]!.objects.every(object => object.style.stylePresetId === RscJournalStylePreset.id)).toBe(true);
+    expect(all.selection).toEqual({ pageId: first.id, objectIds: [first.objects[0]!.id] });
+    expect(applyNativeStylePreset(all, RscJournalStylePreset.id, "document").patches).toEqual([]);
+  });
+});

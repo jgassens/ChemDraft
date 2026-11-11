@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { decodeUserText } from "./textInput";
 
 export interface CliIo {
@@ -30,6 +30,7 @@ export interface NamedSmilesJob extends NamedBatchJob {
 }
 
 const MAX_BATCH_JOBS = 500;
+export const MAX_BATCH_BYTES = 32 * 1024 * 1024;
 const batchNamePattern = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$/;
 
 export type SuccessfulJsonLine = {
@@ -98,6 +99,26 @@ export function isWindowsDeviceName(name: string): boolean {
   return /^(con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i.test(name.split(".")[0]!.trimEnd());
 }
 
+/** Read through a fixed-size window so a growing or oversized batch never loads unbounded data. */
+async function readBoundedBatchFile(path: string): Promise<Buffer> {
+  const handle = await open(path, "r");
+  try {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    while (length <= MAX_BATCH_BYTES) {
+      const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, MAX_BATCH_BYTES + 1 - length));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length > MAX_BATCH_BYTES) throw new Error("Batch file exceeds the 32 MB input limit.");
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks, length);
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Read a JSON array of named jobs, trim and validate names, and reject duplicates. The callback
  * validates subcommand-specific input fields while this function owns the common batch contract.
@@ -109,7 +130,7 @@ export async function readBatchFile<T extends NamedBatchJob>(
 ): Promise<T[]> {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(decodeUserText(await readFile(path))) as unknown;
+    parsed = JSON.parse(decodeUserText(await readBoundedBatchFile(path))) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new CliUsageError(`Could not read batch file "${path}": ${message}`);

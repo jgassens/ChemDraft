@@ -72,6 +72,14 @@
     "returnType": "Result<(), String>"
   },
   {
+    "file": "dialog_windows.rs",
+    "name": "preferences_ready",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, data: Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "download_diagnosis.rs",
     "name": "diagnose_download_host",
     "async": true,
@@ -289,6 +297,46 @@
   },
   {
     "file": "lib.rs",
+    "name": "set_resizable_toolbars",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "configure_toolset_resize",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, min_width: f64, min_height: f64,",
+    "returnType": "Result<Option<toolbar_resize::Size>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "current_toolset_user_size",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow,",
+    "returnType": "Result<Option<toolbar_resize::Size>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "reset_toolbar_sizes",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "fit_toolset_window",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, width: f64, height: f64,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "list_toolset_window_states",
     "async": false,
     "generics": "",
@@ -332,7 +380,7 @@
     "name": "set_toolbars_menu",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>, resizable_toolbars: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -901,6 +949,22 @@
     "async": false,
     "generics": "",
     "parameters": "app: AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "set_structure_search_enabled",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "open_structure_search",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, site: String, smiles: String,",
     "returnType": "Result<(), String>"
   }
 ]

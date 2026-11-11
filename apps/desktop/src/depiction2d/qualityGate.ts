@@ -60,7 +60,8 @@ export async function gatePasteDepiction(
           ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }), x: atom.x, y: -atom.y })),
         bonds: after.bonds.map(bond => ({ from: indices.get(bond.fromAtomId)!, to: indices.get(bond.toAtomId)!,
           order: bond.order, ...(bond.stereo === "either" ? { stereo: "either" as const } : {}),
-          wedge: bond.display?.bondStyle === "wedge" ? "wedge" : bond.display?.bondStyle === "hashed" ? "hashed" : null }))
+          wedge: bond.display?.bondStyle === "wedge" ? "wedge" : bond.display?.bondStyle === "hashed" ? "hashed"
+            : bond.display?.bondStyle === "wavy" ? "wavy" : null }))
       } };
     }
   } catch (error) {

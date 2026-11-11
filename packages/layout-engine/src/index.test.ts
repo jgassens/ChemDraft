@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { nativeTextSubscriptBottomEm } from "./textMetrics";
 import {
   ChemDraftSyntheticStylePreset,
+  SketchStylePreset,
   DocumentPageSchema,
   createEmptyDocument,
   nativeDrawingStyleFromObjectStyle,
@@ -18,6 +19,8 @@ import {
   atomDegrees,
   atomLabelAnchorOffset,
   atomLabelLayout,
+  atomLabelGlyphBounds,
+  moleculeSelectionBounds,
   atomLabelRunAdvance,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
@@ -56,6 +59,8 @@ import {
   type PageSvgFragment
 } from "./index";
 import { elementFragments } from "./testing";
+import { patrickHandAdvances, patrickHandInkBounds } from "./patrickHandMetrics.generated";
+import { presetRenderingCases, presetRenderingMolecule } from "./presetRendering.fixture";
 
 const baseInput = {
   atoms: [
@@ -68,6 +73,117 @@ const baseInput = {
   pageBounds: { x: 0, y: 0, width: 816, height: 1056 },
   objectBounds: { x: 152, y: 204, width: 96, height: 32 }
 } satisfies Omit<BondExtensionPlanningInput, "clickPoint">;
+
+describe("preset colour and handwriting regression coverage", () => {
+  it.each(presetRenderingCases)("$name resolves sparse bond and atom colours for every ink layer", ({ style }) => {
+    const variants = [undefined, "double", "triple", "wedge", "hashed", "dashed", "bold"] as const;
+    for (const variant of variants) {
+      const molecule = presetRenderingMolecule(style,
+        variant && variant !== "double" && variant !== "triple" ? { bondStyle: variant } : undefined,
+        variant === "double" || variant === "triple" ? variant : "single");
+      const ink = planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments);
+      const bonds = ink.filter(f => f.tag !== "g" && (String(f.attrs.class).includes("native-bond-line") || f.attrs.class === "native-bond-hash"));
+      const rough = ink.filter(f => f.attrs.class === "native-molecule-sketch");
+      expect(bonds.length + rough.length).toBeGreaterThan(0);
+      for (const fragment of bonds) {
+        const color = fragment.attrs[fragment.tag === "polygon" ? "fill" : "stroke"];
+        expect(color).toBe(fragment.key.includes("-b0-") ? "#c03080" : "#126082");
+      }
+      for (const fragment of rough) {
+        const numbers = String(fragment.attrs.d).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)!.map(Number);
+        const xs = numbers.filter((_, index) => index % 2 === 0);
+        const targetBond = Math.min(...xs) < 200;
+        if (targetBond) expect(Math.max(...xs)).toBeLessThan(200);
+        const color = fragment.attrs.stroke === "none" ? fragment.attrs.fill : fragment.attrs.stroke;
+        expect(color).toBe(targetBond ? "#c03080" : "#126082");
+      }
+      expect(ink.find(f => f.key === `label-${molecule.id}-o`)?.attrs.fill).toBe("#267a38");
+      expect(ink.find(f => f.key === `label-${molecule.id}-n`)?.attrs.fill).toBe("#126082");
+    }
+  });
+
+  it.each(["C", "HC", "CH3", "H3C", "13CH2+", "CH2-", "Mg", "gyp", "j", "Cl", "OMe"])(
+    "encloses Patrick Hand's actual ink for %s in every label alignment", label => {
+      for (const alignment of ["automatic", "left", "center", "right"] as const) {
+        for (const anchor of [undefined, { side: "start", length: 1 }, { side: "end", length: 1 }] as const) {
+          const drawing = { ...SketchStylePreset.drawing, atomLabelPaddingPx: 0, atomLabelAlignment: alignment };
+          const layout = atomLabelLayout(label, drawing, anchor);
+          for (const run of layout.runs) {
+            const size = drawing.atomLabelFontSizePx * (run.script === "normal" ? 1 : run.script === "superscript" ? 0.88 : 0.72);
+            const advance = [...run.text].reduce((sum, ch) => sum + patrickHandAdvances[ch.codePointAt(0)!]!, 0) * size;
+            let cursor = run.x - (run.textAnchor === "middle" ? advance / 2 : run.textAnchor === "end" ? advance : 0);
+            for (const ch of run.text) {
+              const [xmin, ymin, xmax, ymax] = patrickHandInkBounds[ch.codePointAt(0)!]!;
+              expect(layout.bounds.x).toBeLessThanOrEqual(cursor + xmin * size + 1e-9);
+              expect(layout.bounds.x + layout.bounds.width + 1e-9).toBeGreaterThanOrEqual(cursor + xmax * size);
+              expect(layout.bounds.y).toBeLessThanOrEqual(run.y + (0.35 - ymax) * size + 1e-9);
+              expect(layout.bounds.y + layout.bounds.height + 1e-9).toBeGreaterThanOrEqual(run.y + (0.35 - ymin) * size);
+              cursor += patrickHandAdvances[ch.codePointAt(0)!]! * size;
+            }
+          }
+        }
+      }
+    }
+  );
+
+  it("uses handwriting outline metrics for glyph bounds instead of returning the padded label box", () => {
+    const molecule = presetRenderingMolecule(stylePresetToObjectStyle(SketchStylePreset));
+    const plan = planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === "o")!;
+    const ink = atomLabelGlyphBounds(plan);
+    expect(ink.width).toBeLessThan(plan.layout.bounds.width);
+    expect(ink.height).toBeLessThan(plan.layout.bounds.height);
+    expect(ink.y).toBeCloseTo((0.35 - 0.665) * plan.fontSizePx, 8);
+  });
+
+  it("recolours an existing Sketch's mixed hash, ordinary and wedge ink without changing seeded geometry", () => {
+    let molecule = presetRenderingMolecule(stylePresetToObjectStyle(SketchStylePreset));
+    molecule.style.bondColors = {};
+    molecule.bonds[0]!.display = { bondStyle: "hashed" };
+    molecule.bonds[2]!.display = { bondStyle: "wedge" };
+    const rough = () => planPageSvgRender(pageWithObjects([molecule])).fragments.flatMap(elementFragments)
+      .filter(f => f.attrs.class === "native-molecule-sketch");
+    const before = rough();
+    molecule = { ...molecule, style: { ...molecule.style, bondColors: { b1: "#c03080" } } };
+    const after = rough();
+    const subpaths = (paths: PageSvgElementFragment[]) => paths.flatMap(path => String(path.attrs.d)
+      .split(/(?=M)/).map(part => part.trim()).filter(Boolean)).sort();
+    expect(subpaths(after)).toEqual(subpaths(before));
+    for (const path of after) {
+      const numbers = String(path.attrs.d).match(/-?\d*\.?\d+/g)!.map(Number);
+      const xs = numbers.filter((_, index) => index % 2 === 0);
+      const target = Math.min(...xs) > 200 && Math.max(...xs) < 300;
+      expect(path.attrs.stroke === "none" ? path.attrs.fill : path.attrs.stroke).toBe(target ? "#c03080" : "#126082");
+    }
+    expect(after.some(path => path.attrs.stroke === "#c03080")).toBe(true);
+  });
+
+  it.each(presetRenderingCases)("$name keeps selection frames around handwriting ink and leaves other presets unchanged", ({ name, style }) => {
+    const molecule = presetRenderingMolecule(style);
+    molecule.atoms = [
+      { id: "c", element: "C", labelLiteral: true, x: 140, y: 160, formalCharge: 0 },
+      { id: "hc", element: "HC", labelLiteral: true, x: 184, y: 160, formalCharge: 0 }
+    ];
+    molecule.bonds = [];
+    molecule.x = 140; molecule.y = 160; molecule.width = 44; molecule.height = 0;
+    const frame = moleculeSelectionBounds(molecule);
+    const partFrame = moleculeSelectionBounds(molecule, { x: 184, y: 160, width: 0, height: 0 }, new Set(["hc"]));
+    if (name !== "Sketch") {
+      expect(frame).toBe(molecule);
+      expect(partFrame).toEqual({ x: 184, y: 160, width: 0, height: 0 });
+    } else {
+      for (const plan of planMoleculeAtomLabels(molecule)) {
+        const ink = atomLabelGlyphBounds(plan);
+        for (const bounds of plan.atom.id === "hc" ? [frame, partFrame] : [frame]) {
+          expect(bounds.x).toBeLessThan(plan.anchor.x + ink.x);
+          expect(bounds.x + bounds.width).toBeGreaterThan(plan.anchor.x + ink.x + ink.width);
+          expect(bounds.y).toBeLessThan(plan.anchor.y + ink.y);
+          expect(bounds.y + bounds.height).toBeGreaterThan(plan.anchor.y + ink.y + ink.height);
+        }
+      }
+      expect(partFrame.x).toBeGreaterThan(160);
+    }
+  });
+});
 
 describe("native subscript ink", () => {
   it("ends digit and non-descender subscripts at their shifted baseline", () => {
@@ -652,7 +768,7 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.newAtomPoint.y).toBeCloseTo(300, 3);
   });
 
-  it("finds atom-level hover hits only when valence is available", () => {
+  it("finds atom-level hover hits regardless of degree", () => {
     const hit = findNearestAtomHit({
       atoms: baseInput.atoms,
       bonds: baseInput.bonds,
@@ -664,7 +780,7 @@ describe("layout-engine molecule growth planning", () => {
     expect(hit).toEqual({
       atomId: "atom_002",
       degree: 1,
-      availableBonds: 3,
+      availableBonds: Number.POSITIVE_INFINITY,
       distance: Math.sqrt(5)
     });
 
@@ -679,7 +795,7 @@ describe("layout-engine molecule growth planning", () => {
       point: { x: 160, y: 220 },
       hitRadius: 16,
       maxBondsPerAtom: 4
-    })).toBeUndefined();
+    })).toMatchObject({ atomId: "atom_001", degree: 4, availableBonds: Number.POSITIVE_INFINITY });
   });
 
   it("finds nearest atoms without valence filtering for edit hit testing", () => {
@@ -729,7 +845,7 @@ describe("layout-engine molecule growth planning", () => {
     })).toBeUndefined();
   });
 
-  it("rejects growth from atoms that already have four bonds", () => {
+  it("plans growth from atoms that already have four bonds", () => {
     expect(planBondExtension({
       ...baseInput,
       atoms: [
@@ -748,7 +864,7 @@ describe("layout-engine molecule growth planning", () => {
       preferredAtomId: "atom_001",
       objectBounds: { x: 112, y: 134, width: 136, height: 172 },
       clickPoint: { x: 100, y: 220 }
-    })).toBeUndefined();
+    })).toMatchObject({ sourceAtomId: "atom_001" });
   });
 
   it("rejects distant clicks that are outside the active molecule hit envelope", () => {
@@ -908,7 +1024,21 @@ describe("layout-engine molecule growth planning", () => {
     });
   });
 
-  it("rejects freeform growth when the source atom is saturated or the drag is too short", () => {
+  it.each(["guided", "freeform"] as const)("%s growth snaps to a degree-four target even with an explicit degree cap", mode => {
+    const target = { id: "target", x: 280, y: 220 - Math.sqrt(3) * 40 };
+    const input = {
+      ...baseInput,
+      atoms: [...baseInput.atoms, target],
+      bonds: [...baseInput.bonds, ...Array.from({ length: 4 }, (_, i) => ({ fromAtomId: target.id, toAtomId: `other${i}` }))],
+      maxBondsPerAtom: 1
+    };
+    const plan = mode === "guided"
+      ? planBondExtension({ ...input, preferredAtomId: "atom_002", clickPoint: target })
+      : planFreeformBondExtension({ ...input, sourceAtomId: "atom_002", endPoint: target, forceCustomLength: true });
+    expect(plan).toMatchObject({ sourceAtomId: "atom_002", targetAtomId: target.id, newAtomPoint: { x: target.x, y: target.y } });
+  });
+
+  it("allows saturated sources but rejects drags that are too short", () => {
     expect(planFreeformBondExtension({
       atoms: [
         { id: "atom_001", x: 160, y: 220 },
@@ -928,7 +1058,7 @@ describe("layout-engine molecule growth planning", () => {
       bondLength: 80,
       pageBounds: baseInput.pageBounds,
       maxBondsPerAtom: 4
-    })).toBeUndefined();
+    })).toMatchObject({ sourceAtomId: "atom_001" });
 
     expect(planFreeformBondExtension({
       atoms: baseInput.atoms,
@@ -2141,13 +2271,19 @@ describe("layout-engine page SVG planner", () => {
     expect(dotCx + 2.1).toBeLessThanOrEqual(329 - fontSize * 0.6);
   });
 
-  it("keeps the radical dot at the tuned 0.75·radius offset for a ±1 mark", () => {
-    const fragments = plannedChargeMark("charge_radical_single", 1, { radical: true });
+  it("keeps a ±1 radical dot separate from its sign and inside the symbol frame", () => {
+    const fragments = planPageSvgRender(pageWithObjects([
+      chargeMarkObject("charge_radical_single", 1, { radical: true })
+    ]), { directElectronMarkEditing: true }).fragments;
 
     expect(fragments[0]?.attrs["data-charge-style"]).toBe("plain");
     expect(fragments[0]?.attrs["data-charge-radical"]).toBe("true");
     const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
-    expect(Number(dot?.attrs.cx)).toBeCloseTo(329 - 18 * 0.32 * 0.75, 6);
+    const bar = fragments.find((fragment) => fragment.key.startsWith("charge-bar-"));
+    expect(Number(dot?.attrs.cx) + Number(dot?.attrs.r)).toBeLessThan(
+      Number(bar?.attrs.x1) - Number(bar?.attrs["stroke-width"]) / 2);
+    expect(Number(dot?.attrs.cx) - Number(dot?.attrs.r)).toBeGreaterThanOrEqual(329 - 9);
+    expect(Number(bar?.attrs.x2) + Number(bar?.attrs["stroke-width"]) / 2).toBeLessThanOrEqual(329 + 9);
   });
 
   it("plans atom-label visibility, implicit hydrogens, colors, and transparent backgrounds", () => {

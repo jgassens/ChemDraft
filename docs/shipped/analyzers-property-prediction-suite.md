@@ -29,13 +29,13 @@ optimizer, and loss exploration is out of scope until this audit produces a disp
 This slice has three deliverables:
 
 1. A product contract naming the exact artifact, input interpretation, oracle-site versus end-to-end
-   evidence, training datasets and row counts, MAE and RMSE, tail behaviour, interval calibration,
+   evidence, training datasets and row counts, MAE and RMSE, tail behavior, interval calibration,
    known benchmark overlap, applicability, and explicit declines.
 2. A separate competitor benchmark record naming versions, common rows, site handling, omissions,
-   licences, runtime environment, hardware, and task differences. Results that do not measure the same
+   licenses, runtime environment, hardware, and task differences. Results that do not measure the same
    task must not share an unlabeled ranking.
 3. A molecule-level structured audit of severe failures. Each record must carry the intended acid and
-   conjugate base, experimental target type, supplied and derived tautomer/protomer, labelled and
+   conjugate base, experimental target type, supplied and derived tautomer/protomer, labeled and
    predicted site, correct-event and extra-event status, training-family proximity, source consistency,
    value and interval, and one primary failure category. Unknown fields remain explicit unknowns; a
    predictor-assigned site is not upgraded into experimental ground truth.
@@ -486,7 +486,7 @@ Three findings changed the code after it was written, and each is recorded where
   written out without them — so the model was being taught that carbons in drug scaffolds have basic
   pKa values. The rationalisation was plausible, written down, and wrong. Correcting it: MAE 1.19 to
   1.04, and 1,137 "basic" labels on carbon and 325 "acidic" labels on protonless atoms both go to zero.
-- **The site table cannot value what it locates.** Scored against 1,750 labelled sites, its per-type
+- **The site table cannot value what it locates.** Scored against 1,750 labeled sites, its per-type
   averages give MAE 2.77 where exactly one type matches — worse than the 2.33 of predicting the dataset
   mean. The table was already implemented and reporting numbers when this was measured; the numbers
   came out.
@@ -521,7 +521,7 @@ review of model files, training data, transitives, and redistribution rights bef
   the DataWarrior measured set. Government-funded and fully open, which makes it the natural *floor* to
   beat rather than a candidate to embed.
 
-**The question that decides this is provenance, not licensing.** A licence governs whether we may ship
+**The question that decides this is provenance, not licensing.** A license governs whether we may ship
 a file. What matters more here is stated three paragraphs down, as a requirement this section already
 imposes on any pKa result: it must record *"whether the value is experimentally trained,
 quantum-derived, or **inherited from another predictor**."* That third category is not a legal
@@ -570,7 +570,7 @@ Any pKa capability shipped here must decline on metals outright; there is no evi
 do anything else.
 
 *Uni-pKa — **experimentally trained**, but not simply obtainable.* Its ChEMBL stage is
-`loss_func="pretrain_mlm"` — **masked language modelling, self-supervised over structures**, not
+`loss_func="pretrain_mlm"` — **masked language modeling, self-supervised over structures**, not
 regression against someone else's pKa predictions. The supervised signal comes entirely from
 `finetune_mse` on `dwar-iBond.tsv`: **8,232 rows carrying a per-row `ref.` column** ("DataWarrior index
 5074", and so on) — experimental values with traceable attribution. That is the cleanest provenance
@@ -702,9 +702,9 @@ one thing: glycine's NEUTRAL form, **4.33 against 8.56**, where the real value i
 That species does not exist in water. Glycine is a zwitterion, so nothing labels its neutral form and
 nothing could have corrected the rebalanced model about it. **The fold builds it anyway** —
 `pKa(n) = log10(Z(n)/Z(n-1))` sums over every microstate, populated or not — so macroscopic accuracy
-rests on predictions no training set constrains, and adding well-labelled data can move them arbitrarily
-while every labelled figure improves. External MAE got BETTER in the same run that made amino acids
-worse, and that is not a contradiction: external tests labelled microstates, the fold requires unlabelled
+rests on predictions no training set constrains, and adding well-labeled data can move them arbitrarily
+while every labeled figure improves. External MAE got BETTER in the same run that made amino acids
+worse, and that is not a contradiction: external tests labeled microstates, the fold requires unlabelled
 ones.
 
 This is what the electrostatic coupling term was introduced for years ago — "Dwar-iBond records only
@@ -740,7 +740,7 @@ miss rises 1.4% → 19.6%.
 What was broken was the reconciliation. The fold walked outward by proton count and set each microstate's
 energy to the UNWEIGHTED MEAN of the routes into it — forward only, so a well-constrained rung could never
 correct a bad one upstream of it; unweighted, so a garbage prediction on an unpopulated species had equal
-say with a labelled one; and it discarded the disagreement it measured. It now solves every microstate's
+say with a labeled one; and it discarded the disagreement it measured. It now solves every microstate's
 free energy at once by weighted least squares over the whole ladder, weighting each rung by
 `1/sigma^2` from `edge-variance.json`. The normal equations are a weighted graph Laplacian; the cycle
 closes by construction because `L` is a potential.
@@ -797,7 +797,7 @@ sites**, which is a different failure from being unsure, and the spread speaks o
 
 What did work was chemistry, gated on a count as every rule here is. An anilide nitrogen — one carbonyl,
 one carbocyclic aryl, nothing else — holds **0 basic labels of 12,096**, against 8 real ones for the
-amidine and heteroaryl neighbours the rule still excludes. `isUnactivatedAmide` had rejected any
+amidine and heteroaryl neighbors the rule still excludes. `isUnactivatedAmide` had rejected any
 non-carbonyl double bond as "activating", which is true for N-H acidity and backwards for basicity: an
 aryl group withdraws, so an anilide is less basic than the acetamide already covered. SAMPL6 matched
 0.515 → 0.494, extra steps 51 → 49. Acetanilide moved in the tests from "still offers one" to "offers no
@@ -848,7 +848,7 @@ either way, though the ones it reports are less wrong (in-window MAE 2.01 → 1.
 **Why the weighted solve could not save it, which is the part that transfers.** The bad rung reported an
 interval of 0.46 — the second TIGHTEST of glycine's four. The ensemble is confidently wrong, so the
 weighting gave it near-full say. That is now the second measured instance of the same blindness: a spread
-fitted on labelled data cannot flag a species the labels do not contain, exactly as it cannot flag a site
+fitted on labeled data cannot flag a species the labels do not contain, exactly as it cannot flag a site
 that should not exist.
 
 What does catch it needs no reference value at all. Glycine's thermodynamic square closes to 0.35 under
@@ -859,7 +859,7 @@ macroscopic curve. That is now a test rather than an anecdote: "the cycle defect
 So the conclusion inverts. It is not that this corpus is bad, nor that the fold was. **Per-site accuracy
 and macroscopic accuracy measure different populations, and a corpus can improve one while destroying the
 other.** Shipping these rows needs labels for the unpopulated microstates — QM, since no experiment can
-reach them — and no amount of fold engineering substitutes for that. The licence question these rows
+reach them — and no amount of fold engineering substitutes for that. The license question these rows
 also carry never had to be decided.
 
 **The over-detection residual, traced to a mechanism.** Attributing every in-window extra step to the
@@ -1075,7 +1075,7 @@ original scope.
 
 It costs nothing new. The fold already solves every microstate's free energy relative to the fully
 deprotonated reference, and mass action gives the population straight from it — `10^(L(s) - n(s)*pH)`,
-normalised, summed by NET CHARGE because that is the quantity a reader acts on. Measured at pH 7.4:
+normalized, summed by NET CHARGE because that is the quantity a reader acts on. Measured at pH 7.4:
 
     molecule        distribution                    net-neutral   uncharged
     acetic acid     -1: 99.92%   0: 0.08%                 0.08%      0.08%
@@ -1132,7 +1132,7 @@ Then the QupKake evaluation data was fetched, and the picture reversed: **extern
 scaffold-grouped fold, worse on data it has never seen — overfitting of exactly the kind scaffold
 grouping is supposed to prevent. With a 40% zwitterion regression and 12.2 MB against 4.5 MB, rejected.
 
-Two of the three figures that favoured it are measured on molecules related to the corpus. **Shipping on
+Two of the three figures that favored it are measured on molecules related to the corpus. **Shipping on
 the cvMAE would have shipped a worse model under a better-looking number**, and nothing else in the
 directory would have caught it.
 
@@ -1244,7 +1244,7 @@ silenced acetic acid. A filter that silences acetic acid is measuring a histogra
 **The benchmark found a crash on its first run.** `CIP_bonds` entries are flat triples
 `[atom, atom, descriptor]`, not `[atoms[], descriptor]`, so the filter read an atom index as the
 descriptor — never `"(?)"`, so always passing — and then called `.join` on a number. Every molecule with
-an assigned double-bond stereocentre threw out of the entire analysis run; `C/C=C/C` was enough. It had
+an assigned double-bond stereocenter threw out of the entire analysis run; `C/C=C/C` was enough. It had
 been wrong since it was written, and no chosen test molecule had an E/Z bond.
 
 **Macroscopic pKa: done.** `protonation.ts` enumerates every protonation microstate, scores each edge
@@ -1290,7 +1290,7 @@ against 2.49, and histidine's imidazolium from 2.82 to 6.45 against 6.00 — and
 without such a pair bit-identical.
 
 **The zwitterion coupling is fixed, by adding the physics the labels could not teach.** The microscopic
-model barely responds to a neighbouring charge — on glycine it shifts the carboxyl 0.6 log units where
+model barely responds to a neighboring charge — on glycine it shifts the carboxyl 0.6 log units where
 the real effect is 2.6, and moves the ammonium the wrong way — because Dwar-iBond only records
 microstates a titration can populate, never an amino acid's neutral form. A one-parameter Coulomb term
 across acid/base site pairs, `dpKa = -W·q/d`, fitted against MACROSCOPIC values (an aggregate the
@@ -1345,14 +1345,14 @@ shape than feared, and both halves matter.
 
 **Better than feared:** 98.7% of the names it produced round-trip exactly, stereochemistry is a genuine
 strength (R/S, E/Z, meso, and ring stereo all exact), and it declines *every* metal — 38/38 Cu, 31/31
-Co, 23/23 Hg, plus ferrocene, cisplatin, SeO₂. That is correct behaviour and deserves crediting.
+Co, 23/23 Hg, plus ferrocene, cisplatin, SeO₂. That is correct behavior and deserves crediting.
 
 **Worse in shape:** 36 structures (0.72%) got a confident, well-formed, OPSIN-parseable name for a
 *different molecule*, and **14 of those name a smaller one** — seven arsenic compounds have the whole
 arsonic acid group silently deleted, so `NC(=O)CNc1ccc([As](=O)(O)O)cc1` names as
 "2-(phenylamino)acetamide". The adversarial set fails the same way: `[13CH3]C(=O)O` and
 `[2H]C([2H])([2H])C(=O)O` both name as "acetic acid", and TEMPO names as its closed-shell
-hydroxylamine. **The isotope case is the one this branch should recognise on sight** — it is exactly
+hydroxylamine. **The isotope case is the one this branch should recognize on sight** — it is exactly
 what §8's envelope refused to do, committed in the naming direction.
 
 **The specific defect is not inaccuracy, it is a misplaced boundary.** Arsenic never round-trips once
@@ -1564,7 +1564,7 @@ an Analyze item ships only when it computes something).
 
   **A declined method now gets a second chance, and both answers stay in the run.** Sodium benzoate
   carries `rdkit.crippen-logp` → `unsupported` (Na has no parameters) *and*
-  `rdkit.crippen-logp@largest-organic-fragment` → 0.0501, labelled "Crippen logP · largest organic
+  `rdkit.crippen-logp@largest-organic-fragment` → 0.0501, labeled "Crippen logP · largest organic
   fragment · Na removed" and carrying an `interpretation.derived` info warning. Nothing is substituted;
   the UI chooses which to lead with. `fallbackInterpretations: []` computes strictly against the
   drawing, and `interpretationOverride` is the "— change" affordance §1 asks for — overriding sodium
@@ -1596,7 +1596,7 @@ an Analyze item ships only when it computes something).
   caller that renders `run.results` needs no special case, and every one of these validates against
   `AnalysisRunSchema`.
 
-  The organising idea is a **slot** — a thing being analysed, holding at most one live analysis. A
+  The organizing idea is a **slot** — a thing being analyzed, holding at most one live analysis. A
   second request for the same slot supersedes the first, because the user edited and the older answer
   is about a molecule that no longer exists. A superseded run that completes late is discarded and
   never enters the cache, which is the race that otherwise leaves a stale panel.
@@ -1661,7 +1661,7 @@ an Analyze item ships only when it computes something).
   **The runtime still detects the capability by value, and that is not a stylistic choice.** Measured
   against the pre-rebuild binary, `get_descriptors('{"includeSandP":true}')` did **not** throw — it
   silently ignored the argument and returned the same `tpsa` 34.14 for `CS(=O)(=O)C`. Detecting by "did
-  the call succeed" would have reported patch #6 as present and labelled an S-excluded number with the
+  the call succeed" would have reported patch #6 as present and labeled an S-excluded number with the
   S-included convention, which is the exact failure this branch exists to prevent. Any future artifact
   that lags the patch set fails identically, so the probe stays. `detectEngineCapabilities` compares the
   number on a sulfone probe, and `rdkit.tpsa`'s contract follows it: version 2.0.0 with the S-included
@@ -1689,7 +1689,7 @@ an Analyze item ships only when it computes something).
   **The copyleft scan found one thing worth recording.** No GPL or AGPL in either graph, and the Rust
   graph is permissive-only — but `rollup-plugin-dts` is LGPL-3.0-only. It is a root devDependency used
   only by `scripts/build-sdk.mjs`, so it is not linked, bundled, or redistributed; "no copyleft" would
-  have been an overstatement, so the inventory says so. Two packages whose licence pnpm could not parse
+  have been an overstatement, so the inventory says so. Two packages whose license pnpm could not parse
   (`eve-raphael` "Unknown", `font-face-observer` "BSD") were resolved from their own LICENSE files to
   Apache-2.0 and BSD-2-Clause.
 - **Phase 8 — Release 2, mass tooling. ✅ all three clauses landed.**
@@ -1744,18 +1744,18 @@ an Analyze item ships only when it computes something).
   agree to ~1e-8, which is how differently they round AME rather than a disagreement about chemistry.
   The unit travels on the result (`thomson` against `dalton`), so no renderer infers the axis.
 
-  *Labelled structures now compute too*, through IsoSpec's general `Iso` constructor, which takes
-  isotopes rather than a formula. A labelled atom becomes its own dimension holding one isotope at
+  *Labeled structures now compute too*, through IsoSpec's general `Iso` constructor, which takes
+  isotopes rather than a formula. A labeled atom becomes its own dimension holding one isotope at
   probability 1; unlabelled atoms of the same element keep their natural-abundance dimension. **That
   per-position split is the whole point and it is checkable:** acetic acid's M+1 is 2.18% from two
-  carbons, and 1-¹³C acetic acid's is 1.09% — the labelled carbon is ¹³C with certainty and contributes
+  carbons, and 1-¹³C acetic acid's is 1.09% — the labeled carbon is ¹³C with certainty and contributes
   no satellite, the other still does. Dropping the label would say 2.18%; treating the element as
-  labelled would say 0. The two follow-ups compose: a labelled anion computes on the m/z axis with no
+  labeled would say 0. The two follow-ups compose: a labeled anion computes on the m/z axis with no
   special case on either side.
 
   **The artifact was rebuilt for it** (2026-07-31, same `v2.3.5` commit, IsoSpec still unpatched), so
   the hashes moved and every pin with them. The wrapper validates array lengths, per-dimension
-  normalisation, and probability range *before* constructing anything — IsoSpec walks the flattened
+  normalization, and probability range *before* constructing anything — IsoSpec walks the flattened
   arrays by a running sum with no bounds checking, so a short array is an out-of-bounds read inside the
   WASM heap that returns numbers rather than failing. The unlabelled formula path stays the default
   because IsoSpec resolves those element names itself and so cannot be narrowed by the symbol table the
@@ -1782,7 +1782,7 @@ an Analyze item ships only when it computes something).
   **The abundance set is a convention and must be disclosed like `includeSandP`.** IsoSpec's tables
   carry no provenance in its own repository, so the defensible claim is "the values the shipped engine
   used" — which is why the wrapper exposes `isotope_table()` and the tests read it from the binary.
-  Measured: 292 entries, every element normalised to 1, masses matching AME to ~1e-9, and ¹³C at
+  Measured: 292 entries, every element normalized to 1, masses matching AME to ~1e-9, and ¹³C at
   `0.010788` against CIAAW's representative `0.0107` — 0.82% relatively higher, moving C₂₀'s M+1 from
   0.21400 to 0.21576. Not an error (CIAAW publishes carbon as an interval because it varies by source),
   but a reader reproducing the number from a textbook table will not match, so the contract must say so.
@@ -1842,11 +1842,11 @@ build stamp reads `chemdraft-analyzers` before trusting a manual pass.
 
 **Engineering scope is complete, and the two named follow-ups are done** (2026-07-31). The envelope
 computes for charged structures, on the m/z axis with the electron bookkeeping taken from IsoSpec's own
-table, and for isotope-labelled ones, through the general `Iso` constructor the formula parser could
+table, and for isotope-labeled ones, through the general `Iso` constructor the formula parser could
 not reach. Both are recorded in the Phase 8 entry above. What still declines there is a label naming an
 isotope the tables do not carry — a decline with a stated reason, like the two it replaces.
 
-**Releases stay blocked on the distribution track** (§4): the core licence, the nmrshiftdb2 deadline,
+**Releases stay blocked on the distribution track** (§4): the core license, the nmrshiftdb2 deadline,
 and the plugin-distribution rules are the project owner's calls, not engineering's.
 
 *(Every item this section once listed as build-blocked has landed: the MinimalLib rebuild carrying
@@ -1864,8 +1864,8 @@ Two of the three were settled on 2026-07-31; one remains, and it is not an engin
    required them to match.
 2. ✅ **Plugin-distribution rules — written** as AGENTS.md §8c, with a mechanical gate
    (`assertBundledDataLicensed`) that refuses to build a distribution whose package ships a dataset while
-   declaring only a code licence. The rule is a *labelling* obligation, not the licence-inheritance rule
-   it is often mistaken for: permissive licences never require a plugin to adopt the host's terms.
+   declaring only a code license. The rule is a *labeling* obligation, not the license-inheritance rule
+   it is often mistaken for: permissive licenses never require a plugin to adopt the host's terms.
 3. ⏳ **nmrshiftdb2** — the authorized-licensor confirmation and a decision deadline.
 
    **The Apache-2.0 choice substantially changes this item and it should be re-read, not carried

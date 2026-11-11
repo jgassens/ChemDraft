@@ -10,7 +10,7 @@ import {
   nativeTextMetrics, nativeTextScriptFontScale, nativeTextSubscriptBottomEm, nativeTextSuperscriptOffsetEm,
   reactionArrowHeadDepthPx, reactionArrowVerticalExtent
 } from "@chemdraft/layout-engine";
-import { formulaSpansForMixedText } from "./formulaText";
+import { formulaSpansForReactionCondition } from "./formulaText";
 import { estimateNativeTextSpanLineWidth, nativeTextObjectSizeForSpanLines } from "./textObjects";
 
 export interface ReactionLabelsOptions {
@@ -20,6 +20,7 @@ export interface ReactionLabelsOptions {
   textStyle?: Partial<NativeTextStyle>;
   bondLength: number;
   arrowKind: ArrowObject["arrowKind"];
+  arrowStrokeWidth?: number;
 }
 
 interface LabelBlock {
@@ -40,7 +41,7 @@ export interface ReactionLabelsPlan {
 
 // Journal-scheme policy, in bond lengths or em so it follows the caller's drawing scale.
 const labelWidthInBonds = 10;
-const minimumArrowInBonds = 2.5;
+const minimumArrowInBonds = 3;
 const arrowHeadClearanceEm = 0.25;
 const arrowClearanceEm = 0.3;
 const scriptLineClearanceEm = 0.12;
@@ -49,7 +50,7 @@ const minimumCaptionWidthInBonds = 8;
 const defaultLabelStyle: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 
 function lineSpans(text: string, caption = false): TextSpan[] {
-  const spans = (!caption && formulaSpansForMixedText(text)) || [{ text, script: "normal", style: {} }];
+  const spans = (!caption && formulaSpansForReactionCondition(text)) || [{ text, script: "normal", style: {} }];
   return spans.reduce<TextSpan[]>((runs, span) => {
     const previous = runs.at(-1);
     if (previous && previous.script === span.script &&
@@ -144,7 +145,7 @@ export function layoutReactionLabels(
   }
 ): { above?: TextObject; below?: TextObject; caption?: TextObject } {
   const { arrowMidpoint: midpoint, schemeBounds, idPrefix } = placement;
-  const extent = reactionArrowVerticalExtent(plan.options.arrowKind, plan.arrowLength, "shafts");
+  const extent = reactionArrowVerticalExtent(plan.options.arrowKind, plan.arrowLength, "shafts", plan.options.arrowStrokeWidth);
   const clearance = arrowClearanceEm * plan.textStyle.fontSizePx;
   const object = (block: LabelBlock, id: string, center: number, y: number): TextObject => ({
     // Left-aligned text starts at object.x; the box's trailing padding is not visible text.

@@ -126,12 +126,12 @@ I will have legal resolve all of it afterwards. Your job is to make their job po
 call.
 
 - **Never stop, never ask, never decline an arm on licensing grounds.** Run it and record it.
-- Maintain one `pka-provenance.md` with a row per corpus: upstream licence, what that licence actually
+- Maintain one `pka-provenance.md` with a row per corpus: upstream license, what that license actually
   covers (software vs data — QupKake's BSD is a *software* grant and the 4,022 experimental rows are
   upstream **CC BY 4.0**), whether it feeds the shipped corpus or is research-only, and the open question
   for legal.
 - Fix the two statements that are currently wrong in text that reaches a user through
-  `ionizationContract()`: the QupKake licence attribution, and Dwar-iBond's 3,031 rows being unresolved.
+  `ionizationContract()`: the QupKake license attribution, and Dwar-iBond's 3,031 rows being unresolved.
 - Keep legal's decision open by keeping it off the shipped tree: weights or artifacts derived from an
   encumbered corpus (ChemAxon pseudo-labels, IUPAC CC BY-NC, unclarified D2A nonaqueous) land in
   `~/pka-runs/`, never in `packages/`. Do not add a redistributability claim to `NOTICE` for anything

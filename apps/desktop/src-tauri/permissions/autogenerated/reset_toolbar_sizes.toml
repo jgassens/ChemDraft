@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reset-toolbar-sizes"
+description = "Enables the reset_toolbar_sizes command without any pre-configured scope."
+commands.allow = ["reset_toolbar_sizes"]
+
+[[permission]]
+identifier = "deny-reset-toolbar-sizes"
+description = "Denies the reset_toolbar_sizes command without any pre-configured scope."
+commands.deny = ["reset_toolbar_sizes"]

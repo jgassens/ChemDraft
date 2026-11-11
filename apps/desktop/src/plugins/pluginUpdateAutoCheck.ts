@@ -1,4 +1,5 @@
 import { AUTO_CHECK_DELAY_MS, AUTO_CHECK_INTERVAL_MS, autoCheckDue } from "../appUpdates";
+import { PluginApiVersion } from "@chemdraft/plugin-api";
 import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
 import { OFFICIAL_PLUGIN_CATALOG, type PluginUpdateCheckResult } from "./pluginUpdates";
 
@@ -22,6 +23,7 @@ function isCachedResult(value: unknown): value is PluginUpdateCheckResult {
   if (result.status === "unsupported") return true;
   if (typeof result.latestVersion !== "string") return false;
   if (result.status === "upToDate") return true;
+  if (result.status === "incompatible") return typeof result.message === "string";
   if (result.status !== "available" || !result.offer || typeof result.offer !== "object") return false;
   const offer = result.offer as Record<string, unknown>;
   return ["pluginId", "pluginName", "installedVersion", "version", "releaseUrl", "packageUrl",
@@ -41,13 +43,14 @@ export function readCachedPluginUpdateResults(
   } catch { return undefined; }
 }
 
-/** Bind offers to the installed bytes, not just the plugin version. */
+/** Bind results to the installed bytes and host API, so upgrading ChemDraft rechecks requirements.
+ * This also invalidates offers cached before release compatibility was checked. */
 export function installedPluginCatalogKey(installedPlugins: readonly InstalledPluginCatalogEntry[]): string {
   return JSON.stringify(
-    installedPlugins.map(({ record }) => ({
+    { hostApiVersion: PluginApiVersion, plugins: installedPlugins.map(({ record }) => ({
       id: record.id, version: record.version, sourceChecksum: record.sourceChecksum,
       stagedPath: record.stagedPath, installedAt: record.installedAt
-    })).sort((left, right) => left.id.localeCompare(right.id))
+    })).sort((left, right) => left.id.localeCompare(right.id)) }
   );
 }
 
@@ -126,9 +129,18 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
         return [];
       }
       const results = await deps.check(installed);
-      const cache = { catalogKey, checkedAt: now(), results: results.filter(result => result.status !== "failed") };
+      const previous = readCachedPluginUpdateResults(deps.storage, catalogKey, now());
+      // The cache has one timestamp for all results. Retaining an offer must retain that time,
+      // even if a different source succeeded, so stale metadata never looks freshly checked.
+      const retained = results.some(result => result.status === "unavailable" &&
+        previous?.results.some(cached => cached.pluginId === result.pluginId));
+      const cache = { catalogKey, checkedAt: retained ? previous!.checkedAt : now(), results: results.flatMap(result => {
+        if (result.status === "failed") return [];
+        if (result.status !== "unavailable") return [result];
+        return previous?.results.filter(cached => cached.pluginId === result.pluginId) ?? [];
+      }) };
       // A failed/unsupported source is not an answer. Manual successful checks count too.
-      if (results.some(result => result.status === "available" || result.status === "upToDate")) {
+      if (results.some(result => result.status === "available" || result.status === "upToDate" || result.status === "incompatible")) {
         try {
           deps.storage?.setItem(LAST_PLUGIN_RESULTS_KEY, JSON.stringify(cache));
           deps.storage?.setItem(LAST_PLUGIN_CHECK_KEY, String(cache.checkedAt));
@@ -136,7 +148,7 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
         catch { /* An unavailable store only causes another check next launch. */ }
       }
       // Automatic failures stay out of the UI; the manager retains manual failures locally.
-      deps.onResults(cache);
+      deps.onResults(results.every(result => result.status === "unavailable") && previous ? previous : cache);
       return results;
     }).finally(() => { running = undefined; });
     const entry: RunningCheck = { catalogKey, promise, cancelled: false };

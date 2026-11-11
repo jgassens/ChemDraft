@@ -70,8 +70,9 @@ describe("projected reaction arrows and brackets", () => {
       const lines = [...output.matchAll(/<line\b[^>]*>/g)].map(match => match[0]);
       expect(lines.length).toBeGreaterThan(0);
       for (const line of lines.slice(0, arrowKind === "retrosynthesis" ? 2 : lines.length)) {
-        expect(line).toContain('x1="130"');
-        expect(line).toContain(arrowKind === "retrosynthesis" ? 'x2="188.5"' : 'x2="190"');
+        expect(line).toContain(arrowKind === "resonance" ? 'x1="132.25"' : 'x1="130"');
+        expect(line).toContain(arrowKind === "retrosynthesis" ? 'x2="188.5"' :
+          arrowKind === "forward" || arrowKind === "resonance" ? 'x2="187.75"' : 'x2="190"');
         expect(line).toContain('stroke-width="1.5"');
       }
       for (const line of lines) {
@@ -85,6 +86,8 @@ describe("projected reaction arrows and brackets", () => {
       const points = [...output.matchAll(/<polygon\b[^>]*points="([^"]+)"/g)]
         .flatMap(match => match[1]!.split(" ").map(point => Number(point.split(",")[0])));
       expect(points.every(x => x >= 130 && x <= 190)).toBe(true);
+      if (arrowKind === "forward" || arrowKind === "resonance") expect(points).toContain(190);
+      if (arrowKind === "resonance") expect(points).toContain(130);
     }
   );
 
@@ -114,7 +117,9 @@ describe("projected reaction arrows and brackets", () => {
     expect(line).toContain('x1="160"');
     expect(line).toContain('y1="60.038"');
     expect(line).toContain('x2="160"');
-    expect(line).toContain('y2="163.962"');
+    expect(line).toContain('y2="160.064"');
+    const headTip = output.match(/<polygon\b[^>]*points="([^" ]+)/)![1]!;
+    expect(headTip.split(",")[1]).toBe("163.962");
   });
 
   it.each([arrow, bracket])("keeps untilted $type SVG unchanged, including rotation", object => {

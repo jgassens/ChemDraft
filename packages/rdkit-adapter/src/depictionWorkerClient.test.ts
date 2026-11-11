@@ -178,7 +178,7 @@ describe("2D depiction worker deadline", () => {
     vi.useFakeTimers();
     const factory = vi.fn(port), controller = new AbortController();
     const result = expect(createDepictionWorkerClient(factory)("CCO", { signal: controller.signal }))
-      .rejects.toMatchObject({ name: "AbortError", message: "2D depiction cancelled." });
+      .rejects.toMatchObject({ name: "AbortError", message: "2D depiction canceled." });
     await flush();
     vi.advanceTimersByTime(2_000);
     controller.abort();

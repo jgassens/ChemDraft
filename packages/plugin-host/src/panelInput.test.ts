@@ -266,7 +266,7 @@ describe("canvas content uses the bounded report snapshot", () => {
     const received = setContent.mock.calls[0]![2][0].buttons[0].payload;
     expect(received).not.toBe(request.sections[0]!.buttons[0]!.payload);
     expect(JSON.stringify(received)).toBe(JSON.stringify(request.sections[0]!.buttons[0]!.payload));
-    await expect(api.setContent(content(2_001))).rejects.toThrow("Panel payload must be JSON-serialisable, at most 4000 characters");
+    await expect(api.setContent(content(2_001))).rejects.toThrow("Panel payload must be JSON-serializable, at most 4000 characters");
     expect(setContent).toHaveBeenCalledTimes(1);
   });
 

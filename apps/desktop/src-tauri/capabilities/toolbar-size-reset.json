@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "toolbar-size-reset",
+  "description": "Only the document window may clear all remembered toolbar sizes.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-reset-toolbar-sizes"
+  ]
+}

@@ -77,6 +77,21 @@ describe("parseDocumentSessionEnvelope", () => {
     expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(valid)))).toEqual(valid);
   });
 
+  it.each([
+    { formatVersion: "1.3.0" },
+    { minAppVersion: "1.3.0" },
+    { formatVersion: "1.3.0", minAppVersion: "1.1.1" }
+  ])("retains original file headers independently of serialized contents: %j", nativeDocumentVersions => {
+    const envelope = { ...valid, nativeDocumentVersions };
+    expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(envelope)), true)).toEqual(envelope);
+  });
+
+  it.each([null, [], "1.3.0", { formatVersion: 13 }, { minAppVersion: "new" },
+    { formatVersion: "1.3.0-beta" }, { formatVersion: "1.3.0", injected: true }])(
+    "ignores malformed optional file headers without losing the drawing: %j", nativeDocumentVersions => {
+      expect(parseDocumentSessionEnvelope({ ...valid, nativeDocumentVersions }, true)).toEqual(valid);
+    });
+
   const openWarnings = { displayName: "import.cdxml", sourceLabel: "CDXML",
     warnings: [{ code: "import", message: "Imported a subset.", atomIds: ["a1"], bondIds: ["b1"] }] };
   const saveWarnings = { ...openWarnings, operation: "save" as const, displayName: "drawing.chemdraft" };

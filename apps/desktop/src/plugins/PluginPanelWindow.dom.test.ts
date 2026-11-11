@@ -509,7 +509,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(mac).toContain("PanelResizeOverlay::alloc(mtm)");
     expect(mac).toContain("#[unsafe(method(hitTest:))]");
     const hitTest = mac.split("fn hit_test(")[1]!.split("pub(super) fn install_resize_hit_test<")[0]!;
-    expect(hitTest).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
+    expect(hitTest).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& palette_resize_edge\(/);
     expect(hitTest).toContain(".and_then(|content| unsafe { content.superview() })");
     expect(hitTest).toContain("Retained::as_ptr(&frame).cast_mut()");
     expect(hitTest).toMatch(/std::ptr::null_mut\(\)\s*\}\s*\}\s*\);/);
@@ -519,7 +519,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(mac).toContain("overlay.setAutoresizingMask(autoresize)");
     const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
     // Activation must skip exactly the same band that the overlay yields to AppKit.
-    expect(click).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
+    expect(click).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& palette_resize_edge\(/);
     expect(click).toContain("content.convertPoint_fromView(native.locationInWindow(), None)");
     expect(click).toMatch(/if !resizing \{\s*let _ = target.set_focusable\(true\);\s*panel.makeKeyWindow\(\);/);
     expect(click).toContain("event.as_ptr()");

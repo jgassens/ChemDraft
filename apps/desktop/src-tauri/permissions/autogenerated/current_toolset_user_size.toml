@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-current-toolset-user-size"
+description = "Enables the current_toolset_user_size command without any pre-configured scope."
+commands.allow = ["current_toolset_user_size"]
+
+[[permission]]
+identifier = "deny-current-toolset-user-size"
+description = "Denies the current_toolset_user_size command without any pre-configured scope."
+commands.deny = ["current_toolset_user_size"]

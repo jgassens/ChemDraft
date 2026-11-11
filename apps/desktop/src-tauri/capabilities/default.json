@@ -19,6 +19,7 @@
     "allow-open-toolset-window",
     "allow-close-toolset-window",
     "allow-list-toolset-window-states",
+    "allow-set-resizable-toolbars",
     "allow-load-toolset-customization-state",
     "allow-save-toolset-customization-state",
     "allow-load-document-session",
@@ -120,6 +121,33 @@
         }
       ]
     },
+    {
+      "identifier": "fs:allow-open",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "$APPDATA/installed-plugins"
+        },
+        {
+          "path": "$APPDATA/installed-plugins/**"
+        }
+      ]
+    },
+    "fs:allow-read",
     {
       "identifier": "fs:allow-stat",
       "allow": [

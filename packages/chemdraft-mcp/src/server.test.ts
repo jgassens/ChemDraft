@@ -6,7 +6,8 @@ import {
   readdir,
   rm,
   stat,
-  utimes
+  utimes,
+  writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,6 +16,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import { runRenderDocumentCommand } from "../../chemdraft-cli/src/commands/renderDocument";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
 import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
@@ -78,6 +81,45 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("native compatibility: keeps named read warnings and minimum in a rendering failure JSON result", async () => {
+    const client = await connect({ commands: { renderDocument: async (argv, io) => {
+      // Reading succeeds, but a directory at the output destination makes writing fail.
+      await mkdir(argv[argv.indexOf("--out") + 1]!);
+      return runRenderDocumentCommand(argv, io);
+    } } });
+    const result = await client.callTool({ name: "render_document", arguments: {
+      documentJson: JSON.stringify({ ...createEmptyDocument(), minAppVersion: "1.10.2", conditionsLabel: "keep" }),
+      format: "chemdraft"
+    } });
+    expect(result.isError).toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({ ok: false, minAppVersion: "1.10.2",
+      documentWarnings: [expect.objectContaining({ code: "NATIVE_UNKNOWN_FIELD_PRESERVED", path: ["conditionsLabel"] })],
+      error: expect.any(String) });
+  });
+  it.each(["inline", "path"])("native compatibility: %s input reports warnings/minimum and preserves future content", async source => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-mcp-forward-")); temporaryDirectories.push(directory);
+    const documentJson = JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.10.0", minAppVersion: "1.10.2",
+      conditionsLabel: { text: "keep this" }, styles: { drawing: { stylePresetId: "future-preset" } } });
+    const documentPath = join(directory, "future.json");
+    await writeFile(documentPath, documentJson);
+    const client = await connect();
+    const result = await client.callTool({ name: "render_document", arguments: {
+      ...(source === "inline" ? { documentJson } : { documentPath }), format: "chemdraft", outDir: directory
+    } });
+    expect(result.isError).not.toBe(true);
+    const payload = jsonPayload(result.content);
+    expect(payload).toMatchObject({ ok: true, minAppVersion: "1.10.2",
+      documentWarnings: [expect.any(Object), expect.any(Object)] });
+    expect(payload.documentWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "NATIVE_UNKNOWN_FIELD_PRESERVED", path: ["conditionsLabel"], originalValue: { text: "keep this" } }),
+      expect.objectContaining({ code: "NATIVE_STYLE_PRESET_FALLBACK", originalValue: "future-preset" })
+    ]));
+    const saved = openChemDraftPayload(await readFile((payload.files as string[])[0]!, "utf8"));
+    const raw = JSON.parse(serializeDocument(saved.document!));
+    expect(raw.conditionsLabel).toEqual({ text: "keep this" });
+    expect(raw.styles.drawing.stylePresetId).toBe("future-preset");
+    expect(raw.minAppVersion).toBe("1.10.2");
+  });
   it("checks built-in templates before OPSIN for name_to_structure", async () => {
     const client = await connect();
     const tools = await client.listTools();
@@ -693,6 +735,24 @@ describe("ChemDraft MCP server", () => {
       summary: { logP: { value: null, status: "not-requested" } }
     });
   }, 120_000);
+
+  it("declines unknown-order chemistry in MCP analysis with no fallback numbers", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "analyze_structure", arguments: {
+      smiles: "C~C", methods: ["rdkit.composition", "rdkit.average-mass", "rdkit.monoisotopic-mass", "rdkit.canonical-smiles"]
+    } });
+    expect(result.isError).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({
+      summary: {
+        formula: { value: null, status: "unsupported" },
+        averageMass: { value: null, status: "unsupported" },
+        monoisotopicMass: { value: null, status: "unsupported" },
+        canonicalSmiles: { value: null, status: "unsupported" },
+        logP: { value: null, status: "not-requested" }
+      },
+      run: { status: "unsupported", warnings: [expect.objectContaining({ code: "structure.unknown_bond_order" })] }
+    });
+  });
 
   it("surfaces bad-SMILES CLI errors as MCP errors", async () => {
     const client = await connect();

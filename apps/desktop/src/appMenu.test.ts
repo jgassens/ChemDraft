@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { NativeStylePresets } from "@chemdraft/chem-core";
 
 import {
   buildAppMenuModel,
@@ -16,6 +17,7 @@ import {
 } from "./appMenu";
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
+import { nativeStylePresetCommandId } from "./commands";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -59,6 +61,22 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
+    const context = { ...EMPTY_CONTEXT, platform };
+    const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
+    const aliases: AppMenuCommand[] = ["first", "second"].map(name => ({
+      kind: "command", id: `menu.test.${name}`, commandId: `plugin.test.${name}`,
+      label: name, enabled: true, pluginContributed: true
+    }));
+    const model = buildAppMenuModel({ ...context, pluginMenuItems: aliases.map(command => ({ location: "structure", command })) });
+    const structure = model.find(section => section.id === "structure")!;
+    expect(base.items.slice(-NativeStylePresets.length)).toEqual(NativeStylePresets.map(preset =>
+      expect.objectContaining({ kind: "command", commandId: nativeStylePresetCommandId(preset.id) })));
+    expect(structure.items.slice(0, base.items.length)).toEqual(base.items);
+    expect(structure.items.slice(base.items.length)).toEqual([expect.objectContaining({ kind: "separator" }), ...aliases]);
+    expect(nativeRoutedCommandIds(model)).toEqual(nativeRoutedCommandIds(buildAppMenuModel(context)));
+  });
+
   it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
@@ -157,6 +175,18 @@ describe("app menu model", () => {
     expect([...webIds].sort()).toEqual([...nativeIds].sort());
   });
 
+  it.each(["macos", "windows"] as const)("wires the toolbar size reset in the %s menu", (platform) => {
+    for (const enabled of [false, true]) {
+      const commands = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform, resizableToolbars: enabled }));
+      expect(commands.find(item => item.commandId === "view.toolbars.resetSizes")).toMatchObject({ enabled, label: "Reset Toolbar Sizes" });
+    }
+    const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+    const menu = source.split("fn create_toolbars_menu<R: Runtime>")[1]?.split("fn ensure_toolset_window")[0];
+    expect(menu).toContain('"view.toolbars.resetSizes"');
+    expect(menu).toContain("resizable_toolbars,");
+    expect(source).toContain("create_toolbars_menu(app, entries, view_state.resizable_toolbars)");
+  });
+
   it("exposes the OS-predefined clipboard commands as web commands but excludes them from the native set", () => {
     const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
     const predefined = commands.filter((command) => command.nativePredefined).map((command) => command.commandId);
@@ -217,7 +247,9 @@ describe("app menu model", () => {
     if (toolbars?.kind === "submenu") {
       expect(toolbars.items.map((item) => (item.kind === "command" ? item.commandId : item.kind))).toEqual([
         "view.toolset.toggle.core.main",
-        "view.toolset.toggle.core.art"
+        "view.toolset.toggle.core.art",
+        "separator",
+        "view.toolbars.resetSizes"
       ]);
     }
 
@@ -240,6 +272,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"
@@ -309,6 +342,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"
