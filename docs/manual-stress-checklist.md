@@ -1189,6 +1189,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - In an existing customized layout without Double Bond or Triple Bond, add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
 - Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
 - Allow growth or order changes that exceed available valence and show (!) on the affected atoms; retain existing atoms and coordinates, with only the requested graph changes. Still refuse unrepresentable multiple bonds to group labels or dashed dative bonds. Check save/reopen and SVG/MOL export, including valence warnings. Switch back to Single Bond and wedge/hash/dashed/bold tools.
+- Transition metals use a coordination ceiling (Pt: 6 in `packages/document-workflow-core/src/atoms.ts`); check (!) only above it, such as Pt with 7 attached atoms. The Ru example's (!) belongs on N.
 - Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
 
 ## Isotope insertion (macOS and Windows)
@@ -1329,6 +1330,7 @@ formatted.
 - Draw a Ru donor complex with neutral N bonded to Ru and two carbons. Set the solid Ru–N bond
   to double using hover `2`, order cycling, and the bond tool. Each edit must land with (!) on N;
   Undo/Redo restores the exact authored graph without adding charge. Dashed Ru–N stays single.
+- Transition metals show (!) only above their coordination ceiling (Pt: 6; test 7 attached atoms); the Ru example's (!) belongs on N.
 - Draw neopentane, relabel its center S and endpoints O, then raise two S–O bonds to double one
   at a time. The intermediate S(V) has (!); the final H2SO4 has no (!). Repeat with literal S/O
   labels and explicit OH for the acid oxygens. Keep every atom, coordinate and charge as drawn.
@@ -1359,8 +1361,9 @@ formatted.
 - Select waves together with a molecule, straight line and rectangle; adjust every slider and
   confirm only selected waves change. Check the molecule's bonds, stereo, charge and labels, and an
   unselected wave. Repeat Undo/Redo and cancel; mixed wave values should read Mixed until adjusted.
-- Open Customize Main Toolbar and search for Wave; value-specific smoothness, height and width
-  commands should be available and work when added to a toolbar.
+- Value-specific wave smoothness/height/width commands are hidden from the Customize gallery on purpose
+  (they remain registered; `galleryModel.ts` excludes `object.wave.*`). Search “wavy” finds Wavy bond
+  and Wavy Line; adjust waves with the Object Settings sliders.
 
 ## Newer native documents (macOS and Windows)
 
@@ -1456,7 +1459,8 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 - Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.
   It displays a wave. Undo and Redo restore each edit; export MOL and check the unknown stereo survives.
 - Choose it from the Customize gallery too; click a wavy bond again to reverse its unknown stereo
-  end, then convert back to wedge/plain. Each edit is one Undo/Redo step. Check label clearance and
+  end, then convert back to wedge. To make wedge/hash/wavy plain, hover the bond and press 1, or click
+  it with the Single Bond tool; each is one Undo step labeled “Made bond plain”. Check label clearance and
   canvas/SVG/PDF/PNG parity, no R/S at the wave's `from` atom, SMILES without `@` there, MOL V2000
   stereo 4 and V3000 CFG=2.
 

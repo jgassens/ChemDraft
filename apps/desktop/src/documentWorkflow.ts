@@ -8939,7 +8939,7 @@ export function applyNativeMoleculeBondOrderTarget(
     return document;
   }
 
-  const nextOrder = nextNativeBondOrder(molecule, bond);
+  const nextOrder = nativeBondCanBeMadePlain(bond) ? "single" : nextNativeBondOrder(molecule, bond);
   return isNativeBondOrderValue(nextOrder)
     ? applyNativeMoleculeBondOrderValueTarget(document, target, nextOrder)
     : document;
@@ -8963,14 +8963,17 @@ export function applyNativeMoleculeBondOrderValueTarget(
     return document;
   }
 
-  if ((order === bond.order && bond.stereo !== "either") || !canSetNativeBondOrder(molecule, bond, order)) {
+  const makePlain = order === "single" && nativeBondCanBeMadePlain(bond);
+  // This display-only edit keeps the order, so order-change restrictions do not apply.
+  if (!makePlain && ((order === bond.order && bond.stereo !== "either") || !canSetNativeBondOrder(molecule, bond, order))) {
     return document;
   }
 
   const bonds = molecule.bonds.map((candidate) =>
     candidate.id === bond.id
       // Clearing an existing double bond's "either" stereo is not double-bond creation.
-      ? nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order, bond.order !== "double")
+      ? makePlain ? nativeBondWithoutStereoDisplay(candidate)
+        : nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order, bond.order !== "double")
       : candidate
   );
   const refreshed = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
@@ -8981,6 +8984,18 @@ export function applyNativeMoleculeBondOrderValueTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/** Single-order edits clear only the explicitly authored single-bond stereo display. */
+export function nativeBondCanBeMadePlain(bond: MoleculeBond | undefined): boolean {
+  return bond?.order === "single" &&
+    (bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed" || bond.display?.bondStyle === "wavy");
+}
+
+function nativeBondWithoutStereoDisplay(bond: MoleculeBond): MoleculeBond {
+  const { display: _display, ...rest } = bond;
+  const { bondStyle: _bondStyle, ...display } = bond.display ?? {};
+  return { ...rest, ...(Object.keys(display).length ? { display } : {}) };
 }
 
 /**
@@ -9000,6 +9015,7 @@ export function nativeBondOrderTargetRefusal(
   if (!isEditableNativeMoleculeGraph(molecule)) {
     return "Bond order not changed: this molecule cannot be edited as a native graph";
   }
+  if (order === "single" && nativeBondCanBeMadePlain(bond)) return undefined;
   if (order === bond.order && bond.stereo !== "either") return `Bond is already ${order}`;
   const reason = nativeBondOrderRefusalReason(molecule, bond, order);
   return reason ? `Bond order not changed: ${reason}` : undefined;

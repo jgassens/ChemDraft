@@ -521,6 +521,7 @@ import {
   nativeBondStereoFlipDisabledReason,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
+  nativeBondCanBeMadePlain,
   applyNativeMoleculeDeleteTarget,
   nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
@@ -1772,7 +1773,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.21.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -4684,6 +4685,8 @@ export function MainWindow({
 
   const cycleNativeBondOrder = useCallback((target: NativeBondOrderTarget) => {
     const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = object?.type === "molecule" && nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderTarget(selectedDocument, target);
     if (nextDocument === selectedDocument) {
@@ -4691,14 +4694,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Changed bond order");
+    setStatus(madePlain ? "Made bond plain" : "Changed bond order");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const setHoveredNativeBondOrder = useCallback((order: NativeBondOrderValue) => {
@@ -4710,6 +4713,9 @@ export function MainWindow({
       return;
     }
 
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = order === "single" && object?.type === "molecule" &&
+      nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, order);
     if (nextDocument === selectedDocument) {
@@ -4717,14 +4723,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered bond to ${order}`);
+    setStatus(madePlain ? "Made bond plain" : `Set hovered bond to ${order}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeBondDisplayStyle = useCallback((bondStyle: NativeBondDisplayStyle) => {
