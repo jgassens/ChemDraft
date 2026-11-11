@@ -2853,6 +2853,7 @@ fn place_content_window_from_frame<R: Runtime>(
         }
     }
     // A user size remains useful after its display is removed; its position does not.
+    let saved_frame = saved;
     let saved = restorable_position(saved, &monitors);
     let client = normal
         .as_ref()
@@ -2970,12 +2971,39 @@ fn place_content_window_from_frame<R: Runtime>(
             Ok(())
         },
         || {
-            let normal = sample_normal_frame(window)
-                .ok_or("Dialog frame is not yet a stable normal frame")?;
-            Ok(DialogFrame {
-                outer: normal.physical.outer,
-                client: normal.physical.client,
-            })
+            measure_placement_frame(
+                cfg!(windows),
+                sample_normal_frame(window).map(|normal| DialogFrame {
+                    outer: normal.physical.outer,
+                    client: normal.physical.client,
+                }),
+                || {
+                    retained
+                        .map(|normal| DialogFrame {
+                            outer: normal.physical.outer,
+                            client: normal.physical.client,
+                        })
+                        .or_else(|| {
+                            let size = remembered_client_size(saved_frame, true)?;
+                            Some(DialogFrame::from_saved_client(
+                                size,
+                                destination_scale,
+                                (
+                                    f64::from(frame.0.saturating_sub(client.0)) / scale,
+                                    f64::from(frame.1.saturating_sub(client.1)) / scale,
+                                ),
+                            ))
+                        })
+                },
+                || {
+                    let outer = window.outer_size().map_err(|e| e.to_string())?;
+                    let client = window.inner_size().map_err(|e| e.to_string())?;
+                    Ok(DialogFrame {
+                        outer: (outer.width, outer.height),
+                        client: (client.width, client.height),
+                    })
+                },
+            )
         },
         |size| window.set_min_size(Some(size)).map_err(|e| e.to_string()),
     )?;
@@ -3002,9 +3030,40 @@ struct TemplatePlacement<'a> {
     saved: Option<&'a SavedPosition>,
     owner_rect: (f64, f64, f64, f64),
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct DialogFrame {
     outer: (u32, u32),
     client: (u32, u32),
+}
+impl DialogFrame {
+    fn from_saved_client((width, height): (f64, f64), scale: f64, decorations: (f64, f64)) -> Self {
+        // Saved records contain logical client sizes. Reuse known decorations, if any.
+        Self {
+            outer: (
+                ((width + decorations.0) * scale).ceil() as u32,
+                ((height + decorations.1) * scale).ceil() as u32,
+            ),
+            client: (
+                (width * scale).ceil() as u32,
+                (height * scale).ceil() as u32,
+            ),
+        }
+    }
+}
+fn measure_placement_frame(
+    windows: bool,
+    sampled: Option<DialogFrame>,
+    saved: impl FnOnce() -> Option<DialogFrame>,
+    read_sizes: impl FnOnce() -> Result<DialogFrame, String>,
+) -> Result<DialogFrame, String> {
+    if let Some(frame) = sampled {
+        return Ok(frame);
+    }
+    if windows {
+        // An iconic owner or a restoring frame must not discard a ready dialog.
+        return saved().map_or_else(read_sizes, Ok);
+    }
+    Err("Dialog frame is not yet a stable normal frame".into())
 }
 struct DialogPlacement<'a> {
     position: (f64, f64, f64),
@@ -5623,6 +5682,164 @@ mod tests {
             outer: ((576.0 * scale) as u32, (460.0 * scale) as u32),
             client: ((560.0 * scale) as u32, (420.0 * scale) as u32),
             scale,
+        }
+    }
+
+    #[test]
+    fn windows_first_placement_survives_an_iconic_owner_or_unstable_frame() {
+        for scale in [1.0, 1.5, 2.0] {
+            let work = WorkArea {
+                id: "screen".into(),
+                x: 12.0,
+                y: 12.0,
+                width: 1176.0,
+                height: 876.0,
+                scale,
+            };
+            let physical = normal_test_frame(scale);
+            let unstable = PhysicalNormalFrame {
+                client: (physical.client.0 + 1, physical.client.1),
+                ..physical
+            };
+            for (reason, sample) in [
+                ("iconic owner", stable_normal_frame(&work, None, None)),
+                (
+                    "unstable frame",
+                    stable_normal_frame(&work, Some(physical), Some(unstable)),
+                ),
+            ] {
+                assert!(sample.is_none());
+                for saved in [
+                    None,
+                    Some(DialogFrame {
+                        outer: physical.outer,
+                        client: physical.client,
+                    }),
+                ] {
+                    for kind in [
+                        "export",
+                        "structureTemplates",
+                        "engineInstall",
+                        "toolInstall",
+                        "customColor",
+                    ] {
+                        let spec = kind_spec(kind).unwrap();
+                        let result = DialogPlacement {
+                            position: (100.0, 100.0, scale),
+                            client_size: spec.size,
+                            content: None,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: false,
+                            template: Some(TemplatePlacement {
+                                saved: None,
+                                owner_rect: (0.0, 0.0, 1000.0, 700.0),
+                            }),
+                        }
+                        .apply(
+                            |_, _| Ok(()),
+                            |_, _| Ok(()),
+                            || {
+                                measure_placement_frame(
+                                    true,
+                                    sample.as_ref().map(|normal| DialogFrame {
+                                        outer: normal.physical.outer,
+                                        client: normal.physical.client,
+                                    }),
+                                    || saved,
+                                    || {
+                                        Ok(DialogFrame {
+                                            outer: physical.outer,
+                                            client: physical.client,
+                                        })
+                                    },
+                                )
+                            },
+                            |_| Ok(()),
+                        );
+                        assert!(result.is_ok(), "{kind}: {reason}: {result:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn placement_measurement_prefers_stable_then_saved_then_plain_sizes() {
+        let stable = DialogFrame {
+            outer: (576, 460),
+            client: (560, 420),
+        };
+        let saved = DialogFrame {
+            outer: (616, 480),
+            client: (600, 440),
+        };
+        let plain = DialogFrame {
+            outer: (536, 660),
+            client: (520, 620),
+        };
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                Some(stable),
+                || panic!("stable frame available"),
+                || panic!("stable frame available")
+            )
+            .unwrap(),
+            stable
+        );
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                None,
+                || Some(saved),
+                || panic!("saved frame available")
+            )
+            .unwrap(),
+            saved
+        );
+        assert_eq!(
+            measure_placement_frame(true, None, || None, || Ok(plain)).unwrap(),
+            plain
+        );
+    }
+
+    #[test]
+    fn placement_measurement_keeps_macos_sampling_and_native_read_errors() {
+        assert!(measure_placement_frame(
+            false,
+            None,
+            || panic!("macOS must not use fallbacks"),
+            || panic!("macOS must not read plain sizes")
+        )
+        .is_err());
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                None,
+                || None,
+                || Err("native size read failed".into())
+            )
+            .unwrap_err(),
+            "native size read failed"
+        );
+    }
+
+    #[test]
+    fn saved_placement_frame_uses_destination_scale_and_known_decorations() {
+        let size = (560.5, 420.5);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let frame = DialogFrame::from_saved_client(size, scale, (16.0, 40.0));
+            assert_eq!(
+                frame.client,
+                ((560.5 * scale).ceil() as u32, (420.5 * scale).ceil() as u32)
+            );
+            assert_eq!(
+                frame.outer,
+                ((576.5 * scale).ceil() as u32, (460.5 * scale).ceil() as u32)
+            );
+            let no_decorations = DialogFrame::from_saved_client(size, scale, (0.0, 0.0));
+            assert_eq!(no_decorations.outer, frame.client);
         }
     }
 
