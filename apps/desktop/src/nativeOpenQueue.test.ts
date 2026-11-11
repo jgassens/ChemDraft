@@ -48,7 +48,7 @@ describe("native open queue notifications", () => {
     const drain = vi.fn(async () => ["before setup", "during subscribe", "third"]);
     let changed!: () => void;
     const dispose = listenAndDrainNativeOpenQueue({
-      listen: handler => { changed = handler; return subscribed.promise; },
+      subscribe: handler => { changed = handler; return subscribed.promise; },
       drain, consumeBatch: consume, onError: vi.fn()
     });
     changed();
@@ -75,7 +75,7 @@ describe("native open queue notifications", () => {
       return batch;
     });
     const dispose = listenAndDrainNativeOpenQueue({
-      listen: async handler => { changed = handler; return () => {}; },
+      subscribe: async handler => { changed = handler; return () => {}; },
       drain, consumeBatch: consume, onError: vi.fn()
     });
     await vi.waitFor(() => expect(drain).toHaveBeenCalledTimes(1));
@@ -100,7 +100,7 @@ describe("native open queue notifications", () => {
     const drain = vi.fn(() => batch.promise);
     const stop = vi.fn();
     const dispose = listenAndDrainNativeOpenQueue({
-      listen: async () => stop, drain, consumeBatch: consume, onError: vi.fn()
+      subscribe: async () => stop, drain, consumeBatch: consume, onError: vi.fn()
     });
     await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
     dispose();

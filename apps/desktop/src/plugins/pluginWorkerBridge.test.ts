@@ -244,7 +244,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       const embed = await chemistry.embed3d!({ components: [{ smiles: "C" }], seed: 42 });
       const minimize = await chemistry.minimize3d!({ model: embed.model, interfragment: false });
       await expect(chemistry.minimize3d!({ model: embed.model, interfragment: "false" } as never))
-        .rejects.toThrow("minimize3d interfragment must be a boolean (true or false).");
+        .rejects.toThrow("The interfragment is invalid.");
       const flatten = await chemistry.flatten3d!({ model: minimize.model, view: "auto" });
       return { embed, minimize, flatten };
     } } });

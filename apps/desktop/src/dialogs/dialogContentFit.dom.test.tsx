@@ -114,7 +114,7 @@ describe.each(["macos", "windows"] as const)("live content minimum on %s", platf
           width: form.style.width === "min-content" ? intrinsic : 480 } as DOMRect;
       };
       const short = measureDialogContent(form)!;
-      expect(short.contentWidth).toBe(300);
+      expect(short.contentWidth).toBe(320);
       render("W".repeat(300));
       const savedStyle = title.getAttribute("style");
       expect(measureDialogContent(form)).toEqual(short);

@@ -18,7 +18,8 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const native = vi.hoisted(() => ({
   loadSession: vi.fn<() => Promise<unknown>>(),
-  open: undefined as undefined | ((payload: { path: string; displayName: string; contents: string }) => void),
+  pendingOpen: [] as { path: string; displayName: string; contents: string }[],
+  open: undefined as undefined | (() => void),
   saveSession: vi.fn<(value: DocumentSessionEnvelope) => Promise<void>>(),
   savePath: vi.fn<() => Promise<string>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -54,11 +55,15 @@ vi.mock("./window-manager", async original => ({
 }));
 vi.mock("./window-manager/tauriEvents", async original => ({
   ...await original<typeof import("./window-manager/tauriEvents")>(),
-  listenTauriEvent: async (name: string, handler: (event: { payload: Parameters<NonNullable<typeof native.open>>[0] }) => void) => {
+  listenTauriEvent: async (name: string, handler: (event: { payload: null }) => void) => {
     if (name !== "chemdraft://open-document") return () => {};
-    native.open = payload => handler({ payload });
+    native.open = () => handler({ payload: null });
     return () => { native.open = undefined; };
   }
+}));
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(),
+  invoke: vi.fn(async (command: string) => command === "take_pending_open_document" ? native.pendingOpen.splice(0) : undefined)
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: native.savePath }));
 vi.mock("@tauri-apps/plugin-fs", async original => ({
@@ -123,6 +128,7 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
   }
   beforeEach(async () => {
     vi.clearAllMocks();
+    native.pendingOpen.length = 0;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -183,9 +189,15 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
       if (source !== "opened") native.loadSession.mockResolvedValueOnce(
         buildDocumentSessionEnvelope(payload, { path: "/tmp/opened-table.chemdraft", dirty: source === "restored dirty" }, "opened-table.chemdraft", false));
       await remount(createPhase4Document());
-      if (source === "opened") await act(async () => { native.open!({
-        path: "/tmp/opened-table.chemdraft", displayName: "opened-table.chemdraft", contents: payload.contents
-      }); });
+      if (source === "opened") {
+        await act(async () => {
+          native.pendingOpen.push({ path: "/tmp/opened-table.chemdraft", displayName: "opened-table.chemdraft", contents: payload.contents });
+          native.open!();
+        });
+        await act(async () => {
+          await vi.waitFor(() => expect(snapshot().file.path).toBe("/tmp/opened-table.chemdraft"));
+        });
+      }
       native.writeFile.mockClear();
       const original = value(currentTable(), target).text;
       expect(snapshot().file.dirty).toBe(source === "restored dirty");

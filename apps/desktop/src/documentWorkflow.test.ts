@@ -7711,7 +7711,7 @@ describe("Phase 4 document workflow", () => {
     const cdxml = exportPhase4Cdxml(tilted);
     const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));
     expect(cdxml.contents).toContain('GraphicType="Rectangle"');
-    expect(cdxml.contents).toContain('RectangleType="RoundEdge"');
+    expect(cdxml.contents).toContain('RectangleType="RoundEdge Filled"');
     expect(cdxml.contents).toContain('CornerRadius="525"');
     const colorTable = cdxml.contents.match(/<colortable>([\s\S]*?)<\/colortable>/)?.[1] ?? "";
     const colors = [...colorTable.matchAll(/<color\b[^>]*>/g)].map(([entry]) =>

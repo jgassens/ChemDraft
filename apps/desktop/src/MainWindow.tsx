@@ -1779,7 +1779,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.06.00-codex";
+const CURRENT_BUILD_STAMP = "11.11.08.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7253,7 +7253,9 @@ export function MainWindow({
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      if (!commitClipboardPaste(result.document, anchor, detectedPayload.kind === "image" ? "Paste Picture" : undefined)) return;
+      if (detectedPayload.kind === "image") {
+        if (!commitDocumentChangeWithPageFit(result.document, "Paste Picture")) return;
+      } else if (!commitClipboardPaste(result.document, anchor)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -7263,7 +7265,7 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
+  }, [commitClipboardPaste, commitDocumentChangeWithPageFit, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
@@ -10345,7 +10347,7 @@ export function MainWindow({
     };
 
     return listenAndDrainNativeOpenQueue({
-      listen: listenForNativeOpenDocuments,
+      subscribe: listenForNativeOpenDocuments,
       drain: takePendingNativeOpenDocuments,
       consumeBatch: openNativePayloads,
       onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)

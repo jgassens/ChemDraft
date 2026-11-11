@@ -13,8 +13,9 @@ import * as clipboard from "./clipboard";
 import * as smilesPaste from "./smilesListPaste";
 import * as smilesIdentity from "./smilesPasteIdentity";
 import * as windowManager from "./window-manager";
-import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
+import { applyClipboardPastePayload, createPhase4Document, setDocumentCustomPageSize } from "./documentWorkflow";
 import { pictureSvg } from "./testSupport/imageFixture";
+import { PageEnlargementConsent } from "./pageEnlargement";
 
 const picturePngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAJAAAABICAYAAAAZK3z6AAAA80lEQVR4nO3OsQkAMBDEsNt/6c8OaYzBhXptu0v+4YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YGYPTnRs7EzXJbBAAAAAElFTkSuQmCC";
 
@@ -377,6 +378,32 @@ describe("picture paste and canvas", { timeout: 30_000 }, () => {
     expect(snapshot().selection.objectIds).toEqual([image.id]);
     await command("edit.undo");
     expect(canUndo()).toBe(false);
+  });
+
+  it("keeps the refusal when picture decoding finishes while a page-size question is pending", async () => {
+    const drawing = setDocumentCustomPageSize(createPhase4Document("Pending page question"),
+      { width: 20, height: 20, unit: "css-px" });
+    await render(drawing);
+    const before = snapshot();
+    const decoding = deferred<void>();
+    const decode = vi.fn(() => decoding.promise);
+    vi.stubGlobal("Image", class { src = ""; decode = decode; });
+    const answer = deferred<"keep">();
+    const confirm = vi.spyOn(PageEnlargementConsent.prototype, "confirm").mockReturnValue(answer.promise);
+    const bytes = Uint8Array.from(atob(picturePngBase64), char => char.charCodeAt(0));
+    await dispatchFiles([new File([bytes], "picture.png", { type: "image/png" })]);
+    await waitForPaste(() => expect(decode).toHaveBeenCalledOnce());
+
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue(nativeImage);
+    await command("clipboard.paste");
+    expect(confirm).toHaveBeenCalledOnce();
+    await act(async () => decoding.resolve());
+    await waitForPaste(() => expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("Finish the page size question before editing."));
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Pasted picture.");
+    expect(snapshot()).toEqual(before);
+    expect(canUndo()).toBe(false);
+    await act(async () => answer.resolve("keep"));
   });
 
   it("refuses oversized DOM image files before reading them, with the shared limit message", async () => {

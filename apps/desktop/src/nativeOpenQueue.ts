@@ -5,7 +5,7 @@
  * without waiting for prompts; each destructive drain is one batch for status reporting.
  */
 export function listenAndDrainNativeOpenQueue<T>(options: {
-  listen: (changed: () => void) => Promise<() => void>;
+  subscribe: (changed: () => void) => Promise<() => void>;
   drain: () => Promise<readonly T[]>;
   consumeBatch: (payloads: readonly T[]) => void;
   onError: (error: unknown) => void;
@@ -36,7 +36,7 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
     void drainRequested();
   };
 
-  void options.listen(changed).then(stop => {
+  void options.subscribe(changed).then(stop => {
     if (disposed) { stop(); return; }
     unlisten = stop;
     ready = true;
