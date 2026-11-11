@@ -2102,6 +2102,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     }
     let preferences = window.label() == super::PREFERENCES_WINDOW_LABEL;
     if preferences {
+        super::clear_document_key_after_unhide_for_preferences();
         if let Some(state) = REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2134,7 +2135,11 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         activate_preferences_application_on_main()?;
     }
     window.set_focus().map_err(|e| e.to_string())?;
-    bring_to_front_on_main(window)
+    bring_to_front_on_main(window)?;
+    if preferences {
+        defer_preferences_raise_on_main(window);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2152,6 +2157,54 @@ fn activate_preferences_application_on_main() -> Result<(), String> {
 fn activate_preferences_application_on_main() -> Result<(), String> {
     // Other platforms retain the existing show/set_focus path.
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_raise_preferences_after_activation(
+    quitting: bool,
+    preferences_visible: Option<bool>,
+    owner_visible: bool,
+    utilities_suspended: bool,
+) -> bool {
+    !quitting && preferences_visible == Some(true) && owner_visible && !utilities_suspended
+}
+
+#[cfg(target_os = "macos")]
+fn defer_preferences_raise_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let app = window.app_handle().clone();
+    let raise = block2::RcBlock::new(move || {
+        // Resolve live windows at execution time; never retain a native pointer across turns.
+        let preferences = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL);
+        let owner_visible = app
+            .get_webview_window(super::MAIN_WINDOW_LABEL)
+            .is_some_and(|owner| {
+                owner.is_visible().unwrap_or(false) && !owner.is_minimized().unwrap_or(true)
+            });
+        if !should_raise_preferences_after_activation(
+            super::quit_in_progress(),
+            preferences
+                .as_ref()
+                .map(|window| window.is_visible().unwrap_or(false)),
+            owner_visible,
+            super::utility_windows_suspended(),
+        ) {
+            return;
+        }
+        if let Some(window) = preferences {
+            if let Err(error) = bring_to_front_on_main(&window) {
+                eprintln!("ChemDraft: could not raise Preferences after activation: {error}");
+            }
+        }
+    });
+    // Unlike Tauri's main-thread runner, adding an operation never invokes this block inline.
+    // Foundation's main queue runs it after the current activation/show transaction returns.
+    // SAFETY: the block captures only a Send AppHandle; AppKit access stays on the main queue.
+    unsafe { objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&raise) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn defer_preferences_raise_on_main<R: Runtime>(_window: &tauri::WebviewWindow<R>) {
+    // Windows keeps the immediate set_focus and owned-window z-order handling.
 }
 
 /// Called by reveal and by the existing relative-order utility restore (already on main).
@@ -3743,6 +3796,36 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn deferred_preferences_raise_requires_live_visible_windows_and_no_quit_or_suspension() {
+        for (reason, quitting, preferences_visible, owner_visible, suspended, expected) in [
+            ("ready", false, Some(true), true, false, true),
+            ("quitting", true, Some(true), true, false, false),
+            ("Preferences gone", false, None, true, false, false),
+            ("Preferences hidden", false, Some(false), true, false, false),
+            (
+                "owner hidden or gone",
+                false,
+                Some(true),
+                false,
+                false,
+                false,
+            ),
+            ("utilities suspended", false, Some(true), true, true, false),
+        ] {
+            assert_eq!(
+                super::should_raise_preferences_after_activation(
+                    quitting,
+                    preferences_visible,
+                    owner_visible,
+                    suspended,
+                ),
+                expected,
+                "{reason}"
+            );
+        }
+    }
+
     #[test]
     fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
         let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});

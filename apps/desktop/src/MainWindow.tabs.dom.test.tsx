@@ -71,7 +71,9 @@ const native = vi.hoisted(() => ({
   suspendPending: undefined as Promise<void> | undefined,
   clipboardPending: undefined as Promise<{ types: string[]; textItems: { type: string; text: string }[] }> | undefined,
   events: new Map<string, (payload: unknown) => void>(),
-  picker: vi.fn<() => Promise<string | null>>(),
+  picker: vi.fn<() => Promise<string | string[] | null>>(),
+  pendingOpenDocuments: [] as Array<{ path: string; displayName: string; contents: string; bytes?: number[] }>,
+  drainOpenDocuments: vi.fn<() => Promise<unknown>>(),
   savePicker: vi.fn<() => Promise<string | null>>(),
   readFile: vi.fn<(path: string) => Promise<Uint8Array>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
@@ -123,7 +125,14 @@ vi.mock("./window-manager", async (original) => ({
 }));
 vi.mock("./window-manager/tauriEvents", async (original) => {
   const listen = async (name: string, handler: (event: { payload: unknown }) => void) => {
-    const callback = (payload: unknown) => handler({ payload });
+    const callback = (payload: unknown) => {
+      // Model the native queue: older tests supply the OS request here, while the real event is
+      // just a notification. Only the pending-drain invoke delivers document payloads to React.
+      if (name === "chemdraft://open-document" && payload) {
+        native.pendingOpenDocuments.push(payload as typeof native.pendingOpenDocuments[number]);
+      }
+      handler({ payload });
+    };
     native.events.set(name, callback);
     return () => { if (native.events.get(name) === callback) native.events.delete(name); };
   };
@@ -134,6 +143,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   isTauri: () => native.suspendUtilities,
   invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+    if (command === "take_pending_open_document") return native.drainOpenDocuments();
     if (command === "read_clipboard_payload") return native.clipboardPending ?? { types: [], textItems: [] };
     if (command === "suspend_toolset_windows") {
       if (native.suspendFailure && options?.suspended) throw new Error("Native utility hide refused");
@@ -235,6 +245,8 @@ describe("documents in one window", () => {
       return { toolsetId, open: native.toolsetWindows.get(toolsetId) ?? false, focused: false };
     });
     native.session = undefined;
+    native.pendingOpenDocuments = [];
+    native.drainOpenDocuments.mockReset().mockImplementation(async () => native.pendingOpenDocuments.splice(0));
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
     native.saveSession.mockImplementation(async (value) => { native.session = JSON.parse(JSON.stringify(value)); });
@@ -1276,6 +1288,47 @@ describe("documents in one window", () => {
     expect(drawnText()).toContain("Keep OS edits");
   });
 
+  it("opens every picker selection in selection order using deferred reads", async () => {
+    const paths = ["/drawings/first.chemdraft", "/drawings/second.chemdraft", "/drawings/third.chemdraft"];
+    native.picker.mockResolvedValueOnce(paths);
+    for (const index of paths.keys()) {
+      native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fileContents(index.toString())));
+    }
+    await command("document.open");
+    expect(native.picker).toHaveBeenLastCalledWith(expect.objectContaining({ multiple: true }));
+    expect(native.readFile.mock.calls.map(([path]) => path)).toEqual(paths);
+    expect(tabs().map(tab => tab.textContent)).toEqual(["first.chemdraft", "second.chemdraft", "third.chemdraft"]);
+    for (const [index, path] of paths.entries()) {
+      await activate(index);
+      expect(bridge().snapshot().file.path).toBe(path);
+      expect(bridge().snapshot().document.title).toBe(index.toString());
+    }
+  });
+
+  it("drains live notifications overlapping the initial read without duplicate opens or lost files", async () => {
+    const paths = ["/drawings/cold-A.chemdraft", "/drawings/cold-B.chemdraft", "/drawings/live-C.chemdraft"];
+    const payloads = paths.map((path, index) => ({ path, displayName: path.split("/").at(-1)!, contents: fileContents(`Payload ${index}`) }));
+    let finishDrain!: (value: unknown) => void;
+    native.drainOpenDocuments.mockImplementationOnce(() => new Promise(resolve => { finishDrain = resolve; }));
+    await remount();
+    expect(native.events.has("chemdraft://open-document")).toBe(true);
+    const drainCount = native.drainOpenDocuments.mock.calls.length;
+    // A's notification can arrive after A was removed from the native queue by the initial drain.
+    await act(async () => {
+      native.events.get("chemdraft://open-document")!(null);
+      native.pendingOpenDocuments.push(payloads[2]!);
+      native.events.get("chemdraft://open-document")!(null);
+    });
+    expect(native.drainOpenDocuments).toHaveBeenCalledTimes(drainCount);
+    await act(async () => finishDrain(payloads.slice(0, 2)));
+    expect(tabs().map(tab => tab.textContent)).toEqual(["cold-A.chemdraft", "cold-B.chemdraft", "live-C.chemdraft"]);
+    expect(vi.mocked(openNativeDocument).mock.calls.map(([contents]) => contents)).toEqual(payloads.map(payload => payload.contents));
+    expect(native.pendingOpenDocuments).toEqual([]);
+    await act(async () => native.events.get("chemdraft://open-document")!(null));
+    expect(tabs()).toHaveLength(3);
+    expect(openNativeDocument).toHaveBeenCalledTimes(3);
+  });
+
   it("browser file drop reuses a pristine tab and preserves an edited one", async () => {
     native.desktop = false;
     async function drop(name: string) {
@@ -1360,6 +1413,53 @@ describe("documents in one window", () => {
           expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe(preset);
         }
       } finally { restore(); }
+    });
+
+    it("cold-start drains three launch files in order with one prompt and per-document Enlarge, Cancel, Enlarge answers", async () => {
+      const paths = ["/drawings/launch-A.cdxml", "/drawings/launch-B.cdxml", "/drawings/launch-C.cdxml"];
+      const payloads = paths.map(path => ({ path, displayName: path.split("/").at(-1)!, contents: oversized }));
+      let activePrompts = 0;
+      let maximumPrompts = 0;
+      const shown: NativePromptOptions[] = [];
+      restorePromptProvider();
+      restorePromptProvider = setNativePromptProvider(async prompt => {
+        shown.push(prompt);
+        maximumPrompts = Math.max(maximumPrompts, ++activePrompts);
+        try {
+          return await new Promise<string>(resolve => { pendingPrompt = { prompt, resolve }; });
+        } finally { activePrompts--; }
+      });
+      // The native pending-drain invoke returns all three payloads from the cold-start queue.
+      native.drainOpenDocuments.mockResolvedValueOnce(payloads);
+      await remount();
+      expectPageFit("launch-A.cdxml");
+      expect(tabs().map(tab => tab.textContent)).toEqual(["launch-A.cdxml"]);
+      expect(shown).toHaveLength(1);
+      await dismissPageFit("resize");
+      expectPageFit("launch-B.cdxml");
+      expect(tabs().map(tab => tab.textContent)).toEqual(["launch-A.cdxml •", "launch-B.cdxml"]);
+      expect(bridge().snapshot().file.path).toBe(paths[1]);
+      expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe("letter");
+      expect(shown).toHaveLength(2);
+      await dismissPageFit("keep");
+      expectPageFit("launch-C.cdxml");
+      expect(bridge().snapshot().file.path).toBe(paths[2]);
+      expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe("letter");
+      expect(shown).toHaveLength(3);
+      await dismissPageFit("resize");
+      expect(pendingPrompt).toBeUndefined();
+      expect(activePrompts).toBe(0);
+      expect(maximumPrompts).toBe(1);
+      expect(shown.map(prompt => prompt.message.split(" extends beyond")[0])).toEqual(payloads.map(payload => payload.displayName));
+      expect(tabs().map(tab => tab.textContent)).toEqual(["launch-A.cdxml •", "launch-B.cdxml", "launch-C.cdxml •"]);
+      for (const [index, path] of paths.entries()) {
+        await activate(index);
+        expect(bridge().snapshot().file.path).toBe(path);
+        expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe(index === 1 ? "letter" : "custom");
+        expect(bridge().snapshot().file.dirty).toBe(index !== 1);
+        expect(pendingPrompt).toBeUndefined();
+      }
+      expect(shown).toHaveLength(3);
     });
 
     it("keeps a delayed batch read ahead of later files after cancelling a close", async () => {
