@@ -996,17 +996,17 @@ describe("documents in one window", () => {
   });
 
   it("keeps native Close Window / Close Tab menu routing tied to the document count", async () => {
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
     await command("document.new");
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, true, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(pendingPrompt).toBeUndefined();
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
     await closeTab();
     expect(tabs()).toHaveLength(1);
-    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
+    expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false, false);
   });
 
   it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
