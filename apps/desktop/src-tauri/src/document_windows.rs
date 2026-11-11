@@ -21,6 +21,7 @@ pub struct DocumentWindow {
 #[derive(Default)]
 pub struct DocumentWindowRegistry {
     windows: Mutex<BTreeMap<String, DocumentWindow>>,
+    preferences_owner: Mutex<Option<String>>,
 }
 
 impl DocumentWindowRegistry {
@@ -30,6 +31,7 @@ impl DocumentWindowRegistry {
         registry
             .register("main", "main")
             .expect("the initial document registry is empty");
+        registry.set_preferences_owner("main");
         registry
     }
 
@@ -136,19 +138,75 @@ impl DocumentWindowRegistry {
             .cloned()
     }
 
-    /// Until explicit ownership lands, existing utilities all belong to the migrated main window.
+    /// Identity lookup for ownership checks, including construction and close-time cleanup.
+    pub fn registered_document_window(&self, window_id: &str) -> Option<DocumentWindow> {
+        self.windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(window_id)
+            .cloned()
+    }
+
+    pub fn set_preferences_owner(&self, label: &str) -> bool {
+        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(owner) = windows.values().find(|window| window.native_label == label) else {
+            return false;
+        };
+        *self
+            .preferences_owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(owner.window_id.clone());
+        true
+    }
+
+    /// Preferences survives only with a ready owner. Exclude the dismissing window before removal.
+    pub fn reown_preferences(&self, closing_owner: Option<&str>) -> Option<DocumentWindow> {
+        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut owner = self
+            .preferences_owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let eligible = |window: &&DocumentWindow| {
+            window.lifecycle == DocumentWindowLifecycle::Ready
+                && Some(window.window_id.as_str()) != closing_owner
+        };
+        let next = owner
+            .as_ref()
+            .and_then(|id| windows.get(id))
+            .filter(eligible)
+            .or_else(|| {
+                windows
+                    .values()
+                    .filter(eligible)
+                    .max_by_key(|window| (window.last_activated_at, window.created_at))
+            })
+            .cloned();
+        *owner = next.as_ref().map(|window| window.window_id.clone());
+        next
+    }
+
+    /// Dialogs carry their registered owner id; remaining utilities retain migration ownership.
     /// The hidden runtime is an application service, not an owned document utility.
     pub fn owner_of(&self, label: &str) -> Option<DocumentWindow> {
         let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(window) = windows.values().find(|window| window.native_label == label) {
             return Some(window.clone());
         }
+        if label == "preferences" {
+            let owner = self
+                .preferences_owner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            return owner.as_ref().and_then(|id| windows.get(id)).cloned();
+        }
+        if let Some((owner, _, _)) = super::dialog_windows::dialog_label_parts(label) {
+            return windows.get(owner).cloned();
+        }
         if label.starts_with("toolset-")
-            || label.starts_with("dialog-")
             || label.starts_with("plugin-panel-")
-            || matches!(label, "preferences" | "spin3d-debugger")
+            || label == "spin3d-debugger"
         {
-            // A1 migration ownership: explicit per-utility owners/labels land in A4/A5.
+            // Palette and panel ownership belongs to the later multi-window tasks.
             return windows.get("main").cloned();
         }
         None
@@ -255,5 +313,68 @@ mod tests {
         assert!(registry.owner_of("unknown").is_none());
         registry.remove("main");
         assert!(registry.owner_of("toolset-main").is_none());
+    }
+
+    #[test]
+    fn preferences_has_no_survivor_when_its_only_owner_is_dismissed_or_closing() {
+        for closing in [false, true] {
+            let registry = DocumentWindowRegistry::with_main();
+            registry.set_ready("main");
+            if closing {
+                registry.begin_closing("main");
+            }
+            assert!(registry.reown_preferences(Some("main")).is_none());
+            assert!(registry.owner_of("preferences").is_none());
+        }
+    }
+
+    #[test]
+    fn creating_and_closing_documents_cannot_keep_preferences_alive() {
+        let registry = DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        registry.register("doc-creating", "doc-creating").unwrap();
+        registry.register("doc-closing", "doc-closing").unwrap();
+        registry.set_ready("doc-closing");
+        registry.begin_closing("doc-closing");
+        assert!(registry.reown_preferences(Some("main")).is_none());
+        assert!(registry.owner_of("preferences").is_none());
+    }
+
+    #[test]
+    fn preferences_survives_its_opener_and_uses_the_active_surviving_document() {
+        let registry = DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        registry.register("doc-b", "doc-b").unwrap();
+        registry.set_ready("doc-b");
+        registry.register("doc-c", "doc-c").unwrap();
+        registry.set_ready("doc-c");
+        assert!(!registry.set_preferences_owner("toolset-main"));
+        assert!(registry.set_preferences_owner("main"));
+        registry.mark_activated("doc-b");
+        // Dismissing another window does not move Preferences away from its live opener.
+        assert_eq!(
+            registry.reown_preferences(Some("doc-c")).unwrap().window_id,
+            "main"
+        );
+        assert_eq!(
+            registry.reown_preferences(Some("main")).unwrap().window_id,
+            "doc-b"
+        );
+        registry.remove("main");
+        assert_eq!(registry.owner_of("preferences").unwrap().window_id, "doc-b");
+        registry.begin_closing("doc-b");
+        assert_eq!(
+            registry.reown_preferences(Some("doc-b")).unwrap().window_id,
+            "doc-c"
+        );
+        registry.remove("doc-b");
+        registry.begin_closing("doc-c");
+        assert!(registry.reown_preferences(Some("doc-c")).is_none());
+        assert!(registry.owner_of("preferences").is_none());
+        registry.remove("doc-c");
+        registry.register("doc-d", "doc-d").unwrap();
+        registry.set_ready("doc-d");
+        registry.mark_activated("doc-d");
+        assert_eq!(registry.reown_preferences(None).unwrap().window_id, "doc-d");
     }
 }

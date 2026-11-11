@@ -11,7 +11,7 @@ failure reports an error in the document status; it never creates an in-page des
 
 ## Authority and files
 
-- `apps/desktop/src/dialogs/DialogCoordinator.ts`: one coordinator owned by MainWindow; subscriptions,
+- `apps/desktop/src/dialogs/DialogCoordinator.ts`: one coordinator per document window, with its captured window id; subscriptions,
   startup deadlines, receipts, originating-tab callbacks, and exactly-once settlement.
 - `dialogProtocol.ts`: internal version 1 request/snapshot/ready/action/result/closed contract and
   runtime validators; no callbacks or unrestricted command strings. Transport policy is shared;
@@ -27,7 +27,30 @@ failure reports an error in the document status; it never creates an in-page des
 - `src-tauri/src/dialog_windows.rs`: registration, validation, native construction/reveal/ownership,
   close/destroy hooks, bounded sessions, and frame persistence.
 - `src-tauri/capabilities/dialog-host.json` / `dialog-owner.json`: host receive/send only versus
-  main-only create/publish/close. Existing filesystem/dialog/capture/engine grants are unchanged.
+  document-only create/publish/close. Existing filesystem/dialog/capture/engine grants are unchanged.
+
+## Owner identity (1.3 A4)
+
+Native session labels are `dialog-<ownerWindowId>-<kind>-<slot>`. The migrated first owner is
+`main`, so its labels and per-kind saved frame keys are unchanged. Parsing splits kind and slot
+from the right, allowing generated document ids with UUID hyphens. Owner ids are bounded to
+128 ASCII token characters in the `main`/`doc-…` namespace; path separators, colons, whitespace,
+unknown kinds and malformed slots are refused. Native parsing also requires the owner id in
+`DocumentWindowRegistry`. Syntax-only label classification is used for styling, never authority.
+
+Rust authenticates a document caller against that registry and requires its native label to equal
+the message's owner id. Every channel/bootstrap/publish/close operation retains the registered
+session, caller, owner, kind, tab and revision checks. TypeScript validates the captured owner;
+the dialog transport obtains its owner from the Rust-authenticated channel's native label, pins
+that label for its lifetime, and permits outgoing messages only for that channel's owner.
+Capability patterns remain kind-specific (`dialog-*-<kind>-*`) and grant only request/send.
+Globs provide a namespace gate; registry membership, label grammar and exact-session authorization
+remain mandatory inside both commands. No generic event or document capabilities are added.
+
+Duplicate sessions are keyed by owner, tab and kind; the 16-session cap remains application-wide.
+`dismiss_owned(app, ownerWindowId, reason)` settles only that owner's sessions. `dismiss_all`
+retains the existing quit teardown across owners, including Preferences. The close-versus-quit
+policy and enabling additional native document windows remain later tasks in the 1.3 plan.
 
 ## Preferences frame lifecycle
 
@@ -42,7 +65,12 @@ position applied by placement and OS adjustments within two physical pixels per 
 logical pixel rounded up at the window's scale, whichever is larger). The placement marker remains
 until a move exceeds that tolerance or the window closes; larger user moves are accepted immediately.
 Retained-window reveal preserves its position. Windows uses document ownership without a taskbar
-entry; macOS uses the host's floating level and activation policy. Owner dismissal closes it too.
+entry; macOS uses the host's floating level and activation policy. Preferences is an
+application-scoped singleton: document-owner dismissal leaves it open when another ready document
+survives. When its opener closes, its logical owner becomes the active surviving document; Windows updates `GWLP_HWNDPARENT`
+before the opener is destroyed, while macOS remains unparented. Dismissing the last document window
+(with no surviving ready document) flushes and dismisses Preferences with the other dialogs,
+preserving the single-window behavior. App quit still flushes and closes it.
 Preferences does not become a protocol draft window or receive dialog transport permissions.
 
 Native regression tests cover first-open centering, per-kind persistence/reopen at a different scale,
@@ -73,7 +101,7 @@ Suppression hides the badge only: validation still supplies the explanation and 
 
 The generic `engineInstall` kind uses the same modeless native construction, owner, floating
 level, focus policy, session limits and per-kind position persistence as the existing dialogs.
-Its label is `dialog-main-engineInstall-<slot>`. The existing opaque-host route in App needs no
+Its label is `dialog-<ownerWindowId>-engineInstall-<slot>`. The existing opaque-host route in App needs no
 new query parameters. Dialog capabilities add only this label pattern; all engine commands remain
 restricted to the document window. Recognition installation is unchanged.
 
@@ -149,7 +177,7 @@ and wrong callers fail closed. Bootstrap uses only the opaque `hostId`, protocol
 request ID; Rust derives its envelope from the actual registered calling window. Nothing about a
 drawing or its file path appears in `/?window=dialog&hostId=…`.
 
-Rust assigns `dialog-main-pageSize-<slot>`. Main supplies a Tauri `Channel` to `dialog_open`, and
+Rust assigns `dialog-<ownerWindowId>-pageSize-<slot>`. Main supplies a Tauri `Channel` to `dialog_open`, and
 the dialog supplies its own channel to `dialog_request`. Rust stores these channels in the session
 only after checking the actual invoking native window. Actions, ready, bootstrap requests and
 native closed notifications reach main only through its channel; snapshots and results reach the
@@ -183,7 +211,7 @@ owner. macOS uses unparented, focusable floating-level windows at
 `toolset_utility_window_level()`, like toolbars, with `hidesOnDeactivate` enabled. They are never
 AppKit document children: adding a child makes it adopt the parent's normal level and keeps it
 visible with the document on deactivation. Reveal and utility restoration never attach dialogs;
-even a recorded child relationship is refused. Registry ownership still dismisses dialogs when
+even a recorded child relationship is refused. Registry ownership still dismisses document-session dialogs when
 the document is hidden/closed or the app quits, without relying on `parentWindow()`. No menu is
 attached. Native close/destroy is authoritative; the document's macOS hide-on-Close hook also
 dismisses dialogs. Quit dismisses registered sessions before asking for the final document flush.
@@ -289,7 +317,7 @@ screen cap. This work does not migrate plugin-owned reports or other independent
 
 Preferences retains its application-wide route and settings broadcasts. Its hidden, unfocused
 native construction now uses Windows document ownership, skip-taskbar, non-minimizable traits and
-the shared host's geometry, floating level, suspension, stacking and owner dismissal. Only its
+the shared host's geometry, floating level, suspension and stacking; it survives owner dismissal. Only its
 actual calling window can invoke `preferences_ready`, granted solely by
 `capabilities/preferences-layout.json`; it reports the same bounded `ContentFit` measurement.
 Preferences uses the same `DialogPlacement`, AppKit/Tauri setters and debounced frame worker as
@@ -330,7 +358,7 @@ typed callback and do not receive native window or download authority.
 ## Structure templates
 
 `template.insertDialog` opens the modeless `structureTemplates` kind, labeled
-`dialog-main-structureTemplates-<slot>`, through the same opaque-host route in `App.tsx`.
+`dialog-<ownerWindowId>-structureTemplates-<slot>`, through the same opaque-host route in `App.tsx`.
 It starts at 620 × 700 logical pixels (minimum 420 × 360), resizes, and inherits document ownership,
 first centering, per-kind position persistence, utility suspension, focus and originating-tab dismissal
 on both platforms. Reopening shows and focuses the retained window without resetting its search.
@@ -370,7 +398,7 @@ snapshot revisions and cancellation semantics before they can use the host.
 
 ## Stage 2: modeless Export
 
-`export.open` opens the second registered kind, `export`, labeled `dialog-main-export-<slot>`.
+`export.open` opens the second registered kind, `export`, labeled `dialog-<ownerWindowId>-export-<slot>`.
 It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
 retain a session for the same tab. Export starts at a 520px logical width with content-fit height
 (520 × 620 before ready or without a measurement). Its 420 × 360 resize minimum is bounded by the

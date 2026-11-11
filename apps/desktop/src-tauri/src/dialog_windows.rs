@@ -930,7 +930,7 @@ impl Message {
                 MAX_BYTES
             }
             || self.protocol_version != 1
-            || !documents.is_document_window(&self.owner_window_id)
+            || registered_owner(documents, &self.owner_window_id).is_none()
             || kind_spec(&self.dialog_kind).is_err()
             || !token(&self.document_tab_id)
             || !token(&self.session_id)
@@ -1328,19 +1328,56 @@ impl PreferencesLayout {
 }
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
 
+fn valid_owner_id(owner: &str) -> bool {
+    token(owner) && (owner == "main" || owner.strip_prefix("doc-").is_some_and(|id| !id.is_empty()))
+}
+
+fn registered_owner(
+    documents: &super::document_windows::DocumentWindowRegistry,
+    owner: &str,
+) -> Option<super::document_windows::DocumentWindow> {
+    valid_owner_id(owner)
+        .then(|| documents.registered_document_window(owner))
+        .flatten()
+}
+
+/// Syntax classification for native styling only; never an authorization check.
+pub(crate) fn dialog_label_parts(label: &str) -> Option<(&str, &str, &str)> {
+    let (rest, slot) = label.strip_prefix("dialog-")?.rsplit_once('-')?;
+    let (owner, kind) = rest.rsplit_once('-')?;
+    (valid_owner_id(owner)
+        && kind != "preferences"
+        && kind_spec(kind).is_ok()
+        && !slot.is_empty()
+        && slot.len() <= 20
+        && slot.bytes().all(|c| c.is_ascii_digit()))
+    .then_some((owner, kind, slot))
+}
+
+fn parse_dialog_label<'a>(
+    documents: &super::document_windows::DocumentWindowRegistry,
+    label: &'a str,
+) -> Option<(&'a str, &'a str, &'a str)> {
+    let parts = dialog_label_parts(label)?;
+    registered_owner(documents, parts.0)?;
+    Some(parts)
+}
+
 pub(crate) fn is_dialog_label(label: &str) -> bool {
-    label == super::PREFERENCES_WINDOW_LABEL
-        || label
-            // A1 has no owner-generic dialog label scheme; retain this gate until A4.
-            .strip_prefix("dialog-main-")
-            .and_then(|s| s.split_once('-'))
-            .is_some_and(|(kind, slot)| {
-                kind != "preferences"
-                    && kind_spec(kind).is_ok()
-                    && !slot.is_empty()
-                    && slot.len() <= 20
-                    && slot.bytes().all(|c| c.is_ascii_digit())
-            })
+    label == super::PREFERENCES_WINDOW_LABEL || dialog_label_parts(label).is_some()
+}
+
+fn authorize_owner(
+    documents: &super::document_windows::DocumentWindowRegistry,
+    owner: &str,
+    caller: &str,
+) -> Result<(), String> {
+    if caller != owner
+        || registered_owner(documents, owner).is_none_or(|window| window.native_label != caller)
+    {
+        return Err("Unknown dialog owner".into());
+    }
+    Ok(())
 }
 fn authorize(
     documents: &super::document_windows::DocumentWindowRegistry,
@@ -1349,14 +1386,14 @@ fn authorize(
     owner: bool,
     message: Option<&Message>,
 ) -> Result<(), String> {
-    let expected = if owner {
-        &session.snapshot.owner_window_id
+    let registered = parse_dialog_label(documents, &session.registration.window_label);
+    if registered.is_none_or(|(id, kind, _)| {
+        id != session.snapshot.owner_window_id || kind != session.snapshot.dialog_kind
+    }) || (if owner {
+        authorize_owner(documents, &session.snapshot.owner_window_id, sender).is_err()
     } else {
-        &session.registration.window_label
-    };
-    if !documents.is_document_window(&session.snapshot.owner_window_id)
-        || sender != expected
-        || message.is_some_and(|m| !m.same_session(&session.snapshot))
+        sender != session.registration.window_label
+    }) || message.is_some_and(|m| !m.same_session(&session.snapshot))
     {
         return Err(
             "Dialog caller, session, or revision does not match its registered native window"
@@ -1370,6 +1407,165 @@ fn authorize(
 mod document_registry_authorization_tests {
     use super::*;
 
+    fn snapshot_for(owner: &str) -> Message {
+        serde_json::from_value(json!({
+            "protocolVersion": 1, "ownerWindowId": owner, "documentTabId": "same-tab",
+            "dialogKind": "pageSize", "sessionId": "same-session", "requestId": "same-request",
+            "snapshotRevision": 1, "type": "snapshot",
+            "data": {"title": "Drawing", "width": 8.5, "height": 11, "unit": "inch"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn two_owners_do_not_collide_and_dismissing_a_keeps_b_and_preferences() {
+        let documents = crate::document_windows::DocumentWindowRegistry::with_main();
+        documents.set_ready("main");
+        documents.register("doc-b", "doc-b").unwrap();
+        documents.set_ready("doc-b");
+        documents.mark_activated("doc-b");
+        assert!(documents.set_preferences_owner("main"));
+        let mut dialogs = Registry {
+            preferences: Some(PreferencesLayout::default()),
+            ..Registry::default()
+        };
+        let a = snapshot_for("main");
+        let b = snapshot_for("doc-b");
+        let (ra, build_a) = register(&documents, &mut dialogs, a.clone(), false).unwrap();
+        let (rb, build_b) = register(&documents, &mut dialogs, b.clone(), false).unwrap();
+        assert!(build_a && build_b);
+        assert_ne!(ra.host_id, rb.host_id);
+        assert_eq!(ra.window_label, "dialog-main-pageSize-1");
+        assert_eq!(rb.window_label, "dialog-doc-b-pageSize-2");
+        assert!(
+            !register(&documents, &mut dialogs, a.clone(), false)
+                .unwrap()
+                .1
+        );
+        let mut duplicate = a.clone();
+        duplicate.session_id = "another-session".into();
+        assert!(register(&documents, &mut dialogs, duplicate, false).is_err());
+        assert!(authorize_owner(&documents, "main", "doc-b").is_err());
+        assert!(authorize_owner(&documents, "doc-b", "main").is_err());
+        assert!(authorize_owner(&documents, "doc-b", "toolset-main").is_err());
+        assert!(authorize(
+            &documents,
+            &dialogs.sessions[&ra.host_id],
+            "doc-b",
+            true,
+            Some(&a)
+        )
+        .is_err());
+        assert!(authorize(
+            &documents,
+            &dialogs.sessions[&rb.host_id],
+            "main",
+            true,
+            Some(&b)
+        )
+        .is_err());
+        assert!(authorize(
+            &documents,
+            &dialogs.sessions[&ra.host_id],
+            &rb.window_label,
+            false,
+            Some(&a)
+        )
+        .is_err());
+        assert!(authorize(
+            &documents,
+            &dialogs.sessions[&ra.host_id],
+            "main",
+            true,
+            Some(&b)
+        )
+        .is_err());
+
+        documents.reown_preferences(Some("main"));
+        let dismissed = take_owned_sessions(&mut dialogs, "main");
+        assert_eq!(dismissed.len(), 1);
+        assert_eq!(dismissed[0].registration.host_id, ra.host_id);
+        assert!(dialogs.preferences.is_some());
+        assert_eq!(
+            documents.owner_of("preferences").unwrap().window_id,
+            "doc-b"
+        );
+        assert_eq!(dialogs.sessions.len(), 1);
+        assert!(authorize(
+            &documents,
+            &dialogs.sessions[&rb.host_id],
+            &rb.window_label,
+            false,
+            Some(&b)
+        )
+        .is_ok());
+        assert!(take_owned_sessions(&mut dialogs, "main").is_empty());
+
+        // The cap remains application-wide, rather than 16 sessions per owner.
+        for index in 1..16 {
+            let mut message = snapshot_for(if index % 2 == 0 { "main" } else { "doc-b" });
+            message.document_tab_id = format!("tab-{index}");
+            register(&documents, &mut dialogs, message, false).unwrap();
+        }
+        let mut overflow = snapshot_for("main");
+        overflow.document_tab_id = "overflow".into();
+        assert_eq!(
+            register(&documents, &mut dialogs, overflow, false)
+                .err()
+                .as_deref(),
+            Some("Too many dialog windows are open")
+        );
+    }
+
+    #[test]
+    fn labels_round_trip_registered_ids_and_reject_malformed_or_unregistered_owners() {
+        let documents = crate::document_windows::DocumentWindowRegistry::with_main();
+        documents
+            .register("doc-a-1234-5678", "doc-a-1234-5678")
+            .unwrap();
+        let mut dialogs = Registry::default();
+        for owner in ["main", "doc-a-1234-5678"] {
+            let message = snapshot_for(owner);
+            let (registration, _) = register(&documents, &mut dialogs, message, false).unwrap();
+            let (parsed_owner, kind, slot) =
+                parse_dialog_label(&documents, &registration.window_label).unwrap();
+            assert_eq!(parsed_owner, owner);
+            assert_eq!(kind, "pageSize");
+            assert_eq!(
+                format!("dialog-{parsed_owner}-{kind}-{slot}"),
+                registration.window_label
+            );
+            assert_eq!(
+                documents
+                    .owner_of(&registration.window_label)
+                    .unwrap()
+                    .window_id,
+                owner
+            );
+        }
+        documents.register("doc-b/evil", "doc-b/evil").unwrap();
+        for label in [
+            "dialog-doc-missing-pageSize-1",
+            "dialog-doc-b/evil-pageSize-1",
+            "dialog-doc-a\\b-pageSize-1",
+            "dialog-doc-a:b-pageSize-1",
+            "dialog--pageSize-1",
+            "dialog-toolset-main-pageSize-1",
+            "dialog-main-unknown-1",
+            "dialog-main-preferences-1",
+            "dialog-main-pageSize-",
+            "dialog-main-pageSize-../main",
+            "dialog-main-pageSize-1-extra",
+            "dialog-main-pageSize-123456789012345678901",
+        ] {
+            assert!(parse_dialog_label(&documents, label).is_none(), "{label}");
+            assert!(documents.owner_of(label).is_none(), "{label}");
+        }
+        assert!(snapshot_for("doc-b/evil").validate(&documents).is_err());
+        documents.remove("doc-a-1234-5678");
+        assert!(parse_dialog_label(&documents, "dialog-doc-a-1234-5678-pageSize-2").is_none());
+    }
+
     #[test]
     fn dialog_envelopes_and_sessions_require_a_live_registered_document() {
         let documents = crate::document_windows::DocumentWindowRegistry::default();
@@ -1381,7 +1577,7 @@ mod document_registry_authorization_tests {
         }))
         .unwrap();
         assert!(message.validate(&documents).is_err());
-        documents.register("other", "doc-other").unwrap();
+        documents.register("doc-other", "doc-other").unwrap();
         message.owner_window_id = "doc-other".into();
         assert!(message.validate(&documents).is_ok());
         let mut dialogs = Registry::default();
@@ -1389,7 +1585,7 @@ mod document_registry_authorization_tests {
         let session = &dialogs.sessions[&registration.host_id];
         assert!(authorize(&documents, session, "doc-other", true, Some(&message)).is_ok());
         assert!(authorize(&documents, session, "main", true, Some(&message)).is_err());
-        documents.remove("other");
+        documents.remove("doc-other");
         assert!(message.validate(&documents).is_err());
         assert!(authorize(&documents, session, "doc-other", true, Some(&message)).is_err());
     }
@@ -1599,7 +1795,8 @@ fn register(
         return Err("Too many dialog windows are open".into());
     }
     if registry.sessions.values().any(|s| {
-        s.snapshot.document_tab_id == message.document_tab_id
+        s.snapshot.owner_window_id == message.owner_window_id
+            && s.snapshot.document_tab_id == message.document_tab_id
             && s.snapshot.dialog_kind == message.dialog_kind
     }) {
         return Err("A dialog for this drawing is already open".into());
@@ -1607,8 +1804,10 @@ fn register(
     registry.next_slot += 1;
     let registration = Registration {
         host_id: format!("h{:016x}", registry.next_slot),
-        // Label scheme stays main-only until A4 defines owner-qualified dialog labels.
-        window_label: format!("dialog-main-{}-{}", message.dialog_kind, registry.next_slot),
+        window_label: format!(
+            "dialog-{}-{}-{}",
+            message.owner_window_id, message.dialog_kind, registry.next_slot
+        ),
     };
     registry.sessions.insert(
         registration.host_id.clone(),
@@ -1639,10 +1838,12 @@ pub(crate) async fn dialog_open(
     message: Message,
     channel: Channel<Value>,
 ) -> Result<Registration, String> {
-    if !super::is_document_window(&app, window.label())
-        || window.label() != message.owner_window_id
-        || app.get_webview_window(window.label()).is_none()
-    {
+    authorize_owner(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
+        &message.owner_window_id,
+        window.label(),
+    )?;
+    if app.get_webview_window(window.label()).is_none() {
         return Err("Unknown dialog owner".into());
     }
     let _creation = super::lock_window_creation()?;
@@ -2006,19 +2207,123 @@ fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &
         }
     }
 }
-pub(crate) fn dismiss_owned<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+fn take_owned_sessions(registry: &mut Registry, owner_window_id: &str) -> Vec<Session> {
+    let ids: Vec<_> = registry
+        .sessions
+        .iter()
+        .filter(|(_, session)| session.snapshot.owner_window_id == owner_window_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.into_iter()
+        .filter_map(|id| registry.sessions.remove(&id))
+        .collect()
+}
+
+fn dismiss_session<R: Runtime>(app: &tauri::AppHandle<R>, mut session: Session, reason: &str) {
+    flush_position(app, &mut session);
+    notify_closed(&session, reason);
+    if let Some(window) = app.get_webview_window(&session.registration.window_label) {
+        let _ = window.destroy();
+    }
+}
+
+pub(crate) fn dismiss_owned<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    owner_window_id: &str,
+    reason: &str,
+) {
+    // Preserve Preferences only with a ready survivor; otherwise retain last-window teardown.
+    if reason != "quit" && !reown_preferences(app, Some(owner_window_id)) {
+        flush_preferences(app, PreferencesClose::Close);
+        if let Some(window) = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL) {
+            let _ = window.destroy();
+        }
+    }
+    let sessions = take_owned_sessions(
+        &mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
+        owner_window_id,
+    );
+    for session in sessions {
+        dismiss_session(app, session, reason);
+    }
+}
+
+/// Quit retains the existing all-dialog teardown, including Preferences frame persistence.
+pub(crate) fn dismiss_all<R: Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
     flush_preferences(app, PreferencesClose::Close);
     if let Some(window) = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL) {
         let _ = window.destroy();
     }
-    let sessions = std::mem::take(&mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()).sessions);
-    for mut session in sessions.into_values() {
-        flush_position(app, &mut session);
-        notify_closed(&session, reason);
-        if let Some(window) = app.get_webview_window(&session.registration.window_label) {
-            let _ = window.destroy();
+    let owners: std::collections::BTreeSet<_> = REGISTRY
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .sessions
+        .values()
+        .map(|session| session.snapshot.owner_window_id.clone())
+        .collect();
+    for owner in owners {
+        dismiss_owned(app, &owner, reason);
+    }
+}
+
+pub(crate) fn reown_preferences<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    closing_owner: Option<&str>,
+) -> bool {
+    let Some(owner) = app
+        .state::<super::document_windows::DocumentWindowRegistry>()
+        .reown_preferences(closing_owner)
+    else {
+        return false;
+    };
+    let Some(window) = app.get_webview_window(super::PREFERENCES_WINDOW_LABEL) else {
+        return true;
+    };
+    #[cfg(windows)]
+    {
+        let app = app.clone();
+        let target = window.clone();
+        let result = super::run_on_main_thread_blocking(&window, move || {
+            use windows_sys::Win32::{
+                Foundation::{GetLastError, SetLastError},
+                UI::WindowsAndMessaging::{
+                    GetWindow, SetWindowLongPtrW, GWLP_HWNDPARENT, GW_OWNER,
+                },
+            };
+            let hwnd = target.hwnd().map_err(|e| e.to_string())?.0 as _;
+            let owner_hwnd = app
+                .get_webview_window(&owner.native_label)
+                .ok_or("Preferences owner window disappeared")?
+                .hwnd()
+                .map_err(|e| e.to_string())?
+                .0 as isize;
+            unsafe {
+                if GetWindow(hwnd, GW_OWNER) as isize == owner_hwnd {
+                    return Ok(());
+                }
+                SetLastError(0);
+                if SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner_hwnd) == 0 {
+                    let error = GetLastError();
+                    if error != 0 {
+                        return Err(format!(
+                            "Could not re-own Preferences: Windows error {error}"
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        })
+        .and_then(|result| result);
+        if let Err(error) = result {
+            eprintln!("{error}");
         }
     }
+    #[cfg(not(windows))]
+    {
+        // macOS dialogs remain unparented floating windows; only logical ownership changes.
+        let _ = (window, owner);
+    }
+    true
 }
 
 pub(crate) fn prepare_preferences() {
@@ -3747,7 +4052,7 @@ mod tests {
         assert!(!spec.fit_content);
         assert!(super::is_dialog_label("dialog-main-reactionConditions-1"));
         assert!(include_str!("../capabilities/dialog-host.json")
-            .contains("dialog-main-reactionConditions-*"));
+            .contains("dialog-*-reactionConditions-*"));
         let mut message = snapshot();
         message.dialog_kind = "reactionConditions".into();
         message.data = json!({"title":"Drawing","arrowId":"arrow-1","draft":draft});
@@ -3906,6 +4211,42 @@ mod tests {
     fn preferences_native_x_and_red_close_save_live_frame_before_destroy_and_relaunch() {
         for platform in ["windows", "macos"] {
             assert_preferences_close_reopens(platform);
+        }
+    }
+
+    #[test]
+    fn last_owner_dismissal_flushes_preferences_before_destroy() {
+        for platform in ["windows", "macos"] {
+            for closing in [false, true] {
+                let documents = crate::document_windows::DocumentWindowRegistry::with_main();
+                documents.set_ready("main");
+                if closing {
+                    documents.begin_closing("main");
+                }
+                assert!(documents.reown_preferences(Some("main")).is_none());
+                let path = preferences_test_path(platform);
+                let registry = Mutex::new(Registry {
+                    preferences: Some(PreferencesLayout::default()),
+                    ..Registry::default()
+                });
+                let frame = preferences_native_frame(platform, 1.5, false).unwrap();
+                flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
+                    assert!(registry.lock().unwrap().preferences.is_some());
+                    Some(frame.clone())
+                });
+                // The close-time frame is on disk while the native window is still alive.
+                let bytes = std::fs::read(&path).unwrap();
+                let positions: HashMap<String, SavedPosition> =
+                    serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(positions["preferences"].size, frame.size);
+                assert_eq!(positions["preferences"].x, frame.x);
+                flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
+                    panic!("Destroyed must never query a dead native window")
+                });
+                assert!(registry.lock().unwrap().preferences.is_none());
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            }
         }
     }
 
@@ -4078,6 +4419,23 @@ mod tests {
                 .find("flush_preferences(app, PreferencesClose::Close)")
                 .unwrap()
                 < owner_close.find("window.destroy()").unwrap()
+        );
+        let document_dismiss = source
+            .split("pub(crate) fn dismiss_owned")
+            .nth(1)
+            .unwrap()
+            .split("pub(crate) fn dismiss_all")
+            .next()
+            .unwrap();
+        assert!(document_dismiss.contains("reown_preferences(app, Some(owner_window_id))"));
+        assert!(document_dismiss.contains("take_owned_sessions("));
+        assert!(document_dismiss
+            .contains("if reason != \"quit\" && !reown_preferences(app, Some(owner_window_id)) {"));
+        assert!(
+            document_dismiss
+                .find("flush_preferences(app, PreferencesClose::Close)")
+                .unwrap()
+                < document_dismiss.find("window.destroy()").unwrap()
         );
         let lib = include_str!("lib.rs");
         // The Preferences command opens or raises; it no longer disposes of the window.
@@ -4345,8 +4703,9 @@ mod tests {
         );
         assert!(is_dialog_label("dialog-main-vibeCodeGuide-1"));
         assert!(!is_dialog_label("dialog-main-vibeCodeGuide-../main"));
-        assert!(include_str!("../capabilities/dialog-host.json")
-            .contains("dialog-main-vibeCodeGuide-*"));
+        assert!(
+            include_str!("../capabilities/dialog-host.json").contains("dialog-*-vibeCodeGuide-*")
+        );
         let mut message = snapshot();
         message.dialog_kind = "vibeCodeGuide".into();
         message.data = json!({"title":"Guide"});
@@ -4384,7 +4743,7 @@ mod tests {
             .starts_with("dialog-main-structureTemplates-"));
         assert!(is_dialog_label(&registration.window_label));
         assert!(include_str!("../capabilities/dialog-host.json")
-            .contains("dialog-main-structureTemplates-*"));
+            .contains("dialog-*-structureTemplates-*"));
         assert!(
             !register(
                 &crate::test_documents(),
@@ -4520,7 +4879,7 @@ mod tests {
             assert!(!is_dialog_label(label));
         }
         let capability = include_str!("../capabilities/dialog-host.json");
-        assert!(capability.contains("dialog-main-toolInstall-*"));
+        assert!(capability.contains("dialog-*-toolInstall-*"));
     }
     #[test]
     fn tool_install_shared_button_contract() {
@@ -5350,7 +5709,7 @@ mod tests {
             "targetVersion":1, "fixes":[{"action":"charge", "label":"Set formal charge to +1"}, {"action":"ignore", "label":"Ignore warning"}]});
         assert!(message.validate(&crate::test_documents()).is_ok());
         let capability = include_str!("../capabilities/dialog-host.json");
-        assert!(capability.contains("dialog-main-atomProblem-*"));
+        assert!(capability.contains("dialog-*-atomProblem-*"));
         let mut registry = Registry::default();
         let (registration, _) = register(
             &crate::test_documents(),
@@ -7181,7 +7540,7 @@ mod tests {
             "Insert Table — Drawing"
         );
         let capability = include_str!("../capabilities/dialog-host.json");
-        assert!(capability.contains("dialog-main-insertTable-*"));
+        assert!(capability.contains("dialog-*-insertTable-*"));
         let mut message = snapshot();
         message.dialog_kind = "insertTable".into();
         message.data = json!({"title":"Drawing", "rows":4, "columns":3,
@@ -7254,9 +7613,7 @@ mod tests {
         let spec = kind_spec("customColor").unwrap();
         assert!(!spec.maximizable);
         assert!(spec.resizable);
-        assert!(
-            include_str!("../capabilities/dialog-host.json").contains("dialog-main-customColor-*")
-        );
+        assert!(include_str!("../capabilities/dialog-host.json").contains("dialog-*-customColor-*"));
         let mut message = snapshot();
         message.dialog_kind = "customColor".into();
         message.data =

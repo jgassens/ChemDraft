@@ -52,7 +52,7 @@ async function mountForm(renderPreview = vi.fn().mockResolvedValue(preview), ini
 }
 const exportSnapshot: DialogMessage = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "export", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", options: { ...exportFixture(), format: "jpeg", destinationPath: "C:\\Exports\\Drawing.jpeg" }, frame } };
 function deliver(message: DialogMessage) {
-  ipc.channels[0]!.onmessage({ senderWindowId: "main", windowLabel: "dialog-main-export-1", message });
+  ipc.channels[0]!.onmessage({ senderWindowId: message.ownerWindowId, windowLabel: `dialog-${message.ownerWindowId}-${message.dialogKind}-1`, message });
 }
 async function mountHost() {
   await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));

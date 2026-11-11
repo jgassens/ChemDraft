@@ -1,4 +1,5 @@
 import { documentWindowId } from "../documentIdentity";
+import { isDialogOwnerId } from "./dialogLabels";
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
@@ -66,6 +67,7 @@ export class DialogCoordinator {
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
   }, private options: { readyTimeoutMs?: number; ownerWindowId?: string } = {}) {
     this.ownerWindowId = options.ownerWindowId ?? documentWindowId();
+    if (!isDialogOwnerId(this.ownerWindowId)) throw new Error("Invalid dialog owner");
   }
 
   private readonly ownerWindowId: string;

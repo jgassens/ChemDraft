@@ -1,4 +1,5 @@
-import { documentWindowId, isDocumentWindowId } from "../documentIdentity";
+import { documentWindowId } from "../documentIdentity";
+import { isDialogOwnerId, parseDialogLabel } from "./dialogLabels";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 export type ConditionsSnapshot = { title: string; arrowId: string; draft: ReactionConditionsDraft };
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
@@ -146,7 +147,7 @@ export function parseDialogMessage(value: unknown, ownerWindowId = documentWindo
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || !isDocumentWindowId(ownerWindowId) || value.ownerWindowId !== ownerWindowId || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || !isDialogOwnerId(ownerWindowId) || value.ownerWindowId !== ownerWindowId || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -218,7 +219,7 @@ export function sameDialog(message: DialogEnvelope, snapshot: DialogEnvelope): b
 /** Envelope consistency check for Rust channel deliveries. Sender fields alone are not authentication. */
 export function validateDialogDelivery(value: unknown, sender: string, snapshot: DialogEnvelope, label: string): DialogMessage | undefined {
   const message = parseDialogMessage(value, snapshot.ownerWindowId);
-  if (!message || !sameDialog(message, snapshot)) return undefined;
+  if (!message || !sameDialog(message, snapshot) || parseDialogLabel(label)?.ownerWindowId !== snapshot.ownerWindowId) return undefined;
   const expected = message.type === "snapshot" || message.type === "preview" || message.type === "result" || message.type === "closed" ? snapshot.ownerWindowId : label;
   return sender === expected ? message : undefined;
 }

@@ -4,38 +4,52 @@ import { DialogCoordinator } from "./DialogCoordinator";
 import { dialogEnvelope, type DialogCloseReason, type DialogMessage } from "./dialogProtocol";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 
-function host(options: { timeout?: number } = {}) {
+function host(options: { timeout?: number; ownerWindowId?: string } = {}) {
   const calls: string[] = [];
   let handler: (delivery: DialogDelivery) => void = () => {};
   let snapshot!: Extract<DialogMessage, { type: "snapshot" }>;
-  const registration = { hostId: "opaque", windowLabel: "dialog-main-pageSize-1" };
+  const ownerWindowId = options.ownerWindowId ?? "main";
+  const registration = { hostId: ownerWindowId === "main" ? "opaque" : `opaque-${ownerWindowId}`, windowLabel: `dialog-${ownerWindowId}-pageSize-1` };
   const transport: DialogTransport = {
     subscribe: vi.fn(async h => { calls.push("subscribe"); handler = h; return vi.fn(); }),
     open: vi.fn(async s => { calls.push("open"); snapshot = s as typeof snapshot; return registration; }),
     publish: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
   const owner = { vibeCodeGuideAction: vi.fn(), previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
-  const coordinator = new DialogCoordinator(transport, owner, { readyTimeoutMs: options.timeout ?? 100 });
+  const coordinator = new DialogCoordinator(transport, owner, { readyTimeoutMs: options.timeout ?? 100, ownerWindowId });
   const open = () => coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
   const message = (type: DialogMessage["type"], data: unknown, requestId = "action-1") => ({ ...dialogEnvelope(snapshot), type, data, requestId }) as DialogMessage;
   const deliver = (m: DialogMessage, sender = registration.windowLabel) => coordinator.receive({ message: m, senderWindowId: sender, windowLabel: registration.windowLabel });
-  return { calls, transport, owner, coordinator, open, message, deliver, replay: () => handler({ message: snapshot, senderWindowId: "main", windowLabel: registration.windowLabel }) };
+  return { calls, transport, owner, coordinator, open, message, deliver, replay: () => handler({ message: snapshot, senderWindowId: ownerWindowId, windowLabel: registration.windowLabel }) };
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("keeps two owners' same-tab sessions independent when A is dismissed", async () => {
+    const a = host({ ownerWindowId: "doc-a" }), b = host({ ownerWindowId: "doc-b" });
+    await Promise.all([a.open(), b.open()]);
+    await a.deliver(a.message("ready", {}));
+    await b.deliver(b.message("ready", {}));
+    await a.deliver({ ...a.message("action", { action: "apply", width: 10, height: 15, unit: "mm" }), ownerWindowId: "doc-b" });
+    expect(a.owner.applyPageSize).not.toHaveBeenCalled();
+    await a.coordinator.dispose();
+    expect(a.transport.close).toHaveBeenCalledExactlyOnceWith("opaque-doc-a", "ownerClose");
+    expect(b.transport.close).not.toHaveBeenCalled();
+    await b.deliver(b.message("action", { action: "apply", width: 10, height: 15, unit: "mm" }));
+    expect(b.owner.applyPageSize).toHaveBeenCalledExactlyOnceWith("tab-1", { action: "apply", width: 10, height: 15, unit: "mm" });
+    expect(a.owner.applyPageSize).not.toHaveBeenCalled();
+    await b.coordinator.dispose();
+  });
   it("retains its captured document owner and refuses a different owner's action", async () => {
-    const h = host();
-    const coordinator = new DialogCoordinator(h.transport, h.owner, { ownerWindowId: "doc-other" });
-    await coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
-    const snapshot = vi.mocked(h.transport.open).mock.calls[0]![0];
-    expect(snapshot.ownerWindowId).toBe("doc-other");
-    const delivery = (message: unknown) => coordinator.receive({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1", message });
-    await delivery({ ...snapshot, type: "ready", data: {} });
-    await delivery({ ...snapshot, ownerWindowId: "main", type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
+    const h = host({ ownerWindowId: "doc-other" });
+    await h.open();
+    const current = vi.mocked(h.transport.open).mock.calls[0]![0];
+    expect(current.ownerWindowId).toBe("doc-other");
+    const delivery = (message: unknown) => h.coordinator.receive({ senderWindowId: "dialog-doc-other-pageSize-1", windowLabel: "dialog-doc-other-pageSize-1", message });
+    await delivery({ ...current, type: "ready", data: {} });
+    await delivery({ ...current, ownerWindowId: "main", type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
     expect(h.owner.applyPageSize).not.toHaveBeenCalled();
-    await delivery({ ...snapshot, type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
+    await delivery({ ...current, type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
     expect(h.owner.applyPageSize).toHaveBeenCalledExactlyOnceWith("tab-1", { action: "apply", width: 10, height: 15, unit: "mm" });
-    await coordinator.dispose();
     await h.coordinator.dispose();
   });
   it("keeps conditions tied to their original tab and arrow, deduplicates Save and refuses another arrow", async () => {

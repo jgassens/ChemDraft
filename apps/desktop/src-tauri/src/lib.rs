@@ -314,7 +314,7 @@ fn visit_quit_documents(
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
         // Native sessions settle before the final document flush, even with an unresponsive renderer.
-        dialog_windows::dismiss_owned(self, "quit");
+        dialog_windows::dismiss_all(self, "quit");
         visit_quit_documents(
             &self.state::<document_windows::DocumentWindowRegistry>(),
             |label| {
@@ -1152,7 +1152,16 @@ pub fn run() {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         if !prompt_waits_for_user(&QUIT) {
-                            dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
+                            if let Some(owner) = window
+                                .state::<document_windows::DocumentWindowRegistry>()
+                                .owner_of(window.label())
+                            {
+                                dialog_windows::dismiss_owned(
+                                    window.app_handle(),
+                                    &owner.window_id,
+                                    "ownerClose",
+                                );
+                            }
                             if let Err(error) = window.hide() {
                                 eprintln!("Could not hide ChemDraft main window: {error}");
                             }
@@ -1173,7 +1182,7 @@ pub fn run() {
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
                         panel_full_size::restore_all(window.app_handle());
-                        dialog_windows::dismiss_owned(window.app_handle(), "quit");
+                        dialog_windows::dismiss_all(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
                         assistant_mcp::shutdown();
@@ -1200,6 +1209,7 @@ pub fn run() {
                         let registry = window.state::<document_windows::DocumentWindowRegistry>();
                         let previous = registry.active_document_window().map(|w| w.window_id);
                         registry.mark_activated(window.label());
+                        dialog_windows::reown_preferences(window.app_handle(), None);
                         if let Some(active) = registry.active_document_window() {
                             if previous.as_deref() != Some(active.window_id.as_str()) {
                                 let _ = window.app_handle().emit(
@@ -7115,6 +7125,8 @@ fn create_or_raise_preferences_window<R: Runtime>(
         .and_then(|document| app.get_webview_window(&document.native_label))
         .ok_or("Unknown dialog owner")?;
 
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .set_preferences_owner(owner.label());
     dialog_windows::prepare_preferences();
     let builder = WebviewWindowBuilder::new(
         app,
@@ -7139,6 +7151,7 @@ fn create_or_raise_preferences_window<R: Runtime>(
         builder
     };
     let window = builder.build().map_err(|error| error.to_string())?;
+    dialog_windows::reown_preferences(app, None);
     disable_default_context_menus(&window);
     Ok(window)
 }

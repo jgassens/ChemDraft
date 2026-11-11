@@ -11,11 +11,15 @@ describe("dialog contract", () => {
     expect(parseDialogMessage(message, "doc-other")).toEqual(message);
     expect(parseDialogMessage(message, "main")).toBeUndefined();
     expect(parseDialogMessage(snapshot(), "doc-other")).toBeUndefined();
-    for (const utility of ["preferences", "toolset-core-main", "dialog-main-pageSize-1", "runtime"]) {
+    for (const utility of ["preferences", "toolset-core-main", "dialog-main-pageSize-1", "runtime", "doc-a\n"]) {
       expect(parseDialogMessage({ ...message, ownerWindowId: utility }, utility)).toBeUndefined();
     }
-    expect(validateDialogDelivery(message, "doc-other", message, "dialog-main-pageSize-1")).toEqual(message);
-    expect(validateDialogDelivery(message, "main", message, "dialog-main-pageSize-1")).toBeUndefined();
+    expect(validateDialogDelivery(message, "doc-other", message, "dialog-doc-other-pageSize-1")).toEqual(message);
+    expect(validateDialogDelivery(message, "main", message, "dialog-doc-other-pageSize-1")).toBeUndefined();
+    expect(validateDialogDelivery(message, "doc-other", message, "dialog-main-pageSize-1")).toBeUndefined();
+    const other = { ...message, ownerWindowId: "doc-b" };
+    expect(parseDialogMessage(other, "doc-b")).toEqual(other);
+    expect(validateDialogDelivery(other, "doc-b", message, "dialog-doc-other-pageSize-1")).toBeUndefined();
   });
   it("accepts only the registered sender and current envelope", () => {
     const s = snapshot();

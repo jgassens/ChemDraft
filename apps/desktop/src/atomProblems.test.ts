@@ -153,7 +153,7 @@ describe("atom problem native host policy", () => {
   it("uses the restricted dialog host and fails closed on unsupported payloads", () => {
     const h = dialogHost();
     const capability = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/dialog-host.json", import.meta.url), "utf8"));
-    expect(capability.windows).toContain("dialog-main-atomProblem-*");
+    expect(capability.windows).toContain("dialog-*-atomProblem-*");
     expect(capability.permissions).toEqual(["allow-dialog-request", "allow-dialog-send"]);
     const source = readFileSync(new URL("./MainWindow.tsx", import.meta.url), "utf8");
     expect(source).toContain("coordinator.openAtomProblem(tabId, data)");
