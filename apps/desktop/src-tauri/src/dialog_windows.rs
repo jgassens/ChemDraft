@@ -3888,6 +3888,45 @@ impl Drop for PositionWriteGuard {
 
 static POSITION_WRITES: LazyLock<Arc<PositionWriteTracker>> = LazyLock::new(Default::default);
 
+/// A serial writer for layout frames. Registration precedes enqueueing so confirmation also
+/// waits for queued work; only the worker takes filesystem locks or performs disk I/O.
+#[derive(Clone)]
+pub(super) struct PositionWriteWorker {
+    sender: std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>,
+    tracker: Arc<PositionWriteTracker>,
+}
+
+impl Default for PositionWriteWorker {
+    fn default() -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        std::thread::spawn(move || {
+            for write in receiver {
+                write();
+            }
+        });
+        Self {
+            sender,
+            tracker: Default::default(),
+        }
+    }
+}
+
+impl PositionWriteWorker {
+    pub(super) fn dispatch(&self, write: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        let pending = self.tracker.register();
+        self.sender
+            .send(Box::new(move || {
+                let _pending = pending;
+                write();
+            }))
+            .map_err(|_| "The window geometry writer stopped.".to_string())
+    }
+
+    pub(super) fn drain(&self) {
+        self.tracker.drain();
+    }
+}
+
 /// Only confirmation workers wait here. The quit deadline and exit watchdog never do.
 pub(crate) fn drain_pending_position_writes() {
     POSITION_WRITES.drain();

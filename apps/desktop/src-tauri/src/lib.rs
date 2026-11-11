@@ -302,6 +302,10 @@ struct QuitFlow {
 }
 
 impl QuitFlow {
+    fn in_progress(&self) -> bool {
+        self.requested.load(Ordering::SeqCst) || self.quitting.load(Ordering::SeqCst)
+    }
+
     const fn new(
         quitting: &'static AtomicBool,
         flush_grace: Duration,
@@ -395,7 +399,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
             let capture = app.clone();
             if let Err(error) = app.run_on_main_thread(move || {
                 dismiss_then_flush_with(
-                    || dialog_windows::dismiss_owned(&capture, "quit"),
+                    || capture_quit_window_frames(&capture),
                     || {
                         if capture.get_webview_window(MAIN_WINDOW_LABEL).is_none()
                             || capture
@@ -415,6 +419,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 
     fn drain_pending_position_writes(&self) {
+        LAYOUT_POSITION_WRITER.drain();
         dialog_windows::drain_pending_position_writes();
     }
 
@@ -530,6 +535,18 @@ fn arm_quit_flush_grace<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
 fn dismiss_then_flush_with(dismiss: impl FnOnce(), flush: impl FnOnce()) {
     dismiss();
     flush();
+}
+
+/// Read native frames on the main thread before renderer/session disposal. Every write is
+/// registered with the bounded drain before the renderer can confirm its session flush.
+fn capture_quit_window_frames<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let webview: &tauri::Webview<R> = window.as_ref();
+        if let Err(error) = persist_main_window_geometry(&webview.window()) {
+            eprintln!("Could not capture ChemDraft main window frame for quit: {error}");
+        }
+    }
+    dialog_windows::dismiss_owned(app, "quit");
 }
 
 /// Session confirmation has priority; only then join geometry workers. The deadline never joins.
@@ -806,7 +823,7 @@ async fn resume_quit_after_prompt(
         return Ok(false);
     }
     // Accepted prompts use the same capture-before-session ordering as non-prompting quits.
-    run_on_main_thread_blocking(&window, move || dialog_windows::dismiss_owned(&app, "quit"))?;
+    run_on_main_thread_blocking(&window, move || capture_quit_window_frames(&app))?;
     Ok(true)
 }
 
@@ -1310,6 +1327,16 @@ pub fn run() {
         .on_window_event(|window, event| {
             file_warnings_window::on_window_event(window, event);
             if window.label() == MAIN_WINDOW_LABEL {
+                if on_main_window_geometry_event_with(&QUIT, event, || {
+                    // Windows sends Resized when the owner is restored from the taskbar;
+                    // macOS also reports its restored frame. Never release a prompt here.
+                    schedule_suspended_utility_restore(window.app_handle());
+                    if let Err(error) = persist_main_window_geometry(window) {
+                        eprintln!("Could not persist ChemDraft main window frame: {error}");
+                    }
+                }) {
+                    return;
+                }
                 match event {
                     // macOS: closing the document window hides it and the app lives on in the
                     // Dock (RunEvent::Reopen brings it back).
@@ -1345,21 +1372,6 @@ pub fn run() {
                         window
                             .state::<naming_engine::NamingEngineState>()
                             .shutdown();
-                    }
-                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
-                        // Frames changed by quit teardown are not the user's; skip like palettes do.
-                        // An early return rather than clippy's suggested match guard: a guard that
-                        // fails falls through to the next arm, which is only equivalent as long as
-                        // nothing below also matches Moved/Resized. This says what it means.
-                        if APP_QUITTING.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        // Windows sends Resized when the owner is restored from the taskbar;
-                        // macOS also reports its restored frame. Never release a prompt here.
-                        schedule_suspended_utility_restore(window.app_handle());
-                        if let Err(error) = persist_main_window_geometry(window) {
-                            eprintln!("Could not persist ChemDraft main window frame: {error}");
-                        }
                     }
                     WindowEvent::Focused(true) => {
                         schedule_suspended_utility_restore(window.app_handle());
@@ -2957,7 +2969,23 @@ fn second_launch_action(quitting: bool, setup_completed: bool) -> SecondLaunchAc
 /// Whether a quit has begun: off macOS a document-window close requests one, and the exit itself
 /// raises `APP_QUITTING` everywhere.
 fn quit_in_progress() -> bool {
-    QUIT.requested.load(Ordering::SeqCst) || APP_QUITTING.load(Ordering::SeqCst)
+    QUIT.in_progress()
+}
+
+/// The production Moved/Resized event path, shared with the stalled-writer regression. Queued
+/// events during the drain must not replace the explicit final capture with teardown geometry.
+fn on_main_window_geometry_event_with(
+    flow: &QuitFlow,
+    event: &WindowEvent,
+    persist: impl FnOnce(),
+) -> bool {
+    if !matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+        return false;
+    }
+    if !flow.in_progress() {
+        persist();
+    }
+    true
 }
 
 /// Takes the window-creation lock, and refuses once a quit has begun. A window built during a quit
@@ -9910,11 +9938,9 @@ fn persist_toolset_position<R: Runtime>(
     x: f64,
     y: f64,
 ) -> Result<(), String> {
-    update_toolset_layout_state(app, |layout_state| {
-        let state = layout_state
-            .toolsets
-            .entry(toolset_id.to_string())
-            .or_default();
+    let toolset_id = toolset_id.to_string();
+    update_toolset_layout_state(app, move |layout_state| {
+        let state = layout_state.toolsets.entry(toolset_id).or_default();
         state.x = Some(x);
         state.y = Some(y);
     })
@@ -9985,13 +10011,21 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     } else {
         None
     };
-    update_toolset_layout_state(window.app_handle(), |layout_state| {
-        update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
-    })
+    // The final quit capture is valid even while a save prompt has suspended utility windows.
+    // Native minimized/fullscreen checks above still reject transient frames.
+    if quit_in_progress() {
+        queue_toolset_layout_update(window.app_handle(), move |layout_state| {
+            update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
+        })
+    } else {
+        update_toolset_layout_state(window.app_handle(), move |layout_state| {
+            update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
+        })
+    }
 }
 
 fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
-    if APP_QUITTING.load(Ordering::SeqCst) || utility_windows_suspended() {
+    if utility_windows_suspended() {
         return Ok(());
     }
     // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
@@ -10028,8 +10062,9 @@ fn save_plugin_panel_frame<R: Runtime>(
     else {
         return Ok(());
     };
-    update_toolset_layout_state(window.app_handle(), |layout| {
-        layout.plugin_panels.insert(id.replace(':', "."), frame);
+    let id = id.replace(':', ".");
+    update_toolset_layout_state(window.app_handle(), move |layout| {
+        layout.plugin_panels.insert(id, frame);
     })
 }
 
@@ -10172,23 +10207,56 @@ fn mark_toolset_window_closed<R: Runtime>(
     Ok(state)
 }
 
+static LAYOUT_POSITION_WRITER: std::sync::LazyLock<dialog_windows::PositionWriteWorker> =
+    std::sync::LazyLock::new(Default::default);
+
 fn update_toolset_layout_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    update: impl FnOnce(&mut ToolsetLayoutState),
+    update: impl FnOnce(&mut ToolsetLayoutState) + Send + 'static,
 ) -> Result<(), String> {
-    let suspension = UTILITY_SUSPENSION
+    let suspended = UTILITY_SUSPENSION
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if suspension.active() {
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .active();
+    if suspended {
         return Ok(());
     }
-    // Read-then-write, so a read failure must NOT become a write. This used to swallow every read
-    // error as `default()`, and a transient failure during a window `Moved` event then wrote those
-    // defaults over toolbar-state.json -- losing every saved position and visibility. Same trap the
-    // write side was rewired to avoid; propagate instead, and the mutation is simply skipped.
-    let mut layout_state = read_toolset_layout_state(app)?;
-    update(&mut layout_state);
-    save_toolset_layout_state(app, &layout_state)
+    queue_toolset_layout_update(app, update)
+}
+
+fn queue_toolset_layout_update<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    update: impl FnOnce(&mut ToolsetLayoutState) + Send + 'static,
+) -> Result<(), String> {
+    let read_app = app.clone();
+    let save_app = app.clone();
+    queue_toolset_layout_update_with(
+        &LAYOUT_POSITION_WRITER,
+        move || read_toolset_layout_state(&read_app),
+        update,
+        move |layout| save_toolset_layout_state(&save_app, layout),
+    )
+}
+
+fn queue_toolset_layout_update_with(
+    writer: &dialog_windows::PositionWriteWorker,
+    read: impl FnOnce() -> Result<ToolsetLayoutState, String> + Send + 'static,
+    update: impl FnOnce(&mut ToolsetLayoutState) + Send + 'static,
+    save: impl FnOnce(&ToolsetLayoutState) -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    writer.dispatch(move || {
+        // One serial worker owns all layout read-modify-write transactions. No suspension lock
+        // crosses I/O, and native close/hide callbacks never wait behind a stalled geometry write.
+        // A read failure must NOT become defaults and overwrite an otherwise valid saved layout.
+        let persist = || {
+            let mut layout_state = read()?;
+            update(&mut layout_state);
+            save(&layout_state)
+        };
+        if let Err(error) = persist() {
+            eprintln!("Could not persist ChemDraft window geometry: {error}");
+        }
+    })
 }
 
 /// What a layout-state read means, separated from where it came from so it can be tested directly.
@@ -11295,6 +11363,7 @@ mod tests {
         timers: Arc<Mutex<Vec<(Duration, QuitTestTask)>>>,
         workers: QuitTestQueue,
         main: QuitTestQueue,
+        capture_frames: Arc<dyn Fn() + Send + Sync>,
         drain: Arc<dyn Fn() + Send + Sync>,
     }
 
@@ -11305,6 +11374,7 @@ mod tests {
                 timers: Default::default(),
                 workers: Default::default(),
                 main: Default::default(),
+                capture_frames: Arc::new(|| {}),
                 drain: Arc::new(|| {}),
             }
         }
@@ -11332,7 +11402,10 @@ mod tests {
                 let capture = host.clone();
                 host.main.lock().unwrap().push(Box::new(move || {
                     dismiss_then_flush_with(
-                        || capture.app.calls.lock().unwrap().push("dialogs settled"),
+                        || {
+                            (capture.capture_frames)();
+                            capture.app.calls.lock().unwrap().push("dialogs settled");
+                        },
                         || {
                             capture.app.ask_document_to_flush();
                         },
@@ -11372,6 +11445,164 @@ mod tests {
         fn force_exit(&self, waited: Duration, reason: QuitReason) {
             self.app.force_exit(waited, reason);
         }
+    }
+
+    fn queue_test_layout_frame(
+        writer: &dialog_windows::PositionWriteWorker,
+        path: PathBuf,
+        frame: MainWindowGeometry,
+        before_write: impl FnOnce() + Send + 'static,
+    ) {
+        let read_path = path.clone();
+        queue_toolset_layout_update_with(
+            writer,
+            move || toolset_layout_state_from_read(read_optional_file(&read_path)),
+            move |layout| {
+                update_main_window_geometry(
+                    &mut layout.main_window,
+                    MainWindowGeometryUpdate::SaveFrame,
+                    Some(frame),
+                );
+            },
+            move |layout| {
+                before_write();
+                let contents = serde_json::to_string_pretty(layout).unwrap();
+                write_file_atomic(&path, &contents)
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn moved_and_resized_events_during_quit_drain_cannot_block_the_deadline() {
+        // Exercise the handler used by Builder::on_window_event with real Tauri events and the
+        // real serial/tracked layout writer, rather than making QuitHost::drain itself stall.
+        for appkit in [true, false] {
+            for expire in [true, false] {
+                let flow = test_quit_flow(QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
+                let mut host = ControlledQuitHost::new();
+                let writer = dialog_windows::PositionWriteWorker::default();
+                let path = std::env::temp_dir().join(format!(
+                    "chemdraft-quit-event-{}-{appkit}-{expire}.json",
+                    std::process::id()
+                ));
+                let _ = fs::remove_file(&path);
+                let capture_thread = thread::current().id();
+                let old_frame = MainWindowGeometry {
+                    x: 50.0,
+                    y: 60.0,
+                    width: 900.0,
+                    height: 700.0,
+                    maximized: false,
+                };
+                let final_frame = MainWindowGeometry {
+                    x: 150.0,
+                    ..old_frame
+                };
+                let moved = WindowEvent::Moved(tauri::PhysicalPosition::new(150, 60));
+                let resized = WindowEvent::Resized(tauri::PhysicalSize::new(900, 700));
+                let (started, starting) = mpsc::channel();
+                let (release, blocked) = mpsc::channel();
+                assert!(on_main_window_geometry_event_with(flow, &moved, || {
+                    queue_test_layout_frame(&writer, path.clone(), old_frame, move || {
+                        started.send(thread::current().id()).unwrap();
+                        blocked.recv().unwrap(); // A filesystem write that cannot finish yet.
+                    });
+                }));
+                assert_ne!(
+                    starting.recv_timeout(Duration::from_secs(2)).unwrap(),
+                    capture_thread
+                );
+
+                let final_writer = writer.clone();
+                let final_path = path.clone();
+                host.capture_frames = Arc::new(move || {
+                    queue_test_layout_frame(&final_writer, final_path.clone(), final_frame, || {});
+                });
+                let drain_writer = writer.clone();
+                let (draining, drain_started) = mpsc::channel();
+                host.drain = Arc::new(move || {
+                    draining.send(()).unwrap();
+                    drain_writer.drain();
+                });
+                if appkit {
+                    assert!(request_appkit_quit_with(flow, &host));
+                } else {
+                    request_quit_with(flow, &host, false);
+                }
+                host.capture_dialogs(); // Includes the final frame, queued behind the stalled write.
+                complete_quit_flush_with(flow, &host, QuitReason::FlushConfirmed);
+                let drain = thread::spawn(host.take_worker());
+                drain_started.recv_timeout(Duration::from_secs(2)).unwrap();
+                assert!(flow.requested.load(Ordering::SeqCst));
+                assert!(!flow.quitting.load(Ordering::SeqCst));
+                assert!(!drain.is_finished());
+
+                for event in [&moved, &resized] {
+                    assert!(on_main_window_geometry_event_with(flow, event, || {
+                        panic!("A queued quit-time event must not enter geometry persistence");
+                    }));
+                }
+                // This thread can still deliver the OS reply while the real writer is stalled.
+                if expire {
+                    host.fire_timer();
+                    assert!(flow.quitting.load(Ordering::SeqCst));
+                    assert_eq!(
+                        host.app.calls().last(),
+                        Some(&if appkit { "reply YES" } else { "exit" })
+                    );
+                    if !appkit {
+                        host.fire_timer();
+                        assert_eq!(host.app.calls().last(), Some(&"force exit"));
+                    }
+                    assert!(!drain.is_finished());
+                }
+                release.send(()).unwrap();
+                drain.join().unwrap();
+                let saved = toolset_layout_state_from_read(read_optional_file(&path)).unwrap();
+                assert_eq!(saved.main_window, Some(final_frame));
+                if !expire {
+                    assert_eq!(
+                        host.app.calls().last(),
+                        Some(&if appkit { "reply YES" } else { "exit" })
+                    );
+                    host.fire_timer(); // Late deadline cannot reply YES a second time.
+                }
+                if appkit {
+                    assert_eq!(
+                        host.app
+                            .calls()
+                            .iter()
+                            .filter(|&&call| call == "reply YES")
+                            .count(),
+                        1
+                    );
+                }
+                fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn queued_layout_read_failure_never_mutates_or_overwrites_the_file() {
+        let writer = dialog_windows::PositionWriteWorker::default();
+        let mutated = Arc::new(AtomicBool::new(false));
+        let overwritten = Arc::new(AtomicBool::new(false));
+        let mutation = mutated.clone();
+        let overwrite = overwritten.clone();
+        queue_toolset_layout_update_with(
+            &writer,
+            || Err("The saved layout is unreadable".into()),
+            move |_| mutation.store(true, Ordering::SeqCst),
+            move |_| {
+                overwrite.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap();
+        writer.drain();
+        assert!(!mutated.load(Ordering::SeqCst));
+        assert!(!overwritten.load(Ordering::SeqCst));
     }
 
     #[test]
