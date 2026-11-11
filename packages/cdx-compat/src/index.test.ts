@@ -907,7 +907,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       text: "H2O",
       spans: [
         { text: "H", script: "normal", style: {} },
-        { text: "2", script: "subscript", style: { fontWeight: 700 } },
+        { text: "2", script: "subscript", style: { fontWeight: 700, fontSizePx: 18 } },
         { text: "O", script: "normal", style: {} }
       ]
     }, {
@@ -919,8 +919,9 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       spans: []
     }]);
     const result = exportDocumentToCdxml(document);
-    expect(result.warnings.filter(item => item.code === "cdxml.text_format_native_only")
-      .map(item => item.sourceObjectId)).toEqual(["styled_text", "bold_box"]);
+    const formattingWarnings = result.warnings.filter(item => item.code === "cdxml.text_format_native_only");
+    expect(formattingWarnings.map(item => item.sourceObjectId)).toEqual(["styled_text", "bold_box"]);
+    expect(formattingWarnings[1]!.message).toContain("but not formatting applied to the whole text box (font, size, bold, italic, alignment, spacing)");
   });
 
   it("exports text, plus signs, reaction arrows and native reaction steps", () => {

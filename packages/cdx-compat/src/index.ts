@@ -2021,7 +2021,8 @@ function exportTextObject(text: TextObject, context: VisibleExportContext, alloc
       message: `Text ${text.id} (source ${text.compatibility?.originalId ?? "<unnamed>"}) was edited or its source text is unavailable; source formatting was not kept. The current native text is written.` });
   }
   const unsupportedTextStyle = (style: Record<string, unknown>) =>
-    Object.keys(style).some(key => key !== "color") ||
+    Object.entries(style).some(([key, value]) => key === "fontWeight" ? value !== 400 && value !== 700
+      : key === "fontStyle" ? value !== "normal" && value !== "italic" : key !== "color") ||
     typeof style.color === "string" && normalizeHexColor(style.color) === undefined;
   const styledSpan = text.spans.some(span => unsupportedTextStyle(span.style));
   const styledObject = [
@@ -2031,16 +2032,19 @@ function exportTextObject(text: TextObject, context: VisibleExportContext, alloc
   if (styledSpan || styledObject || typeof text.style.color === "string" && normalizeHexColor(text.style.color) === undefined) {
     warnings.push({
       code: "cdxml.text_format_native_only",
-      message: `Some text formatting is preserved only in the embedded ChemDraft payload; the visible ${format} retains colors and subscript/superscript but may look different in other apps.`,
+      message: `Some text formatting is preserved only in the embedded ChemDraft payload; the visible ${format} keeps per-character (run) colors, bold/italic and subscript/superscript, but not formatting applied to the whole text box (font, size, bold, italic, alignment, spacing), and may look different in other apps.`,
       sourceObjectId: text.id
     });
   }
   const color = cdxmlColorAttribute(text.style.color, colors);
   const content = text.spans.length === 0 ? escapeXmlText(text.text)
     : textObjectSpansForRendering(text).map((span) => {
-        const face = span.script === "subscript" ? ' face="32"' : span.script === "superscript" ? ' face="64"' : "";
-        // Explicit black must override a coloured parent, even though it is otherwise implicit.
-        const runColor = cdxmlColorAttribute(span.style.color, colors, normalizeHexColorValue(text.style.color));
+        const faceBits = (typeof span.style.fontWeight === "number" && span.style.fontWeight >= 600 ? 1 : 0)
+          | (span.style.fontStyle === "italic" ? 2 : 0)
+          | (span.script === "subscript" ? 32 : span.script === "superscript" ? 64 : 0);
+        const face = faceBits ? ` face="${faceBits}"` : "";
+        // Keep an explicit run colour when the parent has no explicit colour, including black.
+        const runColor = cdxmlColorAttribute(span.style.color, colors, normalizeHexColorValue(text.style.color) ?? "");
         return `<s${face}${runColor.length ? ` ${runColor.join(" ")}` : ""}>${escapeXmlText(span.text)}</s>`;
       }).join("");
   return `<t id="${textId}" p="${formatPoint({ x: text.x, y: text.y })}"${color.length ? ` ${color.join(" ")}` : ""}>${content}</t>`;
@@ -4494,7 +4498,11 @@ function importText(textElement: XmlElementView, pageIndex: number, objectIndex:
       spans.push({
         text: textContent(run.children),
         script: face & 32 ? "subscript" : face & 64 ? "superscript" : "normal",
-        style: runColor ? { color: runColor } : {}
+        style: {
+          ...(runColor ? { color: runColor } : {}),
+          ...(face & 1 ? { fontWeight: 700 } : {}),
+          ...(face & 2 ? { fontStyle: "italic" } : {})
+        }
       });
     } else {
       const plain = textContent([node]);
