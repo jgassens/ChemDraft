@@ -96,39 +96,50 @@ pub(crate) fn restore_file_scopes(
         }
     }
 
-    if session.get("version").and_then(Value::as_u64) != Some(1) {
-        return;
-    }
-    if let Some(tabs) = session.get("tabs") {
-        let Some(tabs) = tabs.as_array() else { return };
-        if tabs.is_empty()
-            || !session
+    fn restore_envelope(
+        session: &mut Value,
+        allow_file: &mut impl FnMut(&Path) -> Result<(), String>,
+    ) {
+        if session.get("version").and_then(Value::as_u64) != Some(1) {
+            return;
+        }
+        if let Some(tabs) = session.get("tabs") {
+            let Some(tabs) = tabs.as_array() else { return };
+            let recovery = session.get("unrestoredTabs");
+            if !session
                 .get("activeTabIndex")
                 .and_then(Value::as_u64)
-                .is_some_and(|index| index < tabs.len() as u64)
-            || !session.get("unrestoredTabs").is_none_or(Value::is_array)
+                .is_some_and(|index| index < tabs.len() as u64 || (tabs.is_empty() && index == 0))
+                || !recovery.is_none_or(Value::is_array)
+                || (tabs.is_empty()
+                    && !recovery
+                        .and_then(Value::as_array)
+                        .is_some_and(|tabs| !tabs.is_empty()))
+            {
+                return;
+            }
+            for tab in session["tabs"].as_array_mut().unwrap() {
+                restore_envelope(tab, allow_file);
+            }
+        } else {
+            if !readable_tab(session) {
+                return;
+            }
+            restore_tab(session, allow_file);
+        }
+        // Recovery entries can be readable tabs or older tab sessions. Follow only recognized
+        // v1 envelope fields, never paths in opaque metadata or unsupported future versions.
+        if let Some(tabs) = session
+            .get_mut("unrestoredTabs")
+            .and_then(Value::as_array_mut)
         {
-            return;
-        }
-        for tab in session["tabs"].as_array_mut().unwrap() {
-            restore_tab(tab, &mut allow_file);
-        }
-    } else {
-        if !readable_tab(session) {
-            return;
-        }
-        restore_tab(session, &mut allow_file);
-    }
-    // Previously unreadable tabs are retried by the frontend too, but only readable envelopes
-    // carrying their own saved path can gain access. No recursion into unsupported recovery data.
-    if let Some(tabs) = session
-        .get_mut("unrestoredTabs")
-        .and_then(Value::as_array_mut)
-    {
-        for tab in tabs {
-            restore_tab(tab, &mut allow_file);
+            for tab in tabs {
+                restore_envelope(tab, allow_file);
+            }
         }
     }
+
+    restore_envelope(session, &mut allow_file);
 }
 
 #[cfg(test)]
@@ -269,6 +280,51 @@ mod tests {
         assert_eq!(grants(&mut session), vec![path]);
         session["activeTabIndex"] = json!(7);
         assert!(grants(&mut session).is_empty());
+    }
+
+    #[test]
+    fn recovery_only_sessions_restore_saved_paths_in_kept_tabs_and_tab_sessions() {
+        let files = Files::new();
+        let kept = files.file("kept.chemdraft");
+        let nested = files.file("nested.cdxml");
+        let nested_kept = files.file("nested-kept.cdx");
+        let opaque = files.file("opaque.chemdraft");
+        let missing = files.0.join("missing.chemdraft");
+        let mut kept_tab = tab(&kept);
+        kept_tab["restoreSavePathError"] = json!("external drive was unavailable");
+        let future = json!({ "version": 99, "tabs": [tab(&opaque)], "activeTabIndex": 0 });
+        let mut session = json!({ "version": 1, "tabs": [], "activeTabIndex": 0,
+            "unrestoredTabs": [kept_tab, {
+                "version": 1, "tabs": [tab(&nested)], "activeTabIndex": 0,
+                "unrestoredTabs": [tab(&nested_kept), tab(&missing)],
+                "path": opaque, "other": { "path": opaque }
+            }, future, { "other": tab(&opaque) }] });
+        assert_eq!(
+            grants(&mut session),
+            vec![kept.clone(), nested, nested_kept]
+        );
+        assert!(session["unrestoredTabs"][0]
+            .get("restoreSavePathError")
+            .is_none());
+        assert!(
+            session["unrestoredTabs"][1]["unrestoredTabs"][1]["restoreSavePathError"].is_string()
+        );
+        assert_eq!(
+            session["unrestoredTabs"][1]["unrestoredTabs"][1]["path"],
+            json!(missing)
+        );
+        assert_eq!(session["unrestoredTabs"][2], future);
+        restore_file_scopes(&mut session, |_| Err("grant refused".into()));
+        assert_eq!(
+            session["unrestoredTabs"][0]["restoreSavePathError"],
+            "grant refused"
+        );
+        assert_eq!(session["unrestoredTabs"][0]["path"], json!(kept));
+        assert_eq!(session["unrestoredTabs"][0]["contents"], "drawing");
+        session["activeTabIndex"] = json!(1);
+        assert!(grants(&mut session).is_empty());
+        let mut empty = json!({ "version": 1, "tabs": [], "activeTabIndex": 0 });
+        assert!(grants(&mut empty).is_empty());
     }
 
     #[test]

@@ -1281,7 +1281,7 @@ async fn confirm_prompted_quit(
     )?;
     let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
     if lifecycle.close_confirmed(window.label(), request_id) {
-        finish_close_window(&app, &window).await?;
+        finish_close_window(&app, &window, request_id).await?;
         lifecycle.cancel_close(window.label(), request_id);
         return Ok(());
     }
@@ -1356,6 +1356,7 @@ fn request_close_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
 async fn finish_close_window(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
+    request_id: u64,
 ) -> Result<(), String> {
     // Commit closes serially with window construction. Two already-approved closes must not both
     // decide they are non-last before either document has left the registry.
@@ -1373,7 +1374,13 @@ async fn finish_close_window(
     let registry = window.state::<document_windows::DocumentWindowRegistry>();
     // Serialize this transition with the quit request before any session entry is removed. A quit
     // that wins keeps this window alive; a close that wins cannot own a later quit prompt.
-    claim_window_close(&QUIT, &registry, &owner.window_id)?;
+    claim_window_close(
+        &QUIT,
+        &registry,
+        &window.state::<window_lifecycle::DocumentLifecycle>(),
+        &owner.window_id,
+        request_id,
+    )?;
     if close_quits {
         // Its mandatory save choice is complete. Use A6's all-window flush/exit, without asking twice.
         request_quit_with(&QUIT, app, false);
@@ -1427,7 +1434,9 @@ async fn finish_close_window(
 fn claim_window_close(
     flow: &QuitFlow,
     registry: &document_windows::DocumentWindowRegistry,
+    lifecycle: &window_lifecycle::DocumentLifecycle,
     id: &str,
+    request_id: u64,
 ) -> Result<(), String> {
     let state = flow.state.lock().unwrap();
     if state.prompt.1 != QuitPromptPhase::Idle
@@ -1435,6 +1444,14 @@ fn claim_window_close(
         || flow.quitting.load(Ordering::SeqCst)
     {
         return Err("Application quit superseded this window close".into());
+    }
+    let owner = registry
+        .document_window(id)
+        .ok_or("Document window is no longer registered")?;
+    // Quit invalidates close identities in begin_prompts. Revalidate under the quit lock even
+    // after cancellation returns it to Idle: the old save choice cannot authorize later edits.
+    if !lifecycle.close_confirmed(&owner.native_label, request_id) {
+        return Err("The document window close is stale; close the window again".into());
     }
     if !registry.begin_closing(id) {
         return Err("Document window is no longer registered".into());
@@ -12231,11 +12248,53 @@ mod tests {
         lifecycle.begin_prompts(vec!["main".into()]);
         assert!(acknowledge_quit_prompt(flow, quit, true));
         assert!(!flow.requested.load(Ordering::SeqCst));
-        assert!(claim_window_close(flow, &registry, "main").is_err());
+        assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
         assert!(registry.document_window("main").is_some());
         assert!(!lifecycle.close_confirmed("main", close));
         assert!(cancel_quit_with(flow, quit));
         assert!(request_prompted_quit_with(flow, &host).is_some());
+    }
+
+    #[test]
+    fn approved_close_stalled_before_claim_is_rejected_after_quit_is_cancelled() {
+        // macOS permits closing its last document; Windows uses this path only with another open.
+        for is_macos in [true, false] {
+            let registry = document_windows::DocumentWindowRegistry::with_main();
+            registry.set_ready("main");
+            if !is_macos {
+                registry.register("b", "doc-b").unwrap();
+                registry.set_ready("b");
+            }
+            let coordinator = session_coordinator::SessionCoordinator::default();
+            assert!(!coordinator.close_quits(&registry, is_macos));
+            let lifecycle = window_lifecycle::DocumentLifecycle::default();
+            let close = lifecycle.begin_close("main").unwrap();
+            assert!(lifecycle.resume_close("main", close));
+            // confirm_prompted_quit passed its first check, but has not claimed the close yet.
+            assert!(lifecycle.close_confirmed("main", close));
+            let flow = test_quit_flow(NEVER, NEVER);
+            let host = StuckAppHost::new(true);
+            let quit = request_prompted_quit_with(flow, &host).unwrap();
+            lifecycle.begin_prompts(vec!["main".into()]);
+            assert!(acknowledge_quit_prompt(flow, quit, true));
+            assert!(cancel_quit_with(flow, quit));
+            lifecycle.cancel_prompts();
+            assert_eq!(flow.state.lock().unwrap().prompt.1, QuitPromptPhase::Idle);
+            assert!(!flow.requested.load(Ordering::SeqCst));
+            // Editing resumes here. The previously approved close must leave the document alive.
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
+            assert_eq!(
+                registry.document_window("main").unwrap().lifecycle,
+                document_windows::DocumentWindowLifecycle::Ready
+            );
+            let fresh_close = lifecycle.begin_close("main").unwrap();
+            assert_ne!(fresh_close, close);
+            assert!(lifecycle.resume_close("main", fresh_close));
+            // Even a newly approved close must not make the old identity valid again.
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", fresh_close).is_ok());
+            assert_eq!(coordinator.close_quits(&registry, is_macos), !is_macos);
+        }
     }
 
     #[test]
@@ -12245,7 +12304,10 @@ mod tests {
         registry.register("b", "doc-b").unwrap();
         registry.set_ready("b");
         let flow = test_quit_flow(NEVER, NEVER);
-        claim_window_close(flow, &registry, "main").unwrap();
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let close = lifecycle.begin_close("main").unwrap();
+        assert!(lifecycle.resume_close("main", close));
+        claim_window_close(flow, &registry, &lifecycle, "main", close).unwrap();
         let host = StuckAppHost::new(true);
         let quit = request_prompted_quit_with(flow, &host).unwrap();
         let labels = registry
@@ -12254,7 +12316,6 @@ mod tests {
             .filter(|window| window.lifecycle != document_windows::DocumentWindowLifecycle::Closing)
             .map(|window| window.native_label)
             .collect();
-        let lifecycle = window_lifecycle::DocumentLifecycle::default();
         assert_eq!(lifecycle.begin_prompts(labels), Some("doc-b".into()));
         assert!(acknowledge_quit_prompt(flow, quit, true));
         assert_eq!(retire_destroyed_quit_prompt(flow, &lifecycle, "main"), None);

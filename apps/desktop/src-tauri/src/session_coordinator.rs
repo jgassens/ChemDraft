@@ -1379,6 +1379,42 @@ mod tests {
     }
 
     #[test]
+    fn fresh_start_work_then_close_and_relaunch_renews_kept_drawings_file_scope() {
+        let files = Files::new();
+        let path = files.0.join("external-drive-drawing.chemdraft");
+        fs::write(&path, "saved drawing").unwrap();
+        let path = path.canonicalize().unwrap();
+        let mut kept = tab("kept drawing");
+        kept["path"] = json!(path);
+        let mut saved = snapshot("previous work");
+        saved["unrestoredTabs"] = json!([kept]);
+        let coordinator = files.start(&saved, true);
+        // Fresh startup keeps the now-readable recovery drawing instead of opening it.
+        coordinator.restore_window("main", 1, true).unwrap();
+        let mut work = snapshot("new work");
+        work["unrestoredTabs"] = saved["unrestoredTabs"].clone();
+        coordinator
+            .submit(("main", 1), 1, work, true, true, Instant::now())
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        coordinator.finish_window_close("main");
+        let closed = files.read();
+        assert_eq!(closed["windows"][0]["tabs"], json!([]));
+        let next_launch = files.start(&closed, true);
+        let mut restored = next_launch
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        let mut grants = Vec::new();
+        crate::document_session::restore_file_scopes(&mut restored, |path| {
+            grants.push(path.to_path_buf());
+            Ok(())
+        });
+        assert_eq!(grants, vec![path]);
+        assert_eq!(restored["unrestoredTabs"][0], kept);
+    }
+
+    #[test]
     fn failed_close_restores_recovery_entry_without_duplicating_the_window() {
         let files = Files::new();
         let mut saved = snapshot("keep");
