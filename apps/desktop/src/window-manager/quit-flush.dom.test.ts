@@ -20,6 +20,7 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 
 import { confirmQuitAfterFlush, listenForQuitFlushRequest, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
+import { runUpdateFlow, tauriUpdateFlowDeps } from "../appUpdates";
 
 function requestFlush() {
   native.listeners.get(QUIT_FLUSH_REQUEST_EVENT)?.({ event: QUIT_FLUSH_REQUEST_EVENT, id: 1, payload: undefined });
@@ -92,6 +93,37 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     }]);
     native.invoke.mockRejectedValueOnce(new Error("disk full"));
     await expect(saveDocumentSession({ edit: 3 }, { strict: true })).rejects.toThrow("disk full");
+  });
+
+  it.each([false, true])("waits for the whole coordinator before installing an update (disk failure: %s)", async fails => {
+    const rendererFlush = vi.fn(async () => { await saveDocumentSession({ edit: "latest" }, { strict: true }); });
+    let finishFlush!: () => void;
+    const pendingFlush = new Promise<void>(resolve => { finishFlush = resolve; });
+    native.invoke.mockImplementation(async command => {
+      if (command === "flush_document_session") {
+        await pendingFlush;
+        if (fails) throw new Error("disk full");
+      }
+    });
+    const update = { version: "2", currentVersion: "1", download: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
+    const deps = { ...tauriUpdateFlowDeps({ setStatus: vi.fn(), flushSession: rendererFlush }),
+      check: vi.fn().mockResolvedValue(update), confirm: vi.fn().mockResolvedValue(true), message: vi.fn().mockResolvedValue(undefined) };
+    const outcome = runUpdateFlow("manual", deps);
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("flush_document_session"));
+    expect(rendererFlush).toHaveBeenCalledTimes(1);
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["save_document_session", "flush_document_session"]);
+    expect(update.install).not.toHaveBeenCalled();
+    finishFlush();
+    expect(await outcome).toBe(fails ? "install-failed" : "installing");
+    expect(update.install).toHaveBeenCalledTimes(fails ? 0 : 1);
+    if (fails) expect(deps.message).toHaveBeenCalledWith(expect.stringContaining("disk full"), expect.anything());
+  });
+
+  it("drains the coordinator even when the renderer preserves an untouched startup session", async () => {
+    const deps = tauriUpdateFlowDeps({ setStatus: vi.fn(), flushSession: vi.fn().mockResolvedValue(undefined) });
+    await deps.flushSession();
+    expect(native.invoke.mock.calls).toEqual([["flush_document_session"]]);
   });
 });
 

@@ -3308,6 +3308,23 @@ describe("documents in one window", () => {
     expect(native.saveSession).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps future metadata on the reused pristine blank startup tab", async () => {
+    const saved = await flush();
+    const raw = saved.tabs![0]! as unknown as Record<string, unknown>;
+    raw.futureTab = { opaque: ["blank", 99] };
+    native.session = saved;
+    await remount();
+    expect(tabs()).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Restored last session");
+    const flushed = await flush();
+    expect((native.session as { tabs: unknown[] }).tabs[0]).toHaveProperty("futureTab", raw.futureTab);
+    expect(flushed.tabs![0]!.blank).toBe(true);
+    await paste("New work on reused blank");
+    const edited = await flush();
+    expect((native.session as { tabs: unknown[] }).tabs[0]).toHaveProperty("futureTab", raw.futureTab);
+    expect(edited.tabs![0]!.contents).toContain("New work on reused blank");
+  });
+
   it.each([false, true])("tab x queues OS open-with so Save writes the prompted drawing (multiple: %s)", async (multiple) => {
     if (multiple) {
       await paste("Original prompted drawing");

@@ -303,6 +303,20 @@ trait QuitHost: Clone + Send + 'static {
     fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
 
+/// All native exit routes drain accepted snapshots, including AppKit termination without a
+/// renderer handshake. The coordinator clears dirty only after a successful atomic write, so
+/// overlapping callbacks/timers write each pending state once and a failed flush remains retryable.
+fn flush_session_before_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Err(error) = flush_session(app) {
+        eprintln!("Could not flush document session before quit: {error}");
+    }
+}
+
+fn flush_session<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    app.state::<session_coordinator::SessionCoordinator>()
+        .flush()
+}
+
 fn visit_quit_documents(
     registry: &document_windows::DocumentWindowRegistry,
     mut deliver: impl FnMut(&str) -> bool,
@@ -341,12 +355,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 
     fn exit(&self) {
         // Also drain accepted snapshots when the renderer did not answer before the grace expired.
-        if let Err(error) = self
-            .state::<session_coordinator::SessionCoordinator>()
-            .flush()
-        {
-            eprintln!("Could not flush document session before quit: {error}");
-        }
+        flush_session_before_exit(self);
         tauri::AppHandle::exit(self, 0);
     }
 
@@ -362,6 +371,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(windows)]
     fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!("{}", forced_exit_message(reason, waited));
+        flush_session_before_exit(self);
         self.state::<ocsr_engine::OcsrEngineState>()
             .kill_for_forced_exit();
         self.state::<naming_engine::NamingEngineState>()
@@ -1552,6 +1562,7 @@ pub fn run() {
             save_toolset_customization_state,
             load_document_session,
             save_document_session,
+            flush_document_session,
             set_toolbars_menu,
             focus_main_document_window,
             focus_main_document_window_if_app_active,
@@ -1648,6 +1659,7 @@ pub fn run() {
                     api.prevent_exit();
                     request_quit(app);
                 } else {
+                    flush_session_before_exit(app);
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -1660,6 +1672,7 @@ pub fn run() {
                 // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
                 // only when the preference is enabled. System termination and preference-off
                 // AppKit quit still reach this final, non-blocking cleanup as before.
+                flush_session_before_exit(app);
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -3482,6 +3495,19 @@ fn save_document_session(
         )?;
     session_coordinator::schedule(&app, delay);
     Ok(())
+}
+
+/// Update installers may exit without a RunEvent. Drain every window's accepted snapshot,
+/// including when the current renderer deliberately preserves the previous startup session.
+#[tauri::command]
+fn flush_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Only a registered document window can flush its session".into());
+    }
+    flush_session(&app)
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and

@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.04.00-codex";
+const CURRENT_BUILD_STAMP = "11.11.06.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10503,6 +10503,7 @@ export function MainWindow({
     }
 
     let active = true;
+    const startupTabId = activeDocumentTabIdRef.current;
     void loadDocumentSession()
       .then(async (raw) => {
         if (!active) {
@@ -10517,7 +10518,15 @@ export function MainWindow({
             return;
           }
           skippedSessionRestoreRef.current = startWithFreshDocument;
-          if (!shouldRestoreDocumentSession(envelope)) return;
+          if (!shouldRestoreDocumentSession(envelope)) {
+            // Reusing the startup blank still restores its opaque metadata. The next snapshot
+            // serializes the live document, so retaining this source cannot overwrite new edits.
+            const [rawTab] = documentSessionRestoreCandidates(envelope);
+            if (rawTab && documentTabsRef.current.some(tab => tab.id === startupTabId)) {
+              sessionTabMetadataRef.current.set(startupTabId, rawTab);
+            }
+            return;
+          }
           const shellOpenFailure = shellOpenFailureRef.current;
           shellOpenFailureRef.current = undefined;
           const skipped: unknown[] = [];

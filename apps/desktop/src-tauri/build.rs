@@ -124,6 +124,7 @@ fn main() {
             "perf_log_window_state",
             "window_logical_position",
             "take_pending_open_document",
+            "flush_document_session",
             "open_problem_report_email",
             "take_pending_crash_report",
         ]),

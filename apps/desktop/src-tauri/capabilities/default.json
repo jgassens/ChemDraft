@@ -23,6 +23,7 @@
     "allow-save-toolset-customization-state",
     "allow-load-document-session",
     "allow-save-document-session",
+    "allow-flush-document-session",
     "allow-set-toolbars-menu",
     "allow-focus-main-document-window",
     "allow-focus-main-document-window-if-app-active",

@@ -729,6 +729,135 @@ mod tests {
     }
 
     #[test]
+    fn every_native_exit_and_update_route_drains_a_deferred_snapshot_once() {
+        // Pair each real entry point with its flush wiring. These checks catch bypasses of the
+        // coordinator, while the disk assertions below exercise the shared drain on every route.
+        let lib = include_str!("lib.rs");
+        let appkit = include_str!("macos_quit.rs");
+        let windows_update = include_str!("../../src/appUpdates.ts");
+        for (route, source, start, end, flush) in [
+            (
+                "quit decision / Windows last-window close",
+                lib,
+                "    fn exit(&self) {",
+                "    /// Windows:",
+                "flush_session_before_exit(self)",
+            ),
+            (
+                "ExitRequested",
+                lib,
+                "            RunEvent::ExitRequested { code, api, .. } => {",
+                "            RunEvent::Exit => {",
+                "flush_session_before_exit(app)",
+            ),
+            (
+                "Windows forced exit",
+                lib,
+                "    fn force_exit(&self, waited: Duration, reason: QuitReason) {",
+                "        self.state::<ocsr_engine::OcsrEngineState>()",
+                "flush_session_before_exit(self)",
+            ),
+            (
+                "Exit",
+                lib,
+                "            RunEvent::Exit => {",
+                "            // Dock-icon click",
+                "flush_session_before_exit(app)",
+            ),
+            (
+                "AppKit / Sparkle termination",
+                appkit,
+                "unsafe extern \"C\" fn should_terminate(",
+                "    NSApplicationTerminateReply::TerminateNow",
+                "super::flush_session(app)",
+            ),
+            (
+                "Windows update install",
+                windows_update,
+                "export function tauriUpdateFlowDeps(",
+                "    check: async () => {",
+                "await invoke(\"flush_document_session\")",
+            ),
+        ] {
+            let body = source
+                .split_once(start)
+                .unwrap()
+                .1
+                .split_once(end)
+                .unwrap()
+                .0;
+            assert!(body.contains(flush), "{route} must drain the coordinator");
+            let files = Files::new();
+            let coordinator = files.start(&snapshot("old"), true);
+            coordinator.restore_window("main", false).unwrap();
+            let now = Instant::now();
+            // Reproduce a metadata write followed by an accepted renderer edit inside 800 ms.
+            coordinator.set_frame("main", json!({"x": 42})).unwrap();
+            assert!(coordinator
+                .submit("main", 1, snapshot("deferred"), true, false, now)
+                .unwrap()
+                .is_some());
+            assert_eq!(files.read()["windows"][0]["tabs"][0], tab("old"), "{route}");
+            coordinator.flush().unwrap();
+            assert_eq!(
+                files.read()["windows"][0]["tabs"][0],
+                tab("deferred"),
+                "{route}"
+            );
+            let written_at = coordinator.state.lock().unwrap().last_write;
+            // ExitRequested, Exit and AppKit may follow a decided quit, and the old timer may
+            // still fire. None may write the same snapshot a second time.
+            coordinator.flush().unwrap();
+            coordinator.tick(now + WRITE_INTERVAL).unwrap();
+            assert_eq!(
+                coordinator.state.lock().unwrap().last_write,
+                written_at,
+                "{route}"
+            );
+            assert_eq!(
+                files.read()["windows"][0]["tabs"][0],
+                tab("deferred"),
+                "{route}"
+            );
+        }
+        let windows_close = lib
+            .split_once("// Elsewhere there is no Dock")
+            .unwrap()
+            .1
+            .split_once("WindowEvent::Destroyed =>")
+            .unwrap()
+            .0;
+        assert!(windows_close.contains("request_quit(window.app_handle())"));
+        let update_command = lib
+            .split_once("fn flush_document_session(")
+            .unwrap()
+            .1
+            .split_once("/// JS pushes")
+            .unwrap()
+            .0;
+        assert!(update_command.contains("flush_session(&app)"));
+    }
+
+    #[test]
+    fn a_failed_terminal_flush_preserves_the_pending_snapshot_for_retry() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("old"), true);
+        coordinator.restore_window("main", false).unwrap();
+        coordinator.set_frame("main", json!({"x": 42})).unwrap();
+        coordinator
+            .submit("main", 1, snapshot("deferred"), true, false, Instant::now())
+            .unwrap();
+        fs::remove_file(files.path()).unwrap();
+        fs::create_dir(files.path()).unwrap();
+        assert!(coordinator.flush().is_err());
+        assert!(coordinator.state.lock().unwrap().dirty);
+        fs::remove_dir(files.path()).unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("deferred"));
+        coordinator.flush().unwrap();
+    }
+
+    #[test]
     fn restore_is_read_once_and_distributes_only_each_windows_own_tabs() {
         let files = Files::new();
         let session = json!({ "version": 2, "windows": [window("a", &["a1", "a2"], 1), window("b", &["b"], 0)],

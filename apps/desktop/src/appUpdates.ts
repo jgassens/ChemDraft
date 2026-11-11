@@ -233,6 +233,13 @@ export async function currentUpdateBuildInfo(isDesktop: boolean, platform: strin
 export function tauriUpdateFlowDeps(app: Pick<UpdateFlowDeps, "setStatus" | "flushSession">): UpdateFlowDeps {
   return {
     ...app,
+    flushSession: async () => {
+      await app.flushSession();
+      // A preserved startup blank may submit nothing. Other windows can also have accepted
+      // snapshots inside the native throttle; installation requires the whole coordinator on disk.
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("flush_document_session");
+    },
     check: async () => {
       const { check } = await import("@tauri-apps/plugin-updater");
       return check();

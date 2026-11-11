@@ -72,15 +72,24 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
-    if super::should_prompt_appkit_quit(
-        super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
-        super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
-        reason,
-    ) {
-        if let Some(app) = APP.get() {
+    if let Some(app) = APP.get() {
+        // Sparkle also terminates through AppKit. A successful flush is required before handing
+        // the bundle to its installer; unlike a best-effort Exit callback, this can cancel it.
+        if let Err(error) = super::flush_session(app) {
+            eprintln!("Could not flush document session before AppKit termination: {error}");
+            if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
+            // System logout/shutdown must remain non-blocking.
+        }
+        if super::should_prompt_appkit_quit(
+            super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
+            super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+            reason,
+        ) {
             super::request_quit(app);
             return NSApplicationTerminateReply::TerminateCancel; // Return to the event loop while the user chooses.
         }
     }
-    NSApplicationTerminateReply::TerminateNow // Preference off, decided exit, or system termination.
+    NSApplicationTerminateReply::TerminateNow
 }
