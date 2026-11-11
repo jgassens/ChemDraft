@@ -338,6 +338,43 @@ fn private_delivery_waits_for_completion_and_rechecks_the_live_caller() {
 }
 
 #[test]
+fn rejected_claims_and_stale_connections_preserve_a_live_callers_partial() {
+    let documents = ready_documents();
+    let mut broker = Broker::default();
+    let (channel, received) = capture();
+    broker.connect(&documents, HOST, HOST, channel).unwrap();
+    let main = connect(&mut broker, &documents, "main");
+    let parts = message_chunks(json!({"version":1,"kind":"response","id":"call",
+        "method":"getDocument","ok":true,"value":"x".repeat(5000)}));
+    broker
+        .push(&documents, "main", "main", &main, HOST, parts[0].clone())
+        .unwrap();
+    for (caller, claimed, connection) in [
+        ("toolset-core-main", "main", main.as_str()),
+        ("main", "doc-b", main.as_str()),
+        ("main", "main", "stale"),
+    ] {
+        assert!(broker
+            .push(
+                &documents,
+                caller,
+                claimed,
+                connection,
+                HOST,
+                parts[1].clone()
+            )
+            .is_err());
+        assert!(broker.partials.contains_key("main"));
+        assert!(received.lock().unwrap().is_empty());
+    }
+    broker
+        .push(&documents, "main", "main", &main, HOST, parts[1].clone())
+        .unwrap();
+    assert!(broker.partials.is_empty());
+    assert_eq!(received.lock().unwrap().len(), 2);
+}
+
+#[test]
 fn chunk_limits_order_replay_and_budget_are_enforced_before_delivery() {
     let documents = ready_documents();
     let mut broker = Broker::default();

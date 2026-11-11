@@ -12,7 +12,7 @@ dialog coordinator and final synchronous write checks. No plugin permission or c
 check is removed. One-document panel labels, persistence keys and presentation remain unchanged.
 A5b must bind those surfaces per document before another document window is enabled.
 
-Build stamp: `11.11.01.10-codex`. Implementation is complete; native execution remains unverified
+Build stamp: `11.11.01.11-codex`. Implementation is complete; native execution remains unverified
 by this worker (the coordinator runs Cargo and packaged app checks). See
 [the adapter review](runtime-broker-a5a3-review.md).
 
@@ -144,6 +144,21 @@ requires the native file dialog's chosen-file runtime scope. `chooseRuntimeFile`
 wrapper. Package bytes, integrity/manifest/handshake validation and inspection receipts stay in the
 owner. Native package reads additionally admit the exact injected host label and retain the opened
 file's chosen-path scope and exact-sibling checksum checks.
+
+The download-diagnosis and external-tool capability guards admit exactly their existing document
+capability file (`main`, `doc-*`) and `runtime-host-services.json` (`runtime` only), with no remote
+or webview selectors. The host needs these native calls because it owns the install/update and
+external-tool controllers. Keeping the exact host grant avoids adding document-side execution
+forwarders to the broker. Each external-tool grant must contain exactly the registered command set;
+every other capability file, including utilities, must contain none of these permissions. Diagnosis
+remains limited to the fixed native host allowlist, and the existing consent/install gates remain.
+
+Broker sends prune closed peers and their partial transfers before caller authorization, so a
+closing sender's rejected continuation cannot retain its buffered message. Pruning uses the live
+registry and connection state, never the claimed sender. Rejected aliases and stale connections
+cannot discard a live caller's partial. Completion already removes the partial before validation
+and delivery. The existing closing-caller and context-menu guard assertions remain unchanged;
+the hidden builder now applies the shared default-context-menu policy to its created webview.
 
 The host gains no window controls, menu/session/clipboard/document-write permissions, generic
 event emission, native picker or utility-suspension permission. Its only generic event grants are

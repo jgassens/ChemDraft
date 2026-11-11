@@ -368,8 +368,9 @@ impl Broker {
         recipient: &str,
         chunk: Chunk,
     ) -> Result<(), String> {
-        authorize_caller(documents, caller, claimed)?;
+        // A closing caller must release its buffered transfers even when authorization fails.
         self.prune(documents);
+        authorize_caller(documents, caller, claimed)?;
         self.check_connection(caller, connection)?;
         authorize_pair(documents, caller, recipient)?;
         let recipient_connection = self
@@ -551,10 +552,11 @@ pub(crate) fn create_runtime_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Re
     }
     // No registry/session registration, document ownership, menu, focus-return or reveal call.
     // macOS retains its application menu; Windows installs menus only on registered documents.
-    WebviewWindowBuilder::from_config(app, &runtime_window_config())
+    let window = WebviewWindowBuilder::from_config(app, &runtime_window_config())
         .map_err(|error| error.to_string())?
         .build()
         .map_err(|error| error.to_string())?;
+    crate::disable_default_context_menus(&window);
     Ok(())
 }
 
