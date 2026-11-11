@@ -739,11 +739,14 @@ export async function loadDocumentSession(freshStart = loadStartWithFreshDocumen
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<unknown | null>("load_document_session", { freshStart }).then((state) => state ?? undefined);
+  const result = await invoke<{ incarnation: number; session: unknown | null }>("load_document_session", { freshStart });
+  documentSessionIncarnation = result.incarnation;
+  return result.session ?? undefined;
 }
 
 // One sequence per document webview; allocated before asynchronous IPC preparation.
 let documentSessionRevision = 0;
+let documentSessionIncarnation: number | undefined;
 
 /** Send this window's snapshot to the sole native session coordinator. */
 /** Autosave ignores a failed write (the previous session stays); `strict` rejects instead, for callers
@@ -754,9 +757,14 @@ export async function saveDocumentSession(state: unknown, options?: { strict?: b
   }
 
   const revision = ++documentSessionRevision;
+  const incarnation = documentSessionIncarnation;
+  if (incarnation === undefined) {
+    if (options?.strict) throw new Error("Document session restore has not completed for this window");
+    return;
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   const write = invoke("save_document_session", {
-    state, revision, flush: options?.flush === true || options?.strict === true, replacePreserved: true
+    state, revision, incarnation, flush: options?.flush === true || options?.strict === true, replacePreserved: true
   });
   await (options?.strict ? write : write.catch(() => undefined));
 }

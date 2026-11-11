@@ -6,7 +6,7 @@ const native = vi.hoisted(() => {
   const listeners = new Map<string, (event: { event: string; id: number; payload: unknown }) => void>();
   return {
     listeners,
-    invoke: vi.fn<(...args: unknown[]) => Promise<void>>(),
+    invoke: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     listen: vi.fn(async (eventName: string, handler: (event: { event: string; id: number; payload: unknown }) => void) => {
       listeners.set(eventName, handler);
       return () => { listeners.delete(eventName); };
@@ -19,18 +19,21 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen: native.listen })
 }));
 
-import { cancelQuit, confirmQuitAfterFlush, listenForQuitFlushRequest, listenForQuitPromptRequest, QUIT_PROMPT_REQUEST_EVENT, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
+import { cancelQuit, confirmQuitAfterFlush, listenForQuitFlushRequest, listenForQuitPromptRequest, loadDocumentSession, QUIT_PROMPT_REQUEST_EVENT, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
 import { runUpdateFlow, tauriUpdateFlowDeps, UPDATE_SESSION_DRAIN_TIMEOUT_MS } from "../appUpdates";
 
 function requestFlush() {
   native.listeners.get(QUIT_FLUSH_REQUEST_EVENT)?.({ event: QUIT_FLUSH_REQUEST_EVENT, id: 1, payload: 42 });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   native.listeners.clear();
   native.listen.mockClear();
   native.invoke.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("__TAURI_INTERNALS__", {});
+  native.invoke.mockResolvedValueOnce({ incarnation: 1, session: null });
+  await loadDocumentSession();
+  native.invoke.mockClear();
 });
 
 afterEach(() => {
@@ -58,7 +61,8 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     expect(native.listen).toHaveBeenCalledWith(QUIT_FLUSH_REQUEST_EVENT, expect.any(Function));
     requestFlush();
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("save_document_session", {
-      state: session, revision: expect.any(Number), flush: true, replacePreserved: true
+      // Each snapshot now identifies the native window incarnation loaded before editing.
+      state: session, revision: expect.any(Number), incarnation: 1, flush: true, replacePreserved: true
     }));
     expect(native.invoke).toHaveBeenCalledTimes(1);
     finishWrite();
@@ -117,10 +121,21 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     await saveDocumentSession({ edit: 2 }, { strict: true });
     const first = native.invoke.mock.calls[0]![1] as { revision: number };
     expect(native.invoke.mock.calls[1]).toEqual(["save_document_session", {
-      state: { edit: 2 }, revision: first.revision + 1, flush: true, replacePreserved: true
+      // Revision ordering is scoped to the native incarnation, including strict drains.
+      state: { edit: 2 }, revision: first.revision + 1, incarnation: 1, flush: true, replacePreserved: true
     }]);
     native.invoke.mockRejectedValueOnce(new Error("disk full"));
     await expect(saveDocumentSession({ edit: 3 }, { strict: true })).rejects.toThrow("disk full");
+  });
+
+  it("loads the native incarnation and carries it with every session snapshot", async () => {
+    const session = { tabs: [{ contents: "retained drawing" }] };
+    native.invoke.mockResolvedValueOnce({ incarnation: 2, session });
+    expect(await loadDocumentSession()).toEqual(session);
+    await saveDocumentSession({ edit: "new webview" }, { flush: true });
+    expect(native.invoke).toHaveBeenLastCalledWith("save_document_session", {
+      state: { edit: "new webview" }, revision: expect.any(Number), incarnation: 2, flush: true, replacePreserved: true
+    });
   });
 
   it.each([false, true])("waits for the whole coordinator before installing an update (disk failure: %s)", async fails => {

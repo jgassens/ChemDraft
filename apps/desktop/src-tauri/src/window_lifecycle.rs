@@ -123,8 +123,31 @@ impl DocumentLifecycle {
 
     pub(crate) fn begin_prompts(&self, labels: Vec<String>) -> Option<String> {
         let mut state = self.state.lock().unwrap();
+        // A quit supersedes any renderer close choice/final save still in flight.
+        state.closes.clear();
         state.prompts = labels.into();
         state.prompts.front().cloned()
+    }
+
+    /// Unexpected destruction must not leave a Showing prompt with an owner that cannot answer.
+    pub(crate) fn forget_window(&self, label: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        state.closes.remove(label);
+        let owned_prompt = state.prompts.front().is_some_and(|owner| owner == label);
+        if owned_prompt {
+            state.prompts.clear();
+        } else {
+            state.prompts.retain(|owner| owner != label);
+        }
+        if let Some(flush) = &mut state.flush {
+            if flush.pending.remove(label) {
+                flush.error = Some(
+                    "A document window was destroyed before its session flush completed".into(),
+                );
+                self.changed.notify_all();
+            }
+        }
+        owned_prompt
     }
 
     pub(crate) fn is_prompt_owner(&self, label: &str) -> bool {
@@ -134,6 +157,10 @@ impl DocumentLifecycle {
             .prompts
             .front()
             .is_some_and(|owner| owner == label)
+    }
+
+    pub(crate) fn cancel_prompts(&self) {
+        self.state.lock().unwrap().prompts.clear();
     }
 
     pub(crate) fn complete_prompt(&self, label: &str) -> Option<String> {
@@ -147,7 +174,7 @@ impl DocumentLifecycle {
     /// Repeated native close clicks reuse the pending choice. No timeout may discard a window.
     pub(crate) fn begin_close(&self, label: &str) -> Option<u64> {
         let mut state = self.state.lock().unwrap();
-        if state.closes.contains_key(label) {
+        if state.closes.contains_key(label) || !state.prompts.is_empty() {
             return None;
         }
         state.next_close += 1;
@@ -284,5 +311,23 @@ mod tests {
         assert!(lifecycle.cancel_close("main", id));
         assert!(!lifecycle.close_confirmed("main", id));
         assert!(lifecycle.begin_close("main").unwrap() > id);
+    }
+
+    #[test]
+    fn quit_supersedes_an_approved_close_waiting_for_its_final_renderer_snapshot() {
+        let lifecycle = DocumentLifecycle::default();
+        let close = lifecycle.begin_close("main").unwrap();
+        assert!(lifecycle.resume_close("main", close));
+        assert_eq!(
+            lifecycle.begin_prompts(vec!["main".into()]),
+            Some("main".into())
+        );
+        assert!(!lifecycle.close_confirmed("main", close));
+        assert!(!lifecycle.resume_close("main", close));
+        assert!(lifecycle.begin_close("main").is_none());
+        assert!(lifecycle.is_prompt_owner("main"));
+        lifecycle.cancel_prompts();
+        assert!(!lifecycle.is_prompt_owner("main"));
+        assert!(lifecycle.begin_close("main").is_some());
     }
 }

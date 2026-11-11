@@ -224,10 +224,12 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   const candidate = raw as Record<string, unknown>;
   if (candidate.tabs !== undefined) {
     if (nested || candidate.version !== DOCUMENT_SESSION_VERSION || !Array.isArray(candidate.tabs) ||
-        candidate.tabs.length === 0 || !Number.isInteger(candidate.activeTabIndex) ||
+        !Number.isInteger(candidate.activeTabIndex) ||
         typeof candidate.activeTabIndex !== "number" || candidate.activeTabIndex < 0 ||
-        candidate.activeTabIndex >= candidate.tabs.length ||
+        candidate.activeTabIndex >= Math.max(1, candidate.tabs.length) ||
         (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs))) return undefined;
+    // Native close removes the readable tabs but retains recovery drawings for reopen/next launch.
+    if (candidate.tabs.length === 0 && !(candidate.unrestoredTabs as unknown[] | undefined)?.length) return undefined;
     const tabs: DocumentSessionEnvelope[] = [];
     const unrestoredTabs: unknown[] = [...(candidate.unrestoredTabs as unknown[] ?? [])];
     let activeTabIndex = 0;

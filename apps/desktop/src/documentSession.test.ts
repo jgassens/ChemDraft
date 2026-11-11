@@ -292,6 +292,17 @@ describe("multi-document session extension", () => {
       expect(documentSessionRestoreCandidates(parsed)).toEqual([unsupported]);
     });
 
+    it("restores the recovery-only entry retained after a native window close", () => {
+      const raw = { version: 1, tabs: [], activeTabIndex: 0, unrestoredTabs: [unsupported, previouslyKept] };
+      const parsed = parseDocumentSessionEnvelope(raw)!;
+      expect(parsed).toEqual(raw);
+      expect(shouldRestoreDocumentSession(parsed)).toBe(true);
+      expect(documentSessionRestoreCandidates(parsed)).toEqual([unsupported, previouslyKept]);
+      expect(unrestoredTabContents(documentSessionRestoreCandidates(parsed)[0])).toBe(originalContents);
+      expect(parseDocumentSessionEnvelope({ ...raw, activeTabIndex: 1 })).toBeUndefined();
+      expect(parseDocumentSessionEnvelope({ ...raw, unrestoredTabs: [] })).toBeUndefined();
+    });
+
     it("still rejects an unreadable outer session even when it carries recoverable children", () => {
       expect(parseDocumentSessionEnvelope({ ...session, version: 99, tabs: [unsupported], activeTabIndex: 0,
         unrestoredTabs: [previouslyKept] })).toBeUndefined();

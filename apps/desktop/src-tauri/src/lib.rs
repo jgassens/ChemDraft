@@ -1215,7 +1215,13 @@ async fn cancel_quit(
     let cancelled = cancel_appkit_prompt_with(&QUIT, window.app_handle(), request_id, disposition);
     #[cfg(not(target_os = "macos"))]
     let cancelled = cancel_prompt_without_appkit(&QUIT, request_id, disposition);
-    if QUIT.state.lock().unwrap().prompt == (request_id, QuitPromptPhase::Idle) {
+    let state = QUIT.state.lock().unwrap();
+    let retired = state.prompt == (request_id, QuitPromptPhase::Idle);
+    if retired {
+        lifecycle.cancel_prompts();
+    }
+    drop(state);
+    if retired {
         for label in document_labels(window.app_handle()) {
             let _ = window
                 .app_handle()
@@ -1326,6 +1332,15 @@ fn request_close_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
         return;
     }
     let lifecycle = app.state::<window_lifecycle::DocumentLifecycle>();
+    // Queue the close event before a competing quit can supersede its request. Once quit has
+    // claimed the flow, no late close event may replace its renderer prompt.
+    let state = QUIT.state.lock().unwrap();
+    if state.prompt.1 != QuitPromptPhase::Idle
+        || QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+    {
+        return;
+    }
     if let Some(id) = lifecycle.begin_close(label) {
         if let Err(error) = app.emit_to(
             label,
@@ -1345,26 +1360,30 @@ async fn finish_close_window(
     // Commit closes serially with window construction. Two already-approved closes must not both
     // decide they are non-last before either document has left the registry.
     let _creation = lock_window_creation()?;
-    if QUIT.requested.load(Ordering::SeqCst) || APP_QUITTING.load(Ordering::SeqCst) {
-        return Err("Application quit superseded this window close".into());
-    }
     let owner = window
         .state::<document_windows::DocumentWindowRegistry>()
         .owner_of(window.label())
         .ok_or("Document window is no longer registered")?;
-    if app
+    let close_quits = app
         .state::<session_coordinator::SessionCoordinator>()
         .close_quits(
             &window.state::<document_windows::DocumentWindowRegistry>(),
             cfg!(target_os = "macos"),
-        )
-    {
+        );
+    let registry = window.state::<document_windows::DocumentWindowRegistry>();
+    // Serialize this transition with the quit request before any session entry is removed. A quit
+    // that wins keeps this window alive; a close that wins cannot own a later quit prompt.
+    claim_window_close(&QUIT, &registry, &owner.window_id)?;
+    if close_quits {
         // Its mandatory save choice is complete. Use A6's all-window flush/exit, without asking twice.
         request_quit_with(&QUIT, app, false);
         return Ok(());
     }
     // Move shared HWND ownership before destroying the old owner (Windows destroys owned HWNDs).
-    preserve_shared_utilities(app, window)?;
+    if let Err(error) = preserve_shared_utilities(app, window) {
+        registry.cancel_closing(&owner.window_id);
+        return Err(error);
+    }
     let writer = app.clone();
     let id = owner.window_id.clone();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -1383,6 +1402,7 @@ async fn finish_close_window(
     });
     if let Err(error) = result {
         cancelled.store(true, Ordering::SeqCst);
+        registry.cancel_closing(&owner.window_id);
         // Serialize behind any late disk write, without extending the close's bounded wait.
         let app = app.clone();
         let id = owner.window_id;
@@ -1393,12 +1413,8 @@ async fn finish_close_window(
         });
         return Err(error);
     }
-    let registry = window.state::<document_windows::DocumentWindowRegistry>();
-    registry.begin_closing(&owner.window_id);
     if let Err(error) = window.destroy() {
-        registry.remove(&owner.window_id);
-        registry.register(&owner.window_id, &owner.native_label)?;
-        registry.set_ready(&owner.window_id);
+        registry.cancel_closing(&owner.window_id);
         app.state::<session_coordinator::SessionCoordinator>()
             .cancel_window_close(&owner.window_id)?;
         return Err(error.to_string());
@@ -1406,6 +1422,37 @@ async fn finish_close_window(
     app.state::<session_coordinator::SessionCoordinator>()
         .finish_window_close(&owner.window_id);
     Ok(())
+}
+
+fn claim_window_close(
+    flow: &QuitFlow,
+    registry: &document_windows::DocumentWindowRegistry,
+    id: &str,
+) -> Result<(), String> {
+    let state = flow.state.lock().unwrap();
+    if state.prompt.1 != QuitPromptPhase::Idle
+        || flow.requested.load(Ordering::SeqCst)
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return Err("Application quit superseded this window close".into());
+    }
+    if !registry.begin_closing(id) {
+        return Err("Document window is no longer registered".into());
+    }
+    Ok(())
+}
+
+fn retire_destroyed_quit_prompt(
+    flow: &QuitFlow,
+    lifecycle: &window_lifecycle::DocumentLifecycle,
+    label: &str,
+) -> Option<u64> {
+    let mut state = flow.state.lock().unwrap();
+    if !lifecycle.forget_window(label) {
+        return None;
+    }
+    let id = state.prompt.0;
+    retire_quit_prompt(flow, &mut state, id).then_some(id)
 }
 
 fn is_shared_utility(label: &str) -> bool {
@@ -1974,6 +2021,18 @@ pub fn run() {
                         request_close_window(window.app_handle(), window.label());
                     }
                     WindowEvent::Destroyed => {
+                        if let Some(id) = retire_destroyed_quit_prompt(
+                            &QUIT,
+                            &window.state::<window_lifecycle::DocumentLifecycle>(),
+                            window.label(),
+                        ) {
+                            for label in document_labels(window.app_handle()) {
+                                let _ =
+                                    window
+                                        .app_handle()
+                                        .emit_to(&label, QUIT_CANCELLED_EVENT, id);
+                            }
+                        }
                         // Application services belong to the process. An approved close has already
                         // removed/flushed its session; process teardown preserves the quit session.
                         if let Some(owner) = window
@@ -4217,11 +4276,17 @@ async fn load_document_session(
         .state::<document_windows::DocumentWindowRegistry>()
         .owner_of(window.label())
         .ok_or("Document window is not registered")?;
-    let Some(mut session) = app
+    let session = app
         .state::<session_coordinator::SessionCoordinator>()
-        .restore_window(&owner.window_id, fresh_start.unwrap_or(false))?
-    else {
-        return Ok(None);
+        .restore_window(
+            &owner.window_id,
+            owner.incarnation,
+            fresh_start.unwrap_or(false),
+        )?;
+    let Some(mut session) = session else {
+        return Ok(Some(
+            serde_json::json!({ "incarnation": owner.incarnation, "session": null }),
+        ));
     };
     document_session::restore_file_scopes(&mut session, |path| {
         use tauri_plugin_fs::FsExt;
@@ -4237,7 +4302,9 @@ async fn load_document_session(
         }
         Ok(())
     });
-    Ok(Some(session))
+    Ok(Some(
+        serde_json::json!({ "incarnation": owner.incarnation, "session": session }),
+    ))
 }
 
 /// The working document's autosave (serialized contents + file association). JS owns the envelope
@@ -4248,6 +4315,7 @@ async fn save_document_session(
     window: tauri::WebviewWindow,
     state: serde_json::Value,
     revision: u64,
+    incarnation: u64,
     flush: bool,
     replace_preserved: bool,
 ) -> Result<(), String> {
@@ -4263,7 +4331,7 @@ async fn save_document_session(
         let delay = writer_app
             .state::<session_coordinator::SessionCoordinator>()
             .submit(
-                &owner.window_id,
+                (&owner.window_id, incarnation),
                 revision,
                 state,
                 replace_preserved,
@@ -12148,6 +12216,71 @@ mod tests {
         assert!(acknowledge_quit_prompt(flow, next, true));
         thread::sleep(Duration::from_millis(600));
         assert!(!flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn approved_close_cannot_destroy_the_owner_of_a_newer_showing_quit_prompt() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let close = lifecycle.begin_close("main").unwrap();
+        assert!(lifecycle.resume_close("main", close));
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        lifecycle.begin_prompts(vec!["main".into()]);
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert!(!flow.requested.load(Ordering::SeqCst));
+        assert!(claim_window_close(flow, &registry, "main").is_err());
+        assert!(registry.document_window("main").is_some());
+        assert!(!lifecycle.close_confirmed("main", close));
+        assert!(cancel_quit_with(flow, quit));
+        assert!(request_prompted_quit_with(flow, &host).is_some());
+    }
+
+    #[test]
+    fn committed_close_cannot_be_selected_as_a_later_quit_prompt_owner() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        registry.register("b", "doc-b").unwrap();
+        registry.set_ready("b");
+        let flow = test_quit_flow(NEVER, NEVER);
+        claim_window_close(flow, &registry, "main").unwrap();
+        let host = StuckAppHost::new(true);
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        let labels = registry
+            .all_document_windows()
+            .into_iter()
+            .filter(|window| window.lifecycle != document_windows::DocumentWindowLifecycle::Closing)
+            .map(|window| window.native_label)
+            .collect();
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        assert_eq!(lifecycle.begin_prompts(labels), Some("doc-b".into()));
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert_eq!(retire_destroyed_quit_prompt(flow, &lifecycle, "main"), None);
+        assert!(lifecycle.is_prompt_owner("doc-b"));
+    }
+
+    #[test]
+    fn destroyed_showing_prompt_owner_is_retired_so_later_menu_quit_can_start() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        lifecycle.begin_prompts(vec!["main".into(), "doc-b".into()]);
+        let flush = lifecycle.begin_flush(
+            window_lifecycle::FlushPurpose::PromptedQuit,
+            vec!["main".into()],
+        );
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert_eq!(
+            retire_destroyed_quit_prompt(flow, &lifecycle, "main"),
+            Some(quit)
+        );
+        assert!(!lifecycle.is_prompt_owner("main"));
+        assert!(!lifecycle.is_prompt_owner("doc-b"));
+        assert!(lifecycle.wait_for_update(flush, Duration::ZERO).is_err());
+        assert!(request_prompted_quit_with(flow, &host).unwrap() > quit);
     }
 
     #[test]

@@ -10793,8 +10793,10 @@ export function MainWindow({
             try {
               await dialogCoordinatorRef.current?.settleForWindowClose(isWindowClose ? "ownerClose" : "quit");
               await writeDocumentSessionNow({ strict: true, flush: true });
+              if (quitRequestRef.current !== requestId) return;
               await confirmPromptedQuit(requestId);
             } catch (error) {
+              if (quitRequestRef.current !== requestId) return;
               await cancelQuit(requestId, "failed");
               quitInteractionRef.current = false;
               quitMutationFrozenRef.current = false;
@@ -11221,9 +11223,11 @@ export function MainWindow({
       if (!await resumeQuitAfterPrompt(requestId)) return;
       await dialogCoordinatorRef.current?.settleForWindowClose(closingWindowRef.current ? "ownerClose" : "quit");
       await writeDocumentSessionNow({ strict: true, flush: true });
+      if (quitRequestRef.current !== requestId) return;
       await confirmPromptedQuit(requestId);
-      setQuitPromptOpen(undefined);
+      if (quitRequestRef.current === requestId) setQuitPromptOpen(undefined);
     } catch (error) {
+      if (quitRequestRef.current !== requestId) return;
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
       await cancelQuitPrompt(requestId, "failed");
     } finally {

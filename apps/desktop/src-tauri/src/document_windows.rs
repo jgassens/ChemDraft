@@ -1,6 +1,13 @@
 //! Document identities and routing authority. A2 still creates only the migrated first window.
 
-use std::{collections::BTreeMap, sync::Mutex, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::Instant,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DocumentWindowLifecycle {
@@ -13,6 +20,7 @@ pub enum DocumentWindowLifecycle {
 pub struct DocumentWindow {
     pub window_id: String,
     pub native_label: String,
+    pub incarnation: u64,
     pub created_at: Instant,
     pub last_activated_at: Option<Instant>,
     pub lifecycle: DocumentWindowLifecycle,
@@ -22,6 +30,7 @@ pub struct DocumentWindow {
 pub struct DocumentWindowRegistry {
     windows: Mutex<BTreeMap<String, DocumentWindow>>,
     preferences_owner: Mutex<Option<String>>,
+    next_incarnation: AtomicU64,
 }
 
 impl DocumentWindowRegistry {
@@ -59,6 +68,7 @@ impl DocumentWindowRegistry {
             DocumentWindow {
                 window_id: window_id.into(),
                 native_label: native_label.into(),
+                incarnation: self.next_incarnation.fetch_add(1, Ordering::Relaxed) + 1,
                 created_at: Instant::now(),
                 last_activated_at: None,
                 lifecycle: DocumentWindowLifecycle::Creating,
@@ -109,6 +119,13 @@ impl DocumentWindowRegistry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(window_id)
+    }
+
+    /// A failed native close keeps the same webview and its session revision authority.
+    pub fn cancel_closing(&self, window_id: &str) {
+        if let Some(window) = self.windows.lock().unwrap().get_mut(window_id) {
+            window.lifecycle = DocumentWindowLifecycle::Ready;
+        }
     }
 
     pub fn active_document_window(&self) -> Option<DocumentWindow> {
@@ -235,6 +252,22 @@ impl DocumentWindowRegistry {
 #[cfg(test)]
 mod tests {
     use super::{DocumentWindowLifecycle as Lifecycle, DocumentWindowRegistry};
+
+    #[test]
+    fn reopening_a_native_label_allocates_a_new_incarnation_but_failed_close_keeps_it() {
+        let registry = DocumentWindowRegistry::with_main();
+        let first = registry.owner_of("main").unwrap().incarnation;
+        registry.begin_closing("main");
+        registry.cancel_closing("main");
+        assert_eq!(registry.owner_of("main").unwrap().incarnation, first);
+        assert_eq!(
+            registry.owner_of("main").unwrap().lifecycle,
+            Lifecycle::Ready
+        );
+        registry.remove("main");
+        registry.register("main", "main").unwrap();
+        assert!(registry.owner_of("main").unwrap().incarnation > first);
+    }
 
     #[test]
     fn registers_unique_ids_and_labels_in_creating_state() {

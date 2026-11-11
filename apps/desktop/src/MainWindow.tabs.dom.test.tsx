@@ -2345,6 +2345,42 @@ describe("documents in one window", () => {
     expect(native.dialogSnapshot?.dialogKind).toBe("pageSize");
   });
 
+  it.each(["macos", "windows"] as const)("a newer Quit question on %s supersedes a close waiting for its final save", async platform => {
+    await mountForShortcutPlatform(platform);
+    await paste("Close then Quit");
+    await act(async () => native.promptQuit!(4294967297, true));
+    let finishSave!: () => void;
+    const pending = new Promise<void>(resolve => { finishSave = resolve; });
+    native.saveSession.mockImplementationOnce(async () => { await pending; });
+    await modalButton("Don't Save");
+    expect(native.resumeQuit).toHaveBeenCalledWith(4294967297);
+    await act(async () => native.promptQuit!(1));
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+    await act(async () => { finishSave(); });
+    expect(native.quit).not.toHaveBeenCalled();
+    expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+    await quitButton("Cancel");
+    expect(native.cancelQuit).toHaveBeenCalledWith(1);
+    await paste("Editable after superseded close");
+    expect(drawnText()).toContain("Editable after superseded close");
+  });
+
+  it.each(["macos", "windows"] as const)("a clean window close on %s retains recovery drawings after Cancel", async platform => {
+    await mountForShortcutPlatform(platform);
+    const session = buildDocumentTabsSession([buildDocumentSessionEnvelope(
+      createNativeSavePayload(createPhase4Document("Clean restored drawing")),
+      { dirty: false }, "Clean drawing", false
+    )], 0);
+    session.unrestoredTabs = [{ version: 99, contents: "kept unreadable drawing", displayName: "Kept.chemdraft" }];
+    native.session = session;
+    await remount();
+    expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
+    await modalButton("Cancel");
+    await act(async () => native.promptQuit!(4294967297, true));
+    expect(native.quit).toHaveBeenCalledWith(4294967297);
+    expect(parseDocumentSessionEnvelope(native.session)!.unrestoredTabs).toEqual(session.unrestoredTabs);
+  });
+
   it("uses the native quit question without rendering an in-window dialog", async () => {
     await paste("Dirty native prompt drawing");
     saveAskToSaveBeforeQuit(true);
