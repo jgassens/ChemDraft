@@ -110,7 +110,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Reaction conditions",
             size: (560.0, 620.0),
             min_size: (380.0, 420.0),
-            fit_content: false,
+            fit_content: true,
             preserve_user_frame: false,
         }),
         "export" => Ok(DialogKindSpec {
@@ -2616,12 +2616,12 @@ fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Opt
         .size
         .filter(|size| valid_client_size(*size))
 }
-fn custom_color_refit_size(
+fn content_refit_size(
     fit: MeasuredContent,
     current: (f64, f64),
     user_size: Option<(f64, f64)>,
 ) -> (f64, f64) {
-    // Mode/error changes can remove content as well as add it. Keep a user's larger size,
+    // Format/mode/error changes can remove content as well as add it. Keep a user's larger size,
     // but do not turn the previous programmatic content height into a permanent floor.
     (
         current.0.max(fit.logical_width().unwrap_or(1.0)),
@@ -2835,7 +2835,12 @@ fn place_content_window_from_frame<R: Runtime>(
         .or_else(|| positions.get(kind))
         .filter(|position| valid_saved_frame(position));
     let mut client_size = dialog_client_size(&spec, content_fit, saved, current_frame);
-    if current_frame && kind == "customColor" {
+    if current_frame
+        && matches!(
+            kind,
+            "customColor" | "export" | "insertTable" | "reactionConditions"
+        )
+    {
         if let Some(fit) = content_fit {
             // A resize can still be waiting for the persistence debounce when the form reports
             // its next measurement. Consult that pending user frame before the stored one.
@@ -2849,7 +2854,7 @@ fn place_content_window_from_frame<R: Runtime>(
                 .map(|(_, position)| position.clone());
             let user_size = remembered_client_size(pending.as_ref(), true)
                 .or_else(|| remembered_client_size(positions.get(kind), true));
-            client_size = custom_color_refit_size(fit, client_size, user_size);
+            client_size = content_refit_size(fit, client_size, user_size);
         }
     }
     // A user size remains useful after its display is removed; its position does not.
@@ -3701,7 +3706,7 @@ mod tests {
         let spec = super::kind_spec("reactionConditions").unwrap();
         assert_eq!(spec.title, "Reaction conditions");
         assert!(spec.resizable);
-        assert!(!spec.fit_content);
+        assert!(spec.fit_content);
         assert!(super::is_dialog_label("dialog-main-reactionConditions-1"));
         assert!(include_str!("../capabilities/dialog-host.json")
             .contains("dialog-main-reactionConditions-*"));
@@ -6598,7 +6603,7 @@ mod tests {
                         Some(scale),
                     )
                     .unwrap();
-                    current = custom_color_refit_size(fit, current, user_size);
+                    current = content_refit_size(fit, current, user_size);
                     assert_eq!(
                         current,
                         (
@@ -6606,6 +6611,76 @@ mod tests {
                             height.max(user_size.map_or(1.0, |size| size.1))
                         )
                     );
+                }
+            }
+        }
+    }
+    #[test]
+    fn changing_content_shrinks_native_client_and_lowers_minimum_on_both_platforms() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                for kind in ["export", "insertTable", "reactionConditions"] {
+                    let spec = kind_spec(kind).unwrap();
+                    assert!(spec.fit_content);
+                    let work = WorkArea {
+                        id: "screen".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1600.0,
+                        height: 1200.0,
+                        scale,
+                    };
+                    for user_size in [None, Some((700.0_f64, 800.0_f64))] {
+                        let dialog = RefCell::new(SimulatedDialog {
+                            scale,
+                            client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                            minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                            position: tauri::LogicalPosition::new(100.0, 100.0),
+                            decoration: tauri::LogicalSize::new(border, title_bar),
+                            queue: Vec::new(),
+                            calls: Vec::new(),
+                        });
+                        // PDF/options, added error, CDXML/fewer options, PDF again. The final
+                        // minimum may be below the builder's original minimum (e.g. Export 360).
+                        for height in [620.0_f64, 660.0, 300.0, 620.0] {
+                            let fit = MeasuredContent::new(
+                                ContentFit::from_ready(&json!({
+                                    "contentHeight": height,
+                                    "contentWidth": spec.size.0,
+                                    "pixelRatio": scale
+                                })),
+                                Some(scale),
+                            )
+                            .unwrap();
+                            let current =
+                                (dialog.borrow().client.width, dialog.borrow().client.height);
+                            let client_size = content_refit_size(fit, current, user_size);
+                            dialog.borrow_mut().calls.clear();
+                            SimulatedDialog::place(
+                                &dialog,
+                                macos,
+                                DialogPlacement {
+                                    position: (100.0 * scale, 100.0 * scale, scale),
+                                    client_size,
+                                    content: Some(fit),
+                                    work: &work,
+                                    spec: &spec,
+                                    fit_content: true,
+                                    template: None,
+                                },
+                            );
+                            let native = dialog.borrow();
+                            assert_eq!(
+                                native.client.height,
+                                height.max(user_size.map_or(1.0, |s| s.1))
+                            );
+                            assert_eq!(native.minimum.height, height);
+                            // The previous PDF/error minimum must be cleared BEFORE resizing.
+                            assert_eq!(native.calls.first(), Some(&"minimum"));
+                            assert_eq!(native.calls.last(), Some(&"minimum"));
+                        }
+                    }
                 }
             }
         }
@@ -6939,6 +7014,7 @@ mod tests {
             "arrangementSpacing",
             "customColor",
             "insertTable",
+            "reactionConditions",
             "export",
             "engineInstall",
             "toolInstall",

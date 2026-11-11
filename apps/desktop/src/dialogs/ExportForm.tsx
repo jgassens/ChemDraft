@@ -566,6 +566,8 @@ const exportDialogPanelStyle: CSSProperties = {
 
 const exportDialogBodyStyle: CSSProperties = {
   display: "grid",
+  alignContent: "start",
+  gridAutoRows: "max-content",
   gap: 8,
   minHeight: 0,
   overflowY: "auto"

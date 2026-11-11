@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { measureDialogContent } from "./dialogContentFit";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +19,37 @@ function type(text: string) {
   field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 describe("Reaction conditions form", () => {
+  it.each(["macos", "windows"] as const)("reports natural content without a fixed window or empty status floor on %s", async platform => {
+    const styles = document.createElement("style");
+    styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
+    document.head.append(styles);
+    const ready = vi.fn();
+    const render = (error?: string) => act(async () => root.render(createElement(ReactionConditionsForm, {
+      title: "Drawing", draft: initial, platform, error, onReady: ready,
+      onChange: vi.fn(), onSave: vi.fn(), onCancel: vi.fn()
+    })));
+    try {
+      await render();
+      const form = container.querySelector("form")!;
+      const status = form.querySelector<HTMLElement>('[role="status"]')!;
+      const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+      expect(ready).toHaveBeenCalledExactlyOnceWith(form);
+      expect(getComputedStyle(form).minHeight).toBe("0px");
+      expect(getComputedStyle(status).display).toBe("none");
+      expect(getComputedStyle(body).overflow).toBe("auto");
+      expect(form.lastElementChild?.classList.contains("cd-dialog-fit-footer")).toBe(true);
+      // Model a 900px viewport with 540px of intrinsic controls/help and an optional error.
+      form.getBoundingClientRect = () => ({ top: 0, width: 560,
+        height: form.style.height === "auto" ? 540 + (getComputedStyle(status).display === "none" ? 0 : 40) : 900 } as DOMRect);
+      expect(measureDialogContent(form)?.contentHeight).toBe(540);
+      await render("The arrow has changed. Reopen its conditions.");
+      expect(getComputedStyle(status).display).not.toBe("none");
+      expect(measureDialogContent(form)?.contentHeight).toBe(580);
+      await render();
+      expect(measureDialogContent(form)?.contentHeight).toBe(540);
+      expect(ready).toHaveBeenCalledTimes(1);
+    } finally { styles.remove(); }
+  });
   it.each(["macos", "windows"] as const)("saves on one DOM click after focus leaves the editor on %s", async platform => {
     const save = vi.fn();
     let latest = initial;

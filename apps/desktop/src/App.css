@@ -7862,7 +7862,7 @@ textarea:focus-visible,
 
 .arrangement-spacing-scale { display: flex; justify-content: space-between; font-size: 12px; }
 
-.reaction-conditions-form { box-sizing: border-box; min-height: 100vh; max-height: 100vh; overflow-y: auto; padding: 20px; background: var(--cd-bg-panel); color: var(--cd-text-primary); font-size: 13px; }
+.reaction-conditions-form { box-sizing: border-box; max-height: 100vh; overflow: hidden; padding: 20px; background: var(--cd-bg-panel); color: var(--cd-text-primary); font-size: 13px; }
 .reaction-conditions-form h2 { margin: 0 0 20px; font-size: 19px; }
 .reaction-conditions-form label { display: block; margin: 12px 0 6px; font-weight: 600; }
 .reaction-conditions-tools { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
@@ -7914,16 +7914,11 @@ textarea:focus-visible,
 .cd-dialog-fit-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: auto; margin: -4px; padding: 4px; }
 .cd-dialog-fit-footer { flex: none; }
 .cd-dialog-fit-body > * { flex-shrink: 0; }
-/* Fixed row metrics on both WebKit and WebView2. An empty status paragraph must
-   reserve the same two lines as a validation message. */
-.cd-insert-table-form h2 { line-height: 19px; margin: 0 0 13px; }
-.cd-insert-table-form .cd-insert-table-drawing { line-height: 16px; margin: 0 0 13px; }
-.cd-insert-table-form .cd-page-size-fields label { line-height: 16px; }
-.cd-insert-table-form .cd-page-size-fields input,
-.cd-insert-table-form .cd-page-size-fields select,
-.cd-insert-table-form button { box-sizing: border-box; height: 30px; }
-.cd-insert-table-form [role="status"] { flex: 1 0 auto; min-height: 32px; line-height: 16px; margin: 13px 0 0; }
-.cd-insert-table-form .cd-dialog-fit-footer { padding-top: 13px; }
+/* Status messages participate in content fitting only when present. The observer refits
+   after validation changes; an empty live region must not leave a permanent blank row. */
+.cd-insert-table-form [role="status"]:empty,
+.reaction-conditions-form [role="status"]:empty { display: none; }
+.cd-insert-table-form .cd-dialog-fit-footer { padding-top: 12px; }
 .cd-page-size-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .cd-page-size-fields label { display: flex; flex-direction: column; gap: 4px; }
 .cd-page-size-fields input { width: 90px; }

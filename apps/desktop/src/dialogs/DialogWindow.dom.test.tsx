@@ -66,6 +66,40 @@ it.each(["macos", "windows"] as const)("requests a new content fit after Choose 
     expect(fits()).toHaveLength(2);
   } finally { layout.mockRestore(); }
 });
+it.each(["macos", "windows"] as const)("sends smaller fits for PDF → CDXML/CDX and deduplicates only the latest size on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  const layout = vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLFormElement) {
+    // Intrinsic height changes with the actual rendered options; the native viewport is
+    // still PDF-sized until it receives the next ready report. jsdom has no layout engine.
+    const intrinsic = this.textContent?.includes("Compress PDF") ? 620 : 300;
+    return { top: 0, height: this.style.height === "auto" ? intrinsic : 620 } as DOMRect;
+  });
+  try {
+    act(() => root.unmount()); root = createRoot(container);
+    host.send.mockClear();
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+    await act(async () => {
+      host.receive!({ ...snapshot, dialogKind: "export", data: { title: "Origin", options: exportFixture() } });
+      await import("./ExportForm");
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const heights = () => host.send.mock.calls.map(([, message]) => message as DialogMessage)
+      .filter(message => message.type === "ready").map(message => message.data.contentHeight);
+    expect(heights()).toEqual([620]);
+    const body = container.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+    expect(body.style.alignContent).toBe("start");
+    expect(body.style.gridAutoRows).toBe("max-content");
+    const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    for (const value of ["cdxml", "pdf", "cdx"]) {
+      await act(async () => { format.value = value; format.dispatchEvent(new Event("change", { bubbles: true })); });
+      // MutationObserver alone must notice removed options even if no box resizes yet.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    }
+    expect(heights()).toEqual([620, 300, 620, 300]);
+    await act(async () => { window.dispatchEvent(new Event("resize")); await vi.advanceTimersByTimeAsync(0); });
+    expect(heights()).toEqual([620, 300, 620, 300]);
+  } finally { layout.mockRestore(); }
+});
 it("suppresses browser context menus except on editable fields", () => {
   const menu = (target: Element) => {
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });

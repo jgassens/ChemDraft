@@ -15,6 +15,30 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it.each(["macos", "windows"] as const)("sends the natural height and refits when an error appears or clears on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  const layout = vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLFormElement) {
+    const status = this.querySelector('[role="status"]');
+    return { top: 0, height: this.style.height === "auto" ? (status?.textContent ? 580 : 540) : 620 } as DOMRect;
+  });
+  try {
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
+    await act(async () => host.receive!(snapshot));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const heights = () => host.send.mock.calls.map(([, message]) => message as DialogMessage)
+      .filter(message => message.type === "ready").map(message => message.data.contentHeight);
+    expect(heights()).toEqual([540]);
+    const save = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    await act(async () => save.click());
+    const action = host.send.mock.calls.map(([, message]) => message as DialogMessage).filter(message => message.type === "action").at(-1)!;
+    await act(async () => host.receive!({ ...dialogEnvelope(action), type: "result", data: { status: "error", error: "The arrow changed. Try again." } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(heights()).toEqual([540, 580]);
+    await act(async () => save.click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(heights()).toEqual([540, 580, 540]);
+  } finally { layout.mockRestore(); }
+});
 it("renders its native snapshot, preserves a local draft on replay and sends only one Save", async () => {
   await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
   await act(async () => host.receive!(snapshot));

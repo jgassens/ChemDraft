@@ -27,7 +27,7 @@ function layOut(form: HTMLElement, natural: number, window: number, overflow = n
     get: () => form.style.getPropertyValue("min-height") === "0px" ? overflow : Math.max(overflow, window) });
 }
 
-it.each(["macos", "windows"] as const)("reserves status space and stable row metrics on %s", platform => {
+it.each(["macos", "windows"] as const)("fits natural rows without reserving empty status space on %s", platform => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const styles = document.createElement("style");
   styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
@@ -52,18 +52,24 @@ it.each(["macos", "windows"] as const)("reserves status space and stable row met
     expect(spec).toContain("min_size: (360.0, 120.0)");
     // The window height comes from content, including when shorter than the old 240px floor.
     expect(spec).toContain("fit_content: true");
-    const status = container.querySelector('[role="status"]')!;
+    const status = container.querySelector<HTMLElement>('[role="status"]')!;
     expect(status.textContent).toBe("");
-    expect(getComputedStyle(status).minHeight).toBe("32px");
-    expect(getComputedStyle(status).lineHeight).toBe("16px");
-    expect(getComputedStyle(form.querySelector("h2")!).lineHeight).toBe("19px");
+    expect(getComputedStyle(status).display).toBe("none");
+    expect(getComputedStyle(status).minHeight).not.toBe("32px");
     for (const control of form.querySelectorAll("input, select, button")) {
-      expect(getComputedStyle(control).height).toBe("30px");
-      expect(getComputedStyle(control).boxSizing).toBe("border-box");
+      expect(["", "auto"]).toContain(getComputedStyle(control).height);
     }
+    // jsdom has no layout: model the ordinary field row plus a status row only when visible.
+    // CSS assertions above ensure there are no fixed controls or reserved status floor.
+    form.getBoundingClientRect = () => ({ top: 0, width: 480,
+      height: form.style.height === "auto" ? 180 + (getComputedStyle(status).display === "none" ? 0 : 40) : 400 } as DOMRect);
+    expect(measureDialogContent(form)?.contentHeight).toBe(180);
     render("Table insertion failed. Try again.");
     expect(status.textContent).toBe("Table insertion failed. Try again.");
-    expect(getComputedStyle(status).minHeight).toBe("32px");
+    expect(getComputedStyle(status).display).not.toBe("none");
+    expect(measureDialogContent(form)?.contentHeight).toBe(220);
+    render();
+    expect(measureDialogContent(form)?.contentHeight).toBe(180);
   } finally {
     act(() => root.unmount());
     container.remove();
@@ -214,7 +220,7 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
   try {
     act(() => root.render(createElement(InsertTableForm, {
       title: "Drawing", initial: { rows: 2, columns: 2, headerRows: 1, preset: "three-line" },
-      platform, error: "A validation message long enough to wrap past the two lines the status reserves. ".repeat(4),
+      platform, error: "A validation message long enough to wrap across several lines in the scrolling body. ".repeat(4),
       onSubmit: vi.fn(), onCancel: vi.fn(),
     })));
     const form = container.querySelector("form")!;
@@ -232,9 +238,9 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
     expect([getComputedStyle(footer).flexGrow, getComputedStyle(footer).flexShrink]).toEqual(["0", "0"]);
     expect(Array.from(footer.querySelectorAll("button"), button => button.textContent)).toEqual(["Cancel", "Insert"]);
     expect(body.querySelector("button")).toBeNull();
-    // The status grows with its message; it never shrinks below it and overlaps the buttons.
+    // Status text keeps its natural height without consuming unused space above the footer.
     const status = getComputedStyle(body.querySelector('[role="status"]')!);
-    expect([status.flexGrow, status.flexShrink]).toEqual(["1", "0"]);
+    expect([status.flexGrow, status.flexShrink]).toEqual(["0", "0"]);
   } finally {
     act(() => root.unmount());
     container.remove();

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { nativeFormattedTextObjectSize, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { nativeTextObjectLineMetrics, nativeTextSpanMetrics } from '@chemdraft/layout-engine';
 import { detectDialogPlatform, validConditionsDraft, type DialogPlatform } from "./dialogProtocol";
+import { useDialogContentReady } from "./dialogContentFit";
 
 export const conditionsSymbols = ["°", "±", "−", "Δ", "ν", "μ", "·", "×"] as const;
 export const conditionsSymbolCommandId = (symbol: typeof conditionsSymbols[number]): string => "reactionConditions.insertSymbol." + encodeURIComponent(symbol);
@@ -34,9 +35,10 @@ export function changeConditionsText(draft: ReactionConditionsDraft, text: strin
   return { ...draft, spans: pack([...old.slice(0, prefix), ...text.slice(prefix, text.length - suffix).split("").map(text => ({ text, script })), ...old.slice(old.length - suffix)]) };
 }
 
-export function ReactionConditionsForm({ title, draft, onChange, onSave, onCancel, busy = false, error,
+export function ReactionConditionsForm({ title, draft, onChange, onSave, onCancel, onReady, busy = false, error,
   platform = detectDialogPlatform() }: { title: string; draft: ReactionConditionsDraft; onChange(draft: ReactionConditionsDraft): void;
-  onSave(): void; onCancel(): void; busy?: boolean; error?: string; platform?: DialogPlatform }) {
+  onSave(): void; onCancel(): void; onReady?(form: HTMLFormElement): void; busy?: boolean; error?: string; platform?: DialogPlatform }) {
+  const root = useDialogContentReady<HTMLFormElement>(onReady);
   const id = useId(), textarea = useRef<HTMLTextAreaElement>(null), composing = useRef(false);
   const pendingEdit = useRef<{ start: number; end: number; inputType: string } | undefined>(undefined);
   useEffect(() => {
@@ -75,7 +77,7 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
   for (const symbol of conditionsSymbols) {
     commands.register({ id: conditionsSymbolCommandId(symbol), title: "Insert " + symbol, source: "core", enabled: !busy }, () => insert(symbol));
   }
-  return <form className="reaction-conditions-form" role="dialog" aria-labelledby={id} aria-busy={busy}
+  return <form ref={root} className="reaction-conditions-form cd-dialog-fit" role="dialog" aria-labelledby={id} aria-busy={busy}
     onSubmit={event => { event.preventDefault(); if (valid && !busy && !composing.current) onSave(); }}
     onKeyDown={event => {
       event.stopPropagation();
@@ -84,7 +86,7 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
       if (event.key === "Escape" || modifier && event.key.toLowerCase() === "w") { event.preventDefault(); onCancel(); }
       if (event.key === "F5" || modifier && event.key.toLowerCase() === "r") event.preventDefault();
     }}>
-    <h2 id={id}>Reaction conditions</h2>
+    <div className="cd-dialog-fit-body"><h2 id={id}>Reaction conditions</h2>
     <p>Drawing: <strong>{title}</strong></p>
     <label htmlFor={`${id}-text`}>Reagents, temperature, time, or yield</label>
     <div className="reaction-conditions-tools" role="group" aria-label="Conditions symbols and formatting">
@@ -116,8 +118,8 @@ export function ReactionConditionsForm({ title, draft, onChange, onSave, onCance
       <option value="above">Top / inside</option><option value="below">Bottom / outside</option>
     </select>
     <p>Labels follow their arrow. Top uses the inside of a curve; Bottom uses the outside. Straight arrows use page top and bottom. Drag a label to adjust crowded positions, or double-click to edit. Clear the text to remove it.</p>
-    <p role="status">{error ?? (!valid ? "Shorten the conditions or use fewer formatting changes to save." : "")}</p>
-    <footer><button type="button" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" disabled={busy || !valid}>Save</button></footer>
+    <p role="status">{error ?? (!valid ? "Shorten the conditions or use fewer formatting changes to save." : "")}</p></div>
+    <footer className="cd-dialog-fit-footer"><button type="button" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" disabled={busy || !valid}>Save</button></footer>
   </form>;
 }
 
