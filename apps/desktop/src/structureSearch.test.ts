@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { repeatUnits } from "@chemdraft/export-engine";
 import { applyPatch } from "@chemdraft/chem-core";
-import { applySingleBondToolAtNativeAtom, copyAsSmiles, createPhase4Document, insertNativeBracket,
+import { openChemDraftPayload } from "@chemdraft/cdx-compat";
+import { applySingleBondToolAtNativeAtom, copyAsSmiles, createPhase4Document, deleteSelectedDocumentObjects, insertNativeBracket,
   insertNativeSingleBondMolecule } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
 import { allShellCommands } from "./commands";
@@ -66,6 +68,20 @@ function pentaneWithRepeatUnit() {
   expect(repeatUnits(bracketed)).toMatchObject([{ members: [{ atomIds: members.map(atom => atom.id) }] }]);
   return bracketed;
 }
+function importedBracketAndNeighbor(usage: "SRU" | "MultipleGroup") {
+  const fixture = readFileSync(new URL("../../../packages/fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8");
+  const cdxml = fixture.replace(/<crossingbond[^>]*\/>/, "")
+    .replaceAll('BracketUsage="SRU"', `BracketUsage="${usage}"`)
+    .replace("</page>", `<fragment id="40">
+      <n id="41" Element="6" p="300 100"/><n id="42" Element="6" p="330 100"/>
+      <b id="43" B="41" E="42" Order="1"/>
+    </fragment></page>`);
+  const document = openChemDraftPayload(cdxml).document!;
+  const [member, neighbor] = document.pages[0]!.objects.filter(object => object.type === "molecule");
+  expect(member).toBeDefined();
+  expect(neighbor).toBeDefined();
+  return { document, member: member!, neighbor: neighbor! };
+}
 function setup(answer = "continue") {
   let time = 1000;
   let enabled = true;
@@ -76,6 +92,42 @@ function setup(answer = "continue") {
 }
 
 describe("online structure search", () => {
+  it.each(["SRU", "MultipleGroup"] as const)("searches the remaining molecule after deleting an imported %s bracket's member", async usage => {
+    const { document, member, neighbor } = importedBracketAndNeighbor(usage);
+    const removed = deleteSelectedDocumentObjects(document, [member.id]);
+    const brackets = removed.pages[0]!.objects.filter(object => object.type === "bracket");
+    expect(brackets).toHaveLength(2);
+    expect(brackets.every(bracket => bracket.containedObjectIds.length === 0 &&
+      bracket.compatibility?.unknown.bracketedGroup !== undefined)).toBe(true);
+    expect(repeatUnits(removed, [neighbor])).toMatchObject([{
+      usage: usage === "SRU" ? "sru" : "multiple", members: []
+    }]);
+    const selected = applyPatch(removed, { op: "setSelection", objectIds: [neighbor.id] });
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", structureSearchDocument(selected))).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CC" });
+  });
+
+  it.each([
+    ["SRU", "Search can't include a polymer repeat unit. Select atoms outside the brackets."],
+    ["MultipleGroup", "Search can't include a repeated (multiple) bracket group. Select atoms outside the brackets."]
+  ] as const)("searches beside an imported %s bracket but still refuses its member", async (usage, message) => {
+    const { document, member, neighbor } = importedBracketAndNeighbor(usage);
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+    const selected = applyPatch(document, { op: "setSelection", objectIds: [neighbor.id] });
+
+    await expect(search("pubchem", structureSearchDocument(selected))).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CC" });
+
+    const selectedMember = applyPatch(document, { op: "setSelection", objectIds: [member.id] });
+    const memberSearch = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+    const error = await memberSearch("pubchem", structureSearchDocument(selectedMember)).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(StructureSearchRefusal);
+    expect(structureSearchErrorStatus(error)).toBe(message);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["multiple", "Search can't include a repeated (multiple) bracket group. Select atoms outside the brackets."],
     ["unknown", "Search can't include bracketed structure. Select atoms outside the brackets."]
