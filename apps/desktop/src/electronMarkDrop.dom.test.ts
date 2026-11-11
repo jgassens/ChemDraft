@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
@@ -18,12 +20,18 @@ class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 describe.each(["macos", "windows"] as const)("electron-mark drops on %s", platform => {
 describe.each([false, true])("electron-mark drop interaction with direct editing %s", enabled => {
   let container: HTMLDivElement, root: Root;
+  let handleStyles: HTMLStyleElement;
   let frames: Map<number, FrameRequestCallback>, frameId: number;
   const captureMethods = { set: Element.prototype.setPointerCapture,
     release: Element.prototype.releasePointerCapture, has: Element.prototype.hasPointerCapture };
   beforeEach(() => {
     vi.stubGlobal("localStorage", new MemoryStorage());
     saveDirectElectronMarkEditing(enabled);
+    // jsdom has no layout. Read the actual handle CSS for coordinate-based targeting below.
+    handleStyles = document.createElement("style");
+    handleStyles.textContent = [...readFileSync(resolve("apps/desktop/src/App.css"), "utf8")
+      .matchAll(/[^{}]*\.object-resize-[^{}]*\{[^{}]*\}/g)].map(match => match[0]).join("\n");
+    document.head.append(handleStyles);
     frames = new Map(); frameId = 0;
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -38,7 +46,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
   });
   afterEach(async () => {
     await act(async () => root.unmount());
-    container.remove();
+    container.remove(); handleStyles.remove();
     window.history.replaceState(null, "", "/");
     delete window.__CHEMDRAFT_AGENT__;
     vi.restoreAllMocks(); vi.unstubAllGlobals();
@@ -85,6 +93,155 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     const molecule = dropMolecule(snapshot());
     return molecule.atoms.map(atom => atomDisplayLabel(atom, molecule.bonds, undefined, molecule.atoms));
   }
+
+  async function selectedMark(zoom: number, rotation: number, size = 18) {
+    let initial = electronMarkDropFixture().document;
+    const mark = dropMark(initial);
+    initial = applyPatch(initial, { op: "updateObject", objectId: mark.id,
+      changes: { x: 450, y: 350, width: size, height: size, rotation, chargeStyle: "circled" } }, { now: phase4Timestamp });
+    initial = workflow.selectDocumentObjects(initial, initial.pages[0].id, [mark.id]);
+    await mount(initial);
+    if (zoom !== 1) await act(async () => {
+      container.querySelector(".canvas-region")!.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, ctrlKey: true, deltaY: -Math.log(zoom) / 0.002
+      }));
+    });
+    expect((window.__CHEMDRAFT_AGENT__!.snapshot().viewport as { scale: number }).scale).toBeCloseTo(zoom);
+    return snapshot();
+  }
+  function handleBoxes(zoom: number) {
+    const mark = dropMark(snapshot());
+    const frame = container.querySelector<HTMLElement>(`[data-object-controls="${mark.id}"] [data-art-transform-frame]`);
+    if (!frame) return [];
+    const value = (key: string, fallback: number) => {
+      const number = /calc\(([-\d.]+)px/.exec(frame.style.getPropertyValue(key));
+      return (number ? Number(number[1]) : fallback) * zoom;
+    };
+    const left = mark.x * zoom + value("left", 0), top = mark.y * zoom + value("top", 0);
+    const width = value("width", mark.width), height = value("height", mark.height);
+    return [...frame.querySelectorAll<HTMLButtonElement>("[data-object-resize-corner]")].map(handle => {
+      const css = getComputedStyle(handle), w = Number.parseFloat(css.width), h = Number.parseFloat(css.height);
+      const corner = handle.dataset.objectResizeCorner!;
+      const x = left + (corner.endsWith("left") ? Number.parseFloat(css.left) : width - Number.parseFloat(css.right) - w);
+      const y = top + (corner.startsWith("top") ? Number.parseFloat(css.top) : height - Number.parseFloat(css.bottom) - h);
+      expect([x, y, w, h].every(Number.isFinite)).toBe(true);
+      return { handle, x, y, width: w, height: h, frame: { x: left, y: top, width, height } };
+    });
+  }
+  function resizeHandleAt(point: { x: number; y: number }, zoom: number) {
+    // Resolve HTML corner hit boxes using production offsets. Dispatching straight to the
+    // SVG would bypass the bug: jsdom does not implement elementFromPoint/layout.
+    return handleBoxes(zoom).reverse().find(box => point.x >= box.x && point.x <= box.x + box.width &&
+      point.y >= box.y && point.y <= box.y + box.height)?.handle;
+  }
+  function targetAt(point: { x: number; y: number }, zoom: number) {
+    const mark = dropMark(snapshot());
+    // With direct editing OFF there is no rectangular catcher. The plus sign's
+    // painted vertical stroke crosses the center; the unfilled circle does not.
+    return resizeHandleAt(point, zoom) ?? container.querySelector(`[data-electron-mark-hit-target="${mark.id}"]`) ??
+      container.querySelector(`[data-page-svg-object-visual="${mark.id}"] line:last-child`)!;
+  }
+  async function exactUndoRedo(before: ChemDraftDocument, after: ChemDraftDocument, label: string) {
+    await command("edit.undo"); expect(status()).toBe(`Undid ${label}`); expect(snapshot()).toEqual(before);
+    // A second Undo must have nothing else to undo: the gesture committed exactly once.
+    await command("edit.undo"); expect(snapshot()).toEqual(before);
+    await command("edit.redo"); expect(snapshot()).toEqual(after);
+  }
+
+  const markViews = [0.5, 1, 2].flatMap(zoom => [0, 37].map(rotation => ({ zoom, rotation })));
+  it.each(markViews)("moves a selected mark from its center at zoom $zoom, rotation $rotation in one undo step", async ({ zoom, rotation }) => {
+    const before = await selectedMark(zoom, rotation), mark = dropMark(before);
+    const center = { x: (mark.x + mark.width / 2) * zoom, y: (mark.y + mark.height / 2) * zoom };
+    const end = { x: center.x + 40 * zoom, y: center.y + 30 * zoom };
+    const target = targetAt(center, zoom);
+    if (!enabled) {
+      expect(container.querySelector("[data-electron-mark-hit-target]")).toBeNull();
+      expect(target.tagName).toBe("line");
+      // Its midpoint remains at the frame center under rotation and zoom.
+      const stroke = target as SVGLineElement;
+      expect(Number(stroke.getAttribute("x1"))).toBeCloseTo(center.x / zoom);
+      expect(Number(stroke.getAttribute("x2"))).toBeCloseTo(center.x / zoom);
+      expect((Number(stroke.getAttribute("y1")) + Number(stroke.getAttribute("y2"))) / 2).toBeCloseTo(center.y / zoom);
+    }
+    await act(async () => pointer(target, "pointerdown", center));
+    await move(page(), end);
+    await act(async () => pointer(page(), "pointerup", end));
+    const after = snapshot(), moved = dropMark(after);
+    expect(moved).toMatchObject({ x: mark.x + 40, y: mark.y + 30,
+      width: mark.width, height: mark.height, rotation: mark.rotation });
+    expect(status()).toBe("Moved electron mark");
+    expect(dropMolecule(after)).toEqual(dropMolecule(before));
+    expect(container.querySelectorAll(".object-resize-compact")).toHaveLength(enabled ? 1 : 0);
+    expect(container.querySelectorAll("[data-object-resize-corner]")).toHaveLength(enabled ? 4 : 0);
+    await exactUndoRedo(before, after, "Move electron mark");
+  });
+
+  const cornerViews = markViews.flatMap(view => ["top-left", "top-right", "bottom-left", "bottom-right"]
+    .map(corner => ({ ...view, corner })));
+  it.runIf(enabled).each(cornerViews)("resizes a selected mark from $corner at zoom $zoom, rotation $rotation in one undo step", async ({ zoom, rotation, corner }) => {
+    const before = await selectedMark(zoom, rotation), mark = dropMark(before);
+    const box = handleBoxes(zoom).find(box => box.handle.dataset.objectResizeCorner === corner)!;
+    // Review P2-a/P2-b: 18px at -15px -> 11px at -8px preserves the 3px
+    // overlap while restoring the ordinary reach beside atoms and page edges.
+    expect(box).toMatchObject({ width: 11, height: 11 });
+    const css = getComputedStyle(box.handle);
+    expect(corner.endsWith("left") ? css.left : css.right).toBe("-8px");
+    expect(corner.startsWith("top") ? css.top : css.bottom).toBe("-8px");
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    expect(targetAt(point, zoom)).toBe(box.handle);
+    const center = { x: (mark.x + mark.width / 2) * zoom, y: (mark.y + mark.height / 2) * zoom };
+    const end = { x: center.x + 1.5 * (point.x - center.x), y: center.y + 1.5 * (point.y - center.y) };
+    await act(async () => pointer(box.handle, "pointerdown", point));
+    await move(page(), end);
+    await act(async () => pointer(page(), "pointerup", end));
+    const after = snapshot();
+    expect(dropMark(after).width).toBeGreaterThan(mark.width);
+    expect(dropMark(after).height).toBeGreaterThan(mark.height);
+    expect(status()).toBe("Resized electron mark");
+    expect(dropMolecule(after)).toEqual(dropMolecule(before));
+    await exactUndoRedo(before, after, "Resize electron mark");
+  });
+
+  it.runIf(enabled).each(markViews)("leaves a press 12px outside the bottom-left corner clear of resize handles at zoom $zoom, rotation $rotation", async ({ zoom, rotation }) => {
+    const before = await selectedMark(zoom, rotation);
+    const boxes = handleBoxes(zoom);
+    expect(boxes).toHaveLength(4);
+    const { frame } = boxes[0];
+    const point = { x: frame.x - 12, y: frame.y + frame.height + 12 };
+    // An adjacent atom here was covered by the old -15px compact targets (P2-a).
+    expect(resizeHandleAt(point, zoom)).toBeUndefined();
+    await act(async () => pointer(page(), "pointerdown", point));
+    await act(async () => pointer(page(), "pointerup", point));
+    expect(dropMark(snapshot())).toEqual(dropMark(before));
+  });
+
+  it.runIf(enabled).each([
+    { size: 53, zoom: 1, rotation: 0, compact: true },
+    { size: 54, zoom: 1, rotation: 0, compact: false },
+    { size: 54, zoom: 0.5, rotation: 0, compact: true },
+    { size: 27, zoom: 2, rotation: 0, compact: false },
+    { size: 40, zoom: 1, rotation: 45, compact: false }
+  ])("uses screen frame size for compact handles: $size px, zoom $zoom, rotation $rotation", async ({ size, zoom, rotation, compact }) => {
+    await selectedMark(zoom, rotation, size);
+    expect(container.querySelectorAll(".object-resize-compact")).toHaveLength(compact ? 1 : 0);
+  });
+
+  it("keeps normal rectangle handle offsets unchanged", async () => {
+    const initial = workflow.createPhase4Document("Normal art handles");
+    initial.pages[0].objects = [{ id: "rectangle", type: "graphic", graphicKind: "rect", x: 100, y: 100,
+      width: 160, height: 120, rotation: 0, style: {}, data: {} }];
+    initial.selection.objectIds = ["rectangle"];
+    await mount(initial);
+    expect(container.querySelector(".object-resize-compact")).toBeNull();
+    const handles = [...container.querySelectorAll<HTMLElement>("[data-object-resize-corner]")];
+    expect(handles).toHaveLength(4);
+    for (const handle of handles) {
+      const css = getComputedStyle(handle), corner = handle.dataset.objectResizeCorner!;
+      expect(css.width).toBe("18px"); expect(css.height).toBe("18px");
+      expect(corner.endsWith("left") ? css.left : css.right).toBe("-8px");
+      expect(corner.startsWith("top") ? css.top : css.bottom).toBe("-8px");
+    }
+  });
 
   it.each([
     ["tool.plus", "Add Charge"], ["tool.minus", "Add Charge"],

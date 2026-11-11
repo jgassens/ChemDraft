@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.21.45-codex";
+const CURRENT_BUILD_STAMP = "11.10.22.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -22795,12 +22795,13 @@ export function MainWindow({
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
-                      // Text editor allowance and the selected corner-radius handle use
-                      // screen-sized margins. Other object views stay memoized on zoom.
+                      // Text editor allowance, the selected corner-radius handle and selected
+                      // electron-mark handles use screen sizes. Other views stay memoized on zoom.
                       pageScale={(object.type === "text" && activeTextEditObjectId === object.id) ||
                         (object.type === "graphic" && selected && !inGroupSelection &&
                           !nativeArtToolIsOrbital(activeToolState.activeCommandId) &&
-                          object.graphicKind === "rect")
+                          object.graphicKind === "rect") ||
+                        (directElectronMarkEditing && object.type === "electron-mark" && selected && !inGroupSelection)
                         ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected && !nativeArtToolIsOrbital(activeToolState.activeCommandId)}
@@ -28886,6 +28887,12 @@ function DocumentObjectViewContent({
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
+  const electronMarkFrame = object.type === "electron-mark" && artObjectProjection?.matrix
+    ? documentObjectProjectedPlaneBounds(object.width, object.height, artObjectProjection.matrix)
+    : object;
+  // Three 18px handle widths, measured on screen, including a rotated mark's frame.
+  const compactElectronMarkFrame = object.type === "electron-mark" &&
+    Math.min(electronMarkFrame.width, electronMarkFrame.height) * (pageScale ?? 1) < 54;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
@@ -28948,6 +28955,7 @@ function DocumentObjectViewContent({
   const artObjectTransformFrame = showArtObjectTransformFrame ? (
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
+      compactResizeHandles={compactElectronMarkFrame}
       targetLabel="selected art object"
       canProjectedPlaneTilt={object.type !== "electron-mark" && (object.type !== "graphic" || !graphicObjectIsFreehandPath(object))}
       rotationHandlesVisible={rotationHandlesVisible}
@@ -29979,6 +29987,7 @@ function artPreviewRasterPixelSize(proxy: ArtTransformDragPreviewProxy): { width
 
 function ArtObjectTransformFrame({
   frameStyle,
+  compactResizeHandles = false,
   targetLabel,
   canProjectedPlaneTilt,
   rotationHandlesVisible,
@@ -30003,6 +30012,7 @@ function ArtObjectTransformFrame({
   onResizeInputCancel
 }: {
   frameStyle?: CSSProperties;
+  compactResizeHandles?: boolean;
   targetLabel: string;
   canProjectedPlaneTilt: boolean;
   rotationHandlesVisible: boolean;
@@ -30030,7 +30040,7 @@ function ArtObjectTransformFrame({
   const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
   return (
     <div
-      className="object-transform-frame"
+      className={`object-transform-frame${compactResizeHandles ? " object-resize-compact" : ""}`}
       data-art-transform-frame="true"
       data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
       style={frameStyle ?? { inset: 0 }}
@@ -32278,6 +32288,9 @@ function documentObjectTransformLabel(object: DocumentObject | undefined, direct
   }
   if (object?.type === "molecule") {
     return "selected molecule";
+  }
+  if (object?.type === "electron-mark") {
+    return "electron mark";
   }
   if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing)) {
     return "selected art object";
