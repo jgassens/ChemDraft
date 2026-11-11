@@ -741,7 +741,7 @@ struct NativeOpenDocumentPayload {
 
 #[derive(Default)]
 struct PendingOpenDocument {
-    payload: Mutex<Option<NativeOpenDocumentPayload>>,
+    payloads: Mutex<Vec<NativeOpenDocumentPayload>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
 }
@@ -759,7 +759,10 @@ impl PendingOpenDocument {
         payload: NativeOpenDocumentPayload,
         main_window_exists: bool,
     ) -> Result<OpenDocumentDelivery, String> {
-        *self.payload.lock().map_err(|error| error.to_string())? = Some(payload);
+        self.payloads
+            .lock()
+            .map_err(|error| error.to_string())?
+            .push(payload);
         Ok(if !self.setup_completed.load(Ordering::SeqCst) {
             OpenDocumentDelivery::PendingOnly
         } else if main_window_exists {
@@ -767,6 +770,11 @@ impl PendingOpenDocument {
         } else {
             OpenDocumentDelivery::CreateWindowAndEmit
         })
+    }
+
+    fn drain(&self) -> Result<Vec<NativeOpenDocumentPayload>, String> {
+        let mut pending = self.payloads.lock().map_err(|error| error.to_string())?;
+        Ok(std::mem::take(&mut *pending))
     }
 }
 
@@ -7462,9 +7470,8 @@ fn engine3d_target_triple() -> &'static str {
 #[tauri::command]
 fn take_pending_open_document(
     state: tauri::State<'_, PendingOpenDocument>,
-) -> Result<Option<NativeOpenDocumentPayload>, String> {
-    let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
-    Ok(pending.take())
+) -> Result<Vec<NativeOpenDocumentPayload>, String> {
+    state.drain()
 }
 
 /// Tauri restart cannot be prevented (ExitRequestApi::prevent_exit ignores RESTART_EXIT_CODE).
@@ -7617,43 +7624,44 @@ fn handle_opened_document_urls<R: Runtime>(
     app: &tauri::AppHandle<R>,
     urls: Vec<tauri::Url>,
 ) -> Result<(), String> {
-    let mut opened_payload = None;
-    for url in urls {
-        if let Some(payload) = open_document_payload_from_url(&url)? {
-            opened_payload = Some(payload);
-            break;
-        }
-    }
-    let Some(payload) = opened_payload else {
-        return Ok(());
-    };
-    deliver_opened_document(app, payload)
+    deliver_opened_documents(opened_document_payloads_from_urls(urls), |payload| {
+        deliver_opened_document(app, payload)
+    })
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
-/// second launch). Flags are skipped; the first supported document file wins,
-/// mirroring the first-file-URL rule of the macOS path.
+/// second launch). Skip flags and open every supported file in argument order.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_opened_document_args<R: Runtime>(
     app: &tauri::AppHandle<R>,
     args: impl IntoIterator<Item = String>,
     cwd: &Path,
 ) -> Result<(), String> {
-    let path = args
+    let payloads = openable_document_paths_from_args(args, cwd)
         .into_iter()
-        .filter(|arg| !arg.starts_with('-'))
-        .map(|arg| cwd.join(arg))
-        .find(|path| is_openable_document_path(path));
-    let Some(path) = path else {
-        return Ok(());
-    };
-    deliver_opened_document(app, open_document_payload_from_path(&path)?)
+        .map(|path| open_document_payload_from_path(&path));
+    deliver_opened_documents(payloads, |payload| deliver_opened_document(app, payload))
 }
 
-#[cfg_attr(
-    any(target_os = "macos", target_os = "ios", target_os = "android"),
-    allow(dead_code)
-)]
+#[cfg(any(
+    test,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn openable_document_paths_from_args(
+    args: impl IntoIterator<Item = String>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
+    args.into_iter()
+        .filter(|arg| !arg.starts_with('-'))
+        .map(|arg| cwd.join(arg))
+        .filter(|path| is_openable_document_path(path))
+        .collect()
+}
+
+#[cfg(any(
+    test,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
 fn is_openable_document_path(path: &Path) -> bool {
     let extension_ok = path
         .extension()
@@ -7692,24 +7700,46 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
-    let delivery = state.record(
-        payload.clone(),
-        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
-    )?;
+    let delivery = state.record(payload, app.get_webview_window(MAIN_WINDOW_LABEL).is_some())?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
         // would collide with Tauri's window creation and abort inside the AppKit callback.
-        // Setup will show the config window; its mount drains the pending document.
+        // Setup will show the config window; its mount drains every pending document.
         return Ok(());
     }
 
     if let Err(error) = ensure_main_window_visible(app) {
         eprintln!("Could not show ChemDraft main window for opened document: {error}");
     }
-    emit_open_document_to_main(app, &payload)
+    emit_open_document_to_main(app)
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+/// Attempt every read and delivery, reporting failures through the caller's existing error path.
+/// A bad file must not prevent later members of the same OS request from opening.
+fn deliver_opened_documents(
+    payloads: impl IntoIterator<Item = Result<NativeOpenDocumentPayload, String>>,
+    mut deliver: impl FnMut(NativeOpenDocumentPayload) -> Result<(), String>,
+) -> Result<(), String> {
+    let errors: Vec<_> = payloads
+        .into_iter()
+        .filter_map(|payload| payload.and_then(&mut deliver).err())
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "android"))]
+fn opened_document_payloads_from_urls(
+    urls: Vec<tauri::Url>,
+) -> impl Iterator<Item = Result<NativeOpenDocumentPayload, String>> {
+    urls.into_iter()
+        .filter_map(|url| open_document_payload_from_url(&url).transpose())
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "ios", target_os = "android"))]
 fn open_document_payload_from_url(
     url: &tauri::Url,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
@@ -7803,14 +7833,10 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
     }
 }
 
-fn emit_open_document_to_main<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    payload: &NativeOpenDocumentPayload,
-) -> Result<(), String> {
-    // Deliver via the Tauri event for a running window; a cold start (window not yet
-    // listening) is covered by the pending-document state drained on mount. We deliberately
-    // do not `eval` document contents into the webview to avoid a script-injection surface.
-    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+fn emit_open_document_to_main<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    // Events only signal that the queue changed. The window subscribes before its first drain,
+    // then serializes drains, so an event overlapping a drain cannot deliver a file twice.
+    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, ())
         .map_err(|error| error.to_string())
 }
 
@@ -10186,11 +10212,14 @@ mod tests {
                 OpenDocumentDelivery::PendingOnly
             );
             state.setup_completed.store(true, Ordering::SeqCst);
-            let payload = state.payload.lock().expect("pending lock").take();
-            let payload = payload.expect("document survives setup for the mount drain");
+            let payloads = state
+                .drain()
+                .expect("documents survive setup for the mount drain");
+            assert_eq!(payloads.len(), 1);
+            let payload = &payloads[0];
             assert_eq!(payload.path, "cold-open.chemdraft");
             assert_eq!(payload.contents, "<CDXML/>");
-            assert!(state.payload.lock().expect("pending lock").is_none());
+            assert!(state.drain().expect("empty drain").is_empty());
         }
     }
 
@@ -10207,10 +10236,9 @@ mod tests {
         );
         assert_eq!(
             state
-                .payload
-                .lock()
-                .expect("pending lock")
-                .as_ref()
+                .drain()
+                .expect("drain")
+                .first()
                 .expect("pending document for the new window")
                 .contents,
             "<CDXML/>"
@@ -10227,7 +10255,103 @@ mod tests {
                 .expect("record document"),
             OpenDocumentDelivery::ShowWindowAndEmit
         );
-        assert!(state.payload.lock().expect("pending lock").is_some());
+        assert_eq!(state.drain().expect("drain").len(), 1);
+    }
+
+    #[test]
+    fn pending_open_documents_append_before_setup_and_drain_in_order() {
+        let state = PendingOpenDocument::default();
+        for name in ["first.chemdraft", "second.chemdraft", "third.chemdraft"] {
+            let mut payload = opened_document_test_payload();
+            payload.path = name.into();
+            assert_eq!(
+                state.record(payload, false).expect("record"),
+                OpenDocumentDelivery::PendingOnly
+            );
+        }
+        state.setup_completed.store(true, Ordering::SeqCst);
+        let paths: Vec<_> = state
+            .drain()
+            .expect("drain")
+            .into_iter()
+            .map(|payload| payload.path)
+            .collect();
+        assert_eq!(
+            paths,
+            ["first.chemdraft", "second.chemdraft", "third.chemdraft"]
+        );
+        assert!(state.drain().expect("empty drain").is_empty());
+        state
+            .record(opened_document_test_payload(), true)
+            .expect("later record");
+        let later = state.drain().expect("later drain");
+        assert_eq!(later.len(), 1);
+        assert_eq!(later[0].path, "cold-open.chemdraft");
+    }
+
+    #[test]
+    fn opened_document_urls_deliver_every_file_and_report_a_bad_middle_file() {
+        let dir = std::env::temp_dir().join(format!("chemdraft-open-urls-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        for name in ["first.chemdraft", "third.cdxml"] {
+            fs::write(dir.join(name), name).expect("fixture");
+        }
+        let urls = vec![
+            tauri::Url::from_file_path(dir.join("first.chemdraft")).expect("first URL"),
+            tauri::Url::parse("https://example.com/ignored.chemdraft").expect("non-file URL"),
+            tauri::Url::from_file_path(dir.join("missing.chemdraft")).expect("bad URL"),
+            tauri::Url::from_file_path(dir.join("third.cdxml")).expect("third URL"),
+        ];
+        let mut delivered = Vec::new();
+        let error = deliver_opened_documents(opened_document_payloads_from_urls(urls), |payload| {
+            delivered.push(payload);
+            Ok(())
+        })
+        .expect_err("report unreadable middle file");
+        assert!(error.contains("Could not read document"));
+        assert!(error.contains("missing.chemdraft"));
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(delivered[0].display_name, "first.chemdraft");
+        assert_eq!(delivered[0].contents, "first.chemdraft");
+        assert_eq!(delivered[1].display_name, "third.cdxml");
+        assert_eq!(delivered[1].contents, "third.cdxml");
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn opened_document_args_keep_all_openable_paths_in_argument_order() {
+        let dir =
+            std::env::temp_dir().join(format!("chemdraft-open-many-args-{}", std::process::id()));
+        fs::create_dir_all(dir.join("nested")).expect("temp dir");
+        let second = Path::new("nested").join("second.CDXML");
+        for path in [
+            Path::new("first.chemdraft"),
+            &second,
+            Path::new("third.cdx"),
+            Path::new("notes.txt"),
+            Path::new("-flag.chemdraft"),
+        ] {
+            fs::write(dir.join(path), "<CDXML/>").expect("fixture");
+        }
+        let third = dir.join("third.cdx");
+        let paths = openable_document_paths_from_args(
+            vec![
+                "--chemdraft-agent-bridge".into(),
+                "first.chemdraft".into(),
+                "notes.txt".into(),
+                "-flag.chemdraft".into(),
+                "missing.chemdraft".into(),
+                "nested".into(),
+                second.to_string_lossy().into_owned(),
+                third.to_string_lossy().into_owned(),
+            ],
+            &dir,
+        );
+        assert_eq!(
+            paths,
+            [dir.join("first.chemdraft"), dir.join(second), third]
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[cfg(windows)]

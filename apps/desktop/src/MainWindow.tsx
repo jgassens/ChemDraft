@@ -45,6 +45,7 @@ import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
+import { listenAndDrainNativeOpenQueue } from "./nativeOpenQueue";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -1983,8 +1984,8 @@ const layerContextMenuItems: readonly LayerContextMenuItem[] = [
   { commandId: "layout.sendToBack", label: "Move Object to Back" }
 ];
 const nativeOpenDocumentEvent = "chemdraft://open-document";
-// Window for coalescing the multi-channel delivery (Tauri event + pending-document poll)
-// of a single OS file-open, while still allowing a deliberate later re-open.
+// Coalesce repeated same-path + same-content OS requests arriving close together,
+// while still allowing a deliberate later re-open.
 const NATIVE_OPEN_DEDUPE_WINDOW_MS = 1500;
 
 interface NativeOpenDocumentPayload {
@@ -9886,6 +9887,8 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
+    // The next queued open snapshots this tab before React runs the dirty-state updater.
+    if (changed) fileStateRef.current = { ...fileStateRef.current, dirty: true };
     tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
     importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
@@ -10199,19 +10202,14 @@ export function MainWindow({
       return;
     }
 
-    const path = await pickNativeOpenPath();
-    if (!path) {
+    const paths = await pickNativeOpenPaths();
+    if (!paths.length) {
       setStatus("Open canceled");
       return;
     }
 
-    try {
-      const contents = await readNativeDocumentFile(path);
-      await openDocumentContents(contents, nativePathBasename(path), path);
-    } catch (error) {
-      setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }, [openDocumentContents]);
+    await openDroppedDocumentPaths(paths);
+  }, [openDroppedDocumentPaths]);
 
   useEffect(() => {
     if (!shouldEnableAgentBridge()) {
@@ -10242,18 +10240,14 @@ export function MainWindow({
       return undefined;
     }
 
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
     const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
       try {
         const contents = decodeNativeDocumentContents(payload);
         const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
         const now = Date.now();
         const last = lastNativeOpenPayloadKeyRef.current;
-        // A single OS open is delivered via both the Tauri event and the pending-document
-        // poll, so coalesce identical payloads that arrive close together. Use a time window
-        // rather than a permanent key so a later request still activates its already-open tab.
+        // Keep the existing same-path + same-hash coalescing for repeated OS requests. Delivery
+        // itself comes only from the native queue; events merely request another drain.
         if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
           return;
         }
@@ -10271,33 +10265,12 @@ export function MainWindow({
       }
     };
 
-    void listenForNativeOpenDocuments((payload) => {
-      if (!disposed) {
-        openNativePayload(payload);
-      }
-    })
-      .then((cleanup) => {
-        // The dynamic import may resolve after the effect was torn down; unsubscribe
-        // immediately in that case instead of leaking the listener.
-        if (disposed) {
-          cleanup();
-        } else {
-          unlisten = cleanup;
-        }
-      })
-      .catch(() => undefined);
-    void takePendingNativeOpenDocument()
-      .then((payload) => {
-        if (!disposed && payload) {
-          openNativePayload(payload);
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+    return listenAndDrainNativeOpenQueue({
+      listen: listenForNativeOpenDocuments,
+      drain: takePendingNativeOpenDocuments,
+      consume: payload => { void openNativePayload(payload); },
+      onError: error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`)
+    });
   }, [openDocumentContents]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
@@ -33787,14 +33760,14 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
   return warnings.map((warning) => warning.message).join(" ");
 }
 
-async function pickNativeOpenPath(): Promise<string | undefined> {
+async function pickNativeOpenPaths(): Promise<string[]> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
     title: "Open ChemDraft, CDXML or CDX Document",
-    multiple: false,
+    multiple: true,
     fileAccessMode: "scoped"
   });
-  return typeof selected === "string" ? selected : undefined;
+  return typeof selected === "string" ? [selected] : selected ?? [];
 }
 
 async function pickNativeSavePath(
@@ -33877,20 +33850,16 @@ async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
   return readFile(path);
 }
 
-async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayload | undefined> {
+async function takePendingNativeOpenDocuments(): Promise<NativeOpenDocumentPayload[]> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const payload = await invoke<NativeOpenDocumentPayload | null>("take_pending_open_document");
-  return payload ?? undefined;
+  const payloads = await invoke<NativeOpenDocumentPayload[]>("take_pending_open_document");
+  return payloads.filter(isNativeOpenDocumentPayload);
 }
 
 async function listenForNativeOpenDocuments(
-  handler: (payload: NativeOpenDocumentPayload) => void
+  handler: () => void
 ): Promise<() => void> {
-  return listenTauriEvent<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
-    if (isNativeOpenDocumentPayload(event.payload)) {
-      handler(event.payload);
-    }
-  });
+  return listenTauriEvent<null>(nativeOpenDocumentEvent, handler);
 }
 
 function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumentPayload {
