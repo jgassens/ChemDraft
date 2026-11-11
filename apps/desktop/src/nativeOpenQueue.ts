@@ -1,13 +1,13 @@
 /**
  * Native events are queue-change notifications, never a second source of payloads. Subscribe before
  * the initial destructive drain and serialize all later drains, including notifications received
- * during an in-flight drain. `consume` reserves a slot in the existing document-open queue without
- * waiting for that document's prompts; this coordinator only orders native queue reads.
+ * during an in-flight drain. `consumeBatch` reserves slots in the existing document-open queue
+ * without waiting for prompts; each destructive drain is one batch for status reporting.
  */
 export function listenAndDrainNativeOpenQueue<T>(options: {
   listen: (changed: () => void) => Promise<() => void>;
   drain: () => Promise<readonly T[]>;
-  consume: (payload: T) => void;
+  consumeBatch: (payloads: readonly T[]) => void;
   onError: (error: unknown) => void;
 }): () => void {
   let disposed = false;
@@ -26,9 +26,7 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
           const payloads = await options.drain();
           // A completed destructive read owns its payloads, even if cleanup occurred while it was
           // pending (including a StrictMode replay). Dropping that batch here would lose files.
-          for (const payload of payloads) {
-            try { options.consume(payload); } catch (error) { options.onError(error); }
-          }
+          if (payloads.length) options.consumeBatch(payloads);
         } catch (error) { options.onError(error); }
       }
     } finally { draining = false; }
@@ -46,4 +44,31 @@ export function listenAndDrainNativeOpenQueue<T>(options: {
   }).catch(options.onError);
 
   return () => { disposed = true; unlisten?.(); };
+}
+
+export interface DocumentOpenResult {
+  displayName: string;
+  /** Absent when the open finished, including keeping the page after a resize prompt. */
+  error?: unknown;
+}
+
+function openFailureReason(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s*\r?\n\s*/g, " ");
+}
+
+function openFileName(displayName: string): string {
+  return displayName.split(/[\\/]/).at(-1) || displayName;
+}
+
+export function formatDocumentOpenFailure(displayName: string, error: unknown): string {
+  return `Could not open ${openFileName(displayName)}: ${openFailureReason(error)}`;
+}
+
+/** Successful batches leave the last open's existing status untouched. */
+export function formatDocumentOpenBatchStatus(results: readonly DocumentOpenResult[]): string | undefined {
+  const failures = results.filter(result => "error" in result);
+  const first = failures[0];
+  if (!first) return undefined;
+  const failure = formatDocumentOpenFailure(failures.map(result => openFileName(result.displayName)).join(", "), first.error);
+  return results.length === 1 ? failure : `Opened ${results.length - failures.length} of ${results.length} files. ${failure}`;
 }

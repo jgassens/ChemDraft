@@ -48,7 +48,7 @@ import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
-import { listenAndDrainNativeOpenQueue } from "./nativeOpenQueue";
+import { formatDocumentOpenBatchStatus, formatDocumentOpenFailure, listenAndDrainNativeOpenQueue, type DocumentOpenResult } from "./nativeOpenQueue";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -1779,7 +1779,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.22.45-codex";
+const CURRENT_BUILD_STAMP = "11.10.23.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -1989,6 +1989,12 @@ interface NativeOpenDocumentPayload {
   displayName: string;
   contents: string;
   bytes?: number[];
+}
+
+interface DocumentOpenRequest {
+  contents: DocumentContents | (() => Promise<DocumentContents>);
+  displayName: string;
+  path?: string;
 }
 
 interface ChemDraftAgentArtDebugSnapshot {
@@ -9928,6 +9934,25 @@ export function MainWindow({
     return run;
   }, []);
 
+  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[]): Promise<void> => {
+    const results = requests.map(({ contents, displayName, path }) =>
+      openDocumentContents(contents, displayName, path).then(
+        (): DocumentOpenResult => ({ displayName }),
+        (error: unknown): DocumentOpenResult => ({ displayName, error })
+      ));
+    // Reserve the summary's place before any later batch. Each open includes its page-fit and
+    // compatibility prompts, so keeping an imported page finishes successfully before we count it.
+    const finished = documentOpenQueueRef.current.then(async () => {
+      const summary = formatDocumentOpenBatchStatus(await Promise.all(results));
+      if (summary) {
+        setStatus(summary);
+        if (!documentSessionHydratedRef.current) shellOpenFailureRef.current = summary;
+      }
+    });
+    documentOpenQueueRef.current = finished.catch(() => undefined);
+    return finished;
+  }, [openDocumentContents]);
+
   useEffect(() => {
     if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
     for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
@@ -10238,10 +10263,10 @@ export function MainWindow({
   }, []);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
-    await Promise.all(paths.map(path =>
-      openDocumentContents(() => readNativeDocumentFile(path), nativePathBasename(path), path)
-        .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
-  }, [openDocumentContents]);
+    await openDocumentBatch(paths.map(path => ({
+      contents: () => readNativeDocumentFile(path), displayName: nativePathBasename(path), path
+    })));
+  }, [openDocumentBatch]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) return undefined;
@@ -10286,7 +10311,7 @@ export function MainWindow({
         await openDocumentContents(payload.contents, payload.displayName, payload.path);
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+        setStatus(formatDocumentOpenFailure(payload.displayName, error));
       }
     };
 
@@ -10300,38 +10325,32 @@ export function MainWindow({
       return undefined;
     }
 
-    const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
-      try {
-        const contents = decodeNativeDocumentContents(payload);
-        const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
-        const now = Date.now();
-        const last = lastNativeOpenPayloadKeyRef.current;
-        // Keep the existing same-path + same-hash coalescing for repeated OS requests. Delivery
-        // itself comes only from the native queue; events merely request another drain.
-        if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
-          return;
+    const openNativePayloads = (payloads: readonly NativeOpenDocumentPayload[]) => {
+      const requests = payloads.flatMap<DocumentOpenRequest>(payload => {
+        try {
+          const contents = decodeNativeDocumentContents(payload);
+          const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
+          const now = Date.now();
+          const last = lastNativeOpenPayloadKeyRef.current;
+          // Coalesce repeated OS requests while reserving every other file's queue slot at once.
+          if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) return [];
+          lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
+          return [{ contents, displayName: payload.displayName, path: payload.path }];
+        } catch (error) {
+          // Decode failures also occupy their original batch position and name their source file.
+          return [{ contents: async () => { throw error; }, displayName: payload.displayName, path: payload.path }];
         }
-        lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
-        await openDocumentContents(contents, payload.displayName, payload.path);
-      } catch (error) {
-        const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
-        setStatus(failure);
-        // At a cold start the session restore lands next and replaces the status line, which made a
-        // double-clicked .cdx look like it did nothing. The restore still runs (skipping it would let
-        // autosave overwrite the previous session with a blank page) and repeats this message.
-        if (!documentSessionHydratedRef.current) {
-          shellOpenFailureRef.current = failure;
-        }
-      }
+      });
+      void openDocumentBatch(requests);
     };
 
     return listenAndDrainNativeOpenQueue({
       listen: listenForNativeOpenDocuments,
       drain: takePendingNativeOpenDocuments,
-      consume: payload => { void openNativePayload(payload); },
-      onError: error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`)
+      consumeBatch: openNativePayloads,
+      onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
     });
-  }, [openDocumentContents]);
+  }, [openDocumentBatch]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
@@ -15295,13 +15314,7 @@ export function MainWindow({
       return;
     }
 
-    void readBrowserDocumentFile(file)
-      .then((contents) => {
-        return openDocumentContents(contents, file.name);
-      })
-      .catch((error: unknown) => {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
+    void openDocumentBatch([{ contents: () => readBrowserDocumentFile(file), displayName: file.name }]);
   };
 
   const handleMoleculeTemplateFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -22488,9 +22501,7 @@ export function MainWindow({
             event.preventDefault();
             if (closeTabPromptRef.current) return;
             const files = Array.from(event.dataTransfer.files);
-            void Promise.all(files.map(file =>
-              openDocumentContents(() => readBrowserDocumentFile(file), file.name)
-                .catch(error => setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`))));
+            void openDocumentBatch(files.map(file => ({ contents: () => readBrowserDocumentFile(file), displayName: file.name })));
           }}
           data-zoom-surface="document"
           // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
@@ -27979,11 +27990,14 @@ function selectionStatusLabel(selection: {
   /** Phase 7: when a selection spans several molecules, the aggregate drives the label. */
   nativeSelections?: readonly NativeMoleculeSelectionPart[];
 }): string {
-  if (selection.nativeSelections && selection.nativeSelections.length > 1) {
+  const nativeSelections = selection.nativeSelections ?? (selection.nativeSelection ? [selection.nativeSelection] : []);
+  const partHostIds = new Set(nativeSelections.map(part => part.objectId));
+  const wholeObjectCount = selection.objectIds.filter(objectId => !partHostIds.has(objectId)).length;
+  if (nativeSelections.length > 1 || (nativeSelections.length > 0 && wholeObjectCount > 0)) {
     let atoms = 0;
     let bonds = 0;
     let rings = 0;
-    for (const part of selection.nativeSelections) {
+    for (const part of nativeSelections) {
       if (part.kind === "atom") {
         atoms += 1;
       } else if (part.kind === "bond") {
@@ -27996,6 +28010,10 @@ function selectionStatusLabel(selection: {
         atoms += part.atomIds.length;
         bonds += part.bondIds.length;
       }
+    }
+    if (wholeObjectCount > 0) {
+      const count = atoms + bonds + rings;
+      return `Selected ${count} molecule ${count === 1 ? "part" : "parts"} and ${wholeObjectCount} ${wholeObjectCount === 1 ? "object" : "objects"}`;
     }
     if (rings > 0 && atoms === 0 && bonds === 0) {
       return `Selected ${rings} rings`;

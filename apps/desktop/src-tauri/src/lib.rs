@@ -779,13 +779,13 @@ enum OpenDocumentDelivery {
 impl PendingOpenDocument {
     fn record(
         &self,
-        payload: NativeOpenDocumentPayload,
+        payloads: Vec<NativeOpenDocumentPayload>,
         main_window_exists: bool,
     ) -> Result<OpenDocumentDelivery, String> {
         self.payloads
             .lock()
             .map_err(|error| error.to_string())?
-            .push(payload);
+            .extend(payloads);
         Ok(if !self.setup_completed.load(Ordering::SeqCst) {
             OpenDocumentDelivery::PendingOnly
         } else if main_window_exists {
@@ -7981,17 +7981,22 @@ fn is_openable_document_path(path: &Path) -> bool {
 /// bring the window up and deliver it to an already-listening window.
 fn deliver_opened_document<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    payload: NativeOpenDocumentPayload,
+    payloads: Vec<NativeOpenDocumentPayload>,
 ) -> Result<(), String> {
     // The file was read here in Rust, which no fs scope governs — but Save writes it back through
     // the fs plugin's writeTextFile, which only allows $HOME/$DOCUMENT/$DESKTOP/$DOWNLOAD/$TEMP. A
     // document double-clicked on another drive or a share (D:\…, \\server\…) opened fine and then
     // could not be saved in place. Grant this one file, exactly as the dialog plugin does for a
     // file the user picks.
-    allow_opened_document_in_scope(app, Path::new(&payload.path));
+    for payload in &payloads {
+        allow_opened_document_in_scope(app, Path::new(&payload.path));
+    }
 
     let state = app.state::<PendingOpenDocument>();
-    let delivery = state.record(payload, app.get_webview_window(MAIN_WINDOW_LABEL).is_some())?;
+    let delivery = state.record(
+        payloads,
+        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
+    )?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
         // would collide with Tauri's window creation and abort inside the AppKit callback.
@@ -8005,16 +8010,25 @@ fn deliver_opened_document<R: Runtime>(
     emit_open_document_to_main(app)
 }
 
-/// Attempt every read and delivery, reporting failures through the caller's existing error path.
-/// A bad file must not prevent later members of the same OS request from opening.
+/// Read every file before delivering the OS request as one atomic queue append. A concurrent drain
+/// must not split the batch and let a later success hide an earlier file's parse failure.
 fn deliver_opened_documents(
     payloads: impl IntoIterator<Item = Result<NativeOpenDocumentPayload, String>>,
-    mut deliver: impl FnMut(NativeOpenDocumentPayload) -> Result<(), String>,
+    mut deliver: impl FnMut(Vec<NativeOpenDocumentPayload>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let errors: Vec<_> = payloads
-        .into_iter()
-        .filter_map(|payload| payload.and_then(&mut deliver).err())
-        .collect();
+    let mut opened = Vec::new();
+    let mut errors = Vec::new();
+    for payload in payloads {
+        match payload {
+            Ok(payload) => opened.push(payload),
+            Err(error) => errors.push(error),
+        }
+    }
+    if !opened.is_empty() {
+        if let Err(error) = deliver(opened) {
+            errors.push(error);
+        }
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -8071,9 +8085,15 @@ const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
     use std::io::Read;
-    let read_error = |error| format!("Could not read document {}: {error}", path.display());
+    let display_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled.chemdraft")
+        .to_string();
+    let read_error = |error| format!("Could not open {display_name}: {error}");
     let file = fs::File::open(path).map_err(read_error)?;
-    let too_big = || "Document exceeds the 64 MB size limit".to_string();
+    let too_big =
+        || format!("Could not open {display_name}: Document exceeds the 64 MB size limit");
     if file.metadata().map_err(read_error)?.len() > MAX_OPEN_DOCUMENT_BYTES {
         return Err(too_big());
     }
@@ -8090,12 +8110,6 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
     } else {
         (decode_document_text(&data), None)
     };
-    let display_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Untitled.chemdraft")
-        .to_string();
-
     Ok(NativeOpenDocumentPayload {
         path: path.to_string_lossy().to_string(),
         display_name,
@@ -10522,7 +10536,7 @@ mod tests {
             let state = PendingOpenDocument::default();
             assert_eq!(
                 state
-                    .record(opened_document_test_payload(), main_window_exists)
+                    .record(vec![opened_document_test_payload()], main_window_exists)
                     .expect("record document"),
                 OpenDocumentDelivery::PendingOnly
             );
@@ -10545,7 +10559,7 @@ mod tests {
         // Closing every window on macOS must not reset setup readiness.
         assert_eq!(
             state
-                .record(opened_document_test_payload(), false)
+                .record(vec![opened_document_test_payload()], false)
                 .expect("record document"),
             OpenDocumentDelivery::CreateWindowAndEmit
         );
@@ -10566,7 +10580,7 @@ mod tests {
         state.setup_completed.store(true, Ordering::SeqCst);
         assert_eq!(
             state
-                .record(opened_document_test_payload(), true)
+                .record(vec![opened_document_test_payload()], true)
                 .expect("record document"),
             OpenDocumentDelivery::ShowWindowAndEmit
         );
@@ -10580,7 +10594,7 @@ mod tests {
             let mut payload = opened_document_test_payload();
             payload.path = name.into();
             assert_eq!(
-                state.record(payload, false).expect("record"),
+                state.record(vec![payload], false).expect("record"),
                 OpenDocumentDelivery::PendingOnly
             );
         }
@@ -10597,7 +10611,7 @@ mod tests {
         );
         assert!(state.drain().expect("empty drain").is_empty());
         state
-            .record(opened_document_test_payload(), true)
+            .record(vec![opened_document_test_payload()], true)
             .expect("later record");
         let later = state.drain().expect("later drain");
         assert_eq!(later.len(), 1);
@@ -10618,12 +10632,19 @@ mod tests {
             tauri::Url::from_file_path(dir.join("third.cdxml")).expect("third URL"),
         ];
         let mut delivered = Vec::new();
-        let error = deliver_opened_documents(opened_document_payloads_from_urls(urls), |payload| {
-            delivered.push(payload);
-            Ok(())
-        })
-        .expect_err("report unreadable middle file");
-        assert!(error.contains("Could not read document"));
+        let error =
+            deliver_opened_documents(opened_document_payloads_from_urls(urls), |payloads| {
+                assert_eq!(
+                    payloads.len(),
+                    2,
+                    "one delivery contains the entire OS batch"
+                );
+                delivered.extend(payloads);
+                Ok(())
+            })
+            .expect_err("report unreadable middle file");
+        assert!(error.contains("Could not open missing.chemdraft:"));
+        assert!(!error.contains(dir.to_string_lossy().as_ref()));
         assert!(error.contains("missing.chemdraft"));
         assert_eq!(delivered.len(), 2);
         assert_eq!(delivered[0].display_name, "first.chemdraft");
@@ -12439,8 +12460,14 @@ mod tests {
             Ok(_) => panic!("oversized document must be refused"),
             Err(error) => error,
         };
-        fs::remove_file(path).expect("remove fixture");
-        assert_eq!(error, "Document exceeds the 64 MB size limit");
+        fs::remove_file(&path).expect("remove fixture");
+        assert_eq!(
+            error,
+            format!(
+                "Could not open {}: Document exceeds the 64 MB size limit",
+                path.file_name().expect("file name").to_string_lossy()
+            )
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
