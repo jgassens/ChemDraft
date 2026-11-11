@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.23.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -18551,7 +18551,7 @@ export function MainWindow({
         : selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
       const next = fromSelectionItems(
         applySelection(
-          toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+          toSelectionItemsMulti(documentRef.current.selection.objectIds, lasso.startNativeSelections),
           toSelectionItems(region.objectIds, region.nativeSelection),
           mode
         ),
@@ -18618,7 +18618,7 @@ export function MainWindow({
     const mode = selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
     const next = fromSelectionItems(
       applySelection(
-        toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+        toSelectionItemsMulti(documentRef.current.selection.objectIds, marquee.startNativeSelections),
         toSelectionItems(region.objectIds, region.nativeSelection),
         mode
       ),
