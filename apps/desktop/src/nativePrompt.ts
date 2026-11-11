@@ -1,3 +1,4 @@
+import { documentWindowId, isDocumentWindowId } from "./documentIdentity";
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -117,8 +118,8 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
-      throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    if (prompt.owner === "document" && (!isDocumentWindowId(getCurrentWindow().label) || getCurrentWindow().label !== documentWindowId())) {
+      throw new Error(`A document-owned prompt must be invoked from its document window on ${platform}.`);
     }
     result = await withNativeUtilitySuspension(async () => {
       if (signal?.aborted) return cancel.label;

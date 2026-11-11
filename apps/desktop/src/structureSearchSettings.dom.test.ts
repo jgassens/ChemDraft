@@ -4,17 +4,25 @@ import { createRoot } from "react-dom/client";
 import type { EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryStorage } from "./testSupport/memoryStorage";
-import { useStructureSearchEnabled } from "./structureSearchSettings";
+import { saveStructureSearchEnabled, useStructureSearchEnabled } from "./structureSearchSettings";
 import { UNLISTEN_RETRY_MS } from "./window-manager/tauriEvents";
 
-const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() }));
+const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke: native.invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen, emitTo: native.emitTo }));
 
 afterEach(() => {
+  history.replaceState({}, "", "/");
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it("targets the current document identity when mirroring the search preference", async () => {
+  history.replaceState({}, "", "/?window=doc&id=doc-other");
+  native.emitTo.mockResolvedValue(undefined);
+  await saveStructureSearchEnabled(false);
+  expect(native.emitTo).toHaveBeenCalledWith("doc-other", "chemdraft://structure-search-settings", { enabled: false });
 });
 
 it.each(["MacIntel", "Win32"])("safely releases a pending search preference listener on %s", async platform => {

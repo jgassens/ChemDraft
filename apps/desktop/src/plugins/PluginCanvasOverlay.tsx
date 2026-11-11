@@ -1,3 +1,4 @@
+import { documentWindowId } from "../documentIdentity";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "../imeComposition";
 import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry, PluginOverlayContentSection } from "@chemdraft/plugin-api";
@@ -131,7 +132,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = documentWindowId() }: {
   overlay: PluginCanvasOverlayContribution;
   dockIndex?: number;
   dockCount?: number;

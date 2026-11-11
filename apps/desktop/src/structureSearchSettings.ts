@@ -1,3 +1,4 @@
+import { documentWindowId } from "./documentIdentity";
 import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emitTo } from "@tauri-apps/api/event";
@@ -18,7 +19,7 @@ export function loadStructureSearchEnabled(): boolean {
 export async function saveStructureSearchEnabled(enabled: boolean): Promise<void> {
   try { globalThis.localStorage?.setItem(STRUCTURE_SEARCH_STORAGE_KEY, String(enabled)); }
   catch { /* Persistence is best effort; broadcast the current choice as well. */ }
-  if (isTauri()) await emitTo("main", SETTINGS_EVENT, { enabled });
+  if (isTauri()) await emitTo(documentWindowId(), SETTINGS_EVENT, { enabled });
   else globalThis.dispatchEvent?.(new Event(SETTINGS_EVENT));
 }
 

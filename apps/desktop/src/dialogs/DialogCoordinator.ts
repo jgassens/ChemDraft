@@ -1,3 +1,4 @@
+import { documentWindowId } from "../documentIdentity";
 import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import type { ConditionsSnapshot } from "./dialogProtocol";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
@@ -63,7 +64,11 @@ export class DialogCoordinator {
     vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
-  }, private options: { readyTimeoutMs?: number } = {}) {}
+  }, private options: { readyTimeoutMs?: number; ownerWindowId?: string } = {}) {
+    this.ownerWindowId = options.ownerWindowId ?? documentWindowId();
+  }
+
+  private readonly ownerWindowId: string;
 
   reportError(message: string): void { this.owner.onError(message); }
 
@@ -82,7 +87,7 @@ export class DialogCoordinator {
     const frameKey = JSON.stringify(frame);
     if (session.frameKey === frameKey) return;
     const message: DialogMessage = { ...dialogEnvelope(session.snapshot), dialogKind: "export", type: "result", data: { status: "frame", frame } };
-    if (!parseDialogMessage(message)) throw new Error("Invalid Export frame");
+    if (!parseDialogMessage(message, this.ownerWindowId)) throw new Error("Invalid Export frame");
     session.frameKey = frameKey;
     session.pendingFrame = frame;
     session.previewRequestId = undefined;
@@ -124,7 +129,7 @@ export class DialogCoordinator {
     if (!session || session.settled || session.snapshot.dialogKind !== "atomProblem") return;
     if (data.fixes.length === 0) { await this.settle(session, "close"); return; }
     const snapshot = { ...session.snapshot, data };
-    if (!parseDialogMessage(snapshot)) throw new Error("Invalid atom problem snapshot");
+    if (!parseDialogMessage(snapshot, this.ownerWindowId)) throw new Error("Invalid atom problem snapshot");
     session.snapshot = snapshot;
     if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
   }
@@ -153,7 +158,7 @@ export class DialogCoordinator {
     const session = this.sessions.get(`${tabId}:engineInstall`);
     if (!session || session.settled || session.snapshot.dialogKind !== "engineInstall") return;
     const snapshot = { ...session.snapshot, data };
-    if (!parseDialogMessage(snapshot)) throw new Error("Invalid engine installation snapshot");
+    if (!parseDialogMessage(snapshot, this.ownerWindowId)) throw new Error("Invalid engine installation snapshot");
     session.snapshot = snapshot;
     if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
   }
@@ -168,7 +173,7 @@ export class DialogCoordinator {
     const session = this.sessions.get(`${tabId}:toolInstall`);
     if (!session || session.settled || session.snapshot.dialogKind !== "toolInstall") return;
     const snapshot = { ...session.snapshot, data };
-    if (!parseDialogMessage(snapshot)) throw new Error("Invalid tool installation snapshot");
+    if (!parseDialogMessage(snapshot, this.ownerWindowId)) throw new Error("Invalid tool installation snapshot");
     session.snapshot = snapshot;
     if (data.state.status === "failed" || data.state.status === "broken") session.terminalRequestId = undefined;
     if (session.ready && session.registration) await this.transport.publish(session.registration.hostId, snapshot);
@@ -197,11 +202,11 @@ export class DialogCoordinator {
       }
       return;
     }
-    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
+    const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: this.ownerWindowId, documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
     const title = kind === "customColor" ? "Custom Color" : kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "reactionConditions" ? "Reaction conditions" : kind === "atomProblem" ? "Atom problem" : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
-    if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
+    if (!parseDialogMessage(snapshot, this.ownerWindowId)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
     this.sessions.set(key, session);
@@ -224,7 +229,7 @@ export class DialogCoordinator {
     }
   }
   async receive(delivery: DialogDelivery): Promise<void> {
-    const parsed = parseDialogMessage(delivery.message);
+    const parsed = parseDialogMessage(delivery.message, this.ownerWindowId);
     if (!parsed) return;
     const session = this.sessions.get(`${parsed.documentTabId}:${parsed.dialogKind}`);
     if (!session || session.settled) return;
@@ -339,7 +344,7 @@ export class DialogCoordinator {
       try {
         const preview = await this.owner.previewExport(message.documentTabId, message.data.options, live);
         const result: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "preview", preview } };
-        if (!parseDialogMessage(result)) throw new Error("Preview is too large or invalid. Reduce the content or export size and try again.");
+        if (!parseDialogMessage(result, this.ownerWindowId)) throw new Error("Preview is too large or invalid. Reduce the content or export size and try again.");
         if (live()) await this.transport.publish(session.registration.hostId, result);
       } catch (error) {
         if (live()) await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "error", error: String(error).slice(0, 2048) } });

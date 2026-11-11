@@ -380,9 +380,15 @@ impl PerfLog {
             }
         }
     }
-    fn register_stamp(&self, source: &str, stamp: String) -> Result<(), String> {
+    fn register_stamp(
+        &self,
+        documents: &super::document_windows::DocumentWindowRegistry,
+        source: &str,
+        stamp: String,
+    ) -> Result<(), String> {
         self.clock()?;
-        if source != "main" || stamp.is_empty() || stamp.chars().count() > 256 {
+        if !documents.is_document_window(source) || stamp.is_empty() || stamp.chars().count() > 256
+        {
             return Err("Invalid perf build stamp or source window".into());
         }
         let mut stored = self
@@ -579,6 +585,7 @@ enum ClockEffect {
 // No Tauri types or clock reads: callers supply the authenticated source, observed window
 // existence and current time. The sink delivers effects, propagating transport errors in order.
 fn clock_request(
+    documents: &super::document_windows::DocumentWindowRegistry,
     state: &PerfLog,
     source: &str,
     request: ClockRequest,
@@ -607,11 +614,11 @@ fn clock_request(
         sink(ClockEffect::Forward(payload))?;
     }
     if let Some(stamp) = request.build_stamp {
-        state.register_stamp(source, stamp)?;
+        state.register_stamp(documents, source, stamp)?;
     }
     if let Some(mut request) = request.native_open {
         let label = native_open_label(&request.target).ok_or("Invalid perf open target")?;
-        if source != "main"
+        if !documents.is_document_window(source)
             || request.input_id.is_empty()
             || request.input_id.len() > 128
             || !request.t0.is_finite()
@@ -712,6 +719,7 @@ pub(crate) fn perf_log_clock(
         .and_then(|request| native_open_label(&request.target))
         .is_some_and(|label| app.get_webview_window(&label).is_some());
     clock_request(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
         state,
         window.label(),
         ClockRequest {
@@ -726,7 +734,7 @@ pub(crate) fn perf_log_clock(
             match effect {
                 ClockEffect::Forward(payload) => {
                     // Separate diagnostic delivery. Never attach an origin to an app command/event.
-                    if let Some(main) = app.get_webview_window("main") {
+                    if let Some(main) = super::owned_document_webview(&app, window.label()) {
                         main.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-forward', {{detail:{payload}}}));"))
                             .map_err(|e| e.to_string())?;
                     }
@@ -817,8 +825,13 @@ pub(crate) async fn perf_log_append(
     // Reject before even resolving app_data_dir. The state was constructed using precisely the
     // existing agent_bridge_status env/argument parser, never renderer flags.
     app.state::<PerfLog>().sample()?;
-    let receipt = native_paint_receipt(&app.state::<PerfLog>(), window.label(), &line)
-        .or_else(|| popover_receipt(window.label(), &line));
+    let receipt = native_paint_receipt(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
+        &app.state::<PerfLog>(),
+        window.label(),
+        &line,
+    )
+    .or_else(|| popover_receipt(window.label(), &line));
     let writer_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let directory = writer_app
@@ -847,6 +860,7 @@ pub(crate) async fn perf_log_append(
 }
 
 fn native_paint_receipt(
+    documents: &super::document_windows::DocumentWindowRegistry,
     state: &PerfLog,
     source: &str,
     line: &str,
@@ -876,7 +890,7 @@ fn native_paint_receipt(
     let payload = serde_json::json!({ "target": request.target, "signal": "window-painted",
         "at": at, "frameAt": frame, "rafAt": raf, "shownAt": request.shown_at, "window": source });
     opens.remove(source);
-    Some(("main".into(), payload))
+    Some((documents.owner_of(source)?.native_label, payload))
 }
 
 fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Value)> {
@@ -934,8 +948,12 @@ pub(crate) fn perf_log_complete(
     window: tauri::WebviewWindow,
     completion: Completion,
 ) -> Result<(), String> {
-    let (target, payload) =
-        completion_receipt(&app.state::<PerfLog>(), window.label(), completion)?;
+    let (target, payload) = completion_receipt(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
+        &app.state::<PerfLog>(),
+        window.label(),
+        completion,
+    )?;
     let destination = app
         .get_webview_window(&target)
         .ok_or("Perf completion window closed")?;
@@ -947,6 +965,7 @@ pub(crate) fn perf_log_complete(
 }
 
 fn completion_receipt(
+    documents: &super::document_windows::DocumentWindowRegistry,
     state: &PerfLog,
     source: &str,
     completion: Completion,
@@ -961,7 +980,15 @@ fn completion_receipt(
         raf_at,
         shown_at,
     } = completion;
-    if !valid_completion(source, &target, &request_key, &signal, at, frame_at) {
+    if !valid_completion(
+        documents,
+        source,
+        &target,
+        &request_key,
+        &signal,
+        at,
+        frame_at,
+    ) {
         return Err("Invalid perf completion route or payload".into());
     }
     if raf_at.is_some_and(|raf| {
@@ -978,6 +1005,7 @@ fn completion_receipt(
 }
 
 fn valid_completion(
+    documents: &super::document_windows::DocumentWindowRegistry,
     source: &str,
     target: &str,
     key: &str,
@@ -985,10 +1013,18 @@ fn valid_completion(
     at: f64,
     frame: Option<f64>,
 ) -> bool {
-    let route = (source == "main"
+    let route = (documents.is_document_window(source)
         && target.starts_with("dialog-main-")
+        && documents
+            .owner_of(target)
+            .is_some_and(|owner| owner.native_label == source)
         && matches!(signal, "export-written" | "document-commit" | "dialog-open"))
-        || (source.starts_with("dialog-main-") && target == "main" && signal == "dialog-open");
+        || (source.starts_with("dialog-main-")
+            && documents.is_document_window(target)
+            && documents
+                .owner_of(source)
+                .is_some_and(|owner| owner.native_label == target)
+            && signal == "dialog-open");
     route
         && !key.is_empty()
         && key.len() <= 128
@@ -1002,6 +1038,65 @@ fn valid_completion(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_document_sources_require_membership_and_matching_utility_ownership() {
+        let documents = crate::document_windows::DocumentWindowRegistry::default();
+        let state = super::PerfLog::new(true);
+        assert!(state
+            .register_stamp(&documents, "main", "test".into())
+            .is_err());
+        assert!(!super::valid_completion(
+            &documents,
+            "main",
+            "dialog-main-export-1",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+        documents.register("main", "main").unwrap();
+        documents.register("other", "doc-other").unwrap();
+        assert!(state
+            .register_stamp(&documents, "doc-other", "test".into())
+            .is_ok());
+        assert!(super::valid_completion(
+            &documents,
+            "main",
+            "dialog-main-export-1",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+        assert!(!super::valid_completion(
+            &documents,
+            "doc-other",
+            "dialog-main-export-1",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+        assert!(!super::valid_completion(
+            &documents,
+            "dialog-main-export-1",
+            "doc-other",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+        documents.remove("main");
+        assert!(!super::valid_completion(
+            &documents,
+            "main",
+            "dialog-main-export-1",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+    }
     #[test]
     fn perf_log_append_popover_geometry_routing_obeys_dev_gate() {
         use super::{popover_geometry_enabled, route_popover_geometry, PopoverGeometryRoute};
@@ -1110,6 +1205,7 @@ mod tests {
             },
         );
         assert!(clock_request(
+            &crate::test_documents(),
             &state,
             "main",
             ClockRequest {
@@ -1124,6 +1220,7 @@ mod tests {
         assert!(state.opens.lock().unwrap().is_empty());
         assert_eq!(
             clock_request(
+                &crate::test_documents(),
                 &state,
                 "main",
                 ClockRequest::default(),
@@ -1154,6 +1251,7 @@ mod tests {
         let state = PerfLog::new(true);
         let mut effects = Vec::new();
         clock_request(
+            &crate::test_documents(),
             &state,
             "main",
             open_request("open-1", None),
@@ -1172,6 +1270,7 @@ mod tests {
         effects.clear();
         // The destination exists now, but this is still the original cold open.
         clock_request(
+            &crate::test_documents(),
             &state,
             "main",
             open_request("open-1", Some(1228.0)),
@@ -1193,6 +1292,7 @@ mod tests {
             .unwrap()
             .insert("preferences".into(), 1050.0);
         let sample = clock_request(
+            &crate::test_documents(),
             &state,
             "preferences",
             ClockRequest::default(),
@@ -1206,6 +1306,7 @@ mod tests {
         assert!(sample.native_open.unwrap().cold);
         // A window created during this input is cold even if it already exists.
         clock_request(
+            &crate::test_documents(),
             &state,
             "main",
             open_request("open-2", None),
@@ -1221,6 +1322,7 @@ mod tests {
             .unwrap()
             .insert("preferences".into(), 500.0);
         clock_request(
+            &crate::test_documents(),
             &state,
             "main",
             open_request("open-3", None),
@@ -1240,15 +1342,20 @@ mod tests {
             ("main", open_request("input", Some(999.0))),
             ("main", open_request("input", Some(f64::NAN))),
         ] {
-            assert!(
-                clock_request(&state, source, request, 1100.0, false, |_| panic!(
-                    "invalid open must emit no effects"
-                ))
-                .is_err()
-            );
+            assert!(clock_request(
+                &crate::test_documents(),
+                &state,
+                source,
+                request,
+                1100.0,
+                false,
+                |_| panic!("invalid open must emit no effects")
+            )
+            .is_err());
             assert!(state.opens.lock().unwrap().is_empty());
         }
         assert!(clock_request(
+            &crate::test_documents(),
             &PerfLog::new(false),
             "main",
             ClockRequest::default(),
@@ -1286,15 +1393,20 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            assert!(
-                clock_request(&state, source, request, 1100.0, false, |_| panic!(
-                    "invalid forwarding must emit no effects"
-                ))
-                .is_err()
-            );
+            assert!(clock_request(
+                &crate::test_documents(),
+                &state,
+                source,
+                request,
+                1100.0,
+                false,
+                |_| panic!("invalid forwarding must emit no effects")
+            )
+            .is_err());
         }
         let mut effects = 0;
         let result = clock_request(
+            &crate::test_documents(),
             &state,
             "toolset-core-main",
             ClockRequest {
@@ -1334,8 +1446,13 @@ mod tests {
             raf_at: Some(1120.0),
             shown_at: Some(1050.0),
         };
-        let (target, payload) =
-            completion_receipt(&state, "dialog-main-export-1", completion()).unwrap();
+        let (target, payload) = completion_receipt(
+            &crate::test_documents(),
+            &state,
+            "dialog-main-export-1",
+            completion(),
+        )
+        .unwrap();
         assert_eq!(target, "main");
         assert_eq!(payload["window"], "dialog-main-export-1");
         assert_eq!(payload["shownAt"], 1050.0);
@@ -1343,9 +1460,21 @@ mod tests {
             let mut invalid = completion();
             invalid.raf_at = Some(raf);
             invalid.shown_at = Some(shown);
-            assert!(completion_receipt(&state, "dialog-main-export-1", invalid).is_err());
+            assert!(completion_receipt(
+                &crate::test_documents(),
+                &state,
+                "dialog-main-export-1",
+                invalid
+            )
+            .is_err());
         }
-        assert!(completion_receipt(&state, "toolset-core-main", completion()).is_err());
+        assert!(completion_receipt(
+            &crate::test_documents(),
+            &state,
+            "toolset-core-main",
+            completion()
+        )
+        .is_err());
     }
     #[test]
     fn native_paint_relays_only_the_registered_destination_and_time_range() {
@@ -1367,28 +1496,34 @@ mod tests {
             "firstFrameMs":810,"rafStartMs":770,"windowShownMs":228,
             "doneSignal":"window-painted","extra":{"inputId":"input-1"}})
         .to_string();
-        assert!(native_paint_receipt(&state, "main", &row).is_none());
-        assert!(native_paint_receipt(&state, "toolset-core-main", &row).is_none());
+        assert!(native_paint_receipt(&crate::test_documents(), &state, "main", &row).is_none());
+        assert!(
+            native_paint_receipt(&crate::test_documents(), &state, "toolset-core-main", &row)
+                .is_none()
+        );
         assert!(native_paint_receipt(
+            &crate::test_documents(),
             &state,
             source,
             &row.replace("\"doneMs\":766", "\"doneMs\":120001")
         )
         .is_none());
         assert!(native_paint_receipt(
+            &crate::test_documents(),
             &state,
             source,
             &row.replace("\"firstFrameMs\":810", "\"firstFrameMs\":700")
         )
         .is_none());
-        let (target, receipt) = native_paint_receipt(&state, source, &row).unwrap();
+        let (target, receipt) =
+            native_paint_receipt(&crate::test_documents(), &state, source, &row).unwrap();
         assert_eq!(target, "main");
         assert_eq!(receipt["target"], "toolset:core.drawnStructureSettings");
         assert_eq!(receipt["at"], 1766.0);
         assert_eq!(receipt["frameAt"], 1810.0);
         assert_eq!(receipt["rafAt"], 1770.0);
         assert_eq!(receipt["shownAt"], 1228.0);
-        assert!(native_paint_receipt(&state, source, &row).is_none());
+        assert!(native_paint_receipt(&crate::test_documents(), &state, source, &row).is_none());
         assert_eq!(
             native_open_label("toolset:core.drawnStructureSettings"),
             Some(source.into())
@@ -1495,10 +1630,18 @@ mod tests {
         assert!(state.append(&path, &dialog, MAX_BYTES).is_err());
         assert!(!path.exists());
         assert!(state
-            .register_stamp("dialog-main-export-1", "wrong".into())
+            .register_stamp(
+                &crate::test_documents(),
+                "dialog-main-export-1",
+                "wrong".into()
+            )
             .is_err());
-        state.register_stamp("main", "main stamp".into()).unwrap();
-        assert!(state.register_stamp("main", "replacement".into()).is_err());
+        state
+            .register_stamp(&crate::test_documents(), "main", "main stamp".into())
+            .unwrap();
+        assert!(state
+            .register_stamp(&crate::test_documents(), "main", "replacement".into())
+            .is_err());
         state.append(&path, &dialog, MAX_BYTES).unwrap();
         let row: serde_json::Value = serde_json::from_str(
             fs::read_to_string(path.join("perf-log.jsonl"))
@@ -1517,7 +1660,9 @@ mod tests {
         let path = directory.join("perf-log.jsonl");
         let backup = directory.join("perf-log.1.jsonl");
         let state = PerfLog::new(true);
-        state.register_stamp("main", "test".into()).unwrap();
+        state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .unwrap();
         let line = line();
         state.append(&directory, &line, MAX_BYTES).unwrap();
         fs::write(&backup, "old backup").unwrap();
@@ -1547,7 +1692,9 @@ mod tests {
         fs::write(&path, "keep this log").unwrap();
         fs::create_dir(&backup).unwrap();
         let state = PerfLog::new(true);
-        state.register_stamp("main", "test".into()).unwrap();
+        state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .unwrap();
         assert!(state
             .rotate_with(&path, &backup, |_, _| Err(std::io::Error::from(
                 std::io::ErrorKind::PermissionDenied
@@ -1565,6 +1712,7 @@ mod tests {
     fn completion_accepts_only_bounded_clock_skew_and_distinct_roles_validate() {
         for delta in [0.0, 10.0] {
             assert!(valid_completion(
+                &crate::test_documents(),
                 "dialog-main-export-1",
                 "main",
                 "session-1",
@@ -1575,6 +1723,7 @@ mod tests {
         }
         for frame in [89.9, -1.0, f64::NAN, f64::INFINITY] {
             assert!(!valid_completion(
+                &crate::test_documents(),
                 "dialog-main-export-1",
                 "main",
                 "session-1",
@@ -1608,7 +1757,9 @@ mod tests {
     fn disabled_rejects_without_creating_directory_or_file() {
         let path = dir();
         let state = PerfLog::new(false);
-        assert!(state.register_stamp("main", "test".into()).is_err());
+        assert!(state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .is_err());
         assert!(state.sample().is_err());
         assert!(state.append(&path, &line(), MAX_BYTES).is_err());
         assert!(!path.exists());
@@ -1617,7 +1768,9 @@ mod tests {
     fn appends_and_rotates_once_before_crossing_cap() {
         let path = dir();
         let state = PerfLog::new(true);
-        state.register_stamp("main", "test".into()).unwrap();
+        state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .unwrap();
         let line = line();
         let cap = (line.len() as u64 + 1) * 2;
         for _ in 0..7 {
@@ -1638,7 +1791,9 @@ mod tests {
     fn invalid_and_oversized_lines_never_create_files() {
         let path = dir();
         let state = PerfLog::new(true);
-        state.register_stamp("main", "test".into()).unwrap();
+        state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .unwrap();
         for bad in [
             "{}".to_string(),
             format!("{}\n{}", line(), line()),
@@ -1658,7 +1813,9 @@ mod tests {
     #[test]
     fn clock_is_shared_and_monotonic() {
         let state = PerfLog::new(true);
-        state.register_stamp("main", "test".into()).unwrap();
+        state
+            .register_stamp(&crate::test_documents(), "main", "test".into())
+            .unwrap();
         let a = state.sample().unwrap();
         let b = state.sample().unwrap();
         assert_eq!(a.process_start, b.process_start);
@@ -1667,6 +1824,7 @@ mod tests {
     #[test]
     fn completion_routes_are_narrow_and_numeric() {
         assert!(valid_completion(
+            &crate::test_documents(),
             "main",
             "dialog-main-export-1",
             "request-1",
@@ -1675,6 +1833,7 @@ mod tests {
             None
         ));
         assert!(valid_completion(
+            &crate::test_documents(),
             "dialog-main-export-1",
             "main",
             "session-1",
@@ -1683,6 +1842,7 @@ mod tests {
             Some(2.0)
         ));
         assert!(!valid_completion(
+            &crate::test_documents(),
             "plugin-panel-1",
             "main",
             "session-1",
@@ -1691,6 +1851,7 @@ mod tests {
             None
         ));
         assert!(!valid_completion(
+            &crate::test_documents(),
             "main",
             "main",
             "request-1",
@@ -1699,6 +1860,7 @@ mod tests {
             None
         ));
         assert!(!valid_completion(
+            &crate::test_documents(),
             "main",
             "dialog-main-export-1",
             "request-1",
@@ -1707,6 +1869,7 @@ mod tests {
             None
         ));
         assert!(!valid_completion(
+            &crate::test_documents(),
             "main",
             "dialog-main-export-1",
             "request-1",

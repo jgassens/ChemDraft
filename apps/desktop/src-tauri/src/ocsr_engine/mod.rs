@@ -1763,7 +1763,7 @@ mod tests {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../../capabilities/ocsr-engine.json"))
                 .expect("OCSR capability JSON");
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         let permissions = capability["permissions"]
             .as_array()
             .expect("permission array");

@@ -107,12 +107,24 @@ const destructivePrompts: { name: string; choices: NativePromptOptions["choices"
     macos: { yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" }
   }
 ];
-afterEach(() => { plugin.native = true; plugin.owner = "main"; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
+afterEach(() => { plugin.native = true; plugin.owner = "main"; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; history.replaceState({}, "", "/"); vi.restoreAllMocks(); });
 
 describe("nativePrompt", () => {
   const growth: NativePromptOptions = { title: "ChemDraft Assistant", kind: "info", owner: "document",
     message: "Olympiadane needs a page 1960 × 900 pt. Enlarge the page to fit?",
     choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }] };
+
+  it.each(["macos", "windows"] as const)("uses the current document identity for prompt ownership on %s", async platform => {
+    history.replaceState({}, "", "/?window=doc&id=doc-other");
+    plugin.owner = "doc-other";
+    plugin.message.mockResolvedValue("Enlarge Page");
+    expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe("enlarge");
+    plugin.owner = "main";
+    plugin.message.mockClear();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await nativePrompt(growth, async () => "decline", undefined, undefined, platform)).toBe("decline");
+    expect(plugin.message).not.toHaveBeenCalled();
+  });
 
   it.each(["macos", "windows", "linux"] as const)("requires the document window as native message-box owner on %s", async platform => {
     for (const [answer, expected] of [["Enlarge Page", "enlarge"], ["Cancel", "decline"]]) {

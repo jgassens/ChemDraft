@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "structure-search",
   "description": "Only the document window can open fixed-host structure searches or mirror the online search preference.",
-  "windows": ["main"],
+  "windows": ["main", "doc-*"],
   "permissions": ["allow-open-structure-search", "allow-set-structure-search-enabled"]
 }

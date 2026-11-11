@@ -787,7 +787,7 @@ async fn sixteen_connections_and_header_timeout() {
 fn commands_have_generated_permissions_and_main_only_capability() {
     let capability: Value =
         serde_json::from_str(include_str!("../../capabilities/assistant-mcp.json")).unwrap();
-    assert_eq!(capability["windows"], json!(["main"]));
+    assert_eq!(capability["windows"], json!(["main", "doc-*"]));
     assert!(capability.get("webviews").is_none());
     let source = include_str!("../lib.rs");
     let handler = source

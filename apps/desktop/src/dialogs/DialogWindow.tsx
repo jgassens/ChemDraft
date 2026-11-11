@@ -175,7 +175,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
         });
       }
     });
-    if (perfProbe) void sending.then(() => perfHook(() => perfSurfaceReady("main", snapshot.sessionId, "dialog-open"))).catch(() => undefined);
+    if (perfProbe) void sending.then(() => perfHook(() => perfSurfaceReady(snapshot.ownerWindowId, snapshot.sessionId, "dialog-open"))).catch(() => undefined);
     void sending.catch(e => setError(String(e)));
   }, [hostId, snapshot]);
   useEffect(() => {

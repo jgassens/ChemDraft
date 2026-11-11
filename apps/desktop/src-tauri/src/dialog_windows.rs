@@ -919,7 +919,10 @@ impl Message {
             && self.message_type == "result"
             && self.data["status"] == "preview"
     }
-    fn validate(&self) -> Result<(), String> {
+    fn validate(
+        &self,
+        documents: &super::document_windows::DocumentWindowRegistry,
+    ) -> Result<(), String> {
         if serde_json::to_vec(self).map_err(|e| e.to_string())?.len()
             > if self.is_preview() {
                 MAX_PREVIEW_BYTES
@@ -927,7 +930,7 @@ impl Message {
                 MAX_BYTES
             }
             || self.protocol_version != 1
-            || self.owner_window_id != super::MAIN_WINDOW_LABEL
+            || !documents.is_document_window(&self.owner_window_id)
             || kind_spec(&self.dialog_kind).is_err()
             || !token(&self.document_tab_id)
             || !token(&self.session_id)
@@ -1328,6 +1331,7 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registr
 pub(crate) fn is_dialog_label(label: &str) -> bool {
     label == super::PREFERENCES_WINDOW_LABEL
         || label
+            // A1 has no owner-generic dialog label scheme; retain this gate until A4.
             .strip_prefix("dialog-main-")
             .and_then(|s| s.split_once('-'))
             .is_some_and(|(kind, slot)| {
@@ -1339,6 +1343,7 @@ pub(crate) fn is_dialog_label(label: &str) -> bool {
             })
 }
 fn authorize(
+    documents: &super::document_windows::DocumentWindowRegistry,
     session: &Session,
     sender: &str,
     owner: bool,
@@ -1349,7 +1354,10 @@ fn authorize(
     } else {
         &session.registration.window_label
     };
-    if sender != expected || message.is_some_and(|m| !m.same_session(&session.snapshot)) {
+    if !documents.is_document_window(&session.snapshot.owner_window_id)
+        || sender != expected
+        || message.is_some_and(|m| !m.same_session(&session.snapshot))
+    {
         return Err(
             "Dialog caller, session, or revision does not match its registered native window"
                 .into(),
@@ -1357,6 +1365,36 @@ fn authorize(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod document_registry_authorization_tests {
+    use super::*;
+
+    #[test]
+    fn dialog_envelopes_and_sessions_require_a_live_registered_document() {
+        let documents = crate::document_windows::DocumentWindowRegistry::default();
+        let mut message: Message = serde_json::from_value(json!({
+            "protocolVersion": 1, "ownerWindowId": "main", "documentTabId": "tab-1",
+            "dialogKind": "pageSize", "sessionId": "session-1", "requestId": "request-1",
+            "snapshotRevision": 1, "type": "snapshot",
+            "data": {"title": "Drawing", "width": 8.5, "height": 11, "unit": "inch"}
+        }))
+        .unwrap();
+        assert!(message.validate(&documents).is_err());
+        documents.register("other", "doc-other").unwrap();
+        message.owner_window_id = "doc-other".into();
+        assert!(message.validate(&documents).is_ok());
+        let mut dialogs = Registry::default();
+        let (registration, _) = register(&documents, &mut dialogs, message.clone(), false).unwrap();
+        let session = &dialogs.sessions[&registration.host_id];
+        assert!(authorize(&documents, session, "doc-other", true, Some(&message)).is_ok());
+        assert!(authorize(&documents, session, "main", true, Some(&message)).is_err());
+        documents.remove("other");
+        assert!(message.validate(&documents).is_err());
+        assert!(authorize(&documents, session, "doc-other", true, Some(&message)).is_err());
+    }
+}
+
 fn delivery(session: &Session, sender: &str, message: &Message) -> Result<Value, String> {
     let mut payload = json!({ "senderWindowId": sender, "windowLabel": session.registration.window_label, "message": message });
     let serialized_size = |value: &Value| {
@@ -1414,7 +1452,7 @@ fn preview_delivery_chunks(text: &str, request_id: &str) -> Vec<Value> {
 }
 fn send_host(session: &Session, message: &Message) -> Result<(), String> {
     if message.is_preview() {
-        let text = serde_json::to_string(&json!({ "senderWindowId": super::MAIN_WINDOW_LABEL, "windowLabel": session.registration.window_label, "message": message })).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string(&json!({ "senderWindowId": session.snapshot.owner_window_id, "windowLabel": session.registration.window_label, "message": message })).map_err(|e| e.to_string())?;
         let channel = session
             .host_channel
             .as_ref()
@@ -1433,7 +1471,11 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
         .host_channel
         .as_ref()
         .ok_or("Dialog host channel missing")?
-        .send(delivery(session, super::MAIN_WINDOW_LABEL, message)?)
+        .send(delivery(
+            session,
+            &session.snapshot.owner_window_id,
+            message,
+        )?)
         .map_err(|e| e.to_string())
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
@@ -1534,6 +1576,7 @@ fn releases_action_reservation(message: &Message) -> bool {
 }
 
 fn register(
+    documents: &super::document_windows::DocumentWindowRegistry,
     registry: &mut Registry,
     message: Message,
     quitting: bool,
@@ -1541,7 +1584,7 @@ fn register(
     if quitting {
         return Err(super::QUITTING_WINDOW_REFUSAL.into());
     }
-    message.validate()?;
+    message.validate(documents)?;
     if message.message_type != "snapshot" {
         return Err("A dialog opens with a snapshot".into());
     }
@@ -1564,6 +1607,7 @@ fn register(
     registry.next_slot += 1;
     let registration = Registration {
         host_id: format!("h{:016x}", registry.next_slot),
+        // Label scheme stays main-only until A4 defines owner-qualified dialog labels.
         window_label: format!("dialog-main-{}-{}", message.dialog_kind, registry.next_slot),
     };
     registry.sessions.insert(
@@ -1595,8 +1639,9 @@ pub(crate) async fn dialog_open(
     message: Message,
     channel: Channel<Value>,
 ) -> Result<Registration, String> {
-    if window.label() != super::MAIN_WINDOW_LABEL
-        || app.get_webview_window(super::MAIN_WINDOW_LABEL).is_none()
+    if !super::is_document_window(&app, window.label())
+        || window.label() != message.owner_window_id
+        || app.get_webview_window(window.label()).is_none()
     {
         return Err("Unknown dialog owner".into());
     }
@@ -1605,6 +1650,7 @@ pub(crate) async fn dialog_open(
         return Err("The document window is hidden; no dialog can open".into());
     }
     let (registration, build) = register(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
         &mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
         message.clone(),
         super::quit_in_progress(),
@@ -1720,8 +1766,16 @@ pub(crate) fn dialog_request(
         .sessions
         .get_mut(&host_id)
         .ok_or("Unknown dialog host")?;
-    authorize(session, window.label(), false, None)?;
-    session.snapshot.validate()?;
+    authorize(
+        &window.state::<super::document_windows::DocumentWindowRegistry>(),
+        session,
+        window.label(),
+        false,
+        None,
+    )?;
+    session
+        .snapshot
+        .validate(&window.state::<super::document_windows::DocumentWindowRegistry>())?;
     // This channel belongs to the actual calling dialog, not to a payload label.
     session.host_channel = Some(channel);
     send_host(session, &session.snapshot)?;
@@ -1739,7 +1793,7 @@ pub(crate) async fn dialog_send(
     host_id: String,
     message: Message,
 ) -> Result<(), String> {
-    message.validate()?;
+    message.validate(&window.state::<super::document_windows::DocumentWindowRegistry>())?;
     if !matches!(message.message_type.as_str(), "ready" | "action") {
         return Err("Dialog can send only ready or a typed action".into());
     }
@@ -1756,7 +1810,13 @@ pub(crate) async fn dialog_send(
             .sessions
             .get_mut(&host_id)
             .ok_or("Unknown dialog host")?;
-        authorize(session, window.label(), false, Some(&message))?;
+        authorize(
+            &window.state::<super::document_windows::DocumentWindowRegistry>(),
+            session,
+            window.label(),
+            false,
+            Some(&message),
+        )?;
         let reveal = message.message_type == "ready" && !session.ready;
         if message.message_type == "action" {
             if !session.ready {
@@ -1829,7 +1889,7 @@ pub(crate) fn dialog_publish(
     host_id: String,
     message: Message,
 ) -> Result<(), String> {
-    message.validate()?;
+    message.validate(&window.state::<super::document_windows::DocumentWindowRegistry>())?;
     if !matches!(
         message.message_type.as_str(),
         "snapshot" | "preview" | "result"
@@ -1841,7 +1901,13 @@ pub(crate) fn dialog_publish(
         .sessions
         .get_mut(&host_id)
         .ok_or("Unknown dialog host")?;
-    authorize(session, window.label(), true, Some(&message))?;
+    authorize(
+        &window.state::<super::document_windows::DocumentWindowRegistry>(),
+        session,
+        window.label(),
+        true,
+        Some(&message),
+    )?;
     if message.message_type == "result"
         && message.dialog_kind == "export"
         && message.data["status"] == "frame"
@@ -1902,8 +1968,14 @@ pub(crate) async fn dialog_close(
     {
         let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(session) = registry.sessions.get(&host_id) {
-            authorize(session, window.label(), true, None)?;
-        } else if window.label() != super::MAIN_WINDOW_LABEL {
+            authorize(
+                &window.state::<super::document_windows::DocumentWindowRegistry>(),
+                session,
+                window.label(),
+                true,
+                None,
+            )?;
+        } else if !super::is_document_window(&app, window.label()) {
             return Err("Unknown dialog owner".into());
         }
     }
@@ -1918,7 +1990,7 @@ fn notify_closed(session: &Session, reason: &str) {
     let mut closed = session.snapshot.clone();
     closed.message_type = "closed".into();
     closed.data = json!({"reason": reason});
-    let _ = send_owner(session, super::MAIN_WINDOW_LABEL, &closed);
+    let _ = send_owner(session, &session.snapshot.owner_window_id, &closed);
 }
 fn close_session<R: Runtime>(app: &tauri::AppHandle<R>, host_id: &str, reason: &str) {
     let session = REGISTRY
@@ -2068,9 +2140,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             .defer_show(window.label().into());
         return Ok(());
     }
-    if window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
+    if super::owned_document_webview(window.app_handle(), window.label())
         .is_none_or(|owner| !owner.is_visible().unwrap_or(false))
     {
         return Err("Dialog owner is hidden".into());
@@ -2346,9 +2416,7 @@ fn native_normal_geometry<R: Runtime>(
         },
     };
     let hwnd = window.hwnd().ok()?.0 as _;
-    let owner = window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+    let owner = super::owned_document_webview(window.app_handle(), window.label())?;
     let owner_hwnd = owner.hwnd().ok()?.0 as _;
     // SAFETY: these handles belong to live Tauri windows; every output is initialized and sized.
     unsafe {
@@ -2452,9 +2520,7 @@ fn normal_rect_matches_live(
 fn native_normal_geometry<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Option<PhysicalNormalFrame> {
-    let owner = window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+    let owner = super::owned_document_webview(window.app_handle(), window.label())?;
     if window.is_minimized().ok()?
         || window.is_maximized().ok()?
         || owner.is_minimized().ok()?
@@ -2781,9 +2847,7 @@ fn place_content_window_from_frame<R: Runtime>(
     normal: Option<NormalFrame>,
 ) -> Result<(), String> {
     let app = window.app_handle();
-    let owner = app
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
-        .ok_or("Unknown dialog owner")?;
+    let owner = super::owned_document_webview(app, window.label()).ok_or("Unknown dialog owner")?;
     let monitor = owner
         .current_monitor()
         .map_err(|e| e.to_string())?
@@ -3297,11 +3361,9 @@ fn sample_preferences_position<R: Runtime>(
     if !should_persist(
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
-            || app
-                .get_webview_window(super::MAIN_WINDOW_LABEL)
-                .is_none_or(|owner| {
-                    owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
-                }),
+            || super::owned_document_webview(app, window.label()).is_none_or(|owner| {
+                owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
+            }),
         (
             window.is_maximized().unwrap_or(true),
             window.is_fullscreen().unwrap_or(true),
@@ -3369,11 +3431,9 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
     if !should_persist(
         window.is_visible().unwrap_or(false),
         window.is_minimized().unwrap_or(true)
-            || app
-                .get_webview_window(super::MAIN_WINDOW_LABEL)
-                .is_none_or(|owner| {
-                    owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
-                }),
+            || super::owned_document_webview(app, window.label()).is_none_or(|owner| {
+                owner.is_minimized().unwrap_or(true) || !owner.is_visible().unwrap_or(false)
+            }),
         (
             window.is_maximized().unwrap_or(true),
             window.is_fullscreen().unwrap_or(true),
@@ -3691,12 +3751,12 @@ mod tests {
         let mut message = snapshot();
         message.dialog_kind = "reactionConditions".into();
         message.data = json!({"title":"Drawing","arrowId":"arrow-1","draft":draft});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         message.message_type = "action".into();
         message.data = json!({"action":"apply","draft":draft});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         message.data = json!({"action":"cancel","draft":draft});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
     }
     use super::*;
 
@@ -4290,16 +4350,16 @@ mod tests {
         let mut message = snapshot();
         message.dialog_kind = "vibeCodeGuide".into();
         message.data = json!({"title":"Guide"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         message.data = json!({"title":"x".repeat(257)});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         message.message_type = "action".into();
         for action in ["saveStarter", "openPluginManager", "cancel"] {
             message.data = json!({"action":action});
-            assert!(message.validate().is_ok());
+            assert!(message.validate(&crate::test_documents()).is_ok());
         }
         message.data = json!({"action":"saveStarter","path":"/tmp/a"});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
     }
     #[test]
     fn structure_templates_registration_and_actions_are_bounded_on_all_platforms() {
@@ -4307,11 +4367,17 @@ mod tests {
         message.dialog_kind = "structureTemplates".into();
         message.data =
             json!({"title":"Drawing A","templateIds":["beta-cyclodextrin","pillar-5-arene"]});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let spec = kind_spec("structureTemplates").unwrap();
         assert!(spec.resizable && !spec.maximizable);
         let mut registry = Registry::default();
-        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, build) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(build);
         assert!(registration
             .window_label
@@ -4319,7 +4385,16 @@ mod tests {
         assert!(is_dialog_label(&registration.window_label));
         assert!(include_str!("../capabilities/dialog-host.json")
             .contains("dialog-main-structureTemplates-*"));
-        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        assert!(
+            !register(
+                &crate::test_documents(),
+                &mut registry,
+                message.clone(),
+                false
+            )
+            .unwrap()
+            .1
+        );
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         message.message_type = "action".into();
         for data in [
@@ -4328,12 +4403,12 @@ mod tests {
             json!({"action":"insert","templateId":"beta-cyclodextrin","commandId":"document.new"}),
         ] {
             message.data = data;
-            assert!(message.validate().is_err());
+            assert!(message.validate(&crate::test_documents()).is_err());
         }
         message.data = json!({"action":"insert","templateId":"unknown"});
         assert!(reserve_action(session, &message).is_err());
         message.data = json!({"action":"insert","templateId":"beta-cyclodextrin"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         assert!(reserve_action(session, &message).unwrap());
         assert!(!reserve_action(session, &message).unwrap());
         message.request_id = "second-insert".into();
@@ -4342,9 +4417,9 @@ mod tests {
         assert!(reserve_action(session, &message).unwrap());
         message.message_type = "snapshot".into();
         message.data = json!({"title":"A","templateIds":["beta-cyclodextrin","beta-cyclodextrin"]});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         message.data = json!({"title":"A","templateIds":[],"extra":true});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
     }
     fn engine_install_snapshot() -> Message {
         let mut message = snapshot();
@@ -4368,33 +4443,39 @@ mod tests {
         for intent in ["download", "update", "use"] {
             let mut message = tool_install_snapshot();
             message.data["intent"] = json!(intent);
-            assert!(message.validate().is_ok(), "intent: {intent}");
+            assert!(
+                message.validate(&crate::test_documents()).is_ok(),
+                "intent: {intent}"
+            );
         }
     }
     #[test]
     fn tool_install_accepts_absent_intent() {
         let message = tool_install_snapshot();
         assert!(message.data.get("intent").is_none());
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
     }
     #[test]
     fn tool_install_rejects_invalid_intent() {
         for intent in [json!("unknown"), json!("Update"), json!(""), json!(42)] {
             let mut message = tool_install_snapshot();
             message.data["intent"] = intent.clone();
-            assert!(message.validate().is_err(), "intent: {intent}");
+            assert!(
+                message.validate(&crate::test_documents()).is_err(),
+                "intent: {intent}"
+            );
         }
     }
     #[test]
     fn tool_install_rejects_null_intent() {
         let mut message = tool_install_snapshot();
         message.data["intent"] = Value::Null;
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
     }
     #[test]
     fn tool_install_validates_spec_buttons_labels_and_capability_matcher() {
         let message = tool_install_snapshot();
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let spec = kind_spec("toolInstall").unwrap();
         assert!(spec.resizable);
         assert_eq!(spec.size, (520.0, 460.0));
@@ -4404,12 +4485,14 @@ mod tests {
         );
         let mut unknown_disk_space = message.clone();
         unknown_disk_space.data["freeDiskBytes"] = Value::Null;
-        assert!(unknown_disk_space.validate().is_ok());
+        assert!(unknown_disk_space
+            .validate(&crate::test_documents())
+            .is_ok());
         for action in ["install", "allow", "cancelInstall", "close"] {
             let mut valid = message.clone();
             valid.message_type = "action".into();
             valid.data = json!({"action":action});
-            assert!(valid.validate().is_ok());
+            assert!(valid.validate(&crate::test_documents()).is_ok());
         }
         for (field, value) in [
             ("publisher", json!("")),
@@ -4420,14 +4503,14 @@ mod tests {
         ] {
             let mut invalid = message.clone();
             invalid.data[field] = value;
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         let mut invalid = message.clone();
         invalid.data["state"] = json!({"status":"consent","extra":true});
-        assert!(invalid.validate().is_err());
+        assert!(invalid.validate(&crate::test_documents()).is_err());
         invalid = message.clone();
         invalid.data["buttons"] = json!(["allow", "install", "close"]);
-        assert!(invalid.validate().is_err());
+        assert!(invalid.validate(&crate::test_documents()).is_err());
         assert!(is_dialog_label("dialog-main-toolInstall-12"));
         for label in [
             "dialog-main-toolInstall-../main",
@@ -4462,7 +4545,7 @@ mod tests {
                 message.data["state"] = row["state"].clone();
                 message.data["buttons"] = buttons.clone();
                 assert_eq!(
-                    message.validate().is_ok(),
+                    message.validate(&crate::test_documents()).is_ok(),
                     buttons == row["buttons"],
                     "state: {}, buttons: {buttons}",
                     row["state"]
@@ -4474,7 +4557,13 @@ mod tests {
     fn tool_install_failure_releases_reservation_for_retry() {
         let mut registry = Registry::default();
         let mut snapshot = tool_install_snapshot();
-        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            snapshot.clone(),
+            false,
+        )
+        .unwrap();
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         let mut action = snapshot.clone();
         action.message_type = "action".into();
@@ -4484,7 +4573,7 @@ mod tests {
         action.request_id = "retry".into();
         assert!(reserve_action(session, &action).is_err());
         snapshot.data["state"] = json!({"status":"failed","message":"Download failed"});
-        assert!(snapshot.validate().is_ok());
+        assert!(snapshot.validate(&crate::test_documents()).is_ok());
         update_snapshot(session, &snapshot);
         assert!(reserve_action(session, &action).unwrap());
         assert!(!reserve_action(session, &original_action).unwrap());
@@ -4493,7 +4582,7 @@ mod tests {
     #[test]
     fn engine_install_registration_validation_ownership_and_limits() {
         let message = engine_install_snapshot();
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let spec = kind_spec("engineInstall").unwrap();
         assert!(spec.resizable);
         assert!(!spec.maximizable);
@@ -4511,15 +4600,58 @@ mod tests {
             "Export — Export document"
         );
         let mut registry = Registry::default();
-        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, build) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(build);
         assert!(is_dialog_label(&registration.window_label));
-        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        assert!(
+            !register(
+                &crate::test_documents(),
+                &mut registry,
+                message.clone(),
+                false
+            )
+            .unwrap()
+            .1
+        );
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
-        assert!(authorize(session, "main", true, Some(&message)).is_ok());
-        assert!(authorize(session, "preferences", true, Some(&message)).is_err());
-        assert!(authorize(session, &registration.window_label, false, Some(&message)).is_ok());
-        assert!(authorize(session, "main", false, Some(&message)).is_err());
+        assert!(authorize(
+            &crate::test_documents(),
+            session,
+            "main",
+            true,
+            Some(&message)
+        )
+        .is_ok());
+        assert!(authorize(
+            &crate::test_documents(),
+            session,
+            "preferences",
+            true,
+            Some(&message)
+        )
+        .is_err());
+        assert!(authorize(
+            &crate::test_documents(),
+            session,
+            &registration.window_label,
+            false,
+            Some(&message)
+        )
+        .is_ok());
+        assert!(authorize(
+            &crate::test_documents(),
+            session,
+            "main",
+            false,
+            Some(&message)
+        )
+        .is_err());
         assert!(
             serde_json::to_vec(&delivery(session, "main", &message).unwrap())
                 .unwrap()
@@ -4529,7 +4661,7 @@ mod tests {
         for field in ["path", "callback", "document"] {
             let mut invalid = message.clone();
             invalid.data[field] = json!("untrusted");
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         for state in [
             json!({"status":"unknown"}),
@@ -4538,26 +4670,26 @@ mod tests {
         ] {
             let mut invalid = message.clone();
             invalid.data["state"] = state;
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         let mut oversized = message.clone();
         oversized.data["disclosure"] = json!("\u{0001}".repeat(1024));
-        assert!(oversized.validate().is_err());
+        assert!(oversized.validate(&crate::test_documents()).is_err());
         assert!(delivery(session, "main", &oversized).is_err());
         oversized.data["disclosure"] = json!("x".repeat(MAX_BYTES));
-        assert!(oversized.validate().is_err());
+        assert!(oversized.validate(&crate::test_documents()).is_err());
         for number in [json!(-1), json!(1.5), json!(MAX_SAFE_INTEGER + 1)] {
             let mut invalid = message.clone();
             invalid.data["freeDiskBytes"] = number;
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         for action in ["install", "cancelInstall", "close"] {
             let mut action_message = message.clone();
             action_message.message_type = "action".into();
             action_message.data = json!({"action":action});
-            assert!(action_message.validate().is_ok());
+            assert!(action_message.validate(&crate::test_documents()).is_ok());
             action_message.data["unknown"] = json!(true);
-            assert!(action_message.validate().is_err());
+            assert!(action_message.validate(&crate::test_documents()).is_err());
         }
         for label in [
             "dialog-main-engineInstall-",
@@ -4571,7 +4703,13 @@ mod tests {
     fn engine_install_progress_is_bounded_and_cancel_bypasses_pending_install() {
         let mut registry = Registry::default();
         let mut message = engine_install_snapshot();
-        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         message.message_type = "action".into();
         message.data = json!({"action":"install"});
@@ -4579,7 +4717,7 @@ mod tests {
         assert!(!reserve_action(session, &message).unwrap());
         session.snapshot.data["state"] = json!({"status":"installing", "phase":"Installing Python", "step":2,"steps":5,"bytesDone":100,"bytesTotal":200,"estimated":true});
         session.snapshot.data["buttons"] = json!(["cancelInstall", "close"]);
-        assert!(session.snapshot.validate().is_ok());
+        assert!(session.snapshot.validate(&crate::test_documents()).is_ok());
         assert!(
             serde_json::to_vec(&delivery(session, "main", &session.snapshot).unwrap())
                 .unwrap()
@@ -4593,7 +4731,7 @@ mod tests {
         ] {
             let mut invalid = session.snapshot.clone();
             invalid.data["state"][field] = value;
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         message.request_id = "cancel-install".into();
         message.data = json!({"action":"cancelInstall"});
@@ -4605,7 +4743,13 @@ mod tests {
     #[test]
     fn engine_install_persists_its_kind_and_reopens_at_destination_scale() {
         let mut registry = Registry::default();
-        let (registration, _) = register(&mut registry, engine_install_snapshot(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            engine_install_snapshot(),
+            false,
+        )
+        .unwrap();
         let saved = SavedPosition {
             size: None,
             monitor: "other".into(),
@@ -4661,13 +4805,25 @@ mod tests {
         let mut registry = Registry::default();
         let mut message = snapshot();
         let old_id = message.session_id.clone();
-        let (page, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (page, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         registry.sessions.get_mut(&page.host_id).unwrap().ready = true;
         assert_eq!(export_focus_label(&registry, &old_id), None);
         registry.sessions.clear();
         message.dialog_kind = "export".into();
         message.data = export_snapshot().data;
-        let (export, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (export, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert_eq!(export_focus_label(&registry, &old_id), None);
         registry.sessions.get_mut(&export.host_id).unwrap().ready = true;
         assert_eq!(
@@ -4677,7 +4833,8 @@ mod tests {
         registry.sessions.clear();
         assert_eq!(export_focus_label(&registry, &old_id), None);
         message.session_id = "replacement-session".into();
-        let (replacement, _) = register(&mut registry, message, false).unwrap();
+        let (replacement, _) =
+            register(&crate::test_documents(), &mut registry, message, false).unwrap();
         registry
             .sessions
             .get_mut(&replacement.host_id)
@@ -4697,7 +4854,13 @@ mod tests {
             next_slot: u64::MAX - 1,
             ..Registry::default()
         };
-        let (registration, _) = register(&mut registry, maximum.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            maximum.clone(),
+            false,
+        )
+        .unwrap();
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         let deliveries = std::sync::Arc::new(Mutex::new(Vec::new()));
         let capture = || {
@@ -4748,7 +4911,7 @@ mod tests {
                 data,
                 ..maximum.clone()
             };
-            message.validate().unwrap();
+            message.validate(&crate::test_documents()).unwrap();
             if kind == "result" {
                 // Allowed 2048-character errors expand to over 12 KiB in JSON.
                 assert!(serde_json::to_vec(&message).unwrap().len() >= 8192);
@@ -4768,7 +4931,7 @@ mod tests {
     #[test]
     fn oversized_non_error_deliveries_and_envelopes_fail_closed() {
         let mut registry = Registry::default();
-        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let (r, _) = register(&crate::test_documents(), &mut registry, snapshot(), false).unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         let mut message = snapshot();
         message.data["title"] = json!("x".repeat(MAX_CHANNEL_BYTES));
@@ -4816,7 +4979,7 @@ mod tests {
     #[test]
     fn terminal_action_is_reserved_across_distinct_request_ids() {
         let mut registry = Registry::default();
-        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let (r, _) = register(&crate::test_documents(), &mut registry, snapshot(), false).unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         let mut action = snapshot();
         action.message_type = "action".into();
@@ -5011,7 +5174,13 @@ mod tests {
         use std::sync::mpsc;
         let (sender, receiver) = mpsc::sync_channel(1);
         let registry = std::sync::Arc::new(Mutex::new(Registry::default()));
-        let (r, _) = register(&mut registry.lock().unwrap(), snapshot(), false).unwrap();
+        let (r, _) = register(
+            &crate::test_documents(),
+            &mut registry.lock().unwrap(),
+            snapshot(),
+            false,
+        )
+        .unwrap();
         let saved = SavedPosition {
             size: None,
             monitor: "display".into(),
@@ -5063,11 +5232,12 @@ mod tests {
     #[test]
     fn a_coalesced_kind_remembers_the_latest_move_across_tabs() {
         let mut registry = Registry::default();
-        let (first, _) = register(&mut registry, snapshot(), false).unwrap();
+        let (first, _) =
+            register(&crate::test_documents(), &mut registry, snapshot(), false).unwrap();
         let mut other = snapshot();
         other.document_tab_id = "tab-2".into();
         other.session_id = "session-2".into();
-        let (second, _) = register(&mut registry, other, false).unwrap();
+        let (second, _) = register(&crate::test_documents(), &mut registry, other, false).unwrap();
         let now = Instant::now();
         let position = SavedPosition {
             size: None,
@@ -5178,11 +5348,17 @@ mod tests {
         message.dialog_kind = "atomProblem".into();
         message.data = json!({"title":"Drawing", "explanation":"N has charge 0, expected 1 for valence 4.",
             "targetVersion":1, "fixes":[{"action":"charge", "label":"Set formal charge to +1"}, {"action":"ignore", "label":"Ignore warning"}]});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let capability = include_str!("../capabilities/dialog-host.json");
         assert!(capability.contains("dialog-main-atomProblem-*"));
         let mut registry = Registry::default();
-        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(is_dialog_label(&registration.window_label));
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         assert!(delivery(session, "main", &message).is_ok());
@@ -5193,10 +5369,10 @@ mod tests {
         ] {
             message.message_type = "action".into();
             message.data = data;
-            assert!(message.validate().is_err());
+            assert!(message.validate(&crate::test_documents()).is_err());
         }
         message.data = json!({"action":"charge", "targetVersion":2});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         assert!(reserve_action(session, &message).is_err());
         message.data = json!({"action":"hydrogens", "targetVersion":1});
         assert!(reserve_action(session, &message).is_err());
@@ -5209,7 +5385,7 @@ mod tests {
         message.data = json!({"status":"accepted"});
         assert!(!releases_action_reservation(&message));
         message.data = json!({"status":"applied"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         assert!(releases_action_reservation(&message));
         message.dialog_kind = "pageSize".into();
         assert!(!releases_action_reservation(&message));
@@ -5219,14 +5395,20 @@ mod tests {
         let mut message = snapshot();
         message.dialog_kind = "arrangementSpacing".into();
         message.data = json!({"title":"Drawing", "minPercent":25, "maxPercent":150});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let mut registry = Registry::default();
-        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(is_dialog_label(&registration.window_label));
         let session = registry.sessions.get_mut(&registration.host_id).unwrap();
         message.message_type = "action".into();
         message.data = json!({"action":"preview", "percent":80});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         assert!(reserve_action(session, &message).unwrap());
         assert!(session.terminal_request.is_none());
         assert!(session.actions.is_empty());
@@ -5238,7 +5420,7 @@ mod tests {
         assert!(reserve_action(session, &message).is_err());
         message.message_type = "preview".into();
         message.data = json!({"percent":80, "index":0, "count":1024, "chunk":"A".repeat(2000)});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         assert!(delivery(session, "main", &message).is_ok());
         for data in [
             json!({"percent":80, "index":0, "count":1, "chunk":"A".repeat(2001)}),
@@ -5248,7 +5430,7 @@ mod tests {
             json!({"percent":80.5, "index":0, "count":1, "chunk":"AA=="}),
         ] {
             message.data = data;
-            assert!(message.validate().is_err());
+            assert!(message.validate(&crate::test_documents()).is_err());
         }
     }
     #[test]
@@ -5259,15 +5441,15 @@ mod tests {
         let mut message = snapshot();
         message.message_type = "action".into();
         message.data = json!({"action":"preview", "percent":80});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         message.dialog_kind = "export".into();
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         message.dialog_kind = "arrangementSpacing".into();
         message.message_type = "result".into();
         message.data = json!({"status":"accepted"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         message.data = json!({"status":"exported"});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         assert!(is_dialog_label("dialog-main-arrangementSpacing-12"));
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
     }
@@ -6529,7 +6711,8 @@ mod tests {
         let original = saved_frame(&work, (100, 200), (616, 440), Some((600.0, 400.0)));
         for preferences in [false, true] {
             let mut registry = Registry::default();
-            let (registration, _) = register(&mut registry, snapshot(), false).unwrap();
+            let (registration, _) =
+                register(&crate::test_documents(), &mut registry, snapshot(), false).unwrap();
             registry.preferences = Some(PreferencesLayout {
                 applied_position: None,
                 content_fit: None,
@@ -6714,7 +6897,11 @@ mod tests {
             json!({"contentHeight": 334, "contentWidth": 420, "pixelRatio": 2}),
         ] {
             ready.data = data;
-            assert!(ready.validate().is_ok(), "{}", ready.data);
+            assert!(
+                ready.validate(&crate::test_documents()).is_ok(),
+                "{}",
+                ready.data
+            );
         }
         for data in [
             json!({"contentHeight": 263}),
@@ -6734,13 +6921,17 @@ mod tests {
             json!({"contentHeight": 334, "contentWidth": 4097, "pixelRatio": 2}),
         ] {
             ready.data = data;
-            assert!(ready.validate().is_err(), "{}", ready.data);
+            assert!(
+                ready.validate(&crate::test_documents()).is_err(),
+                "{}",
+                ready.data
+            );
             assert_eq!(ContentFit::from_ready(&ready.data), None);
         }
         // A request still carries nothing.
         ready.message_type = "request".into();
         ready.data = json!({"contentHeight": 263, "pixelRatio": 1});
-        assert!(ready.validate().is_err());
+        assert!(ready.validate(&crate::test_documents()).is_err());
         let fit = |content_height, pixel_ratio, scale| {
             MeasuredContent::new(
                 Some(ContentFit {
@@ -6854,7 +7045,7 @@ mod tests {
         ready.dialog_kind = "insertTable".into();
         ready.message_type = "ready".into();
         ready.data = json!({"contentHeight": 16384, "pixelRatio": 16});
-        assert!(ready.validate().is_err());
+        assert!(ready.validate(&crate::test_documents()).is_err());
         assert_eq!(
             MeasuredContent::new(ContentFit::from_ready(&ready.data), Some(2.0)),
             None
@@ -6995,9 +7186,15 @@ mod tests {
         message.dialog_kind = "insertTable".into();
         message.data = json!({"title":"Drawing", "rows":4, "columns":3,
             "headerRows":1, "preset":"three-line"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         let mut registry = Registry::default();
-        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(registration
             .window_label
             .starts_with("dialog-main-insertTable-"));
@@ -7018,7 +7215,7 @@ mod tests {
                 data["action"] = json!("apply");
             }
             message.data = data.clone();
-            assert!(message.validate().is_ok());
+            assert!(message.validate(&crate::test_documents()).is_ok());
             for (field, value) in [
                 ("rows", json!(0)),
                 ("rows", json!(501)),
@@ -7035,22 +7232,22 @@ mod tests {
             ] {
                 message.data = data.clone();
                 message.data[field] = value;
-                assert!(message.validate().is_err());
+                assert!(message.validate(&crate::test_documents()).is_err());
             }
             for header_rows in [0, 500] {
                 message.data = data.clone();
                 message.data["rows"] = json!(500);
                 message.data["columns"] = json!(64);
                 message.data["headerRows"] = json!(header_rows);
-                assert!(message.validate().is_ok());
+                assert!(message.validate(&crate::test_documents()).is_ok());
             }
         }
         message.data = json!({"action":"cancel"});
-        assert!(message.validate().is_ok());
+        assert!(message.validate(&crate::test_documents()).is_ok());
         message.data["rows"] = json!(4);
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
         message.data = json!({"action":"preview", "percent":80});
-        assert!(message.validate().is_err());
+        assert!(message.validate(&crate::test_documents()).is_err());
     }
     #[test]
     fn custom_color_registers_labels_and_validates_payloads() {
@@ -7064,8 +7261,14 @@ mod tests {
         message.dialog_kind = "customColor".into();
         message.data =
             json!({"title":"Custom Color 1, Slot 2", "swatch":1, "slot":2, "color":null});
-        assert!(message.validate().is_ok());
-        let (registration, _) = register(&mut Registry::default(), message.clone(), false).unwrap();
+        assert!(message.validate(&crate::test_documents()).is_ok());
+        let (registration, _) = register(
+            &crate::test_documents(),
+            &mut Registry::default(),
+            message.clone(),
+            false,
+        )
+        .unwrap();
         assert!(registration
             .window_label
             .starts_with("dialog-main-customColor-"));
@@ -7079,7 +7282,7 @@ mod tests {
         ] {
             let mut invalid = message.clone();
             invalid.data[field] = value;
-            assert!(invalid.validate().is_err());
+            assert!(invalid.validate(&crate::test_documents()).is_err());
         }
         message.message_type = "action".into();
         for data in [
@@ -7088,7 +7291,7 @@ mod tests {
             json!({"action":"cancel"}),
         ] {
             message.data = data;
-            assert!(message.validate().is_ok());
+            assert!(message.validate(&crate::test_documents()).is_ok());
         }
         for data in [
             json!({"action":"apply", "hex":"#ABCDEF"}),
@@ -7096,35 +7299,35 @@ mod tests {
             json!({"action":"clear", "swatch":1}),
         ] {
             message.data = data;
-            assert!(message.validate().is_err());
+            assert!(message.validate(&crate::test_documents()).is_err());
         }
     }
     #[test]
     fn validates_kind_label_owner_and_payload() {
         let mut m = snapshot();
-        assert!(m.validate().is_ok());
+        assert!(m.validate(&crate::test_documents()).is_ok());
         for kind in ["export", "pageSize/../main", "unknown"] {
             m.dialog_kind = kind.into();
-            assert!(m.validate().is_err());
+            assert!(m.validate(&crate::test_documents()).is_err());
         }
         m = snapshot();
         m.owner_window_id = "preferences".into();
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         m = snapshot();
         m.data["title"] = json!("x".repeat(MAX_BYTES));
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         m = snapshot();
         m.data["callback"] = json!("command");
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         m = snapshot();
         m.data["title"] = json!("😀".repeat(128));
-        assert!(m.validate().is_ok());
+        assert!(m.validate(&crate::test_documents()).is_ok());
         m.data["title"] = json!("😀".repeat(129));
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         m = snapshot();
         m.message_type = "result".into();
         m.data = json!({"status": "error", "error": null});
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         assert!(is_dialog_label("dialog-main-pageSize-12"));
         assert!(is_dialog_label("dialog-main-export-0"));
         for label in [
@@ -7136,20 +7339,47 @@ mod tests {
             assert!(!is_dialog_label(label));
         }
         let mut registry = Registry::default();
-        let (r, _) = register(&mut registry, snapshot(), false).unwrap();
+        let (r, _) = register(&crate::test_documents(), &mut registry, snapshot(), false).unwrap();
         let s = &registry.sessions[&r.host_id];
-        assert!(authorize(s, &r.window_label, false, Some(&snapshot())).is_ok());
-        assert!(authorize(s, "main", false, None).is_err());
+        assert!(authorize(
+            &crate::test_documents(),
+            s,
+            &r.window_label,
+            false,
+            Some(&snapshot())
+        )
+        .is_ok());
+        assert!(authorize(&crate::test_documents(), s, "main", false, None).is_err());
         let mut stale = snapshot();
         stale.session_id = "stale".into();
-        assert!(authorize(s, &r.window_label, false, Some(&stale)).is_err());
+        assert!(authorize(
+            &crate::test_documents(),
+            s,
+            &r.window_label,
+            false,
+            Some(&stale)
+        )
+        .is_err());
         stale = snapshot();
         stale.snapshot_revision += 1;
-        assert!(authorize(s, &r.window_label, false, Some(&stale)).is_err());
+        assert!(authorize(
+            &crate::test_documents(),
+            s,
+            &r.window_label,
+            false,
+            Some(&stale)
+        )
+        .is_err());
     }
     #[test]
     fn quit_refuses_and_concurrent_same_session_builds_once() {
-        assert!(register(&mut Registry::default(), snapshot(), true).is_err());
+        assert!(register(
+            &crate::test_documents(),
+            &mut Registry::default(),
+            snapshot(),
+            true
+        )
+        .is_err());
         let registry = std::sync::Arc::new(Mutex::new(Registry::default()));
         let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let threads: Vec<_> = (0..8)
@@ -7157,8 +7387,13 @@ mod tests {
                 let registry = registry.clone();
                 let builds = builds.clone();
                 std::thread::spawn(move || {
-                    let (r, build) =
-                        register(&mut registry.lock().unwrap(), snapshot(), false).unwrap();
+                    let (r, build) = register(
+                        &crate::test_documents(),
+                        &mut registry.lock().unwrap(),
+                        snapshot(),
+                        false,
+                    )
+                    .unwrap();
                     if build {
                         builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
@@ -7295,15 +7530,21 @@ mod tests {
     #[test]
     fn export_validates_options_actions_receipts_and_channel_caps() {
         let snapshot = export_snapshot();
-        assert!(snapshot.validate().is_ok());
+        assert!(snapshot.validate(&crate::test_documents()).is_ok());
         let mut registry = Registry::default();
-        let (r, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let (r, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            snapshot.clone(),
+            false,
+        )
+        .unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         for action in ["export", "chooseDestination"] {
             let mut m = snapshot.clone();
             m.message_type = "action".into();
             m.data = json!({"action":action,"options":snapshot.data["options"]});
-            assert!(m.validate().is_ok());
+            assert!(m.validate(&crate::test_documents()).is_ok());
             assert!(
                 serde_json::to_vec(&delivery(session, &r.window_label, &m).unwrap())
                     .unwrap()
@@ -7311,21 +7552,21 @@ mod tests {
                     <= MAX_CHANNEL_BYTES
             );
             m.data["options"]["raster"]["scale"] = json!(5);
-            assert!(m.validate().is_err());
+            assert!(m.validate(&crate::test_documents()).is_err());
             m.data["options"] = snapshot.data["options"].clone();
             m.data["options"]["destinationPath"] = Value::Null;
-            assert!(m.validate().is_err());
+            assert!(m.validate(&crate::test_documents()).is_err());
             m.data["options"] = snapshot.data["options"].clone();
             m.data["options"]["filename"] = json!("../Drawing.pdf");
-            assert!(m.validate().is_err());
+            assert!(m.validate(&crate::test_documents()).is_err());
             m.data["options"] = snapshot.data["options"].clone();
             m.data["options"]["command"] = json!("document.delete");
-            assert!(m.validate().is_err());
+            assert!(m.validate(&crate::test_documents()).is_err());
         }
         let mut m = snapshot.clone();
         m.message_type = "action".into();
         m.data = json!({"action":"apply","width":1,"height":2,"unit":"mm"});
-        assert!(m.validate().is_err());
+        assert!(m.validate(&crate::test_documents()).is_err());
         for status in [
             "accepted",
             "progress",
@@ -7336,7 +7577,7 @@ mod tests {
         ] {
             m.message_type = "result".into();
             m.data = json!({"status":status,"notice":"Export result"});
-            assert!(m.validate().is_ok());
+            assert!(m.validate(&crate::test_documents()).is_ok());
             assert!(delivery(session, "main", &m).is_ok());
         }
         m.data = json!({"status":"error","error":"\u{0001}".repeat(2048)});
@@ -7347,7 +7588,7 @@ mod tests {
     fn completed_export_allows_only_cancel_and_replays_duplicates() {
         let mut registry = Registry::default();
         let mut m = export_snapshot();
-        let (r, _) = register(&mut registry, m.clone(), false).unwrap();
+        let (r, _) = register(&crate::test_documents(), &mut registry, m.clone(), false).unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         m.message_type = "action".into();
         m.data = json!({"action":"export","options":m.data["options"]});
@@ -7366,7 +7607,7 @@ mod tests {
     fn pending_export_allows_cancel_without_releasing_write_reservation() {
         let mut registry = Registry::default();
         let mut m = export_snapshot();
-        let (r, _) = register(&mut registry, m.clone(), false).unwrap();
+        let (r, _) = register(&crate::test_documents(), &mut registry, m.clone(), false).unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         m.message_type = "action".into();
         m.data = json!({"action":"export","options":m.data["options"]});
@@ -7423,14 +7664,20 @@ mod tests {
     fn preview_is_bounded_typed_and_does_not_reserve_export() {
         let mut registry = Registry::default();
         let snapshot = export_snapshot();
-        let (r, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let (r, _) = register(
+            &crate::test_documents(),
+            &mut registry,
+            snapshot.clone(),
+            false,
+        )
+        .unwrap();
         let session = registry.sessions.get_mut(&r.host_id).unwrap();
         let mut action = snapshot.clone();
         action.message_type = "action".into();
         action.data = json!({"action":"preview","options":snapshot.data["options"]});
         for i in 0..150 {
             action.request_id = format!("preview-{i}");
-            assert!(action.validate().is_ok());
+            assert!(action.validate(&crate::test_documents()).is_ok());
             assert!(reserve_action(session, &action).unwrap());
         }
         assert!(session.terminal_request.is_none());
@@ -7438,14 +7685,14 @@ mod tests {
         let mut result = action.clone();
         result.message_type = "result".into();
         result.data = json!({"status":"preview","preview":{"url":format!("data:image/png;base64,{}", "A".repeat(20000)),"kind":"image","width":100,"height":100,"warnings":[]}});
-        assert!(result.validate().is_ok());
+        assert!(result.validate(&crate::test_documents()).is_ok());
         result.data["preview"]["url"] = json!("https://example.com/image.png");
-        assert!(result.validate().is_err());
+        assert!(result.validate(&crate::test_documents()).is_err());
         result.data["preview"]["url"] = json!(format!(
             "data:image/png;base64,{}",
             "A".repeat(MAX_PREVIEW_BYTES)
         ));
-        assert!(result.validate().is_err());
+        assert!(result.validate(&crate::test_documents()).is_err());
         action.request_id = "export".into();
         action.data["action"] = json!("export");
         assert!(reserve_action(session, &action).unwrap());
@@ -7455,16 +7702,16 @@ mod tests {
         let mut snapshot = export_snapshot();
         let presentation = json!({"width":600,"height":400,"linked":false,"preset":"custom","dpi":300,"crop":"content","background":"white"});
         snapshot.data["options"]["presentation"] = presentation.clone();
-        assert!(snapshot.validate().is_ok());
+        assert!(snapshot.validate(&crate::test_documents()).is_ok());
         for value in [json!(0), json!(1.5), Value::Null] {
             snapshot.data["options"]["presentation"]["width"] = value;
-            assert!(snapshot.validate().is_err());
+            assert!(snapshot.validate(&crate::test_documents()).is_err());
         }
         snapshot.message_type = "result".into();
         snapshot.data = json!({"status":"frame","frame":{"page":{"width":100,"height":100},"content":{"width":80,"height":80},"revision":2}});
-        assert!(snapshot.validate().is_ok());
+        assert!(snapshot.validate(&crate::test_documents()).is_ok());
         snapshot.data["frame"]["revision"] = Value::Null;
-        assert!(snapshot.validate().is_err());
+        assert!(snapshot.validate(&crate::test_documents()).is_err());
     }
     #[test]
     fn preview_chunks_remain_private_with_worst_json_escaping() {

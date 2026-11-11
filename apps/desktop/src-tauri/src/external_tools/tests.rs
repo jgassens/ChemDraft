@@ -2071,7 +2071,7 @@ fn capability_is_main_only_and_exactly_matches_registered_commands() {
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../../capabilities/external-tools.json")).unwrap();
     assert_eq!(capability["identifier"], "external-tools");
-    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
     assert!(capability.get("webviews").is_none());
     assert!(capability.get("remote").is_none());
     let source = include_str!("../lib.rs");

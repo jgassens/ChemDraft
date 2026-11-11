@@ -1,4 +1,4 @@
-use tauri::Runtime;
+use tauri::{Manager, Runtime};
 
 pub(super) fn authorize(label: &str) -> Result<(), String> {
     if super::is_plugin_panel_window_label(label) {
@@ -19,13 +19,23 @@ pub(super) async fn hide_plugin_panel_window(window: tauri::WebviewWindow) -> Re
 }
 
 /// Hides a plugin panel on behalf of the document window (plugin disabled or uninstalled, panel
-/// closed programmatically). Only the main window may call it, and only for panel labels.
-pub(super) fn authorize_main_hide(caller: &str, target: &str) -> Result<(), String> {
-    if caller != super::MAIN_WINDOW_LABEL {
+/// closed programmatically). Only the registered document owner may call it, for panel labels.
+pub(super) fn authorize_main_hide(
+    registry: &super::document_windows::DocumentWindowRegistry,
+    caller: &str,
+    target: &str,
+) -> Result<(), String> {
+    if !registry.is_document_window(caller) {
         return Err("Only the document window may hide a panel on its behalf.".into());
     }
     if !super::is_plugin_panel_window_label(target) {
         return Err("Only a ChemDraft panel window can be hidden this way.".into());
+    }
+    if registry
+        .owner_of(target)
+        .is_none_or(|owner| owner.native_label != caller)
+    {
+        return Err("This panel belongs to another document window.".into());
     }
     Ok(())
 }
@@ -36,7 +46,11 @@ pub(super) async fn hide_plugin_panel_from_main(
     window: tauri::WebviewWindow,
     label: String,
 ) -> Result<(), String> {
-    authorize_main_hide(window.label(), &label)?;
+    authorize_main_hide(
+        &app.state::<super::document_windows::DocumentWindowRegistry>(),
+        window.label(),
+        &label,
+    )?;
     // A panel that was never opened or is already gone has nothing to hide.
     let Some(target) = tauri::Manager::get_webview_window(&app, &label) else {
         return Ok(());
@@ -71,6 +85,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn panel_hide_requires_registered_membership_and_the_panels_document_owner() {
+        let registry = crate::document_windows::DocumentWindowRegistry::default();
+        let panel = "plugin-panel-v1x61x62";
+        assert!(authorize_main_hide(&registry, "main", panel).is_err());
+        registry.register("main", "main").unwrap();
+        registry.register("other", "doc-other").unwrap();
+        assert!(authorize_main_hide(&registry, "main", panel).is_ok());
+        assert!(authorize_main_hide(&registry, "doc-other", panel).is_err());
+        registry.remove("main");
+        assert!(authorize_main_hide(&registry, "main", panel).is_err());
+    }
+
+    #[test]
     fn only_panel_callers_can_hide_their_own_window() {
         for label in [
             "main",
@@ -86,7 +113,9 @@ mod tests {
 
     #[test]
     fn only_the_document_window_may_hide_panels_for_it() {
-        assert!(authorize_main_hide("main", "plugin-panel-v1x61x62").is_ok());
+        assert!(
+            authorize_main_hide(&crate::test_documents(), "main", "plugin-panel-v1x61x62").is_ok()
+        );
         for caller in [
             "plugin-panel-v1x61x62",
             "preferences",
@@ -95,7 +124,8 @@ mod tests {
             "",
         ] {
             assert!(
-                authorize_main_hide(caller, "plugin-panel-v1x61x62").is_err(),
+                authorize_main_hide(&crate::test_documents(), caller, "plugin-panel-v1x61x62")
+                    .is_err(),
                 "{caller}"
             );
         }
@@ -107,7 +137,10 @@ mod tests {
             "dialog-main-export",
             "",
         ] {
-            assert!(authorize_main_hide("main", target).is_err(), "{target}");
+            assert!(
+                authorize_main_hide(&crate::test_documents(), "main", target).is_err(),
+                "{target}"
+            );
         }
     }
 

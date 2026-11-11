@@ -86,7 +86,44 @@ use objc2_foundation::NSString;
 #[cfg(target_os = "macos")]
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
+// Identity of the first migrated/config-created window and its existing saved frame only.
 const MAIN_WINDOW_LABEL: &str = "main";
+
+#[cfg(test)]
+fn test_documents() -> document_windows::DocumentWindowRegistry {
+    document_windows::DocumentWindowRegistry::with_main()
+}
+
+#[cfg(test)]
+fn ready_document_registry() -> document_windows::DocumentWindowRegistry {
+    let registry = test_documents();
+    registry.set_ready("main");
+    registry
+}
+
+fn is_document_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .is_document_window(label)
+}
+
+fn active_document_webview<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<tauri::WebviewWindow<R>> {
+    let document = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window()?;
+    app.get_webview_window(&document.native_label)
+}
+
+fn owned_document_webview<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Option<tauri::WebviewWindow<R>> {
+    let document = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(label)?;
+    app.get_webview_window(&document.native_label)
+}
 
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
@@ -262,21 +299,40 @@ trait QuitHost: Clone + Send + 'static {
     fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
 
+fn visit_quit_documents(
+    registry: &document_windows::DocumentWindowRegistry,
+    mut deliver: impl FnMut(&str) -> bool,
+) -> bool {
+    let mut delivered = false;
+    for document in registry.all_document_windows() {
+        delivered |= deliver(&document.native_label);
+    }
+    delivered
+}
+
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
         // Native sessions settle before the final document flush, even with an unresponsive renderer.
         dialog_windows::dismiss_owned(self, "quit");
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
-                .is_ok()
+        visit_quit_documents(
+            &self.state::<document_windows::DocumentWindowRegistry>(),
+            |label| {
+                self.get_webview_window(label).is_some()
+                    && self.emit_to(label, QUIT_FLUSH_REQUEST_EVENT, ()).is_ok()
+            },
+        )
     }
 
     fn ask_document_to_prompt(&self, request_id: u64) -> bool {
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
-                .is_ok()
+        visit_quit_documents(
+            &self.state::<document_windows::DocumentWindowRegistry>(),
+            |label| {
+                self.get_webview_window(label).is_some()
+                    && self
+                        .emit_to(label, QUIT_PROMPT_REQUEST_EVENT, request_id)
+                        .is_ok()
+            },
+        )
     }
 
     fn exit(&self) {
@@ -332,7 +388,7 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            if let Some(window) = active_document_webview(app) {
                 let reveal = window.clone();
                 let _ = window.run_on_main_thread(move || {
                     let _ = reveal.unminimize();
@@ -457,8 +513,11 @@ async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
 }
 
-fn authorize_quit_window(label: &str) -> Result<(), String> {
-    if label == MAIN_WINDOW_LABEL {
+fn authorize_quit_window(
+    registry: &document_windows::DocumentWindowRegistry,
+    label: &str,
+) -> Result<(), String> {
+    if registry.is_document_window(label) {
         Ok(())
     } else {
         Err("Only the document window can control quit prompts.".into())
@@ -502,7 +561,10 @@ async fn set_quit_prompt_enabled(
     window: tauri::WebviewWindow,
     enabled: bool,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     ASK_TO_SAVE_ON_QUIT.store(enabled, Ordering::SeqCst);
     Ok(())
 }
@@ -513,7 +575,10 @@ async fn prepare_quit_prompt(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
         || QUIT.quitting.load(Ordering::SeqCst)
     {
@@ -540,14 +605,20 @@ async fn quit_prompt_showing(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
     Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
 }
 
 #[tauri::command]
 async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     Ok(cancel_quit_with(&QUIT, request_id))
 }
 
@@ -556,7 +627,10 @@ async fn request_quit_after_close(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     request_quit(&app);
     Ok(())
 }
@@ -567,7 +641,10 @@ async fn resume_quit_after_prompt(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
 }
 
@@ -577,7 +654,10 @@ async fn confirm_prompted_quit(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     let prompt = QUIT.prompt.lock().unwrap();
     if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
         quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
@@ -1017,7 +1097,7 @@ pub fn run() {
                 // Reset before the new page can install its focus listener or acquire a lease.
                 panel_window::reset_for_webview(&webview.window());
             }
-            if webview.label() == MAIN_WINDOW_LABEL
+            if is_document_window(webview.app_handle(), webview.label())
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
                 // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
@@ -1055,7 +1135,7 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            if window.label() == MAIN_WINDOW_LABEL {
+            if is_document_window(window.app_handle(), window.label()) {
                 match event {
                     // macOS: closing the document window hides it and the app lives on in the
                     // Dock (RunEvent::Reopen brings it back).
@@ -1189,11 +1269,18 @@ pub fn run() {
                             window.label()
                         );
                     }
-                    if let Err(error) = window.app_handle().emit_to(
-                        MAIN_WINDOW_LABEL,
-                        PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
-                        window.label(),
-                    ) {
+                    if let Err(error) = owned_document_webview(window.app_handle(), window.label())
+                        .ok_or_else(|| "Panel document owner is not available.".to_string())
+                        .and_then(|owner| {
+                            owner
+                                .emit_to(
+                                    owner.label(),
+                                    PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+                                    window.label(),
+                                )
+                                .map_err(|error| error.to_string())
+                        })
+                    {
                         eprintln!(
                             "Could not report the closed panel window {}: {error}",
                             window.label()
@@ -1286,6 +1373,10 @@ pub fn run() {
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
             }
+
+            // The first config-created window exists before its initial reveal and menu install.
+            app.state::<document_windows::DocumentWindowRegistry>()
+                .set_ready(MAIN_WINDOW_LABEL);
 
             #[cfg(not(target_os = "macos"))]
             if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
@@ -1555,7 +1646,7 @@ fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
             .dialog()
             .message(DEVELOPMENT_UPDATES_MESSAGE)
             .title("ChemDraft Update");
-        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Some(window) = active_document_webview(app) {
             message = message.parent(&window);
         }
         message.show(|_| {});
@@ -1600,13 +1691,18 @@ fn main_window_frame_action(visible: bool, has_saved_frame: bool) -> MainWindowF
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
-        Some(window) => window,
-        None => create_main_window(app)?,
+    let window = if let Some(window) = active_document_webview(app) {
+        window
+    } else {
+        // Startup creates/restores the first config window under its migrated identity only.
+        let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+            Some(window) => window,
+            None => create_main_window(app)?,
+        };
+        app.state::<document_windows::DocumentWindowRegistry>()
+            .set_ready(MAIN_WINDOW_LABEL);
+        window
     };
-
-    app.state::<document_windows::DocumentWindowRegistry>()
-        .set_ready(MAIN_WINDOW_LABEL);
 
     let target = window.clone();
     if let Err(error) = run_on_main_thread_blocking(&window, move || {
@@ -1734,8 +1830,7 @@ fn focus_main_document_window_impl<R: Runtime>(
     ) {
         return Ok(false);
     }
-    let window = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let window = active_document_webview(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
 
     window
@@ -1813,6 +1908,7 @@ mod window_title_tests {
 fn create_main_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    // This builder creates only the first migrated/config window; new-window creation is A10.
     let title = main_window_title();
     if let Some(config) = app
         .config()
@@ -2033,7 +2129,7 @@ async fn suspend_toolset_windows(
     suspended: bool,
     focus_export_session_id: Option<String>,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_document_window(&app, window.label()) {
         return Err("Only the document window can suspend floating windows.".into());
     }
     let _creation = match lock_window_creation() {
@@ -2049,6 +2145,7 @@ async fn suspend_toolset_windows(
         }
     };
     let restore_app = app.clone();
+    let owner_label = window.label().to_string();
     run_on_main_thread_blocking(&window, move || {
         if suspended {
             if quit_in_progress() {
@@ -2059,8 +2156,7 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let main = app
-                .get_webview_window(MAIN_WINDOW_LABEL)
+            let main = owned_document_webview(&app, &owner_label)
                 .ok_or_else(|| "ChemDraft utility suspension owner disappeared.".to_string())?;
             let document_minimized = main.is_minimized().unwrap_or(true);
             let mut snapshot: Vec<_> = windows
@@ -2165,7 +2261,7 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
         let Ok(_creation) = lock_window_creation() else {
             return;
         };
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(&app) else {
             return;
         };
         let restore_app = app.clone();
@@ -2200,10 +2296,7 @@ fn restore_utility_labels<R: Runtime>(
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .is_none_or(|main| main.is_minimized().unwrap_or(true))
-    {
+    if active_document_webview(app).is_none_or(|main| main.is_minimized().unwrap_or(true)) {
         return Ok(());
     }
     // AppKit palettes use the floating level and hide on deactivation. Ordering them in while
@@ -2226,7 +2319,7 @@ fn restore_utility_labels<R: Runtime>(
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(app) else {
             break;
         };
         if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
@@ -2304,8 +2397,7 @@ fn restore_utility_in_document_group<R: Runtime>(
         return Ok(());
     }
     let app = window.app_handle();
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = owned_document_webview(app, window.label())
         .ok_or_else(|| "ChemDraft utility restore owner disappeared.".to_string())?;
     if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
         return Err("ChemDraft utility restore owner is not visible; retrying.".into());
@@ -3233,7 +3325,7 @@ fn load_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<Option<serde_json::Value>, String> {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_document_window(&app, window.label()) {
         return Err("Only the main document window can restore the document session".into());
     }
     let path = document_session_path(&app)?;
@@ -3269,7 +3361,7 @@ fn save_document_session(
     window: tauri::WebviewWindow,
     state: serde_json::Value,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_document_window(&app, window.label()) {
         return Err("Only the main document window can persist the document session".into());
     }
     let path = document_session_path(&app)?;
@@ -3351,8 +3443,7 @@ fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<boo
     {
         // Check NSApplication and raise on the same AppKit thread, even if this command's caller
         // is later moved to a worker. A missing main-thread marker must never authorize a raise.
-        let window = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+        let window = active_document_webview(&app)
             .ok_or_else(|| "Main document window is not available.".to_string())?;
         run_on_main_thread_blocking(&window, move || {
             focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
@@ -3684,13 +3775,10 @@ fn plugin_panel_action_forward(
     request: PluginPanelActionForwardRequest,
 ) -> Result<(), String> {
     let payload = authenticated_plugin_panel_action(window.label(), request)?;
-    window
-        .app_handle()
-        .emit_to(
-            MAIN_WINDOW_LABEL,
-            "chemdraft://plugin-panel-action",
-            payload,
-        )
+    let owner = owned_document_webview(window.app_handle(), window.label())
+        .ok_or("Panel document owner is not available.")?;
+    owner
+        .emit_to(owner.label(), "chemdraft://plugin-panel-action", payload)
         .map_err(|error| error.to_string())
 }
 
@@ -3801,9 +3889,10 @@ fn plugin_panel_event_forward(
             Ok(())
         })?;
     }
-    window
-        .app_handle()
-        .emit_to(MAIN_WINDOW_LABEL, &event, payload)
+    let owner = owned_document_webview(window.app_handle(), window.label())
+        .ok_or("Panel document owner is not available.")?;
+    owner
+        .emit_to(owner.label(), &event, payload)
         .map_err(|error| error.to_string())
 }
 
@@ -4301,9 +4390,17 @@ mod plugin_panel_label_tests {
             payload: serde_json::json!({"text": "\"}); alert('untrusted'); //"}),
         };
         for source in ["plugin-panel-other", "preferences", "toolset-core-main"] {
-            assert!(plugin_panel_publication_script(source, &publication, &state).is_err());
+            assert!(plugin_panel_publication_script(
+                &crate::test_documents(),
+                source,
+                &publication,
+                &state
+            )
+            .is_err());
         }
-        let script = plugin_panel_publication_script("main", &publication, &state).unwrap();
+        let script =
+            plugin_panel_publication_script(&crate::test_documents(), "main", &publication, &state)
+                .unwrap();
         assert!(script.starts_with("window.dispatchEvent(new CustomEvent("));
         assert!(script.contains("JSON.parse("));
         assert!(!script.contains("__TAURI_EVENT_PLUGIN_INTERNALS__"));
@@ -4316,13 +4413,31 @@ mod plugin_panel_label_tests {
             "chemdraft://plugin-panel-action-result",
         ] {
             publication.event = event.into();
-            assert!(plugin_panel_publication_script("main", &publication, &state).is_ok());
+            assert!(plugin_panel_publication_script(
+                &crate::test_documents(),
+                "main",
+                &publication,
+                &state
+            )
+            .is_ok());
         }
         publication.event = "chemdraft://analysis-window-action".into();
-        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        assert!(plugin_panel_publication_script(
+            &crate::test_documents(),
+            "main",
+            &publication,
+            &state
+        )
+        .is_err());
         publication.event = "chemdraft://analysis-window-snapshot".into();
         publication.target_label = "main".into();
-        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        assert!(plugin_panel_publication_script(
+            &crate::test_documents(),
+            "main",
+            &publication,
+            &state
+        )
+        .is_err());
     }
 
     #[test]
@@ -4344,7 +4459,8 @@ mod plugin_panel_label_tests {
             event: super::PLUGIN_PANEL_REPORT_CLEARED_EVENT.into(),
             payload: serde_json::json!({"pluginId": "a", "panelId": "b", "revision": 2}),
         };
-        plugin_panel_publication_script("main", &publication, &state).unwrap();
+        plugin_panel_publication_script(&crate::test_documents(), "main", &publication, &state)
+            .unwrap();
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || false, |_| panic!("removed panel restored"))
             .unwrap();
@@ -4632,11 +4748,17 @@ struct PluginPanelPublication {
 }
 
 fn plugin_panel_publication_script(
+    registry: &document_windows::DocumentWindowRegistry,
     source: &str,
     publication: &PluginPanelPublication,
     suspension: &Mutex<utility_suspension::UtilitySuspension>,
 ) -> Result<String, String> {
-    if source != MAIN_WINDOW_LABEL || !is_plugin_panel_window_label(&publication.target_label) {
+    if !registry.is_document_window(source)
+        || !is_plugin_panel_window_label(&publication.target_label)
+        || registry
+            .owner_of(&publication.target_label)
+            .is_none_or(|owner| owner.native_label != source)
+    {
         return Err("Only the document window may publish to a panel.".into());
     }
     match publication.event.as_str() {
@@ -4672,8 +4794,12 @@ async fn open_plugin_panel_window(
         if request.is_some() {
             return Err("Cannot open and publish a panel in the same request.".into());
         }
-        let script =
-            plugin_panel_publication_script(window.label(), &publication, &UTILITY_SUSPENSION)?;
+        let script = plugin_panel_publication_script(
+            &window.state::<document_windows::DocumentWindowRegistry>(),
+            window.label(),
+            &publication,
+            &UTILITY_SUSPENSION,
+        )?;
         // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
         // recipient so proposal snapshots and replies never enter that shared event bus.
         if let Some(target) = app.get_webview_window(&publication.target_label) {
@@ -4726,15 +4852,12 @@ fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .is_none_or(|main| main.is_minimized().unwrap_or(true))
-    {
+    if active_document_webview(app).is_none_or(|main| main.is_minimized().unwrap_or(true)) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(app) else {
             return Ok(());
         };
         if !run_on_main_thread_blocking(&main, foreground_belongs_to_app)? {
@@ -4875,7 +4998,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
     if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
-        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Some(main) = active_document_webview(app) {
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
     }
@@ -4971,7 +5094,7 @@ fn plugin_panel_restore_geometry<R: Runtime>(
     }
     let (width, height) = panel_window_frame::default_size(None, None);
     let placement = plugin_panel_default_placement(app, width, height)?;
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = active_document_webview(app)?;
     let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
     let frame =
         panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
@@ -4984,7 +5107,7 @@ fn plugin_panel_default_placement<R: Runtime>(
     height: f64,
 ) -> Option<panel_window_frame::Placement> {
     let position = analysis_window_initial_position(app, width, height)?;
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = active_document_webview(app)?;
     let monitor = main.current_monitor().ok().flatten()?;
     let scale = monitor.scale_factor();
     let position = position.to_physical::<i32>(scale);
@@ -5001,7 +5124,7 @@ fn analysis_window_initial_position<R: Runtime>(
     width: f64,
     height: f64,
 ) -> Option<tauri::LogicalPosition<f64>> {
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = active_document_webview(app)?;
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
@@ -5210,7 +5333,7 @@ fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, chi
     if !should_attach_as_document_child(label) {
         return;
     }
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owned_document_webview(app, label) else {
         return;
     };
     let Ok(main_ptr) = main.ns_window() else {
@@ -5327,10 +5450,7 @@ mod document_key_after_unhide_tests {
 
 #[cfg(target_os = "macos")]
 fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
-    let pointer = app
-        .get_webview_window(MAIN_WINDOW_LABEL)?
-        .ns_window()
-        .ok()?;
+    let pointer = active_document_webview(app)?.ns_window().ok()?;
     // The main window is never destroyed while the app runs (closing only hides it).
     unsafe { (pointer as *mut NSWindow).as_ref() }
 }
@@ -5492,12 +5612,15 @@ fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
 /// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
 /// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
 fn toolset_popover_window_config(
+    registry: &document_windows::DocumentWindowRegistry,
     label: &str,
     toolset_id: &str,
     kind: &str,
     prewarm: bool,
     focus_mode: ToolsetPopoverFocusMode,
 ) -> tauri::utils::config::WindowConfig {
+    #[cfg(not(windows))]
+    let _ = registry;
     let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
     tauri::utils::config::WindowConfig {
         label: label.into(),
@@ -5507,7 +5630,9 @@ fn toolset_popover_window_config(
         ),
         title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
         #[cfg(windows)]
-        parent: Some(MAIN_WINDOW_LABEL.into()),
+        parent: registry
+            .active_document_window()
+            .map(|document| document.native_label),
         #[cfg(not(windows))]
         parent: None,
         width: 320.0,
@@ -5538,7 +5663,14 @@ fn build_toolset_popover_window(
     position: (f64, f64),
     focus_mode: ToolsetPopoverFocusMode,
 ) -> Result<(), String> {
-    let config = toolset_popover_window_config(label, toolset_id, kind, prewarm, focus_mode);
+    let config = toolset_popover_window_config(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        label,
+        toolset_id,
+        kind,
+        prewarm,
+        focus_mode,
+    );
     let window = WebviewWindowBuilder::from_config(app, &config)
         .map_err(|error| error.to_string())?
         .position(position.0, position.1)
@@ -5996,8 +6128,7 @@ fn route_toolset_command(
     }
 
     if commit.unwrap_or(false) {
-        let main = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+        let main = owned_document_webview(&app, window.label())
             .ok_or_else(|| "Main document window is not available.".to_string())?;
         // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
         // delivery while utility windows are suspended (for example by a native prompt).
@@ -6136,7 +6267,7 @@ fn clipboard_write_succeeded(result: ClipboardWriteResult) -> Result<(), String>
 /// clipboard ownerless, and every SetClipboardData after it fails.
 #[cfg(windows)]
 fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
-    app.get_webview_window(MAIN_WINDOW_LABEL)
+    active_document_webview(app)
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
         .unwrap_or(std::ptr::null_mut())
@@ -6728,7 +6859,7 @@ fn window_is_covered_by_document<R: Runtime>(window: &tauri::WebviewWindow<R>) -
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
 
-    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owned_document_webview(window.app_handle(), window.label()) else {
         return false;
     };
     let (Ok(main_hwnd), Ok(target_hwnd)) = (main.hwnd(), window.hwnd()) else {
@@ -6836,8 +6967,7 @@ fn ensure_preferences_window<R: Runtime>(
                     quit_in_progress(),
                     utility_windows_suspended(),
                     || {
-                        let owner = target
-                            .get_webview_window(MAIN_WINDOW_LABEL)
+                        let owner = active_document_webview(&target)
                             .ok_or("Main document window is not available.")?;
                         Ok((
                             owner.is_minimized().map_err(|error| error.to_string())?,
@@ -6898,9 +7028,7 @@ fn create_or_raise_preferences_window<R: Runtime>(
             .and_then(|result| result)?;
         return Ok(window);
     }
-    let owner = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .ok_or("Unknown dialog owner")?;
+    let owner = active_document_webview(app).ok_or("Unknown dialog owner")?;
 
     dialog_windows::prepare_preferences();
     let builder = WebviewWindowBuilder::new(
@@ -6942,7 +7070,9 @@ fn palette_focus_diagnostic(window: tauri::WebviewWindow, line: String) -> Resul
         return Ok(());
     }
     let label = window.label();
-    if label != "main" && !(label.starts_with("toolset-") && is_input_focus_window_label(label)) {
+    if !is_document_window(window.app_handle(), label)
+        && !(label.starts_with("toolset-") && is_input_focus_window_label(label))
+    {
         return Err("Palette diagnostics require a document or tool palette window.".into());
     }
     let line: String = line
@@ -7543,12 +7673,18 @@ fn is_edit_history_command(command_id: &str) -> bool {
 /// predefined items, ⌘Z in a palette's text field undoes that text. The secondary window forwards
 /// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
-fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
+fn menu_command_target_label(
+    registry: &document_windows::DocumentWindowRegistry,
+    command_id: &str,
+    focused_label: Option<&str>,
+) -> Option<String> {
     match focused_label {
         Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
-            label
+            Some(label.to_string())
         }
-        _ => MAIN_WINDOW_LABEL,
+        _ => registry
+            .active_document_window()
+            .map(|document| document.native_label),
     }
 }
 
@@ -7561,15 +7697,20 @@ fn emit_menu_command<R: Runtime>(
         .into_iter()
         .find(|(_, window)| window.is_focused().unwrap_or(false))
         .map(|(label, _)| label);
-    let target_label = menu_command_target_label(command_id, focused_label.as_deref());
-    if target_label == MAIN_WINDOW_LABEL {
+    let target_label = menu_command_target_label(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        command_id,
+        focused_label.as_deref(),
+    )
+    .ok_or("Document window is not available.")?;
+    if is_document_window(app, &target_label) {
         if panel_window::palette_blocks_menu(true, command_id) {
             return Ok(());
         }
         return emit_command_to_main(app, command_id);
     }
     let target = app
-        .get_webview_window(target_label)
+        .get_webview_window(&target_label)
         .ok_or_else(|| format!("Window {target_label} is not available."))?;
     dispatch_dom_command_event(
         &target,
@@ -7583,8 +7724,7 @@ fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> Result<(), String> {
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = active_document_webview(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
     let payload = ToolsetCommandPayload {
         command_id: command_id.to_string(),
@@ -7696,10 +7836,7 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
-    let delivery = state.record(
-        payload.clone(),
-        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
-    )?;
+    let delivery = state.record(payload.clone(), active_document_webview(app).is_some())?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
         // would collide with Tauri's window creation and abort inside the AppKit callback.
@@ -7814,7 +7951,9 @@ fn emit_open_document_to_main<R: Runtime>(
     // Deliver via the Tauri event for a running window; a cold start (window not yet
     // listening) is covered by the pending-document state drained on mount. We deliberately
     // do not `eval` document contents into the webview to avoid a script-injection surface.
-    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+    let document = active_document_webview(app).ok_or("Document window is not available.")?;
+    document
+        .emit_to(document.label(), OPEN_DOCUMENT_EVENT, payload.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -7822,11 +7961,12 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    let Some(document) = active_document_webview(app) else {
         return Ok(());
-    }
+    };
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    document
+        .emit_to(document.label(), TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -7955,7 +8095,7 @@ fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tau
     app.set_menu(menu)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(window) = active_document_webview(app) else {
             return Ok(());
         };
         window.set_menu(menu)?;
@@ -8407,6 +8547,7 @@ fn close_window_menu_item<R: Runtime>(
 #[cfg(target_os = "macos")]
 fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
     menu_closes_document_tab(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
         label,
         current_toolbars_menu_model(app)
             .1
@@ -8415,20 +8556,36 @@ fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> b
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn menu_closes_document_tab(label: &str, has_multiple_document_tabs: bool) -> bool {
-    label == MAIN_WINDOW_LABEL && has_multiple_document_tabs
+fn menu_closes_document_tab(
+    registry: &document_windows::DocumentWindowRegistry,
+    label: &str,
+    has_multiple_document_tabs: bool,
+) -> bool {
+    registry.is_document_window(label) && has_multiple_document_tabs
 }
 
 #[cfg(test)]
 mod document_tab_menu_tests {
-    use super::{menu_closes_document_tab, MAIN_WINDOW_LABEL};
+    use super::menu_closes_document_tab;
 
     #[test]
     fn close_menu_routes_only_a_main_window_with_multiple_tabs() {
-        assert!(menu_closes_document_tab(MAIN_WINDOW_LABEL, true));
-        assert!(!menu_closes_document_tab(MAIN_WINDOW_LABEL, false));
+        assert!(menu_closes_document_tab(
+            &crate::test_documents(),
+            "main",
+            true
+        ));
+        assert!(!menu_closes_document_tab(
+            &crate::test_documents(),
+            "main",
+            false
+        ));
         for label in ["preferences", "toolset-core-main", "plugin-panel-example"] {
-            assert!(!menu_closes_document_tab(label, true));
+            assert!(!menu_closes_document_tab(
+                &crate::test_documents(),
+                label,
+                true
+            ));
         }
     }
 }
@@ -9091,10 +9248,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
-        match app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .and_then(|main| main.hwnd().ok())
-        {
+        match active_document_webview(app).and_then(|main| main.hwnd().ok()) {
             Some(owner) => builder.owner_raw(owner),
             None => builder,
         }
@@ -9302,8 +9456,7 @@ fn toolset_frame_is_transient<R: Runtime>(
     window: &tauri::Window<R>,
 ) -> bool {
     let palette_minimized = window.is_minimized().unwrap_or(false);
-    let document_minimized = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let document_minimized = owned_document_webview(app, window.label())
         .is_some_and(|main| main.is_minimized().unwrap_or(false));
     toolset_frame_state_is_transient(palette_minimized, document_minimized)
 }
@@ -9452,9 +9605,7 @@ fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Resul
     // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
     // move an owned panel to its minimized parking position before reporting the owner's resize.
     let native = main_window_placement::snapshot(window)?;
-    let owner_minimized = window
-        .app_handle()
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let owner_minimized = owned_document_webview(window.app_handle(), window.label())
         .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
     let Some(frame) = panel_full_size::frame_for_save(window) else {
         return Ok(());
@@ -9746,9 +9897,7 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     #[cfg(target_os = "macos")]
     let menu = app.menu();
     #[cfg(not(target_os = "macos"))]
-    let menu = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .and_then(|window| window.menu());
+    let menu = active_document_webview(app).and_then(|window| window.menu());
     let Some(menu) = menu else {
         return Ok(());
     };
@@ -10675,18 +10824,18 @@ mod tests {
 
     #[test]
     fn quit_prompt_commands_and_capabilities_are_document_only() {
-        assert!(authorize_quit_window("main").is_ok());
+        assert!(authorize_quit_window(&crate::test_documents(), "main").is_ok());
         for label in [
             "preferences",
             "toolset-bonds",
             "spin3d-debugger",
             "plugin-panel-x",
         ] {
-            assert!(authorize_quit_window(label).is_err());
+            assert!(authorize_quit_window(&crate::test_documents(), label).is_err());
         }
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         let default = include_str!("../capabilities/default.json");
         for permission in [
             "allow-cancel-quit",
@@ -11165,6 +11314,57 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn document_authorization_uses_membership_even_for_the_migrated_label() {
+        let registry = document_windows::DocumentWindowRegistry::default();
+        assert!(authorize_quit_window(&registry, "main").is_err());
+        assert!(authorize_quit_window(&registry, "doc-other").is_err());
+        registry.register("other", "doc-other").unwrap();
+        assert!(authorize_quit_window(&registry, "doc-other").is_ok());
+        for label in ["toolset-core-main", "dialog-main-export-1", "runtime"] {
+            assert!(authorize_quit_window(&registry, label).is_err());
+        }
+        registry.remove("other");
+        assert!(authorize_quit_window(&registry, "doc-other").is_err());
+    }
+
+    #[test]
+    fn menu_target_comes_from_the_active_registered_document_without_a_main_fallback() {
+        let registry = document_windows::DocumentWindowRegistry::default();
+        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
+        registry.register("other", "doc-other").unwrap();
+        registry.set_ready("other");
+        assert_eq!(
+            menu_command_target_label(&registry, "file.open", Some("preferences")).as_deref(),
+            Some("doc-other")
+        );
+        registry.mark_activated("toolset-core-main");
+        assert_eq!(
+            menu_command_target_label(&registry, "file.open", None).as_deref(),
+            Some("doc-other")
+        );
+        registry.remove("other");
+        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
+    }
+
+    #[test]
+    fn quit_fanout_visits_all_and_only_registered_documents() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.register("other", "doc-other").unwrap();
+        let mut labels = Vec::new();
+        assert!(visit_quit_documents(&registry, |label| {
+            labels.push(label.to_string());
+            true
+        }));
+        labels.sort();
+        assert_eq!(labels, ["doc-other", "main"]);
+        registry.remove("main");
+        registry.remove("other");
+        assert!(!visit_quit_documents(&registry, |_| panic!(
+            "no fallback document"
+        )));
+    }
+
     /// Every custom command registered with `generate_handler!` needs BOTH a generated permission
     /// file and a capability grant, or Tauri's deny-by-default ACL rejects the invoke — and because
     /// the JS side swallows invoke rejections, the feature simply does nothing with no error
@@ -11174,6 +11374,66 @@ mod tests {
     /// so it is deliberately not the thing asserted.)
     #[test]
     fn registered_commands_have_permissions_and_capability_grants() {
+        let capability_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        for entry in std::fs::read_dir(capability_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let grant: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let windows = grant["windows"].as_array().unwrap();
+            if !windows.iter().any(|label| label == "main") {
+                continue;
+            }
+            assert!(
+                windows.iter().any(|label| label == "doc-*"),
+                "{}",
+                path.display()
+            );
+            let document_patterns: Vec<_> = windows
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|label| *label == "main" || label.starts_with("doc-"))
+                .collect();
+            let admitted = |label: &str| {
+                document_patterns.iter().any(|pattern| {
+                    pattern
+                        .strip_suffix('*')
+                        .map_or(*pattern == label, |prefix| label.starts_with(prefix))
+                })
+            };
+            assert!(admitted("main"));
+            assert!(admitted("doc-example"));
+            for utility in [
+                "toolset-core-main",
+                "toolset-popover-core-main",
+                "toolset-tooltip",
+                "dialog-main-export-1",
+                "plugin-panel-example",
+                "preferences",
+                "spin3d-debugger",
+                "runtime",
+            ] {
+                assert!(!admitted(utility), "{}: {utility}", path.display());
+                if windows.len() == document_patterns.len() {
+                    assert!(
+                        !windows
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .any(|pattern| {
+                                pattern
+                                    .strip_suffix('*')
+                                    .map_or(pattern == utility, |prefix| {
+                                        utility.starts_with(prefix)
+                                    })
+                            }),
+                        "{}: {utility}",
+                        path.display()
+                    );
+                }
+            }
+        }
         let lib_source = include_str!("lib.rs");
         let capability = format!(
             "{}{}{}{}{}{}{}{}{}",
@@ -11350,6 +11610,7 @@ mod tests {
 
     fn assert_bond_stereo_mouse_creation() {
         let config = toolset_popover_window_config(
+            &crate::ready_document_registry(),
             "toolset-popover-core-bondStereo",
             "core.bondStereo",
             "flyout",
@@ -11358,7 +11619,7 @@ mod tests {
         );
         // These are passed directly to WebviewWindowBuilder::from_config.
         #[cfg(windows)]
-        assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+        assert_eq!(config.parent.as_deref(), Some("main"));
         #[cfg(not(windows))]
         assert_eq!(config.parent, None);
         assert!(!config.focusable);
@@ -11403,6 +11664,7 @@ mod tests {
             ("core.art", "artColor", true),
         ] {
             let config = toolset_popover_window_config(
+                &crate::ready_document_registry(),
                 "popover",
                 toolset,
                 kind,
@@ -11423,7 +11685,7 @@ mod tests {
             assert!(!config.focus);
             assert!(!config.visible);
             #[cfg(windows)]
-            assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+            assert_eq!(config.parent.as_deref(), Some("main"));
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
         }
@@ -11691,28 +11953,56 @@ mod tests {
     #[test]
     fn text_edit_commands_follow_the_key_window_and_other_commands_go_to_main() {
         assert_eq!(
-            menu_command_target_label("edit.undo", Some("toolset-core-main")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.undo",
+                Some("toolset-core-main")
+            )
+            .as_deref()
+            .unwrap(),
             "toolset-core-main"
         );
         assert_eq!(
-            menu_command_target_label("edit.redo", Some("preferences")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.redo",
+                Some("preferences")
+            )
+            .as_deref()
+            .unwrap(),
             "preferences"
         );
         assert_eq!(
-            menu_command_target_label("edit.undo", Some(MAIN_WINDOW_LABEL)),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", Some("main"))
+                .as_deref()
+                .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.undo", None),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", None)
+                .as_deref()
+                .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some("toolset-core-main")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some("toolset-core-main")
+            )
+            .as_deref()
+            .unwrap(),
             "toolset-core-main"
         );
         assert_eq!(
-            menu_command_target_label("clipboard.copyAs.smiles", Some("preferences")),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "clipboard.copyAs.smiles",
+                Some("preferences")
+            )
+            .as_deref()
+            .unwrap(),
+            "main"
         );
     }
 
@@ -11728,16 +12018,30 @@ mod tests {
         let dialog = "dialog-main-pageSize-12";
         assert!(is_routed_menu_command("edit.selectAll"));
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some(dialog)),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some(dialog)
+            )
+            .as_deref()
+            .unwrap(),
             dialog
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some(MAIN_WINDOW_LABEL)),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some("main")
+            )
+            .as_deref()
+            .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", None),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.selectAll", None)
+                .as_deref()
+                .unwrap(),
+            "main"
         );
     }
 
@@ -11755,7 +12059,7 @@ mod tests {
         let dialogs: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/document-dialogs.json"))
                 .expect("document dialogs capability should parse");
-        assert_eq!(dialogs["windows"], serde_json::json!(["main"]));
+        assert_eq!(dialogs["windows"], serde_json::json!(["main", "doc-*"]));
         expect_true(
             dialogs["permissions"]
                 .as_array()
@@ -11781,7 +12085,7 @@ mod tests {
         let capture: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/screen-capture.json"))
                 .expect("screen capture capability should parse");
-        assert_eq!(capture["windows"], serde_json::json!(["main"]));
+        assert_eq!(capture["windows"], serde_json::json!(["main", "doc-*"]));
         let permissions = capture["permissions"]
             .as_array()
             .expect("screen capture permissions");

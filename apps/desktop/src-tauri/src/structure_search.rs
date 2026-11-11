@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 // Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw), Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Modified for ChemDraft: fixed substance-search links with native preference and rate gates.
 
 use std::sync::Mutex;
@@ -21,8 +23,11 @@ static SEARCH_STATE: Mutex<SearchState> = Mutex::new(SearchState {
     last_opened: None,
 });
 
-fn authorize_document(label: &str) -> Result<(), String> {
-    if label == "main" {
+fn authorize_document(
+    registry: &super::document_windows::DocumentWindowRegistry,
+    label: &str,
+) -> Result<(), String> {
+    if registry.is_document_window(label) {
         Ok(())
     } else {
         Err("Structure searches are available only in the document window.".into())
@@ -34,7 +39,10 @@ pub(crate) fn set_structure_search_enabled(
     window: tauri::WebviewWindow,
     enabled: bool,
 ) -> Result<(), String> {
-    authorize_document(window.label())?;
+    authorize_document(
+        &window.state::<super::document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     SEARCH_STATE
         .lock()
         .map_err(|error| error.to_string())?
@@ -87,7 +95,10 @@ pub(crate) fn open_structure_search(
     site: String,
     smiles: String,
 ) -> Result<(), String> {
-    authorize_document(window.label())?;
+    authorize_document(
+        &window.state::<super::document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     let mut state = SEARCH_STATE.lock().map_err(|error| error.to_string())?;
     if !state.enabled {
         return Err("Online structure search is off in Preferences.".into());
@@ -133,8 +144,8 @@ mod tests {
             assert!(search_url(site, "C", "1").is_err());
         }
         assert!(search_url("pubchem", " ", "1").is_err());
-        assert!(authorize_document("preferences").is_err());
-        assert!(authorize_document("main").is_ok());
+        assert!(authorize_document(&crate::test_documents(), "preferences").is_err());
+        assert!(authorize_document(&crate::test_documents(), "main").is_ok());
     }
 
     #[test]

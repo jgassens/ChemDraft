@@ -1,3 +1,4 @@
+import { documentWindowId, isDocumentWindowId } from "../documentIdentity";
 import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 export type ConditionsSnapshot = { title: string; arrowId: string; draft: ReactionConditionsDraft };
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
@@ -38,7 +39,7 @@ function clipDialogText(text: string, maxLength: number, maxBytes: number): stri
 export function boundedAtomProblemSnapshot(data: AtomProblemSnapshot): AtomProblemSnapshot {
   // Reserve the largest valid envelope, including later snapshot revisions and retargets.
   const empty = { ...data, title: "", explanation: "" };
-  const overhead = serializedBytes({ protocolVersion: 1, ownerWindowId: "main", dialogKind: "atomProblem",
+  const overhead = serializedBytes({ protocolVersion: 1, ownerWindowId: documentWindowId(), dialogKind: "atomProblem",
     documentTabId: "x".repeat(128), sessionId: "x".repeat(128), requestId: "x".repeat(128),
     snapshotRevision: Number.MAX_SAFE_INTEGER, type: "snapshot", data: empty });
   const title = clipDialogText(data.title, 256, 768);
@@ -141,11 +142,11 @@ export function validConditionsDraft(v: unknown): v is ReactionConditionsDraft {
       typeof span.text === "string" && ["normal", "subscript", "superscript"].includes(String(span.script))) &&
     v.spans.map(span => span.text).join("").length <= 2000 && new TextEncoder().encode(JSON.stringify(v)).length <= 2500;
 }
-export function parseDialogMessage(value: unknown): DialogMessage | undefined {
+export function parseDialogMessage(value: unknown, ownerWindowId = documentWindowId()): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || !isDocumentWindowId(ownerWindowId) || value.ownerWindowId !== ownerWindowId || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall", "insertTable", "customColor", "structureTemplates", "atomProblem", "vibeCodeGuide"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -216,7 +217,7 @@ export function sameDialog(message: DialogEnvelope, snapshot: DialogEnvelope): b
 }
 /** Envelope consistency check for Rust channel deliveries. Sender fields alone are not authentication. */
 export function validateDialogDelivery(value: unknown, sender: string, snapshot: DialogEnvelope, label: string): DialogMessage | undefined {
-  const message = parseDialogMessage(value);
+  const message = parseDialogMessage(value, snapshot.ownerWindowId);
   if (!message || !sameDialog(message, snapshot)) return undefined;
   const expected = message.type === "snapshot" || message.type === "preview" || message.type === "result" || message.type === "closed" ? snapshot.ownerWindowId : label;
   return sender === expected ? message : undefined;

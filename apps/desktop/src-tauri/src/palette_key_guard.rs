@@ -7,9 +7,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::Instant,
 };
-#[cfg(any(target_os = "macos", windows))]
-use tauri::Manager;
-use tauri::{Emitter, Listener};
+use tauri::{Emitter, Listener, Manager};
 
 #[path = "palette_key_guard_state.rs"]
 mod state;
@@ -17,6 +15,8 @@ pub(crate) use state::End;
 pub(crate) use state::{blocks_forwarded_shortcut, blocks_menu, keeps_palette_focus};
 
 static GUARD: Mutex<state::Guard> = Mutex::new(state::Guard::new());
+// Keep a pending click's document destination until that same sequence clears.
+static DOCUMENT_TARGET: Mutex<Option<(u64, String)>> = Mutex::new(None);
 const EVENT: &str = "chemdraft://palette-click-pending";
 
 fn now() -> u64 {
@@ -33,8 +33,30 @@ fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, 
         // The page echoes the click sequence with its classification/release. Main
         // drops only editing keydowns until this sequence is cleared or expires.
         // A clear carries the pending owner's label, even when main/app loss ended it.
-        let _ = app.emit_to(super::super::MAIN_WINDOW_LABEL, EVENT, event);
-        if !label.is_empty() && label != super::super::MAIN_WINDOW_LABEL {
+        let document = {
+            let mut captured = DOCUMENT_TARGET.lock().unwrap();
+            if event.pending {
+                *captured = app
+                    .state::<crate::document_windows::DocumentWindowRegistry>()
+                    .active_document_window()
+                    .map(|document| (event.sequence, document.native_label));
+            }
+            let document = captured
+                .as_ref()
+                .filter(|(sequence, _)| *sequence == event.sequence)
+                .map(|(_, label)| label.clone());
+            if !event.pending && document.is_some() {
+                *captured = None;
+            }
+            document
+        };
+        if let Some(document) = document
+            .as_deref()
+            .filter(|label| super::super::is_document_window(app, label))
+        {
+            let _ = app.emit_to(document, EVENT, event);
+        }
+        if !label.is_empty() && document.as_deref() != Some(label.as_str()) {
             let _ = app.emit_to(label.as_str(), EVENT, event);
         }
     }
@@ -151,7 +173,9 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                     .charactersIgnoringModifiers()
                     .map(|s| s.to_string())
                     .unwrap_or_default();
-                if label.as_deref() == Some(super::super::MAIN_WINDOW_LABEL)
+                if label
+                    .as_deref()
+                    .is_some_and(|label| super::super::is_document_window(&app, label))
                     && blocks_document()
                     && state::editing_key(
                         &key,

@@ -3,7 +3,7 @@
   "identifier": "main-and-tool-palette",
   "description": "Allow the ChemDraft document window and native toolset windows to use core window/event APIs and the narrow toolset command bridge.",
   "windows": [
-    "main",
+    "main", "doc-*",
     "toolset-*",
     "spin3d-debugger",
     "preferences"

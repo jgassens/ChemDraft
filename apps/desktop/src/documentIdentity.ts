@@ -27,3 +27,8 @@ export class DocumentIdentities {
     this.revisions.delete(tabId);
   }
 }
+
+/** Label syntax only; native registry membership and ownership remain authoritative. */
+export function isDocumentWindowId(label: unknown): label is string {
+  return typeof label === "string" && (label === "main" || /^doc-[A-Za-z0-9_-]+$/.test(label));
+}

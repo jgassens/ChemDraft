@@ -39,7 +39,7 @@ pub fn read_plugin_package(
     window: tauri::WebviewWindow,
     zip_path: PathBuf,
 ) -> Result<tauri::ipc::Response, String> {
-    if window.label() != "main" {
+    if !super::is_document_window(&app, window.label()) {
         return Err("Plugin packages can only be chosen in the document window.".into());
     }
     // The fs plugin's runtime scope is populated by the native dialog (not the broad per-command
@@ -752,7 +752,7 @@ mod tests {
     fn command_has_main_window_only_permission_without_fs_scope_grant() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/document-dialogs.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         assert!(capability["permissions"]
             .as_array()
             .unwrap()

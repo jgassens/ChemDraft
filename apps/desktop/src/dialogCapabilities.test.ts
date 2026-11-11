@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // and nativePrompt) runs in the document window; other windows route through it. Any grant counts,
 // including the deprecated aliases: in tauri-plugin-dialog 2.7 allow-ask and allow-confirm both
 // allow the message command, and dialog:default allows message, open and save.
-const DIALOG_WINDOWS = ["main"];
+const DIALOG_WINDOWS = ["main", "doc-*"];
 const SUSPEND_TOOLSET_WINDOWS_PERMISSION = "allow-suspend-toolset-windows";
 const capabilitiesDir = new URL("../src-tauri/capabilities/", import.meta.url);
 
@@ -20,6 +20,19 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
   .map((permission) => typeof permission === "string" ? permission : permission.identifier);
 
 describe("dialog capabilities", () => {
+  it("keeps document authority out of every utility label", () => {
+    const matches = (capability: Capability, label: string) => capability.windows?.some(pattern =>
+      pattern.endsWith("*") ? label.startsWith(pattern.slice(0, -1)) : pattern === label) ?? false;
+    for (const name of ["dialog-owner.json", "document-dialogs.json"]) {
+      const capability = capabilities.find(entry => entry.name === name)!.capability;
+      expect(matches(capability, "main")).toBe(true);
+      expect(matches(capability, "doc-example")).toBe(true);
+      for (const utility of ["dialog-main-export-1", "toolset-core-main", "toolset-popover-core-main",
+        "toolset-tooltip", "plugin-panel-example", "preferences", "spin3d-debugger", "runtime"]) {
+        expect(matches(capability, utility), `${name}: ${utility}`).toBe(false);
+      }
+    }
+  });
   it("grants content-size reporting only to the actual Preferences window", () => {
     const granted = capabilities.filter(({ capability }) => permissionIdentifiers(capability)
       .includes("allow-preferences-ready"));
@@ -36,7 +49,7 @@ describe("dialog capabilities", () => {
       "allow-dialog-request", "allow-dialog-send"
     ]);
     const owner = capabilities.find(({ name }) => name === "dialog-owner.json")!.capability;
-    expect(owner.windows).toEqual(["main"]);
+    expect(owner.windows).toEqual(["main", "doc-*"]);
     expect(owner.permissions.slice().sort()).toEqual(["allow-dialog-close", "allow-dialog-open", "allow-dialog-publish"]);
   });
   it("grant dialog permissions, aliases included, to the document window alone", () => {

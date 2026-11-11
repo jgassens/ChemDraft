@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { createDocumentTabId, documentWindowId, DocumentIdentities } from "./documentIdentity";
+import { createDocumentTabId, documentWindowId, DocumentIdentities, isDocumentWindowId } from "./documentIdentity";
 
 const uuid = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
 
 describe("document identities", () => {
+  it("accepts document label syntax and refuses utilities and malformed labels", () => {
+    for (const label of ["main", "doc-example"]) expect(isDocumentWindowId(label)).toBe(true);
+    for (const label of ["doc-", "doc-../main", "toolset-core-main", "dialog-main-export-1",
+      "plugin-panel-example", "runtime", "preferences", null]) expect(isDocumentWindowId(label)).toBe(false);
+  });
   it("creates unique UUID tab ids", () => {
     const ids = Array.from({ length: 100 }, createDocumentTabId);
     expect(new Set(ids).size).toBe(ids.length);

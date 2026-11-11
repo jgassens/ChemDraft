@@ -6,6 +6,17 @@ import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validat
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
 describe("dialog contract", () => {
+  it("validates a captured document owner and refuses cross-owner or utility envelopes", () => {
+    const message = { ...snapshot(), ownerWindowId: "doc-other" };
+    expect(parseDialogMessage(message, "doc-other")).toEqual(message);
+    expect(parseDialogMessage(message, "main")).toBeUndefined();
+    expect(parseDialogMessage(snapshot(), "doc-other")).toBeUndefined();
+    for (const utility of ["preferences", "toolset-core-main", "dialog-main-pageSize-1", "runtime"]) {
+      expect(parseDialogMessage({ ...message, ownerWindowId: utility }, utility)).toBeUndefined();
+    }
+    expect(validateDialogDelivery(message, "doc-other", message, "dialog-main-pageSize-1")).toEqual(message);
+    expect(validateDialogDelivery(message, "main", message, "dialog-main-pageSize-1")).toBeUndefined();
+  });
   it("accepts only the registered sender and current envelope", () => {
     const s = snapshot();
     const ready: DialogMessage = { ...s, type: "ready", data: {} };

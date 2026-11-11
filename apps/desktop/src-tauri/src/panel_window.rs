@@ -164,10 +164,7 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     };
     #[cfg(windows)]
     {
-        if let Some(document) = window
-            .app_handle()
-            .get_webview_window(super::MAIN_WINDOW_LABEL)
-        {
+        if let Some(document) = super::owned_document_webview(window.app_handle(), window.label()) {
             if focus_return::should_return(
                 requested,
                 held,
@@ -200,9 +197,8 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
             NSApplication::sharedApplication(marker).isActive(),
             panel.isKeyWindow(),
         ) {
-            if let Some(document) = window
-                .app_handle()
-                .get_webview_window(super::MAIN_WINDOW_LABEL)
+            if let Some(document) =
+                super::owned_document_webview(window.app_handle(), window.label())
             {
                 // makeKeyWindow resigns the palette without activating a background app.
                 super::focus_native_document_window(&document)?;

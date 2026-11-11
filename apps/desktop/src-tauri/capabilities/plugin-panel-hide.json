@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "plugin-panel-hide",
   "description": "Allow only the document window to hide a plugin panel window. The command restores an enlarged panel's normal frame first and refuses any label that is not a plugin panel.",
-  "windows": ["main"],
+  "windows": ["main", "doc-*"],
   "permissions": ["allow-hide-plugin-panel-from-main"]
 }

@@ -94,7 +94,7 @@ describe("palette focus diagnostics", () => {
     expect(command.indexOf("return Ok(())")).toBeLessThan(command.indexOf("window.label()"));
     expect(command.indexOf("return Ok(())")).toBeLessThan(command.indexOf("palette_focus_log("));
     expect(command).toContain(".take(500)");
-    expect(command).toContain('label != "main"');
+    expect(command).toContain("!is_document_window(window.app_handle(), label)");
     expect(command).toContain('label.starts_with("toolset-") && is_input_focus_window_label(label)');
   });
 
@@ -104,7 +104,7 @@ describe("palette focus diagnostics", () => {
       JSON.parse(readFileSync(new URL(name, directory), "utf8")) as { windows: string[]; permissions: unknown[] }
     ).filter(capability => capability.permissions.includes("allow-palette-focus-diagnostic"));
     expect(grants).toHaveLength(1);
-    expect(grants[0].windows).toEqual(["main", "toolset-*"]);
+    expect(grants[0].windows).toEqual(["main", "doc-*", "toolset-*"]);
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     expect(source).toContain('suffix != "tooltip"');
   });

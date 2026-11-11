@@ -1,4 +1,4 @@
-//! Document identities only. Native routing remains on `main` until the next layer.
+//! Document identities and routing authority. A2 still creates only the migrated first window.
 
 use std::{collections::BTreeMap, sync::Mutex, time::Instant};
 
@@ -26,6 +26,7 @@ pub struct DocumentWindowRegistry {
 impl DocumentWindowRegistry {
     pub fn with_main() -> Self {
         let registry = Self::default();
+        // The first migrated/config-created window retains its label and saved-frame identity.
         registry
             .register("main", "main")
             .expect("the initial document registry is empty");
@@ -35,6 +36,7 @@ impl DocumentWindowRegistry {
     /// Only the document label namespace may be registered. Utilities cannot become documents.
     pub fn register(&self, window_id: &str, native_label: &str) -> Result<(), String> {
         if window_id.is_empty()
+            // The first window retains its migrated label; future documents use their own namespace.
             || !(native_label == "main"
                 || native_label
                     .strip_prefix("doc-")
@@ -137,6 +139,7 @@ impl DocumentWindowRegistry {
             || label.starts_with("plugin-panel-")
             || matches!(label, "preferences" | "spin3d-debugger")
         {
+            // A1 migration ownership: explicit per-utility owners/labels land in A4/A5.
             return windows.get("main").cloned();
         }
         None

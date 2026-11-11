@@ -23,6 +23,21 @@ function host(options: { timeout?: number } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("retains its captured document owner and refuses a different owner's action", async () => {
+    const h = host();
+    const coordinator = new DialogCoordinator(h.transport, h.owner, { ownerWindowId: "doc-other" });
+    await coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
+    const snapshot = vi.mocked(h.transport.open).mock.calls[0]![0];
+    expect(snapshot.ownerWindowId).toBe("doc-other");
+    const delivery = (message: unknown) => coordinator.receive({ senderWindowId: "dialog-main-pageSize-1", windowLabel: "dialog-main-pageSize-1", message });
+    await delivery({ ...snapshot, type: "ready", data: {} });
+    await delivery({ ...snapshot, ownerWindowId: "main", type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
+    expect(h.owner.applyPageSize).not.toHaveBeenCalled();
+    await delivery({ ...snapshot, type: "action", data: { action: "apply", width: 10, height: 15, unit: "mm" } });
+    expect(h.owner.applyPageSize).toHaveBeenCalledExactlyOnceWith("tab-1", { action: "apply", width: 10, height: 15, unit: "mm" });
+    await coordinator.dispose();
+    await h.coordinator.dispose();
+  });
   it("keeps conditions tied to their original tab and arrow, deduplicates Save and refuses another arrow", async () => {
     const h = host();
     const apply = vi.fn(), settled = vi.fn();
