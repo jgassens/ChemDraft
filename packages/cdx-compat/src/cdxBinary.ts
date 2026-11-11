@@ -422,7 +422,9 @@ export function readCdx(bytes: Uint8Array, exact = true, warnings: CdxWarning[] 
       const s: CdxElement = { name: "s", attrs: Object.create(null), kids: [], text: "" };
       if (run && run[1] !== 0xffff) s.attrs.font = String(run[1]);
       if (run && run[3]) s.attrs.size = String(run[3] / 20);
-      if (run && (run[4] !== TEXT_FOREGROUND || !textForegroundIsBlack(root!))) s.attrs.color = String(run[4]);
+      // Omitting black foreground is safe only without a parent colour: otherwise
+      // CDXML inheritance replaces this run's black with the text object's colour.
+      if (run && (run[4] !== TEXT_FOREGROUND || !textForegroundIsBlack(root!) || el.attrs.color !== undefined)) s.attrs.color = String(run[4]);
       if (run && run[2]) s.attrs.face = String(run[2]);
       s.text = decode(b2, unicode ? 65001 : runs.length ? charsetOf(run?.[1] ?? -1, el) : LATIN1, el).replace(/\r\n?/g, "\n");
       return s;
