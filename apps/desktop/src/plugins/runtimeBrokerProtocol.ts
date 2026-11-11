@@ -99,6 +99,10 @@ export const runtimeMethods = {
   // revokes the preparation, so an undelivered commit cannot arrive after a reservation is freed.
   commitProposal: { request: RuntimeProposalCommitSchema.extend({ reconcile: z.literal(true).optional() }), response: z.boolean(), destination: "document" },
   acceptPreparedProposal: { request: RuntimeProposalCommitSchema, response: z.null(), destination: "runtime" },
+  // Omit preparationId only after the host has resolved the whole proposal. A failed,
+  // reconciled attempt retires just its preparation while the proposal remains pending.
+  retireProposalCommits: { request: z.object({ proposalId: id, preparationId: z.string().uuid().optional() }).strict(),
+    response: z.null(), destination: "document" },
   setCoreCommands: { request: z.object({ commands: z.array(coreCommand), revision: z.number().int().nonnegative() }).strict(), response: z.null(), destination: "runtime" },
   getCoreCommands: { request: z.object({}).strict(), response: z.array(coreCommand), destination: "document" },
   getCoreCommand: { request: z.object({ commandId: id }).strict(), response: coreCommand.optional(), destination: "document" },

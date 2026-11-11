@@ -61,7 +61,7 @@ export function createRuntimeDocumentSession(providers: RuntimeDocumentProviders
     throw runtimeStartupError(error);
   });
   const client = new RuntimeViewClient(broker, (id, options) => document.invokeCommand(id, options?.input, options), true, startup,
-    (id, options) => document.prepareCommand(id, options?.input, options), port.commandRegistry);
+    (id, options) => document.prepareCommand(id, options?.input, options), port.commandRegistry, port);
   void client.ready.catch(error => current.onPluginUpdateStatus?.(error instanceof Error ? error.message : String(error)));
   let stopActivity: (() => void) | undefined;
   let started = false;
@@ -74,7 +74,7 @@ export function createRuntimeDocumentSession(providers: RuntimeDocumentProviders
   };
   return {
     client,
-    updateDocumentProviders(next: RuntimeDocumentProviders) { current = next; publishMetadata(); },
+    updateDocumentProviders(next: RuntimeDocumentProviders) { current = next; client.refreshProposalDocuments(); publishMetadata(); },
     start() {
       if (started) return;
       started = true;

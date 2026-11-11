@@ -10,6 +10,7 @@ import type { ExternalToolsController } from "../externalTools/ExternalToolsCont
 import { PluginInstallError, type PluginInstallErrorCode } from "./installPluginPackage";
 import { PluginReleaseMetadataUnavailableError } from "./pluginUpdates";
 import { RuntimeBroker } from "./runtimeBroker";
+import type { RuntimeDocumentPort } from "./runtimeBrokerDocument";
 import { RUNTIME_HOST_LABEL } from "./runtimeBrokerProtocol";
 import type { RuntimeRequest, RuntimeTarget } from "./runtimeBrokerProtocol";
 import { decodeRuntimeView, encodeRuntimeView, runtimeViewActionArguments, type RuntimeViewAction, type RuntimeViewState } from "./runtimeViewProtocol";
@@ -81,18 +82,24 @@ export class RuntimeViewClient {
   };
   private readonly stop: () => void;
   private readonly preparations = new Map<string, { request: RuntimeRequest<"commitProposal">; commit(): void }>();
-  // Receipts outlive the caller's RPC deadline and preparation callback. Retain them until this
-  // document client closes: neither retry, delayed delivery nor Undo may repeat an insertion.
+  // Retain ambiguous outcomes until host settlement or drawing retirement, beyond RPC deadlines.
+  // Retiring also removes the callback: an old preparation can never become executable again.
   private readonly proposalReceipts = new Map<string, { request: ProposalCommit; committed: boolean }>();
   private readonly committedProposals = new Map<string, ProposalCommit>();
   private readonly stopProposalCommit: () => void;
+  private readonly stopProposalRetirement: () => void;
   readonly runtime: PluginRuntimeClient;
 
   constructor(private readonly broker: RuntimeBroker, invokeCommand?: PluginRuntimeClient["invokeCommand"], private readonly asynchronous = !broker.supportsImmediate,
     private readonly startup: Promise<void> = Promise.resolve(), prepareCommand?: PluginRuntimeClient["prepareCommand"],
-    private readonly commandRegistry?: CommandRegistry) {
+    private readonly commandRegistry?: CommandRegistry, private readonly documentPort?: Pick<RuntimeDocumentPort, "read">) {
+    this.stopProposalRetirement = broker.handle("retireProposalCommits", request => {
+      this.retireProposalCommits(request.proposalId, request.preparationId);
+      return null;
+    });
     this.stopProposalCommit = broker.handle("commitProposal", request => {
       if (request.target.windowId !== broker.label) throw new Error("The proposal belongs to another document window.");
+      this.refreshProposalDocuments();
       const receipt = this.proposalReceipts.get(request.preparationId);
       if (receipt) {
         if (!sameCommit(receipt.request, request)) throw new Error("The proposal commit receipt does not match this preparation.");
@@ -107,7 +114,8 @@ export class RuntimeViewClient {
       if (request.reconcile) {
         // Synchronous with commits: a negative receipt cancels even a not-yet-delivered request.
         this.preparations.delete(request.preparationId);
-        this.proposalReceipts.set(request.preparationId, { request, committed: !!previous });
+        // Unknown/retired preparations have no callback, so a negative reconciliation needs no
+        // tombstone. In particular, delayed reconciliation must not recreate retired metadata.
         return !!previous;
       }
       if (!prepared || !expected) {
@@ -259,7 +267,10 @@ export class RuntimeViewClient {
       acceptPreparedProposal: async (proposalId, target, documentKey, commit) => {
         const request = { proposalId, target: { ...target }, documentKey, preparationId: crypto.randomUUID() };
         this.preparations.set(request.preparationId, { request, commit });
-        try { await broker.call(RUNTIME_HOST_LABEL, "acceptPreparedProposal", request); }
+        try {
+          await broker.call(RUNTIME_HOST_LABEL, "acceptPreparedProposal", request);
+          this.retireProposalCommits(proposalId);
+        }
         finally { this.preparations.delete(request.preparationId); }
       }
     };
@@ -289,7 +300,29 @@ export class RuntimeViewClient {
     return view;
   }
 
-  dispose(): void { this.disposed = true; this.stop(); this.stopProposalCommit(); this.preparations.clear(); this.proposalReceipts.clear(); this.committedProposals.clear(); this.listeners.clear(); this.previews.clear(); this.pendingPreviews.clear(); this.livePreviewTokens.clear(); }
+  /** Called on provider updates, including inactive-tab closure/replacement, and before delivery. */
+  refreshProposalDocuments(): void {
+    if (!this.documentPort) return;
+    const requests = [...this.preparations.values(), ...this.proposalReceipts.values(),
+      ...[...this.committedProposals.values()].map(request => ({ request }))];
+    for (const { request } of requests) {
+      if (this.documentPort.read(request.target.tabId)?.documentKey !== request.documentKey) {
+        this.retireProposalCommits(request.proposalId);
+      }
+    }
+  }
+
+  private retireProposalCommits(proposalId: string, preparationId?: string): void {
+    for (const [id, { request }] of this.preparations) {
+      if (request.proposalId === proposalId && (!preparationId || id === preparationId)) this.preparations.delete(id);
+    }
+    for (const [id, { request }] of this.proposalReceipts) {
+      if (request.proposalId === proposalId && (!preparationId || id === preparationId)) this.proposalReceipts.delete(id);
+    }
+    if (!preparationId) this.committedProposals.delete(proposalId);
+  }
+
+  dispose(): void { this.disposed = true; this.stop(); this.stopProposalCommit(); this.stopProposalRetirement(); this.preparations.clear(); this.proposalReceipts.clear(); this.committedProposals.clear(); this.listeners.clear(); this.previews.clear(); this.pendingPreviews.clear(); this.livePreviewTokens.clear(); }
 
   private topic<T>(key: string): T | undefined { return this.topics.get(key) as T | undefined; }
   private immediate<T>(action: RuntimeViewAction["action"], ...args: unknown[]): T {

@@ -17,12 +17,16 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
   type UncertainAcceptance = { request: RuntimeRequest<"acceptPreparedProposal">; sender: string; token: string;
     reconciliation?: Promise<boolean> };
   const uncertainAcceptances = new Map<string, UncertainAcceptance>();
+  const retireAcceptance = (request: RuntimeRequest<"acceptPreparedProposal">, committed: boolean) =>
+    broker.call(request.target.windowId, "retireProposalCommits", { proposalId: request.proposalId,
+      preparationId: committed ? undefined : request.preparationId }).catch(() => undefined);
   const reconcileAcceptance = (attempt: UncertainAcceptance): Promise<boolean> => {
     if (!attempt.reconciliation) {
-      const pending = broker.call(attempt.sender, "commitProposal", { ...attempt.request, reconcile: true }).then(committed => {
+      const pending = broker.call(attempt.sender, "commitProposal", { ...attempt.request, reconcile: true }).then(async committed => {
         if (uncertainAcceptances.get(attempt.request.proposalId) === attempt) {
           runtime.host.settleProposedPatchAcceptance(attempt.request.proposalId, attempt.token, committed);
           uncertainAcceptances.delete(attempt.request.proposalId);
+          await retireAcceptance(attempt.request, committed);
         }
         return committed;
       });
@@ -36,6 +40,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
   // returns an opaque receipt, so an otherwise valid large package never exceeds a broker message.
   const packages = new Map<string, { inspection: PluginPackageInspection; windowId: string }>();
   const previewSources = new Map<string, { token: string; source: string; windowId: string }>();
+  const pendingByWindow = new Map<string, Set<string>>();
   const proposalWindow = (id: string) => runtime.proposalWindowId(id) ?? "main";
   const assertProposalOwner = (id: string, windowId: string) => {
     if (proposalWindow(id) !== windowId) throw new Error("This proposal belongs to another document window.");
@@ -85,6 +90,14 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     const liveIds = new Set(pending.map(proposal => proposal.id));
     for (const id of previewSources.keys()) if (!liveIds.has(id)) previewSources.delete(id);
     const proposals = pending.filter(proposal => proposalWindow(proposal.id) === windowId);
+    const pendingIds = new Set(proposals.map(proposal => proposal.id));
+    const previousIds = pendingByWindow.get(windowId);
+    pendingByWindow.set(windowId, pendingIds);
+    // Absence is interpreted by the authoritative host, never by a possibly stale client view.
+    // This covers rejection and expiration as well as acceptance, without retaining tombstones.
+    for (const proposalId of previousIds ?? []) if (!pendingIds.has(proposalId)) {
+      void broker.call(windowId, "retireProposalCommits", { proposalId }).catch(() => undefined);
+    }
     // Keep large data URIs out of any one bounded message. The view reconstructs the exact URI
     // through bounded data reads, so native review windows receive the same image as before.
     const reviewProposals = proposals.map(proposal => {
@@ -119,7 +132,11 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
   const publishForWindow = (topic: string, read: (windowId: string) => unknown) => {
     for (const windowId of clients()) void broker.broadcastView([windowId], topic, encodeRuntimeView(read(windowId))).catch(() => undefined);
   };
-  const publishState = () => publishForWindow("state", snapshot);
+  const publishState = () => {
+    const liveWindows = new Set(clients());
+    for (const windowId of pendingByWindow.keys()) if (!liveWindows.has(windowId)) pendingByWindow.delete(windowId);
+    publishForWindow("state", snapshot);
+  };
   const describeError = (cause: unknown) => ({
     message: cause instanceof Error ? cause.message : String(cause),
     installCode: cause instanceof PluginInstallError ? cause.code : undefined,
@@ -254,6 +271,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
         return null;
       }
       runtime.host.settleProposedPatchAcceptance(request.proposalId, token, true);
+      await retireAcceptance(request, true);
       return null;
     }),
     broker.handle("getRuntimeView", (_request, sender) => encodeRuntimeView({ state: snapshot(sender), topics: topics(sender) })),
@@ -277,6 +295,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     for (const stop of stops) stop();
     packages.clear();
     previewSources.clear();
+    pendingByWindow.clear();
     uncertainAcceptances.clear();
   }, { publish: () => {
     publishState();
