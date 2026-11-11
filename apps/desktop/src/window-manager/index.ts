@@ -1,3 +1,4 @@
+import { loadStartWithFreshDocument } from "../startupSettings";
 import { acceptsPaletteEvent, ACTIVE_DOCUMENT_EVENT, currentPaletteTarget, paletteDocumentIsActive, paletteGestureTarget, paletteTargetRevision, setActivePaletteWindow, bindPaletteSnapshot, type PaletteMessage, type PaletteTarget } from "./paletteTarget";
 export type { PaletteTarget, PaletteMessage } from "./paletteTarget";
 import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportPreviewSettings";
@@ -732,26 +733,31 @@ export async function saveToolsetLayoutState(state: unknown): Promise<void> {
 
 /** Load the working-document autosave envelope (see documentSession.ts). Undefined when there is
  *  none or off the desktop runtime. */
-export async function loadDocumentSession(): Promise<unknown | undefined> {
+export async function loadDocumentSession(freshStart = loadStartWithFreshDocument()): Promise<unknown | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<unknown | null>("load_document_session").then((state) => state ?? undefined);
+  return invoke<unknown | null>("load_document_session", { freshStart }).then((state) => state ?? undefined);
 }
 
-/** Persist the working-document autosave envelope. JS owns the shape; Rust writes the opaque
- *  JSON. No-op off the desktop runtime. */
+// One sequence per document webview; allocated before asynchronous IPC preparation.
+let documentSessionRevision = 0;
+
+/** Send this window's snapshot to the sole native session coordinator. */
 /** Autosave ignores a failed write (the previous session stays); `strict` rejects instead, for callers
  *  that are about to end the process and must know the document reached disk. */
-export async function saveDocumentSession(state: unknown, options?: { strict?: boolean }): Promise<void> {
+export async function saveDocumentSession(state: unknown, options?: { strict?: boolean; flush?: boolean }): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
+  const revision = ++documentSessionRevision;
   const { invoke } = await import("@tauri-apps/api/core");
-  const write = invoke("save_document_session", { state });
+  const write = invoke("save_document_session", {
+    state, revision, flush: options?.flush === true || options?.strict === true, replacePreserved: true
+  });
   await (options?.strict ? write : write.catch(() => undefined));
 }
 

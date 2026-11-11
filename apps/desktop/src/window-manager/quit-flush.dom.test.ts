@@ -51,12 +51,14 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     const session = { lastEdit: "inside the autosave debounce" };
     const stop = await listenForQuitFlushRequest(async () => {
       // The document window uses this same write-then-confirm handshake on either platform.
-      await saveDocumentSession(session);
+      await saveDocumentSession(session, { flush: true });
       await confirmQuitAfterFlush();
     });
     expect(native.listen).toHaveBeenCalledWith(QUIT_FLUSH_REQUEST_EVENT, expect.any(Function));
     requestFlush();
-    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("save_document_session", { state: session }));
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("save_document_session", {
+      state: session, revision: expect.any(Number), flush: true, replacePreserved: true
+    }));
     expect(native.invoke).toHaveBeenCalledTimes(1);
     finishWrite();
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_after_flush"));
@@ -79,6 +81,17 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     native.invoke.mockRejectedValue(new Error("native exit unavailable"));
     await expect(confirmQuitAfterFlush()).resolves.toBeUndefined();
     expect(native.invoke).toHaveBeenCalledWith("quit_after_flush");
+  });
+
+  it("submits increasing revisions and requests an immediate strict update flush", async () => {
+    await saveDocumentSession({ edit: 1 });
+    await saveDocumentSession({ edit: 2 }, { strict: true });
+    const first = native.invoke.mock.calls[0]![1] as { revision: number };
+    expect(native.invoke.mock.calls[1]).toEqual(["save_document_session", {
+      state: { edit: 2 }, revision: first.revision + 1, flush: true, replacePreserved: true
+    }]);
+    native.invoke.mockRejectedValueOnce(new Error("disk full"));
+    await expect(saveDocumentSession({ edit: 3 }, { strict: true })).rejects.toThrow("disk full");
   });
 });
 

@@ -34,6 +34,7 @@ mod plugin_starter;
 mod problem_reports;
 mod runtime_broker;
 mod screen_capture;
+mod session_coordinator;
 mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
@@ -50,7 +51,7 @@ use clipboard_formats::{
 use clipboard_images::{ClipboardImageItem, SkippedClipboardImageItem};
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -339,6 +340,13 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 
     fn exit(&self) {
+        // Also drain accepted snapshots when the renderer did not answer before the grace expired.
+        if let Err(error) = self
+            .state::<session_coordinator::SessionCoordinator>()
+            .flush()
+        {
+            eprintln!("Could not flush document session before quit: {error}");
+        }
         tauri::AppHandle::exit(self, 0);
     }
 
@@ -832,7 +840,7 @@ struct NativeOpenDocumentPayload {
 
 #[derive(Default)]
 struct PendingOpenDocument {
-    payload: Mutex<Option<NativeOpenDocumentPayload>>,
+    payload: Mutex<VecDeque<NativeOpenDocumentPayload>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
 }
@@ -850,7 +858,10 @@ impl PendingOpenDocument {
         payload: NativeOpenDocumentPayload,
         main_window_exists: bool,
     ) -> Result<OpenDocumentDelivery, String> {
-        *self.payload.lock().map_err(|error| error.to_string())? = Some(payload);
+        self.payload
+            .lock()
+            .map_err(|error| error.to_string())?
+            .push_back(payload);
         Ok(if !self.setup_completed.load(Ordering::SeqCst) {
             OpenDocumentDelivery::PendingOnly
         } else if main_window_exists {
@@ -1049,6 +1060,7 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(session_coordinator::SessionCoordinator::default())
         .manage(document_windows::DocumentWindowRegistry::with_main())
         .manage(runtime_broker::State::default())
         .manage(palette_routing::PaletteRouting::default())
@@ -1185,6 +1197,24 @@ pub fn run() {
                         request_quit(window.app_handle());
                     }
                     WindowEvent::Destroyed => {
+                        if !APP_QUITTING.load(Ordering::SeqCst) && window.label() != "main" {
+                            if let Some(owner) = window
+                                .state::<document_windows::DocumentWindowRegistry>()
+                                .owner_of(window.label())
+                            {
+                                match window
+                                    .state::<session_coordinator::SessionCoordinator>()
+                                    .close_window(&owner.window_id)
+                                {
+                                    Ok(delay) => {
+                                        session_coordinator::schedule(window.app_handle(), delay)
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Could not remove closed session window: {error}")
+                                    }
+                                }
+                            }
+                        }
                         // The close button only hides the main window, so its actual destruction
                         // means the app is dying — including SIGTERM teardowns that never fire
                         // ExitRequested. Raise the quit flag so palette destruction that follows
@@ -1218,6 +1248,19 @@ pub fn run() {
                         let registry = window.state::<document_windows::DocumentWindowRegistry>();
                         let previous = registry.active_document_window().map(|w| w.window_id);
                         registry.mark_activated(window.label());
+                        if let Some(owner) = registry.owner_of(window.label()) {
+                            match window
+                                .state::<session_coordinator::SessionCoordinator>()
+                                .set_active(&owner.window_id)
+                            {
+                                Ok(delay) => {
+                                    session_coordinator::schedule(window.app_handle(), delay)
+                                }
+                                Err(error) => {
+                                    eprintln!("Could not record active session window: {error}")
+                                }
+                            }
+                        }
                         dialog_windows::reown_preferences(window.app_handle(), None);
                         if let Some(active) = registry.active_document_window() {
                             if previous.as_deref() != Some(active.window_id.as_str()) {
@@ -1381,6 +1424,12 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            match document_session_path(app) {
+                Ok(path) => app
+                    .state::<session_coordinator::SessionCoordinator>()
+                    .initialize(path, "main", true),
+                Err(error) => eprintln!("Could not start document session coordinator: {error}"),
+            }
             panel_window::observe_document_pointer_release(app);
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
@@ -3371,17 +3420,21 @@ mod toolbar_customization_persistence_tests {
 fn load_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    fresh_start: Option<bool>,
 ) -> Result<Option<serde_json::Value>, String> {
     if !is_document_window(&app, window.label()) {
         return Err("Only the main document window can restore the document session".into());
     }
-    let path = document_session_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is not registered")?;
+    let Some(mut session) = app
+        .state::<session_coordinator::SessionCoordinator>()
+        .restore_window(&owner.window_id, fresh_start.unwrap_or(false))?
+    else {
         return Ok(None);
     };
-
-    let mut session = serde_json::from_str(&contents)
-        .map_err(|error| format!("Document session is invalid: {error}"))?;
     document_session::restore_file_scopes(&mut session, |path| {
         use tauri_plugin_fs::FsExt;
         let scope = app
@@ -3400,20 +3453,35 @@ fn load_document_session(
 }
 
 /// The working document's autosave (serialized contents + file association). JS owns the envelope
-/// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
-/// opaque JSON, exactly like the toolbar customization state.
+/// snapshot; only the coordinator owns the session file and accepts revisioned window updates.
 #[tauri::command]
 fn save_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: serde_json::Value,
+    revision: u64,
+    flush: bool,
+    replace_preserved: bool,
 ) -> Result<(), String> {
     if !is_document_window(&app, window.label()) {
-        return Err("Only the main document window can persist the document session".into());
+        return Err("Only a registered document window can persist its session".into());
     }
-    let path = document_session_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is not registered")?;
+    let delay = app
+        .state::<session_coordinator::SessionCoordinator>()
+        .submit(
+            &owner.window_id,
+            revision,
+            state,
+            replace_preserved,
+            flush,
+            Instant::now(),
+        )?;
+    session_coordinator::schedule(&app, delay);
+    Ok(())
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
@@ -7821,10 +7889,15 @@ fn engine3d_target_triple() -> &'static str {
 
 #[tauri::command]
 fn take_pending_open_document(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Only a registered document window can drain opened files".into());
+    }
     let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
-    Ok(pending.take())
+    Ok(pending.pop_front())
 }
 
 /// Tauri restart cannot be prevented (ExitRequestApi::prevent_exit ignores RESTART_EXIT_CODE).
@@ -7989,37 +8062,45 @@ fn handle_opened_document_urls<R: Runtime>(
     app: &tauri::AppHandle<R>,
     urls: Vec<tauri::Url>,
 ) -> Result<(), String> {
-    let mut opened_payload = None;
-    for url in urls {
-        if let Some(payload) = open_document_payload_from_url(&url)? {
-            opened_payload = Some(payload);
-            break;
-        }
-    }
-    let Some(payload) = opened_payload else {
-        return Ok(());
-    };
-    deliver_opened_document(app, payload)
+    deliver_opened_documents(urls.iter().map(open_document_payload_from_url), |payload| {
+        deliver_opened_document(app, payload)
+    })
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
-/// second launch). Flags are skipped; the first supported document file wins,
-/// mirroring the first-file-URL rule of the macOS path.
+/// second launch). Flags are skipped; every supported document is queued in argument order.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_opened_document_args<R: Runtime>(
     app: &tauri::AppHandle<R>,
     args: impl IntoIterator<Item = String>,
     cwd: &Path,
 ) -> Result<(), String> {
-    let path = args
+    let payloads = args
         .into_iter()
         .filter(|arg| !arg.starts_with('-'))
         .map(|arg| cwd.join(arg))
-        .find(|path| is_openable_document_path(path));
-    let Some(path) = path else {
-        return Ok(());
-    };
-    deliver_opened_document(app, open_document_payload_from_path(&path)?)
+        .filter(|path| is_openable_document_path(path))
+        .map(|path| open_document_payload_from_path(&path).map(Some));
+    deliver_opened_documents(payloads, |payload| deliver_opened_document(app, payload))
+}
+
+/// A failed member must not discard the remaining files in an OS batch on either platform.
+fn deliver_opened_documents(
+    payloads: impl IntoIterator<Item = Result<Option<NativeOpenDocumentPayload>, String>>,
+    mut deliver: impl FnMut(NativeOpenDocumentPayload) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for payload in payloads {
+        let result = payload.and_then(|payload| payload.map(&mut deliver).unwrap_or(Ok(())));
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[cfg_attr(
@@ -8064,7 +8145,7 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
-    let delivery = state.record(payload.clone(), active_document_webview(app).is_some())?;
+    let delivery = state.record(payload, active_document_webview(app).is_some())?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
         // would collide with Tauri's window creation and abort inside the AppKit callback.
@@ -8075,7 +8156,7 @@ fn deliver_opened_document<R: Runtime>(
     if let Err(error) = ensure_main_window_visible(app) {
         eprintln!("Could not show ChemDraft main window for opened document: {error}");
     }
-    emit_open_document_to_main(app, &payload)
+    emit_open_document_to_main(app)
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -8172,16 +8253,12 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
     }
 }
 
-fn emit_open_document_to_main<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    payload: &NativeOpenDocumentPayload,
-) -> Result<(), String> {
-    // Deliver via the Tauri event for a running window; a cold start (window not yet
-    // listening) is covered by the pending-document state drained on mount. We deliberately
-    // do not `eval` document contents into the webview to avoid a script-injection surface.
+fn emit_open_document_to_main<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    // Wake the native FIFO drain. Cold starts remain queued until subscription, and events never
+    // carry a second copy of a file. Never eval document contents into a webview.
     let document = active_document_webview(app).ok_or("Document window is not available.")?;
     document
-        .emit_to(document.label(), OPEN_DOCUMENT_EVENT, payload.clone())
+        .emit_to(document.label(), OPEN_DOCUMENT_EVENT, ())
         .map_err(|error| error.to_string())
 }
 
@@ -9821,9 +9898,26 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     } else {
         None
     };
+    let mut saved = None;
     update_toolset_layout_state(window.app_handle(), |layout_state| {
         update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
-    })
+        saved = layout_state.main_window;
+    })?;
+    if let (Some(frame), Some(owner)) = (
+        saved,
+        window
+            .state::<document_windows::DocumentWindowRegistry>()
+            .owner_of(window.label()),
+    ) {
+        let delay = window
+            .state::<session_coordinator::SessionCoordinator>()
+            .set_frame(
+                &owner.window_id,
+                serde_json::to_value(frame).map_err(|error| error.to_string())?,
+            )?;
+        session_coordinator::schedule(window.app_handle(), delay);
+    }
+    Ok(())
 }
 
 fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
@@ -10567,11 +10661,11 @@ mod tests {
                 OpenDocumentDelivery::PendingOnly
             );
             state.setup_completed.store(true, Ordering::SeqCst);
-            let payload = state.payload.lock().expect("pending lock").take();
+            let payload = state.payload.lock().expect("pending lock").pop_front();
             let payload = payload.expect("document survives setup for the mount drain");
             assert_eq!(payload.path, "cold-open.chemdraft");
             assert_eq!(payload.contents, "<CDXML/>");
-            assert!(state.payload.lock().expect("pending lock").is_none());
+            assert!(state.payload.lock().expect("pending lock").is_empty());
         }
     }
 
@@ -10591,7 +10685,7 @@ mod tests {
                 .payload
                 .lock()
                 .expect("pending lock")
-                .as_ref()
+                .front()
                 .expect("pending document for the new window")
                 .contents,
             "<CDXML/>"
@@ -10608,7 +10702,42 @@ mod tests {
                 .expect("record document"),
             OpenDocumentDelivery::ShowWindowAndEmit
         );
-        assert!(state.payload.lock().expect("pending lock").is_some());
+        assert!(!state.payload.lock().expect("pending lock").is_empty());
+    }
+
+    #[test]
+    fn three_simultaneous_opened_files_are_queued_in_order_before_and_after_setup() {
+        for setup in [false, true] {
+            let state = PendingOpenDocument::default();
+            state.setup_completed.store(setup, Ordering::SeqCst);
+            for name in ["one.chemdraft", "two.cdxml", "three.cdx"] {
+                let mut payload = opened_document_test_payload();
+                payload.path = name.into();
+                state.record(payload, true).unwrap();
+            }
+            let mut queue = state.payload.lock().unwrap();
+            let paths: Vec<String> = std::iter::from_fn(|| queue.pop_front())
+                .map(|payload| payload.path)
+                .collect();
+            assert_eq!(paths, ["one.chemdraft", "two.cdxml", "three.cdx"]);
+            assert!(queue.is_empty());
+        }
+    }
+
+    #[test]
+    fn opened_file_batch_continues_after_a_failed_member() {
+        let state = PendingOpenDocument::default();
+        let payloads = [
+            Ok(Some(opened_document_test_payload())),
+            Err("unreadable second file".into()),
+            Ok(None),
+            Ok(Some(opened_document_test_payload())),
+        ];
+        let error =
+            deliver_opened_documents(payloads, |payload| state.record(payload, true).map(|_| ()))
+                .unwrap_err();
+        assert_eq!(error, "unreadable second file");
+        assert_eq!(state.payload.lock().unwrap().len(), 2);
     }
 
     #[cfg(windows)]

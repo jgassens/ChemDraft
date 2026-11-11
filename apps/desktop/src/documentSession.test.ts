@@ -8,6 +8,8 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  preserveDocumentSessionTabMetadata,
+  rawDocumentSessionTab,
   restoredDocumentFileState,
   restoredSavePathNotice,
   unrestoredTabContents,
@@ -131,9 +133,11 @@ describe("parseDocumentSessionEnvelope", () => {
     expect(parseDocumentSessionEnvelope(missingSavedAt)).toBeUndefined();
   });
 
-  it("drops unknown extra fields rather than carrying them forward", () => {
-    const parsed = parseDocumentSessionEnvelope({ ...valid, futureField: true });
+  it("normalizes the display view while retaining raw future metadata for autosave", () => {
+    const raw = { ...valid, futureField: true };
+    const parsed = parseDocumentSessionEnvelope(raw)!;
     expect(parsed).toEqual(valid);
+    expect(rawDocumentSessionTab(parsed as DocumentSessionEnvelope)).toBe(raw);
   });
 });
 
@@ -306,5 +310,25 @@ describe("strict session flush (before the updater's installer ends the process)
     expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, blank: true, fileState: { dirty: false } })).toBeUndefined();
     expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, fileState: { path: "C:/a.cdxml", dirty: false } }))
       .toBeUndefined();
+  });
+});
+
+
+describe("session tab metadata carry-forward", () => {
+  it("preserves future fields beside and inside regenerated metadata and clears known optional fields", () => {
+    const current = buildDocumentSessionEnvelope({ contents: "new", payloadHash: "new", filename: "new" },
+      { dirty: true }, "new", false);
+    const original = { ...current, contents: "old", path: "/old.chemdraft",
+      future: { opaque: ["unchanged"] }, nativeDocumentVersions: { formatVersion: "unknown" },
+      openWarnings: { futureReport: { preserve: true }, displayName: "old", sourceLabel: "source", warnings: [] } };
+    const result = preserveDocumentSessionTabMetadata(original, { ...current,
+      openWarnings: { displayName: "new", sourceLabel: "source", warnings: [] } });
+    expect(result.contents).toBe("new");
+    expect(result).toHaveProperty("future", original.future);
+    expect(result.openWarnings).toHaveProperty("futureReport", { preserve: true });
+    expect(result.openWarnings?.displayName).toBe("new");
+    expect(result).not.toHaveProperty("path");
+    expect(result).not.toHaveProperty("nativeDocumentVersions");
+    expect(original.contents).toBe("old");
   });
 });

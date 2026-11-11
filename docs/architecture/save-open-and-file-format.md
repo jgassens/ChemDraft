@@ -101,13 +101,13 @@ File UI state is kept outside the native document:
 
 Dirty state is driven by document history commits. Viewport, palette, ruler, and other UI-only changes must not dirty the document.
 
-Session restore renews per-run fs/asset access natively while reading the app's own
-`document-session.json`. Only readable tab envelopes' saved paths are considered (including
+Session restore renews per-run fs/asset access from the coordinator's startup read of the app's own
+`document-session.json` (see [the session coordinator](document-session.md)). Only readable tab envelopes' saved paths are considered (including
 legacy single-document sessions and readable kept tabs retried on launch). The outer active-tab
 mirror and arbitrary objects in document contents never authorize paths. Each grant uses
 `allow_file` for one absolute, existing, regular `.chemdraft`, `.cdxml` or `.cdx` file; directories,
 symlink components, Windows reparse points, and read-only files are refused. Both session IPC
-commands accept only the main document window, and no frontend path-grant command is exposed.
+commands accept only registered document windows, and no frontend path-grant command is exposed.
 
 A refused or failed grant adds a transient `restoreSavePathError` to the returned tab. Restore
 keeps its contents, dirty state, and original file association; Save (including a close prompt's

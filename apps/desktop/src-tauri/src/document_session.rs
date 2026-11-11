@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 /// Match the readable tab envelope in documentSession.ts. Cosmetic metadata is optional. Do not
 /// treat the outer active-tab mirror, document contents, or arbitrary nested objects as file grants.
-fn readable_tab(tab: &Value) -> bool {
+pub(crate) fn readable_tab(tab: &Value) -> bool {
     tab.is_object()
         && tab.get("version").and_then(Value::as_u64) == Some(1)
         && tab.get("tabs").is_none()

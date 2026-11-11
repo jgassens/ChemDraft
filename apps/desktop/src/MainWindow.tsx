@@ -1,3 +1,4 @@
+import { createNativeOpenQueue } from "./nativeOpenQueue";
 import { bindPaletteDocument, currentPaletteTarget, type PaletteTarget } from "./window-manager/paletteTarget";
 import { listenForPaletteDocumentActivation } from "./window-manager";
 import { createDocumentTabId, documentWindowId, DocumentIdentities, DrawingIncarnations } from "./documentIdentity";
@@ -200,6 +201,7 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  preserveDocumentSessionTabMetadata,
   restoredDocumentFileState,
   restoredSavePathNotice,
   shouldRestoreDocumentSession,
@@ -1776,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.02.20-codex";
+const CURRENT_BUILD_STAMP = "11.11.03.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2941,6 +2943,8 @@ export function MainWindow({
   /** A shell open that failed before the session restore ran; the restore's status repeats it. */
   const shellOpenFailureRef = useRef<string | undefined>(undefined);
   const documentSessionSaveEnabledRef = useRef(false);
+  const sessionTabMetadataRef = useRef(new Map<string, unknown>());
+  const nativeOpenQueueRef = useRef<ReturnType<typeof createNativeOpenQueue<NativeOpenDocumentPayload>> | undefined>(undefined);
   const unrestoredSessionTabsRef = useRef<unknown[]>([]);
   const [unrestoredSessionTabCount, setUnrestoredSessionTabCount] = useState(0);
   const unrestoredTabFlowRunningRef = useRef(false);
@@ -9907,6 +9911,7 @@ export function MainWindow({
     }
     importedPageFitGateRef.current.dismiss(id);
     documentTabSnapshotsRef.current.delete(id);
+    sessionTabMetadataRef.current.delete(id);
     parkedPalettePreviewsRef.current.delete(id);
     paletteDocumentRevisionsRef.current.delete(id);
     documentIdentities.remove(id);
@@ -10429,16 +10434,15 @@ export function MainWindow({
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
+    const openNativePayload = async (payload: NativeOpenDocumentPayload, coalesceDuplicate = false) => {
       try {
         const contents = decodeNativeDocumentContents(payload);
         const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
         const now = Date.now();
         const last = lastNativeOpenPayloadKeyRef.current;
-        // A single OS open is delivered via both the Tauri event and the pending-document
-        // poll, so coalesce identical payloads that arrive close together. Use a time window
-        // rather than a permanent key so a later request still activates its already-open tab.
-        if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
+        // Legacy embedding payload events can be delivered twice. The native FIFO consumes once,
+        // so repeated OS requests must always reactivate their file, even inside this time window.
+        if (coalesceDuplicate && last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
           return;
         }
         lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
@@ -10455,9 +10459,14 @@ export function MainWindow({
       }
     };
 
+    nativeOpenQueueRef.current ??= createNativeOpenQueue(takePendingNativeOpenDocument);
+    const queue = nativeOpenQueueRef.current;
+    const pauseQueue = queue.subscribe(openNativePayload);
     void listenForNativeOpenDocuments((payload) => {
       if (!disposed) {
-        openNativePayload(payload);
+        // Native events only wake the FIFO. A payload is accepted for local/test embeddings.
+        if (payload) void openNativePayload(payload, true);
+        else void queue.wake().catch(() => undefined);
       }
     })
       .then((cleanup) => {
@@ -10467,19 +10476,15 @@ export function MainWindow({
           cleanup();
         } else {
           unlisten = cleanup;
-        }
-      })
-      .catch(() => undefined);
-    void takePendingNativeOpenDocument()
-      .then((payload) => {
-        if (!disposed && payload) {
-          openNativePayload(payload);
+          // Subscribing first closes the race between the cold-start drain and a new OS open.
+          void queue.wake().catch(() => undefined);
         }
       })
       .catch(() => undefined);
 
     return () => {
       disposed = true;
+      pauseQueue();
       unlisten?.();
     };
   }, [openDocumentContents]);
@@ -10538,7 +10543,7 @@ export function MainWindow({
               }
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
               const reports = restoreSessionWarningReports(session);
-              restored.push({ session, opened, resolved, history, reports, candidateIndex, id: createDocumentTabId() });
+              restored.push({ session, rawTab, opened, resolved, history, reports, candidateIndex, id: createDocumentTabId() });
             } catch {
               skipped.push(rawTab);
             }
@@ -10568,9 +10573,11 @@ export function MainWindow({
             tabs = [...documentTabsRef.current, ...restoredTabs];
           } else {
             documentTabSnapshotsRef.current.clear();
+            sessionTabMetadataRef.current.clear();
             nonPristineTabsRef.current.clear();
           }
-          for (const { id, session, resolved, opened, history, reports } of restored) {
+          for (const { id, session, rawTab, resolved, opened, history, reports } of restored) {
+            sessionTabMetadataRef.current.set(id, rawTab);
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
             const savePathNotice = restoredSavePathNotice(session);
             documentTabSnapshotsRef.current.set(id, {
@@ -10632,7 +10639,7 @@ export function MainWindow({
   // "the previous autosave stays" is not good enough there — a failed save must stop the update.
   // That includes the gate: with autosave off (the last session could not be read) or the restore
   // still running, nothing is written, and resolving would let the installer discard the drawing.
-  const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean }) => {
+  const writeDocumentSessionNow = useCallback(async (options?: { strict?: boolean; flush?: boolean }) => {
     if (!documentSessionHydratedRef.current || !documentSessionSaveEnabledRef.current) {
       snapshotDocumentTab(false);
       const refusal = options?.strict
@@ -10669,7 +10676,7 @@ export function MainWindow({
           payload = createNativeSavePayload(tabDocument);
           sessionPayloadCacheRef.current.set(tabDocument, payload);
         }
-        return {
+        return preserveDocumentSessionTabMetadata(sessionTabMetadataRef.current.get(tab.id), {
           ...buildDocumentSessionEnvelope(payload, snapshot.file,
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
@@ -10679,12 +10686,12 @@ export function MainWindow({
           nativeDocumentVersions: tabDocument.formatVersion || tabDocument.minAppVersion ? {
             formatVersion: tabDocument.formatVersion, minAppVersion: tabDocument.minAppVersion
           } : undefined
-        };
+        });
       });
       const envelope = buildDocumentTabsSession(tabs,
         documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
       if (unrestoredSessionTabsRef.current.length) envelope.unrestoredTabs = unrestoredSessionTabsRef.current;
-      await saveDocumentSession(envelope, { strict: options?.strict });
+      await saveDocumentSession(envelope, { strict: options?.strict, flush: options?.flush });
       skippedSessionRestoreRef.current = false;
     } catch (error) {
       if (options?.strict) {
@@ -10718,7 +10725,7 @@ export function MainWindow({
     let disposed = false;
     void listenForQuitFlushRequest(async () => {
       await dialogCoordinatorRef.current?.dispose("quit");
-      await writeDocumentSessionNow();
+      await writeDocumentSessionNow({ flush: true });
       await confirmQuitAfterFlush();
     }).then((cleanup) => {
       if (disposed) {
@@ -10765,7 +10772,7 @@ export function MainWindow({
         if (!dirty) {
           quitMutationFrozenRef.current = true;
           if (await resumeQuitAfterPrompt(requestId)) {
-            await writeDocumentSessionNow();
+            await writeDocumentSessionNow({ flush: true });
             await confirmPromptedQuit(requestId);
           }
           return;
@@ -11178,7 +11185,7 @@ export function MainWindow({
       }
       // Re-arm grace before session IPC so a stalled flush still arms #99's exit watchdog.
       if (!await resumeQuitAfterPrompt(requestId)) return;
-      await writeDocumentSessionNow();
+      await writeDocumentSessionNow({ flush: true });
       await confirmPromptedQuit(requestId);
     } catch (error) {
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
@@ -34164,12 +34171,11 @@ async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayloa
 }
 
 async function listenForNativeOpenDocuments(
-  handler: (payload: NativeOpenDocumentPayload) => void
+  handler: (payload?: NativeOpenDocumentPayload) => void
 ): Promise<() => void> {
-  return listenTauriEvent<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
-    if (isNativeOpenDocumentPayload(event.payload)) {
-      handler(event.payload);
-    }
+  return listenCurrentWindowEvent<unknown>(nativeOpenDocumentEvent, (event) => {
+    if (event.payload === null || event.payload === undefined) handler();
+    else if (isNativeOpenDocumentPayload(event.payload)) handler(event.payload);
   });
 }
 

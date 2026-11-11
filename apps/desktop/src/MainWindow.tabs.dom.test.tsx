@@ -57,6 +57,7 @@ const native = vi.hoisted(() => ({
   listToolsets: vi.fn<() => Promise<ToolsetWindowState[]>>(),
   openToolset: vi.fn<(id: string) => Promise<ToolsetWindowState>>(),
   session: undefined as unknown,
+  pendingOpens: [] as unknown[],
   load: vi.fn<() => Promise<unknown>>(),
   saveSession: vi.fn<(value: unknown) => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
@@ -135,6 +136,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
   isTauri: () => native.suspendUtilities,
   invoke: vi.fn(async (command: string, options?: { suspended?: boolean }) => {
+    if (command === "take_pending_open_document") return native.pendingOpens.shift() ?? null;
     if (command === "read_clipboard_payload") return native.clipboardPending ?? { types: [], textItems: [] };
     if (command === "suspend_toolset_windows") {
       if (native.suspendFailure && options?.suspended) throw new Error("Native utility hide refused");
@@ -236,6 +238,7 @@ describe("documents in one window", () => {
       return { toolsetId, open: native.toolsetWindows.get(toolsetId) ?? false, focused: false };
     });
     native.session = undefined;
+    native.pendingOpens.length = 0;
     native.events.clear();
     native.load.mockImplementation(async () => native.session);
     native.saveSession.mockImplementation(async (value) => { native.session = JSON.parse(JSON.stringify(value)); });
@@ -2396,6 +2399,22 @@ describe("documents in one window", () => {
   });
 
 
+  it("carries future metadata through restore, edits and autosave without changing drawings", async () => {
+    const previous = threeTabSession();
+    const raw = previous.tabs![1]! as unknown as Record<string, unknown>;
+    raw.futureTab = { opaque: ["keep", 99] };
+    (raw.view as Record<string, unknown>).futureView = { keep: true };
+    native.session = previous;
+    await remount();
+    await paste("Edit after future metadata");
+    await flush();
+    const saved = native.session as ReturnType<typeof threeTabSession>;
+    expect(saved.tabs![1]).toHaveProperty("futureTab", raw.futureTab);
+    expect(saved.tabs![1]!.view).toHaveProperty("futureView", { keep: true });
+    expect(saved.tabs![1]!.contents).toContain("Edit after future metadata");
+    expect(openNativeDocument(saved.tabs![0]!.contents).document?.title).toBe("First");
+  });
+
   describe("fresh-document launch preference", () => {
     it.each([false, true])("uses the launch preference %s without changing live history", async enabled => {
       const defaultViewport = bridge().snapshot().viewport;
@@ -2470,6 +2489,40 @@ describe("documents in one window", () => {
       expect(tabs()).toHaveLength(enabled ? 2 : 5);
       expect(bridge().snapshot().document.title).toBe("Later OS file");
     });
+
+    it.each([[false, "MacIntel"], [true, "MacIntel"], [false, "Win32"], [true, "Win32"]] as const)(
+      "drains three native startup files only after hydration (fresh %s, %s)", async (enabled, platform) => {
+        vi.stubGlobal("navigator", { platform });
+        saveStartWithFreshDocument(enabled);
+        let hydrated!: (session: unknown) => void;
+        native.load.mockImplementationOnce(() => new Promise(resolve => { hydrated = resolve; }));
+        for (let index = 1; index <= 3; index++) native.pendingOpens.push({
+          path: platform === "Win32" ? String.raw`D:\drawings\native-${index}.chemdraft` : `/tmp/native-${index}.chemdraft`,
+          displayName: `native-${index}.chemdraft`, contents: fileContents(`Native batch ${index}`)
+        });
+        await remount();
+        expect(tabs()).toHaveLength(1);
+        expect(bridge().snapshot().document.title).toBe("Untitled");
+        await act(async () => {
+          hydrated(threeTabSession());
+          await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        expect(tabs()).toHaveLength(enabled ? 3 : 6);
+        expect(bridge().snapshot().document.title).toBe("Native batch 3");
+        await activate(enabled ? 0 : 3);
+        native.pendingOpens.push({
+          path: platform === "Win32" ? String.raw`D:\drawings\native-3.chemdraft` : "/tmp/native-3.chemdraft",
+          displayName: "native-3.chemdraft", contents: fileContents("Native batch 3")
+        });
+        await act(async () => native.events.get("chemdraft://open-document")!(undefined));
+        expect(bridge().snapshot().document.title).toBe("Native batch 3");
+        expect(tabs()).toHaveLength(enabled ? 3 : 6);
+        const saved = await flush();
+        for (let index = 1; index <= 3; index++) {
+          expect(saved.tabs!.filter(tab => openNativeDocument(tab.contents).document?.title === `Native batch ${index}`)).toHaveLength(1);
+        }
+        expect(native.pendingOpens).toHaveLength(0);
+      });
 
     it.each([false, true])("does not replace live drawings on invalid OS file requests (fresh %s)", async enabled => {
       saveStartWithFreshDocument(enabled); native.session = threeTabSession(); await remount();

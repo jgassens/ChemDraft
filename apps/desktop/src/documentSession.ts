@@ -161,6 +161,23 @@ export function rawDocumentSessionTab(tab: DocumentSessionEnvelope): unknown {
   return rawSessionTabs.get(tab) ?? tab;
 }
 
+/** Carry future metadata through document serialization, including nested view/report fields.
+ * Known optional fields can still be cleared by the current document state. */
+export function preserveDocumentSessionTabMetadata(raw: unknown, current: DocumentSessionEnvelope): DocumentSessionEnvelope {
+  const merge = (old: unknown, next: unknown): unknown => {
+    if (!record(old) || Array.isArray(old) || !record(next) || Array.isArray(next)) return next;
+    const result = { ...old };
+    for (const [key, value] of Object.entries(next)) result[key] = merge(old[key], value);
+    return result;
+  };
+  const result = merge(raw, current) as DocumentSessionEnvelope;
+  for (const key of ["path", "restoreSavePathError", "unrestoredTabs", "view", "openWarnings", "saveWarnings",
+    "nativeDocumentVersions", "pristine"] as const) {
+    if (!(key in current)) delete result[key];
+  }
+  return result;
+}
+
 /** Retry carried envelopes through the current parser without normalizing away recovery data. */
 export function documentSessionRestoreCandidates(envelope: ParsedDocumentSession): unknown[] {
   const tabs = envelope.tabs ?? ("contents" in envelope ? [envelope] : []);

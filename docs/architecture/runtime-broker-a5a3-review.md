@@ -156,7 +156,21 @@ macOS Apple silicon, macOS Intel and Windows native execution are **unverified**
 must run the native gauntlet and app checks after the actual ownership cutover. No native build,
 launch or full gauntlet is claimed here.
 
-## Remaining work — native verification after A5b
+## Remaining work — native verification after A6
+
+A6 adds the sole Rust session coordinator, revisioned v2 persistence, a one-time atomic v1 backup,
+per-window restore views, the temporary combined-window restore, metadata preservation and queued
+OS file opens. See [document-session.md](document-session.md) for the format and API. Build stamp:
+`11.11.03.00-codex`. No Cargo command or native launch ran in this worker session. Integration must
+run Rust fmt/clippy/tests and packaged checks on macOS Apple silicon, macOS Intel and Windows,
+including exact migration/backup retention, fresh-start preservation, crash/relaunch, strict update
+flush and three-file Finder/Explorer opens. The source assertions in `App.test.ts` for the old
+panel parent/title remain baseline failures from before A6; their expected patterns are absent in HEAD.
+
+Remaining implementation is A7's close/quit and all-renderer flush barrier, A8/A9 menus/focus,
+A10 native window creation and separate-window restore, A11 diagnostics, A12 final docs, and
+the held A10b tab moves. A6's offer/installed/release hooks have a stub-client dry run; no tab
+movement or second-window UI is enabled.
 
 **A5a implementation is complete**, including production hidden-host startup, native adapter
 method/direction/target checks, minimal host service grants and asynchronous readiness. The first
@@ -188,8 +202,8 @@ Remaining work is coordinator verification: Cargo fmt/clippy/tests and packaged 
 Apple silicon, macOS Intel and Windows. Check the encoded native owner/Windows HWND, AppKit focus
 return, no taskbar entry, deferred-close cleanup, monitor-scale restore, single-window parity and
 two-window panel/prompt/overlay/assistant behavior. The new Rust tests were formatted but not run,
-per the worker's no-Cargo instruction. No second-window UI or tab move is enabled here; A6/A7 and
-the held A10b implementation remain separate tasks.
+per the worker's no-Cargo instruction. No second-window UI or tab move is enabled here; A6 is now
+implemented above, while A7 and the held A10b implementation remain separate tasks.
 
 The new host-services grant is exact-`runtime`: existing engines/controllers, scoped plugin storage/
 staging and the unchanged release URL allowlist. Image read/stat depend on the native picker scope.
