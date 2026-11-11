@@ -59,7 +59,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -189,9 +189,9 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Destroyed events would be recorded as user closes (visible: false) and clobber the saved
 /// open-palette set that the next launch restores.
 static APP_QUITTING: AtomicBool = AtomicBool::new(false);
-// Destruction can raise APP_QUITTING before any drain. Track the bounded drain separately so
-// that fallback exit still saves, while an AppKit deadline never incurs another wait afterward.
-static EXIT_SESSION_DRAIN_HANDLED: AtomicBool = AtomicBool::new(false);
+// Destruction can raise APP_QUITTING before any drain. Every exit caller joins this drain's
+// completion or original deadline; an AppKit reply finishes it without adding another wait.
+static EXIT_SESSION_DRAIN: ExitSessionDrain = ExitSessionDrain::new();
 
 /// Application-menu Quit on macOS, File ▸ Exit elsewhere.
 const APP_QUIT_COMMAND_ID: &str = "app.quit";
@@ -445,25 +445,72 @@ trait QuitHost: Clone + Send + 'static {
     fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
 
-/// Every fallback exit gets at most one bounded drain. In particular, AppKit's deadline must
-/// not be followed by another wait in ExitRequested or Exit.
-fn claim_exit_session_drain_with(quitting: &AtomicBool, handled: &AtomicBool) -> bool {
-    quitting.store(true, Ordering::SeqCst);
-    !handled.swap(true, Ordering::SeqCst)
+enum ExitSessionDrainState {
+    Idle,
+    Pending(Instant),
+    Finished,
+}
+
+struct ExitSessionDrain {
+    state: Mutex<ExitSessionDrainState>,
+    finished: Condvar,
+}
+
+impl ExitSessionDrain {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(ExitSessionDrainState::Idle),
+            finished: Condvar::new(),
+        }
+    }
+
+    fn finish(&self) {
+        *self.state.lock().unwrap() = ExitSessionDrainState::Finished;
+        self.finished.notify_all();
+    }
+
+    fn run(&self, deadline: Instant, drain: impl FnOnce(Duration)) {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            match *state {
+                ExitSessionDrainState::Idle => {
+                    *state = ExitSessionDrainState::Pending(deadline);
+                    drop(state);
+                    drain(deadline.saturating_duration_since(Instant::now()));
+                    self.finish();
+                    return;
+                }
+                ExitSessionDrainState::Pending(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return;
+                    }
+                    // Only this small state lock is held here, never a persistence lock.
+                    state = self.finished.wait_timeout(state, remaining).unwrap().0;
+                }
+                ExitSessionDrainState::Finished => return,
+            }
+        }
+    }
 }
 
 fn flush_session_before_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
-    if !claim_exit_session_drain_with(&APP_QUITTING, &EXIT_SESSION_DRAIN_HANDLED) {
-        return;
-    }
-    let timeout = remaining_quit_flush_grace(&QUIT, Instant::now());
-    if let Err(error) = flush_session_with_timeout(app, timeout) {
-        eprintln!("Could not flush document session before quit: {error}");
-    }
+    APP_QUITTING.store(true, Ordering::SeqCst);
+    let now = Instant::now();
+    let deadline = now + remaining_quit_flush_grace(&QUIT, now);
+    EXIT_SESSION_DRAIN.run(deadline, |remaining| {
+        let app = app.clone();
+        if let Err(error) =
+            session_coordinator::with_timeout(remaining, move || drain_exit_persistence(&app))
+        {
+            eprintln!("Could not flush document session before quit: {error}");
+        }
+    });
 }
 
 fn flush_session<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    flush_session_with_timeout(app, QUIT_FLUSH_GRACE)
+    let app = app.clone();
+    session_coordinator::with_timeout(QUIT_FLUSH_GRACE, move || drain_persistence(&app))
 }
 
 fn remaining_quit_flush_grace(flow: &QuitFlow, now: Instant) -> Duration {
@@ -476,20 +523,31 @@ fn remaining_quit_flush_grace(flow: &QuitFlow, now: Instant) -> Duration {
         })
 }
 
-fn flush_session_with_timeout<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    timeout: Duration,
+fn drain_exit_persistence<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    dismiss_then_drain_with(
+        || dialog_windows::dismiss_all(app, "quit"),
+        || drain_persistence(app),
+    )
+}
+
+/// Capture final frames before draining, including when a clean document confirms a prompted
+/// quit without dismissing its dialogs. Destruction then has no uncaptured final frames.
+fn dismiss_then_drain_with(
+    dismiss_dialogs: impl FnOnce(),
+    drain: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    let app = app.clone();
-    session_coordinator::with_timeout(timeout, move || {
-        drain_quit_persistence_with(
-            || {
-                app.state::<session_coordinator::SessionCoordinator>()
-                    .flush()
-            },
-            dialog_windows::drain_pending_position_writes,
-        )
-    })
+    dismiss_dialogs();
+    drain()
+}
+
+fn drain_persistence<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    drain_quit_persistence_with(
+        || {
+            app.state::<session_coordinator::SessionCoordinator>()
+                .flush()
+        },
+        dialog_windows::drain_pending_position_writes,
+    )
 }
 
 /// Both kinds of persistence share the caller's single bounded wait. Even a failed session
@@ -551,20 +609,14 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(target_os = "macos")]
     fn reply_to_appkit_termination(&self, flow: &'static QuitFlow, terminate: bool) {
         if terminate {
-            EXIT_SESSION_DRAIN_HANDLED.store(true, Ordering::SeqCst);
+            EXIT_SESSION_DRAIN.finish();
         }
         macos_quit::reply_to_termination(self, flow, terminate);
     }
 
     #[cfg(any(target_os = "macos", test))]
     fn drain_appkit_session(&self) -> Result<(), String> {
-        drain_quit_persistence_with(
-            || {
-                self.state::<session_coordinator::SessionCoordinator>()
-                    .flush()
-            },
-            dialog_windows::drain_pending_position_writes,
-        )
+        drain_exit_persistence(self)
     }
 
     /// Windows: `exit` only asks the event loop to stop, and the event loop runs on the main thread,
@@ -11659,12 +11711,18 @@ mod tests {
     #[test]
     fn fallback_exit_drains_after_destruction_but_never_waits_again_after_appkits_deadline() {
         let quitting = AtomicBool::new(true); // Destroyed set this before any drain.
-        let handled = AtomicBool::new(false);
-        assert!(claim_exit_session_drain_with(&quitting, &handled));
-        assert!(!claim_exit_session_drain_with(&quitting, &handled));
-        // AppKit's YES claims this guard even when its writer is still blocked at the deadline.
-        let handled = AtomicBool::new(true);
-        assert!(!claim_exit_session_drain_with(&quitting, &handled));
+        let drain = ExitSessionDrain::new();
+        let calls = std::cell::Cell::new(0);
+        assert!(quitting.load(Ordering::SeqCst));
+        let deadline = Instant::now() + QUIT_FLUSH_GRACE;
+        // A completed-drain count replaces claim booleans because callers now share completion.
+        drain.run(deadline, |_| calls.set(calls.get() + 1));
+        drain.run(deadline, |_| calls.set(calls.get() + 1));
+        assert_eq!(calls.get(), 1);
+        // AppKit's YES completes the shared gate even if its writer remains blocked.
+        let drain = ExitSessionDrain::new();
+        drain.finish();
+        drain.run(deadline, |_| panic!("AppKit already completed quit"));
     }
 
     #[test]
@@ -11714,6 +11772,77 @@ mod tests {
             host.wait_for_calls(3),
             ["ask to flush", "exit", "force exit"]
         );
+    }
+
+    #[test]
+    fn two_document_confirmations_join_one_drain_before_exit_or_watchdog() {
+        for stalls_until_deadline in [false, true] {
+            let persistence = Arc::new(Mutex::new(()));
+            let held = persistence.lock().unwrap();
+            let writer = persistence.clone();
+            let drain = Arc::new(ExitSessionDrain::new());
+            let (entered, entering) = mpsc::channel();
+            let (started, starting) = mpsc::channel();
+            let flow = test_quit_flow(Duration::from_secs(1), Duration::from_millis(20));
+            let host = StuckAppHost {
+                prepare_exit: Arc::new(move || {
+                    entered.send(()).unwrap();
+                    let writer = writer.clone();
+                    let started = started.clone();
+                    let now = Instant::now();
+                    drain.run(now + remaining_quit_flush_grace(flow, now), |timeout| {
+                        let result = session_coordinator::with_timeout(timeout, move || {
+                            started.send(()).unwrap();
+                            drop(writer.lock().unwrap());
+                            Ok(())
+                        });
+                        assert_eq!(result.is_err(), stalls_until_deadline);
+                    });
+                }),
+                ..StuckAppHost::new(true)
+            };
+            flow.requested.store(true, Ordering::SeqCst);
+            flow.state.lock().unwrap().flush_deadline = Some(Instant::now() + flow.flush_grace);
+            assert!(host.ask_document_to_flush());
+            let first_host = host.clone();
+            let first = thread::spawn(move || {
+                quit_now_with(flow, &first_host, QuitReason::FlushConfirmed);
+            });
+            entering.recv_timeout(Duration::from_secs(2)).unwrap();
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            let second_host = host.clone();
+            let (returned, returning) = mpsc::channel();
+            let second = thread::spawn(move || {
+                quit_now_with(flow, &second_host, QuitReason::FlushConfirmed);
+                returned.send(()).unwrap();
+            });
+            entering.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(
+                returning.recv_timeout(Duration::from_millis(30)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(host.calls(), ["ask to flush"]);
+            assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+            if !stalls_until_deadline {
+                drop(held);
+                first.join().unwrap();
+                second.join().unwrap();
+            } else {
+                // Both confirmations and the watchdog finish while disk I/O
+                // remains locked. Joining must reuse the first deadline, never start a new one.
+                returning.recv_timeout(Duration::from_secs(2)).unwrap();
+                first.join().unwrap();
+                second.join().unwrap();
+                host.wait_for_calls(4);
+                assert!(host.calls().contains(&"force exit"));
+                drop(held);
+            }
+            assert!(starting.try_recv().is_err());
+            assert_eq!(
+                host.calls().iter().filter(|call| **call == "exit").count(),
+                2
+            );
+        }
     }
 
     #[test]

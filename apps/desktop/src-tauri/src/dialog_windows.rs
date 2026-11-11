@@ -4186,6 +4186,82 @@ mod tests {
     }
 
     #[test]
+    fn clean_prompted_quit_captures_destruction_frames_before_the_only_drain() {
+        for platform in ["macos", "windows"] {
+            let path = preferences_test_path(platform);
+            let expected = preferences_native_frame(platform, 1.5, false).unwrap();
+            let mut registry = Registry::default();
+            let message = snapshot();
+            let owner = message.owner_window_id.clone();
+            let (registration, _) =
+                register(&crate::test_documents(), &mut registry, message, false).unwrap();
+            registry
+                .sessions
+                .get_mut(&registration.host_id)
+                .unwrap()
+                .pending_move = Some((Instant::now(), expected.clone()));
+            let tracker = Arc::new(PositionWriteTracker::default());
+            // A clean document confirms without renderer dialog disposal: nothing is tracked
+            // yet, so draining here (before native dismissal) would incorrectly finish at once.
+            assert_eq!(*tracker.pending.lock().unwrap(), 0);
+            let io = Arc::new(Mutex::new(()));
+            let held = io.lock().unwrap();
+            let worker_io = io.clone();
+            let worker_path = path.clone();
+            let (started, starting) = std::sync::mpsc::channel();
+            let (finished, finishing) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result =
+                    crate::session_coordinator::with_timeout(Duration::from_secs(2), move || {
+                        crate::dismiss_then_drain_with(
+                            || {
+                                // The same removal/capture used by dismiss_all/dismiss_owned
+                                // moves writes normally deferred until owner destruction earlier.
+                                for mut session in take_owned_sessions(&mut registry, &owner) {
+                                    let (_, saved) = session.pending_move.take().unwrap();
+                                    let path = worker_path.clone();
+                                    let io = worker_io.clone();
+                                    let kind = session.snapshot.dialog_kind;
+                                    persist_close_tracked_with(&tracker, true, move || {
+                                        let _io = io.lock().unwrap();
+                                        write_positions(&path, vec![(kind, saved)]);
+                                    });
+                                }
+                                assert_eq!(*tracker.pending.lock().unwrap(), 1);
+                                // Later owner destruction cannot register another final frame.
+                                assert!(take_owned_sessions(&mut registry, &owner).is_empty());
+                            },
+                            || {
+                                started.send(()).unwrap();
+                                crate::drain_quit_persistence_with(|| Ok(()), || tracker.drain())
+                            },
+                        )
+                    });
+                finished.send(result).unwrap();
+            });
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(
+                finishing.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(held);
+            finishing
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            worker.join().unwrap();
+            let positions: HashMap<String, SavedPosition> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(positions.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&positions["pageSize"]).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn quit_drain_deadline_abandons_blocked_frames_without_truncating_the_saved_file() {
         for platform in ["macos", "windows"] {
             let path = preferences_test_path(platform);
