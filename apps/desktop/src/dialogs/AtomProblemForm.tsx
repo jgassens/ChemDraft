@@ -1,13 +1,16 @@
 import { useEffect } from "react";
+import { useDialogContentReady } from "./dialogContentFit";
 import type { AtomProblemSnapshot } from "./dialogProtocol";
-export function AtomProblemForm({ data, busy, error, onAction, onClose }: {
+export function AtomProblemForm({ data, busy, error, onAction, onClose, onReady }: {
   data: AtomProblemSnapshot; busy: boolean; error?: string; onAction(action: AtomProblemSnapshot["fixes"][number]["action"]): void; onClose(): void;
+  onReady?(element: HTMLElement): void;
 }) {
+  const root = useDialogContentReady<HTMLElement>(onReady);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape" || (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") { event.preventDefault(); onClose(); } };
     document.addEventListener("keydown", close); return () => document.removeEventListener("keydown", close);
   }, [onClose]);
-  return <section role="dialog" aria-modal="false" aria-label="Atom problem" className="cd-page-size-form cd-dialog-fit">
+  return <section ref={root} role="dialog" aria-modal="false" aria-label="Atom problem" className="cd-page-size-form cd-dialog-fit">
     <div className="cd-dialog-fit-body">
       <h2>Atom problem</h2><p>{data.explanation}</p>
       {error && <p role="alert">{error}</p>}

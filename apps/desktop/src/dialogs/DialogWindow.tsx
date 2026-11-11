@@ -190,8 +190,6 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     }, percent === 100 ? 0 : 120);
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
   }, [hostId, snapshot, percent]);
-  // Other forms report readiness after measuring their committed content.
-  useEffect(() => { if (snapshot?.dialogKind === "atomProblem") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -223,7 +221,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     });
   };
   if (!snapshot) return <p role="status">{error ?? "Opening dialog…"}</p>;
-  if (snapshot.dialogKind === "atomProblem") return <AtomProblemForm data={snapshot.data} busy={busy} error={error}
+  if (snapshot.dialogKind === "atomProblem") return <AtomProblemForm data={snapshot.data} busy={busy} error={error} onReady={reportReady}
     onAction={action => sendAction({ action, targetVersion: snapshot.data.targetVersion })} onClose={() => sendAction({ action: "cancel" })} />;
   if (snapshot.dialogKind === "vibeCodeGuide") return <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onReady={reportReady} onAction={action => sendAction({ action })} /></Suspense>;
   if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>

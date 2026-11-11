@@ -16,6 +16,18 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
+it("reports the natural problem height instead of retaining an empty viewport band", async () => {
+  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return { x: 0, y: 0, left: 0, top: 0, right: 460, width: 460,
+      height: this.matches('[role="dialog"]') ? 180 : 0, bottom: 180, toJSON: () => ({}) };
+  });
+  try {
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
+    await act(async () => host.receive!(snapshot));
+    const ready = host.send.mock.calls.map(c => c[1] as DialogMessage).find(m => m.type === "ready");
+    expect(ready?.data).toMatchObject({ contentHeight: 180, pixelRatio: 1 });
+  } finally { rect.mockRestore(); }
+});
 it("scrolls long problem details while keeping all three fixes and Close in a pinned footer", async () => {
   const style = document.createElement("style");
   style.textContent = readFileSync("apps/desktop/src/App.css", "utf8");

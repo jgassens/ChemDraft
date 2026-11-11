@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.21.30-codex";
+const CURRENT_BUILD_STAMP = "11.10.21.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2448,6 +2448,7 @@ export function MainWindow({
     [analysisReportFingerprint]
   );
   const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [molecularInspectorOpen, setMolecularInspectorOpen] = useState(false);
   const [analysisInterpretation, setAnalysisInterpretation] = useState<string | undefined>();
 
   // Every document entering the app is normalized so charge marks near atoms carry their
@@ -3020,6 +3021,19 @@ export function MainWindow({
   toolsetRegistryRef.current = toolsetRegistry;
 
   const selectedMolecule = getSelectedMolecule(document);
+  const liveAnalysisSubject = selectedMolecule ? analysisSubjectKey(selectedMolecule, document) : undefined;
+  useEffect(() => {
+    if (!molecularInspectorOpen) return;
+    const molecule = getSelectedMolecule(documentRef.current);
+    if (molecule) void runMolecularProperties(molecule, analysisInterpretation);
+    else {
+      analysisClient()?.cancel("selection");
+      setAnalysisBusy(false);
+    }
+    // Selection and chemistry drive refreshes; report/busy updates must not start another run.
+    // Interpretation changes already run explicitly through recomputeAnalysisFor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [molecularInspectorOpen, liveAnalysisSubject, runMolecularProperties]);
   /**
    * The report describes something other than what is selected now.
    *
@@ -4758,7 +4772,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : undefined);
+    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4835,7 +4849,8 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult,
+    undoLabel?: string
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -4854,7 +4869,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undoLabel);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4869,7 +4884,8 @@ export function MainWindow({
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
       kind === "gemDimethyl"
         ? nativeBranchedHotkeyTarget(document, target, hoveredGrowthArrowPlan(target))
-        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target)),
+      kind === "gemDimethyl" ? "Add branched alkyl" : undefined
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
@@ -4892,7 +4908,8 @@ export function MainWindow({
 
   const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
-      nativeRingHotkeyFuseAtBondTarget(document, target, templateId)
+      nativeRingHotkeyFuseAtBondTarget(document, target, templateId),
+      templateId === "chairCyclohexaneA" ? "Fuse chair cyclohexane ring" : undefined
     );
   }, [applyHoveredNativeTargetEdit]);
 
@@ -11714,6 +11731,7 @@ export function MainWindow({
           // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
           // analysis-window host before starting the worker so progress/empty state is visible.
           if (isDesktopRuntime()) {
+            setMolecularInspectorOpen(true);
             publishAnalysisWindow(
               MOLECULAR_INSPECTOR_WINDOW_ID,
               "Molecular Inspector",
@@ -11733,7 +11751,7 @@ export function MainWindow({
             setStatus("Molecular Inspector opened — select a structure to analyze it");
             return;
           }
-          await runMolecularProperties(molecule, analysisInterpretation);
+          if (!isDesktopRuntime() || molecularInspectorOpen) await runMolecularProperties(molecule, analysisInterpretation);
           return;
         }
         if (action.id === "chemistry.validateSelection") {
@@ -12333,6 +12351,7 @@ export function MainWindow({
     openWarnings,
     activeToolState,
     analysisBusy,
+    molecularInspectorOpen,
     analysisInterpretation,
     analysisReport,
     analysisReportIsStale,
@@ -12762,6 +12781,7 @@ export function MainWindow({
     const runtime = pluginRuntime.runtime;
     return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
       if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
+        if (panelId === MOLECULAR_INSPECTOR_WINDOW_ID) setMolecularInspectorOpen(false);
         if (panelId === PLUGIN_DIAGNOSTICS_WINDOW_ID) setPluginDiagnosticsOpen(false);
         if (panelId === PATCH_REVIEW_WINDOW_ID) setProposalReview((current) => ({ ...current, windowOpen: false }));
         return;
@@ -13026,6 +13046,7 @@ export function MainWindow({
         }
         switch (action.kind) {
           case "close":
+            if (action.windowId === MOLECULAR_INSPECTOR_WINDOW_ID) setMolecularInspectorOpen(false);
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
               setPluginDiagnosticsOpen(false);
             }
@@ -15604,7 +15625,7 @@ export function MainWindow({
     const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle,
       cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument !== currentDocument) {
-      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : undefined);
+      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -16633,7 +16654,9 @@ export function MainWindow({
 
     const movesMark = (drag.groupObjectIds ?? [drag.objectId]).some(id =>
       findDocumentObject(drag.startDocument, id)?.type === "electron-mark");
-    commitDocumentHistoryFrom(drag.startDocument, moved, movesMark ? "Move electron mark"
+    const movesGroup = (drag.groupObjectIds?.length ?? 0) > 1 &&
+      (object?.type === "group" || parentGroupForDocumentObject(drag.startDocument.pages[0]?.objects ?? [], drag.objectId) !== undefined);
+    commitDocumentHistoryFrom(drag.startDocument, moved, movesGroup ? "Move group" : movesMark ? "Move electron mark"
       : object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? "Move Reaction Conditions" : undefined);
     return true;
   }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
