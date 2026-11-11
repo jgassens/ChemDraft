@@ -7028,7 +7028,11 @@ fn create_or_raise_preferences_window<R: Runtime>(
             .and_then(|result| result)?;
         return Ok(window);
     }
-    let owner = active_document_webview(app).ok_or("Unknown dialog owner")?;
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window()
+        .and_then(|document| app.get_webview_window(&document.native_label))
+        .ok_or("Unknown dialog owner")?;
 
     dialog_windows::prepare_preferences();
     let builder = WebviewWindowBuilder::new(
