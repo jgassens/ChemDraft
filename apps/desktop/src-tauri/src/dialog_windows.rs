@@ -3212,18 +3212,25 @@ impl DialogPlacement<'_> {
         )?;
         if unmeasured {
             // No native geometry, cached frame, or system decoration estimate: use the
-            // template with zero decorations, centred in the destination work area.
+            // template with conservative decorations, centred in the destination work area.
+            const FALLBACK_DECORATIONS_AT_96_DPI: (f64, f64) = (16.0, 40.0);
+            let decorations = (
+                (FALLBACK_DECORATIONS_AT_96_DPI.0 * self.work.scale).ceil() as u32,
+                (FALLBACK_DECORATIONS_AT_96_DPI.1 * self.work.scale).ceil() as u32,
+            );
             let template_client = (
                 (self.spec.size.0 * self.work.scale).ceil() as u32,
                 (self.spec.size.1 * self.work.scale).ceil() as u32,
             );
-            let client = fitted_template_client(template_client, template_client, self.work);
+            let template_frame = DialogFrame::from_client(template_client, decorations);
+            let client = fitted_template_client(template_client, template_frame.outer, self.work);
             resize(client.0, client.1)?;
+            let outer = DialogFrame::from_client(client, decorations).outer;
             let (x, y) = self.work.clamp(
-                self.work.x + (self.work.width - f64::from(client.0) / self.work.scale) / 2.0,
-                self.work.y + (self.work.height - f64::from(client.1) / self.work.scale) / 2.0,
-                f64::from(client.0) / self.work.scale,
-                f64::from(client.1) / self.work.scale,
+                self.work.x + (self.work.width - f64::from(outer.0) / self.work.scale) / 2.0,
+                self.work.y + (self.work.height - f64::from(outer.1) / self.work.scale) / 2.0,
+                f64::from(outer.0) / self.work.scale,
+                f64::from(outer.1) / self.work.scale,
             );
             move_to(x * self.work.scale, y * self.work.scale)?;
         }
@@ -6089,6 +6096,12 @@ mod tests {
                     let spec = kind_spec("preferences").unwrap();
                     let position = Cell::new((0.0, 0.0));
                     let client = Cell::new(None);
+                    // Model real decorations independently of whether an estimate is available.
+                    let real_decorations_at_96_dpi: (f64, f64) = (16.0, 40.0);
+                    let real_decorations = (
+                        (real_decorations_at_96_dpi.0 * scale).ceil() as u32,
+                        (real_decorations_at_96_dpi.1 * scale).ceil() as u32,
+                    );
                     let decorations = if system_available {
                         // Inject the system estimate at the destination DPI, with no cache.
                         Some(((16.0 * scale).ceil() as u32, (40.0 * scale).ceil() as u32))
@@ -6142,10 +6155,8 @@ mod tests {
                         },
                     )
                     .unwrap();
-                    let final_frame = DialogFrame::from_client(
-                        client.get().unwrap(),
-                        decorations.unwrap_or((0, 0)),
-                    );
+                    let final_frame =
+                        DialogFrame::from_client(client.get().unwrap(), real_decorations);
                     assert_placed_bounds_inside(position.get(), final_frame, &work);
                     if system_available {
                         // The saved client size survives until fitting, rather than reverting
@@ -6158,7 +6169,11 @@ mod tests {
                         );
                         assert_eq!(
                             final_frame.client,
-                            fitted_template_client(template, template, &work)
+                            fitted_template_client(
+                                template,
+                                DialogFrame::from_client(template, real_decorations).outer,
+                                &work,
+                            )
                         );
                         assert_eq!(
                             position.get(),
