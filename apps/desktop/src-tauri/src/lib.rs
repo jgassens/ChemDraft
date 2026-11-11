@@ -4292,11 +4292,6 @@ fn cancel_plugin_panel_restore(
         .closed(&label);
 }
 
-#[cfg(test)]
-fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String {
-    plugin_panel_owned_identity_window_label(plugin_id, panel_id, "main")
-}
-
 fn plugin_panel_owned_identity_window_label(
     plugin_id: &str,
     panel_id: &str,
