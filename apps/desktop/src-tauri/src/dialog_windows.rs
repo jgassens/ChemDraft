@@ -2989,6 +2989,7 @@ fn place_content_window_from_frame<R: Runtime>(
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
     mark_transient(window.label());
+    let applied_client = std::cell::Cell::new(None);
     DialogPlacement {
         position: (x, y, destination_scale),
         client_size,
@@ -3059,27 +3060,71 @@ fn place_content_window_from_frame<R: Runtime>(
                 },
                 |size| window.set_size(size).map_err(|e| e.to_string()),
             )?;
+            applied_client.set(Some((width, height)));
             if window.label() == super::PREFERENCES_WINDOW_LABEL {
-                let position = window.outer_position().map_err(|e| e.to_string())?;
-                mark_preferences_position(window.label(), (position.x, position.y));
+                match window.outer_position() {
+                    Ok(position) => {
+                        mark_preferences_position(window.label(), (position.x, position.y));
+                    }
+                    Err(error) if !cfg!(windows) => return Err(error.to_string()),
+                    Err(_) => {}
+                }
             }
             Ok(())
         },
         || {
-            let normal = sample_normal_frame(window)
-                .ok_or("Dialog frame is not yet a stable normal frame")?;
-            Ok(DialogFrame {
-                outer: normal.physical.outer,
-                client: normal.physical.client,
-            })
+            measure_placement_frame(
+                cfg!(windows),
+                sample_normal_frame(window).map(|normal| DialogFrame {
+                    unmeasured: false,
+                    outer: normal.physical.outer,
+                    client: normal.physical.client,
+                }),
+                applied_client.get(),
+                destination_scale,
+                || {
+                    retained
+                        .or(normal.as_ref())
+                        .and_then(|normal| {
+                            DialogFrame {
+                                unmeasured: false,
+                                outer: normal.physical.outer,
+                                client: normal.physical.client,
+                            }
+                            .decorations_at_scale(normal.physical.scale, destination_scale)
+                        })
+                        .or_else(|| system_dialog_decorations(window, destination_scale))
+                },
+                || {
+                    let outer = window.outer_size().map_err(|e| e.to_string())?;
+                    let client = window.inner_size().map_err(|e| e.to_string())?;
+                    Ok(DialogFrame {
+                        unmeasured: false,
+                        outer: (outer.width, outer.height),
+                        client: (client.width, client.height),
+                    })
+                },
+            )
         },
         |size| window.set_min_size(Some(size)).map_err(|e| e.to_string()),
     )?;
     mark_transient(window.label());
-    let client = window.inner_size().map_err(|e| e.to_string())?;
-    remember_programmatic_client(window.label(), (client.width, client.height));
-    let position = window.outer_position().map_err(|e| e.to_string())?;
-    remember_programmatic_position(window.label(), (position.x, position.y));
+    // Persistence bookkeeping must not turn an otherwise placed Windows dialog into an
+    // error when the same native measurements that required fallback are still unavailable.
+    match window.inner_size() {
+        Ok(client) => remember_programmatic_client(window.label(), (client.width, client.height)),
+        Err(error) if !cfg!(windows) => return Err(error.to_string()),
+        Err(_) => {
+            if let Some(client) = applied_client.get() {
+                remember_programmatic_client(window.label(), client);
+            }
+        }
+    }
+    match window.outer_position() {
+        Ok(position) => remember_programmatic_position(window.label(), (position.x, position.y)),
+        Err(error) if !cfg!(windows) => return Err(error.to_string()),
+        Err(_) => {}
+    }
     if kind == "preferences" {
         if let Some(normal) = sample_normal_frame(window) {
             if let Some(state) = REGISTRY
@@ -3098,9 +3143,132 @@ struct TemplatePlacement<'a> {
     saved: Option<&'a SavedPosition>,
     owner_rect: (f64, f64, f64, f64),
 }
+
+#[cfg(windows)]
+fn system_dialog_decorations<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    scale: f64,
+) -> Option<(u32, u32)> {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        UI::{
+            HiDpi::AdjustWindowRectExForDpi,
+            WindowsAndMessaging::{GetMenu, GetWindowLongW, GWL_EXSTYLE, GWL_STYLE},
+        },
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let hwnd = window.hwnd().ok()?.0 as _;
+    let mut rect = RECT::default();
+    // SAFETY: hwnd belongs to the live dialog; rect is initialized. Unlike normal-frame
+    // sampling, this style-based estimate remains available while the owner is minimized.
+    unsafe {
+        if AdjustWindowRectExForDpi(
+            &mut rect,
+            GetWindowLongW(hwnd, GWL_STYLE) as u32,
+            (!GetMenu(hwnd).is_null()) as i32,
+            GetWindowLongW(hwnd, GWL_EXSTYLE) as u32,
+            (96.0 * scale).round() as u32,
+        ) == 0
+        {
+            return None;
+        }
+    }
+    let width = u32::try_from(rect.right.checked_sub(rect.left)?).ok()?;
+    let height = u32::try_from(rect.bottom.checked_sub(rect.top)?).ok()?;
+    (f64::from(width.max(height)) <= 256.0 * scale).then_some((width, height))
+}
+
+#[cfg(not(windows))]
+fn system_dialog_decorations<R: Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+    _scale: f64,
+) -> Option<(u32, u32)> {
+    None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct DialogFrame {
+    // Neither native sizes nor a decoration estimate was available.
+    unmeasured: bool,
     outer: (u32, u32),
     client: (u32, u32),
+}
+impl DialogFrame {
+    fn decorations_at_scale(&self, scale: f64, destination_scale: f64) -> Option<(u32, u32)> {
+        if !scale.is_finite()
+            || scale <= 0.0
+            || !destination_scale.is_finite()
+            || destination_scale <= 0.0
+            || [self.outer.0, self.outer.1, self.client.0, self.client.1]
+                .iter()
+                .any(|value| *value == 0 || *value == 32767)
+            || self.client.0 > self.outer.0
+            || self.client.1 > self.outer.1
+        {
+            return None;
+        }
+        let decorations = (self.outer.0 - self.client.0, self.outer.1 - self.client.1);
+        if f64::from(decorations.0.max(decorations.1)) > 256.0 * scale {
+            return None;
+        }
+        Some((
+            (f64::from(decorations.0) * (destination_scale / scale)).ceil() as u32,
+            (f64::from(decorations.1) * (destination_scale / scale)).ceil() as u32,
+        ))
+    }
+
+    fn from_client(client: (u32, u32), decorations: (u32, u32)) -> Self {
+        Self {
+            unmeasured: false,
+            outer: (
+                client.0.saturating_add(decorations.0),
+                client.1.saturating_add(decorations.1),
+            ),
+            client,
+        }
+    }
+}
+fn measure_placement_frame(
+    windows: bool,
+    sampled: Option<DialogFrame>,
+    applied_client: Option<(u32, u32)>,
+    destination_scale: f64,
+    cached_decorations: impl FnOnce() -> Option<(u32, u32)>,
+    read_sizes: impl FnOnce() -> Result<DialogFrame, String>,
+) -> Result<DialogFrame, String> {
+    if let Some(frame) = sampled {
+        return Ok(frame);
+    }
+    if windows {
+        // The owner may be iconic while the dialog still exposes usable native sizes.
+        // Read after moving to the destination DPI, before fitting or clamping. Saved
+        // client sizes must never replace the size just applied (including a fitted size).
+        let native = read_sizes();
+        let decorations = native
+            .as_ref()
+            .ok()
+            .and_then(|frame| frame.decorations_at_scale(destination_scale, destination_scale))
+            .or_else(cached_decorations);
+        let client = applied_client.or_else(|| {
+            native.as_ref().ok().and_then(|frame| {
+                frame
+                    .decorations_at_scale(destination_scale, destination_scale)
+                    .map(|_| frame.client)
+            })
+        });
+        return Ok(match (client, decorations) {
+            (Some(client), Some(decorations)) => DialogFrame::from_client(client, decorations),
+            // Measurement cannot cancel a ready Windows dialog. The placement driver will
+            // replace this provisional frame with a centred, fitted template-size window.
+            _ => DialogFrame {
+                unmeasured: true,
+                ..DialogFrame::from_client(client.unwrap_or((1, 1)), (0, 0))
+            },
+        });
+    }
+    Err("Dialog frame is not yet a stable normal frame".into())
 }
 struct DialogPlacement<'a> {
     position: (f64, f64, f64),
@@ -3114,8 +3282,8 @@ struct DialogPlacement<'a> {
 impl DialogPlacement<'_> {
     fn apply(
         self,
-        move_to: impl FnMut(f64, f64) -> Result<(), String>,
-        resize: impl FnMut(u32, u32) -> Result<(), String>,
+        mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
+        mut resize: impl FnMut(u32, u32) -> Result<(), String>,
         mut measure: impl FnMut() -> Result<DialogFrame, String>,
         mut set_minimum: impl FnMut(tauri::LogicalSize<f64>) -> Result<(), String>,
     ) -> Result<(), String> {
@@ -3124,15 +3292,44 @@ impl DialogPlacement<'_> {
             // Small work areas may require less than the kind's usual minimum.
             set_minimum(tauri::LogicalSize::new(1.0, 1.0))?;
         }
+        let mut unmeasured = false;
         finish_placement(
             (self.position, self.client_size),
             self.work,
             fits_work_area,
             self.template,
-            move_to,
-            resize,
-            &mut measure,
+            &mut move_to,
+            &mut resize,
+            || {
+                let frame = measure()?;
+                unmeasured |= frame.unmeasured;
+                Ok(frame)
+            },
         )?;
+        if unmeasured {
+            // No native geometry, cached frame, or system decoration estimate: use the
+            // template with conservative decorations, centred in the destination work area.
+            const FALLBACK_DECORATIONS_AT_96_DPI: (f64, f64) = (16.0, 40.0);
+            let decorations = (
+                (FALLBACK_DECORATIONS_AT_96_DPI.0 * self.work.scale).ceil() as u32,
+                (FALLBACK_DECORATIONS_AT_96_DPI.1 * self.work.scale).ceil() as u32,
+            );
+            let template_client = (
+                (self.spec.size.0 * self.work.scale).ceil() as u32,
+                (self.spec.size.1 * self.work.scale).ceil() as u32,
+            );
+            let template_frame = DialogFrame::from_client(template_client, decorations);
+            let client = fitted_template_client(template_client, template_frame.outer, self.work);
+            resize(client.0, client.1)?;
+            let outer = DialogFrame::from_client(client, decorations).outer;
+            let (x, y) = self.work.clamp(
+                self.work.x + (self.work.width - f64::from(outer.0) / self.work.scale) / 2.0,
+                self.work.y + (self.work.height - f64::from(outer.1) / self.work.scale) / 2.0,
+                f64::from(outer.0) / self.work.scale,
+                f64::from(outer.1) / self.work.scale,
+            );
+            move_to(x * self.work.scale, y * self.work.scale)?;
+        }
         if fits_work_area {
             let frame = measure()?;
             let minimum = self
@@ -3986,6 +4183,7 @@ mod tests {
                     },
                     || {
                         Ok(DialogFrame {
+                            unmeasured: false,
                             client: reopened_client.get(),
                             outer: (
                                 reopened_client.get().0 + (decorations.0 * scale) as u32,
@@ -5054,6 +5252,7 @@ mod tests {
                 || {
                     let (w, h) = *client.borrow();
                     Ok(DialogFrame {
+                        unmeasured: false,
                         outer: (w + 16, h + 40),
                         client: (w, h),
                     })
@@ -5119,6 +5318,7 @@ mod tests {
                 || {
                     let (w, h) = *client.borrow();
                     Ok(DialogFrame {
+                        unmeasured: false,
                         outer: (w + 16, h + 40),
                         client: (w, h),
                     })
@@ -5165,6 +5365,7 @@ mod tests {
                 calls.borrow_mut().push("measure".into());
                 let (w, h) = *frame.borrow();
                 Ok(DialogFrame {
+                    unmeasured: false,
                     outer: (w, h),
                     client: (w - 32, h - 80),
                 })
@@ -5480,6 +5681,7 @@ mod tests {
             )
             .to_physical::<u32>(self.scale);
             DialogFrame {
+                unmeasured: false,
                 client: (client.width, client.height),
                 outer: (outer.width, outer.height),
             }
@@ -5777,6 +5979,530 @@ mod tests {
             outer: ((576.0 * scale) as u32, (460.0 * scale) as u32),
             client: ((560.0 * scale) as u32, (420.0 * scale) as u32),
             scale,
+        }
+    }
+
+    fn assert_placed_bounds_inside(position: (f64, f64), frame: DialogFrame, work: &WorkArea) {
+        assert!(position.0 >= work.x * work.scale, "left: {position:?}");
+        assert!(position.1 >= work.y * work.scale, "top: {position:?}");
+        assert!(
+            position.0 + f64::from(frame.outer.0) <= (work.x + work.width) * work.scale,
+            "right: {position:?}, {frame:?}"
+        );
+        assert!(
+            position.1 + f64::from(frame.outer.1) <= (work.y + work.height) * work.scale,
+            "bottom: {position:?}, {frame:?}"
+        );
+    }
+
+    #[test]
+    fn windows_first_placement_survives_an_iconic_owner_or_unstable_frame() {
+        for scale in [1.0, 1.5, 2.0] {
+            let work = WorkArea {
+                id: "screen".into(),
+                x: 12.0,
+                y: 12.0,
+                width: 1176.0,
+                height: 876.0,
+                scale,
+            };
+            let physical = normal_test_frame(scale);
+            let unstable = PhysicalNormalFrame {
+                client: (physical.client.0 + 1, physical.client.1),
+                ..physical
+            };
+            for (reason, sample) in [
+                ("iconic owner", stable_normal_frame(&work, None, None)),
+                (
+                    "unstable frame",
+                    stable_normal_frame(&work, Some(physical), Some(unstable)),
+                ),
+            ] {
+                assert!(sample.is_none());
+                for saved in [
+                    None,
+                    Some(DialogFrame {
+                        unmeasured: false,
+                        outer: physical.outer,
+                        client: physical.client,
+                    }),
+                ] {
+                    for kind in [
+                        "export",
+                        "structureTemplates",
+                        "engineInstall",
+                        "toolInstall",
+                        "customColor",
+                    ] {
+                        let spec = kind_spec(kind).unwrap();
+                        let applied_client = std::cell::Cell::new(physical.client);
+                        let final_position = std::cell::Cell::new((0.0, 0.0));
+                        let result = DialogPlacement {
+                            position: (100.0, 100.0, scale),
+                            client_size: spec.size,
+                            content: None,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: false,
+                            template: Some(TemplatePlacement {
+                                saved: None,
+                                owner_rect: (0.0, 0.0, 1000.0, 700.0),
+                            }),
+                        }
+                        .apply(
+                            |x, y| {
+                                final_position.set((x, y));
+                                Ok(())
+                            },
+                            |width, height| {
+                                applied_client.set((width, height));
+                                Ok(())
+                            },
+                            || {
+                                measure_placement_frame(
+                                    true,
+                                    sample.as_ref().map(|normal| DialogFrame {
+                                        unmeasured: false,
+                                        outer: normal.physical.outer,
+                                        client: normal.physical.client,
+                                    }),
+                                    Some(applied_client.get()),
+                                    scale,
+                                    || {
+                                        saved.and_then(|frame| {
+                                            frame.decorations_at_scale(scale, scale)
+                                        })
+                                    },
+                                    || {
+                                        Ok(DialogFrame::from_client(
+                                            applied_client.get(),
+                                            ((16.0 * scale) as u32, (40.0 * scale) as u32),
+                                        ))
+                                    },
+                                )
+                            },
+                            |_| Ok(()),
+                        );
+                        assert!(result.is_ok(), "{kind}: {reason}: {result:?}");
+                        assert_placed_bounds_inside(
+                            final_position.get(),
+                            DialogFrame::from_client(
+                                applied_client.get(),
+                                ((16.0 * scale) as u32, (40.0 * scale) as u32),
+                            ),
+                            &work,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn placement_measurement_prefers_stable_then_current_sizes_and_cached_decorations() {
+        let stable = DialogFrame {
+            unmeasured: false,
+            outer: (576, 460),
+            client: (560, 420),
+        };
+        let saved = DialogFrame {
+            unmeasured: false,
+            outer: (616, 480),
+            client: (600, 440),
+        };
+        let plain = DialogFrame {
+            unmeasured: false,
+            outer: (536, 660),
+            client: (520, 620),
+        };
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                Some(stable),
+                Some((600, 700)),
+                1.0,
+                || panic!("stable frame available"),
+                || panic!("stable frame available")
+            )
+            .unwrap(),
+            stable
+        );
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                None,
+                Some((600, 700)),
+                1.0,
+                || saved.decorations_at_scale(1.0, 1.0),
+                || Err("native size read failed".into())
+            )
+            .unwrap(),
+            DialogFrame {
+                unmeasured: false,
+                outer: (616, 740),
+                client: (600, 700)
+            }
+        );
+        assert_eq!(
+            measure_placement_frame(true, None, None, 1.0, || None, || Ok(plain)).unwrap(),
+            plain
+        );
+        assert_eq!(
+            measure_placement_frame(
+                true,
+                None,
+                Some((600, 700)),
+                1.0,
+                || panic!("usable native decorations take precedence"),
+                || Ok(plain)
+            )
+            .unwrap(),
+            DialogFrame {
+                unmeasured: false,
+                outer: (616, 740),
+                client: (600, 700)
+            }
+        );
+    }
+
+    #[test]
+    fn placement_measurement_keeps_macos_sampling_but_survives_windows_read_errors() {
+        assert!(measure_placement_frame(
+            false,
+            None,
+            Some((600, 700)),
+            1.0,
+            || panic!("macOS must not use fallbacks"),
+            || panic!("macOS must not read plain sizes")
+        )
+        .is_err());
+        assert!(
+            measure_placement_frame(
+                true,
+                None,
+                Some((600, 700)),
+                1.0,
+                || None,
+                || Err("native size read failed".into())
+            )
+            .unwrap()
+            .unmeasured
+        );
+    }
+
+    #[test]
+    fn saved_placement_frame_uses_destination_scale_and_known_decorations() {
+        let size: (f64, f64) = (560.5, 420.5);
+        let cached = DialogFrame {
+            unmeasured: false,
+            outer: (1232, 1880),
+            client: (1200, 1800),
+        };
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let client = (
+                (size.0 * scale).ceil() as u32,
+                (size.1 * scale).ceil() as u32,
+            );
+            let frame = measure_placement_frame(
+                true,
+                None,
+                Some(client),
+                scale,
+                || cached.decorations_at_scale(2.0, scale),
+                || Err("native size read failed".into()),
+            )
+            .unwrap();
+            assert_eq!(
+                frame.client,
+                ((560.5 * scale).ceil() as u32, (420.5 * scale).ceil() as u32)
+            );
+            assert_eq!(
+                frame.outer,
+                ((576.5 * scale).ceil() as u32, (460.5 * scale).ceil() as u32)
+            );
+            let no_decorations = DialogFrame::from_client(client, (0, 0));
+            assert_eq!(no_decorations.outer, frame.client);
+        }
+    }
+
+    #[test]
+    fn windows_unavailable_geometry_without_cache_places_saved_size_inside_work_area() {
+        use std::cell::Cell;
+        for scale in [1.0_f64, 1.25, 1.5, 2.0] {
+            for native_invalid in [false, true] {
+                for system_available in [false, true] {
+                    let work = WorkArea {
+                        id: "destination".into(),
+                        x: -800.0,
+                        y: 50.0,
+                        width: 900.0,
+                        height: 500.0,
+                        scale,
+                    };
+                    let saved = SavedPosition {
+                        size: Some((750.5, 900.0)),
+                        monitor: work.id.clone(),
+                        x: 50.0,
+                        y: 500.0,
+                        offset_x: 1.0,
+                        offset_y: 1.0,
+                    };
+                    let spec = kind_spec("preferences").unwrap();
+                    let position = Cell::new((0.0, 0.0));
+                    let client = Cell::new(None);
+                    // Model real decorations independently of whether an estimate is available.
+                    let real_decorations_at_96_dpi: (f64, f64) = (16.0, 40.0);
+                    let real_decorations = (
+                        (real_decorations_at_96_dpi.0 * scale).ceil() as u32,
+                        (real_decorations_at_96_dpi.1 * scale).ceil() as u32,
+                    );
+                    let decorations = if system_available {
+                        // Inject the system estimate at the destination DPI, with no cache.
+                        Some(((16.0 * scale).ceil() as u32, (40.0 * scale).ceil() as u32))
+                    } else {
+                        None
+                    };
+                    DialogPlacement {
+                        position: (saved.x * scale, saved.y * scale, scale),
+                        client_size: dialog_client_size(&spec, None, Some(&saved), false),
+                        content: None,
+                        work: &work,
+                        spec: &spec,
+                        fit_content: true,
+                        template: Some(TemplatePlacement {
+                            saved: Some(&saved),
+                            owner_rect: (-32000.0, -32000.0, 0.0, 0.0),
+                        }),
+                    }
+                    .apply(
+                        |x, y| {
+                            position.set((x, y));
+                            Ok(())
+                        },
+                        |width, height| {
+                            client.set(Some((width, height)));
+                            Ok(())
+                        },
+                        || {
+                            // A minimized owner prevents any stable normal-frame sample.
+                            measure_placement_frame(
+                                true,
+                                None,
+                                client.get(),
+                                scale,
+                                || decorations,
+                                || {
+                                    if native_invalid {
+                                        Ok(DialogFrame::from_client((0, 0), (0, 0)))
+                                    } else {
+                                        Err("native geometry unavailable".into())
+                                    }
+                                },
+                            )
+                        },
+                        |minimum| {
+                            if let Some(client) = client.get() {
+                                assert!(minimum.width <= f64::from(client.0) / scale);
+                                assert!(minimum.height <= f64::from(client.1) / scale);
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    let final_frame =
+                        DialogFrame::from_client(client.get().unwrap(), real_decorations);
+                    assert_placed_bounds_inside(position.get(), final_frame, &work);
+                    if system_available {
+                        // The saved client size survives until fitting, rather than reverting
+                        // to the template just because there is no cached normal frame.
+                        assert_eq!(final_frame.client.0, (750.5 * scale).ceil() as u32);
+                    } else {
+                        let template = (
+                            (spec.size.0 * scale).ceil() as u32,
+                            (spec.size.1 * scale).ceil() as u32,
+                        );
+                        assert_eq!(
+                            final_frame.client,
+                            fitted_template_client(
+                                template,
+                                DialogFrame::from_client(template, real_decorations).outer,
+                                &work,
+                            )
+                        );
+                        assert_eq!(
+                            position.get(),
+                            (
+                                (work.x + work.width / 2.0) * scale
+                                    - f64::from(final_frame.outer.0) / 2.0,
+                                (work.y + work.height / 2.0) * scale
+                                    - f64::from(final_frame.outer.1) / 2.0,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_fallback_clamps_final_bounds_after_content_growth_and_work_area_shrink() {
+        use std::cell::Cell;
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for (old_height, content_height, work_height) in [
+                (300.0_f64, 700.0_f64, 900.0_f64),
+                (900.0, 900.0, 600.0),
+                (900.0, 900.0, 900.0),
+                (300.0, 1100.0, 900.0),
+            ] {
+                // No normal sample: native sizes alone must detect the decorations.
+                // Also exercise cached decorations at a different DPI when reads fail.
+                for (cache_available, native_readable) in
+                    [(false, true), (true, true), (true, false)]
+                {
+                    for restore_saved_origin in [false, true] {
+                        let work = WorkArea {
+                            id: "screen".into(),
+                            x: 0.0,
+                            y: 0.0,
+                            width: 1200.0,
+                            height: work_height,
+                            scale,
+                        };
+                        let spec = kind_spec("export").unwrap();
+                        let saved = SavedPosition {
+                            size: Some((600.0, old_height)),
+                            monitor: work.id.clone(),
+                            x: 700.0,
+                            y: 550.0,
+                            offset_x: 700.0,
+                            offset_y: 550.0,
+                        };
+                        let content = MeasuredContent::new(
+                            ContentFit::from_ready(&json!({
+                                "contentHeight": content_height, "pixelRatio": scale,
+                            })),
+                            Some(scale),
+                        );
+                        let actual_client =
+                            Cell::new(((600.0 * scale) as u32, (old_height * scale) as u32));
+                        let applied_client = Cell::new(None);
+                        let position = Cell::new((saved.x * scale, saved.y * scale));
+                        let decorations = ((16.0 * scale) as u32, (40.0 * scale) as u32);
+                        let cached = cache_available.then(|| {
+                            DialogFrame::from_client((1200, (old_height * 2.0) as u32), (32, 80))
+                        });
+                        DialogPlacement {
+                            position: (position.get().0, position.get().1, scale),
+                            client_size: dialog_client_size(&spec, content, Some(&saved), false),
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: restore_saved_origin.then_some(TemplatePlacement {
+                                saved: Some(&saved),
+                                owner_rect: (0.0, 0.0, 1200.0, 900.0),
+                            }),
+                        }
+                        .apply(
+                            |x, y| {
+                                position.set((x, y));
+                                Ok(())
+                            },
+                            |width, height| {
+                                actual_client.set((width, height));
+                                applied_client.set(Some((width, height)));
+                                Ok(())
+                            },
+                            || {
+                                let actual =
+                                    DialogFrame::from_client(actual_client.get(), decorations);
+                                let measured = measure_placement_frame(
+                                    true,
+                                    None,
+                                    applied_client.get(),
+                                    scale,
+                                    || {
+                                        cached.and_then(|frame| {
+                                            frame.decorations_at_scale(2.0, scale)
+                                        })
+                                    },
+                                    || {
+                                        if native_readable {
+                                            Ok(actual)
+                                        } else {
+                                            Err("unreadable sizes".into())
+                                        }
+                                    },
+                                )?;
+                                // Includes the measurement after fitting. A saved client
+                                // size must never conceal either a growth or a shrink.
+                                assert_eq!(measured, actual);
+                                Ok(measured)
+                            },
+                            |minimum| {
+                                let min = minimum.to_physical::<u32>(scale);
+                                actual_client.set((
+                                    actual_client.get().0.max(min.width),
+                                    actual_client.get().1.max(min.height),
+                                ));
+                                Ok(())
+                            },
+                        )
+                        .unwrap();
+                        let final_frame =
+                            DialogFrame::from_client(actual_client.get(), decorations);
+                        assert_eq!(
+                            final_frame.client.1,
+                            (content_height.min(work_height - 40.0) * scale).ceil() as u32,
+                        );
+                        assert_placed_bounds_inside(position.get(), final_frame, &work);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn placement_fallback_rejects_unusable_native_decoration_geometry() {
+        for frame in [
+            DialogFrame {
+                unmeasured: false,
+                outer: (0, 0),
+                client: (0, 0),
+            },
+            DialogFrame {
+                unmeasured: false,
+                outer: (600, 700),
+                client: (610, 700),
+            },
+            DialogFrame {
+                unmeasured: false,
+                outer: (600, 700),
+                client: (600, 1),
+            },
+            DialogFrame {
+                unmeasured: false,
+                outer: (32767, 700),
+                client: (600, 700),
+            },
+        ] {
+            assert!(
+                measure_placement_frame(true, None, Some((600, 700)), 1.0, || None, || Ok(frame))
+                    .unwrap()
+                    .unmeasured
+            );
+            assert_eq!(
+                measure_placement_frame(
+                    true,
+                    None,
+                    Some((600, 700)),
+                    1.0,
+                    || Some((16, 40)),
+                    || Ok(frame)
+                )
+                .unwrap(),
+                DialogFrame::from_client((600, 700), (16, 40)),
+            );
         }
     }
 
@@ -6995,6 +7721,7 @@ mod tests {
                                 },
                                 || {
                                     Ok(DialogFrame {
+                                        unmeasured: false,
                                         client: client.get(),
                                         outer: (
                                             client.get().0 + border,
@@ -7375,6 +8102,7 @@ mod tests {
                 || {
                     let (w, h) = *client.borrow();
                     Ok(DialogFrame {
+                        unmeasured: false,
                         outer: (w, h + (28.0 * reveal_scale) as u32),
                         client: (w, h),
                     })
@@ -7431,6 +8159,7 @@ mod tests {
                 || {
                     let (w, h) = *resizes.borrow().last().unwrap();
                     Ok(DialogFrame {
+                        unmeasured: false,
                         outer: (w, h + (28.0 * scale) as u32),
                         client: (w, h),
                     })
@@ -7490,6 +8219,7 @@ mod tests {
                     let decorations = (2.0 * scale) as u32;
                     let title_bar = (28.0 * scale) as u32;
                     Ok(DialogFrame {
+                        unmeasured: false,
                         outer: (w + decorations, h + title_bar),
                         client: (w, h),
                     })
@@ -7969,6 +8699,7 @@ mod tests {
             },
             || {
                 Ok(DialogFrame {
+                    unmeasured: false,
                     outer: (780, 960),
                     client: (780, 930),
                 })

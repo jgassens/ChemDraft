@@ -55,9 +55,9 @@ export function structureSearchDocument(
   const repeatWarnings = repeatUnitExportWarnings(document, "SMILES", { molecules });
   const searchMolecules = molecules.map(molecule => {
     const atomIds = new Set(molecule.atoms.map(atom => atom.id));
-    const selectedUnits = units.filter(unit => !unit.members.length || unit.members.some(member =>
+    const selectedUnits = units.filter(unit => unit.members.some(member =>
       member.molecule.id === molecule.id &&
-      (!member.atomIds.length || member.atomIds.some(id => atomIds.has(id)))
+      member.atomIds.some(id => atomIds.has(id))
     ));
     selectedUnits.forEach(unit => bracketUsages.add(unit.usage));
     const bracketIds = new Set(selectedUnits.map(unit => unit.objectId));
