@@ -9,6 +9,7 @@ import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from
 import { createPhase4Document, insertNativeTemplateMolecule } from "../documentWorkflow";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { objectRect, overlaps } from "../assistant/placement";
+import * as canvasOcclusion from "../window-manager/canvasOcclusion";
 import { MainWindow } from "../MainWindow";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
@@ -212,6 +213,45 @@ function moleculeIds(bridge: Bridge): string[] {
 }
 
 describe("accepting a recognition proposal from the review window", () => {
+  it.each(["macos", "windows"] as const)("avoids a covering review panel on %s only after acceptance", async platform => {
+    const blank = createEmptyDocument();
+    const page = blank.pages[0]!;
+    const bridge = await renderMainWindow({ initialDocument: blank, shortcutPlatform: platform });
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: page.width, bottom: page.height,
+      width: page.width, height: page.height, toJSON: () => ({}) } as DOMRect;
+    for (const element of container!.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      element.getBoundingClientRect = () => rect;
+      Object.defineProperties(element, { clientWidth: { configurable: true, value: page.width },
+        clientHeight: { configurable: true, value: page.height } });
+    }
+    const covered = { x: page.width / 2 - 100, y: page.height / 2 - 180, width: 200, height: 360 };
+    vi.spyOn(canvasOcclusion, "readCanvasOcclusion").mockResolvedValue({
+      documentFrame: { x: 0, y: 0, width: page.width, height: page.height + 30 },
+      webviewOffset: [0, 30], screenUnitsPerCssPixel: 1, coveringRects: [{ ...covered, y: covered.y + 30 }]
+    });
+    const port = getAssistantHistoryPort();
+    const before = port.read("initial")!;
+    const proposal = await recognizeIntoProposal(bridge);
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    await sendAction({ kind: "acceptPluginProposal", proposalId: proposal.id });
+    const after = port.read("initial")!;
+    const inserted = after.pages[0]!.objects[0]! as MoleculeObject;
+    const bounds = objectRect(inserted);
+    expect(overlaps(bounds, covered)).toBe(false);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.width);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(page.height);
+    expect(inserted.atoms.map(atom => atom.element)).toEqual(["C", "O"]);
+    expect(inserted.bonds[0]!.order).toBe("double");
+    expect(after.selection.objectIds).toEqual([inserted.id]);
+    await act(async () => { await bridge.command("edit.undo"); });
+    expect(port.read("initial")!.pages).toEqual(before.pages);
+    expect(statusText()).toBe("Undid Recognition Fixture: Insert Recognized Structure");
+    await act(async () => { await bridge.command("edit.redo"); });
+    expect(port.read("initial")!.pages).toEqual(after.pages);
+  });
+
   it.each(["macos", "windows"] as const)("places mocked recognition beside benzene on %s only after review, selected in one undo", async platform => {
     const blank = createEmptyDocument();
     const page = blank.pages[0]!;

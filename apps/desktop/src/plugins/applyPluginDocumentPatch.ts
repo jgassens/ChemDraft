@@ -11,7 +11,8 @@ import {
 } from "@chemdraft/plugin-api";
 import { rebasePluginPatch, writePatchOps } from "@chemdraft/plugin-host";
 import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
-import { choosePagePlacements, objectRect, overlaps as boundsOverlap, RELATIVE_GAP, unionRects } from "../assistant/placement";
+import { choosePlacement, objectRect, overlaps as boundsOverlap, pageContentRect, RELATIVE_GAP, unionRects } from "../assistant/placement";
+import type { ViewportRect } from "@chemdraft/viewport-engine";
 
 export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
   /** Page-space visible rectangle, read when the write actually commits (after gesture gating). */
@@ -121,7 +122,8 @@ export function applyPluginDocumentPatch(
 export function placeInsertedObjectsInFreeSpace(
   document: ChemDraftDocument,
   pageId: string,
-  insertedIds: readonly string[]
+  insertedIds: readonly string[],
+  options: { viewport?: ViewportRect; covered?: readonly ViewportRect[] } = {}
 ): ChemDraftDocument {
   const page = document.pages.find(candidate => candidate.id === pageId);
   if (!page) return document;
@@ -133,17 +135,25 @@ export function placeInsertedObjectsInFreeSpace(
   if (objects.some(object => referencesExistingObject(object, existingIds))) return document;
   const bounds = pluginInsertionBounds(objects);
   if (!bounds) return document;
-  const occupied = page.objects.filter(object => !inserted.has(object.id)).map(objectRect);
+  const occupied = [...page.objects.filter(object => !inserted.has(object.id)).map(objectRect), ...(options.covered ?? [])];
   const visibleBounds = unionRects([bounds, ...objects.map(objectRect)]);
-  if (!occupied.some(other => boundsOverlap(visibleBounds, other))) return document;
-  const placements = choosePagePlacements({ page, sizes: [visibleBounds], occupied,
+  const content = pageContentRect(page);
+  const viewport = options.viewport;
+  const left = Math.max(content.x, viewport?.x ?? 0);
+  const top = Math.max(content.y, viewport?.y ?? 0);
+  const right = Math.min(content.x + content.width, viewport ? viewport.x + viewport.width : page.width);
+  const bottom = Math.min(content.y + content.height, viewport ? viewport.y + viewport.height : page.height);
+  if (right <= left || bottom <= top) return document;
+  const withinVisible = visibleBounds.x >= left && visibleBounds.y >= top &&
+    visibleBounds.x + visibleBounds.width <= right && visibleBounds.y + visibleBounds.height <= bottom;
+  if (!occupied.some(other => boundsOverlap(visibleBounds, other)) && (!viewport || withinVisible)) return document;
+  const placement = choosePlacement({ page: { ...page,
+    margin: { left, top, right: page.width - right, bottom: page.height - bottom } }, size: visibleBounds, occupied,
     preferred: visibleBounds, gap: RELATIVE_GAP });
-  const placement = placements.rects[0]!;
-  // The search can propose page growth; these inserts keep their position when the page is full.
-  if (placements.nonFitting.length || placement.x < 0 || placement.y < 0 ||
-    placement.x + placement.width > page.width || placement.y + placement.height > page.height) return document;
+  // Never grow the page or move the view to make room. A full/covered viewport retains the insert.
+  if (!placement.fits) return document;
   return translateInsertedDocumentObjects(document, objects.map(object => object.id),
-    placement.x - visibleBounds.x, placement.y - visibleBounds.y);
+    placement.rect.x - visibleBounds.x, placement.rect.y - visibleBounds.y);
 }
 
 /** Keep existing object bounds, but never trust a molecule frame to enclose its atoms. */

@@ -41,6 +41,7 @@ fn main() {
             "dialog_send",
             "dialog_publish",
             "dialog_close",
+            "document_canvas_occlusion",
             "open_toolset_window",
             "close_toolset_window",
             "suspend_toolset_windows",

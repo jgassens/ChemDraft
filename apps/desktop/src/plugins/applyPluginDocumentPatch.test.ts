@@ -16,6 +16,7 @@ import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } fro
 import { assertPluginPatchWriteScope, PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { objectRect, overlaps } from "../assistant/placement";
+import { placeInsertedObjectsInFreeSpace } from "./applyPluginDocumentPatch";
 import {
   createNativeArtLineGraphicObject,
   moveDocumentObjects,
@@ -65,6 +66,43 @@ function repeatUnitObjects(): [MoleculeObject, BracketObject, BracketObject] {
 }
 
 describe("desktop direct plugin patch application", () => {
+  it("places an inserted template beside all covering dialogs within the visible area, by translation only", () => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const molecule = structureTemplateMolecule(resolveStructureTemplateName("18-crown-6")!, {
+      document, centre: { x: 396, y: 306 }
+    });
+    page.objects = [molecule];
+    document.selection = { pageId: page.id, objectIds: [molecule.id] };
+    const viewport = { x: 50, y: 70, width: 650, height: 450 };
+    const covered = [{ x: 290, y: 150, width: 210, height: 300 }, { x: 80, y: 100, width: 80, height: 100 }];
+    const placed = placeInsertedObjectsInFreeSpace(document, page.id, [molecule.id], { viewport, covered });
+    const inserted = placed.pages[0].objects[0] as MoleculeObject;
+    const bounds = objectRect(inserted);
+    expect(covered.every(rect => !overlaps(bounds, rect))).toBe(true);
+    expect(bounds.x).toBeGreaterThanOrEqual(viewport.x);
+    expect(bounds.y).toBeGreaterThanOrEqual(viewport.y);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.x + viewport.width);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.y + viewport.height);
+    const dx = inserted.x - molecule.x, dy = inserted.y - molecule.y;
+    expect(Math.hypot(dx, dy)).toBeGreaterThan(0);
+    expect(placed).toEqual(translateInsertedDocumentObjects(document, [molecule.id], dx, dy));
+    expect(placed.selection).toEqual(document.selection);
+    expect([placed.pages[0].width, placed.pages[0].height]).toEqual([page.width, page.height]);
+  });
+
+  it.each(["all covered", "uncovered sliver too small"])("keeps the original insertion when %s, even with free space off screen", mode => {
+    const document = createEmptyDocument();
+    const page = document.pages[0];
+    const molecule = structureTemplateMolecule(resolveStructureTemplateName("18-crown-6")!, {
+      document, centre: { x: 396, y: 306 }
+    });
+    page.objects = [molecule];
+    const viewport = { x: 250, y: 150, width: 300, height: 300 };
+    const covered = [{ ...viewport, width: viewport.width - (mode === "all covered" ? 0 : 5) }];
+    expect(placeInsertedObjectsInFreeSpace(document, page.id, [molecule.id], { viewport, covered })).toBe(document);
+  });
+
   it.each(["insert", "page"] as const)("translates every stored absolute coordinate in a template group (%s)", mode => {
     const document = createEmptyDocument();
     const page = document.pages[0];

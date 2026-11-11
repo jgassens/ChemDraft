@@ -31,6 +31,7 @@ import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
+import { pageOcclusionRects, readCanvasOcclusion } from "./window-manager/canvasOcclusion";
 import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
 import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
@@ -1772,7 +1773,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.20.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -9963,7 +9964,9 @@ export function MainWindow({
     }
   }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
 
-  const insertTemplateToTab = useCallback((tabId: string, id: string) => {
+  const insertTemplateToTab = useCallback(async (tabId: string, id: string) => {
+    const geometry = await readCanvasOcclusion();
+    // Re-read the tab and edit state after native sampling; it must never commit an old snapshot.
     if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
     if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
     if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
@@ -9991,7 +9994,12 @@ export function MainWindow({
     const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
       : { x: page.width / 2, y: page.height / 2 };
     const result = insertStructureTemplate(source, id, centre);
-    commitInsertionToTabWithPageFit(tabId, source, result.document, result.label);
+    const pageRect = active ? pageRef.current?.getBoundingClientRect() : undefined;
+    const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
+    const placed = covered.length && visible
+      ? placeInsertedObjectsInFreeSpace(result.document, page.id, result.document.selection.objectIds, { viewport: visible, covered })
+      : result.document;
+    commitInsertionToTabWithPageFit(tabId, source, placed, result.label);
   // isSnapshotSessionActive is declared later and reads only stable refs.
   }, [assistantHistoryPort, commitInsertionToTabWithPageFit]);
 
@@ -11505,7 +11513,7 @@ export function MainWindow({
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
-      insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
+      return insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
     }));
 
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
@@ -12783,14 +12791,24 @@ export function MainWindow({
       // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
+        const identityBeforeSampling = documentIdentityRef.current;
+        const geometry = recognized ? await readCanvasOcclusion() : undefined;
+        if (activeDocumentTabIdRef.current !== tab.id || documentIdentityRef.current !== identityBeforeSampling ||
+          quitInteractionRef.current || isSnapshotSessionActive()) {
+          throw new Error("The drawing changed or is busy; accept the proposal again.");
+        }
         const before = documentRef.current;
         const documentIdentity = documentIdentityRef.current;
         let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
         if (recognized) {
+          const visible = assistantHistoryPort.getViewportRect?.(tab.id);
+          const pageRect = pageRef.current?.getBoundingClientRect();
+          const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
           const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
           for (const page of prepared.pages) {
             const insertedIds = page.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
-            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds);
+            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds,
+              page.id === prepared.pages[0]?.id ? { viewport: visible, covered: visible ? covered : [] } : {});
           }
         }
         prepared = normalizeCommittedDocument(prepared);
@@ -12819,7 +12837,7 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
+    [activateDocumentTab, assistantHistoryPort, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
   );
 
   const rejectPluginProposal = useCallback(

@@ -1,4 +1,5 @@
 mod assistant_mcp;
+mod canvas_occlusion;
 mod clipboard_formats;
 mod clipboard_images;
 mod clipboard_limits;
@@ -1405,6 +1406,7 @@ pub fn run() {
             toggle_preferences_window,
             dialog_windows::preferences_ready,
             window_logical_position,
+            canvas_occlusion::document_canvas_occlusion,
             agent_bridge_status,
             palette_focus_diagnostic,
             perf_log::perf_log_clock,
