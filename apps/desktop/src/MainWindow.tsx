@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.20.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -14203,10 +14203,10 @@ export function MainWindow({
   )), []);
 
   useEffect(() => {
-    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must
-    // reach the registered command before that happens. Resolve without the editable-target
+    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save and
+    // text formatting must reach their registered commands first. Resolve without the editable-target
     // filter, using the same platform-aware registry as the canvas, and keep the #273 flush path.
-    const saveFromInlineEditor = (event: KeyboardEvent) => {
+    const commandFromInlineEditor = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
           isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
           !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor], [data-bracket-label-editor]")) return;
@@ -14214,6 +14214,18 @@ export function MainWindow({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
       });
+      // The text textarea stops bubbling keys, just like the table editor. Route its
+      // formatting chords through the same registered commands as the toolbar buttons.
+      const commandKey = (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos" ? event.metaKey : event.ctrlKey;
+      const textFormatCommand = event.target.matches(".text-object-editor") && commandKey && !event.altKey && !event.shiftKey
+        ? ({ b: "text.bold", i: "text.italic", u: "text.underline" } as Record<string, string>)[event.key.toLowerCase()]
+        : undefined;
+      if (textFormatCommand) {
+        event.preventDefault();
+        event.stopPropagation();
+        void invokeCommandRef.current(textFormatCommand);
+        return;
+      }
       if (commandId !== "document.save" && commandId !== "document.saveAs") return;
       // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
       // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
@@ -14221,9 +14233,9 @@ export function MainWindow({
       event.preventDefault();
       void invokeCommandRef.current(commandId);
     };
-    window.addEventListener("keydown", saveFromInlineEditor, true);
-    return () => window.removeEventListener("keydown", saveFromInlineEditor, true);
-  }, [shortcutRegistry]);
+    window.addEventListener("keydown", commandFromInlineEditor, true);
+    return () => window.removeEventListener("keydown", commandFromInlineEditor, true);
+  }, [shortcutRegistry, shortcutPlatform]);
 
   useEffect(() => {
     const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {

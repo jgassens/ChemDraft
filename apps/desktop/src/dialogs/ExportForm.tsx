@@ -133,7 +133,7 @@ function ExportFormBody({
   const implemented = descriptor.status === "implemented";
   const rasterFormat = rasterExportFormatForDialogFormat(state.format);
   const destinationLabel = state.destinationPath ?? (isDesktopRuntime() ? "Choose a location" : "Downloads");
-  const exportDisabled = sizeError !== undefined || state.busy || !validExportOptions(exportOptions(state)) || !implemented;
+  const exportDisabled = completed || sizeError !== undefined || state.busy || !validExportOptions(exportOptions(state)) || !implemented;
 
   return (
     <section aria-label="Export" role="dialog" aria-modal={isDesktopRuntime() ? undefined : true} aria-busy={state.busy}

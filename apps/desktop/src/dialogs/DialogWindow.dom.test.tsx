@@ -270,3 +270,26 @@ it("refreshes preview on frame revision while preserving the user's export draft
   await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: first.requestId, data: { status: "preview", preview: { url: "data:image/png;base64,AAAA", kind: "image", width: 100, height: 100, warnings: [] } } }));
   expect(container.querySelector('img[alt="Export preview"]')).toBeNull();
 });
+
+
+it.each(["macos", "windows"] as const)("reopens format selection after successful export on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  const exportSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-again",
+    data: { title: "Export again", options: exportFixture() } };
+  await act(async () => { host.receive!(exportSnapshot); await import("./ExportForm"); });
+  const button = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === text)!;
+  await act(async () => button("Export").click());
+  const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "exported", notice: "Exported PDF" } }));
+  const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+  expect(format.disabled).toBe(false);
+  await act(async () => { format.focus(); format.value = "svg"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(format.value).toBe("svg");
+  expect(button("Export").disabled).toBe(false);
+  await act(async () => button("Export").click());
+  const next = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  expect(next.requestId).not.toBe(action.requestId);
+  expect(next.type === "action" && "options" in next.data && next.data.options.format).toBe("svg");
+});

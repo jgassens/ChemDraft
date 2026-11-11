@@ -254,7 +254,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     });
   };
   if (snapshot?.dialogKind === "export" && exportDraft) return <Suspense fallback={<p role="status">Opening Export…</p>}><ExportForm frame={frame} renderPreview={renderPreview} title={snapshot.data.title} onReady={reportReady}
-    state={{ ...exportDraft, busy: busy || exported }} onChange={setExportDraft} error={error} notice={notice} completed={exported}
+    state={{ ...exportDraft, busy }} onChange={draft => { setExportDraft(draft); setExported(false); }} error={error} notice={notice} completed={exported}
     onCancel={() => sendAction({ action: "cancel" })}
     onChooseDestination={() => sendAction({ action: "chooseDestination", options: exportOptions(exportDraft) })}
     onSubmit={() => sendAction({ action: "export", options: exportOptions(exportDraft) })} /></Suspense>;

@@ -38,7 +38,7 @@ describe("Export protocol and authority", () => {
       for (const status of ["accepted", "progress", "picked", "exported", "cancelled", "error"]) expect(parseDialogMessage({ ...action, type: "result", data: { status } })).toBeDefined();
     } finally { await h.coordinator.dispose(); }
   });
-  it("reserves an export across duplicate and distinct request IDs; success is shown and Close still works", async () => {
+  it("reserves a pending export across request IDs, then permits another explicit export after success", async () => {
     const h = await setup();
     try {
       let finish!: () => void;
@@ -50,7 +50,7 @@ describe("Export protocol and authority", () => {
       expect(h.owner.export).toHaveBeenCalledExactlyOnceWith("tab-origin", exportFixture(), expect.any(Function), expect.any(Function));
       finish(); await Promise.all([first, duplicate]);
       await h.deliver("action", action, "press-3");
-      expect(h.owner.export).toHaveBeenCalledTimes(1);
+      expect(h.owner.export).toHaveBeenCalledTimes(2);
       expect(h.transport.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: { status: "exported", notice: "Exported with warnings" } }));
       await h.coordinator.openExport("tab-origin", { title: "Ignored replay", options: exportFixture() });
       expect(h.transport.open).toHaveBeenCalledTimes(2);
@@ -161,4 +161,19 @@ it("exposes only the current live Export session for picker focus restoration", 
   expect(h.coordinator.exportSessionId("tab-origin")).not.toBe(h.snapshot.sessionId);
   await h.coordinator.dispose();
   expect(h.coordinator.exportSessionId("tab-origin")).toBeUndefined();
+});
+
+it("allows a new format export in the same session after success, while replaying each receipt once", async () => {
+  const h = await setup();
+  try {
+    const first = { action: "export", options: exportFixture() };
+    await h.deliver("action", first, "pdf");
+    const second = { action: "export", options: { ...exportFixture(), filename: "Drawing.svg", format: "svg" } };
+    await h.deliver("action", second, "svg");
+    expect(h.owner.export).toHaveBeenCalledTimes(2);
+    expect(h.owner.export.mock.calls[1][1]).toMatchObject({ filename: "Drawing.svg", format: "svg" });
+    await h.deliver("action", first, "pdf");
+    await h.deliver("action", second, "svg");
+    expect(h.owner.export).toHaveBeenCalledTimes(2);
+  } finally { await h.coordinator.dispose(); }
 });
