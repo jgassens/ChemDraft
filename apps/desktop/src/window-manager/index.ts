@@ -835,9 +835,9 @@ export async function listenForExportPreviewSettings(handler: (enabled: boolean)
     return () => { stop(); native(); };
   } catch { return stop; }
 }
-async function quitPromptCommand<T>(command: string, requestId: number): Promise<T> {
+async function quitPromptCommand<T>(command: string, requestId: number, extra?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(command, { requestId });
+  return invoke<T>(command, { requestId, ...extra });
 }
 export async function setQuitPromptEnabled(enabled: boolean): Promise<void> {
   if (!isDesktopRuntime()) return;
@@ -846,7 +846,8 @@ export async function setQuitPromptEnabled(enabled: boolean): Promise<void> {
 }
 export const prepareQuitPrompt = (id: number): Promise<boolean> => quitPromptCommand("prepare_quit_prompt", id);
 export const reportQuitPromptShowing = (id: number): Promise<boolean> => quitPromptCommand("quit_prompt_showing", id);
-export const cancelQuit = (id: number): Promise<boolean> => quitPromptCommand("cancel_quit", id);
+export const cancelQuit = (id: number, disposition?: "deferred" | "failed"): Promise<boolean> =>
+  quitPromptCommand("cancel_quit", id, disposition ? { disposition } : undefined);
 export const resumeQuitAfterPrompt = (id: number): Promise<boolean> => quitPromptCommand("resume_quit_after_prompt", id);
 export const confirmPromptedQuit = (id: number): Promise<void> => quitPromptCommand("confirm_prompted_quit", id);
 export async function requestQuitAfterClose(): Promise<void> {

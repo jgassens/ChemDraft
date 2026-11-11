@@ -118,7 +118,18 @@ export function buildDocumentTabsSession(
 ): DocumentSessionEnvelope {
   const active = tabs[activeTabIndex];
   if (!active) throw new Error("The active document tab is missing");
-  return { ...active, tabs, activeTabIndex };
+  // Only the known v1 compatibility fields belong at window scope. Opaque metadata retained
+  // from a restored tab must stay on that tab, even when the startup blank is reused.
+  const envelope: DocumentSessionEnvelope = {
+    version: active.version, contents: active.contents, payloadHash: active.payloadHash,
+    blank: active.blank, displayName: active.displayName, dirty: active.dirty, savedAt: active.savedAt,
+    tabs, activeTabIndex
+  };
+  for (const key of ["path", "restoreSavePathError", "pristine", "view", "openWarnings",
+    "saveWarnings", "nativeDocumentVersions"] as const) {
+    if (key in active) Object.assign(envelope, { [key]: active[key] });
+  }
+  return envelope;
 }
 
 export interface DocumentSessionSource {

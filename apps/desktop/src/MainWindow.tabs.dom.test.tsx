@@ -22,7 +22,7 @@ import { saveAskToSaveBeforeQuit, loadAskToSaveBeforeQuit } from "./quitSettings
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { createViewportState } from "@chemdraft/viewport-engine";
 import { DOM_COMMAND_EVENT, setToolbarsMenu, type ToolsetWindowState } from "./window-manager";
-import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope } from "./documentSession";
+import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSessionEnvelope, type DocumentSessionEnvelope } from "./documentSession";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { createRuntimeDocumentPort } from "./plugins/runtimeDocumentPort";
 import { applyPatches, type DocumentPatch, type MoleculeObject } from "@chemdraft/chem-core";
@@ -2171,7 +2171,7 @@ describe("documents in one window", () => {
     saveAskToSaveBeforeQuit(true);
     await flush();
     expect(native.promptShowing).not.toHaveBeenCalled();
-    expect(native.cancelQuit).toHaveBeenCalledWith(1);
+    expect(native.cancelQuit).toHaveBeenCalledWith(1, "failed");
     expect(native.suspensionDepth).toBe(0);
     expect(native.quit).not.toHaveBeenCalled();
   });
@@ -2279,7 +2279,7 @@ describe("documents in one window", () => {
     }
     await flush();
     await quitButton("Save");
-    expect(native.cancelQuit).toHaveBeenCalledWith(1);
+    expect(native.cancelQuit).toHaveBeenCalledWith(1, "failed");
     expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
     await paste("Editable after cancelled quit");
     expect(drawnText()).toContain("Editable after cancelled quit");
@@ -3323,6 +3323,23 @@ describe("documents in one window", () => {
     const edited = await flush();
     expect((native.session as { tabs: unknown[] }).tabs[0]).toHaveProperty("futureTab", raw.futureTab);
     expect(edited.tabs![0]!.contents).toContain("New work on reused blank");
+  });
+
+  it("keeps window and blank-tab extensionData separate when reusing the startup tab", async () => {
+    const saved = await flush();
+    const tab = { ...saved.tabs![0]!, extensionData: { scope: "tab", opaque: [1, 2] } };
+    // Native v2 restoration exposes this window through the existing v1 renderer contract.
+    const window = { ...saved, extensionData: { scope: "window" }, tabs: [tab] };
+    native.session = window;
+    await remount();
+    expect(tabs()).toHaveLength(1);
+    await flush();
+    const snapshot = native.session as DocumentSessionEnvelope;
+    expect(snapshot).not.toHaveProperty("extensionData");
+    expect(snapshot.tabs![0]).toHaveProperty("extensionData", tab.extensionData);
+    expect({ ...window, ...snapshot }).toMatchObject({
+      extensionData: { scope: "window" }, tabs: [{ extensionData: tab.extensionData }]
+    });
   });
 
   it.each([false, true])("tab x queues OS open-with so Save writes the prompted drawing (multiple: %s)", async (multiple) => {

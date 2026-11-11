@@ -11,6 +11,26 @@ use std::{
 
 const WRITE_INTERVAL: Duration = Duration::from_millis(800);
 
+/// Disk I/O cannot be cancelled safely mid-replacement. Let the writer finish on its own thread,
+/// but never make quit or update installation wait indefinitely for it (or its mutex).
+pub(crate) fn with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(task());
+    });
+    receiver.recv_timeout(timeout).map_err(|error| match error {
+        std::sync::mpsc::RecvTimeoutError::Timeout => format!(
+            "Saving the document session timed out after {} seconds; the operation was cancelled. Save your document and try again.",
+            timeout.as_secs()
+        ),
+        std::sync::mpsc::RecvTimeoutError::Disconnected =>
+            "The document session writer stopped before saving completed".into(),
+    })?
+}
+
 #[derive(Default)]
 pub(crate) struct SessionCoordinator {
     state: Mutex<SessionState>,
@@ -571,6 +591,97 @@ mod tests {
     }
 
     #[test]
+    fn update_drain_is_bounded_while_the_coordinator_mutex_is_held() {
+        let coordinator = std::sync::Arc::new(SessionCoordinator::default());
+        let held = coordinator.state.lock().unwrap();
+        let writer = coordinator.clone();
+        let result = with_timeout(Duration::from_millis(20), move || writer.flush());
+        assert!(result.unwrap_err().contains("timed out"));
+        // The caller returned before the writer could acquire the mutex.
+        drop(held);
+        let writer = coordinator.clone();
+        assert!(with_timeout(Duration::from_secs(2), move || writer.flush()).is_ok());
+        assert_eq!(
+            with_timeout(Duration::from_secs(2), || Err::<(), _>("disk full".into())),
+            Err("disk full".into())
+        );
+    }
+
+    #[test]
+    fn watchdog_termination_does_not_wait_for_the_coordinator_mutex() {
+        use crate::{QuitFlow, QuitHost, QuitReason};
+        #[derive(Clone)]
+        struct Watchdog(std::sync::mpsc::Sender<()>);
+        impl QuitHost for Watchdog {
+            fn ask_document_to_flush(&self) -> bool {
+                true
+            }
+            fn exit(&self) {}
+            fn drain_appkit_session(&self) -> Result<(), String> {
+                panic!("watchdog must not persist")
+            }
+            fn force_exit(&self, _: Duration, _: QuitReason) {
+                self.0.send(()).unwrap();
+            }
+        }
+        let coordinator = SessionCoordinator::default();
+        let held = coordinator.state.lock().unwrap();
+        let quitting = Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        let flow = Box::leak(Box::new(QuitFlow::new(
+            quitting,
+            Duration::from_secs(3),
+            Duration::from_millis(20),
+        )));
+        let (terminated, receiver) = std::sync::mpsc::channel();
+        crate::quit_now_with(flow, &Watchdog(terminated), QuitReason::GraceExpired);
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(held);
+        // Also guard the Windows host implementation, which cannot execute on this test host.
+        let source = include_str!("lib.rs");
+        let windows_force_exit = source
+            .split("#[cfg(windows)]\n    fn force_exit")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(not(windows))]")
+            .next()
+            .unwrap();
+        assert!(!windows_force_exit.contains("flush_session"));
+        assert!(!windows_force_exit.contains("SessionCoordinator"));
+    }
+
+    #[test]
+    fn blank_tab_and_window_extension_data_remain_separate_after_a_flush() {
+        let files = Files::new();
+        let mut blank = tab("blank");
+        blank["blank"] = json!(true);
+        blank["dirty"] = json!(false);
+        blank["pristine"] = json!(true);
+        blank.as_object_mut().unwrap().remove("path");
+        blank["extensionData"] = json!({ "scope": "tab" });
+        let session = json!({ "version": 2, "activeWindowId": "main", "windows": [{
+            "id": "main", "frame": null, "extensionData": { "scope": "window" },
+            "tabs": [blank], "activeTabIndex": 0
+        }] });
+        let coordinator = files.start(&session, false);
+        let restored = coordinator.restore_window("main", false).unwrap().unwrap();
+        let mut snapshot = restored.clone();
+        // The renderer submits only known compatibility fields and retains opaque tab data in tabs.
+        snapshot.as_object_mut().unwrap().remove("extensionData");
+        coordinator
+            .submit("main", 1, snapshot, true, true, Instant::now())
+            .unwrap();
+        let saved = files.read();
+        assert_eq!(
+            saved["windows"][0]["extensionData"],
+            json!({ "scope": "window" })
+        );
+        assert_eq!(
+            saved["windows"][0]["tabs"][0]["extensionData"],
+            json!({ "scope": "tab" })
+        );
+    }
+
+    #[test]
     fn migrates_v1_verbatim_and_backs_up_original_bytes_exactly_once() {
         let files = Files::new();
         let unreadable =
@@ -751,13 +862,6 @@ mod tests {
                 "flush_session_before_exit(app)",
             ),
             (
-                "Windows forced exit",
-                lib,
-                "    fn force_exit(&self, waited: Duration, reason: QuitReason) {",
-                "        self.state::<ocsr_engine::OcsrEngineState>()",
-                "flush_session_before_exit(self)",
-            ),
-            (
                 "Exit",
                 lib,
                 "            RunEvent::Exit => {",
@@ -769,7 +873,14 @@ mod tests {
                 appkit,
                 "unsafe extern \"C\" fn should_terminate(",
                 "    NSApplicationTerminateReply::TerminateNow",
-                "super::flush_session(app)",
+                "super::request_appkit_quit_with",
+            ),
+            (
+                "AppKit coordinator worker",
+                lib,
+                "fn quit_now_with<H: QuitHost>",
+                "/// The document window's answer",
+                "host.drain_appkit_session()",
             ),
             (
                 "Windows update install",

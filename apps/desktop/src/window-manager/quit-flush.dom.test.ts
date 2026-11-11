@@ -19,8 +19,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen: native.listen })
 }));
 
-import { confirmQuitAfterFlush, listenForQuitFlushRequest, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
-import { runUpdateFlow, tauriUpdateFlowDeps } from "../appUpdates";
+import { cancelQuit, confirmQuitAfterFlush, listenForQuitFlushRequest, QUIT_FLUSH_REQUEST_EVENT, saveDocumentSession } from "./index";
+import { runUpdateFlow, tauriUpdateFlowDeps, UPDATE_SESSION_DRAIN_TIMEOUT_MS } from "../appUpdates";
 
 function requestFlush() {
   native.listeners.get(QUIT_FLUSH_REQUEST_EVENT)?.({ event: QUIT_FLUSH_REQUEST_EVENT, id: 1, payload: undefined });
@@ -84,6 +84,17 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     expect(native.invoke).toHaveBeenCalledWith("quit_after_flush");
   });
 
+  it("distinguishes the user's Cancel from an internal prompt deferral or failure", async () => {
+    await cancelQuit(1);
+    await cancelQuit(2, "deferred");
+    await cancelQuit(3, "failed");
+    expect(native.invoke.mock.calls).toEqual([
+      ["cancel_quit", { requestId: 1 }],
+      ["cancel_quit", { requestId: 2, disposition: "deferred" }],
+      ["cancel_quit", { requestId: 3, disposition: "failed" }]
+    ]);
+  });
+
   it("submits increasing revisions and requests an immediate strict update flush", async () => {
     await saveDocumentSession({ edit: 1 });
     await saveDocumentSession({ edit: 2 }, { strict: true });
@@ -124,6 +135,33 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     const deps = tauriUpdateFlowDeps({ setStatus: vi.fn(), flushSession: vi.fn().mockResolvedValue(undefined) });
     await deps.flushSession();
     expect(native.invoke.mock.calls).toEqual([["flush_document_session"]]);
+  });
+
+  it("aborts an update when the native coordinator drain never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      let finishDrain!: () => void;
+      const stalled = new Promise<void>(resolve => { finishDrain = resolve; });
+      native.invoke.mockImplementation(async command => {
+        if (command === "flush_document_session") await stalled;
+      });
+      const update = { version: "2", currentVersion: "1", download: vi.fn().mockResolvedValue(undefined),
+        install: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
+      const deps = { ...tauriUpdateFlowDeps({ setStatus: vi.fn(), flushSession: vi.fn().mockResolvedValue(undefined) }),
+        check: vi.fn().mockResolvedValue(update), confirm: vi.fn().mockResolvedValue(true), message: vi.fn().mockResolvedValue(undefined) };
+      const result = runUpdateFlow("manual", deps);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(native.invoke).toHaveBeenCalledWith("flush_document_session");
+      await vi.advanceTimersByTimeAsync(UPDATE_SESSION_DRAIN_TIMEOUT_MS);
+      expect(await result).toBe("install-failed");
+      expect(deps.message).toHaveBeenCalledWith(expect.stringContaining("timed out"), expect.anything());
+      expect(update.close).toHaveBeenCalledOnce();
+      finishDrain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(update.install).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

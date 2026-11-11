@@ -212,6 +212,17 @@ describe("multi-document session extension", () => {
     expect(shouldRestoreDocumentSession(buildDocumentTabsSession([blank, blank], 0))).toBe(true);
   });
 
+  it("keeps unknown tab fields out of the window compatibility snapshot", () => {
+    const restoredTab = { ...blank, pristine: true, extensionData: { scope: "tab" } };
+    const window = { extensionData: { scope: "window" }, tabs: [restoredTab], activeTabIndex: 0 };
+    const snapshot = buildDocumentTabsSession(window.tabs, 0);
+    expect(snapshot).not.toHaveProperty("extensionData");
+    expect(snapshot.tabs![0]).toHaveProperty("extensionData", { scope: "tab" });
+    expect({ ...window, ...snapshot }).toMatchObject({
+      extensionData: { scope: "window" }, tabs: [{ extensionData: { scope: "tab" } }]
+    });
+  });
+
   it("defaults malformed cosmetic metadata and clamps scale and negative scroll without losing tabs", () => {
     const viewport = createViewportState();
     const parsed = parseDocumentSessionEnvelope(buildDocumentTabsSession([

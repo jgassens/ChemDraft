@@ -50,6 +50,35 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn reply_to_termination<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    flow: &'static super::QuitFlow,
+    terminate: bool,
+) {
+    if let Err(error) = super::dispatch_appkit_reply_with(
+        flow,
+        terminate,
+        MainThreadMarker::new().is_some(),
+        |reply| app.run_on_main_thread(move || reply()),
+        |reply| {
+            let block = block2::RcBlock::new(move || reply());
+            // SAFETY: The block captures only a Send + Sync task. Foundation copies it
+            // and executes it on the main queue, independently of Tauri's event proxy.
+            unsafe {
+                objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block);
+            }
+        },
+        move || {
+            let mtm =
+                MainThreadMarker::new().expect("AppKit quit reply must run on the main thread");
+            objc2_app_kit::NSApplication::sharedApplication(mtm)
+                .replyToApplicationShouldTerminate(terminate);
+        },
+    ) {
+        eprintln!("Could not dispatch AppKit termination reply via Tauri; queued native fallback: {error}");
+    }
+}
+
 unsafe extern "C" fn should_terminate(
     _: &AnyObject,
     _: Sel,
@@ -72,24 +101,32 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
-    if let Some(app) = APP.get() {
-        // Sparkle also terminates through AppKit. A successful flush is required before handing
-        // the bundle to its installer; unlike a best-effort Exit callback, this can cancel it.
-        if let Err(error) = super::flush_session(app) {
-            eprintln!("Could not flush document session before AppKit termination: {error}");
-            if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
-                return NSApplicationTerminateReply::TerminateCancel;
+    let reply_pending = super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery();
+    match super::appkit_quit_decision(
+        cfg!(target_os = "macos"),
+        super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
+        super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+        reply_pending,
+        reason,
+    ) {
+        super::AppkitQuitDecision::Prompt => {
+            if let Some(app) = APP.get() {
+                if super::request_appkit_quit_with(&super::QUIT, app, true) {
+                    return NSApplicationTerminateReply::TerminateLater;
+                }
             }
-            // System logout/shutdown must remain non-blocking.
         }
-        if super::should_prompt_appkit_quit(
-            super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
-            super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
-            reason,
-        ) {
-            super::request_quit(app);
-            return NSApplicationTerminateReply::TerminateCancel; // Return to the event loop while the user chooses.
+        super::AppkitQuitDecision::DeferReply => {
+            if let Some(app) = APP.get() {
+                if super::request_appkit_quit_with(&super::QUIT, app, false) {
+                    return NSApplicationTerminateReply::TerminateLater;
+                }
+            }
         }
+        super::AppkitQuitDecision::WaitForReply => {
+            return NSApplicationTerminateReply::TerminateLater;
+        }
+        super::AppkitQuitDecision::TerminateNow => {}
     }
     NSApplicationTerminateReply::TerminateNow
 }

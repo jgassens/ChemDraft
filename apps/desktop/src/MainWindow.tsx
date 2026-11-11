@@ -1778,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.06.32-codex";
+const CURRENT_BUILD_STAMP = "11.11.08.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -10765,14 +10765,14 @@ export function MainWindow({
         if (closeTabPromptRef.current) {
           // React cleanup cannot dismiss an OS alert. Retire this native quit deadline and
           // finish the existing close choice first, then request a fresh, visible quit prompt.
-          if (await cancelQuit(requestId) && quitRequestRef.current === requestId) {
+          if (await cancelQuit(requestId, "deferred") && quitRequestRef.current === requestId) {
             pendingQuitAfterCloseRef.current = true;
             setQuitAfterCloseReady((value) => value + 1);
           }
           return;
         }
         if (!snapshotDocumentTab()) {
-          await cancelQuit(requestId);
+          await cancelQuit(requestId, "failed");
           quitInteractionRef.current = false;
           return;
         }
@@ -11120,7 +11120,7 @@ export function MainWindow({
     let disposed = false;
     const suspension = acquireNativeUtilitySuspension();
     const retirePrompt = () => {
-      void cancelQuit(requestId).then((cancelled) => {
+      void cancelQuit(requestId, "failed").then((cancelled) => {
         if (!cancelled) return;
         if (quitRequestRef.current === requestId) {
           quitInteractionRef.current = false;
@@ -11145,14 +11145,15 @@ export function MainWindow({
     };
   }, [quitPromptOpen]);
 
-  const cancelQuitPrompt = useCallback(async (requestId = quitRequestRef.current) => {
+  const cancelQuitPrompt = useCallback(async (requestId = quitRequestRef.current, disposition?: "failed") => {
     if (requestId === undefined) return;
     if (quitRequestRef.current === requestId) {
       quitPromptBusyRef.current = true;
       setQuitSaveBusy(true);
     }
     try {
-      if (await cancelQuit(requestId)) {
+      const cancelled = disposition ? await cancelQuit(requestId, disposition) : await cancelQuit(requestId);
+      if (cancelled) {
         if (quitRequestRef.current === requestId) {
           quitInteractionRef.current = false;
           quitMutationFrozenRef.current = false;
@@ -11181,14 +11182,14 @@ export function MainWindow({
           const file = tab.id === activeDocumentTabIdRef.current ? fileStateRef.current :
             documentTabSnapshotsRef.current.get(tab.id)?.file;
           if (file?.dirty && !await saveDocumentTabById(tab.id, false)) {
-            await cancelQuitPrompt(requestId);
+            await cancelQuitPrompt(requestId, "failed");
             return;
           }
         }
         if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
           ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
-          setStatus("A document changed while saving. Quit canceled; save again before quitting.");
-          await cancelQuitPrompt(requestId);
+          setStatus("A document changed while saving. Save again before quitting.");
+          await cancelQuitPrompt(requestId, "failed");
           return;
         }
       }
@@ -11198,7 +11199,7 @@ export function MainWindow({
       await confirmPromptedQuit(requestId);
     } catch (error) {
       setStatus("Quit failed: " + (error instanceof Error ? error.message : String(error)));
-      await cancelQuitPrompt(requestId);
+      await cancelQuitPrompt(requestId, "failed");
     } finally {
       if (quitRequestRef.current === requestId) {
         quitPromptBusyRef.current = false;
@@ -11233,10 +11234,10 @@ export function MainWindow({
     const requestId = quitPromptOpen;
     if (requestId === undefined || quitRequestRef.current !== requestId) return;
     try {
-      if (!await reportQuitPromptShowing(requestId)) await cancelQuitPrompt(requestId);
+      if (!await reportQuitPromptShowing(requestId)) await cancelQuitPrompt(requestId, "failed");
     } catch (error) {
       setStatus("Quit prompt unavailable: " + String(error));
-      await cancelQuitPrompt(requestId);
+      await cancelQuitPrompt(requestId, "failed");
     }
   });
 

@@ -24,6 +24,7 @@ export const AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 /** Delay before the launch check, so it never competes with startup work (session restore, plugins). */
 export const AUTO_CHECK_DELAY_MS = 15_000;
 export const LAST_AUTO_CHECK_STORAGE_KEY = "chemdraft.appUpdates.lastCheckedAt";
+export const UPDATE_SESSION_DRAIN_TIMEOUT_MS = 3_000;
 
 export interface UpdateBuildInfo {
   isDesktop: boolean;
@@ -114,6 +115,24 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Covers both the renderer's strict save and the native drain. A late save completion must
+ * never resume an aborted installation; the caller can check for updates again. */
+async function drainSessionBeforeUpdate(flush: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(flush),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          "Saving your document timed out after 3 seconds. The update was cancelled. Save your document and try again."
+        )), UPDATE_SESSION_DRAIN_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * One update check. `manual` (the menu) reports every result; `automatic` (the daily launch check)
  * speaks up only when there is an update, so an offline launch stays quiet.
@@ -171,7 +190,7 @@ export async function runUpdateFlow(mode: "manual" | "automatic", deps: UpdateFl
     // The installer ends this process. Anything not on disk now is gone, so a failed save stops the
     // update rather than risking the document.
     deps.setStatus(`Saving your document before installing ChemDraft ${update.version}…`);
-    await deps.flushSession();
+    await drainSessionBeforeUpdate(() => deps.flushSession());
     deps.setStatus(`Installing ChemDraft ${update.version}…`);
     await update.install();
     return "installing";

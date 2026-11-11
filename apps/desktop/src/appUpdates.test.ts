@@ -8,6 +8,7 @@ import {
   AUTO_CHECK_INTERVAL_MS,
   LAST_AUTO_CHECK_STORAGE_KEY,
   STABLE_APP_IDENTIFIER,
+  UPDATE_SESSION_DRAIN_TIMEOUT_MS,
   appUpdateChannelNotice,
   appUpdateChecksAllowed,
   appUpdatesSupported,
@@ -221,6 +222,35 @@ describe("runUpdateFlow", () => {
       "ChemDraft 0.3.6 could not be installed: disk full",
       expect.objectContaining({ kind: "error" })
     );
+  });
+
+  it("aborts a timed-out session drain, reports why, and permits a later update check", async () => {
+    vi.useFakeTimers();
+    try {
+      const update = fakeUpdate();
+      let completeSave!: () => void;
+      const pendingSave = new Promise<void>(resolve => { completeSave = resolve; });
+      const flow = deps({ check: vi.fn(async () => update), flushSession: vi.fn(() => pendingSave) });
+      const result = runUpdateFlow("manual", flow);
+      await vi.advanceTimersByTimeAsync(UPDATE_SESSION_DRAIN_TIMEOUT_MS - 1);
+      expect(update.install).not.toHaveBeenCalled();
+      expect(flow.message).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toBe("install-failed");
+      expect(flow.message).toHaveBeenCalledWith(expect.stringContaining(
+        "Saving your document timed out after 3 seconds. The update was cancelled."
+      ), expect.objectContaining({ kind: "error" }));
+      expect(update.close).toHaveBeenCalledOnce();
+      completeSave();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(update.install).not.toHaveBeenCalled();
+      flow.flushSession = vi.fn(async () => undefined);
+      expect(await runUpdateFlow("manual", flow)).toBe("installing");
+      expect(update.install).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a failed download or signature check and leaves the app running", async () => {
