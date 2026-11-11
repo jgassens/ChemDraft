@@ -2032,7 +2032,7 @@ function exportTextObject(text: TextObject, context: VisibleExportContext, alloc
   if (styledSpan || styledObject || typeof text.style.color === "string" && normalizeHexColor(text.style.color) === undefined) {
     warnings.push({
       code: "cdxml.text_format_native_only",
-      message: `Some text formatting is preserved only in the embedded ChemDraft payload; the visible ${format} retains colors, bold/italic and subscript/superscript but may look different in other apps.`,
+      message: `Some text formatting is preserved only in the embedded ChemDraft payload; the visible ${format} keeps per-character (run) colors, bold/italic and subscript/superscript, but not formatting applied to the whole text box (font, size, bold, italic, alignment, spacing), and may look different in other apps.`,
       sourceObjectId: text.id
     });
   }
