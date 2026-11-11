@@ -13,9 +13,12 @@ Approved in principle, with these conditions:
 2. **Build phase runs from a MacBook session** (agentctl lives there).
 3. **Before any code:** one Kimi high review of this plan, after the 1.2 big review, focused on the
    `apps.handoff` security contract: user consent, no path or argument injection, the app picked by
-   the user and never by the plugin, and macOS/Windows parity. Open point for that review: the master
-   asked for "user consent each time"; this plan has one-time consent per plugin and app plus a
-   message box whenever something would be lost (owner question 2). The owner decides.
+   the user and never by the plugin, and macOS/Windows parity.
+   **Consent: resolved, pending Kimi** (master, 2026-11-10). One-time consent per plugin and app is
+   accepted, provided (a) every handoff still comes only from a user-started command; (b) the consent
+   is listed and revocable in Preferences or the plugin's settings; (c) a different app, or a changed
+   app path or bundle ID, asks again; (d) the loss message box shows every time something would be
+   lost. This settles owner question 2.
 4. **Keep §7:** the XYZ handoff warns about or refuses charge, stereo, and abbreviation loss, per the
    table in Decision 1.
 
