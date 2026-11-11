@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { dmgArchitecture, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
+import { dmgArchitecture, targetForFeed, verifyAppcast, verifyDmgEnclosure } from "./macos-appcast.mjs";
 import { targetArchitecture } from "./macos-mach-o.mjs";
 import { readAppPlist, verifyApp, verifySourceCommit } from "./verify-macos-app.mjs";
 import { refuseUnsignedBuild, withDmgApps } from "./macos-dmg.mjs";
@@ -34,10 +34,14 @@ export function verifyDmgCommit(dmg, target, commit, { run = spawnSync, ...optio
   });
 }
 
-export function verifyFeedArtifacts({ xml, target, dmgs = [], apps = [] }, { checkDmg = verifyDmg, checkApp = verifyApp } = {}) {
+export function verifyFeedArtifacts({ xml, target, dmgs = [], apps = [] }, { checkDmg = verifyDmg, checkApp = verifyApp, sparklePublicKey } = {}) {
   const items = verifyAppcast(xml, target);
   for (const dmg of dmgs) {
-    if (!items.some((item) => basename(new URL(item.url).pathname) === basename(dmg))) throw new Error(`${dmg}: artifact is not listed in the feed`);
+    const matches = items.filter((item) => basename(decodeURIComponent(new URL(item.url).pathname)) === basename(dmg));
+    if (!matches.length) throw new Error(`${dmg}: artifact is not listed in the feed`);
+    const bytes = readFileSync(dmg);
+    // Check every matching item so a duplicate enclosure cannot hide stale metadata.
+    for (const item of matches) verifyDmgEnclosure(item, bytes, sparklePublicKey);
     checkDmg(dmg, target);
   }
   for (const app of apps) checkApp(app, target);

@@ -16,10 +16,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { RELEASE_DOWNLOAD_BASE, WINDOWS_PLATFORM_KEY } from "./windows-updater.mjs";
 
-export const RELEASE_DOWNLOAD_BASE = "https://github.com/jgassens/ChemDraft/releases/download";
-/** The platform key tauri-plugin-updater looks up first for an NSIS build (`{os}-{arch}-{installer}`). */
-export const WINDOWS_PLATFORM_KEY = "windows-x86_64-nsis";
+export { RELEASE_DOWNLOAD_BASE, WINDOWS_PLATFORM_KEY } from "./windows-updater.mjs";
 
 export interface UpdateManifest {
   version: string;

@@ -1,3 +1,22 @@
+import { generateKeyPairSync, sign } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Small synthetic artifact bytes signed with an in-memory, throwaway key.
+const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+export const dmgBytes = Buffer.from("synthetic DMG bytes: never mounted by tests");
+export const sparklePublicKey = publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
+export const sparkleSignature = sign(null, dmgBytes, privateKey).toString("base64");
+
+export function signedDmg(t, name) {
+  const folder = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".dmg-test-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const file = join(folder, name);
+  writeFileSync(file, dmgBytes);
+  return file;
+}
+
 // Synthetic headers only; tests never need a JDK or compiler.
 export function thinMachO(architecture = "x86_64", minimum = 0x000b0000, command = 0x32) {
   const size = command === 0x32 ? 24 : 16;

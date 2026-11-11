@@ -3,6 +3,38 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { artifactDigest, BUILD_TARGETS, COMMIT_PATTERN } from "./record-build.mjs";
+import { loadUpdaterPublicKey, RELEASE_DOWNLOAD_BASE, verifyUpdaterSignature, WINDOWS_PLATFORM_KEY } from "./windows-updater.mjs";
+
+export function verifyWindowsUpdateAssets({ assets, version, allowIncomplete = false }, { updaterPublicKey } = {}) {
+  const installer = `ChemDraft_${version}_x64-setup.exe`;
+  const present = new Set(readdirSync(assets));
+  // An absent Windows build may be deferred, but a partial updater package must fail closed.
+  if (allowIncomplete && ![installer, `${installer}.sig`, "latest.json"].some((name) => present.has(name))) return;
+  const read = (name, encoding) => {
+    try { return readFileSync(join(assets, name), encoding); }
+    catch (error) { throw new Error(`${name}: ${error.code === "ENOENT" ? "missing release file" : error.message}`); }
+  };
+  const signature = read(`${installer}.sig`, "utf8").trim();
+  const manifest = read("latest.json", "utf8");
+  let feed;
+  try { feed = JSON.parse(manifest); }
+  catch (error) { throw new Error(`latest.json: ${error.message}`); }
+  if (feed?.version !== version) throw new Error(`latest.json: version: expected ${version}, found ${feed?.version}`);
+  const platforms = feed.platforms;
+  const keys = platforms && typeof platforms === "object" && !Array.isArray(platforms) ? Object.keys(platforms) : [];
+  if (keys.length !== 1 || keys[0] !== WINDOWS_PLATFORM_KEY) {
+    throw new Error(`latest.json: platforms: expected ${WINDOWS_PLATFORM_KEY}, found ${keys.join(", ") || JSON.stringify(platforms)}`);
+  }
+  const entry = platforms[WINDOWS_PLATFORM_KEY];
+  const expectedUrl = `${RELEASE_DOWNLOAD_BASE}/v${version}/${encodeURIComponent(installer)}`;
+  if (entry?.url !== expectedUrl) throw new Error(`latest.json: platforms.${WINDOWS_PLATFORM_KEY}.url: expected ${expectedUrl}, found ${JSON.stringify(entry?.url)}`);
+  if (entry?.signature !== signature) {
+    throw new Error(`latest.json: platforms.${WINDOWS_PLATFORM_KEY}.signature: expected ${JSON.stringify(signature)} from ${installer}.sig, found ${JSON.stringify(entry?.signature)}`);
+  }
+  const bytes = read(installer);
+  try { verifyUpdaterSignature(bytes, signature, updaterPublicKey ?? loadUpdaterPublicKey()); }
+  catch (error) { throw new Error(`${installer}.sig: ${error.message}`); }
+}
 
 export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSync } = {}) {
   if (commit !== undefined && !COMMIT_PATTERN.test(commit)) throw new Error("Expected --commit to be a full 40-character SHA");

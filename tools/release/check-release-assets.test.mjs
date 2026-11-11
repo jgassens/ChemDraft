@@ -5,9 +5,10 @@ import { test } from "node:test";
 import { checkReleaseAssets } from "./check-release-assets.mjs";
 import { artifactDigest } from "./record-build.mjs";
 import { expectedReleaseCommit } from "./release-assets.mjs";
-import { arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
+import { loadUpdaterPublicKey } from "./windows-updater.mjs";
+import { arm, commit, fakeReleaseRunner, installer, installerUrl, intel, releaseFixture, updaterPublicKey, updaterSignature, version, windowsPlatformKey } from "./release-test-fixtures.mjs";
 
-const check = (args, options = {}) => checkReleaseAssets({ tag: `v${version}`, ...args }, { run: fakeReleaseRunner(), platform: "darwin", ...options });
+const check = (args, options = {}) => checkReleaseAssets({ tag: `v${version}`, ...args }, { run: fakeReleaseRunner(), platform: "darwin", updaterPublicKey, ...options });
 
 test("folder gate accepts exactly three builds from the tag's commit", (t) => {
   const args = releaseFixture(t);
@@ -45,11 +46,61 @@ for (const extra of ["ChemDraft_1.2.2_aarch64.dmg", "ChemDraft_1.2.3_x64.dmg", "
   });
 }
 
-test("the expected Windows signature and latest.json are allowed", (t) => {
+test("the expected Windows signature and latest.json verify against the installer", (t) => {
   const args = releaseFixture(t);
-  for (const name of [`${installer}.sig`, "latest.json"]) writeFileSync(join(args.assets, name), "fixture");
   assert.equal(check(args).complete, true);
 });
+
+test("Windows updater gate defaults to the checked-in config key and refuses the throwaway test key", (t) => {
+  const config = JSON.parse(readFileSync(new URL("../../apps/desktop/src-tauri/tauri.windows.conf.json", import.meta.url), "utf8"));
+  assert.equal(loadUpdaterPublicKey(), config.plugins.updater.pubkey);
+  assert.throws(() => check(releaseFixture(t), { updaterPublicKey: undefined }), /x64-setup\.exe\.sig: Updater signature key ID mismatch/);
+});
+
+test("incomplete mode defers a wholly absent Windows build, but refuses orphaned updater metadata", (t) => {
+  const args = releaseFixture(t);
+  const signature = readFileSync(join(args.assets, `${installer}.sig`), "utf8");
+  for (const name of [installer, `${installer}.build.json`, `${installer}.sig`, "latest.json"]) unlinkSync(join(args.assets, name));
+  assert.deepEqual(check({ ...args, allowIncomplete: true }), { complete: false, missing: [installer, `${installer}.build.json`] });
+  writeFileSync(join(args.assets, `${installer}.sig`), signature);
+  assert.throws(() => check({ ...args, allowIncomplete: true }), /latest\.json: missing release file/);
+});
+
+for (const [label, mutate, expected] of [
+  ["stale version", (feed) => { feed.version = "1.2.2"; }, /latest\.json: version: expected 1\.2\.3, found 1\.2\.2/],
+  ["wrong URL", (feed) => { feed.platforms[windowsPlatformKey].url = installerUrl.replace("v1.2.3", "v1.2.2"); }, /latest\.json: platforms\.windows-x86_64-nsis\.url: expected .*v1\.2\.3.*found .*v1\.2\.2/],
+  ["wrong platform key", (feed) => { feed.platforms = { "windows-x86_64": feed.platforms[windowsPlatformKey] }; }, /latest\.json: platforms: expected windows-x86_64-nsis, found windows-x86_64/],
+  ["unexpected extra platform", (feed) => { feed.platforms["windows-aarch64-nsis"] = feed.platforms[windowsPlatformKey]; }, /latest\.json: platforms: expected windows-x86_64-nsis, found .*windows-aarch64-nsis/],
+  ["signature differs from .sig", (feed) => { feed.platforms[windowsPlatformKey].signature = updaterSignature(Buffer.from("other installer")); }, /latest\.json: platforms\.windows-x86_64-nsis\.signature: expected .*\.sig.*found/]
+]) {
+  test(`Windows updater gate rejects ${label}`, (t) => {
+    const args = releaseFixture(t);
+    const file = join(args.assets, "latest.json");
+    const feed = JSON.parse(readFileSync(file, "utf8"));
+    mutate(feed);
+    writeFileSync(file, JSON.stringify(feed));
+    assert.throws(() => check(args), expected);
+  });
+}
+
+test("Windows updater gate rejects a real signature over different installer bytes, even when the feed matches it", (t) => {
+  const args = releaseFixture(t);
+  const signature = updaterSignature(Buffer.from("different signed installer"));
+  writeFileSync(join(args.assets, `${installer}.sig`), signature);
+  const file = join(args.assets, "latest.json");
+  const feed = JSON.parse(readFileSync(file, "utf8"));
+  feed.platforms[windowsPlatformKey].signature = signature;
+  writeFileSync(file, JSON.stringify(feed));
+  assert.throws(() => check(args), /x64-setup\.exe\.sig: Updater signature verification failed/);
+});
+
+for (const name of [`${installer}.sig`, "latest.json"]) {
+  test(`Windows updater gate requires ${name}, including incomplete mode`, (t) => {
+    const args = releaseFixture(t);
+    unlinkSync(join(args.assets, name));
+    for (const allowIncomplete of [false, true]) assert.throws(() => check({ ...args, allowIncomplete }), (error) => error.message.includes(name));
+  });
+}
 
 test("incomplete mode verifies all supplied builds, records, bytes, DMG commits and extra assets", (t) => {
   const args = releaseFixture(t);
