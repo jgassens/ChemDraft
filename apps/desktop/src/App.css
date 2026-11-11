@@ -4896,6 +4896,28 @@ textarea:focus-visible,
   bottom: 3px;
 }
 
+/* Marks under three handle widths (54 screen px) need a clear move region.
+   Keep the 18px targets, but overlap their frame by only 3px on each side. */
+.object-resize-compact > .object-resize-top-left {
+  top: -15px;
+  left: -15px;
+}
+
+.object-resize-compact > .object-resize-top-right {
+  top: -15px;
+  right: -15px;
+}
+
+.object-resize-compact > .object-resize-bottom-left {
+  bottom: -15px;
+  left: -15px;
+}
+
+.object-resize-compact > .object-resize-bottom-right {
+  bottom: -15px;
+  right: -15px;
+}
+
 .object-resize-readout {
   position: absolute;
   top: calc(100% + 8px);

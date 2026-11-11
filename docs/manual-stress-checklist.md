@@ -1366,7 +1366,7 @@ formatted.
 
 Open a versioned future native JSON file and a `.chemdraft` envelope with a greater `minAppVersion`,
 an unknown visual field, a future bond style and a future drawing preset ID. Repeat through File
-Open, recent files, OS Open With and file drop. Each newly opened document must show exactly one
+Open, OS Open With and file drop. Each newly opened document must show exactly one
 native OK message with that file's full minimum version, owned by the document window. Verify that
 floating utilities hide and restore around the box, focus returns correctly, and Windows gains no
 taskbar entry. Activating an already-open file must not repeat the box. Legacy and same-version
@@ -1470,7 +1470,9 @@ whole-molecule cleanup with the existing behavior, and check save/reopen and exp
 
 - With Direct electron-mark editing off (the default), drag a charge mark onto an atom: it lands
   beside the atom label. Undo and Redo the drop. Enable Direct electron-mark editing in Preferences,
-  then move, resize and rotate the mark; Undo and Redo restore each edit.
+  then move, resize and rotate the mark; Undo and Redo restore each edit. With the mark selected,
+  dragging from its center moves it; corner handles resize. Repeat at 50%, 100% and 200% zoom,
+  including a rotated mark.
 
 ### Reaction conditions
 
