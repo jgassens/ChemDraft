@@ -45,7 +45,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Atom problem",
             size: (460.0, 360.0),
             min_size: (360.0, 260.0),
-            fit_content: false,
+            fit_content: true,
             preserve_user_frame: false,
         }),
         "vibeCodeGuide" => Ok(DialogKindSpec {
@@ -3682,6 +3682,25 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     #[test]
+    fn atom_problem_fits_short_content_at_each_monitor_scale() {
+        for scale in [1.0, 1.5, 2.0] {
+            let spec = kind_spec("atomProblem").unwrap();
+            let content = MeasuredContent::new(
+                Some(ContentFit {
+                    content_height: 180.0,
+                    content_width: None,
+                    pixel_ratio: scale,
+                }),
+                Some(scale),
+            );
+            assert_eq!(
+                dialog_client_size(&spec, content, None, false).1,
+                180.0,
+                "{scale}x"
+            );
+        }
+    }
+    #[test]
     fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
         let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});
         assert!(
@@ -6276,6 +6295,7 @@ mod tests {
                 {
                     for kind in [
                         "preferences",
+                        "atomProblem",
                         "vibeCodeGuide",
                         "insertTable",
                         "export",
