@@ -213,6 +213,8 @@ export interface DesktopPluginRuntime {
   assistant: AssistantToolsController;
   updateDocumentTabTitles(titles: readonly { id: string; title: string }[], windowId?: string): void;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
+  /** Captured authority is independent of presentation metadata such as the tab's current title. */
+  proposalWindowId(proposalId: string): string | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string, windowId?: string): void;
   /**
@@ -640,6 +642,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     externalTools,
     assistant,
     updateDocumentTabTitles(titles, windowId = "") { documentTitles.set(windowId, new Map(titles.map(({ id, title }) => [id, title]))); },
+    proposalWindowId(proposalId) {
+      return proposalTabs.has(proposalId) ? proposalWindows.get(proposalId) ?? "main" : undefined;
+    },
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;

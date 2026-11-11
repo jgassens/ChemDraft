@@ -14,6 +14,7 @@ import { createPluginRuntime } from "./createPluginRuntime";
 import { RuntimeBroker } from "./runtimeBroker";
 import { RuntimeBrokerHost } from "./runtimeBrokerHost";
 import { RuntimeBrokerDocument, type RuntimeDocumentPort } from "./runtimeBrokerDocument";
+import { createRuntimeDocumentSession } from "./runtimeDocumentSession";
 
 const captured = vi.hoisted(() => ({ port: undefined as RuntimeDocumentPort | undefined }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -78,6 +79,24 @@ async function fixture(platform: "macos" | "windows", handler: RegisterPluginOpt
 }
 
 describe("MainWindow's real broker document/history port", () => {
+  it.each(["macos", "windows"] as const)("dispatches real Undo/Redo through the production facade with a failed host on %s", async platform => {
+    const f = await fixture(platform, { commandHandlers: { "plugin.broker.run": context => context.documents.applyPatch!({
+      reason: "Insert caption", patch: { op: "addObject", pageId: "page_001", object: caption("inserted") }
+    }) } });
+    const before = f.read();
+    await act(async () => { await f.client.invokeCommand("plugin.broker.run"); });
+    const after = f.read();
+    const session = createRuntimeDocumentSession({ documentPort: f.port, commandRegistry: f.port.commandRegistry },
+      async () => { throw new Error("Runtime host unavailable"); });
+    cleanup.push(session.dispose);
+    await expect(session.client.ready).rejects.toThrow("Runtime host unavailable");
+    await act(async () => { await session.client.runtime.invokeCommand("edit.undo"); });
+    expect(f.read()).toEqual(before);
+    await act(async () => { await session.client.runtime.invokeCommand("edit.redo"); });
+    expect(f.read()).toEqual(after);
+    expect(after.selection.objectIds).toEqual(["inserted"]);
+  });
+
   it.each(["macos", "windows"] as const)("commits a late write to the inactive source tab's history on %s", async platform => {
     const started = deferred(), resume = deferred();
     const f = await fixture(platform, { commandHandlers: { "plugin.broker.run": async context => {

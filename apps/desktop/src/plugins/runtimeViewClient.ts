@@ -1,6 +1,6 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type { PluginManifest, ProposedPatchStatus } from "@chemdraft/plugin-api";
-import type { AcceptProposedPatchOptions, QueuedProposedPatch } from "@chemdraft/plugin-host";
+import type { AcceptProposedPatchOptions, CommandRegistry, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import type { PluginRuntimeView } from "./pluginRuntimeOwner";
 import type { PluginPanelController } from "./PluginPanelController";
@@ -49,8 +49,12 @@ export interface PluginRuntimeClient extends Pick<DesktopPluginRuntime,
 export type BrokerPluginRuntimeView = Omit<PluginRuntimeView, "runtime"> & { runtime: PluginRuntimeClient };
 
 type Reply = { ok: true; value: unknown } | { ok: false; error: { message: string; installCode?: PluginInstallErrorCode; metadataKind?: string } };
+type ProposalCommit = RuntimeRequest<"acceptPreparedProposal">;
+const sameCommit = (a: ProposalCommit, b: ProposalCommit) => a.proposalId === b.proposalId &&
+  a.preparationId === b.preparationId && a.documentKey === b.documentKey &&
+  a.target.windowId === b.target.windowId && a.target.tabId === b.target.tabId;
 
-/** Document-side adapter: all reads use detached data, all actions are broker messages. */
+/** Document-side adapter: plugin actions use the broker; core actions stay in the local registry. */
 export class RuntimeViewClient {
   private state: RuntimeViewState = { installedPluginCatalogReady: false, cachedPluginUpdateResults: [],
     plugins: [], pluginMenuItems: [], canvasOverlays: [], bundledPlugins: [], installedPlugins: [],
@@ -67,27 +71,56 @@ export class RuntimeViewClient {
   private bundledSource?: RuntimeViewState["bundledPlugins"];
   private readonly previews = new Map<string, string>();
   private readonly pendingPreviews = new Map<string, Promise<string>>();
+  private livePreviewTokens = new Set<string>();
   private initialized = false;
   private startupFailure?: Error;
-  private readonly isPluginCommand = (id: string): boolean => (!this.initialized && id.startsWith("plugin.")) || this.state.commands.some(command => command.id === id && !!command.pluginId);
+  private readonly isPluginCommand = (id: string): boolean => {
+    const local = this.commandRegistry?.get(id);
+    return local ? local.source === "plugin" || !!local.pluginId
+      : id.startsWith("plugin.") || this.state.commands.some(command => command.id === id && !!command.pluginId);
+  };
   private readonly stop: () => void;
   private readonly preparations = new Map<string, { request: RuntimeRequest<"commitProposal">; commit(): void }>();
+  // Receipts outlive the caller's RPC deadline and preparation callback. Retain them until this
+  // document client closes: neither retry, delayed delivery nor Undo may repeat an insertion.
+  private readonly proposalReceipts = new Map<string, { request: ProposalCommit; committed: boolean }>();
+  private readonly committedProposals = new Map<string, ProposalCommit>();
   private readonly stopProposalCommit: () => void;
   readonly runtime: PluginRuntimeClient;
 
   constructor(private readonly broker: RuntimeBroker, invokeCommand?: PluginRuntimeClient["invokeCommand"], private readonly asynchronous = !broker.supportsImmediate,
-    private readonly startup: Promise<void> = Promise.resolve(), prepareCommand?: PluginRuntimeClient["prepareCommand"]) {
+    private readonly startup: Promise<void> = Promise.resolve(), prepareCommand?: PluginRuntimeClient["prepareCommand"],
+    private readonly commandRegistry?: CommandRegistry) {
     this.stopProposalCommit = broker.handle("commitProposal", request => {
+      if (request.target.windowId !== broker.label) throw new Error("The proposal belongs to another document window.");
+      const receipt = this.proposalReceipts.get(request.preparationId);
+      if (receipt) {
+        if (!sameCommit(receipt.request, request)) throw new Error("The proposal commit receipt does not match this preparation.");
+        return receipt.committed;
+      }
       const prepared = this.preparations.get(request.preparationId);
       const expected = prepared?.request;
-      if (!prepared || !expected || request.target.windowId !== broker.label ||
-        expected.proposalId !== request.proposalId || expected.documentKey !== request.documentKey ||
-        expected.target.windowId !== request.target.windowId || expected.target.tabId !== request.target.tabId) {
+      if (expected && !sameCommit(expected, request)) throw new Error("The proposal has no matching prepared document commit.");
+      const previous = this.committedProposals.get(request.proposalId);
+      if (previous && (previous.documentKey !== request.documentKey || previous.target.windowId !== request.target.windowId ||
+        previous.target.tabId !== request.target.tabId)) throw new Error("The proposal was committed to another document target.");
+      if (request.reconcile) {
+        // Synchronous with commits: a negative receipt cancels even a not-yet-delivered request.
+        this.preparations.delete(request.preparationId);
+        this.proposalReceipts.set(request.preparationId, { request, committed: !!previous });
+        return !!previous;
+      }
+      if (!prepared || !expected) {
         throw new Error("The proposal has no matching prepared document commit.");
       }
       this.preparations.delete(request.preparationId);
-      prepared.commit();
-      return null;
+      this.proposalReceipts.set(request.preparationId, { request, committed: !!previous });
+      if (!previous) {
+        prepared.commit();
+        this.committedProposals.set(request.proposalId, request);
+        this.proposalReceipts.set(request.preparationId, { request, committed: true });
+      }
+      return true;
     });
     if (!asynchronous) {
       const initial = decodeRuntimeView<{ state: RuntimeViewState; topics: Record<string, unknown> }>(broker.callImmediate(RUNTIME_HOST_LABEL, "getRuntimeView", {}));
@@ -99,6 +132,7 @@ export class RuntimeViewClient {
       if (topic === "state") {
         const revision = ++this.stateRevision;
         const next = value as RuntimeViewState;
+        this.prunePreviews(next);
         if (this.asynchronous && this.hasPreviewReferences(next)) {
           void this.resolvePreviewsAsync(next).then(resolved => {
             if (!this.disposed && revision === this.stateRevision) this.applyState(resolved);
@@ -115,7 +149,14 @@ export class RuntimeViewClient {
       const requestedTopics = new Map(this.topics);
       const encoded = await broker.call(RUNTIME_HOST_LABEL, "getRuntimeView", {});
       const initial = decodeRuntimeView<{ state: RuntimeViewState; topics: Record<string, unknown> }>(encoded);
-      const state = await this.resolvePreviewsAsync(initial.state);
+      // A state notification may have superseded this initial reply while it was in flight.
+      // Only the latest incoming state owns preview tokens, including an empty proposal list.
+      let state: RuntimeViewState | undefined;
+      if (!this.disposed && this.stateRevision === revision) {
+        this.prunePreviews(initial.state);
+        try { state = await this.resolvePreviewsAsync(initial.state); }
+        catch (error) { if (!this.disposed && this.stateRevision === revision) throw error; }
+      }
       if (this.disposed) return;
       for (const [topic, value] of Object.entries(initial.topics)) {
         if (this.topics.get(topic) !== requestedTopics.get(topic)) continue;
@@ -123,7 +164,7 @@ export class RuntimeViewClient {
         this.topics.set(topic, value);
         this.notify(topic);
       }
-      if (this.stateRevision === revision) this.applyState(state);
+      if (state && this.stateRevision === revision) this.applyState(state);
     }).then(() => { this.initialized = true; }) : Promise.resolve();
     if (!asynchronous) this.initialized = true;
     void this.ready.catch(error => {
@@ -137,6 +178,7 @@ export class RuntimeViewClient {
     this.runtime = {
       prepareCommand: prepareCommand && ((id, options) => {
         try {
+          if (!this.isPluginCommand(id)) return () => this.runtime.invokeCommand(id, options);
           if (!this.initialized) throw this.startupFailure ?? new Error("Plugin runtime host is starting. Try the plugin command again when it is ready.");
           return prepareCommand(id, options);
         } catch (error) { return () => Promise.reject(error); }
@@ -184,8 +226,11 @@ export class RuntimeViewClient {
       proposalDocumentTab: id => this.asynchronous ? new Map(this.state.proposalTabs).get(id) : immediate("proposalDocumentTab", id),
       closeProposalDocumentTab: (id, title) => { immediate("closeProposalDocumentTab", id, title); },
       invokeCommand: (id, options) => {
+        if (!this.isPluginCommand(id)) return this.commandRegistry
+          ? this.commandRegistry.invoke(id, { input: options?.input })
+          : Promise.reject(new Error("The document command registry is unavailable."));
         if (!this.initialized) return Promise.reject(this.startupFailure ?? new Error("Plugin runtime host is starting. Try the plugin command again when it is ready."));
-        return invokeCommand && this.isPluginCommand(id) ? invokeCommand(id, options) : call<{ result?: unknown; error?: Extract<Reply, { ok: false }>["error"]; warnings: string[] }>("invokePluginCommand", id, options?.input, !!options?.selectionWarnings).then(({ result, warnings, error }) => {
+        return invokeCommand ? invokeCommand(id, options) : call<{ result?: unknown; error?: Extract<Reply, { ok: false }>["error"]; warnings: string[] }>("invokePluginCommand", id, options?.input, !!options?.selectionWarnings).then(({ result, warnings, error }) => {
           options?.selectionWarnings?.push(...warnings);
           if (error) throw this.makeError(error);
           return result;
@@ -244,7 +289,7 @@ export class RuntimeViewClient {
     return view;
   }
 
-  dispose(): void { this.disposed = true; this.stop(); this.stopProposalCommit(); this.preparations.clear(); this.listeners.clear(); this.previews.clear(); this.pendingPreviews.clear(); }
+  dispose(): void { this.disposed = true; this.stop(); this.stopProposalCommit(); this.preparations.clear(); this.proposalReceipts.clear(); this.committedProposals.clear(); this.listeners.clear(); this.previews.clear(); this.pendingPreviews.clear(); this.livePreviewTokens.clear(); }
 
   private topic<T>(key: string): T | undefined { return this.topics.get(key) as T | undefined; }
   private immediate<T>(action: RuntimeViewAction["action"], ...args: unknown[]): T {
@@ -281,6 +326,14 @@ export class RuntimeViewClient {
   private hasPreviewReferences(state: RuntimeViewState): boolean {
     return state.proposals.some(proposal => proposal.proposal.recognition?.sourceImageRef.startsWith("runtime-preview:"));
   }
+  private prunePreviews(state: RuntimeViewState): void {
+    this.livePreviewTokens = new Set(state.proposals.flatMap(proposal => {
+      const reference = proposal.proposal.recognition?.sourceImageRef.match(/^runtime-preview:([a-f0-9-]+):(\d+)$/);
+      return reference ? [reference[1]!] : [];
+    }));
+    for (const token of this.previews.keys()) if (!this.livePreviewTokens.has(token)) this.previews.delete(token);
+    for (const token of this.pendingPreviews.keys()) if (!this.livePreviewTokens.has(token)) this.pendingPreviews.delete(token);
+  }
   private async resolvePreviewsAsync(state: RuntimeViewState): Promise<RuntimeViewState> {
     if (!this.hasPreviewReferences(state)) return state;
     const next = structuredClone(state);
@@ -289,6 +342,7 @@ export class RuntimeViewClient {
       const reference = recognition?.sourceImageRef.match(/^runtime-preview:([a-f0-9-]+):(\d+)$/);
       if (!recognition || !reference) continue;
       const [, token, length] = reference;
+      if (this.disposed || !this.livePreviewTokens.has(token!)) throw new Error("This recognition preview is no longer pending.");
       let pending = this.pendingPreviews.get(token!);
       if (!pending) {
         pending = (async () => {
@@ -297,28 +351,31 @@ export class RuntimeViewClient {
           const chunks: string[] = [];
           for (let offset = 0; offset < Number(length);) {
             const chunk = await this.call<string>("previewImageChunk", token, offset);
+            // Pruning revokes this fetch even if the token is reintroduced by a newer state.
+            if (this.disposed || this.pendingPreviews.get(token!) !== pending) throw new Error("This recognition preview is no longer pending.");
             if (!chunk || chunk.length > 256 * 1024 || offset + chunk.length > Number(length)) throw new Error("Invalid recognition preview chunk.");
             chunks.push(chunk); offset += chunk.length;
           }
           const source = chunks.join("");
-          if (!this.disposed) this.previews.set(token!, source);
+          this.previews.set(token!, source);
           return source;
         })();
         this.pendingPreviews.set(token!, pending);
-        void pending.finally(() => this.pendingPreviews.delete(token!)).catch(() => undefined);
+        void pending.finally(() => {
+          if (this.pendingPreviews.get(token!) === pending) this.pendingPreviews.delete(token!);
+        }).catch(() => undefined);
       }
       recognition.sourceImageRef = await pending;
     }
     return next;
   }
   private resolvePreviews(state: RuntimeViewState): RuntimeViewState {
-    const live = new Set<string>();
+    this.prunePreviews(state);
     for (const proposal of state.proposals) {
       const recognition = proposal.proposal.recognition;
       const reference = recognition?.sourceImageRef.match(/^runtime-preview:([a-f0-9-]+):(\d+)$/);
       if (!recognition || !reference) continue;
       const [, token, length] = reference;
-      live.add(token!);
       let source = this.previews.get(token!);
       if (!source) {
         const chunks: string[] = [];
@@ -331,7 +388,6 @@ export class RuntimeViewClient {
       }
       recognition.sourceImageRef = source;
     }
-    for (const token of this.previews.keys()) if (!live.has(token)) this.previews.delete(token);
     return state;
   }
   private notify(topic: string): void { for (const listener of this.listeners.get(topic) ?? []) listener(); }

@@ -95,7 +95,9 @@ export const runtimeMethods = {
   invokeCommand: { request: z.object({ invocation: RuntimeInvocationSchema, input: PluginCommandInputSchema.optional() }).strict(), response: z.unknown(), destination: "runtime" },
   getContributions: { request: z.object({}).strict(), response: RuntimeContributionsSchema, destination: "runtime" },
   getRuntimeView: { request: z.object({}).strict(), response: z.unknown(), destination: "runtime" },
-  commitProposal: { request: RuntimeProposalCommitSchema, response: z.null(), destination: "document" },
+  // Reconciliation uses the same authenticated route and identity. A negative receipt also
+  // revokes the preparation, so an undelivered commit cannot arrive after a reservation is freed.
+  commitProposal: { request: RuntimeProposalCommitSchema.extend({ reconcile: z.literal(true).optional() }), response: z.boolean(), destination: "document" },
   acceptPreparedProposal: { request: RuntimeProposalCommitSchema, response: z.null(), destination: "runtime" },
   setCoreCommands: { request: z.object({ commands: z.array(coreCommand), revision: z.number().int().nonnegative() }).strict(), response: z.null(), destination: "runtime" },
   getCoreCommands: { request: z.object({}).strict(), response: z.array(coreCommand), destination: "document" },

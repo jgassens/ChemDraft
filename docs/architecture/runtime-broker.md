@@ -12,9 +12,72 @@ dialog coordinator and final synchronous write checks. No plugin permission or c
 check is removed. One-document panel labels, persistence keys and presentation remain unchanged.
 A5b now binds presentation per document window. Another document window is not enabled by this task.
 
-Build stamp: `11.11.02.15-codex`. Implementation is complete; native execution remains unverified
+Build stamp: `11.11.02.19-codex`. Implementation is complete; native execution remains unverified
 by this worker (the coordinator runs Cargo and packaged app checks). See
 [the adapter review](runtime-broker-a5a3-review.md).
+
+## A5 review corrections
+
+Proposal acceptance previously treated a failed commit RPC as proof that nothing was committed.
+A lost or late acknowledgement therefore released the host reservation and let a retry insert the
+same proposal again. `RuntimeViewClient` now retains document-side receipts for each proposal and
+preparation, including its target and drawing key. Repeated commits return the recorded outcome;
+a fresh preparation for an already committed proposal cannot apply it again. Receipts contain
+identity and outcome only, survive Undo and RPC cleanup, and remain until the document client closes.
+
+`bindRuntimeViewOwner` reconciles ambiguous outcomes over the existing `commitProposal` route with
+`reconcile: true`. The document answers from its receipt; if uncommitted, it atomically revokes the
+preparation before returning false, preventing a late request from racing a released reservation.
+Only that confirmed negative outcome releases the reservation for another attempt. If reconciliation
+is unavailable, the reservation stays held and a later acceptance first reconciles that same attempt.
+This keeps the existing native method/direction/target checks and adds no capability or runtime.
+`runtimeProposalForwarding.dom.test.ts` reproduces lost and delayed replies through the production
+owner/client acceptance handlers and real proposal application, asserting one insertion, one history
+entry and unchanged selection; it also covers unavailable reconciliation and idempotent replay.
+
+Core dispatch previously waited for host initialization and then made a round trip through the host.
+The production `RuntimeViewClient` facade now invokes every non-plugin command directly in its
+document registry, supplied by both native and local sessions. Registry ownership identifies plugin
+commands; only those commands retain host readiness and captured invocation routing. Core enabled
+and permission checks remain in the same registry. `runtimeHostStartup.dom.test.tsx` invokes this
+facade before readiness, after startup failure and after startup, and asserts that ready core actions
+send no broker messages. `MainWindow.runtimeBroker.dom.test.tsx` uses MainWindow's real document
+history and core handlers to prove exact Undo/Redo through the facade with a failed host on both
+`macos` and `windows` shortcut branches. These regressions failed before the corrections.
+
+Native macOS Apple silicon, macOS Intel and Windows remain unverified. The coordinator must run
+Cargo and packaged checks, including core commands/Undo/Redo with an absent host and one proposal
+insertion/undo entry after a lost commit acknowledgement. No application launch or Cargo run was
+performed for these corrections. Recommended next task: complete that native verification.
+
+## A5 P2 review corrections
+
+The four reproduced findings are corrected without changing the public plugin API, native broker
+methods, permission grants or write-scope checks. The host still constructs one runtime. Package
+receipts use the authenticated requesting window as their owner; proposals use the window captured
+at creation, independently of focus or later tab-title metadata.
+
+| Finding and root cause | Fix location and behavior | Production-path regression |
+| --- | --- | --- |
+| Drawing replacement strands an assistant transaction: session authentication required a current drawing, and a failed controller refresh skipped cleanup before forgetting the request. | `runtimeAssistantDocument.ts:31` separates session authentication from drawing reads; cancellation authenticates the original session. `runtimeAssistantDocument.ts:132` ends a live drawing or cancels a stale transaction. `assistant/assistantTransaction.ts:126` cancels without reading, selecting or amending any history; old owned Undo is disabled. `assistant/AssistantToolsController.ts:279` treats refresh as optional thumbnail work so cleanup always runs. | `runtimeAssistantForwarding.test.ts:131`, “ends a replaced drawing's request…” writes through the real assistant tool/broker/history path, replaces the production `DrawingIncarnations` key, ends the request, checks exact replacement history/selection identity, and successfully writes in a fresh request. The following parameterized regression covers authenticated cancellation after replacement/close, forged-session refusal and stale Undo refusal. |
+| Proposals, preview tokens and rejection leaked across document windows: snapshots included the global pending list, and rejection/chunk reads had no owner check. | `runtimeViewOwner.ts:87` filters pending proposals and their tab metadata. `runtimeViewOwner.ts:201` checks preview ownership; `runtimeViewOwner.ts:213` checks rejection ownership. Synchronous acceptance, screen-capture queries and tab reads apply the same captured-window rule. `createPluginRuntime.ts:645` exposes captured ownership separately from optional display titles. Global preview pruning still considers all pending proposals, so publishing B does not discard A's live preview. | `runtimeReviewOwnership.dom.test.tsx:124`, “keeps proposals, previews and rejection…” uses two asynchronous document brokers, real image acquisition, recognition preparation, host-held proposals and owner/client actions. B sees none of A's proposals, cannot fetch A's known token or reject A's known id, and each owner can reject its own result. “retains a proposal's captured window…” also removes B's title metadata and proves its authority cannot fall back to A. |
+| Recognition previews accumulated after review: only the immediate adapter pruned reconstructed images; async fetches could finish after their proposal disappeared. | `runtimeViewClient.ts:135` prunes cached and pending tokens on every incoming state, including empty states. `runtimeViewClient.ts:329` derives the live set from wire references; `runtimeViewClient.ts:353` rechecks fetch identity after every awaited chunk before retaining data. Initial replies cannot revive superseded tokens or turn an obsolete preview into a startup failure. | `runtimeReviewOwnership.dom.test.tsx:154`, “prunes resolved async previews…” repeats real recognition/rejection three times and checks that cached and pending image maps empty each time. “does not resurrect an obsolete preview…” holds the final production chunk response until after rejection. Two initial-loading races hold the initial state reply or a preview chunk while review resolves. |
+| Closing B's manager invalidated A's package review: unmount sent a global prepared-package-map clear. | `runtimeViewOwner.ts:37` stores the requesting window with every picked/downloaded/update inspection. Receipt lookup rejects a foreign window, and `runtimeViewOwner.ts:157` discards only the authenticated sender's receipts. Installation still receives the original owner-held inspection and all existing install gates. | `runtimeReviewOwnership.dom.test.tsx:216`, “closing B's manager…” opens both real manager components, clicks A's Add/Review path, unmounts B, then clicks A's Install successfully through the broker receipt path. B's own receipt expires. “refuses another window's package receipt…” proves a known foreign handle cannot reach the install boundary. |
+
+Paths in the table are relative to `apps/desktop/src/plugins/`, except those prefixed `assistant/`,
+which are relative to `apps/desktop/src/`. Only machine recognition/validation and package I/O
+boundaries are substituted in the new view regressions; ownership checks, queues, controllers,
+history transactions, asynchronous broker dispatch, view reconstruction and manager effects run
+their production implementations. Cache inspection observes retained data without replacing any
+cache or preview-fetch method.
+
+The final regression files were also run against the original implementation at pre-fix `HEAD`:
+all 11 new cases failed and the four existing cases passed. Restoring the fixes passes the new cases.
+Scoped checks and the final desktop TypeScript result are recorded in the worker report. No Cargo,
+native build or application launch was run. macOS Apple silicon, macOS Intel and Windows remain
+unverified natively: the coordinator must run Cargo and packaged checks, then verify replacement
+during an assistant request, owner-only review/rejection and preview release, and installation in A
+after closing B's manager on both OSes. Recommended next task: that native verification.
 
 ## Implemented ownership boundary
 
@@ -129,7 +192,7 @@ Startup always attempts the shared hidden-window builder; the debug/environment 
 A native creation failure is logged and drawing startup continues. The document registers its
 reply handlers before connecting and requests `initializeRuntime`. The host awaits the document's
 core definitions before constructing its owner once; duplicate initialization shares that promise.
-The document then installs contributions and initializes its asynchronous view. Commands invoked
+The document then installs contributions and initializes its asynchronous view. Plugin commands invoked
 before readiness fail explicitly with “Plugin runtime host is starting”; they are never silently
 dropped or replayed. Readiness alone retries unavailable-peer/handler errors, for at most 15 seconds.
 An absent, refused or hung host produces “Plugin runtime host failed to start: … Drawing remains

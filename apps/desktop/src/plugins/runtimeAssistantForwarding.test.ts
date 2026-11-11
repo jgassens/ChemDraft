@@ -10,6 +10,7 @@ import { createRuntimeDocumentPort } from "./runtimeDocumentPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "../assistant/assistantMcpEngine";
 import { createPluginRuntime } from "./createPluginRuntime";
 import { normalizeCommittedDocument } from "../documentWorkflow";
+import { DrawingIncarnations } from "../documentIdentity";
 import { RuntimeBroker } from "./runtimeBroker";
 import { RuntimeBrokerDocument } from "./runtimeBrokerDocument";
 import { RuntimeBrokerHost } from "./runtimeBrokerHost";
@@ -38,6 +39,7 @@ async function fixture(remote: boolean, extra?: PluginAssistantToolHandler) {
   let history = createDocumentHistory(initial);
   const labels: string[] = [];
   let active = f.context.tabId, closed = false, gesture = false;
+  const incarnations = new DrawingIncarnations();
   const read = () => closed ? undefined : history.present;
   const gate = createPluginWriteGate({ isGestureActive: () => gesture });
   const port: AssistantHistoryPort = {
@@ -72,7 +74,7 @@ async function fixture(remote: boolean, extra?: PluginAssistantToolHandler) {
     captureAssistantRequest: assistant.begin, assistantMcpEngine: native, assistantContext: () => f.context
   });
   const documentPort = createRuntimeDocumentPort({ windowId: "main", commandRegistry: new CommandRegistry(),
-    activeTabId: () => active, read: tab => tab === f.context.tabId && read() ? { document: read()!, documentKey: "drawing" } : undefined,
+    activeTabId: () => active, read: tab => tab === f.context.tabId && read() ? { document: read()!, documentKey: incarnations.key(tab) } : undefined,
     selection: () => ({ objectIds: initial.selection.objectIds, molecules: [] }), viewportRect: port.getViewportRect,
     assistant: { history: port, transactions, assertWritable: () => {} },
     assertWritable: () => {}, getWriteGate: () => gate, placement: () => ({}), normalize: normalizeCommittedDocument,
@@ -91,13 +93,13 @@ async function fixture(remote: boolean, extra?: PluginAssistantToolHandler) {
   const host = new RuntimeBrokerHost(hostBroker, () => runtime, () => ["main"]);
   const document = new RuntimeBrokerDocument(documentBroker, documentPort);
   await document.refreshContributions();
-  const command = remote ? document.invokeCommand("plugin.assistant.send") : runtime.invokeCommand("plugin.assistant.send");
+  let command = remote ? document.invokeCommand("plugin.assistant.send") : runtime.invokeCommand("plugin.assistant.send");
   await vi.waitFor(() => expect(context).toBeDefined());
   stops.push(() => { release(); void command.catch(() => {}); runtime.unregisterPlugin(f.context.plugin.id); document.dispose(); host.dispose();
     assistant.dispose(); documentBroker.dispose(); hostBroker.dispose(); gate.dispose(); transactions.dispose(); });
   const request = await context.assistant!.beginRequest({ prompt: "Add two labels", label: "Two labels" });
   let sequence = 0;
-  return { context, request,
+  return { get context() { return context; }, request, tabId: f.context.tabId, hostBroker,
     async bridge(name: string) {
       const requestId = String(++sequence);
       listener!({ sessionId: "session", requestId, method: "tools/call", params: { name, arguments: {} } });
@@ -109,7 +111,15 @@ async function fixture(remote: boolean, extra?: PluginAssistantToolHandler) {
       history = { ...history, present: { ...history.present, title: "Edited while preparing" } };
     }; },
     undoThis: () => hostBroker.call("main", "assistantUndo", { requestId: request.requestId, pluginId: f.context.plugin.id,
-      target: { windowId: "main", tabId: f.context.tabId }, documentKey: "drawing" }), channels, handler, native, initial, labels, transactions, read, history: () => history,
+      target: { windowId: "main", tabId: f.context.tabId }, documentKey: incarnations.key(f.context.tabId) }), channels, handler, native, initial, labels, transactions, read, history: () => history,
+    replace: () => { incarnations.replace(f.context.tabId); history = createDocumentHistory(initial); },
+    async beginFresh() {
+      release(); await command;
+      context = undefined as unknown as PluginCommandContext;
+      command = document.invokeCommand("plugin.assistant.send");
+      await vi.waitFor(() => expect(context).toBeDefined());
+      return context.assistant!.beginRequest({ prompt: "Fresh drawing" });
+    },
     selectAway: () => { active = "other-tab"; }, close: () => { closed = true; },
     gesture: (value: boolean) => { gesture = value; if (!value) gate.flush(); },
     tool: vi.fn((text: string) => context.assistant!.callTool({ name: "insert_text", input: { text } })),
@@ -118,6 +128,41 @@ async function fixture(remote: boolean, extra?: PluginAssistantToolHandler) {
 }
 
 describe("assistant data forwarding", () => {
+  it("ends a replaced drawing's request without touching replacement history or selection, then accepts a new request", async () => {
+    const f = await fixture(true);
+    expect((await f.tool("Old drawing label")).isError).not.toBe(true);
+    f.replace();
+    const replacement = f.history();
+    await expect(f.end()).resolves.toMatchObject({ touchedIds: [] });
+    expect(f.transactions.hasRunningForTab(f.tabId)).toBe(false);
+    expect(f.history()).toBe(replacement);
+    expect(f.read()).toBe(replacement.present);
+    const fresh = await f.beginFresh();
+    expect((await f.tool("New drawing label")).isError).not.toBe(true);
+    await f.context.assistant!.endRequest(fresh);
+    expect(f.history().past).toEqual([replacement.present]);
+  });
+
+  it.each(["replace", "close"] as const)("authenticates stale cancellation independently of drawing reads after %s", async invalidate => {
+    const f = await fixture(true);
+    f.gesture(true);
+    const pending = f.tool("Queued label");
+    await vi.waitFor(() => expect(f.channels.deliveries.some(({ message }) => message.kind === "request" && message.method === "assistantWrite")).toBe(true));
+    const write = f.channels.deliveries.flatMap(({ message }) => message.kind === "request" && message.method === "assistantWrite"
+      ? [message.payload as import("./runtimeBrokerProtocol").RuntimeRequest<"assistantWrite">] : [])[0]!;
+    f[invalidate]();
+    const unchanged = f.history();
+    await expect(f.hostBroker.call("main", "cancelAssistantWrite", { session: { ...write.session, pluginId: "forged" }, writeId: write.writeId })).rejects.toThrow(/another document target/);
+    await expect(f.hostBroker.call("main", "cancelAssistantWrite", { session: write.session, writeId: write.writeId })).resolves.toBeNull();
+    await expect(f.hostBroker.call("main", "cancelAssistantConsent", { session: write.session, decisionId: "cancelled-decision" })).resolves.toBeNull();
+    f.gesture(false);
+    expect((await pending).isError).toBe(true);
+    await expect(f.end()).resolves.toMatchObject({ touchedIds: [] });
+    expect(f.transactions.hasRunningForTab(f.tabId)).toBe(false);
+    expect(f.history()).toBe(unchanged);
+    await expect(f.hostBroker.call("main", "assistantUndo", write.session)).rejects.toThrow(/closed|replaced/);
+  });
+
   it("keeps identical history, labels and selection, and redo makes no call", async () => {
     const local = await fixture(false);
     const remote = await fixture(true);

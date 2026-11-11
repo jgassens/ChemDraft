@@ -82,7 +82,7 @@ it("starts the sole production owner on the hidden route after core definitions,
   expect(native.owner).not.toHaveBeenCalled();
   expect(session.client.read().isPluginCommand("plugin.startup.run")).toBe(true);
   await expect(session.client.runtime.invokeCommand("plugin.startup.run")).rejects.toThrow("Plugin runtime host is starting");
-  await expect(registry.invoke("core.draw")).resolves.toBe("drawing works");
+  await expect(session.client.runtime.invokeCommand("core.draw")).resolves.toBe("drawing works");
   window.history.replaceState(null, "", "/?window=runtime");
   const container = document.createElement("div"); document.body.append(container);
   let root = createRoot(container);
@@ -98,6 +98,10 @@ it("starts the sole production owner on the hidden route after core definitions,
   expect(providers.getActiveDocument()).toBeUndefined();
   expect(registry.get("plugin.startup.run")?.pluginId).toBe("org.test.startup");
   await expect(session.client.runtime.invokeCommand("plugin.startup.run")).resolves.toBe("ready result");
+  const messages = channels.deliveries.length;
+  await expect(session.client.runtime.invokeCommand("core.draw")).resolves.toBe("drawing works");
+  await expect(session.client.runtime.prepareCommand!("core.draw")()).resolves.toBe("drawing works");
+  expect(channels.deliveries).toHaveLength(messages);
   act(() => root.unmount()); root = createRoot(container);
   await act(async () => root.render(createElement(App)));
   expect(native.owner).toHaveBeenCalledTimes(1);
@@ -125,7 +129,18 @@ it("reports a specific startup failure to commands and status without constructi
     expect.objectContaining({ code: "runtime-host-startup-failed", message: expect.stringContaining("Native runtime channel registration refused.") })
   ]));
   expect(native.owner).toHaveBeenCalledTimes(before);
-  await expect(registry.invoke("core.draw")).resolves.toBe("still drawing");
+  await expect(session.client.runtime.invokeCommand("core.draw")).resolves.toBe("still drawing");
+  await expect(session.client.runtime.prepareCommand!("core.draw")()).resolves.toBe("still drawing");
+  registry.register({ id: "core.disabled", title: "Disabled", enabled: false }, () => { throw new Error("must not run"); });
+  registry.register({ id: "core.protected", title: "Protected", requiredPermissions: ["document.write"] }, () => { throw new Error("must not run"); });
+  registry.register({ id: "document.input", title: "Input" }, context => context.input);
+  registry.register({ id: "plugin.coreOwned", title: "Core ownership wins" }, () => "local core");
+  await expect(session.client.runtime.invokeCommand("core.disabled")).rejects.toThrow("disabled");
+  await expect(session.client.runtime.invokeCommand("core.protected")).rejects.toThrow('requires permission "document.write"');
+  const input = { source: "panel" as const, panelId: "panel.test.draw", sectionId: "actions", control: "button" as const, controlId: "draw" };
+  await expect(session.client.runtime.invokeCommand("document.input", { input })).resolves.toEqual(input);
+  await expect(session.client.runtime.invokeCommand("plugin.coreOwned")).resolves.toBe("local core");
+  await expect(session.client.runtime.invokeCommand("document.missing")).rejects.toThrow("not registered");
 });
 
 it("retains a failed owner initialization receipt rather than constructing another runtime on retry", async () => {

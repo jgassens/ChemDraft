@@ -9,16 +9,20 @@ import { createPluginRuntimeOwner, type PluginRuntimeOwner } from "./pluginRunti
 import { applyAcceptedPluginProposal } from "./applyPluginDocumentPatch";
 import { RuntimeBroker } from "./runtimeBroker";
 import { bindRuntimeCoreCommands, RuntimeCoreCommandRegistry } from "./runtimeCoreCommands";
-import type { RuntimeTransport } from "./runtimeBrokerProtocol";
+import type { RuntimeMessage, RuntimeTransport } from "./runtimeBrokerProtocol";
 
 const cleanup: Array<() => void> = [];
-afterEach(() => { for (const stop of cleanup.splice(0).reverse()) stop(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { for (const stop of cleanup.splice(0).reverse()) stop(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 class AsyncChannels extends RuntimeTestChannels {
   remote = false;
+  intercept?: (sender: string, recipient: string, message: RuntimeMessage) => boolean;
   override transport(label: string): RuntimeTransport {
     const transport = super.transport(label), channels = this;
     return { ...transport, get immediate() { return !channels.remote; },
-      send: (recipient, message) => channels.remote ? Promise.resolve().then(() => transport.send(recipient, message)) : transport.send(recipient, message) };
+      send: (recipient, message) => {
+        if (channels.intercept?.(label, recipient, structuredClone(message))) return Promise.resolve();
+        return channels.remote ? Promise.resolve().then(() => transport.send(recipient, message)) : transport.send(recipient, message);
+      } };
   }
 }
 const caption: TextObject = { id: "caption", type: "text", text: "Reviewed", spans: [],
@@ -51,6 +55,74 @@ async function fixture() {
 }
 
 describe("remote proposal acceptance", () => {
+  it.each(["lost", "delayed"])("reconciles a %s commit acknowledgement before allowing a retry", async acknowledgement => {
+    const f = await fixture(); f.channels.remote = true;
+    vi.useFakeTimers();
+    let reply: RuntimeMessage | undefined;
+    f.channels.intercept = (sender, _recipient, message) => {
+      if (!reply && sender === "main" && message.kind === "response" && message.method === "commitProposal") {
+        reply = message; return true;
+      }
+      return false;
+    };
+    const outcome = f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit).catch(error => error);
+    await vi.waitFor(() => expect(f.history).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(300_001);
+    await outcome;
+    if (acknowledgement === "delayed") f.channels.deliver("runtime", "main", reply!);
+    await f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit).catch(() => undefined);
+    expect(f.history).toHaveLength(1);
+    expect(f.read().pages[0]!.objects).toEqual([caption]);
+    expect(f.read().selection.objectIds).toEqual([caption.id]);
+    expect(f.owner.runtime.host.listProposedPatches("pending")).toEqual([]);
+  });
+
+  it("keeps an ambiguous reservation until a retry can reconcile the document receipt", async () => {
+    const f = await fixture(); f.channels.remote = true;
+    vi.useFakeTimers();
+    f.channels.intercept = (sender, _recipient, message) => sender === "main" && message.kind === "response" && message.method === "commitProposal";
+    const outcome = f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit).catch(error => error);
+    await vi.waitFor(() => expect(f.history).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(600_001); await outcome;
+    expect(() => f.owner.runtime.host.rejectProposedPatch(f.proposal.id)).toThrow("already in progress");
+    f.channels.intercept = undefined;
+    await f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit);
+    expect(f.history).toHaveLength(1);
+    expect(f.owner.runtime.host.listProposedPatches("pending")).toEqual([]);
+  });
+
+  it("revokes an undelivered commit during reconciliation so a late delivery cannot insert again", async () => {
+    const f = await fixture(); f.channels.remote = true;
+    vi.useFakeTimers();
+    let held: RuntimeMessage | undefined;
+    f.channels.intercept = (sender, _recipient, message) => {
+      if (!held && sender === "runtime" && message.kind === "request" && message.method === "commitProposal") {
+        held = message; return true;
+      }
+      return false;
+    };
+    const outcome = f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit).catch(error => error);
+    await vi.waitFor(() => expect(held).toBeDefined());
+    await vi.advanceTimersByTimeAsync(300_001); await outcome;
+    expect(f.history).toHaveLength(0);
+    await f.session.client.runtime.acceptPreparedProposal(f.proposal.id,
+      { windowId: "main", tabId: "tab-a" }, "drawing", f.commit);
+    f.channels.deliver("main", "runtime", held!);
+    expect(f.history).toHaveLength(1);
+    // Replaying the successful commit also returns its receipt without rerunning the callback.
+    const committed = f.channels.deliveries.find(({ message }) => message.kind === "request" && message.method === "commitProposal" &&
+      !(message.payload as { reconcile?: true }).reconcile)!;
+    f.channels.deliver("main", "runtime", { ...committed.message, id: "replay" });
+    expect(f.history).toHaveLength(1);
+    await vi.waitFor(() => expect(f.channels.deliveries.some(({ message }) => message.kind === "response" &&
+      message.id === "replay" && message.ok && message.value === true)).toBe(true));
+  });
+
   it("commits exactly once through asynchronous messages, with the same history, label and selection", async () => {
     const f = await fixture();
     const expected = applyAcceptedPluginProposal(f.initial, f.proposal.proposal, { now: "2026-11-10T00:00:00Z" }).document;

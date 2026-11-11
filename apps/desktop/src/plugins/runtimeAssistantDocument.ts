@@ -28,11 +28,15 @@ export function bindRuntimeAssistantDocument(broker: RuntimeBroker, port: Runtim
     if (writable) port.assistant.assertWritable();
     return port.assistant;
   };
-  const current = (session: RuntimeAssistantSession, ended = false) => {
+  const authenticate = (session: RuntimeAssistantSession, ended = false) => {
     const binding = sessions.get(session.requestId);
     if (!binding || JSON.stringify(binding.session) !== JSON.stringify(session) || (binding.ended && !ended)) {
       throw new Error("The assistant request has ended or belongs to another document target.");
     }
+    return binding;
+  };
+  const current = (session: RuntimeAssistantSession, ended = false) => {
+    const binding = authenticate(session, ended);
     const state = port.read(session.target.tabId);
     if (session.target.windowId !== port.windowId || !state || state.documentKey !== session.documentKey) {
       throw new Error("The assistant's document tab is closed or replaced; write refused.");
@@ -115,7 +119,7 @@ export function bindRuntimeAssistantDocument(broker: RuntimeBroker, port: Runtim
         throw error;
       } finally { release(); binding.pending.delete(writeId); }
     }),
-    broker.handle("cancelAssistantWrite", ({ session, writeId }) => { current(session, true).binding.pending.get(writeId)?.abort(); return null; }),
+    broker.handle("cancelAssistantWrite", ({ session, writeId }) => { authenticate(session, true).pending.get(writeId)?.abort(); return null; }),
     broker.handle("assistantConsent", async ({ session, decisionId, platform }) => {
       const { binding } = current(session);
       const abort = new AbortController();
@@ -124,12 +128,16 @@ export function bindRuntimeAssistantDocument(broker: RuntimeBroker, port: Runtim
       try { return await authority().transactions.pageEnlargementConsent(session.requestId, platform).confirm(abort.signal); }
       finally { binding.pending.delete(decisionId); }
     }),
-    broker.handle("cancelAssistantConsent", ({ session, decisionId }) => { current(session, true).binding.pending.get(decisionId)?.abort(); return null; }),
+    broker.handle("cancelAssistantConsent", ({ session, decisionId }) => { authenticate(session, true).pending.get(decisionId)?.abort(); return null; }),
     broker.handle("assistantEnd", ({ session, touchedIds }) => {
-      const { binding } = current(session);
+      const binding = authenticate(session);
       binding.ended = true;
       binding.pending.forEach(abort => abort.abort());
-      return authority(false).transactions.endAssistantTransaction(session.requestId, { touchedIds });
+      const local = authority(false);
+      const state = port.read(session.target.tabId);
+      return state?.documentKey === session.documentKey
+        ? local.transactions.endAssistantTransaction(session.requestId, { touchedIds })
+        : local.transactions.cancelAssistantTransaction(session.requestId);
     }),
     broker.handle("assistantUndo", session => { current(session, true); return authority(false).transactions.undoOwnTransaction(session.requestId); })
   ];
@@ -137,7 +145,7 @@ export function bindRuntimeAssistantDocument(broker: RuntimeBroker, port: Runtim
     for (const stop of stops) stop();
     for (const { session, ended, pending } of sessions.values()) {
       pending.forEach(abort => abort.abort());
-      if (!ended) { try { port.assistant?.transactions.endAssistantTransaction(session.requestId, { touchedIds: [] }); } catch { /* Closed tab. */ } }
+      if (!ended) { try { port.assistant?.transactions.cancelAssistantTransaction(session.requestId); } catch { /* Already ended. */ } }
     }
     sessions.clear();
   }, {

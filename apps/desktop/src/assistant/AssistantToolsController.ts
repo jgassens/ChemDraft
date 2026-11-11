@@ -276,11 +276,14 @@ export class AssistantToolsController implements PluginHostAssistant {
     request.cancellations.forEach(stop => stop.abort());
     // Mark ended before awaiting IPC, so a queued bridge call cannot write meanwhile.
     try {
-      if (request.remote) await request.remote.refresh();
+      // Refresh only serves the transcript thumbnail. Cleanup must still reach the captured
+      // transaction when its drawing has closed or been replaced.
+      let readable = true;
+      if (request.remote) { try { await request.remote.refresh(); } catch { readable = false; } }
       const result = await request.transactions.endAssistantTransaction(requestId, { touchedIds: [...request.touched] });
       let previewSvg: string | undefined;
       try {
-        const document = request.context.getDocument();
+        const document = readable ? request.context.getDocument() : undefined;
         if (document) previewSvg = await runThumbnail(document, result.touchedIds);
       } catch { /* A transcript preview must not turn a completed request into a failure. */ }
       return { ...result, ...(previewSvg ? { previewSvg } : {}), summary: `${request.touched.size} object(s) changed.` };

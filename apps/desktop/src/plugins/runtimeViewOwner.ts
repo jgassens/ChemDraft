@@ -9,24 +9,48 @@ import { PluginInstallError } from "./installPluginPackage";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./fixturePlugin";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import type { CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
+import type { RuntimeRequest } from "./runtimeBrokerProtocol";
 
 /** Only this owner-side adapter knows the real host/controllers. It never transmits them. */
 export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeBroker, clients: () => readonly string[], presentation?: { pickPackage(windowId: string): Promise<PickedPluginPackage | undefined> }): (() => void) & { publish(): void } {
   const runtime = owner.runtime;
+  type UncertainAcceptance = { request: RuntimeRequest<"acceptPreparedProposal">; sender: string; token: string;
+    reconciliation?: Promise<boolean> };
+  const uncertainAcceptances = new Map<string, UncertainAcceptance>();
+  const reconcileAcceptance = (attempt: UncertainAcceptance): Promise<boolean> => {
+    if (!attempt.reconciliation) {
+      const pending = broker.call(attempt.sender, "commitProposal", { ...attempt.request, reconcile: true }).then(committed => {
+        if (uncertainAcceptances.get(attempt.request.proposalId) === attempt) {
+          runtime.host.settleProposedPatchAcceptance(attempt.request.proposalId, attempt.token, committed);
+          uncertainAcceptances.delete(attempt.request.proposalId);
+        }
+        return committed;
+      });
+      attempt.reconciliation = pending;
+      void pending.catch(() => { if (attempt.reconciliation === pending) attempt.reconciliation = undefined; });
+    }
+    return attempt.reconciliation;
+  };
   const documentNames = new Map<string, string>();
   // Archive bytes and worker descriptors stay with their owner. The manager reviews metadata and
   // returns an opaque receipt, so an otherwise valid large package never exceeds a broker message.
-  const packages = new Map<string, PluginPackageInspection>();
-  const previewSources = new Map<string, { token: string; source: string }>();
-  const retainPackage = (inspection: PluginPackageInspection) => {
+  const packages = new Map<string, { inspection: PluginPackageInspection; windowId: string }>();
+  const previewSources = new Map<string, { token: string; source: string; windowId: string }>();
+  const proposalWindow = (id: string) => runtime.proposalWindowId(id) ?? "main";
+  const assertProposalOwner = (id: string, windowId: string) => {
+    if (proposalWindow(id) !== windowId) throw new Error("This proposal belongs to another document window.");
+  };
+  const retainPackage = (inspection: PluginPackageInspection, windowId: string) => {
     const runtimePackageHandle = crypto.randomUUID();
-    packages.set(runtimePackageHandle, inspection);
+    packages.set(runtimePackageHandle, { inspection, windowId });
     return { ...inspection, entries: [], runtimePackageHandle };
   };
-  const packageFor = (raw: unknown) => {
+  const packageFor = (raw: unknown, windowId: string) => {
     const handle = (raw as { runtimePackageHandle?: string })?.runtimePackageHandle;
-    if (!handle || !packages.has(handle)) throw new Error("This plugin package review has expired. Choose or download the package again.");
-    return packages.get(handle)!;
+    const retained = handle && packages.get(handle);
+    if (!retained) throw new Error("This plugin package review has expired. Choose or download the package again.");
+    if (retained.windowId !== windowId) throw new Error("This plugin package review belongs to another document window.");
+    return retained.inspection;
   };
   const restoreTokens = new WeakMap<CanvasOverlayDraftRestore, number>();
   let nextRestoreToken = 0;
@@ -57,9 +81,10 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     const prompt = view.openTextPrompt && (view.openTextPrompt.windowId ?? "main") === windowId ? view.openTextPrompt : undefined;
     state.openTextPrompt = undefined;
     if (prompt) state.openTextPrompt = { id: prompt.id, pluginId: prompt.pluginId, pluginName: prompt.pluginName, request: prompt.request };
-    const proposals = runtime.host.listProposedPatches("pending");
-    const liveIds = new Set(proposals.map(proposal => proposal.id));
+    const pending = runtime.host.listProposedPatches("pending");
+    const liveIds = new Set(pending.map(proposal => proposal.id));
     for (const id of previewSources.keys()) if (!liveIds.has(id)) previewSources.delete(id);
+    const proposals = pending.filter(proposal => proposalWindow(proposal.id) === windowId);
     // Keep large data URIs out of any one bounded message. The view reconstructs the exact URI
     // through bounded data reads, so native review windows receive the same image as before.
     const reviewProposals = proposals.map(proposal => {
@@ -68,7 +93,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
       if (!recognition || !source || source.length < 512_000) return proposal;
       let retained = previewSources.get(proposal.id);
       if (!retained || retained.source !== source) {
-        retained = { token: crypto.randomUUID(), source };
+        retained = { token: crypto.randomUUID(), source, windowId };
         previewSources.set(proposal.id, retained);
       }
       return { ...proposal, proposal: { ...proposal.proposal, recognition: { ...recognition,
@@ -122,14 +147,17 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
             return { ...reply, error: reply.error ? describeError(reply.error) : undefined };
           }, cause => ({ error: describeError(cause), warnings }));
       }
-      case "pickPackage": return (presentation ? presentation.pickPackage(windowId) : view.pickPackage?.())?.then(picked => picked && ({ ...picked, inspection: retainPackage(picked.inspection) }));
-      case "installPackage": return view.installPackage?.(packageFor(args[0]));
-      case "prepareOfficialPluginInstall": return view.prepareOfficialPluginInstall?.(args[0] as string).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection) }));
+      case "pickPackage": return (presentation ? presentation.pickPackage(windowId) : view.pickPackage?.())?.then(picked => picked && ({ ...picked, inspection: retainPackage(picked.inspection, windowId) }));
+      case "installPackage": return view.installPackage?.(packageFor(args[0], windowId));
+      case "prepareOfficialPluginInstall": return view.prepareOfficialPluginInstall?.(args[0] as string).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection, windowId) }));
       case "uninstallInstalledPlugin": return view.uninstallInstalledPlugin?.(args[0] as string);
       case "checkInstalledPluginUpdates": return view.checkInstalledPluginUpdates?.();
-      case "prepareInstalledPluginUpdate": return view.prepareInstalledPluginUpdate?.(args[0] as PluginUpdateOffer).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection) }));
-      case "updateInstalledPlugin": return view.updateInstalledPlugin?.({ ...args[0] as PreparedPluginUpdate, inspection: packageFor((args[0] as PreparedPluginUpdate).inspection) });
-      case "discardPreparedPackages": return packages.clear();
+      case "prepareInstalledPluginUpdate": return view.prepareInstalledPluginUpdate?.(args[0] as PluginUpdateOffer).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection, windowId) }));
+      case "updateInstalledPlugin": return view.updateInstalledPlugin?.({ ...args[0] as PreparedPluginUpdate, inspection: packageFor((args[0] as PreparedPluginUpdate).inspection, windowId) });
+      case "discardPreparedPackages": {
+        for (const [handle, retained] of packages) if (retained.windowId === windowId) packages.delete(handle);
+        return;
+      }
       case "closePanel": return runtime.panels.closePanel(windowId);
       case "submitTextPrompt": return runtime.prompts.submit(args[0] as number, args[1] as string);
       case "cancelTextPrompt": return runtime.prompts.cancel(args[0] as number);
@@ -164,20 +192,28 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
         return runtime.clearCanvasOverlayDraftRestore(args[0] as string, current, windowId);
       }
       case "closeProposalDocumentTab": return runtime.closeProposalDocumentTab(args[0] as string, args[1] as string, windowId);
-      case "proposalDocumentTab": return runtime.proposalDocumentTab(args[0] as string);
+      case "proposalDocumentTab": return proposalWindow(args[0] as string) === windowId ? runtime.proposalDocumentTab(args[0] as string) : undefined;
       case "listCanvasOverlays": return runtime.listCanvasOverlays();
-      case "screenCaptureOf": return !!runtime.host.recognitionScreenCaptureOf(args[0] as string);
+      case "screenCaptureOf": {
+        assertProposalOwner(args[0] as string, windowId);
+        return !!runtime.host.recognitionScreenCaptureOf(args[0] as string);
+      }
       case "previewImageChunk": {
         const retained = [...previewSources.values()].find(source => source.token === args[0]);
         if (!retained) throw new Error("This recognition preview is no longer pending.");
+        if (retained.windowId !== windowId) throw new Error("This recognition preview belongs to another document window.");
         const offset = args[1] as number;
         return retained.source.slice(offset, offset + 256 * 1024);
       }
       case "acceptProposal": {
+        assertProposalOwner(args[0] as string, windowId);
         if (!broker.supportsImmediate) throw new Error("Use the captured asynchronous proposal commit.");
         return owner.acknowledgePreparedProposal(args[0] as string);
       }
-      case "rejectProposal": return runtime.host.rejectProposedPatch(args[0] as string);
+      case "rejectProposal": {
+        assertProposalOwner(args[0] as string, windowId);
+        return runtime.host.rejectProposedPatch(args[0] as string);
+      }
       case "registerFixture": if (import.meta.env.DEV) return runtime.registerPlugin(fixturePluginManifest, createFixturePluginOptions()); return;
       case "unregisterFixture": if (import.meta.env.DEV) return runtime.unregisterPlugin(FIXTURE_PLUGIN_ID); return;
     }
@@ -195,15 +231,29 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     }),
     broker.handle("acceptPreparedProposal", async (request, sender) => {
       const target = runtime.proposalDocumentTab(request.proposalId);
-      if (sender !== request.target.windowId || target?.id !== request.target.tabId || (target.windowId && target.windowId !== sender)) {
+      if (sender !== request.target.windowId || target?.id !== request.target.tabId || proposalWindow(request.proposalId) !== sender) {
         throw new Error("The proposal does not belong to this document target.");
       }
+      const uncertain = uncertainAcceptances.get(request.proposalId);
+      if (uncertain) {
+        if (uncertain.sender !== sender) throw new Error("The proposal acceptance belongs to another document window.");
+        // A retry first resolves the old reservation, never authorizes a second insertion while
+        // the first outcome is unknown. Failed reconciliation leaves that reservation held.
+        if (await reconcileAcceptance(uncertain)) return null;
+      }
       const token = runtime.host.reserveProposedPatchAcceptance(request.proposalId);
-      let committed = false;
       try {
-        await broker.call(sender, "commitProposal", request);
-        committed = true;
-      } finally { runtime.host.settleProposedPatchAcceptance(request.proposalId, token, committed); }
+        const committed = await broker.call(sender, "commitProposal", request);
+        if (!committed) throw new Error("The proposal's prepared document commit was cancelled.");
+      } catch (cause) {
+        const attempt = { request, sender, token };
+        uncertainAcceptances.set(request.proposalId, attempt);
+        // A missing reply does not mean the synchronous document mutation failed. Reconcile its
+        // retained receipt before freeing the reservation; a negative reply also revokes late work.
+        if (!await reconcileAcceptance(attempt)) throw cause;
+        return null;
+      }
+      runtime.host.settleProposedPatchAcceptance(request.proposalId, token, true);
       return null;
     }),
     broker.handle("getRuntimeView", (_request, sender) => encodeRuntimeView({ state: snapshot(sender), topics: topics(sender) })),
@@ -227,6 +277,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     for (const stop of stops) stop();
     packages.clear();
     previewSources.clear();
+    uncertainAcceptances.clear();
   }, { publish: () => {
     publishState();
     for (const windowId of clients()) for (const [topic, value] of Object.entries(topics(windowId))) {

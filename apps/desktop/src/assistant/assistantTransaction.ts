@@ -119,12 +119,24 @@ export class AssistantTransactions {
       this.port.select(tx.tabId, selected, tx.label);
       tx.after = new WeakRef(this.document(tx.tabId));
     }
+    return this.finish(tx, selected);
+  }
+
+  /** A closed or replaced drawing has no history/selection left for this request to amend. */
+  cancelAssistantTransaction(txId: string): AssistantTransactionResult {
+    const tx = this.running(txId);
+    tx.openEntry = false;
+    tx.after = undefined;
+    return this.finish(tx, []);
+  }
+
+  private finish(tx: Transaction, touchedIds: string[]): AssistantTransactionResult {
     tx.ended = true;
     tx.snapshot = undefined;
     if (![...this.transactions.values()].some(candidate => !candidate.ended)) {
       this.unsubscribe?.(); this.unsubscribe = undefined;
     }
-    return { split: tx.split, touchedIds: selected };
+    return { split: tx.split, touchedIds };
   }
 
   undoOwnTransaction(txId: string): boolean {
