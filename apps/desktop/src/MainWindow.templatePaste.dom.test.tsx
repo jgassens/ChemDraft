@@ -131,6 +131,89 @@ describe("template SMILES paste", () => {
       }
       return { port, paste };
     }
+    async function pointer(type: string, x: number, y: number) {
+      const page = container.querySelector<HTMLElement>(".page")!;
+      page.setPointerCapture = () => {};
+      page.releasePointerCapture = () => {};
+      page.hasPointerCapture = () => false;
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+        buttons: type === "pointerdown" ? 1 : 0, clientX: x, clientY: y });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      await act(async () => page.dispatchEvent(event));
+    }
+    async function drawAndSelect() {
+      await command("tool.bond");
+      await pointer("pointerdown", 300, 300);
+      await pointer("pointermove", 340, 300);
+      await pointer("pointerup", 340, 300);
+      await command("tool.select");
+      await command("edit.selectAll");
+    }
+    async function copy(mode = "copy") {
+      const write = vi.spyOn(clipboard, "writeClipboardItems").mockImplementation(async items => ({
+        ok: true, written: items.map(item => item.type), failed: [], warnings: []
+      }));
+      await command(`clipboard.${mode}`);
+      expect(write).toHaveBeenCalledOnce();
+      const copied = write.mock.calls[0]![0].find(item => item.type === CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)!;
+      if (!("text" in copied)) throw new Error("Expected native selection text");
+      return copied;
+    }
+    it("offsets the first in-place canvas copy by one step, then keeps stepping with one undo per paste", async () => {
+      const { port, paste } = await setup();
+      await drawAndSelect();
+      const before = port.read("initial")!;
+      const original = before.pages[0]!.objects[0]!;
+      expect(before.pages[0]!.objects).toHaveLength(1);
+      if (original.type !== "molecule") throw new Error("Expected drawn molecule");
+      const bounds = documentObjectVisualBounds(original);
+      await pointer("pointermove", bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      const copied = await copy();
+      const first = await paste(copied.text, copied.type);
+      const second = await paste(copied.text, copied.type);
+      for (const [index, pasted] of [first.object, second.object].entries()) {
+        if (pasted.type !== "molecule") throw new Error("Expected pasted molecule");
+        const step = (index + 1) * 24;
+        expect(pasted.x - original.x).toBeCloseTo(step, 6);
+        expect(pasted.y - original.y).toBeCloseTo(step, 6);
+        expect(pasted.structure).toBe(original.structure);
+        expect(pasted.bonds).toEqual(original.bonds);
+        expect(pasted.atoms).toEqual(original.atoms.map(atom => ({ ...atom, x: atom.x + step, y: atom.y + step })));
+      }
+      await command("edit.undo");
+      expect(port.read("initial")!.pages[0]!.objects).toEqual([original, first.object]);
+      await command("edit.undo");
+      expect(port.read("initial")).toEqual(before);
+      await command("edit.redo");
+      expect(port.read("initial")!.pages[0]!.objects).toEqual([original, first.object]);
+    });
+    it.each(["move source", "cut source", "new pointer"])("keeps invocation-point placement after %s", async change => {
+      const { port, paste } = await setup();
+      await drawAndSelect();
+      const bounds = createSelectionClipboardPayload(port.read("initial")!)!.bounds;
+      let point = { x: bounds.centerX, y: bounds.centerY };
+      await pointer("pointermove", point.x, point.y);
+      const copied = await copy(change === "cut source" ? "cut" : "copy");
+      if (change === "move source") await command("selection.nudge.right.large");
+      if (change === "new pointer") {
+        point = { x: 180, y: 240 };
+        await pointer("pointermove", point.x, point.y);
+      }
+      const first = await paste(copied.text, copied.type);
+      expect(first.centre.x).toBeCloseTo(point.x, 6);
+      expect(first.centre.y).toBeCloseTo(point.y, 6);
+    });
+    it("keeps the first unmatched SMILES text paste at its invocation point", async () => {
+      const { paste } = await setup();
+      await drawAndSelect();
+      await pointer("pointermove", 180, 240);
+      vi.spyOn(depictionClient, "depictSmilesOffThread").mockImplementation(async smiles => ({
+        depiction: ocl.depictSmiles2D(smiles), stereoCount: 0
+      }));
+      const first = await paste("CCO");
+      expect(first.centre.x).toBeCloseTo(180, 6);
+      expect(first.centre.y).toBeCloseTo(240, 6);
+    });
     it.each([false, true])("keeps the invocation anchor and repeat count when the pointer moves during slow depiction (list=%s)", async list => {
       const { port, paste } = await setup();
       const movePointer = async (x: number, y: number) => {

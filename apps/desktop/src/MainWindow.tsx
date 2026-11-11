@@ -25063,7 +25063,17 @@ export function nextSelectionClipboardPastePlacement(
     centerX: centre.x,
     centerY: centre.y
   };
-  const offsetIndex = continues ? previousState.pasteCount : (anchor || sourceAction === "cut" ? 0 : initialOffset);
+  // A pointer at the copied selection's centre must not hide its first duplicate.
+  // Match both IDs and snapshots: a cut, moved source or external import keeps its
+  // invocation-point placement. A pointer elsewhere is also an explicit new placement.
+  const copiesInPlace = initialOffset > 0 && payload.objects.length > 0 &&
+    Math.abs(centre.x - payload.bounds.centerX) < 1 && Math.abs(centre.y - payload.bounds.centerY) < 1 &&
+    payload.objects.every(object => {
+      const source = page.objects.find(candidate => candidate.id === object.id);
+      return source !== undefined && JSON.stringify(source) === JSON.stringify(object);
+    });
+  const offsetIndex = continues ? previousState.pasteCount
+    : sourceAction === "cut" ? 0 : copiesInPlace ? initialOffset : anchor ? 0 : initialOffset;
   const point = clampSelectionClipboardPastePoint(selectionClipboardPastePoint(bounds, page, offsetIndex), bounds, page);
   return {
     point,
