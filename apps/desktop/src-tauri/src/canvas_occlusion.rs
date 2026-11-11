@@ -21,7 +21,7 @@ pub(crate) struct CanvasOcclusion {
 }
 
 fn authorize(label: &str) -> Result<(), String> {
-    if label == super::MAIN_WINDOW_LABEL {
+    if super::is_document_window(label) {
         Ok(())
     } else {
         Err("Only the document window can read canvas occlusion geometry".into())

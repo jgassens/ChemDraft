@@ -88,6 +88,26 @@ use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 
+/// The single place that decides whether a window label is a document window. Today only the
+/// main window is one; the multi-window work must replace this body with a document-window
+/// registry lookup.
+pub(crate) fn is_document_window(label: &str) -> bool {
+    label == MAIN_WINDOW_LABEL
+}
+
+#[cfg(test)]
+mod document_window_tests {
+    use super::is_document_window;
+
+    #[test]
+    fn recognizes_only_document_window_labels() {
+        assert!(is_document_window("main"));
+        for label in ["palette-main", "dialog-x", ""] {
+            assert!(!is_document_window(label));
+        }
+    }
+}
+
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
 /// A no-op elsewhere.
