@@ -34,6 +34,7 @@ import {
   validateTrustedPluginManifest,
   type CommandRegistry,
   type PluginPatchApplicationRequest,
+  type PluginInvocationDocumentProvider,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
 
@@ -148,6 +149,8 @@ export interface DesktopPluginRuntimeOptions {
   /** Native external-tools boundary; injectable so runtime tests do not require Tauri IPC. */
   externalToolsEngine?: ExternalToolsEngine;
   assistantMcpEngine?: AssistantMcpEngine;
+  forwardUnboundCommand?: DesktopPluginRuntime["invokeCommand"];
+  captureAssistantRequest?: AssistantToolsControllerOptions["captureRequest"];
   assistantContext?: AssistantToolsControllerOptions["createContext"];
   assistantTransactions?: AssistantToolsControllerOptions["transactions"];
   runAssistantWrite?: AssistantToolsControllerOptions["runWrite"];
@@ -208,6 +211,7 @@ export interface DesktopPluginRuntime {
   naming: StructureNamingController;
   externalTools: ExternalToolsController;
   assistant: AssistantToolsController;
+  updateDocumentTabTitles(titles: readonly { id: string; title: string }[], windowId?: string): void;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
   closeProposalDocumentTab(tabId: string, title: string): void;
@@ -227,7 +231,8 @@ export interface DesktopPluginRuntime {
    * the selection meanwhile, or this one reading it after its own patch changed the document, can
    * neither add to it nor take from it.
    */
-  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput;
+    documentProvider?: PluginInvocationDocumentProvider; writeSelection?: PluginSelectionSnapshot }): Promise<unknown>;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
   getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
@@ -250,6 +255,7 @@ export interface DesktopPluginRuntime {
 export interface ProposalDocumentTab {
   id: string;
   title: string;
+  windowId?: string;
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
@@ -267,8 +273,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let structureSignal: AbortSignal | undefined;
   const structureProvider =
     options.buildStructureFromSmiles === undefined
-      ? (request: PluginStructureFromSmilesRequest) =>
-          structureFromSmilesForPlugin(request, options.getActiveDocument, structureSignal)
+      ? async (request: PluginStructureFromSmilesRequest, provider?: PluginInvocationDocumentProvider) => {
+          const signal = structureSignal;
+          // Read through the captured invocation. Engine work receives only detached document data.
+          const document = provider ? await provider.getDocument() : options.getActiveDocument();
+          signal?.throwIfAborted();
+          return structureFromSmilesForPlugin(request, () => document, signal);
+        }
       : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
@@ -307,6 +318,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const naming = new StructureNamingController(options.structureNamingEngine ?? new TauriStructureNamingEngine(), options.namingCanonicalizer);
   const externalTools = new ExternalToolsController(options.externalToolsEngine ?? (isTauriHost() ? new TauriExternalToolsEngine() : new UnsupportedExternalToolsEngine()));
   const assistant = new AssistantToolsController({
+    captureRequest: options.captureAssistantRequest,
     host: (): PluginHost => host,
     engine: options.assistantMcpEngine ?? (isTauriHost() ? new TauriAssistantMcpEngine() : new UnsupportedAssistantMcpEngine()),
     getActiveTabId: () => options.getActiveDocumentTab?.().id,
@@ -347,7 +359,9 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
+  const documentTitles = new Map<string, Map<string, string>>();
   const proposalTabs = new Map<string, string>();
+  const proposalWindows = new Map<string, string>();
   const closedTabTitles = new Map<string, string>();
   const runningTabCommands = new Map<string, number>();
   const pruneClosedTabTitles = () => {
@@ -357,8 +371,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
   };
   let proposingTabId: string | undefined;
+  let proposingWindowId: string | undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
+      if (!invokeOptions?.documentProvider && options.forwardUnboundCommand && this.commands.get(commandId)?.pluginId) {
+        return await options.forwardUnboundCommand(commandId, invokeOptions) as Result;
+      }
       return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions));
     }
 
@@ -399,6 +417,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
 
     override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken, input);
+      const provider = this.invocationDocumentProvider(invocationToken);
       if (invocationToken && commandFrame) {
         commandFrame.push(invocationToken);
         commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
@@ -417,29 +436,37 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
+        const getKey = provider?.getDocumentKey ?? options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument()));
+        const documentKey = getKey();
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
           const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
-          if (documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
-          const molecule = scopedNamingMolecule(options.getActiveDocument(), options.getSelection?.(), parsed.objectId);
+          if (documentKey !== getKey()) throw new Error("The active document changed during the naming command.");
+          const [document, selection] = provider
+            ? await Promise.all([provider.getDocument(), provider.getSelection({ collectWarnings: false })])
+            : [options.getActiveDocument(), options.getSelection?.()];
+          invocation.stop.signal.throwIfAborted();
+          const molecule = scopedNamingMolecule(document, selection, parsed.objectId);
           const manifest = this.listPlugins().find(plugin => plugin.id === pluginId)!;
-          return naming.name(manifest, molecule, invocation.stop.signal);
+          return naming.name(manifest, molecule, invocation.stop.signal, provider?.target && documentKey ? { ...provider.target, documentKey } : undefined);
         };
       }
-      const tabId = options.getActiveDocumentTab?.().id;
+      const tabId = provider?.target?.tabId ?? options.getActiveDocumentTab?.().id;
       const proposePatch = context.documents.proposePatch;
       context.documents.proposePatch = (proposal) => {
         // The host enqueues synchronously before returning its promise. Scope the queue notification
         // to this context, so concurrent commands and late results retain their own source tab.
         const previous = proposingTabId;
+        const previousWindow = proposingWindowId;
         proposingTabId = tabId;
+        proposingWindowId = provider?.target?.windowId;
         try {
           return proposePatch(proposal);
         } finally {
           proposingTabId = previous;
+          proposingWindowId = previousWindow;
         }
       };
       const collector = armedSelectionWarnings;
@@ -531,19 +558,23 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const pending = host.listProposedPatches("pending");
       const pendingIds = new Set(pending.map((proposal) => proposal.id));
       for (const id of proposalTabs.keys()) {
-        if (!pendingIds.has(id)) proposalTabs.delete(id);
+        if (!pendingIds.has(id)) { proposalTabs.delete(id); proposalWindows.delete(id); }
       }
       for (const proposal of pending) {
         if (proposalTabs.has(proposal.id)) continue;
         // Trusted desktop callers of host.proposePatch have no invocation context.
         const tabId = proposingTabId ?? options.getActiveDocumentTab?.().id;
-        if (tabId) proposalTabs.set(proposal.id, tabId);
+        if (tabId) {
+          proposalTabs.set(proposal.id, tabId);
+          if (proposingWindowId) proposalWindows.set(proposal.id, proposingWindowId);
+        }
       }
       pruneClosedTabTitles();
       options.onProposedPatchesChanged?.();
     },
     applyDocumentPatch: options.applyDocumentPatch,
-    buildTablePatch: (spec, document, selection) => {
+    buildTablePatch: async (spec, document, selection, _viewport, provider) => {
+      if (provider) return buildPluginTablePatch(spec, document, selection, await provider.getViewportRect?.());
       const tabId = options.getActiveDocumentTab?.().id;
       const viewport = tabId ? (options.getAssistantViewportRect ?? (id => getAssistantHistoryPort().getViewportRect?.(id)))(tabId) : undefined;
       return buildPluginTablePatch(spec, document, selection, viewport);
@@ -553,7 +584,12 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     },
     promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
     requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
-    recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
+    recognizeStructure: (plugin, image, signal, provider) => recognition.recognize(plugin, image, signal, provider
+      ? async (outcome, source) => {
+          const document = await provider.getDocument();
+          signal.throwIfAborted();
+          return preparePluginStructureRecognition(outcome, source, document, options.recognitionStructureValidator);
+        } : undefined),
     externalTools,
     assistant,
     computeProperties: computePropertiesForPlugin,
@@ -577,11 +613,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     naming,
     externalTools,
     assistant,
+    updateDocumentTabTitles(titles, windowId = "") { documentTitles.set(windowId, new Map(titles.map(({ id, title }) => [id, title]))); },
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;
-      const title = options.getDocumentTabTitle?.(id) ?? closedTabTitles.get(id);
-      return title === undefined ? undefined : { id, title };
+      const windowId = proposalWindows.get(proposalId);
+      const title = documentTitles.get(windowId ?? "")?.get(id) ?? options.getDocumentTabTitle?.(id) ?? closedTabTitles.get(id);
+      return title === undefined ? undefined : { id, title, ...(windowId ? { windowId } : {}) };
     },
     closeProposalDocumentTab(tabId, title) {
       assistant.closeAllForTab(tabId);
@@ -672,8 +710,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
+      if (!invokeOptions.documentProvider && options.forwardUnboundCommand && host.commands.get(commandId)?.pluginId) return options.forwardUnboundCommand(commandId, invokeOptions);
       armedSelectionWarnings = invokeOptions.selectionWarnings;
       try {
+        if (invokeOptions.documentProvider) return host.invokeCommand(commandId, { input: invokeOptions.input,
+          documentProvider: invokeOptions.documentProvider, writeSelection: invokeOptions.writeSelection });
         return invokeOptions.input === undefined
           ? host.invokeCommand(commandId)
           : host.invokeCommand(commandId, { input: invokeOptions.input });

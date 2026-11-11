@@ -1,11 +1,12 @@
 import { createDocumentTabId } from "../documentIdentity";
 import type { ToolInstallAction, ToolInstallSnapshot } from "../dialogs/dialogProtocol";
-import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
+import type { RuntimeDialogPort } from "../plugins/runtimeDialogs";
+import type { RuntimeDialogTarget } from "../plugins/runtimeDialogProtocol";
 import { ExternalToolsController, type ExternalToolsPresenter } from "./ExternalToolsController";
 import type { ExternalToolStatus } from "./externalToolsEngine";
 import { toolInstallSnapshot } from "./toolInstallSnapshot";
 
-export interface ExternalToolsDialogContext { coordinator: () => DialogCoordinator | undefined; documentTabId: () => string | undefined }
+export interface ExternalToolsDialogContext { coordinator: (target?: RuntimeDialogTarget) => RuntimeDialogPort | undefined; documentTabId: () => string | undefined }
 const errorText = (error: unknown) => error instanceof Error ? error.message : typeof error === "object" && error && "message" in error ? String((error as { message: unknown }).message) : "Installation failed.";
 
 /** Connects the policy controller to the native dialog coordinator; there is never an in-page fallback. */
@@ -14,8 +15,8 @@ export function presentExternalToolInstall(controller: ExternalToolsController, 
   // tab reserved until native closure, including a still-pending open IPC, has completed.
   const queues = new Map<string, Promise<void>>();
   const fallbackTabId = createDocumentTabId();
-  function enqueue<T>(signal: AbortSignal, show: (coordinator: DialogCoordinator, id: string, closed: () => void) => Promise<T>): Promise<T> {
-    const id = context.documentTabId() ?? fallbackTabId;
+  function enqueue<T>(signal: AbortSignal, show: (coordinator: RuntimeDialogPort, id: string, closed: () => void) => Promise<T>, target?: RuntimeDialogTarget): Promise<T> {
+    const id = target?.tabId ?? context.documentTabId() ?? fallbackTabId;
     const previous = queues.get(id) ?? Promise.resolve();
     let release!: () => void;
     const closed = new Promise<void>(resolve => { release = resolve; });
@@ -29,20 +30,20 @@ export function presentExternalToolInstall(controller: ExternalToolsController, 
       void previous.then(() => {
         signal.removeEventListener("abort", abort);
         if (signal.aborted) { release(); abort(); return; }
-        const coordinator = context.coordinator();
+        const coordinator = context.coordinator(target);
         if (!coordinator) { release(); reject(new Error("External-tool installation UI is unavailable.")); return; }
         show(coordinator, id, release).then(resolve, reject);
       }).catch(error => { release(); reject(error); });
     });
   }
   const presenter: ExternalToolsPresenter = {
-    consent(plugin, status, signal) {
+    consent(plugin, status, signal, target) {
       return enqueue(signal, (coordinator, id, closed) => showDialog<"granted" | "declined">(coordinator, id, toolInstallSnapshot(status, plugin, { status: "consent" }), signal, closed, dialog => ({
         action: action => { if (action === "allow") dialog.close(undefined, "granted"); },
         closeError: () => new Error("declined")
-      })));
+      })), target);
     },
-    install(plugin, status, signal) {
+    install(plugin, status, signal, target) {
       return enqueue(signal, (coordinator, id, closed) => showDialog<ExternalToolStatus>(coordinator, id, toolInstallSnapshot(status, plugin), signal, closed, dialog => {
         let installing = false;
         let failed: unknown;
@@ -71,7 +72,7 @@ export function presentExternalToolInstall(controller: ExternalToolsController, 
             } finally { installing = false; }
           }
         };
-      }));
+      }), target);
     }
   };
   return controller.attachPresenter(presenter);
@@ -84,7 +85,7 @@ interface ToolDialog<T> {
   update(snapshot: ToolInstallSnapshot): Promise<boolean>;
 }
 
-function showDialog<T>(coordinator: DialogCoordinator, id: string, snapshot: ToolInstallSnapshot, signal: AbortSignal, release: () => void,
+function showDialog<T>(coordinator: RuntimeDialogPort, id: string, snapshot: ToolInstallSnapshot, signal: AbortSignal, release: () => void,
   handlers: (dialog: ToolDialog<T>) => { action(action: ToolInstallAction): void | Promise<void>; closeError(): unknown; onClose?(): void }): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let closed = false;

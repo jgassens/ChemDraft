@@ -296,7 +296,8 @@ export class StructureRecognitionController {
   async recognize(
     plugin: { id: string; name: string },
     image: PluginProvidedImage,
-    signal: AbortSignal
+    signal: AbortSignal,
+    prepareResult: PrepareRecognitionResult = this.prepareResult
   ): Promise<PluginRecognitionResult> {
     if (signal.aborted) return { status: "cancelled" };
     // One at a time: the engine runs one recognition, and the indicator shows one.
@@ -317,7 +318,7 @@ export class StructureRecognitionController {
     this.active = active;
     this.publishActivity();
     try {
-      return await this.runRecognition(active, plugin, image);
+      return await this.runRecognition(active, plugin, image, prepareResult);
     } finally {
       signal.removeEventListener("abort", onAbort);
       if (this.active === active) {
@@ -330,7 +331,8 @@ export class StructureRecognitionController {
   private async runRecognition(
     active: ActiveRecognition,
     plugin: { id: string; name: string },
-    image: PluginProvidedImage
+    image: PluginProvidedImage,
+    prepareResult: PrepareRecognitionResult
   ): Promise<PluginRecognitionResult> {
     const stopped = active.stop.signal;
     let status: StructureRecognitionEngineStatus | typeof STOPPED;
@@ -396,7 +398,7 @@ export class StructureRecognitionController {
     // The engine's own words, which may be empty or a whole traceback: bounded like every failure.
     if (outcome.status === "failed") return recognitionFailure(outcome.code, outcome.message);
     this.setStage(active, "validating");
-    const result = await untilStopped(this.prepareResult(outcome, image), stopped);
+    const result = await untilStopped(prepareResult(outcome, image), stopped);
     if (result === STOPPED) return { status: "cancelled" };
     return result.status === "failed" ? recognitionFailure(result.code, result.message) : result;
   }

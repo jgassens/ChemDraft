@@ -324,7 +324,7 @@ describe("accepting a recognition proposal from the review window", () => {
   it("reports an accept that fails instead of leaving the proposal silently pending", async () => {
     const bridge = await renderMainWindow();
     const proposal = await recognizeIntoProposal(bridge);
-    vi.spyOn(harness.runtime!.host, "acceptProposedPatch").mockImplementation(() => {
+    vi.spyOn(harness.runtime!.host, "reserveProposedPatchAcceptance").mockImplementation(() => {
       throw new Error("page page_1 does not exist");
     });
 

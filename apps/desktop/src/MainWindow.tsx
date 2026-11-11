@@ -1,6 +1,6 @@
 import { bindPaletteDocument, currentPaletteTarget, type PaletteTarget } from "./window-manager/paletteTarget";
 import { listenForPaletteDocumentActivation } from "./window-manager";
-import { createDocumentTabId, documentWindowId, DocumentIdentities } from "./documentIdentity";
+import { createDocumentTabId, documentWindowId, DocumentIdentities, DrawingIncarnations } from "./documentIdentity";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
@@ -180,10 +180,9 @@ import {
   type ViewportState
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
-import { assertPluginPatchWriteScope, CommandRegistry } from "@chemdraft/plugin-host";
+import { CommandRegistry } from "@chemdraft/plugin-host";
 import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
-import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
 import { classifyToolbarSelection } from "./toolbars/toolbarSelectionKind";
 import { CustomizeToolbarsDialog } from "./toolbars/CustomizeToolbars/CustomizeToolbarsDialog";
@@ -212,15 +211,15 @@ import {
 import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
-  applyPluginDocumentPatch,
   placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
   type PluginWriteGate
 } from "./plugins/applyPluginDocumentPatch";
+import { createRuntimeDocumentPort } from "./plugins/runtimeDocumentPort";
 import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNotice";
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
-import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
+import type { PluginRuntimeClient } from "./plugins/runtimeViewClient";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
@@ -881,7 +880,9 @@ import { PluginPromptTextDialog } from "./plugins/PluginPromptTextDialog";
 import { PluginImageRequestDialog } from "./plugins/PluginImageRequestDialog";
 import { StructureRecognitionInstallDialog } from "./plugins/StructureRecognitionInstallDialog";
 import { RecognitionProgressIndicator } from "./plugins/RecognitionProgressIndicator";
-import { usePluginRuntime, pluginCommandFailure } from "./plugins/usePluginRuntime";
+import { pluginCommandFailure } from "./plugins/pluginCommandFailure";
+import { usePluginRuntimeView } from "./plugins/usePluginRuntimeView";
+import { readRuntimeOverlayDeclaration } from "./plugins/runtimeOverlayAction";
 import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
@@ -1775,7 +1776,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.20.30-codex";
+const CURRENT_BUILD_STAMP = "11.11.01.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2504,7 +2505,7 @@ export function MainWindow({
   const [activeDocumentTabId, setActiveDocumentTabId] = useState(initialDocumentTabId);
   const documentTabsRef = useRef(documentTabs);
   documentTabsRef.current = documentTabs;
-  const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
+  const pluginRuntimeRef = useRef<PluginRuntimeClient | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
   const atomProblemTargetRef = useRef<{ tabId: string; target: AtomProblemTarget; source: ChemDraftDocument; version: number } | undefined>(undefined);
   const atomProblemVersionRef = useRef(0);
@@ -2902,6 +2903,7 @@ export function MainWindow({
   // never on an ordinary edit, so a plugin write started before a replace and landing after it is
   // refused rather than silently inserted into the new document.
   const [documentIdentities] = useState(() => new DocumentIdentities(documentWindowId()));
+  const [drawingIncarnations] = useState(() => new DrawingIncarnations());
   const getDocumentIdentity = useCallback(() => documentIdentities.key(activeDocumentTabIdRef.current), [documentIdentities]);
   // Palette revisions describe replacement, not activation: switching away/back is still the same drawing.
   const paletteDocumentRevisionsRef = useRef(new Map<string, number>());
@@ -3667,6 +3669,7 @@ export function MainWindow({
     // The document is being REPLACED, not edited — bump before installing the new history so a plugin
     // write already in flight against the old document key is refused rather than landing here.
     documentIdentities.advance(activeDocumentTabIdRef.current);
+    drawingIncarnations.replace(activeDocumentTabIdRef.current);
     paletteDocumentRevisionsRef.current.set(activeDocumentTabIdRef.current,
       (paletteDocumentRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0) + 1);
     parkedPalettePreviewsRef.current.delete(activeDocumentTabIdRef.current);
@@ -9907,6 +9910,7 @@ export function MainWindow({
     parkedPalettePreviewsRef.current.delete(id);
     paletteDocumentRevisionsRef.current.delete(id);
     documentIdentities.remove(id);
+    drawingIncarnations.remove(id);
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
     browserFileKeysRef.current.delete(id);
@@ -12604,74 +12608,80 @@ export function MainWindow({
     };
   }, [isSnapshotSessionActive]);
 
-  // The persistent plugin runtime (host + panel controller + toolset stage), created exactly once on
-  // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
-  // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
-  // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
+  // The committing document owns history, gesture waiting, page consent and final scope checks.
+  // This tab-addressed port is shared by local writes and the runtime broker's document adapter.
   const nameResolutionStatusRef = useRef<string | undefined>(undefined);
-  const pluginRuntime = usePluginRuntime({
-    onPluginUpdateStatus: setStatus,
-    onNameResolutionStatus: text => {
-      nameResolutionStatusRef.current = text;
-      if (text) setStatus(text);
-    },
-    getActiveDocument: () => documentRef.current,
-    getActiveDocumentKey: () => getDocumentIdentity(),
-    getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
-    getDialogCoordinator: () => dialogCoordinatorRef.current,
-    getDocumentTabTitle: (tabId) => documentTabsRef.current.find((tab) => tab.id === tabId)?.title,
-    // `warnings` is the collector of the command invocation that is reading (see the plugin command
-    // dispatch below); a read outside one gets none and stays silent.
-    getSelection: (warnings) => buildPluginSelectionSnapshot(documentRef.current, warnings),
-    commandRegistry: registry,
-    createStorage: createPersistentPluginStorage,
-    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds }) => {
-      if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
-      const gate = pluginWriteGateRef.current;
-      if (!gate) throw new Error("The document window is closing; nothing was inserted.");
-      // The host checked the document key before calling; a write that waits for a gesture checks again
-      // when it runs, so it can never land in a document opened meanwhile.
-      const documentIdentity = getDocumentIdentity();
-      if (isSnapshotSessionActive()) {
-        setStatus(`${plugin.name}: finish the current edit to insert the result`);
-      }
-      return gate.run(async () => {
-        signal?.throwIfAborted();
+  const runtimeDocumentPort = useMemo(() => {
+    const transactionByWrite = new WeakMap<object, string>();
+    return createRuntimeDocumentPort({
+      assistant: { history: assistantHistoryPort, transactions: assistantTransactions,
+        assertWritable: () => {
+          if (!mountedRef.current || quitInteractionRef.current || quitMutationFrozenRef.current) {
+            throw new Error("The document window is closing or waiting for Quit; assistant write refused.");
+          }
+        } },
+      windowId: documentIdentities.windowId,
+      commandRegistry: registry,
+      activeTabId: () => activeDocumentTabIdRef.current,
+      read: tabId => {
+        const document = assistantHistoryPort.read(tabId);
+        return document ? { document, documentKey: drawingIncarnations.key(tabId) } : undefined;
+      },
+      selection: (tabId, warnings) => buildPluginSelectionSnapshot(assistantHistoryPort.read(tabId)!, warnings),
+      viewportRect: tabId => assistantHistoryPort.getViewportRect?.(tabId),
+      assertWritable: () => {
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
-        if (getDocumentIdentity() !== documentIdentity) {
-          throw new Error("The document changed while the plugin was running; nothing was inserted.");
+        if (!mountedRef.current) throw new Error("The document window is closing; nothing was inserted.");
+        if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+      },
+      getWriteGate: () => pluginWriteGateRef.current,
+      placement: (tabId, before, application) => ({
+        avoidInsertionOverlap: application.plugin.id === "org.chemdraft.opsin.nameToStructure",
+        insertionTarget: { pageId: before.pages[0]!.id, bounds: assistantHistoryPort.getViewportRect?.(tabId) }
+      }),
+      normalize: normalizeCommittedDocument,
+      willWrite: (tabId, request) => {
+        if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) {
+          setStatus(`${request.plugin.name}: finish the current edit to insert the result`);
         }
-        const before = documentRef.current;
-        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds);
-        const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
-        const applied = applyPluginDocumentPatch(before, patch, {
-          avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
-          insertionTarget: { pageId: documentRef.current.pages[0]!.id,
-            bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
-        });
-        const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, activeDocumentTabIdRef.current);
+      },
+      prepare: async (write, accept) => {
+        const { tabId, before, proposed, application, isCurrent } = write;
+        const { plugin, signal } = application;
+        const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, tabId);
         if (!assistantTxId && assistantTransactions.activeTransactionForPlugin(plugin.id)) {
           throw new Error("The assistant request belongs to another document tab; write refused.");
         }
+        if (assistantTxId) transactionByWrite.set(write, assistantTxId);
         let consent = signal && pluginPageConsentsRef.current.get(signal);
         if (!consent) {
           consent = new PageEnlargementConsent(shortcutPlatform);
           if (signal) pluginPageConsentsRef.current.set(signal, consent);
         }
-        const prepared = normalizeCommittedDocument(applied.document);
-        const pending = commitWithPageFit(before, prepared, document => {
-          if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared);
-          else commitDocumentChange(document, undoLabel);
-        }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
-            : consent, signal,
-          isCurrent: () => mountedRef.current && !quitInteractionRef.current && getDocumentIdentity() === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current) });
+        const pending = commitWithPageFit(before, proposed, accept, {
+          consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent,
+          signal, isCurrent
+        });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }
         }
-        setSelectedNativeMoleculePart(undefined);
+      },
+      commit: (write, document) => {
+        const assistantTxId = transactionByWrite.get(write);
+        if (assistantTxId) {
+          assistantTransactions.writeAssistantTransaction(assistantTxId, document, write.applied.receipt.objectIds, write.proposed);
+        } else if (write.tabId === activeDocumentTabIdRef.current) {
+          commitDocumentChange(document, write.application.undoLabel);
+        } else {
+          // An ordinary plugin write interrupts an assistant entry just like an editor write.
+          for (const listener of assistantUserEditListenersRef.current) listener(write.tabId);
+          assistantHistoryPort.push(write.tabId, write.before, document, write.application.undoLabel);
+        }
+      },
+      didCommit: ({ tabId, before, applied, application: { plugin, command, patch } }) => {
+        if (tabId === activeDocumentTabIdRef.current) setSelectedNativeMoleculePart(undefined);
+        const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
         const insertedObject = patch.patch.op === "addObject" ? patch.patch.object : undefined;
         const insertedDescription = insertedObject?.type === "molecule"
           ? "structure"
@@ -12688,10 +12698,28 @@ export function MainWindow({
           applied.receipt.objectIds.length > 0 && insertedDescription
             ? `${plugin.name}: inserted ${insertedDescription}`
             : `${plugin.name}: applied ${command.title}`;
-        setStatus(sourceStatus ? `${insertionStatus} (${sourceStatus})` : insertionStatus);
-        return applied.receipt;
-      });
-    }
+        const message = sourceStatus ? `${insertionStatus} (${sourceStatus})` : insertionStatus;
+        if (tabId === activeDocumentTabIdRef.current) setStatus(message);
+        else {
+          const snapshot = documentTabSnapshotsRef.current.get(tabId);
+          if (snapshot) documentTabSnapshotsRef.current.set(tabId, { ...snapshot, status: message });
+        }
+      }
+    });
+  }, [assistantHistoryPort, assistantTransactions, commitDocumentChange, documentIdentities, drawingIncarnations,
+    isSnapshotSessionActive, registry, setSelectedNativeMoleculePart, shortcutPlatform]);
+  const pluginRuntime = usePluginRuntimeView({
+    documentPort: runtimeDocumentPort,
+    onPluginUpdateStatus: setStatus,
+    onNameResolutionStatus: text => {
+      nameResolutionStatusRef.current = text;
+      if (text) setStatus(text);
+    },
+    documentTabs: documentTabsRef.current,
+    getDialogCoordinator: () => dialogCoordinatorRef.current,
+    commandRegistry: registry,
+    createStorage: createPersistentPluginStorage,
+    onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1)
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
@@ -12737,7 +12765,7 @@ export function MainWindow({
     const unsubscribe = runtime.onDidChange(syncPluginToolsets);
     if (import.meta.env.DEV) {
       try {
-        runtime.registerPlugin(fixturePluginManifest, createFixturePluginOptions());
+        runtime.registerFixture();
       } catch (error) {
         console.warn("Fixture plugin registration failed", error);
       }
@@ -12747,7 +12775,7 @@ export function MainWindow({
       unsubscribe();
       if (import.meta.env.DEV) {
         try {
-          runtime.unregisterPlugin(FIXTURE_PLUGIN_ID);
+          runtime.unregisterFixture();
         } catch {
           // Already unregistered; nothing to clean up.
         }
@@ -12961,10 +12989,10 @@ export function MainWindow({
       }
       // A screen capture is saved to the recognition-sources folder when it is taken (AGENTS.md §8), so
       // accepting keeps nothing more; the capture stays there until the user deletes it.
-      const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
         const before = documentRef.current;
         const documentIdentity = getDocumentIdentity();
+        const screenCapture = await host.recognitionScreenCaptureOf(proposal.id);
         let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
         if (recognized) {
           const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
@@ -12975,17 +13003,22 @@ export function MainWindow({
         }
         prepared = normalizeCommittedDocument(prepared);
         // Keep the proposal pending until the page question and stale-document check succeed.
-        const pending = commitWithPageFit(before, prepared, document => {
-          const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
-          commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
-        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
+        const isCurrent = () =>
           mountedRef.current && !quitInteractionRef.current && getDocumentIdentity() === documentIdentity &&
-          assistantDocumentContentUnchanged(before, documentRef.current)
-        });
+          activeDocumentTabIdRef.current === tab.id && !quitMutationFrozenRef.current &&
+          assistantDocumentContentUnchanged(before, documentRef.current);
+        let acceptedDocument = prepared;
+        const pending = commitWithPageFit(before, prepared, document => { acceptedDocument = document; },
+          { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent });
         if (pending) {
           pageFitPendingRef.current += 1;
           try { await pending; } finally { pageFitPendingRef.current -= 1; }
         }
+        await pluginRuntime.runtime.acceptPreparedProposal(proposal.id,
+          { windowId: documentIdentities.windowId, tabId: tab.id }, drawingIncarnations.key(tab.id), () => {
+            if (!isCurrent() || isSnapshotSessionActive()) throw new Error("The drawing changed while accepting the proposal; try the action again.");
+            commitDocumentChange(acceptedDocument, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
+          });
         setSelectedNativeMoleculePart(undefined);
         const inserted = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
         const message = screenCapture
@@ -12999,13 +13032,13 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
+    [activateDocumentTab, commitDocumentChange, documentIdentities, drawingIncarnations, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
   );
 
   const rejectPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
+    async (proposal: QueuedProposedPatch): Promise<ProposalDecisionOutcome> => {
       try {
-        pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
+        await pluginRuntime.runtime.host.rejectProposedPatch(proposal.id);
         setStatus("Rejected plugin proposal");
         return { ok: true, message: "Rejected plugin proposal" };
       } catch {
@@ -13174,7 +13207,7 @@ export function MainWindow({
             } else if (action.kind === "acceptPluginProposal") {
               outcome = await handlers.acceptPluginProposal(proposal);
             } else {
-              outcome = handlers.rejectPluginProposal(proposal);
+              outcome = await handlers.rejectPluginProposal(proposal);
             }
             if (action.requestId) {
               const response = sourceLabel === undefined
@@ -13426,7 +13459,9 @@ export function MainWindow({
   const dispatchOverlayAction = async (pluginId: string, overlayId: string,
     request: PluginPanelActionRequest): Promise<PluginPanelActionResult> => {
     const runtime = pluginRuntime.runtime;
-    const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
+    let declaration: Awaited<ReturnType<typeof readRuntimeOverlayDeclaration>>;
+    try { declaration = await readRuntimeOverlayDeclaration(runtimeDocumentPort, runtime, pluginId, overlayId); }
+    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; }
     if (!declaration) return { ok: false, message: "This overlay is no longer available." };
     const overlay = declaration.overlay;
     const content = runtime.getCanvasOverlayContents().get(overlayId) ?? [];

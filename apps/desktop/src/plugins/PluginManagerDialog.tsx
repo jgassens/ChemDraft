@@ -12,6 +12,7 @@ import {
   unavailableDesktopPluginPermissions,
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
+import type { PluginRuntimeClient } from "./runtimeViewClient";
 import type { ExternalToolConsent } from "../externalTools/externalToolsEngine";
 import {
   PluginInstallError,
@@ -64,7 +65,7 @@ function requiresRecognitionEngine(pluginId: string | undefined): boolean {
 
 export interface PluginManagerDialogProps {
   onShown?: () => void;
-  runtime: DesktopPluginRuntime;
+  runtime: DesktopPluginRuntime | PluginRuntimeClient;
   bundledPlugins: readonly BundledPluginDescriptor[];
   /** Plugins installed from a package (M36). Empty where installing is unsupported (browser build, tests). */
   installedPlugins?: readonly InstalledPluginCatalogEntry[];
@@ -218,6 +219,7 @@ export function PluginManagerDialog({
 
   // Keep the checkboxes truthful even when a registration changes outside this dialog.
   useEffect(() => runtime.host.subscribe(refreshFromHost), [runtime]);
+  useEffect(() => () => { if ("discardPreparedPackages" in runtime) runtime.discardPreparedPackages(); }, [runtime]);
   useEffect(() => runtime.naming.subscribe(refreshFromHost), [runtime]);
   useEffect(() => {
     let current = true;
@@ -315,7 +317,8 @@ export function PluginManagerDialog({
     }
 
     try {
-      applyEnabledPlugins(runtime, disabledIds, catalog);
+      if ("applyEnabledPluginIds" in runtime) runtime.applyEnabledPluginIds([...disabledIds]);
+      else applyEnabledPlugins(runtime, disabledIds, catalog);
       saveDisabledPluginIds(disabledIds);
       setError(undefined);
       onPluginsChanged?.();

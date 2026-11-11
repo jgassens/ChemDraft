@@ -31,6 +31,7 @@ mod plugin_package;
 mod plugin_panel_acl_tests;
 mod plugin_starter;
 mod problem_reports;
+mod runtime_broker;
 mod screen_capture;
 mod structure_search;
 mod utility_suspension;
@@ -1048,6 +1049,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(document_windows::DocumentWindowRegistry::with_main())
+        .manage(runtime_broker::State::default())
         .manage(palette_routing::PaletteRouting::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
@@ -1088,6 +1090,9 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                runtime_broker::forget_window(webview.app_handle(), webview.label());
+            }
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 if let Some(window) = webview.app_handle().get_webview_window(webview.label()) {
                     let target = window.clone();
@@ -1144,6 +1149,9 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                runtime_broker::forget_window(window.app_handle(), window.label());
+            }
             if is_document_window(window.app_handle(), window.label()) {
                 match event {
                     // macOS: closing the document window hides it and the app lives on in the
@@ -1405,6 +1413,12 @@ pub fn run() {
             app.state::<document_windows::DocumentWindowRegistry>()
                 .set_ready(MAIN_WINDOW_LABEL);
 
+            // A host failure must not prevent opening the drawing window. Plugin startup will
+            // report its specific broker failure; it never constructs a document-side owner.
+            if let Err(error) = runtime_broker::create_runtime_window(app) {
+                eprintln!("Plugin runtime host failed to start: {error}");
+            }
+
             #[cfg(not(target_os = "macos"))]
             if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
                 eprintln!("Could not install the ChemDraft menu: {error}");
@@ -1448,6 +1462,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            runtime_broker::runtime_broker_connect,
+            runtime_broker::runtime_broker_send,
+            runtime_broker::runtime_broker_disconnect,
             assistant_mcp::assistant_mcp_session_open,
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
@@ -7776,6 +7793,8 @@ fn menu_command_target_label(
     command_id: &str,
     focused_label: Option<&str>,
 ) -> Option<String> {
+    // The application service is never a recipient, even if the OS reports anomalous focus.
+    let focused_label = focused_label.filter(|label| *label != "runtime");
     match focused_label {
         Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
             Some(label.to_string())
@@ -11534,7 +11553,7 @@ mod tests {
         }
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}",
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
@@ -11543,7 +11562,8 @@ mod tests {
             include_str!("../capabilities/quit-prompt.json"),
             include_str!("../capabilities/download-diagnosis.json"),
             include_str!("../capabilities/external-tools.json"),
-            include_str!("../capabilities/plugin-starter.json")
+            include_str!("../capabilities/plugin-starter.json"),
+            include_str!("../capabilities/runtime-broker.json")
         );
 
         let handler_start = lib_source
@@ -11556,6 +11576,8 @@ mod tests {
             .skip(1)
             .filter_map(|line| {
                 let name = line.trim().trim_end_matches(',').trim();
+                // The private broker's commands have the same app-generated permissions.
+                let name = name.strip_prefix("runtime_broker::").unwrap_or(name);
                 // Module-qualified commands (export::, fonts::) carry their own permissions.
                 if name.is_empty()
                     || name.contains("::")

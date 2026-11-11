@@ -255,6 +255,21 @@ export interface CommandInvocationContext {
   permissions?: ReadonlySet<PluginPermission>;
   /** Host-supplied selection captured at Send, instead of reading the live selection. */
   writeSelection?: PluginSelectionSnapshot;
+  /** Trusted embedding-host binding, captured before dispatch; never supplied by plugin input. */
+  documentProvider?: PluginInvocationDocumentProvider;
+}
+
+/** A command's document authority. Remote embedders bind these closures to one captured target.
+ * Keeping the provider on the invocation (rather than changing global callbacks) isolates commands
+ * that overlap across windows. The committing embedder must still validate scope and lifetime. */
+export interface PluginInvocationDocumentProvider {
+  readonly target?: { windowId: string; tabId: string };
+  getViewportRect?: () => { x: number; y: number; width: number; height: number } | undefined |
+    Promise<{ x: number; y: number; width: number; height: number } | undefined>;
+  getDocument: () => ChemDraftDocument | undefined | Promise<ChemDraftDocument | undefined>;
+  getDocumentKey: () => string | undefined;
+  getSelection: (options?: { collectWarnings?: boolean }) => PluginSelectionSnapshot | undefined | Promise<PluginSelectionSnapshot | undefined>;
+  applyDocumentPatch: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
 }
 
 export type CommandHandler<Result = unknown> = (
@@ -283,6 +298,9 @@ export class PluginHostError extends Error {
 }
 
 export class CommandRegistry {
+  private readonly listeners = new Set<() => void>();
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  private changed(): void { for (const listener of this.listeners) listener(); }
   private readonly commands = new Map<string, { definition: RequiredCommandDefinition; handler: CommandHandler }>();
 
   register(definition: CommandDefinition, handler: CommandHandler): void {
@@ -294,10 +312,11 @@ export class CommandRegistry {
       definition: normalizeCommandDefinition(definition),
       handler
     });
+    this.changed();
   }
 
   unregister(commandId: string): void {
-    this.commands.delete(commandId);
+    if (this.commands.delete(commandId)) this.changed();
   }
 
   /** Remove a command only when it is still owned by the expected plugin. This prevents plugin
@@ -307,7 +326,9 @@ export class CommandRegistry {
     if (entry?.definition.source !== "plugin" || entry.definition.pluginId !== pluginId) {
       return false;
     }
-    return this.commands.delete(commandId);
+    const removed = this.commands.delete(commandId);
+    if (removed) this.changed();
+    return removed;
   }
 
   has(commandId: string): boolean {
@@ -462,9 +483,9 @@ export type HostRecognitionOutcome = PluginRecognitionResult & { hostReview?: Ho
 
 export interface PluginHostExternalTools {
   status(plugin: { id: string; name: string }, request: PluginExternalToolStatusRequest): PluginExternalToolStatus | Promise<PluginExternalToolStatus>;
-  install(plugin: { id: string; name: string }, request: PluginExternalToolInstallRequest, signal: AbortSignal): PluginExternalToolStatus | Promise<PluginExternalToolStatus>;
+  install(plugin: { id: string; name: string }, request: PluginExternalToolInstallRequest, signal: AbortSignal, provider?: PluginInvocationDocumentProvider): PluginExternalToolStatus | Promise<PluginExternalToolStatus>;
   signIn(plugin: { id: string; name: string }, request: PluginExternalToolInstallRequest): { launched: boolean; method: "terminal.command" | "newConsole"; detail?: string } | Promise<{ launched: boolean; method: "terminal.command" | "newConsole"; detail?: string }>;
-  run(plugin: { id: string; name: string }, request: PluginExternalToolRunRequest): PluginExternalToolRunHandle | Promise<PluginExternalToolRunHandle>;
+  run(plugin: { id: string; name: string }, request: PluginExternalToolRunRequest, provider?: PluginInvocationDocumentProvider): PluginExternalToolRunHandle | Promise<PluginExternalToolRunHandle>;
   poll(plugin: { id: string; name: string }, request: PluginExternalToolPollRequest): PluginExternalToolRunPoll | Promise<PluginExternalToolRunPoll>;
   cancel(plugin: { id: string; name: string }, request: PluginExternalToolCancelRequest): void | Promise<void>;
   clearConversation(plugin: { id: string; name: string }, request: PluginExternalToolClearConversationRequest): void | Promise<void>;
@@ -475,7 +496,10 @@ export type PluginHostAssistant = {
   [K in keyof PluginAssistantAPI]: (
     plugin: { id: string; name: string }, ...args: Parameters<PluginAssistantAPI[K]>
   ) => ReturnType<PluginAssistantAPI[K]>;
-} & { closeAllForPlugin(pluginId: string): void };
+} & { closeAllForPlugin(pluginId: string): void;
+  beginCapturedRequest?(plugin: { id: string; name: string }, request: Parameters<PluginAssistantAPI["beginRequest"]>[0],
+    provider: PluginInvocationDocumentProvider): ReturnType<PluginAssistantAPI["beginRequest"]>;
+};
 
 export interface PluginHostOptions {
   /** In-process worker chemistry: no native.execute or document permissions. The signal aborts
@@ -527,7 +551,8 @@ export interface PluginHostOptions {
   recognizeStructure?: (
     plugin: { id: string; name: string },
     image: PluginProvidedImage,
-    signal: AbortSignal
+    signal: AbortSignal,
+    documentProvider?: PluginInvocationDocumentProvider
   ) => HostRecognitionOutcome | Promise<HostRecognitionOutcome>;
   /** Commits a validated direct patch through the embedding application's normal document/history path. */
   applyDocumentPatch?: (
@@ -535,7 +560,9 @@ export interface PluginHostOptions {
   ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
   /** Builds and places a native table without writing. The result uses the ordinary direct-patch
    * permission, invocation, document identity, scope, receipt, and history checks. */
-  buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly string[]) => ProposedDocumentPatch;
+  buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly string[],
+    viewport?: { x: number; y: number; width: number; height: number },
+    documentProvider?: PluginInvocationDocumentProvider) => ProposedDocumentPatch | Promise<ProposedDocumentPatch>;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -548,7 +575,8 @@ export interface PluginHostOptions {
   convertNameToStructure?: (request: PluginNameToStructureRequest) => Promise<PluginNameToStructureResult>;
   /** Lays a SMILES out as a document object. Same rule: absent hosts answer `available: false`. */
   buildStructureFromSmiles?: (
-    request: PluginStructureFromSmilesRequest
+    request: PluginStructureFromSmilesRequest,
+    documentProvider?: PluginInvocationDocumentProvider
   ) => Promise<PluginStructureFromSmilesResult>;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
@@ -562,6 +590,7 @@ export class PluginHost {
 
   private readonly plugins = new Map<string, RegisteredPlugin>();
   private readonly proposedPatches = new Map<string, QueuedProposedPatch>();
+  private readonly proposalAcceptances = new Map<string, string>();
   private readonly storageScopes = new Map<string, Map<string, unknown>>();
   private readonly storageByPluginId = new Map<string, PluginStorage>();
   private readonly panelClosedHandlers = new Map<string, (panelId: string) => void>();
@@ -701,7 +730,8 @@ export class PluginHost {
 
   async invokeCommand<Result = unknown>(
     commandId: string,
-    options: { writeSelection?: PluginSelectionSnapshot; input?: PluginCommandInput } = {}
+    options: { writeSelection?: PluginSelectionSnapshot; input?: PluginCommandInput;
+      documentProvider?: PluginInvocationDocumentProvider } = {}
   ): Promise<Result> {
     const definition = this.commands.get(commandId);
     if (!definition) {
@@ -718,7 +748,8 @@ export class PluginHost {
       pluginId: definition.pluginId,
       permissions: plugin.permissions,
       input,
-      writeSelection: options.writeSelection
+      writeSelection: options.writeSelection,
+      documentProvider: options.documentProvider
     });
   }
 
@@ -817,14 +848,15 @@ export class PluginHost {
   /** Trusted session-controller entry: the caller validates session ownership and tool definitions.
    * Reuse command permissions/scope; report validated direct-write receipts to the owning request. */
   async invokeAssistantTool(pluginId: string, call: PluginAssistantToolCall, signal: AbortSignal,
-    writeSelection: readonly string[], onAppliedPatch?: (receipt: AppliedPatchReceipt) => void): Promise<PluginAssistantToolResult> {
+    writeSelection: readonly string[], onAppliedPatch?: (receipt: AppliedPatchReceipt) => void, documentProvider?: PluginInvocationDocumentProvider): Promise<PluginAssistantToolResult> {
     for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
     signal.throwIfAborted();
     const handler = this.assistantToolHandlers.get(pluginId)?.();
     if (!handler) throw new PluginHostError("This plugin registered no assistant tool handler.");
     const token = Symbol(call.name);
     this.activeCommandInvocations.set(token, {
-      pluginId, commandId: call.name, commandTitle: call.name, documentKey: this.getActiveDocumentKey?.(),
+      pluginId, commandId: call.name, commandTitle: call.name, documentKey: (documentProvider?.getDocumentKey ?? this.getActiveDocumentKey)?.(),
+      documentProvider: documentProvider ? { ...documentProvider } : undefined,
       writeScope: new Set(writeSelection), recognized: false, recognizedImages: [],
       writeStop: new AbortController(), onAppliedPatch
     });
@@ -838,11 +870,21 @@ export class PluginHost {
     }
   }
 
+  /** Trusted embedding adapters may read this invocation binding; it never enters a plugin context. */
+  protected invocationDocumentProvider(invocationToken?: symbol): PluginInvocationDocumentProvider | undefined {
+    return invocationToken ? this.activeCommandInvocations.get(invocationToken)?.documentProvider : undefined;
+  }
+
   createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
     const plugin = this.requireRegisteredPlugin(pluginId);
+    const documentProvider = invocationToken ? this.activeCommandInvocations.get(invocationToken)?.documentProvider : undefined;
     const assistantCall = <K extends keyof PluginAssistantAPI>(method: K, args: Parameters<PluginAssistantAPI[K]>): ReturnType<PluginAssistantAPI[K]> => {
       for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
       if (!this.assistant) throw new PluginHostError("This host provides no assistant tools.");
+      if (method === "beginRequest" && documentProvider && this.assistant.beginCapturedRequest) {
+        return this.assistant.beginCapturedRequest({ id: pluginId, name: plugin.manifest.name },
+          args[0] as Parameters<PluginAssistantAPI["beginRequest"]>[0], documentProvider) as ReturnType<PluginAssistantAPI[K]>;
+      }
       const fn = this.assistant[method] as unknown as (plugin: { id: string; name: string }, ...args: Parameters<PluginAssistantAPI[K]>) => ReturnType<PluginAssistantAPI[K]>;
       return fn.call(this.assistant, { id: pluginId, name: plugin.manifest.name }, ...args);
     };
@@ -859,7 +901,7 @@ export class PluginHost {
       ? {
           getSelection: async () => {
             this.requirePermission(pluginId, "selection.read");
-            const snapshot = (await this.getSelectionSnapshot?.()) ?? { objectIds: [], molecules: [] };
+            const snapshot = (await (documentProvider ? documentProvider.getSelection() : this.getSelectionSnapshot?.())) ?? { objectIds: [], molecules: [] };
             // Hand plugins an independent, immutable copy — never a live document reference, and
             // never an object a later caller could observe being mutated.
             return freezeSelectionSnapshot(snapshot);
@@ -985,7 +1027,7 @@ export class PluginHost {
           status: (request) => this.externalToolStatusForPlugin(pluginId, request),
           install: (request) => this.externalToolInstallForPlugin(pluginId, invocationToken, request),
           signIn: (request) => this.externalToolSignInForPlugin(pluginId, request),
-          run: (request) => this.externalToolRunForPlugin(pluginId, request),
+          run: (request) => this.externalToolRunForPlugin(pluginId, request, documentProvider),
           poll: (request) => this.externalToolPollForPlugin(pluginId, request),
           cancel: (request) => this.externalToolCancelForPlugin(pluginId, request),
           clearConversation: (request) => this.externalToolClearConversationForPlugin(pluginId, request)
@@ -1090,7 +1132,7 @@ export class PluginHost {
                   if (!this.buildStructureFromSmiles) {
                     return { available: false, reason: "This host provides no 2D layout engine." };
                   }
-                  return await this.buildStructureFromSmiles(parsed);
+                  return await (documentProvider ? this.buildStructureFromSmiles(parsed, documentProvider) : this.buildStructureFromSmiles(parsed));
                 }
               }
             : {})
@@ -1109,7 +1151,7 @@ export class PluginHost {
       documents: {
         getActiveDocument: async () => {
           this.requirePermission(pluginId, "document.read");
-          const document = await this.getActiveDocument?.();
+          const document = await (documentProvider ? documentProvider.getDocument() : this.getActiveDocument?.());
           // Same boundary as the selection API above: an independent, immutable copy. In-process
           // plugins share the host's heap, so returning the provider's value handed them the live
           // document — edits would land without ever passing through propose/review.
@@ -1228,9 +1270,11 @@ export class PluginHost {
       );
     }
     if (!this.buildTablePatch) throw new PluginHostError(`This host provides no table builder for plugin "${pluginId}".`);
-    const document = await this.getActiveDocument?.();
+    const document = await (invocation.documentProvider ? invocation.documentProvider.getDocument() : this.getActiveDocument?.());
     if (!document) throw new PluginHostError("No active document is available for table insertion.");
-    const patch = this.buildTablePatch(spec, document, [...invocation.writeScope]);
+    const patch = await (invocation.documentProvider
+      ? this.buildTablePatch(spec, document, [...invocation.writeScope], undefined, invocation.documentProvider)
+      : this.buildTablePatch(spec, document, [...invocation.writeScope]));
     return this.applyPatchForPlugin(pluginId, invocationToken, patch, undefined, "Insert table");
   }
 
@@ -1293,18 +1337,20 @@ export class PluginHost {
         `Plugin "${pluginId}" passed a recognition proposal to documents.applyPatch; recognized structures must be proposed for review with documents.proposePatch.`
       );
     }
-    const apply = requestScope?.apply ?? this.applyDocumentPatch;
+    const apply = requestScope?.apply ?? invocation.documentProvider?.applyDocumentPatch ?? this.applyDocumentPatch;
     if (!apply) {
       throw new PluginHostError(`This host provides no document-write path for plugin "${pluginId}".`);
     }
     const checkDocumentKey = () => {
-      if (!requestScope && this.getActiveDocumentKey && this.getActiveDocumentKey() !== invocation.documentKey) {
+      const getKey = invocation.documentProvider?.getDocumentKey ?? this.getActiveDocumentKey;
+      if (!requestScope && getKey && getKey() !== invocation.documentKey) {
         throw new PluginHostError("The document changed while the plugin was running; nothing was inserted.");
       }
     };
     checkDocumentKey();
     {
-      const document = await (requestScope ? requestScope.getDocument() : this.getActiveDocument?.());
+      const document = await (requestScope ? requestScope.getDocument() :
+        invocation.documentProvider ? invocation.documentProvider.getDocument() : this.getActiveDocument?.());
       checkDocumentKey();
       if (!document) {
         throw new PluginHostError(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check ${ops.some(op => op.op === "removeObject") ? "reaction removal scope" : "write scope"}.`);
@@ -1376,6 +1422,28 @@ export class PluginHost {
     return updated;
   }
 
+  /** Embedding-host only: reserve review while a remote document performs its local, checked
+   * history commit. Neither a prepared document nor an apply callback crosses that boundary.
+   * A failed commit releases the reservation and leaves the original proposal pending. */
+  reserveProposedPatchAcceptance(proposalId: string): string {
+    this.requirePendingProposal(proposalId);
+    const token = crypto.randomUUID();
+    this.proposalAcceptances.set(proposalId, token);
+    return token;
+  }
+
+  settleProposedPatchAcceptance(proposalId: string, token: string, committed: boolean): void {
+    if (this.proposalAcceptances.get(proposalId) !== token) throw new PluginHostError("This proposal acceptance has expired.");
+    this.proposalAcceptances.delete(proposalId);
+    if (!committed) return;
+    const queued = this.requirePendingProposal(proposalId);
+    queued.status = "accepted";
+    queued.resolvedAt = this.timestamp();
+    this.proposedPatches.delete(proposalId);
+    this.recognitionSources.delete(proposalId);
+    this.onProposedPatchesChanged?.();
+  }
+
   rejectProposedPatch(proposalId: string): QueuedProposedPatch {
     const queued = this.requirePendingProposal(proposalId);
     queued.status = "rejected";
@@ -1441,10 +1509,14 @@ export class PluginHost {
 
             const input = this.parseCommandInput(manifest.id, invocationContext.input);
             const invocationToken = Symbol(command.id);
-            const documentKey = this.getActiveDocumentKey?.();
+            // Snapshot the provider object too: mutating invocation options after dispatch must not
+            // replace a command's authority. The closures are trusted and carry their fixed target.
+            const documentProvider = invocationContext.documentProvider ? { ...invocationContext.documentProvider } : undefined;
+            const documentKey = (documentProvider?.getDocumentKey ?? this.getActiveDocumentKey)?.();
             // Snapshot ids only: the plugin-visible selection provider may build molfiles and
             // collect warnings, so it must run only when the plugin explicitly reads selection.
-            const document = invocationContext.writeSelection ? undefined : this.getActiveDocument?.();
+            const document = invocationContext.writeSelection ? undefined :
+              documentProvider ? documentProvider.getDocument() : this.getActiveDocument?.();
             const selectedIds = invocationContext.writeSelection
               ? [...invocationContext.writeSelection.objectIds]
               : document && "then" in document
@@ -1455,6 +1527,7 @@ export class PluginHost {
               commandId: command.id,
               commandTitle: command.title,
               documentKey,
+              documentProvider,
               writeScope: new Set(selectedIds),
               recognized: false,
               writeStop: new AbortController(),
@@ -1568,7 +1641,10 @@ export class PluginHost {
     requests.add(abortController);
     this.openExternalToolInstalls.set(invocationToken, requests);
     try {
-      return PluginExternalToolStatusSchema.parse(await this.externalTools!.install(plugin, parsed, abortController.signal));
+      const args: Parameters<PluginHostExternalTools["install"]> = [plugin, parsed, abortController.signal];
+      const provider = this.invocationDocumentProvider(invocationToken);
+      if (provider) args.push(provider);
+      return PluginExternalToolStatusSchema.parse(await this.externalTools!.install(...args));
     } finally {
       requests.delete(abortController);
       if (requests.size === 0) this.openExternalToolInstalls.delete(invocationToken);
@@ -1581,10 +1657,12 @@ export class PluginHost {
     return PluginExternalToolSignInResultSchema.parse(await this.externalTools!.signIn(plugin, parsed));
   }
 
-  private async externalToolRunForPlugin(pluginId: string, request: PluginExternalToolRunRequest): Promise<PluginExternalToolRunHandle> {
+  private async externalToolRunForPlugin(pluginId: string, request: PluginExternalToolRunRequest, provider?: PluginInvocationDocumentProvider): Promise<PluginExternalToolRunHandle> {
     const plugin = this.externalToolsFor(pluginId);
     const parsed = PluginExternalToolRunRequestSchema.parse(request);
-    return PluginExternalToolRunHandleSchema.parse(await this.externalTools!.run(plugin, parsed));
+    const args: Parameters<PluginHostExternalTools["run"]> = [plugin, parsed];
+    if (provider) args.push(provider);
+    return PluginExternalToolRunHandleSchema.parse(await this.externalTools!.run(...args));
   }
 
   private async externalToolPollForPlugin(pluginId: string, request: PluginExternalToolPollRequest): Promise<PluginExternalToolRunPoll> {
@@ -1772,16 +1850,15 @@ export class PluginHost {
       });
     });
     try {
+      const args: Parameters<NonNullable<PluginHostOptions["recognizeStructure"]>> = [
+        { id: plugin.id, name: plugin.name },
+        // Recognize the retained image the user chose, never caller-mutated bytes.
+        { ...heldImage, bytes: new Uint8Array(heldImage.bytes) }, abortController.signal
+      ];
+      const provider = this.invocationDocumentProvider(invocationToken);
+      if (provider) args.push(provider);
       const result = await Promise.race([
-        Promise.resolve(
-          this.recognizeStructure(
-            { id: plugin.id, name: plugin.name },
-            // The host's own retained copy, not the caller's bytes: what is recognized is exactly
-            // what the user chose, whatever the plugin did to its snapshot afterwards.
-            { ...heldImage, bytes: new Uint8Array(heldImage.bytes) },
-            abortController.signal
-          )
-        ),
+        Promise.resolve(this.recognizeStructure(...args)),
         cancelledOnAbort
       ]);
       // The host's review facts never reach the plugin; the rest is validated as the plugin will see it.
@@ -1936,6 +2013,7 @@ export class PluginHost {
   }
 
   private requirePendingProposal(proposalId: string): QueuedProposedPatch {
+    if (this.proposalAcceptances.has(proposalId)) throw new PluginHostError("This proposal acceptance is already in progress.");
     const queued = this.proposedPatches.get(proposalId);
     if (!queued) {
       throw new PluginHostError(`Proposed patch "${proposalId}" does not exist.`);
@@ -1955,6 +2033,7 @@ export class PluginHost {
 }
 
 interface ActiveCommandInvocation {
+  documentProvider?: PluginInvocationDocumentProvider;
   writeStop: AbortController;
   onAppliedPatch?: (receipt: AppliedPatchReceipt) => void;
   writeScope: Set<string>;

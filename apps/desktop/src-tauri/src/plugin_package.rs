@@ -39,7 +39,7 @@ pub fn read_plugin_package(
     window: tauri::WebviewWindow,
     zip_path: PathBuf,
 ) -> Result<tauri::ipc::Response, String> {
-    if !super::is_document_window(&app, window.label()) {
+    if !super::is_document_window(&app, window.label()) && window.label() != "runtime" {
         return Err("Plugin packages can only be chosen in the document window.".into());
     }
     // The fs plugin's runtime scope is populated by the native dialog (not the broad per-command

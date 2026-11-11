@@ -17,7 +17,7 @@ export function PatchReviewTray({
   onAccept,
   onReject
 }: {
-  host: PluginHost;
+  host: Pick<PluginHost, "listProposedPatches"> & { getPlugin(id: string): { manifest: import("@chemdraft/plugin-api").PluginManifest } | undefined };
   /** Bumped by the host's onProposedPatchesChanged callback so the pending list recomputes. */
   queueVersion: number;
   getDocumentName?(proposal: QueuedProposedPatch): string | undefined;
@@ -186,7 +186,7 @@ export function PatchReviewList({
 }
 
 export async function proposalReviewItem(
-  host: PluginHost, proposal: QueuedProposedPatch, documentName?: string
+  host: { getPlugin(id: string): { manifest: import("@chemdraft/plugin-api").PluginManifest } | undefined }, proposal: QueuedProposedPatch, documentName?: string
 ): Promise<PluginProposalReviewItem> {
   // The plugin host already attached its own record of a recognition (tier, image, warnings) on queueing.
   const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
