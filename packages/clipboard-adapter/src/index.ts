@@ -1456,7 +1456,7 @@ function parseV2000CountsLine(line: string): { atomCount: number; bondCount: num
   return short ? { atomCount: Number(short[1]), bondCount: Number(short[2]) } : undefined;
 }
 
-function findV2000CountsLineIndex(lines: readonly string[]): number {
+export function findV2000CountsLineIndex(lines: readonly string[]): number {
   // A V2000 counts line is "aaabbb...  V2000" (atoms, bonds, then 9 more fields + tag).
   // Requiring either the explicit V2000 tag or the full 6+ field shape avoids mis-reading
   // ordinary two-number text (e.g. "42 17 results found") as a counts line.

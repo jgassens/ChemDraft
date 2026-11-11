@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-file-warnings-publish"
+description = "Enables the file_warnings_publish command without any pre-configured scope."
+commands.allow = ["file_warnings_publish"]
+
+[[permission]]
+identifier = "deny-file-warnings-publish"
+description = "Denies the file_warnings_publish command without any pre-configured scope."
+commands.deny = ["file_warnings_publish"]

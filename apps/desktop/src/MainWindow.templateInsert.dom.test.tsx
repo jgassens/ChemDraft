@@ -11,6 +11,8 @@ import { MainWindow } from "./MainWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { bondDepiction, defaultCases, expectDrawingDefaults } from "./drawingDefaults.testHelpers";
+import * as canvasOcclusion from "./window-manager/canvasOcclusion";
+import { objectRect, overlaps } from "./assistant/placement";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -39,6 +41,53 @@ describe("template insertion during an atom-label edit", () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
     });
   }
+
+  it("inserts outside a mocked native picker, keeps it open and records exactly one undo entry", async () => {
+    const initial = createEmptyDocument();
+    await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      element.getBoundingClientRect = () => rect;
+      Object.defineProperties(element, { clientWidth: { configurable: true, value: 792 }, clientHeight: { configurable: true, value: 612 } });
+    }
+    // The browser picker exercises the shared dispatch/keep-open contract. Native geometry is
+    // mocked independently of runtime detection so no native windows are needed in a DOM test.
+    await act(async () => { await import("./dialogs/StructureTemplatePicker"); });
+    await command("template.insertDialog");
+    const template = resolveStructureTemplateName("18-crown-6")!;
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector(`[data-template-id="${template.id}"]`)).not.toBeNull();
+    }, { timeout: 15_000 });
+    const covered = { x: 290, y: 140, width: 210, height: 330 };
+    vi.spyOn(canvasOcclusion, "readCanvasOcclusion").mockResolvedValue({
+      documentFrame: { x: 100, y: 200, width: 792, height: 642 }, webviewOffset: [0, 30],
+      screenUnitsPerCssPixel: 1, coveringRects: [{ ...covered, x: covered.x + 100, y: covered.y + 230 }]
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(`[data-template-id="${template.id}"]`)!.click());
+    const current = () => getAssistantHistoryPort().read("initial")!;
+    const inserted = current().pages[0]!.objects[0]!;
+    const bounds = objectRect(inserted);
+    expect(overlaps(bounds, covered)).toBe(false);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(792);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(612);
+    expect(current().selection.objectIds).toEqual([inserted.id]);
+    expect(container.querySelector(".cd-template-picker")).not.toBeNull();
+    // The browser fallback gates document commands while its in-page picker is open. A native
+    // picker has its own window; dismiss this fallback explicitly before exercising undo.
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>(".cd-template-picker button")]
+      .find(button => button.textContent === "Close")!.click());
+    await command("edit.undo");
+    expect(current().pages[0]!.objects).toHaveLength(0);
+    expect(container.querySelector("[role=status]")?.textContent).toBe(`Undid Insert ${template.name}`);
+    await command("edit.undo");
+    expect(container.querySelector("[role=status]")?.textContent).toBe("Nothing to undo");
+    await command("edit.redo");
+    expect(current().pages[0]!.objects).toEqual([inserted]);
+  }, 30_000);
 
   it.each(defaultCases)("inserts a template with the document's $bondLengthPx px drawing defaults", async style => {
     const initial = createEmptyDocument();

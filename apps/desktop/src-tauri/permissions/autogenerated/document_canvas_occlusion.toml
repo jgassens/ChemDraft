@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-document-canvas-occlusion"
+description = "Enables the document_canvas_occlusion command without any pre-configured scope."
+commands.allow = ["document_canvas_occlusion"]
+
+[[permission]]
+identifier = "deny-document-canvas-occlusion"
+description = "Denies the document_canvas_occlusion command without any pre-configured scope."
+commands.deny = ["document_canvas_occlusion"]

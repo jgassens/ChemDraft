@@ -1,4 +1,6 @@
 mod assistant_mcp;
+mod canvas_context_menu;
+mod canvas_occlusion;
 mod clipboard_formats;
 mod clipboard_images;
 mod clipboard_limits;
@@ -7,6 +9,7 @@ mod document_session;
 mod download_diagnosis;
 mod export;
 mod external_tools;
+mod file_warnings_window;
 mod fonts;
 mod installed_plugins;
 mod local_engine;
@@ -86,6 +89,26 @@ use objc2_foundation::NSString;
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// The single place that decides whether a window label is a document window. Today only the
+/// main window is one; the multi-window work must replace this body with a document-window
+/// registry lookup.
+pub(crate) fn is_document_window(label: &str) -> bool {
+    label == MAIN_WINDOW_LABEL
+}
+
+#[cfg(test)]
+mod document_window_tests {
+    use super::is_document_window;
+
+    #[test]
+    fn recognizes_only_document_window_labels() {
+        assert!(is_document_window("main"));
+        for label in ["palette-main", "dialog-x", ""] {
+            assert!(!is_document_window(label));
+        }
+    }
+}
 
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
@@ -958,6 +981,7 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(canvas_context_menu::PopupState::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
@@ -1026,6 +1050,9 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
+            if canvas_context_menu::menu_event(app, event.id().as_ref()) {
+                return;
+            }
             // Single brain: every menu click (toolset toggles included) routes to the JS
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
@@ -1053,6 +1080,7 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            file_warnings_window::on_window_event(window, event);
             if window.label() == MAIN_WINDOW_LABEL {
                 match event {
                     // macOS: closing the document window hides it and the app lives on in the
@@ -1254,6 +1282,7 @@ pub fn run() {
         .setup(|app| {
             let app = app.handle();
             panel_window::observe_document_pointer_release(app);
+            file_warnings_window::observe_document(app)?;
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
             // messages that clear the report and notify the host of a panel's close control.
@@ -1325,6 +1354,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            canvas_context_menu::popup_canvas_context_menu,
+            file_warnings_window::file_warnings_open,
+            file_warnings_window::file_warnings_request,
+            file_warnings_window::file_warnings_publish,
+            file_warnings_window::file_warnings_ready,
+            file_warnings_window::file_warnings_action,
+            file_warnings_window::file_warnings_close,
+            file_warnings_window::file_warnings_dismiss,
             assistant_mcp::assistant_mcp_session_open,
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
@@ -1405,6 +1442,7 @@ pub fn run() {
             toggle_preferences_window,
             dialog_windows::preferences_ready,
             window_logical_position,
+            canvas_occlusion::document_canvas_occlusion,
             agent_bridge_status,
             palette_focus_diagnostic,
             perf_log::perf_log_clock,
@@ -1445,6 +1483,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
+            RunEvent::MainEventsCleared => canvas_context_menu::events_cleared(app),
             RunEvent::ExitRequested { code, api, .. } => {
                 if should_flush_exit_request(
                     cfg!(target_os = "macos"),

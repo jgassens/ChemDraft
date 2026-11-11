@@ -248,6 +248,26 @@ describe("custom swatch toolbar and native dialog requests", () => {
 });
 
 describe("CustomColorForm", () => {
+  it.each(["macos", "windows"] as const)("keeps invalid RGB input and its error when switching models on %s", async platform => {
+    const h = host(), submit = vi.fn();
+    await act(async () => h.root.render(<CustomColorForm initial={{ title: "Color", swatch: 1, slot: 1, color: "#123456" }}
+      platform={platform} onSubmit={submit} onCancel={() => {}} onClear={() => {}} />));
+    const select = h.element.querySelector("select")!;
+    const mode = async (value: string) => act(async () => { select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await mode("RGB");
+    await input(h.element.querySelector<HTMLInputElement>("input")!, "300");
+    const error = h.element.querySelector('[role="status"]')!.textContent;
+    expect(error).toContain("got 300");
+    await mode("CMYK");
+    expect(select.value).toBe("RGB");
+    expect(h.element.querySelector<HTMLInputElement>("input")!.value).toBe("300");
+    expect(h.element.querySelector('[role="status"]')!.textContent).toBe(error);
+    expect(h.element.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true);
+    expect(submit).not.toHaveBeenCalled();
+    await input(h.element.querySelector<HTMLInputElement>("input")!, "255");
+    await mode("CMYK"); expect(select.value).toBe("CMYK");
+  });
+
   it("reports a fresh content measurement when mode or validation changes", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       const height = this.textContent?.includes(CMYK_APPROXIMATION_NOTE) ? 390 : this.textContent?.includes("whole number") || this.textContent?.includes("Server error") ? 350 : 300;
@@ -263,6 +283,7 @@ describe("CustomColorForm", () => {
     await act(async () => { const select = h.element.querySelector("select")!; select.value = "RGB"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await input(h.element.querySelector<HTMLInputElement>("input")!, "300");
     expect(ready().at(-1)).toBe(350);
+    await input(h.element.querySelector<HTMLInputElement>("input")!, "255");
     await act(async () => { const select = h.element.querySelector("select")!; select.value = "CMYK"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(ready().at(-1)).toBe(390);
     await act(async () => { const select = h.element.querySelector("select")!; select.value = "Hex"; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -300,6 +321,7 @@ describe("CustomColorForm", () => {
     expect(field("Hex color").value).toBe("#1f5fbf");
     await input(field("Hex color"), "#abc"); expect(h.element.querySelector('[role="img"]')!.getAttribute("aria-label")).toBe("Color preview: #aabbcc");
     await input(field("Hex color"), "#abcd"); expect(h.element.textContent).toContain("Hex color alpha is not supported"); expect(ok().disabled).toBe(true);
+    await input(field("Hex color"), "#abc");
     await mode("RGB"); expect(field("Red").value).toBe("170");
     await input(field("Red"), "300"); expect(h.element.textContent).toContain("Red must be a whole number from 0 to 255, got 300"); expect(ok().disabled).toBe(true);
     await input(field("Red"), "255"); expect(ok().disabled).toBe(false);

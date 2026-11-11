@@ -177,7 +177,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         if (result.available && result.parsed) {
           const match = result.matchedName ?? result.matchedCas;
           providersRef.current.onNameResolutionStatus?.(`Name to Structure: ${result.source === "dictionary" ? `Wikidata dictionary (${match})` : result.engine.id === "chemdraft-templates" ? "built-in template" : "OPSIN"}.`);
-        } else providersRef.current.onNameResolutionStatus?.(undefined);
+        } else providersRef.current.onNameResolutionStatus?.(`Name to Structure failed: ${result.reason}`);
         return result;
       },
       getActiveDocument: () => providersRef.current.getActiveDocument(),

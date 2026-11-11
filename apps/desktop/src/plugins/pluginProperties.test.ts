@@ -47,7 +47,7 @@ describe("plugin properties use the property panel's RDKit analysis", () => {
   });
   it("explains the character and heavy atom limits", async () => {
     expect(await computePropertiesForPlugin({ format: "smiles", structure: "C".repeat(5001) }, client)).toEqual({
-      available: false, reason: "The structure is too long: 5001 characters; the limit is 5000."
+      available: false, reason: "The structure is 5001 characters, over the 5000 limit."
     });
     expect(await computePropertiesForPlugin({ format: "smiles", structure: "C".repeat(501) }, client)).toEqual({
       available: false, reason: "The structure has 501 heavy atoms, over the 500 limit for this analysis."

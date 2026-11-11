@@ -40,3 +40,6 @@ export * from "./electronMarks";
 export * from "./tables";
 
 export * from "./nameDictionary";
+
+export * from "./molfileInterop";
+export * from "./molfileExportIdentity";

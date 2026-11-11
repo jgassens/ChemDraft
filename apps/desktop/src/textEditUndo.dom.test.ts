@@ -382,6 +382,31 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await undo(); expect(texts()).toEqual([]);
   });
 
+  it.each([
+    ["b", "text.bold"], ["i", "text.italic"], ["u", "text.underline"]
+  ])("routes editor shortcut %s through %s with the button's undo behavior", async (key, id) => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    const before = structuredClone(texts());
+    const select = async () => act(async () => {
+      editor()!.setSelectionRange(1, 4);
+      editor()!.dispatchEvent(new Event("select", { bubbles: true }));
+    });
+    await open(alpha); await select(); await command(id); await pagePress();
+    const buttonResult = structuredClone(texts());
+    await undo(); expect(texts()).toEqual(before);
+    await open(alpha); await select();
+    const global = vi.fn(); window.addEventListener("keydown", global);
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true,
+      metaKey: platform === "macos", ctrlKey: platform === "windows" });
+    try { await act(async () => editor()!.dispatchEvent(event)); }
+    finally { window.removeEventListener("keydown", global); }
+    expect(event.defaultPrevented).toBe(true);
+    expect(global).not.toHaveBeenCalled();
+    await pagePress(); expect(texts()).toEqual(buttonResult);
+    await undo(); expect(texts()).toEqual(before);
+    await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+  });
+
   it("groups typing and selected-range bold into the same Edit Text entry", async () => {
     const alpha = await place("Alpha", 200); await place("Beta", 400);
     const before = texts()[0]; await open(alpha); await type("Alpha123");

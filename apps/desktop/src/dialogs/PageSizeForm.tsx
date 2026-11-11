@@ -1,5 +1,5 @@
 import { useDialogContentReady } from "./dialogContentFit";
-import { useRef, type KeyboardEvent } from "react";
+import { useId, useRef, type KeyboardEvent } from "react";
 import { detectDialogPlatform, validPageSize, type DialogPlatform, type PageSize, type PageUnit } from "./dialogProtocol";
 
 export interface PageSizeDraft { width: string; height: string; unit: PageUnit }
@@ -24,7 +24,10 @@ export function PageSizeForm({ state, title, onReady, onChange, onCancel, onAppl
 }) {
   const root = useDialogContentReady<HTMLElement>(onReady);
   const composing = useRef(false);
+  const errorId = useId();
   const size = pageSizeFromDraft(state);
+  const widthInvalid = !pageSizeFromDraft({ ...state, height: "1" });
+  const heightInvalid = !pageSizeFromDraft({ ...state, width: "1" });
   const submit = () => { if (size && !busy && !composing.current) onApply(size); };
   const keyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -44,16 +47,16 @@ export function PageSizeForm({ state, title, onReady, onChange, onCancel, onAppl
     <p>Enter the page width and height. Margins are kept from the current page.</p>
     <div className="cd-page-size-fields">
       <label>Width<input autoFocus type="number" min="0" max="100000" step="any" value={state.width}
-        onChange={e => onChange({ ...state, width: e.target.value })} aria-describedby={!size ? "page-size-error" : undefined} /></label>
+        onChange={e => onChange({ ...state, width: e.target.value })} aria-invalid={widthInvalid || undefined} aria-describedby={widthInvalid ? errorId : undefined} /></label>
       <span aria-hidden="true">×</span>
       <label>Height<input type="number" min="0" max="100000" step="any" value={state.height}
-        onChange={e => onChange({ ...state, height: e.target.value })} aria-describedby={!size ? "page-size-error" : undefined} /></label>
+        onChange={e => onChange({ ...state, height: e.target.value })} aria-invalid={heightInvalid || undefined} aria-describedby={heightInvalid ? errorId : undefined} /></label>
       <label>Units<select className="native-dialog-panel-select" value={state.unit} onChange={e => onChange(convertPageSizeDraft(state, e.target.value as PageUnit))}>
         <option value="inch">Inches</option><option value="mm">Millimeters</option>
         {state.unit === "css-px" ? <option value="css-px">Pixels</option> : null}
       </select></label>
     </div>
-    <p id="page-size-error" role="status">{error ?? (!size ? "Enter positive width and height (at most 100000)." : "")}</p>
+    <p id={errorId} role="status">{error ?? (!size ? "Enter positive width and height (at most 100000)." : "")}</p>
     </div>
     <div className="cd-page-size-buttons cd-dialog-fit-footer"><button type="button" onClick={onCancel}>Cancel</button>
       <button type="button" disabled={!size || busy} onClick={submit}>Apply</button></div>

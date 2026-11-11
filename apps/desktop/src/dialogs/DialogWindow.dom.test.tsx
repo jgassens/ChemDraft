@@ -66,6 +66,40 @@ it.each(["macos", "windows"] as const)("requests a new content fit after Choose 
     expect(fits()).toHaveLength(2);
   } finally { layout.mockRestore(); }
 });
+it.each(["macos", "windows"] as const)("sends smaller fits for PDF → CDXML/CDX and deduplicates only the latest size on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  const layout = vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLFormElement) {
+    // Intrinsic height changes with the actual rendered options; the native viewport is
+    // still PDF-sized until it receives the next ready report. jsdom has no layout engine.
+    const intrinsic = this.textContent?.includes("Compress PDF") ? 620 : 300;
+    return { top: 0, height: this.style.height === "auto" ? intrinsic : 620 } as DOMRect;
+  });
+  try {
+    act(() => root.unmount()); root = createRoot(container);
+    host.send.mockClear();
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+    await act(async () => {
+      host.receive!({ ...snapshot, dialogKind: "export", data: { title: "Origin", options: exportFixture() } });
+      await import("./ExportForm");
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const heights = () => host.send.mock.calls.map(([, message]) => message as DialogMessage)
+      .filter(message => message.type === "ready").map(message => message.data.contentHeight);
+    expect(heights()).toEqual([620]);
+    const body = container.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+    expect(body.style.alignContent).toBe("start");
+    expect(body.style.gridAutoRows).toBe("max-content");
+    const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+    for (const value of ["cdxml", "pdf", "cdx"]) {
+      await act(async () => { format.value = value; format.dispatchEvent(new Event("change", { bubbles: true })); });
+      // MutationObserver alone must notice removed options even if no box resizes yet.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    }
+    expect(heights()).toEqual([620, 300, 620, 300]);
+    await act(async () => { window.dispatchEvent(new Event("resize")); await vi.advanceTimersByTimeAsync(0); });
+    expect(heights()).toEqual([620, 300, 620, 300]);
+  } finally { layout.mockRestore(); }
+});
 it("suppresses browser context menus except on editable fields", () => {
   const menu = (target: Element) => {
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
@@ -269,4 +303,27 @@ it("refreshes preview on frame revision while preserving the user's export draft
   expect(container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!.value).toBe("My custom name.pdf");
   await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: first.requestId, data: { status: "preview", preview: { url: "data:image/png;base64,AAAA", kind: "image", width: 100, height: 100, warnings: [] } } }));
   expect(container.querySelector('img[alt="Export preview"]')).toBeNull();
+});
+
+
+it.each(["macos", "windows"] as const)("reopens format selection after successful export on %s", async platform => {
+  vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
+  act(() => root.unmount()); root = createRoot(container);
+  await act(async () => root.render(createElement(DialogWindow, { hostId: "export-host" })));
+  const exportSnapshot: Extract<DialogMessage, { type: "snapshot" }> = { ...snapshot, dialogKind: "export", sessionId: "export-again",
+    data: { title: "Export again", options: exportFixture() } };
+  await act(async () => { host.receive!(exportSnapshot); await import("./ExportForm"); });
+  const button = (text: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === text)!;
+  await act(async () => button("Export").click());
+  const action = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  await act(async () => host.receive!({ ...exportSnapshot, type: "result", requestId: action.requestId, data: { status: "exported", notice: "Exported PDF" } }));
+  const format = container.querySelector<HTMLSelectElement>("#chemdraft-export-format")!;
+  expect(format.disabled).toBe(false);
+  await act(async () => { format.focus(); format.value = "svg"; format.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(format.value).toBe("svg");
+  expect(button("Export").disabled).toBe(false);
+  await act(async () => button("Export").click());
+  const next = host.send.mock.calls.at(-1)![1] as DialogMessage;
+  expect(next.requestId).not.toBe(action.requestId);
+  expect(next.type === "action" && "options" in next.data && next.data.options.format).toBe("svg");
 });

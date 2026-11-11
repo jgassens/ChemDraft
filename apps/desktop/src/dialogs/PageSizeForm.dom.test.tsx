@@ -8,6 +8,30 @@ let container: HTMLDivElement;
 beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
 afterEach(() => { act(() => root?.unmount()); container?.remove(); root = undefined; vi.unstubAllGlobals(); });
 describe.each(["macos", "windows"] as const)("Page Size keyboard on %s", platform => {
+  it("associates only invalid dimensions with the inline error", () => {
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    const render = (width: string, height: string) => act(() => root!.render(createElement(PageSizeForm, {
+      title: "Drawing A", state: { width, height, unit: "inch" }, platform, onApply: vi.fn(), onCancel: vi.fn(), onChange: vi.fn()
+    })));
+    const check = (widthInvalid: boolean, heightInvalid: boolean) => {
+      const inputs = container.querySelectorAll("input");
+      for (const [index, invalid] of [widthInvalid, heightInvalid].entries()) {
+        const input = inputs[index]!;
+        expect(input.getAttribute("aria-invalid")).toBe(invalid ? "true" : null);
+        const id = input.getAttribute("aria-describedby");
+        if (invalid) {
+          expect(id).toBeTruthy();
+          expect(document.getElementById(id!)?.textContent).toContain("Enter positive width and height");
+        } else expect(id).toBeNull();
+      }
+    };
+    render("0", "11"); check(true, false);
+    const id = container.querySelector("input")!.getAttribute("aria-describedby");
+    render("8.5", "100001"); check(false, true);
+    expect(container.querySelectorAll("input")[1]!.getAttribute("aria-describedby")).toBe(id);
+    render("0", ""); check(true, true);
+    render("8.5", "11"); check(false, false);
+  });
   it("focuses Width; valid Enter applies, invalid values and IME Enter do not", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     const apply = vi.fn(); const cancel = vi.fn();

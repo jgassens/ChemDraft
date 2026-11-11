@@ -2,15 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { CommandRegistry } from "@chemdraft/plugin-host";
 import { applyPatches, moleculeToMolfileV2000, moleculeToMolfileV3000 } from "@chemdraft/chem-core";
 import { depictSmiles2D, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
+import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
+import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
+import { moleculeSmiles } from "./moleculeSmiles";
 import { allPaletteCommands } from "./commands";
 import { activateDrawingToolCommand, createActiveToolState } from "./drawingTools";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { getToolsetItemGroups } from "./toolsets";
 import { buildGallerySections } from "./toolbars/CustomizeMainToolbar/galleryModel";
 import {
-  applyNativeBondDisplayStyleTarget, applyNativeMoleculeBondOrderValueTarget,
+  applyNativeBondDisplayStyleTarget, applyNativeMoleculeBondOrderTarget, applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeEngineRelayout, applySingleBondToolAtPoint, createPhase4Document,
-  getSelectedMolecule, insertNativeMolfileMolecule, nativeBondStyleForToolCommand, stereoPerceptionMolfile,
+  getSelectedMolecule, insertNativeMolfileMolecule, nativeBondOrderTargetRefusal, nativeBondStyleForToolCommand, stereoPerceptionMolfile,
   type NativeBondOrderTarget
 } from "./documentWorkflow";
 
@@ -31,6 +34,95 @@ function existingBond(smiles: string, fromIndex: number, toIndex: number) {
   };
   return { document, target, fromAtomId, toAtomId };
 }
+
+describe("making a stereo single bond plain", () => {
+  for (const route of ["single-order request", "Single Bond click"] as const) {
+    it.each(["wedge", "hashed", "wavy"] as const)(`clears %s via ${route}, preserving the graph and other display properties`, style => {
+      for (const [from, to] of [[1, 0], [0, 1]] as const) {
+        const initial = existingBond("[13CH3]C([O-])CC", from, to);
+        const original = getSelectedMolecule(initial.document)!;
+        const document = applyPatches(initial.document, [{ op: "updateObject", objectId: original.id, changes: {
+          style: { ...original.style, bondColors: { [initial.target.bondId]: "#123456" },
+            bondStrokeWidths: { [initial.target.bondId]: 2.5 } },
+          bonds: original.bonds.map(bond => bond.id === initial.target.bondId
+            ? { ...bond, display: { bondStyle: style, depthWeight: 0.4, doubleBondSide: "left" as const } } : bond)
+        } }]);
+        const before = getSelectedMolecule(document)!;
+        expect(nativeBondOrderTargetRefusal(document, initial.target, "single")).toBeUndefined();
+        const changed = route === "single-order request"
+          ? applyNativeMoleculeBondOrderValueTarget(document, initial.target, "single")
+          : applyNativeMoleculeBondOrderTarget(document, initial.target);
+        const after = getSelectedMolecule(changed)!;
+        const bond = before.bonds.find(candidate => candidate.id === initial.target.bondId)!;
+        expect(after.bonds).toEqual(before.bonds.map(candidate => candidate.id === bond.id
+          ? { ...bond, display: { depthWeight: 0.4, doubleBondSide: "left" } } : candidate));
+        expect(after.atoms).toEqual(before.atoms);
+        expect(after.style).toEqual(before.style);
+        expect(after.chemistry?.formula).toBe(before.chemistry?.formula);
+        expect(after.structureFormat).toBe("smiles");
+        expect(after.structure).not.toBe("");
+        expect(changed.selection).toEqual(document.selection);
+      }
+    });
+  }
+
+  it.each(["wedge", "hashed", "wavy"] as const)("removes an otherwise empty %s display and then treats plain single as a no-op", bondStyle => {
+    const document = applySingleBondToolAtPoint(createPhase4Document(), { x: 220, y: 220 }, { bondStyle });
+    const molecule = getSelectedMolecule(document)!;
+    const bond = molecule.bonds[0]!;
+    const target: NativeBondOrderTarget = { ...bond, kind: "bond", objectId: molecule.id, bondId: bond.id, distanceToPointer: 0 };
+    const plain = applyNativeMoleculeBondOrderValueTarget(document, target, "single");
+    expect(getSelectedMolecule(plain)!.bonds[0]).not.toHaveProperty("display");
+    expect(applyNativeMoleculeBondOrderValueTarget(plain, target, "single")).toBe(plain);
+  });
+
+  it.each(["bold", "dashed"] as const)("keeps %s on an explicit single request", bondStyle => {
+    const document = applySingleBondToolAtPoint(createPhase4Document(), { x: 220, y: 220 }, { bondStyle });
+    const molecule = getSelectedMolecule(document)!;
+    const bond = molecule.bonds[0]!;
+    const target: NativeBondOrderTarget = { ...bond, kind: "bond", objectId: molecule.id, bondId: bond.id, distanceToPointer: 0 };
+    expect(applyNativeMoleculeBondOrderValueTarget(document, target, "single")).toBe(document);
+    const clicked = applyNativeMoleculeBondOrderTarget(document, target);
+    if (bondStyle === "dashed") expect(clicked).toBe(document); // Dative bonds stay single.
+    else expect(getSelectedMolecule(clicked)!.bonds[0]).toMatchObject({ order: "double", display: { bondStyle } });
+  });
+
+  it("keeps plain single → double → triple → single cycling", () => {
+    let document = applySingleBondToolAtPoint(createPhase4Document(), { x: 220, y: 220 });
+    const molecule = getSelectedMolecule(document)!;
+    const bond = molecule.bonds[0]!;
+    const target: NativeBondOrderTarget = { ...bond, kind: "bond", objectId: molecule.id, bondId: bond.id, distanceToPointer: 0 };
+    for (const order of ["double", "triple", "single"]) {
+      document = applyNativeMoleculeBondOrderTarget(document, target);
+      expect(getSelectedMolecule(document)!.bonds[0]!.order).toBe(order);
+    }
+  });
+
+  it.each(["single-order request", "Single Bond click"] as const)("removes only the user-cleared center's exported SMILES stereo via %s", async route => {
+    installNodeRdkitModuleLoader();
+    const initial = existingBond("CC(O)C[C@H](F)Cl", 1, 0);
+    const styled = applyNativeBondDisplayStyleTarget(initial.document, initial.target, "wedge");
+    const original = getSelectedMolecule(styled)!;
+    const exportSmiles = (molecule: typeof original) => moleculeSmiles(molecule, 0, [], computeStructureIdentifiers);
+    const beforeSmiles = await exportSmiles(original);
+    expect(beforeSmiles.match(/@{1,2}/g)).toHaveLength(2);
+    // An untouched drawing keeps both centers specified through the same export route.
+    expect(await exportSmiles(original)).toBe(beforeSmiles);
+    const plain = route === "single-order request"
+      ? applyNativeMoleculeBondOrderValueTarget(styled, initial.target, "single")
+      : applyNativeMoleculeBondOrderTarget(styled, initial.target);
+    const result = getSelectedMolecule(plain)!;
+    const afterSmiles = await exportSmiles(result);
+    expect(afterSmiles.match(/@{1,2}/g)).toHaveLength(1);
+    expect(afterSmiles).toBe((await computeStructureIdentifiers("CC(O)C[C@H](F)Cl"))!.smiles);
+    // Canonical identity is otherwise identical, including atoms, orders, isotopes and charge.
+    expect((await computeStructureIdentifiers(beforeSmiles.replace(/@/g, "")))!.smiles)
+      .toBe((await computeStructureIdentifiers(afterSmiles.replace(/@/g, "")))!.smiles);
+    expect(result.atoms).toEqual(original.atoms);
+    expect(result.bonds.filter(bond => bond.id !== initial.target.bondId))
+      .toEqual(original.bonds.filter(bond => bond.id !== initial.target.bondId));
+  });
+});
 
 describe("wavy bond tool", () => {
   it.each(["perceiver throws", "molfile atom limit"])("keeps stored direction and converts when %s", failure => {

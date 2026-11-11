@@ -4,7 +4,7 @@ import {
   type MoleculeObject,
   type MolfileWriteOptions
 } from "@chemdraft/chem-core";
-import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
+import { assertMolfileExportIdentity, documentDrawingDefaults, moleculeToInteropMolfile, expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { getExportFormatDescriptor, repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning, type TextExportResult } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { copyAsScopeMolecules } from "./documentWorkflow";
@@ -87,7 +87,7 @@ export async function exportStructureListSdf(
         radicalPlaceholders.set(atom.id, "it carries radical electrons, so its stated hydrogen count cannot be preserved");
       }
     }
-    const molfile = moleculeToMolfileV2000(expanded, {
+    const writerOptions: MolfileWriteOptions = {
       ...options,
       fromDocFrame: true,
       warnings: writerWarnings,
@@ -96,22 +96,29 @@ export async function exportStructureListSdf(
       repeatUnitGroups: repeatUnitMolfileGroups(document, [molecule], warnings, { expansions }),
       spellLabel: nativeSingleHeavyElementLabelValence,
       placeholderAtoms: radicalPlaceholders
-    }).contents;
+    };
+    const scaled = moleculeToInteropMolfile(expanded, "v2000",
+      typeof molecule.style.bondLengthPx === "number" ? molecule.style.bondLengthPx : documentDrawingDefaults(document).bondLengthPx,
+      writerOptions).contents;
+    const title = name ?? `ChemDraft molecule ${index + 1}`;
+    const molfile = `${title}${scaled.slice(scaled.indexOf("\n"))}`;
+    const source = moleculeToMolfileV2000(expanded, { ...writerOptions, warnings: undefined }).contents;
+    await assertMolfileExportIdentity(source, molfile, computeStructureIdentifiers,
+      `SDF record ${index + 1} (${title})`);
     warnings.push(...writerWarnings.filter(message => !warnings.some(warning => warning.message.includes(message))).map((message): ExportWarning => ({
       code: "export.sdf_v2000_loss",
       message,
       severity: "warning",
       objectId: molecule.id
     })));
-    const title = name ?? `ChemDraft molecule ${index + 1}`;
     let smiles: string | undefined;
     try {
-      smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile);
+      smiles = await moleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, scaled);
       warnings.push(...repeatUnitExportWarnings(document, "SMILES", { molecules: [molecule] }));
     } catch (error) {
       warnings.push(smilesWriteFailure(molecule, error));
     }
-    records.push(`${title}${molfile.slice(molfile.indexOf("\n"))}`
+    records.push(molfile
       + (smiles === undefined ? "" : `> <SMILES>\n${smiles}\n\n`)
       + `> <Index>\n${index + 1}\n\n`
       + (name ? `> <Name>\n${name}\n\n` : "")

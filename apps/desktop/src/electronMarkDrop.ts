@@ -170,6 +170,6 @@ export function dropElectronMark(
     return { document: after, undoLabel, status: `${name} detached from ${source.atom.element}${chemistry}` };
   }
   return { document: after, undoLabel, status: source
-    ? `${name} repositioned on ${source.atom.element}${chemistry}${target ? "" : "; no atom within capture radius"}`
+    ? `${name} repositioned on ${source.atom.element}${chemistry}${target ? "" : " (no other atom close enough to move it to)"}`
     : `Moved electron mark${chemistry}` };
 }

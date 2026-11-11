@@ -232,7 +232,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     await act(async () => pointer(drag.target, "pointerup", end));
     expect(dropMark(snapshot()).anchor).toEqual(dropMark(before).anchor);
     expect(dropMolecule(snapshot())).toEqual(dropMolecule(before));
-    expect(status()).toBe("Charge repositioned on N; no atom within capture radius");
+    expect(status()).toBe("Charge repositioned on N (no other atom close enough to move it to)");
     await command("edit.undo"); expect(snapshot()).toEqual(before);
   });
 
@@ -267,7 +267,7 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     const drag = await start(), end = { x: 600, y: 500 };
     await move(drag.target, end);
     await act(async () => pointer(drag.target, "pointerup", end));
-    expect(status()).toContain("no atom within capture radius");
+    expect(status()).toContain("no other atom close enough to move it to");
     const distant = snapshot(), original = dropMark(distant);
     await act(async () => pointer(page(), "pointermove", fixture.sourceAtom));
     await command(charge > 0 ? "tool.minus" : "tool.plus");

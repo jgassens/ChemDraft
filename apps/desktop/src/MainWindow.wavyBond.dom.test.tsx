@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule } from "./documentWorkflow";
+import { applySingleBondToolAtPoint, createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
@@ -59,6 +59,82 @@ describe("MainWindow wavy bond undo", () => {
     const from = mol.atoms.find(a => a.id === bond.fromAtomId)!, to = mol.atoms.find(a => a.id === bond.toAtomId)!;
     await click(container.querySelector(`[data-object-id="${mol.id}"]`)!, (from.x + to.x) / 2, (from.y + to.y) / 2);
   }
+
+  for (const platform of ["MacIntel", "Win32"]) {
+    for (const route of ["hover 1", "Single Bond click"]) {
+      it.each(["wedge", "hashed", "wavy"] as const)(`makes %s plain via ${route} in exactly one labeled undo (${platform})`, async bondStyle => {
+        Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+        const seed = applySingleBondToolAtPoint(createPhase4Document("Make plain"), { x: 260, y: 260 }, { bondStyle });
+        const mol = getSelectedMolecule(seed)!;
+        const bond = mol.bonds[0]!;
+        const initialDocument = applyPatches(seed, [{ op: "updateObject", objectId: mol.id, changes: {
+          style: { ...mol.style, bondColors: { [bond.id]: "#123456" }, bondStrokeWidths: { [bond.id]: 2.5 } },
+          atoms: mol.atoms.map((atom, index) => ({ ...atom, ...(index === 0 ? { isotope: 13 } : { formalCharge: 1 }) })),
+          bonds: [{ ...bond, fromAtomId: bond.toAtomId, toAtomId: bond.fromAtomId,
+            display: { ...bond.display, depthWeight: 0.4 } }]
+        } }]);
+        await act(async () => root.render(createElement(MainWindow, {
+          initialDocument, initialActiveToolCommandId: route === "hover 1" ? "tool.select" : "tool.bond",
+          initialPaletteMode: "hidden", initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false
+        })));
+        const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+        for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+        const original = molecule()!;
+        if (route === "hover 1") {
+          const [from, to] = original.atoms;
+          await act(async () => {
+            const event = new MouseEvent("pointermove", { bubbles: true, clientX: (from!.x + to!.x) / 2,
+              clientY: (from!.y + to!.y) / 2, buttons: 0 });
+            Object.defineProperties(event, { pointerId: { value: 77 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+            container.querySelector(".page")!.dispatchEvent(event);
+          });
+          expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+          await act(async () => {
+            document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "1", code: "Digit1", bubbles: true, cancelable: true }));
+          });
+        } else {
+          await bondClick();
+        }
+        const plain = molecule()!;
+        expect(plain.bonds).toEqual([{ ...original.bonds[0], display: { depthWeight: 0.4 } }]);
+        expect(plain.atoms).toEqual(original.atoms);
+        expect(plain.style).toEqual(original.style);
+        expect(container.querySelector('[role="status"]')?.textContent).toBe("Made bond plain");
+        await command("edit.undo");
+        expect(molecule()).toEqual(original);
+        expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Made bond plain");
+        expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+        await command("edit.redo");
+        expect(molecule()).toEqual(plain);
+        expect(container.querySelector('[role="status"]')?.textContent).toBe("Redid Made bond plain");
+      });
+    }
+  }
+
+  it("keeps plain order cycling and explicit Double/Triple Bond tools on a wedge", async () => {
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: createPhase4Document("Bond order tools"), initialActiveToolCommandId: "tool.bond",
+      initialPaletteMode: "hidden", initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false
+    })));
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
+    await click(container.querySelector(".page")!, 260, 260);
+    for (const order of ["double", "triple", "single"]) {
+      await bondClick();
+      expect(molecule()!.bonds[0]!.order).toBe(order);
+    }
+    await command("tool.wedgeBond");
+    await bondClick();
+    const wedge = molecule()!;
+    for (const [tool, order] of [["tool.doubleBond", "double"], ["tool.tripleBond", "triple"]] as const) {
+      await command(tool);
+      await bondClick();
+      expect(molecule()!.bonds[0]).toMatchObject({ order, display: { bondStyle: "wedge" },
+        fromAtomId: wedge.bonds[0]!.fromAtomId, toAtomId: wedge.bonds[0]!.toAtomId });
+      await command("edit.undo");
+      expect(molecule()).toEqual(wedge);
+    }
+  });
 
   it("converts the CH3–CH bond of butan-2-ol with its narrow end on C2 after lazy perception, in one undo", async () => {
     const { depictSmiles2D } = await import("@chemdraft/ocl-adapter");

@@ -5,6 +5,10 @@ description: Use ChemDraft to draw or show molecules; make structure images for 
 
 # ChemDraft
 
+Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,
+MOL pasted (including RXN MOL blocks) or recognized from an image is scaled by its median bond
+to the document's bond length. SMILES depictions, name-to-structure and templates retain mean-based sizing.
+
 ## Two non-negotiables
 
 1. Never hand-draw a molecule or invent or recall a structure-to-name result

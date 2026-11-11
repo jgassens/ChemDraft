@@ -1,3 +1,5 @@
+import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
+import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
@@ -31,6 +33,7 @@ import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
 import { cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
+import { pageOcclusionRects, readCanvasOcclusion } from "./window-manager/canvasOcclusion";
 import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
 import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
@@ -54,6 +57,7 @@ import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tau
 import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { useNativeFileWarnings } from "./useNativeFileWarnings";
 import { lastExportDirectory } from "./exportDirectory";
 import { ImportedPageFitGate } from "./importedPageFitGate";
 import {
@@ -437,7 +441,6 @@ import {
   textScriptForCommand,
   textStylePatchForCommand,
   copyAsActions,
-  copyAsMenuItems,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -501,7 +504,8 @@ import {
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
   applyMechanismArrowControlPoint,
-  copyAsMolfile,
+  copyAsMolfile as serializeCopyAsMolfile,
+  copyAsMolfileForExport as copyAsMolfile,
   copyAsScopedDocument,
   copyAsSmiles,
   createMechanismArrowBetween,
@@ -521,6 +525,7 @@ import {
   nativeBondStereoFlipDisabledReason,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
+  nativeBondCanBeMadePlain,
   applyNativeMoleculeDeleteTarget,
   nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
@@ -676,6 +681,7 @@ import {
   moveDocumentObject,
   moveDocumentObjects,
   moveCanvasSelection,
+  translateInsertedDocumentObjects,
   documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
@@ -1610,10 +1616,6 @@ export interface LayerCommandSelectionResult {
   bondDepthCommandId?: BondDepthCommandId;
   bondDepthContext?: BondDepthContext;
 }
-type LayerContextMenuItem = {
-  commandId: string;
-  label: string;
-};
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
   /** Identifies this open operation even when consecutive files have the same basename. */
@@ -1627,6 +1629,10 @@ export interface SelectionClipboardPasteState {
   sourceAction: SelectionClipboardSourceAction;
   /** Page point the last paste was aimed at, when it was aimed at the pointer. */
   anchor?: ClientPoint;
+  /** First clamped centre in this run, shared by native and imported clipboard content. */
+  origin?: ClientPoint;
+  /** Any intervening document edit, selection change or history navigation ends the run. */
+  document?: ChemDraftDocument;
 }
 // Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
 // they are parsed + validated on Apply.
@@ -1772,7 +1778,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.20.45-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -1972,16 +1978,6 @@ function isTransformHandleDoublePress(
 }
 /** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
 const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
-/** Handled by applyArrowStyleDefaultCommand inside `invoke` (and the object context menu, which
- *  passes the right-clicked object), not via the command registry. */
-const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
-
-const layerContextMenuItems: readonly LayerContextMenuItem[] = [
-  { commandId: "layout.bringForward", label: "Move Object Forward" },
-  { commandId: "layout.bringToFront", label: "Move Object to Front" },
-  { commandId: "layout.sendBackward", label: "Move Object Backward" },
-  { commandId: "layout.sendToBack", label: "Move Object to Back" }
-];
 const nativeOpenDocumentEvent = "chemdraft://open-document";
 // Window for coalescing the multi-channel delivery (Tauri event + pending-document poll)
 // of a single OS file-open, while still allowing a deliberate later re-open.
@@ -2217,6 +2213,7 @@ export function MainWindow({
     window.addEventListener("pointercancel", up, true);
     window.addEventListener("lostpointercapture", up, true);
     window.addEventListener("blur", clear);
+    window.addEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     return () => {
       releaseFocus();
       globalThis.document.removeEventListener("focusin", restoreOverlayFocus, true);
@@ -2229,6 +2226,7 @@ export function MainWindow({
       window.removeEventListener("pointercancel", up, true);
       window.removeEventListener("lostpointercapture", up, true);
       window.removeEventListener("blur", clear);
+      window.removeEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     };
   }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -2825,7 +2823,7 @@ export function MainWindow({
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
-  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const warningReports = useMemo(() => fileWarningReports(openWarningsReport, saveWarningsReport), [openWarningsReport, saveWarningsReport]);
   const openWarnings: OpenWarningsReport | undefined = warningReports[0];
   const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
@@ -3568,6 +3566,9 @@ export function MainWindow({
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
     if (history === previous) return;
+    if (selectionClipboardPasteStateRef.current?.document && history.present !== previous.present) {
+      selectionClipboardPasteStateRef.current = undefined;
+    }
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
       const recorded = assistantRecordedAfterRef.current.get(previous.present);
@@ -4684,6 +4685,8 @@ export function MainWindow({
 
   const cycleNativeBondOrder = useCallback((target: NativeBondOrderTarget) => {
     const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = object?.type === "molecule" && nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderTarget(selectedDocument, target);
     if (nextDocument === selectedDocument) {
@@ -4691,14 +4694,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Changed bond order");
+    setStatus(madePlain ? "Made bond plain" : "Changed bond order");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const setHoveredNativeBondOrder = useCallback((order: NativeBondOrderValue) => {
@@ -4710,6 +4713,9 @@ export function MainWindow({
       return;
     }
 
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = order === "single" && object?.type === "molecule" &&
+      nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, order);
     if (nextDocument === selectedDocument) {
@@ -4717,14 +4723,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered bond to ${order}`);
+    setStatus(madePlain ? "Made bond plain" : `Set hovered bond to ${order}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeBondDisplayStyle = useCallback((bondStyle: NativeBondDisplayStyle) => {
@@ -5026,8 +5032,18 @@ export function MainWindow({
       setObjectContextMenu(undefined);
     };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
+    const onlyDisconnectedAtoms = fragments.length > 0 && targetObjectIds.every(id =>
+      fragments.some(fragment => fragment.objectId === id)) && fragments.every(fragment => {
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && !target.bonds.some(bond =>
+        selected.has(bond.fromAtomId) && selected.has(bond.toAtomId));
+    });
     const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
-      cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+      !changed && onlyDisconnectedAtoms
+        ? "Nothing to clean up: the selected atoms aren't connected to each other. Select a bond or neighboring atoms."
+        : cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
     const partialSelections = fragments.filter(fragment => {
       // The legacy store may include a part's host in objectIds. The part defines its scope;
       // a true whole-molecule pick clears that molecule's part in the selection policy.
@@ -6689,6 +6705,9 @@ export function MainWindow({
     setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
 
+  const useHtmlFileWarnings = useNativeFileWarnings(openWarningsListShown, activeDocumentTabId, warningReports, document,
+    showOpenWarningTarget, () => setOpenWarningsListOpen(false), setStatus);
+
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
       return false;
@@ -6959,9 +6978,12 @@ export function MainWindow({
     } : point;
   }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
 
-  const pastePointForViewport = useCallback((): ClientPoint =>
-    pastePointerPagePoint() ?? viewportCentrePagePoint(),
-  [pastePointerPagePoint, viewportCentrePagePoint]);
+  // Capture before any clipboard read or depiction awaits. The optional pointer also
+  // identifies the repeat-paste sequence; resolving it again at commit can reset that sequence.
+  const captureClipboardPasteAnchor = useCallback(() => {
+    const pointer = pastePointerPagePoint();
+    return { pointer, point: pointer ?? viewportCentrePagePoint(), imagePoint: viewportCentrePagePoint(false) };
+  }, [pastePointerPagePoint, viewportCentrePagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -7186,16 +7208,42 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
   }, [assignHoveredNativeDeleteTarget]);
 
-  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+  // All clipboard insertions share the native repeat-paste placement and one undo entry.
+  // Record the committed snapshot only after insertion; async SMILES preparation must not
+  // clear the preceding paste's placement while loading/verifying its depiction.
+  const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, anchor: ReturnType<typeof captureClipboardPasteAnchor>, label?: string,
+    nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
+    const before = documentRef.current;
+    if (nextDocument === before) return false;
+    const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
+    if (!payload) return false;
+    const page = before.pages[0]!;
+    if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
+      // Oversized content retains its prepared placement and the existing explicit page-size
+      // choice. Repeat offsets and clamping apply only when the payload fits the current page.
+      return commitDocumentChangeWithPageFit(nextDocument, label);
+    }
+    const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
+      page, anchor.pointer, nativePayload ? 1 : 0);
+    const existingIds = new Set(page.objects.map(object => object.id));
+    const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+    const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
+      placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
+    if (!commitDocumentChange(placed, label)) return false;
+    selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
+    return true;
+  }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
+
+  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      detectedPayload.kind === "image" ? viewportCentrePagePoint(false) : pastePointForViewport(),
+      detectedPayload.kind === "image" ? anchor.imagePoint : anchor.point,
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChangeWithPageFit(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+      if (!commitClipboardPaste(result.document, anchor, detectedPayload.kind === "image" ? "Paste Picture" : undefined)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -7205,11 +7253,11 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
+  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, pictureFallback = false): Promise<{
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false): Promise<{
     outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
   }> => {
     const terminalResult = () => {
@@ -7225,7 +7273,7 @@ export function MainWindow({
       let terminal = pictureFallback ? terminalResult() : undefined;
       if (terminal) return terminal;
       const layoutDocument = documentRef.current;
-      const point = pastePointForViewport();
+      const point = anchor.point;
       const parsed = await depictSmilesForPaste(smilesText, { signal }, {
         document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
@@ -7275,7 +7323,7 @@ export function MainWindow({
       terminal = terminalResult();
       if (terminal) return terminal;
       if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-      commitDocumentChangeWithPageFit(nextDocument, "Paste SMILES");
+      if (!commitClipboardPaste(nextDocument, anchor, "Paste SMILES")) return { outcome: "terminal" };
       resetPasteUiState();
       setPageFitPrompt(undefined);
       const pasteStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
@@ -7294,26 +7342,26 @@ export function MainWindow({
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
+  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     if (!parsed.ok) { setStatus(parsed.reason); return; }
     try {
-      const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
+      const result = pasteTableIntoDocument(documentRef.current, parsed, anchor.point, textStyleDefaults,
         prefix => `${prefix}-${crypto.randomUUID()}`);
-      commitDocumentChangeWithPageFit(result.document, "Paste table");
+      if (!commitClipboardPaste(result.document, anchor, "Paste table")) return;
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
       setStatus(tableValidationMessage(error));
     }
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
-  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, pictureFallback = false):
+  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false):
     Promise<{ outcome: "success" | "no-structure" | "terminal"; pasteAsText: boolean; status?: string }> | undefined => {
     const pasteDocument = documentRef.current;
     const terminalResult = (checkDocument = false) => {
@@ -7331,7 +7379,7 @@ export function MainWindow({
       setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
     }, {
       signal, inspectInput: verifySmilesPasteInput,
-      templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+      templatePlacement: { document: pasteDocument, centre: anchor.point }
     });
     if (!pendingList) return undefined;
     return pendingList.then(async (parsed) => {
@@ -7343,7 +7391,7 @@ export function MainWindow({
       terminal = terminalResult(true);
       if (terminal) return terminal;
       const result = insertSmilesMoleculeGrid(
-        pasteDocument, pastePointForViewport(), entries);
+        pasteDocument, anchor.point, entries);
       parsed.failures.push(...verified.failures);
       const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
         failure.error.includes("the RDKit engine did not load:"));
@@ -7368,12 +7416,8 @@ export function MainWindow({
       };
       const status = makeStatus("No SMILES structures were pasted");
       if (result.objectIds.length > 0) {
-        commitDocumentChangeWithPageFit(result.document, "Paste SMILES list", (document, outcome) => {
-          setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems, {
-            document, decision: outcome.decision,
-            overflowObjectIds: outcome.plan.growth.flatMap(growth => growth.objectIds ?? [])
-          })));
-        });
+        if (!commitClipboardPaste(result.document, anchor, "Paste SMILES list")) return { outcome: "terminal" as const, pasteAsText: false };
+        setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems)));
         resetPasteUiState();
         setPageFitPrompt(undefined);
       }
@@ -7390,9 +7434,9 @@ export function MainWindow({
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
     });
-  }, [commitDocumentChangeWithPageFit, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
+  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
     if (detectedPayload.kind === "size-refused") {
       setStatus(detectedPayload.message);
@@ -7406,7 +7450,7 @@ export function MainWindow({
       return;
     }
     if (detectedPayload.kind === "inchi") {
-      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
+      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }, anchor);
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
       return;
     }
@@ -7418,21 +7462,21 @@ export function MainWindow({
           ? readTableClipboardPaste(stripClipboardPictures(rawPayload), html => new DOMParser().parseFromString(html, "text/html"))
           : undefined;
         if (!table || (detectedPayload.fallbackImage && !tableClipboardResultOutranksPicture(table))) return false;
-        applyTableClipboardResult(table);
+        applyTableClipboardResult(table, anchor);
         return true;
       };
       const pasteFallbackImage = () => {
         if (!detectedPayload.fallbackImage) return false;
         if (pasteAsTable()) return true;
         const image = detectedPayload.fallbackImage;
-        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
+        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }), anchor);
         return true;
       };
       const pasteAsText = () => {
         if (pasteAsTable()) return true;
         applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
           ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
-          : { ...detectedPayload, kind: "plain-text" });
+          : { ...detectedPayload, kind: "plain-text" }, anchor);
         return false;
       };
       const finishSingleFallback = ({ reason, failed }: Awaited<ReturnType<typeof renderPastedSmiles>>) => {
@@ -7459,11 +7503,11 @@ export function MainWindow({
             if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
             if (listAbort.signal.aborted) return;
             if (candidate.kind === "smiles") {
-              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, anchor, true);
               if (result.outcome !== "no-structure") return;
               firstFallback ??= () => finishSingleFallback(result);
             } else {
-              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, true);
+              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, anchor, true);
               if (result && result.outcome !== "no-structure") return;
               firstFallback ??= () => finishListFallback(result);
             }
@@ -7478,7 +7522,7 @@ export function MainWindow({
       if ((detectedPayload.kind === "smiles" || looksLikeSmiles(trimmedText)) && !/\s/.test(trimmedText)) {
         // Keep ordinary single SMILES pastes independent of later pastes, as before.
         // Only lists and picture candidate loops register their cancellation controller.
-        void renderPastedSmiles(trimmedText, new AbortController().signal).then(result => {
+        void renderPastedSmiles(trimmedText, new AbortController().signal, anchor).then(result => {
           if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (result.outcome !== "no-structure") return;
           if (!pasteFallbackImage()) finishSingleFallback(result);
@@ -7487,7 +7531,7 @@ export function MainWindow({
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
-      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal);
+      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal, anchor);
       if (!pendingList) {
         if (!pasteFallbackImage()) pasteAsText();
         return;
@@ -7499,23 +7543,17 @@ export function MainWindow({
       });
       return;
     }
-    applySyncClipboardPayload(detectedPayload);
+    applySyncClipboardPayload(detectedPayload, anchor);
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
-  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
-    const placement = nextSelectionClipboardPastePlacement(
-      payload,
-      selectionClipboardPasteStateRef.current,
-      activePage,
-      pastePointerPagePoint()
-    );
     const warnings: string[] = [];
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      placement.point,
+      { x: payload.bounds.centerX, y: payload.bounds.centerY },
       warnings
     );
     if (nextDocument === documentRef.current) {
@@ -7523,8 +7561,7 @@ export function MainWindow({
       return;
     }
 
-    selectionClipboardPasteStateRef.current = placement.state;
-    commitDocumentChangeWithPageFit(nextDocument);
+    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7533,7 +7570,7 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
     setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
-  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, pastePointerPagePoint]);
+  }, [assignHoveredNativeDeleteTarget, commitClipboardPaste]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
@@ -7674,12 +7711,24 @@ export function MainWindow({
       }
       case "clipboard.copyAs.mol": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        try {
+          await writeText(await copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL refused:") ? message : `Copy as MOL failed: ${message}`}${warningSuffix}`);
+        }
         return;
       }
       case "clipboard.copyAs.molV2000": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        try {
+          await writeText(await copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL V2000 refused:") ? message : `Copy as MOL V2000 failed: ${message}`}${warningSuffix}`);
+        }
         return;
       }
       case "clipboard.copyAs.cdxml": {
@@ -7704,13 +7753,13 @@ export function MainWindow({
       case "clipboard.copyAs.inchiKey": {
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
         const warnings: string[] = [];
-        const molfile = copyAsMolfile(current, "v2000", warnings);
-        if (!molfile) {
-          setStatus(`Nothing to copy as ${label}`);
-          return;
-        }
-        setStatus(`Computing ${label}…`);
         try {
+          const molfile = serializeCopyAsMolfile(current, "v2000", warnings, { coordinateUnits: "raw" });
+          if (!molfile) {
+            setStatus(`Nothing to copy as ${label}`);
+            return;
+          }
+          setStatus(`Computing ${label}…`);
           // Same lazy-engine path the analyze command uses: neither the Emscripten glue nor the
           // 7.5 MB wasm belongs in the startup graph for users who never touch InChI.
           const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
@@ -7756,7 +7805,7 @@ export function MainWindow({
     }
   }, [documentWithTableDraft]);
 
-  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>, anchor = captureClipboardPasteAnchor()) => {
     smilesListPasteAbortRef.current?.abort();
     let rawPayload: ClipboardReadPayload | undefined;
     let readFailure: string | undefined;
@@ -7781,17 +7830,17 @@ export function MainWindow({
       if (guarded.kind === "refused") { setStatus(guarded.message); return; }
       const { payload, decision } = guarded;
       if (decision.kind === "selection") {
-        applySelectionClipboardPayload(decision.payload);
+        applySelectionClipboardPayload(decision.payload, anchor);
         return;
       }
       if (decision.kind === "table") {
-        applyTableClipboardResult(decision.result);
+        applyTableClipboardResult(decision.result, anchor);
         return;
       }
 
       const detectedPayload = decision.payload;
       if (detectedPayload.kind !== "empty") {
-        applyDetectedClipboardPayload(detectedPayload, payload);
+        applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         return;
       }
     }
@@ -7799,13 +7848,13 @@ export function MainWindow({
     // Only reuse the last in-app ChemDraft selection when the clipboard has nothing usable;
     // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
     if (selectionClipboardPayloadRef.current) {
-      applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+      applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
       return;
     }
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text))) {
@@ -9963,7 +10012,9 @@ export function MainWindow({
     }
   }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
 
-  const insertTemplateToTab = useCallback((tabId: string, id: string) => {
+  const insertTemplateToTab = useCallback(async (tabId: string, id: string) => {
+    const geometry = await readCanvasOcclusion();
+    // Re-read the tab and edit state after native sampling; it must never commit an old snapshot.
     if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
     if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
     if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
@@ -9991,7 +10042,12 @@ export function MainWindow({
     const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
       : { x: page.width / 2, y: page.height / 2 };
     const result = insertStructureTemplate(source, id, centre);
-    commitInsertionToTabWithPageFit(tabId, source, result.document, result.label);
+    const pageRect = active ? pageRef.current?.getBoundingClientRect() : undefined;
+    const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
+    const placed = covered.length && visible
+      ? placeInsertedObjectsInFreeSpace(result.document, page.id, result.document.selection.objectIds, { viewport: visible, covered })
+      : result.document;
+    commitInsertionToTabWithPageFit(tabId, source, placed, result.label);
   // isSnapshotSessionActive is declared later and reads only stable refs.
   }, [assistantHistoryPort, commitInsertionToTabWithPageFit]);
 
@@ -10075,8 +10131,9 @@ export function MainWindow({
     target.source = source;
     target.version = ++atomProblemVersionRef.current;
     const data = atomProblemSnapshot(source, target.target, target.version);
-    // Restore remains available when reopening a suppressed warning, but it is not an outstanding problem after Ignore.
-    const refreshed = afterIgnore && data.fixes.every(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
+    // Suppressed warnings can still offer chemical fixes alongside Restore. After Ignore,
+    // none is outstanding; reopening the warning still exposes all of its actions.
+    const refreshed = afterIgnore && data.fixes.some(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
     void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, refreshed)
       .catch(error => setStatus(`Atom problem could not update: ${String(error)}`));
   };
@@ -11505,7 +11562,7 @@ export function MainWindow({
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
-      insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
+      return insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
     }));
 
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
@@ -12783,14 +12840,24 @@ export function MainWindow({
       // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
+        const identityBeforeSampling = documentIdentityRef.current;
+        const geometry = recognized ? await readCanvasOcclusion() : undefined;
+        if (activeDocumentTabIdRef.current !== tab.id || documentIdentityRef.current !== identityBeforeSampling ||
+          quitInteractionRef.current || isSnapshotSessionActive()) {
+          throw new Error("The drawing changed or is busy; accept the proposal again.");
+        }
         const before = documentRef.current;
         const documentIdentity = documentIdentityRef.current;
         let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
         if (recognized) {
+          const visible = assistantHistoryPort.getViewportRect?.(tab.id);
+          const pageRect = pageRef.current?.getBoundingClientRect();
+          const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
           const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
           for (const page of prepared.pages) {
             const insertedIds = page.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
-            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds);
+            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds,
+              page.id === prepared.pages[0]?.id ? { viewport: visible, covered: visible ? covered : [] } : {});
           }
         }
         prepared = normalizeCommittedDocument(prepared);
@@ -12819,7 +12886,7 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
+    [activateDocumentTab, assistantHistoryPort, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
   );
 
   const rejectPluginProposal = useCallback(
@@ -13681,12 +13748,13 @@ export function MainWindow({
         return;
       }
 
+      const anchor = captureClipboardPasteAnchor();
       if (!event.clipboardData) {
         // Some desktop WebView paste events arrive without populated clipboardData; read natively
         // so keyboard paste of CDXML/SMILES/ChemDraft payloads still works.
         if (isDesktopRuntime()) {
           event.preventDefault();
-          void pasteClipboard();
+          void pasteClipboard(undefined, anchor);
         }
         return;
       }
@@ -13700,7 +13768,7 @@ export function MainWindow({
       // through DataTransfer. Read natively before a text/plain fallback can lose formatting;
       // pasteClipboard makes the same table decision on the native payload, then on this snapshot.
       if (isDesktopRuntime()) {
-        void pasteClipboard(domPayload);
+        void pasteClipboard(domPayload, anchor);
         return;
       }
       void domPayload.then((unguardedPayload) => {
@@ -13709,18 +13777,18 @@ export function MainWindow({
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
         const { payload, decision } = guarded;
         if (decision.kind === "selection") {
-          applySelectionClipboardPayload(decision.payload);
+          applySelectionClipboardPayload(decision.payload, anchor);
           return;
         }
         if (decision.kind === "table") {
-          applyTableClipboardResult(decision.result);
+          applyTableClipboardResult(decision.result, anchor);
           return;
         }
         const detectedPayload = decision.payload;
         if (detectedPayload.kind !== "empty") {
-          applyDetectedClipboardPayload(detectedPayload, payload);
+          applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         } else if (selectionClipboardPayloadRef.current) {
-          applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+          applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
         }
       }).catch((error: unknown) => {
         setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
@@ -13735,7 +13803,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -14203,10 +14271,10 @@ export function MainWindow({
   )), []);
 
   useEffect(() => {
-    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must
-    // reach the registered command before that happens. Resolve without the editable-target
+    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save and
+    // text formatting must reach their registered commands first. Resolve without the editable-target
     // filter, using the same platform-aware registry as the canvas, and keep the #273 flush path.
-    const saveFromInlineEditor = (event: KeyboardEvent) => {
+    const commandFromInlineEditor = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
           isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
           !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor], [data-bracket-label-editor]")) return;
@@ -14214,6 +14282,18 @@ export function MainWindow({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
       });
+      // The text textarea stops bubbling keys, just like the table editor. Route its
+      // formatting chords through the same registered commands as the toolbar buttons.
+      const commandKey = (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos" ? event.metaKey : event.ctrlKey;
+      const textFormatCommand = event.target.matches(".text-object-editor") && commandKey && !event.altKey && !event.shiftKey
+        ? ({ b: "text.bold", i: "text.italic", u: "text.underline" } as Record<string, string>)[event.key.toLowerCase()]
+        : undefined;
+      if (textFormatCommand) {
+        event.preventDefault();
+        event.stopPropagation();
+        void invokeCommandRef.current(textFormatCommand);
+        return;
+      }
       if (commandId !== "document.save" && commandId !== "document.saveAs") return;
       // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
       // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
@@ -14221,9 +14301,9 @@ export function MainWindow({
       event.preventDefault();
       void invokeCommandRef.current(commandId);
     };
-    window.addEventListener("keydown", saveFromInlineEditor, true);
-    return () => window.removeEventListener("keydown", saveFromInlineEditor, true);
-  }, [shortcutRegistry]);
+    window.addEventListener("keydown", commandFromInlineEditor, true);
+    return () => window.removeEventListener("keydown", commandFromInlineEditor, true);
+  }, [shortcutRegistry, shortcutPlatform]);
 
   useEffect(() => {
     const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {
@@ -17843,6 +17923,7 @@ export function MainWindow({
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
+    selectionClipboardPasteStateRef.current = undefined;
     // Paste from this menu lands where the menu was opened, not where the mouse drifted while
     // reading it.
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
@@ -20898,6 +20979,7 @@ export function MainWindow({
     })();
     setPageContextMenu(undefined);
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
+    selectionClipboardPasteStateRef.current = undefined;
     setObjectContextMenu({
       objectId,
       targetKind,
@@ -22957,7 +23039,7 @@ export function MainWindow({
                 data-open-warnings-button
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
-                aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                aria-controls={useHtmlFileWarnings && openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
@@ -22976,7 +23058,7 @@ export function MainWindow({
             Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
           </div>
         </div>
-        {openWarningsListShown && openWarnings ? (
+        {useHtmlFileWarnings && openWarningsListShown && openWarnings ? (
           <FileWarningsList
             reports={warningReports}
             document={document}
@@ -23409,6 +23491,7 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
   const prompt = useNativePrompt({
     title: "Imported Content Exceeds Page",
+    serializationKey: "imported-page-fit",
     message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
     kind: "warning",
     choices: [
@@ -25005,54 +25088,41 @@ export function initialSelectionClipboardPasteState(
 }
 
 /**
- * Where a pasted ChemDraft selection lands. With `anchor` — the page point under the pointer —
- * the selection is centred there, the way ChemDraw pastes at the cursor. Pasting again WITHOUT
- * moving the pointer steps the copy aside instead of burying it exactly on top of the last one.
- * Without an anchor (no pointer has been over the canvas yet) it falls back to the copy's own
- * position, offset once per repeat.
+ * One placement sequence for every clipboard format, independent of clipboard identity.
+ * The first native copy retains its source-position offset; imports start at their prepared
+ * viewport position. Subsequent pastes step from the first clamped centre until placement resets.
+ * Keep that origin fixed so a run at a page edge does not bounce between two positions.
  */
 export function nextSelectionClipboardPastePlacement(
   payload: ChemDraftSelectionClipboardPayload,
   previousState: SelectionClipboardPasteState | undefined,
   page: DocumentPage,
-  anchor?: ClientPoint
+  anchor?: ClientPoint,
+  initialOffset = 1
 ): { point: ClientPoint; state: SelectionClipboardPasteState } {
   const key = selectionClipboardPayloadKey(payload);
-  const samePayload = previousState?.key === key;
-  const sourceAction = samePayload ? previousState.sourceAction : "external";
-  const previousPasteCount = samePayload ? previousState.pasteCount : 0;
-
-  if (anchor) {
-    const previousAnchor = samePayload ? previousState.anchor : undefined;
-    const pointerStayedPut = previousAnchor !== undefined &&
-      Math.abs(previousAnchor.x - anchor.x) < 1 &&
-      Math.abs(previousAnchor.y - anchor.y) < 1;
-    const anchoredBounds: SelectionBounds = {
-      ...payload.bounds,
-      x: anchor.x - payload.bounds.width / 2,
-      y: anchor.y - payload.bounds.height / 2,
-      centerX: anchor.x,
-      centerY: anchor.y
-    };
-    const point = clampSelectionClipboardPastePoint(
-      selectionClipboardPastePoint(anchoredBounds, page, pointerStayedPut ? previousPasteCount : 0),
-      anchoredBounds,
-      page
-    );
-    return {
-      point,
-      state: { key, sourceAction, pasteCount: previousPasteCount + 1, anchor }
-    };
-  }
-
-  const offsetIndex = sourceAction === "cut" ? previousPasteCount : previousPasteCount + 1;
+  const sourceAction = previousState?.key === key ? previousState.sourceAction : "external";
+  const previousAnchor = previousState?.anchor;
+  const pointerStayedPut = anchor && previousAnchor
+    ? Math.abs(previousAnchor.x - anchor.x) < 1 && Math.abs(previousAnchor.y - anchor.y) < 1
+    : anchor === undefined && previousAnchor === undefined;
+  const continues = previousState?.origin !== undefined && previousState.pasteCount > 0 && pointerStayedPut;
+  const centre = continues ? previousState.origin! : anchor ?? {
+    x: payload.bounds.centerX, y: payload.bounds.centerY
+  };
+  const bounds: SelectionBounds = {
+    ...payload.bounds,
+    x: centre.x - payload.bounds.width / 2,
+    y: centre.y - payload.bounds.height / 2,
+    centerX: centre.x,
+    centerY: centre.y
+  };
+  const offsetIndex = continues ? previousState.pasteCount : (anchor || sourceAction === "cut" ? 0 : initialOffset);
+  const point = clampSelectionClipboardPastePoint(selectionClipboardPastePoint(bounds, page, offsetIndex), bounds, page);
   return {
-    point: selectionClipboardPastePoint(payload.bounds, page, offsetIndex),
-    state: {
-      key,
-      sourceAction,
-      pasteCount: previousPasteCount + 1
-    }
+    point,
+    state: { key, sourceAction, pasteCount: continues ? previousState.pasteCount + 1 : 1, anchor,
+      origin: continues ? previousState.origin : point }
   };
 }
 
@@ -26211,24 +26281,7 @@ function ArtStyleQaLayer({
   );
 }
 
-export function ObjectLayerContextMenu({
-  arrowActions = [],
-  bracketActions = [],
-  layoutActions = [],
-  tableActions = [],
-  bondStereoActions = [],
-  objectId,
-  objectIndex,
-  objectCount,
-  targetKind,
-  bondDepthContext,
-  atomWarning,
-  arrowStyleSource,
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function ObjectLayerContextMenu(props: {
   arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
@@ -26240,507 +26293,27 @@ export function ObjectLayerContextMenu({
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
   atomWarning?: ObjectContextMenuState["atomWarning"];
-  /** Present when the clicked object is an arrow whose look can become the tool's default. */
   arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const layerLabel = contextMenuLayerLabel(targetKind, objectIndex, objectCount);
-  const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
-  const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
-
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-
-  // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
-  // the right edge would clip it and slides up when the bottom would.
-  const [copyAsOpen, setCopyAsOpen] = useState(false);
-  const [arrangeOpen, setArrangeOpen] = useState(false);
-  const [tableAlignOpen, setTableAlignOpen] = useState(false);
-  const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
-  const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [tableAlignStyle, setTableAlignStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    const parent = tableAlignParentRef.current, flyout = tableAlignFlyoutRef.current;
-    if (!tableAlignOpen || !parent || !flyout) return;
-    const rect = parent.getBoundingClientRect(), menuRect = flyout.getBoundingClientRect();
-    setTableAlignStyle({
-      ...(rect.right + menuRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, rect.top + menuRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [tableAlignOpen, clampedPosition]);
-  const tableRowColumnIds = ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
-    "table.column.insertLeft", "table.column.insertRight", "table.column.delete"];
-  const tableRowColumnActions = tableActions.filter(action => tableRowColumnIds.includes(action.id));
-  const tableAlignActions = tableActions.filter(action => action.id.startsWith("table.column.align."));
-  const arrangeParentRef = useRef<HTMLDivElement | null>(null);
-  const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const pendingSubmenuFocusRef = useRef(false);
-  const [arrangeFlyoutStyle, setArrangeFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (layoutActions.length === 0) { setArrangeOpen(false); return; }
-    if (!arrangeOpen) return;
-    const parent = arrangeParentRef.current;
-    const flyout = arrangeFlyoutRef.current;
-    if (!parent || !flyout) return;
-    const parentRect = parent.getBoundingClientRect();
-    const flyoutRect = flyout.getBoundingClientRect();
-    setArrangeFlyoutStyle({
-      ...(parentRect.right + flyoutRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, parentRect.top + flyoutRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [arrangeOpen, clampedPosition, layoutActions.length]);
-  const copyAsParentRef = useRef<HTMLDivElement | null>(null);
-  const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [copyAsFlyoutStyle, setCopyAsFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (!copyAsOpen) {
-      return;
-    }
-    const parentElement = copyAsParentRef.current;
-    const flyoutElement = copyAsFlyoutRef.current;
-    if (!parentElement || !flyoutElement) {
-      return;
-    }
-    const margin = 8;
-    const parentRect = parentElement.getBoundingClientRect();
-    const flyoutRect = flyoutElement.getBoundingClientRect();
-    const opensLeft = parentRect.right + flyoutRect.width + margin > window.innerWidth;
-    const overflowY = Math.max(0, parentRect.top + flyoutRect.height + margin - window.innerHeight);
-    setCopyAsFlyoutStyle({
-      ...(opensLeft ? { right: "100%" } : { left: "100%" }),
-      top: `${-overflowY}px`
-    });
-  }, [copyAsOpen, clampedPosition]);
-
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
-    setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(false);
-  });
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Object layer options"
-      data-context-object-id={objectId}
-      data-context-target-kind={targetKind}
-      data-context-layer-index={objectIndex >= 0 ? objectIndex : undefined}
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {bracketActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-        data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
-        onClick={() => onInvoke(action.id)}>{action.title}</button>)}
-      {tableRowColumnActions.map(action => (
-        <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-          data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
-          onClick={() => onInvoke(action.id)}>{action.title}</button>
-      ))}
-      {tableAlignActions.length > 0 ? <>
-        <div className="object-context-menu-submenu" ref={tableAlignParentRef}
-          onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(true); }}
-          onPointerLeave={() => setTableAlignOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={tableAlignOpen}
-            aria-controls={tableAlignOpen ? "canvas-table-align-menu" : undefined}
-            disabled={tableAlignActions.every(action => action.enabled === false)}
-            className="object-context-menu-item object-context-menu-submenu-trigger"
-            onClick={() => {
-              setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(open => !open);
-            }}>
-            <span>Align Column</span><span aria-hidden="true">›</span>
-          </button>
-          {tableAlignOpen ? <div id="canvas-table-align-menu" role="menu" aria-label="Align Column"
-            className="object-context-menu object-context-menu-flyout"
-            ref={tableAlignFlyoutRef} style={tableAlignStyle}>
-            {tableAlignActions.map(action => <button type="button" role="menuitem" key={action.id}
-              className="object-context-menu-item" data-command-id={action.id}
-              disabled={action.enabled === false} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {({ left: "Left", center: "Center", right: "Right", decimal: "Decimal" } as
-                Record<string, string>)[action.id.split(".").at(-1)!]}
-            </button>)}
-          </div> : null}
-        </div>
-        <div className="object-context-menu-separator" role="separator" />
-      </> : null}
-      {arrowActions.map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-        data-command-id={action.id} disabled={action.enabled === false} onClick={() => onInvoke(action.id)}>{action.title}</button>)}
-      {arrowActions.length > 0 ? <div className="object-context-menu-separator" role="separator" /> : null}
-      {layoutActions.length > 0 ? (
-        <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
-          onPointerLeave={() => setArrangeOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
-            aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
-            className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => {
-              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
-            }}>
-            <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-          </button>
-          {arrangeOpen ? (
-            <div id="canvas-arrange-menu" className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
-              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}>
-              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
-                <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-                  data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                  {action.title.replace(/^Arrange in (?:a|an) /, "")}
-                </button>
-              ))}
-              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
-                <Fragment key={action.id}>
-                  <div className="object-context-menu-separator" role="separator" />
-                  <button type="button" role="menuitem" className="object-context-menu-item"
-                    data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                    Adjust spacing…
-                  </button>
-                </Fragment>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {(["clipboard.cut", "clipboard.copy", "clipboard.paste"] as const).map((clipboardCommandId) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={clipboardCommandId}
-          data-command-id={clipboardCommandId}
-          onClick={() => onInvoke(clipboardCommandId)}
-        >
-          {clipboardCommandId === "clipboard.cut" ? "Cut" : clipboardCommandId === "clipboard.copy" ? "Copy" : "Paste"}
-        </button>
-      ))}
-      <div
-        className="object-context-menu-submenu"
-        ref={copyAsParentRef}
-        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
-        onPointerLeave={() => setCopyAsOpen(false)}
-      >
-        <button
-          type="button"
-          role="menuitem"
-          aria-haspopup="menu"
-          aria-expanded={copyAsOpen}
-          aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
-          className="object-context-menu-item object-context-menu-submenu-trigger"
-          data-context-submenu="copy-as"
-          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
-        >
-          <span>Copy As</span>
-          <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-        </button>
-        {copyAsOpen ? (
-          <div
-            className="object-context-menu object-context-menu-flyout"
-            id="canvas-copy-as-menu"
-            role="menu"
-            aria-label="Copy As formats"
-            ref={copyAsFlyoutRef}
-            style={copyAsFlyoutStyle}
-          >
-            {copyAsMenuItems.map((item) => (
-              <button
-                type="button"
-                role="menuitem"
-                className="object-context-menu-item"
-                key={item.commandId}
-                data-command-id={item.commandId}
-                onClick={() => onInvoke(item.commandId)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      <div className="object-context-menu-separator" role="separator" />
-      {atomWarning ? (
-        <>
-          {atomWarning.problemCommandId && <button type="button" role="menuitem" className="object-context-menu-item"
-            data-command-id={atomWarning.problemCommandId} onClick={() => onInvoke(atomWarning.problemCommandId!)}>Atom problem…</button>}
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="atom.toggleWarningSuppression"
-            onClick={() => onInvoke("atom.toggleWarningSuppression")}
-          >
-            {atomWarning.suppressed
-              ? atomWarning.count === 1 ? "Restore Warning" : "Restore Warnings"
-              : atomWarning.count === 1 ? "Clear Warning" : "Clear Warnings"}
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {arrowStyleSource ? (
-        <>
-          <div className="object-context-menu-title">{arrowStyleSource.title}</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id={SET_DEFAULT_ARROW_STYLE_COMMAND_ID}
-            onClick={() => onInvoke(SET_DEFAULT_ARROW_STYLE_COMMAND_ID)}
-          >
-            Set as Default Arrow Style
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {bondStereoActions.length > 0 ? (
-        <>
-          {bondStereoActions.map(action => (
-            <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-              data-command-id={action.id} disabled={!action.enabled} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {action.title}
-            </button>
-          ))}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {hasBondDepthContext ? (
-        <>
-          <div className="object-context-menu-title">Bond depth</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.bringInFront"
-            onClick={() => onInvoke("bondDepth.bringInFront")}
-          >
-            {hasMultipleBondTargets ? "Bring Selected Bonds In Front" : "Bring Bond In Front"}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.sendBehind"
-            onClick={() => onInvoke("bondDepth.sendBehind")}
-          >
-            {hasMultipleBondTargets ? "Send Selected Bonds Behind" : "Send Bond Behind"}
-          </button>
-          {bondDepthContext?.hasOverrides ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="object-context-menu-item"
-              data-command-id="bondDepth.useDefault"
-              onClick={() => onInvoke("bondDepth.useDefault")}
-            >
-              Use Default Bond Depth
-            </button>
-          ) : null}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      <div className="object-context-menu-title">{layerLabel}</div>
-      {layerContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          data-command-id={item.commandId}
-          key={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <CanvasContextMenu key={`${props.objectId}:${props.position.x}:${props.position.y}`}
+    {...props} items={buildObjectCanvasMenu(props)} label="Object layer options"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
-
-/**
- * A context menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
- * elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
- * bottom edge opens the menu ABOVE the cursor instead of clipping.
- */
-function useClampedContextMenuPosition(
-  position: ClientPoint,
-  menuRef: RefObject<HTMLDivElement | null>
-): ClientPoint {
-  const [clampedPosition, setClampedPosition] = useState(position);
-  useLayoutEffect(() => {
-    const menuElement = menuRef.current;
-    if (!menuElement) {
-      setClampedPosition(position);
-      return;
-    }
-    const margin = 8;
-    const rect = menuElement.getBoundingClientRect();
-    setClampedPosition({
-      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
-      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
-    });
-  }, [menuRef, position]);
-  return clampedPosition;
-}
-
-// Navigate only the direct items of each menu; a flyout has its own wrapping loop.
-function useCanvasContextMenuKeyboard(
-  menuRef: RefObject<HTMLDivElement | null>,
-  onDismiss: () => void,
-  onFocusReturn?: () => void,
-  pendingSubmenuFocusRef?: RefObject<boolean>,
-  closeSubmenus?: () => void
-) {
-  const dismissRef = useRef(onDismiss);
-  dismissRef.current = onDismiss;
-  const focusReturnRef = useRef(onFocusReturn);
-  focusReturnRef.current = onFocusReturn;
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    root.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')?.focus();
-    const outside = (event: globalThis.PointerEvent) => {
-      if (!root.contains(event.target as Node)) dismissRef.current();
-    };
-    window.addEventListener("pointerdown", outside, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      if (root.contains(globalThis.document.activeElement) && globalThis.document.hasFocus()) {
-        focusReturnRef.current?.();
-      }
-    };
-  }, [menuRef]);
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    for (const button of root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')) {
-      button.tabIndex = button === globalThis.document.activeElement ? 0 : -1;
-    }
-    if (pendingSubmenuFocusRef?.current) {
-      const owner = globalThis.document.activeElement;
-      const submenu = owner?.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-      const first = submenu?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)');
-      if (first) { first.tabIndex = 0; first.focus(); }
-      pendingSubmenuFocusRef.current = false;
-    }
-  });
-  return (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const button = event.target instanceof HTMLButtonElement ? event.target : null;
-    const menu = button?.closest<HTMLElement>('[role="menu"]');
-    if (!button || !menu) return;
-    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')]
-      .filter(item => item.closest('[role="menu"]') === menu);
-    const focus = (item: HTMLButtonElement | undefined) => {
-      if (!item) return;
-      button.tabIndex = -1; item.tabIndex = 0; item.focus();
-    };
-    const index = buttons.indexOf(button);
-    switch (event.key) {
-      case "ArrowDown": case "ArrowUp":
-        event.preventDefault(); event.stopPropagation();
-        focus(buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]);
-        break;
-      case "Home": case "End":
-        event.preventDefault(); event.stopPropagation();
-        focus(event.key === "Home" ? buttons[0] : buttons[buttons.length - 1]);
-        break;
-      case "ArrowRight":
-        if (button.getAttribute("aria-haspopup") === "menu") {
-          event.preventDefault(); event.stopPropagation();
-          const submenu = button.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-          if (submenu) focus(submenu.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? undefined);
-          else { if (pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true; button.click(); }
-        }
-        break;
-      case "ArrowLeft": case "Escape":
-        if (menu !== menuRef.current) {
-          event.preventDefault(); event.stopPropagation();
-          const owner = menu.parentElement?.querySelector<HTMLButtonElement>(':scope > button[role="menuitem"]');
-          closeSubmenus?.(); focus(owner ?? undefined);
-        } else if (event.key === "Escape") {
-          event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        }
-        break;
-      case "Tab":
-        event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        break;
-      case "Delete": case "Backspace":
-        event.preventDefault(); event.stopPropagation();
-        break;
-      case "Enter": case " ":
-        event.preventDefault(); event.stopPropagation();
-        if (button.getAttribute("aria-haspopup") === "menu" && pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true;
-        button.click();
-        break;
-    }
-  };
-}
-
-const pageContextMenuItems = [
-  { commandId: "clipboard.paste", label: "Paste" },
-  { commandId: "edit.selectAll", label: "Select All" }
-] as const;
 
 /** Right-click menu for bare page: what you can still do when nothing is under the pointer. */
-export function PageContextMenu({
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function PageContextMenu(props: {
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn);
-
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Page options"
-      data-context-target-kind="page"
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {pageContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={item.commandId}
-          data-command-id={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function contextMenuLayerLabel(
-  targetKind: ObjectContextMenuState["targetKind"],
-  objectIndex: number,
-  objectCount: number
-): string {
-  if (targetKind === "atom" || targetKind === "bond" || targetKind === "parts") {
-    return "Molecule layer";
-  }
-
-  return objectIndex >= 0 ? `Layer ${objectIndex + 1} of ${objectCount}` : "Layer options";
+  return <CanvasContextMenu key={`${props.position.x}:${props.position.y}`}
+    {...props} items={pageCanvasMenu} label="Page options" targetKind="page"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
 
 function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {

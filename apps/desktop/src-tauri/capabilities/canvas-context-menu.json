@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "canvas-context-menu",
+  "description": "Only the document window can present its native canvas and object popup menus on macOS and Windows.",
+  "windows": ["main"],
+  "permissions": ["allow-popup-canvas-context-menu"]
+}

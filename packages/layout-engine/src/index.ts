@@ -8765,3 +8765,5 @@ function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry
 
   return parts.join(" | ");
 }
+
+export * from "./molfileCoordinateScale";
