@@ -4,6 +4,21 @@ Status: plan approved by the owner 2026-11-10; no code until the master session 
 `release/1.2-rc` or `main`). Final home of this document: `docs/plans/send-to-crystal-builder.md` on
 local branch `plan/crystal-builder` (see "After approval").
 
+## Master session conditions (2026-11-10)
+
+Approved in principle, with these conditions:
+
+1. **No code until 1.2 ships.** This is 1.3 work; plugin API 0.1.26 lands with 1.3, not 1.2 or
+   1.2.1, unless the owner says otherwise.
+2. **Build phase runs from a MacBook session** (agentctl lives there).
+3. **Before any code:** one Kimi high review of this plan, after the 1.2 big review, focused on the
+   `apps.handoff` security contract: user consent, no path or argument injection, the app picked by
+   the user and never by the plugin, and macOS/Windows parity. Open point for that review: the master
+   asked for "user consent each time"; this plan has one-time consent per plugin and app plus a
+   message box whenever something would be lost (owner question 2). The owner decides.
+4. **Keep §7:** the XYZ handoff warns about or refuses charge, stereo, and abbreviation loss, per the
+   table in Decision 1.
+
 ## Context
 
 Crystal Builder (github.com/JulesOpp/Crystal-Builder, MIT, Python/PySide6/VTK) builds crystals and
