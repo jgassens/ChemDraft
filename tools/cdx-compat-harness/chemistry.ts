@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { nativeSurvival } from "./survival";
-import { moleculeToMolfileV3000, type ChemDraftDocument, type MoleculeObject } from "../../packages/chem-core/src/index";
+import { DefaultNativeTextStyle, moleculeToMolfileV3000, type ChemDraftDocument, type MoleculeObject } from "../../packages/chem-core/src/index";
 import { expandNativeMoleculeLabelGroups, nativeMoleculeUnspellableLabels, nativeSingleHeavyElementLabelValence, nativeSingleBondGraphMetadata, nativeElementFromAtomLabel, nativeImplicitHydrogenCount } from "../../packages/document-workflow-core/src/index";
 import { nativeBondOrderResolution } from "../../packages/layout-engine/src/index";
 import { installNodeRdkitModuleLoader } from "../../packages/rdkit-adapter/src/node";
@@ -506,12 +506,23 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
   };
   const arrowKinds = sorted(objects.flatMap(o => arrowKind(o) ? [arrowKind(o)!] : []));
   const colours = new Set<string>();
+  const textColour = (run: unknown, parent: unknown): string =>
+    typeof run === "string" && run.trim() ? run : typeof parent === "string" && parent.trim() ? parent : DefaultNativeTextStyle.color;
   const findColours = (value: unknown, key = "") => {
     if (typeof value === "string" && /color|colour/i.test(key)) colours.add(value.toLowerCase());
     else if (Array.isArray(value)) value.forEach(v => findColours(v));
     else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) findColours(v, k);
   };
-  for (const object of objects) { findColours(object.style); if (object.type === "text") findColours(object.spans); }
+  for (const object of objects) {
+    if (object.type === "text" && typeof object.style.color === "string" && !object.style.color.trim()) {
+      const { color: _color, ...style } = object.style;
+      findColours(style);
+    } else findColours(object.style);
+    if (object.type === "text") for (const span of object.spans) {
+      // CDX makes inherited run colours explicit, so collect what the run draws.
+      findColours({ ...span.style, color: textColour(span.style.color, object.style.color) });
+    }
+  }
   const texts = objects.filter(o => o.type === "text");
   const textStyles = texts.map(t => {
     const styles = [t.style, ...t.spans.map(s => ({ ...t.style, ...s.style }))];
@@ -522,7 +533,7 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
       superscript: t.spans.some(s => s.script === "superscript"),
       fontChanges: new Set(styles.map(s => s.fontFamily ?? "default")).size > 1,
       // Capture run boundaries and font changes without retaining text content.
-      runs: t.spans.map(s => ({ length: s.text.length, script: s.script, style: s.style })),
+      runs: t.spans.map(s => ({ length: s.text.length, script: s.script, style: { ...s.style, color: textColour(s.style.color, t.style.color) } })),
       style: t.style
     };
   });
@@ -550,6 +561,7 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
     }),
     standaloneAbbreviations: objects.filter(o => o.type === "superatom").map(o => ({ label: o.label, expandedFragment: o.metadata.expandedStructure })),
     standaloneRGroups: objects.filter(o => o.type === "r-group-label").map(o => ({ label: o.label, semantics: o.display.querySemantics })),
+    textRunColours: texts.map(t => t.spans.map(s => textColour(s.style.color, t.style.color).toLowerCase())),
     drawing: {
       pages: document.pages.length,
       arrows: arrowKinds,

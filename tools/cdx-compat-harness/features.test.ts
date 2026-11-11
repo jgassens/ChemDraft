@@ -995,6 +995,57 @@ describe("synthetic format features", () => {
     }
   }, 30000);
 
+  it("compares effective text run colours", async () => {
+    const makeText = (parentColor?: string, runColor?: string) => {
+      const document = createEmptyDocument();
+      document.pages[0].objects = [TextObjectSchema.parse({
+        id: "text", type: "text", x: 0, y: 0, width: 100, height: 30, text: "synthetic",
+        style: parentColor !== undefined ? { color: parentColor } : {},
+        spans: [{ text: "synthetic", style: runColor !== undefined ? { color: runColor } : {} }]
+      })];
+      return document;
+    };
+    const defaultText = await describeDocument(makeText(), []);
+    const explicitDefault = await describeDocument(makeText(undefined, "#111111"), []);
+    const inheritedRed = await describeDocument(makeText("#ff0000"), []);
+    const explicitRed = await describeDocument(makeText("#ff0000", "#ff0000"), []);
+    const red = await describeDocument(makeText(undefined, "#ff0000"), []);
+    for (const feature of ["colours", "text-styling"]) {
+      expect(compare(defaultText, explicitDefault, []).drawingLoss).not.toContain(feature);
+      expect(compare(inheritedRed, explicitRed, []).drawingLoss).not.toContain(feature);
+      expect(compare(explicitDefault, red, []).drawingLoss).toContain(feature);
+    }
+    for (const blank of ["", "   "]) {
+      const inheritedDefault = await describeDocument(makeText(blank), []);
+      const explicit = await describeDocument(makeText(blank, "#111111"), []);
+      expect(inheritedDefault.drawing.colours).toEqual(["#111111"]);
+      expect(compare(inheritedDefault, explicit, []).drawingLoss).not.toContain("text-styling");
+      expect(compare(inheritedDefault, explicit, []).drawingLoss).not.toContain("colours");
+    }
+  });
+
+  it("compares text run colours in object and run order", async () => {
+    const describe = async (runs: { text: string; color?: string }[][]) => {
+      const document = createEmptyDocument();
+      document.pages[0].objects = runs.map((spans, index) => TextObjectSchema.parse({
+        id: `text-${index}`, type: "text", x: 0, y: index * 30, width: 100, height: 30,
+        text: spans.map(span => span.text).join(""), style: {},
+        spans: spans.map(span => ({ text: span.text, style: span.color ? { color: span.color } : {} }))
+      }));
+      return describeDocument(document, []);
+    };
+    const blue = "#0000ff", black = "#111111";
+    const before = await describe([[{ text: "one", color: blue }], [{ text: "two", color: black }]]);
+    const swapped = await describe([[{ text: "one", color: black }], [{ text: "two", color: blue }]]);
+    const same = await describe([[{ text: "one", color: blue }], [{ text: "two", color: black }]]);
+    expect(compare(before, swapped, []).drawingLoss).toContain("colours");
+    expect(compare(before, same, []).drawingLoss).not.toContain("colours");
+    expect(compare(await describe([[{ text: "one", color: black }]]), await describe([[{ text: "one" }]]), []).drawingLoss).not.toContain("colours");
+    const runs = await describe([[{ text: "one", color: blue }, { text: "two", color: black }]]);
+    const reordered = await describe([[{ text: "two", color: blue }, { text: "one", color: black }]]);
+    expect(compare(runs, reordered, []).drawingLoss).not.toContain("colours");
+  });
+
   it("counts rich text, bracket labels, reaction roles, graphics, colours and pages", async () => {
     const document = createEmptyDocument();
     const base = { x: 0, y: 0, width: 100, height: 30 };
@@ -1014,7 +1065,7 @@ describe("synthetic format features", () => {
     expect(described.drawing.pages).toBe(2);
     expect(described.drawing["text-styling"]).toMatchObject({ objects: 1, styled: 1, bold: 1, italic: 1, subscript: 1, superscript: 1, fontChanges: 1 });
     expect(described.drawing.brackets).toEqual([{ kind: "polymer", repeatUnitLabel: "n" }]);
-    expect(described.drawing.colours).toEqual(["#0000ff", "#ff0000"]);
+    expect(described.drawing.colours).toEqual(["#0000ff", "#111111", "#ff0000"]);
     expect(described.drawing["other-graphics"]).toEqual(["graphic.rect"]);
     expect(described.reactions).toEqual([{ objectId: "reaction", reactants: ["C"], products: ["O"], agents: ["N"], conditions: [], arrowKinds: ["equilibrium"] }]);
   });
