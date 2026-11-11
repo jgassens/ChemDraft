@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { TextObject } from "@chemdraft/chem-core";
+import { DefaultNativeTextStyle, type TextObject } from "@chemdraft/chem-core";
+import { MAGIC } from "./cdxBinary";
 import { exportDocumentToCdx, exportDocumentToCdxml, importCdx, openChemDraftPayload } from "./index";
 
 // Entirely synthetic. CDXML face bit 32 means subscript; 64 means superscript.
@@ -18,6 +19,103 @@ function textOf(result: ReturnType<typeof openChemDraftPayload>): TextObject {
 }
 
 describe("payload-less text run fidelity", () => {
+  it("keeps the Na Cl custom run colours through visible CDXML", () => {
+    const imported = openChemDraftPayload(`<CDXML><colortable>
+      <color r="0.2" g="0.4" b="0.6"/><color r="0.6" g="0.2" b="0.4"/>
+      </colortable><page id="1"><t id="2" p="30 40"><s color="2">Na</s> <s color="3">Cl</s></t></page></CDXML>`);
+    const original = textOf(imported);
+    expect(original.text).toBe("Na Cl");
+    expect(original.spans).toEqual([
+      { text: "Na", script: "normal", style: { color: "#336699" } },
+      { text: " ", script: "normal", style: {} },
+      { text: "Cl", script: "normal", style: { color: "#993366" } }
+    ]);
+    const exported = exportDocumentToCdxml(imported.document!, { embedNativePayload: false });
+    expect(exported.contents).toContain("<colortable>");
+    expect(exported.contents).toContain('<s color="2">Na</s> <s color="3">Cl</s>');
+    expect(textOf(openChemDraftPayload(exported.contents)).spans).toEqual(original.spans);
+    expect(exported.warnings).toEqual([]);
+  });
+
+  for (const preserveSource of [true, false]) {
+    it(`keeps the Na Cl custom run colours through visible CDX (${preserveSource ? "source" : "native"} runs)`, () => {
+      const imported = openChemDraftPayload(`<CDXML><colortable>
+        <color r="0.2" g="0.4" b="0.6"/><color r="0.6" g="0.2" b="0.4"/>
+        </colortable><page id="1"><t id="2" p="30 40"><s color="2">Na</s> <s color="3">Cl</s></t></page></CDXML>`);
+      const original = textOf(imported);
+      const spans = structuredClone(original.spans);
+      if (!preserveSource) delete original.compatibility;
+      const exported = exportDocumentToCdx(imported.document!, { embedNativePayload: false });
+      expect(textOf(importCdx(exported.bytes)).spans).toEqual(spans);
+      expect(exported.warnings).toEqual([]);
+    });
+  }
+
+  for (const format of ["CDXML", "CDX"] as const) {
+    for (const preserveSource of [true, false]) {
+      it(`keeps uncoloured and explicit palette black runs distinct through ${format} (${preserveSource ? "source" : "native"} runs)`, () => {
+        const imported = openChemDraftPayload(`<CDXML><colortable>
+          <color r="1" g="1" b="1"/><color r="0" g="0" b="0"/>
+          </colortable><page id="1"><t id="2" p="30 40"><s>default</s><s color="3">black</s></t></page></CDXML>`);
+        const original = textOf(imported);
+        const spans: TextObject["spans"] = [
+          { text: "default", script: "normal", style: {} },
+          { text: "black", script: "normal", style: { color: "#000000" } }
+        ];
+        expect(original.spans).toEqual(spans);
+        if (!preserveSource) delete original.compatibility;
+        const exported = format === "CDX"
+          ? exportDocumentToCdx(imported.document!, { embedNativePayload: false })
+          : exportDocumentToCdxml(imported.document!, { embedNativePayload: false });
+        const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
+        expect(textOf(reopened).spans).toEqual(spans);
+        expect(exported.warnings).toEqual([]);
+      });
+
+      it(`keeps an uncoloured run drawn #111111 with red at source index 3 through ${format} (${preserveSource ? "source" : "native"} runs)`, () => {
+        const imported = openChemDraftPayload(`<CDXML><colortable>
+          <color r="1" g="1" b="1"/><color r="1" g="0" b="0"/><color r="0" g="0" b="0"/>
+          </colortable><page id="1"><t id="2" p="30 40"><s>default</s><s color="4">black</s></t></page></CDXML>`);
+        const original = textOf(imported);
+        const spans = structuredClone(original.spans);
+        if (!preserveSource) delete original.compatibility;
+        const exported = format === "CDX"
+          ? exportDocumentToCdx(imported.document!, { embedNativePayload: false })
+          : exportDocumentToCdxml(imported.document!, { embedNativePayload: false });
+        const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
+        const actual = textOf(reopened);
+        expect(actual.spans).toEqual(spans);
+        expect(actual.spans[0].style).not.toHaveProperty("color");
+        expect(actual.spans[0].style.color ?? actual.style.color ?? DefaultNativeTextStyle.color).toBe("#111111");
+        expect(actual.spans[1].style.color).toBe("#000000");
+        expect(exported.warnings).toEqual([]);
+      });
+    }
+  }
+
+  for (const runColor of [undefined, 0, 3]) {
+    it(`reads an independently built binary run colour ${runColor ?? "absent"} using its own foreground and palette`, () => {
+      const u16 = (n: number) => [n & 255, n >>> 8 & 255];
+      const u32 = (n: number) => [...u16(n), ...u16(n >>> 16)];
+      const property = (tag: number, data: number[]) => [...u16(tag), ...u16(data.length), ...data];
+      const object = (tag: number, id: number, data: number[]) => [...u16(tag), ...u32(id), ...data, 0, 0];
+      const text = [...new TextEncoder().encode("test")];
+      const runs = runColor === undefined ? u16(0) : [...u16(1), ...[0, 0xffff, 0, 0, runColor].flatMap(u16)];
+      const bytes = new Uint8Array([
+        ...new TextEncoder().encode(MAGIC), 4, 3, 2, 1, ...Array(10).fill(0),
+        ...object(0x8000, 0, [
+          ...object(0x8001, 1, object(0x8006, 2, property(0x0700, [...runs, ...text]))),
+          // Metadata deliberately follows the text. Slot 3 remains uncoloured even
+          // when the document foreground names red; reserved slot 0 is explicit black.
+          ...property(0x0301, u16(4)),
+          ...property(0x0300, [...u16(3), ...[65535, 65535, 65535, 0, 0, 0, 65535, 0, 0].flatMap(u16)])
+        ])
+      ]);
+      const actual = textOf(importCdx(bytes));
+      expect(actual.spans).toEqual([{ text: "test", script: "normal", style: runColor === 0 ? { color: "#000000" } : {} }]);
+    });
+  }
+
   const nonEmptyCases: { name: string; faces: number[]; spans: TextObject["spans"] }[] = [
     { name: "CO with subscript 2", faces: [0, 32], spans: [
       { text: "CO", script: "normal", style: { color: "#ff0000" } },
@@ -92,15 +190,9 @@ describe("payload-less text run fidelity", () => {
           ({ text: span.text, script: span.script, length: span.text.length }));
         expect(runs(actual)).toEqual(runs(original));
         expect(actual.text).toBe(original.text);
-        if (format === "CDX" && !explicitColors) {
-          // CDX requires a colour in every style record: absence cannot survive standard CDX.
-          // Explicit inherited/default colour draws identically, so it needs no warning.
-          expect(actual.spans).toEqual(original.spans.map(span => ({
-            ...span, style: { ...span.style, color: span.style.color ?? "#000000" }
-          })));
-        } else {
-          expect(actual.spans).toEqual(original.spans);
-        }
+        // The release colour-slot contract preserves absent colour through CDX;
+        // only an explicit black run acquires the reserved black index 0.
+        expect(actual.spans).toEqual(original.spans);
         expect(exported.warnings).toEqual([]);
         expect(reopened.warnings.map(warning => warning.code)).toEqual(["cdxml.external_subset_imported"]);
       });

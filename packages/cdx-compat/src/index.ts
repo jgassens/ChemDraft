@@ -2043,8 +2043,8 @@ function exportTextObject(text: TextObject, context: VisibleExportContext, alloc
           | (span.style.fontStyle === "italic" ? 2 : 0)
           | (span.script === "subscript" ? 32 : span.script === "superscript" ? 64 : 0);
         const face = faceBits ? ` face="${faceBits}"` : "";
-        // Explicit black must override a coloured parent, even though it is otherwise implicit.
-        const runColor = cdxmlColorAttribute(span.style.color, colors, normalizeHexColorValue(text.style.color));
+        // Keep an explicit run colour when the parent has no explicit colour, including black.
+        const runColor = cdxmlColorAttribute(span.style.color, colors, normalizeHexColorValue(text.style.color) ?? "");
         return `<s${face}${runColor.length ? ` ${runColor.join(" ")}` : ""}>${escapeXmlText(span.text)}</s>`;
       }).join("");
   return `<t id="${textId}" p="${formatPoint({ x: text.x, y: text.y })}"${color.length ? ` ${color.join(" ")}` : ""}>${content}</t>`;
