@@ -50,6 +50,22 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn reply_to_termination<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let app = app.clone();
+    // Always enqueue from a worker, including the no-document case: run_on_main_thread can
+    // execute inline on the main thread, before applicationShouldTerminate returns Later.
+    std::thread::spawn(move || {
+        if let Err(error) = app.run_on_main_thread(|| {
+            let mtm =
+                MainThreadMarker::new().expect("AppKit quit reply must run on the main thread");
+            objc2_app_kit::NSApplication::sharedApplication(mtm)
+                .replyToApplicationShouldTerminate(true);
+        }) {
+            eprintln!("Could not dispatch AppKit termination reply: {error}");
+        }
+    });
+}
+
 unsafe extern "C" fn should_terminate(
     _: &AnyObject,
     _: Sel,
@@ -72,23 +88,30 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
+    let reply_pending =
+        *super::QUIT.appkit_reply.lock().unwrap() == super::AppkitReplyState::Pending;
     match super::appkit_quit_decision(
         cfg!(target_os = "macos"),
         super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
         super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
-        super::QUIT
-            .requested
-            .load(std::sync::atomic::Ordering::SeqCst),
+        reply_pending,
         reason,
     ) {
-        super::AppkitQuitDecision::Prompt | super::AppkitQuitDecision::Flush => {
+        super::AppkitQuitDecision::Prompt => {
             if let Some(app) = APP.get() {
                 super::request_quit(app);
                 return NSApplicationTerminateReply::TerminateCancel;
             }
         }
-        super::AppkitQuitDecision::WaitForFlush => {
-            return NSApplicationTerminateReply::TerminateCancel;
+        super::AppkitQuitDecision::DeferReply => {
+            if let Some(app) = APP.get() {
+                if super::request_appkit_quit_with(&super::QUIT, app) {
+                    return NSApplicationTerminateReply::TerminateLater;
+                }
+            }
+        }
+        super::AppkitQuitDecision::WaitForReply => {
+            return NSApplicationTerminateReply::TerminateLater;
         }
         super::AppkitQuitDecision::TerminateNow => {}
     }
