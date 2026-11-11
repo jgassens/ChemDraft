@@ -20,6 +20,7 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod palette_routing;
 mod panel_full_size;
 mod panel_window;
 mod panel_window_controls;
@@ -806,8 +807,15 @@ struct ToolsetWindowState {
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct NativeCommandPayload {
+    command_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ToolsetCommandPayload {
     command_id: String,
+    target: palette_routing::PaletteTarget,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1040,6 +1048,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(document_windows::DocumentWindowRegistry::with_main())
+        .manage(palette_routing::PaletteRouting::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
@@ -1188,9 +1197,17 @@ pub fn run() {
                         }
                     }
                     WindowEvent::Focused(true) => {
-                        window
-                            .state::<document_windows::DocumentWindowRegistry>()
-                            .mark_activated(window.label());
+                        let registry = window.state::<document_windows::DocumentWindowRegistry>();
+                        let previous = registry.active_document_window().map(|w| w.window_id);
+                        registry.mark_activated(window.label());
+                        if let Some(active) = registry.active_document_window() {
+                            if previous.as_deref() != Some(active.window_id.as_str()) {
+                                let _ = window.app_handle().emit(
+                                    "chemdraft://active-document-window",
+                                    serde_json::json!({ "windowId": active.window_id }),
+                                );
+                            }
+                        }
                         schedule_suspended_utility_restore(window.app_handle());
                     }
                     _ => {}
@@ -1492,6 +1509,8 @@ pub fn run() {
             cancel_quit,
             close_toolset_popover,
             route_toolset_command,
+            publish_palette_snapshot,
+            palette_routing_state,
             sync_plugin_menu_items,
             read_clipboard_payload,
             write_clipboard_items,
@@ -3891,6 +3910,19 @@ fn plugin_panel_event_forward(
     }
     let owner = owned_document_webview(window.app_handle(), window.label())
         .ok_or("Panel document owner is not available.")?;
+    // Panels share the live command catalog with palettes. Their authenticated bootstrap request
+    // predates palette targets; fill it from the registry rather than weakening the target filter.
+    let payload = if event == "chemdraft://toolset-command-specs-request" {
+        let state = window
+            .state::<palette_routing::PaletteRouting>()
+            .state(&window.state::<document_windows::DocumentWindowRegistry>());
+        let Some(target) = state.target else {
+            return Ok(());
+        };
+        serde_json::json!({ "target": target })
+    } else {
+        payload
+    };
     owner
         .emit_to(owner.label(), &event, payload)
         .map_err(|error| error.to_string())
@@ -6112,10 +6144,40 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn palette_routing_state(app: tauri::AppHandle) -> palette_routing::PaletteRoutingState {
+    app.state::<palette_routing::PaletteRouting>()
+        .state(&app.state::<document_windows::DocumentWindowRegistry>())
+}
+
+#[tauri::command]
+fn publish_palette_snapshot(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    if !palette_routing::is_snapshot_event(&event) {
+        return Err("Invalid palette snapshot event.".into());
+    }
+    let target: palette_routing::PaletteTarget = serde_json::from_value(payload["target"].clone())
+        .map_err(|_| "Missing palette snapshot target.")?;
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    if !palette_routing::can_publish(&registry, window.label(), &target) {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette snapshot from an inactive or foreign document");
+        return Ok(());
+    }
+    app.state::<palette_routing::PaletteRouting>()
+        .remember(&target);
+    app.emit(&event, payload).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn route_toolset_command(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     command_id: String,
+    target: palette_routing::PaletteTarget,
     preserve_input_focus: Option<bool>,
     commit: Option<bool>,
 ) -> Result<(), String> {
@@ -6126,30 +6188,49 @@ fn route_toolset_command(
     if command_id.is_empty() {
         return Err("Toolset command id cannot be empty.".to_string());
     }
-
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let Some(label) = palette_routing::target_label(&registry, &target) else {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette command for an unregistered document");
+        return Ok(());
+    };
+    let Some(document) = app.get_webview_window(&label) else {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette command for a closed document");
+        return Ok(());
+    };
+    let payload = ToolsetCommandPayload {
+        command_id: command_id.to_string(),
+        target,
+    };
     if commit.unwrap_or(false) {
-        let main = owned_document_webview(&app, window.label())
-            .ok_or_else(|| "Main document window is not available.".to_string())?;
-        // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
-        // delivery while utility windows are suspended (for example by a native prompt).
+        // Shortcut-settle commits retain their no-focus behavior, including during suspension.
         return dispatch_dom_toolset_event(
-            &main,
-            &ToolsetCommandPayload {
-                command_id: command_id.to_string(),
-            },
+            &document,
+            &payload,
             "chemdraft://palette-command-commit",
         );
     }
-    emit_command_to_main(&app, command_id)?;
-    // Select changes and clean-number undo update the document while the control
-    // keeps the keyboard. Button/background clicks release the lease themselves.
+    dispatch_dom_command_event(&document, &payload)?;
     if panel_window::keeps_palette_focus(
         window.label(),
         panel_window::holds_input_focus(&window) || preserve_input_focus.unwrap_or(false),
     ) {
         return Ok(());
     }
-    if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
+    // A command returns focus to its captured document, even if another window became active.
+    let focus_result = (|| {
+        document
+            .set_focusable(true)
+            .map_err(|error| error.to_string())?;
+        document.unminimize().map_err(|error| error.to_string())?;
+        if !document.is_visible().unwrap_or(false) {
+            document.show().map_err(|error| error.to_string())?;
+        }
+        focus_native_document_window(&document)?;
+        document.set_focus().map_err(|error| error.to_string())
+    })();
+    if let Err(error) = focus_result {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
         );
@@ -7718,7 +7799,7 @@ fn emit_menu_command<R: Runtime>(
         .ok_or_else(|| format!("Window {target_label} is not available."))?;
     dispatch_dom_command_event(
         &target,
-        &ToolsetCommandPayload {
+        &NativeCommandPayload {
             command_id: command_id.to_string(),
         },
     )
@@ -7730,7 +7811,7 @@ fn emit_command_to_main<R: Runtime>(
 ) -> Result<(), String> {
     let main = active_document_webview(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
-    let payload = ToolsetCommandPayload {
+    let payload = NativeCommandPayload {
         command_id: command_id.to_string(),
     };
 
@@ -7740,16 +7821,16 @@ fn emit_command_to_main<R: Runtime>(
     dispatch_dom_command_event(&main, &payload)
 }
 
-fn dispatch_dom_command_event<R: Runtime>(
+fn dispatch_dom_command_event<R: Runtime, P: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &P,
 ) -> Result<(), String> {
     dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
 }
 
-fn dispatch_dom_toolset_event<R: Runtime>(
+fn dispatch_dom_toolset_event<R: Runtime, P: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &P,
     event_name: &str,
 ) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;

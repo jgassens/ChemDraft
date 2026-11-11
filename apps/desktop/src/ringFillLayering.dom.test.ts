@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 // @vitest-environment jsdom
 
 import { Resvg } from "@resvg/resvg-js";
@@ -494,7 +495,7 @@ describe("canvas ring-fill layers", () => {
   }
 
   async function command(commandId: string, eventName = DOM_COMMAND_EVENT) {
-    await act(async () => window.dispatchEvent(new CustomEvent(eventName, { detail: { commandId } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(eventName, { detail: { target: currentPaletteTarget(), commandId } })));
   }
 
   async function pointer(target: Element, type: "pointerdown" | "pointermove" | "pointerup", point: { x: number; y: number }, buttons = type === "pointerup" ? 0 : 1) {

@@ -1,3 +1,5 @@
+import { bindPaletteDocument, currentPaletteTarget } from "./window-manager/paletteTarget";
+import { listenForPaletteDocumentActivation } from "./window-manager";
 import { createDocumentTabId, documentWindowId, DocumentIdentities } from "./documentIdentity";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
@@ -1773,7 +1775,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.18.31-codex";
+const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2871,6 +2873,12 @@ export function MainWindow({
   // refused rather than silently inserted into the new document.
   const [documentIdentities] = useState(() => new DocumentIdentities(documentWindowId()));
   const getDocumentIdentity = useCallback(() => documentIdentities.key(activeDocumentTabIdRef.current), [documentIdentities]);
+  const paletteDocumentTarget = { windowId: documentIdentities.windowId, tabId: activeDocumentTabId };
+  useLayoutEffect(() => bindPaletteDocument({
+    getTarget: () => ({ windowId: documentIdentities.windowId, tabId: activeDocumentTabIdRef.current }),
+    hasTab: tabId => documentTabsRef.current.some(tab => tab.id === tabId)
+  }), [documentIdentities]);
+
   // Counts undo and redo steps. A label-edit session closed by one must not write into the history
   // state it landed on (see the atom-label close effect).
   const historyNavigationCountRef = useRef(0);
@@ -3238,7 +3246,8 @@ export function MainWindow({
       analysisBusy,
       false,
       currentTable,
-      colorContextKey
+      colorContextKey,
+      paletteDocumentTarget
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -3252,7 +3261,8 @@ export function MainWindow({
     analysisBusy,
     false,
     currentTable,
-    colorContextKey
+    colorContextKey,
+    paletteDocumentTarget
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -4138,7 +4148,8 @@ export function MainWindow({
         analysisBusy,
         analysisReportIsStale,
         currentTable,
-        colorContextKey
+        colorContextKey,
+        currentPaletteTarget()
       )
     ).catch(() => undefined);
     // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
@@ -15039,6 +15050,26 @@ export function MainWindow({
       unlistenCancel?.();
       unlistenInspector?.();
     };
+  }, []);
+
+  const refreshPaletteSnapshotsRef = useRef<() => void>(() => undefined);
+  refreshPaletteSnapshotsRef.current = () => {
+    void broadcastToolsetActiveTool(activeToolCommandIdRef.current).catch(() => undefined);
+    void broadcastToolsetTextStyle({ ...currentToolbarTextStateRef.current, target: currentPaletteTarget() }).catch(() => undefined);
+    void broadcastToolsetCommandSpecs(shellCommandSpecsRef.current).catch(() => undefined);
+    void broadcastToolsetDefinitions(pluginToolsetsRef.current).catch(() => undefined);
+    if (layoutStateRef.current) void broadcastToolsetLayoutState(layoutStateRef.current).catch(() => undefined);
+    void broadcastToolsetCustomizeMode({
+      toolsetId: DEFAULT_TOOLSET_ID, active: customizeMainToolbarActiveRef.current
+    }).catch(() => undefined);
+  };
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listenForPaletteDocumentActivation(() => refreshPaletteSnapshotsRef.current()).then(cleanup => {
+      if (disposed) cleanup(); else stop = cleanup;
+    }).catch(() => undefined);
+    return () => { disposed = true; stop?.(); };
   }, []);
 
   // A freshly created palette window asks for the current layout state (its disk copy can be stale

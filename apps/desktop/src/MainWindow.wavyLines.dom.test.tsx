@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -36,7 +37,7 @@ describe.each(["macos", "windows"] as const)("registered wave edits (%s)", platf
   const canonical = (object: MoleculeObject) => Molecule.fromMolfile(moleculeToMolfileV2000(object, { kekuleBondOrders: new Map() }).contents).toSmiles();
   const moleculeSvg = () => container.querySelector(`[data-object-id="${moleculeId}"].native-molecule-object`)?.innerHTML;
   async function palette(event: string, commandId = objectWaveCommandId("height", 18)) {
-    await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { commandId } })); });
+    await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { target: currentPaletteTarget(), commandId } })); });
   }
   async function command(id: string) {
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); });

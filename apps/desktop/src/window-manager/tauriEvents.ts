@@ -1,5 +1,6 @@
 import type { Event, EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import type { Window } from "@tauri-apps/api/window";
+import { acceptsPaletteEvent } from "./paletteTarget";
 
 /** Stops a listener. Safe to call any number of times, and at any moment. */
 export type SafeUnlisten = () => void;
@@ -91,7 +92,9 @@ export function safeTauriListen<T>(eventName: string, attach: TauriAttach<T>, ha
 /** `listen` from `@tauri-apps/api/event` (events to any target), with a stop that cannot fail. */
 export async function listenTauriEvent<T>(eventName: string, handler: EventCallback<T>): Promise<SafeUnlisten> {
   const { listen } = await import("@tauri-apps/api/event");
-  return safeTauriListen<T>(eventName, (wrapped) => listen<T>(eventName, wrapped), handler).attached;
+  return safeTauriListen<T>(eventName, (wrapped) => listen<T>(eventName, wrapped), (event) => {
+    if (acceptsPaletteEvent(eventName, event.payload)) handler(event);
+  }).attached;
 }
 
 /** A specific native window's events, retaining immediate stop during asynchronous attachment. */

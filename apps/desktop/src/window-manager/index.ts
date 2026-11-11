@@ -1,3 +1,5 @@
+import { acceptsPaletteEvent, ACTIVE_DOCUMENT_EVENT, currentPaletteTarget, paletteDocumentIsActive, paletteGestureTarget, paletteTargetRevision, setActivePaletteWindow, bindPaletteSnapshot, type PaletteMessage, type PaletteTarget } from "./paletteTarget";
+export type { PaletteTarget, PaletteMessage } from "./paletteTarget";
 import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportPreviewSettings";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
@@ -22,7 +24,7 @@ export const PALETTE_COMMAND_CANCEL_EVENT = "chemdraft://palette-command-cancel"
 /**
  * The Molecular Inspector's two actions, travelling from a detached palette back to the main window.
  *
- * Their own channel because the command channel carries `{ commandId }` and nothing else, and both of
+ * Their own channel because the command channel carries a command id and target, and both of
  * these need an argument — WHICH copy, WHICH interpretation. Without it the detached palette had no
  * way to send them at all, so `PaletteWindow` simply did not forward the handlers: Copy rendered
  * "Copied" with an empty clipboard, and the interpretation select accepted changes that went nowhere.
@@ -69,14 +71,14 @@ export interface ToolsetWindowState {
   position?: ToolsetWindowPosition;
 }
 
-export interface ToolsetCommandPayload {
+export interface ToolsetCommandPayload extends PaletteMessage {
   commandId: string;
 }
 
 export type PaletteCommandPayload = ToolsetCommandPayload;
 export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
-export interface ToolsetTextStylePayload {
+export interface ToolsetTextStylePayload extends PaletteMessage {
   currentTable?: ReturnType<typeof tableInspectorSnapshot>;
   colorContextKey?: string;
   currentTextStyle: NativeTextStyle;
@@ -98,11 +100,11 @@ export interface ToolsetTextStylePayload {
   molecularInspectorStale?: boolean;
 }
 
-export interface ToolsetCommandSpecsPayload {
+export interface ToolsetCommandSpecsPayload extends PaletteMessage {
   commands: CommandSpec[];
 }
 
-export interface ToolsetDefinitionsPayload {
+export interface ToolsetDefinitionsPayload extends PaletteMessage {
   /** Plugin toolset DEFINITIONS (structure: groups/items/title). Core toolsets are static in every
    *  palette webview; only runtime plugin contributions need to travel over this channel. */
   toolsets: ToolsetDefinition[];
@@ -144,16 +146,16 @@ export function isDesktopRuntime(): boolean {
   return Boolean(candidate.__TAURI_INTERNALS__ || candidate.__TAURI__);
 }
 
-export function createPaletteCommandPayload(commandId: string): PaletteCommandPayload {
-  return createToolsetCommandPayload(commandId);
+export function createPaletteCommandPayload(commandId: string, target = currentPaletteTarget()): PaletteCommandPayload {
+  return createToolsetCommandPayload(commandId, target);
 }
 
-export function createToolsetCommandPayload(commandId: string): ToolsetCommandPayload {
-  return { commandId };
+export function createToolsetCommandPayload(commandId: string, target = currentPaletteTarget()): ToolsetCommandPayload {
+  return { commandId, target };
 }
 
-export function createToolsetActiveToolPayload(commandId: string): ToolsetActiveToolPayload {
-  return createToolsetCommandPayload(commandId);
+export function createToolsetActiveToolPayload(commandId: string, target = currentPaletteTarget()): ToolsetActiveToolPayload {
+  return createToolsetCommandPayload(commandId, target);
 }
 
 export function createToolsetTextStylePayload(
@@ -167,9 +169,11 @@ export function createToolsetTextStylePayload(
   molecularInspectorBusy = false,
   molecularInspectorStale = false,
   currentTable?: ReturnType<typeof tableInspectorSnapshot>,
-  colorContextKey?: string
+  colorContextKey?: string,
+  target = currentPaletteTarget()
 ): ToolsetTextStylePayload {
   return {
+    target,
     currentTable,
     currentTextStyle,
     currentTextScript,
@@ -891,16 +895,17 @@ export async function sendPaletteCommand(commandId: string, options?: { preserve
 }
 
 export async function sendPaletteCommandPreview(commandId: string): Promise<void> {
-  return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId);
+  return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId, paletteGestureTarget("preview"));
 }
 
 export async function sendPaletteCommandCommit(commandId: string, options?: { settleBeforeForward: true }): Promise<void> {
-  if (options?.settleBeforeForward && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
-  return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
+  const target = paletteGestureTarget("commit");
+  if (options?.settleBeforeForward && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true, target });
+  return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId, target);
 }
 
 export async function sendPaletteCommandCancel(commandId: string): Promise<void> {
-  return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
+  return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId, paletteGestureTarget("cancel"));
 }
 
 // Only shortcut-settle commits share this queue with app commands. Ordinary commits stay
@@ -911,18 +916,21 @@ const pendingPaletteEvents = new Set<Promise<void>>();
 // resolves after Tauri enqueues the destination eval, before the subsequent invoke.
 export const PALETTE_EVENT_SETTLE_TIMEOUT_MS = 500;
 export function routeToolsetCommand(
-  commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean }
+  commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean; target?: PaletteTarget }
 ): Promise<void> {
   // Single delivery: the invoke routes through Rust `route_toolset_command`, which dispatches the
   // native-command DOM event into the main window (the one listener in `listenForToolsetCommands`).
   // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
   // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
-  const payload = createToolsetCommandPayload(commandId);
+  const capturedTarget = options?.target ? Promise.resolve(options.target) : resolvePaletteCommandTarget();
+  // A secondary-window query can fail before an earlier queued commit finishes.
+  void capturedTarget.catch(() => undefined);
   // The number control also has a previewing slider. Flush all earlier event sends,
   // including its release commit, before entering synchronous IPC. Tauri emit resolves
   // after enqueueing the destination eval; the subsequent route cannot pass that eval.
   const earlierEvents = options?.commit ? [...pendingPaletteEvents] : [];
   const next = paletteCommandQueue.then(async () => {
+    const payload = createToolsetCommandPayload(commandId, await capturedTarget);
     if (options?.commit && earlierEvents.length > 0) {
       let timeout: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -943,15 +951,28 @@ export function routeToolsetCommand(
   return next;
 }
 
-function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
-  const pending = deliverToolsetCommandEvent(eventName, commandId);
+async function resolvePaletteCommandTarget(): Promise<PaletteTarget> {
+  try {
+    return currentPaletteTarget();
+  } catch {
+    // Preferences and other secondary windows also forward edit-history shortcuts through this
+    // route. Unlike palettes they need not subscribe to document snapshots before their first key.
+    const { invoke } = await import("@tauri-apps/api/core");
+    const state = await invoke<{ target?: PaletteTarget }>("palette_routing_state");
+    if (!state?.target) throw new Error("The document window is not available.");
+    return state.target;
+  }
+}
+
+function emitToolsetCommandEvent(eventName: string, commandId: string, target: PaletteTarget): Promise<void> {
+  const pending = deliverToolsetCommandEvent(eventName, commandId, target);
   pendingPaletteEvents.add(pending);
   void pending.then(() => pendingPaletteEvents.delete(pending), () => pendingPaletteEvents.delete(pending));
   return pending;
 }
 
-async function deliverToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
-  const payload = createToolsetCommandPayload(commandId);
+async function deliverToolsetCommandEvent(eventName: string, commandId: string, target: PaletteTarget): Promise<void> {
+  const payload = createToolsetCommandPayload(commandId, target);
   dispatchDomToolsetEvent(eventName, payload);
   if (!isDesktopRuntime()) {
     return;
@@ -962,58 +983,96 @@ async function deliverToolsetCommandEvent(eventName: string, commandId: string):
 }
 
 /** What a detached palette asks the main window to do on its behalf. */
-export type PaletteInspectorAction =
+export type PaletteInspectorActionInput =
   | { kind: "copy"; format: "text" | "markdown" }
   | { kind: "interpretation"; interpretationId: string | undefined };
+export type PaletteInspectorAction = PaletteMessage & PaletteInspectorActionInput;
 
-export async function sendPaletteInspectorAction(action: PaletteInspectorAction): Promise<void> {
-  dispatchDomToolsetEvent(PALETTE_INSPECTOR_ACTION_EVENT, action as unknown as ToolsetCommandPayload);
+export async function sendPaletteInspectorAction(action: PaletteInspectorActionInput): Promise<void> {
+  const payload = { ...action, target: currentPaletteTarget() } as PaletteInspectorAction;
+  dispatchDomToolsetEvent(PALETTE_INSPECTOR_ACTION_EVENT, payload);
   if (!isDesktopRuntime()) {
     return;
   }
   const { emit } = await import("@tauri-apps/api/event");
-  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, action);
+  await emit<PaletteInspectorAction>(PALETTE_INSPECTOR_ACTION_EVENT, payload);
 }
 
 export async function broadcastToolsetActiveTool(commandId: string): Promise<void> {
-  const payload = createToolsetActiveToolPayload(commandId);
-  dispatchDomToolsetEvent(TOOLSET_ACTIVE_TOOL_EVENT, payload);
-  if (!isDesktopRuntime()) {
-    return;
-  }
-
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetActiveToolPayload>(TOOLSET_ACTIVE_TOOL_EVENT, payload);
+  return publishPaletteSnapshot(TOOLSET_ACTIVE_TOOL_EVENT, createToolsetActiveToolPayload(commandId));
 }
 
 export async function requestToolsetActiveTool(): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT, {});
-  if (!isDesktopRuntime()) {
-    return;
-  }
-
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
+  return requestPaletteSnapshot(TOOLSET_ACTIVE_TOOL_REQUEST_EVENT);
 }
 
 export async function broadcastToolsetTextStyle(payload: ToolsetTextStylePayload): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_TEXT_STYLE_EVENT, payload);
-  if (!isDesktopRuntime()) {
-    return;
-  }
-
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetTextStylePayload>(TOOLSET_TEXT_STYLE_EVENT, payload);
+  return publishPaletteSnapshot(TOOLSET_TEXT_STYLE_EVENT, payload);
 }
 
 export async function requestToolsetTextStyle(): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_TEXT_STYLE_REQUEST_EVENT, {});
+  return requestPaletteSnapshot(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
+}
+
+/** Native publication checks registry activation again at delivery, closing the IPC/focus race. */
+async function publishPaletteSnapshot<T extends PaletteMessage>(event: string, payload: T): Promise<void> {
+  if (!paletteDocumentIsActive()) return;
   if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(event, payload);
     return;
   }
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("publish_palette_snapshot", { event, payload });
+  } else {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(event, payload);
+  }
+}
 
+async function requestPaletteSnapshot(event: string): Promise<void> {
+  let target: PaletteTarget;
+  if (isDesktopRuntime() && typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const revision = paletteTargetRevision();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const state = await invoke<{ windowId?: string; target?: PaletteTarget }>("palette_routing_state");
+    if (!state?.target) return;
+    if (paletteTargetRevision() === revision) {
+      setActivePaletteWindow(state.windowId);
+      bindPaletteSnapshot(state.target);
+    }
+    target = state.target;
+  } else {
+    target = currentPaletteTarget();
+  }
+  const payload = { target };
+  if (!isDesktopRuntime()) {
+    dispatchDomToolsetEvent(event, payload);
+    return;
+  }
   const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_TEXT_STYLE_REQUEST_EVENT);
+  await emit(event, payload);
+}
+
+/** Utilities do not generate this event: Rust emits only after registry document activation changes. */
+export async function listenForPaletteDocumentActivation(handler: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  let activated = false;
+  const stop = await listenTauriEvent<{ windowId: string }>(ACTIVE_DOCUMENT_EVENT, event => {
+    if (typeof event.payload?.windowId !== "string") return;
+    activated = true;
+    if (setActivePaletteWindow(event.payload.windowId) && paletteDocumentIsActive()) handler();
+  });
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    const revision = paletteTargetRevision();
+    const { invoke } = await import("@tauri-apps/api/core");
+    const state = await invoke<{ windowId?: string; target?: PaletteTarget }>("palette_routing_state").catch(() => undefined);
+    if (state && !activated && paletteTargetRevision() === revision) {
+      setActivePaletteWindow(state.windowId);
+      if (state.target) bindPaletteSnapshot(state.target);
+    }
+  }
+  return stop;
 }
 
 export async function startPaletteWindowDrag(grabX: number, grabY: number): Promise<void> {
@@ -1197,7 +1256,7 @@ export async function listenForPaletteInspectorActions(
 ): Promise<Unlisten> {
   const onDom = (event: Event): void => {
     const detail = (event as CustomEvent<unknown>).detail;
-    if (isPaletteInspectorAction(detail)) handler(detail);
+    if (acceptsPaletteEvent(PALETTE_INSPECTOR_ACTION_EVENT, detail) && isPaletteInspectorAction(detail)) handler(detail);
   };
   globalThis.addEventListener?.(PALETTE_INSPECTOR_ACTION_EVENT, onDom as EventListener);
   const unlistenDom = (): void => {
@@ -1273,11 +1332,8 @@ export async function listenForPalettePointerLeave(
  *  dialog's item hides/reorders/renames never reach an already-open palette. Desktop only — the
  *  browser renders palettes in-window straight from MainWindow state. */
 export async function broadcastToolsetLayoutState(layoutState: unknown): Promise<void> {
-  if (!isDesktopRuntime()) {
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_EVENT, layoutState);
+  if (!isDesktopRuntime()) return;
+  return publishPaletteSnapshot(TOOLSET_LAYOUT_STATE_EVENT, { target: currentPaletteTarget(), layoutState });
 }
 
 export async function listenForToolsetLayoutState(
@@ -1286,18 +1342,15 @@ export async function listenForToolsetLayoutState(
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler(event.payload));
+  return listenTauriEvent(TOOLSET_LAYOUT_STATE_EVENT, (event) => handler((event.payload as { layoutState: unknown }).layoutState));
 }
 
 /** A freshly created palette window asks the main window for the current layout state — the disk
  *  copy it loads on mount can be stale while the save chain is still flushing (create-vs-save race,
  *  same shape as the popover content request). */
 export async function requestToolsetLayoutState(): Promise<void> {
-  if (!isDesktopRuntime()) {
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
+  if (!isDesktopRuntime()) return;
+  return requestPaletteSnapshot(TOOLSET_LAYOUT_STATE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetLayoutStateRequests(handler: () => void): Promise<Unlisten> {
@@ -1329,13 +1382,7 @@ function isToolsetCommandSpecsPayload(value: unknown): value is ToolsetCommandSp
 
 /** Main → palettes: publish the current command metadata and enabled state. */
 export async function broadcastToolsetCommandSpecs(commands: readonly CommandSpec[]): Promise<void> {
-  const payload: ToolsetCommandSpecsPayload = { commands: [...commands] };
-  if (!isDesktopRuntime()) {
-    dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_EVENT, payload);
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCommandSpecsPayload>(TOOLSET_COMMAND_SPECS_EVENT, payload);
+  return publishPaletteSnapshot(TOOLSET_COMMAND_SPECS_EVENT, { commands: [...commands], target: currentPaletteTarget() });
 }
 
 export async function listenForToolsetCommandSpecs(
@@ -1357,12 +1404,7 @@ export async function listenForToolsetCommandSpecs(
 
 /** A detached palette asks the main window for a fresh command snapshot after subscribing. */
 export async function requestToolsetCommandSpecs(): Promise<void> {
-  if (!isDesktopRuntime()) {
-    dispatchDomToolsetEvent(TOOLSET_COMMAND_SPECS_REQUEST_EVENT, {});
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
+  return requestPaletteSnapshot(TOOLSET_COMMAND_SPECS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCommandSpecsRequests(handler: () => void): Promise<Unlisten> {
@@ -1394,13 +1436,7 @@ function isToolsetDefinitionsPayload(value: unknown): value is ToolsetDefinition
 
 /** Main → palettes: publish the current plugin toolset definitions. */
 export async function broadcastToolsetDefinitions(toolsets: readonly ToolsetDefinition[]): Promise<void> {
-  const payload: ToolsetDefinitionsPayload = { toolsets: [...toolsets] };
-  if (!isDesktopRuntime()) {
-    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_EVENT, payload);
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetDefinitionsPayload>(TOOLSET_DEFINITIONS_EVENT, payload);
+  return publishPaletteSnapshot(TOOLSET_DEFINITIONS_EVENT, { toolsets: [...toolsets], target: currentPaletteTarget() });
 }
 
 export async function listenForToolsetDefinitions(
@@ -1422,12 +1458,7 @@ export async function listenForToolsetDefinitions(
 
 /** A detached palette asks the main window for the current plugin toolset definitions after subscribing. */
 export async function requestToolsetDefinitions(): Promise<void> {
-  if (!isDesktopRuntime()) {
-    dispatchDomToolsetEvent(TOOLSET_DEFINITIONS_REQUEST_EVENT, {});
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_DEFINITIONS_REQUEST_EVENT);
+  return requestPaletteSnapshot(TOOLSET_DEFINITIONS_REQUEST_EVENT);
 }
 
 export async function listenForToolsetDefinitionsRequests(handler: () => void): Promise<Unlisten> {
@@ -1457,12 +1488,12 @@ export type ToolsetLayoutEdit =
   | { kind: "resetToolset" }
   | { kind: "exitCustomize" };
 
-export interface ToolsetLayoutEditPayload {
+export interface ToolsetLayoutEditPayload extends PaletteMessage {
   toolsetId: string;
   edit: ToolsetLayoutEdit;
 }
 
-export interface ToolsetCustomizeModePayload {
+export interface ToolsetCustomizeModePayload extends PaletteMessage {
   toolsetId: string;
   active: boolean;
 }
@@ -1488,7 +1519,8 @@ function isToolsetCustomizeModePayload(value: unknown): value is ToolsetCustomiz
 }
 
 /** Palette → main: apply one customize edit. */
-export async function sendToolsetLayoutEdit(payload: ToolsetLayoutEditPayload): Promise<void> {
+export async function sendToolsetLayoutEdit(edit: Omit<ToolsetLayoutEditPayload, "target">): Promise<void> {
+  const payload = { ...edit, target: currentPaletteTarget() };
   if (!isDesktopRuntime()) {
     dispatchDomToolsetEvent(TOOLSET_LAYOUT_EDIT_EVENT, payload);
     return;
@@ -1515,13 +1547,8 @@ export async function listenForToolsetLayoutEdits(
 }
 
 /** Main → palettes: customize mode turned on/off for a toolset. */
-export async function broadcastToolsetCustomizeMode(payload: ToolsetCustomizeModePayload): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
-  if (!isDesktopRuntime()) {
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<ToolsetCustomizeModePayload>(TOOLSET_CUSTOMIZE_MODE_EVENT, payload);
+export async function broadcastToolsetCustomizeMode(payload: Omit<ToolsetCustomizeModePayload, "target">): Promise<void> {
+  return publishPaletteSnapshot(TOOLSET_CUSTOMIZE_MODE_EVENT, { ...payload, target: currentPaletteTarget() });
 }
 
 export async function listenForToolsetCustomizeMode(
@@ -1548,12 +1575,7 @@ export async function listenForToolsetCustomizeMode(
 
 /** A palette that mounts mid-mode asks the main window for the current customize-mode state. */
 export async function requestToolsetCustomizeMode(): Promise<void> {
-  dispatchDomToolsetEvent(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT, {});
-  if (!isDesktopRuntime()) {
-    return;
-  }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
+  return requestPaletteSnapshot(TOOLSET_CUSTOMIZE_MODE_REQUEST_EVENT);
 }
 
 export async function listenForToolsetCustomizeModeRequests(handler: () => void): Promise<Unlisten> {
@@ -1710,7 +1732,8 @@ function dispatchDomToolsetEvent(eventName: string, payload: unknown): void {
 
 function listenForDomToolsetEvent(eventName: string, handler: (event: CustomEvent<unknown>) => void): Unlisten {
   const listener = (event: Event) => {
-    handler(event as CustomEvent<unknown>);
+    const message = event as CustomEvent<unknown>;
+    if (acceptsPaletteEvent(eventName, message.detail)) handler(message);
   };
   window.addEventListener(eventName, listener);
   return () => window.removeEventListener(eventName, listener);

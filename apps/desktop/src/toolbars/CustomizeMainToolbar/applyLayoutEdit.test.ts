@@ -36,7 +36,7 @@ function appliedItemIds(state: ToolsetLayoutState): (string | undefined)[] {
 }
 
 function payload(edit: ToolsetLayoutEditPayload["edit"]): ToolsetLayoutEditPayload {
-  return { toolsetId: TOOLSET, edit };
+  return { toolsetId: TOOLSET, edit, target: { windowId: "main", tabId: "tab-fixture" } };
 }
 
 describe("applyToolsetLayoutEdit", () => {
@@ -262,7 +262,7 @@ describe("applyToolsetLayoutEdit", () => {
     // core.main before calling. This documents that contract.
     const next = applyToolsetLayoutEdit(
       emptyLayoutState(),
-      { toolsetId: "core.other", edit: { kind: "addSpacer", groupId: "g", index: 0 } },
+      { target: { windowId: "main", tabId: "tab-fixture" }, toolsetId: "core.other", edit: { kind: "addSpacer", groupId: "g", index: 0 } },
       context
     );
     expect(next.toolsetOverrides[0]?.toolsetId).toBe("core.other");

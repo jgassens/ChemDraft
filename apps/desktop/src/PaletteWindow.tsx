@@ -1,3 +1,4 @@
+import { listenForPaletteDocumentActivation } from "./window-manager";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
@@ -529,6 +530,20 @@ export function PaletteWindow({
       }
     };
   }, [colorPickerOpen, gridWindowSize, toolset.preferredWindowSize]);
+
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listenForPaletteDocumentActivation(() => {
+      void requestToolsetActiveTool().catch(() => undefined);
+      void requestToolsetTextStyle().catch(() => undefined);
+      void requestToolsetCommandSpecs().catch(() => undefined);
+      void requestToolsetDefinitions().catch(() => undefined);
+      void requestToolsetLayoutState().catch(() => undefined);
+      void requestToolsetCustomizeMode().catch(() => undefined);
+    }).then(cleanup => { if (disposed) cleanup(); else stop = cleanup; }).catch(() => undefined);
+    return () => { disposed = true; stop?.(); };
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

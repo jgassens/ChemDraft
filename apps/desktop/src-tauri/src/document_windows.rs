@@ -127,6 +127,15 @@ impl DocumentWindowRegistry {
             .any(|window| window.native_label == label)
     }
 
+    pub fn document_window(&self, window_id: &str) -> Option<DocumentWindow> {
+        self.windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(window_id)
+            .filter(|window| window.lifecycle == DocumentWindowLifecycle::Ready)
+            .cloned()
+    }
+
     /// Until explicit ownership lands, existing utilities all belong to the migrated main window.
     /// The hidden runtime is an application service, not an owned document utility.
     pub fn owner_of(&self, label: &str) -> Option<DocumentWindow> {

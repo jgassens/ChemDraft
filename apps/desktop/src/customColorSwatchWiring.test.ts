@@ -47,6 +47,7 @@ describe("custom color swatch commands and toolbar layout", () => {
   it("saves and reloads two independently placed two-slot grid widgets", () => {
     let layout = emptyLayoutState();
     for (const n of [1, 3]) layout = applyToolsetLayoutEdit(layout, {
+      target: { windowId: "main", tabId: "tab-fixture" },
       toolsetId: "core.main", edit: { kind: "addWidget", groupId: "core.main.items", widgetId: `widget.core.customColorSwatch${n}`, index: n }
     }, { presentItemIds: new Set(), commandTitle: () => undefined, widgetTitle: id => TOOLBAR_WIDGET_TITLES[id], widgetLayout: id => TOOLBAR_WIDGET_GRID_SPANS[id] });
     const loaded = parseToolsetLayoutState(JSON.parse(JSON.stringify(layout)));

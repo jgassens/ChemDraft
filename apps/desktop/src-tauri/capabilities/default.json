@@ -46,6 +46,8 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "allow-route-toolset-command",
+    "allow-publish-palette-snapshot",
+    "allow-palette-routing-state",
     "allow-sync-plugin-menu-items",
     "allow-read-clipboard-payload",
     "allow-write-clipboard-items",

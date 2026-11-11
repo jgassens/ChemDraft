@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
@@ -52,7 +53,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
   });
 
   async function command(commandId: string) {
-    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { target: currentPaletteTarget(), commandId } })));
   }
   async function pagePress(x = 100, y = 500) {
     await act(async () => {
@@ -90,7 +91,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await act(async () => vi.advanceTimersByTimeAsync(100));
   }
   async function palette(event: string, color: string) {
-    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { commandId: moleculeStructureBondColorCommandId(color) } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { target: currentPaletteTarget(), commandId: moleculeStructureBondColorCommandId(color) } })));
   }
   async function dragRight(id: string, dx: number) {
     const typed = texts().find(object => object.id === id)!;

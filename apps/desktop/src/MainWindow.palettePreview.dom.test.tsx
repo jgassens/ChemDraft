@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -25,7 +26,7 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
   const molecules = () => snapshot().pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
   const original = () => molecules().find(object => object.id === moleculeId)!;
   async function palette(event: string, color = "#0000ff") {
-    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { commandId: moleculeStructureBondColorCommandId(color) } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { target: currentPaletteTarget(), commandId: moleculeStructureBondColorCommandId(color) } })));
   }
   async function command(id: string) {
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); });
@@ -60,6 +61,26 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
     await act(async () => root.unmount()); container.remove();
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
     vi.restoreAllMocks(); vi.unstubAllGlobals();
+  });
+
+  it("refuses palette previews and commits for another window or a closed tab", async () => {
+    const target = currentPaletteTarget();
+    const before = structuredClone(snapshot());
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    for (const foreign of [{ ...target, windowId: "doc-other" }, { ...target, tabId: "closed-tab" }]) {
+      for (const event of [PALETTE_COMMAND_PREVIEW_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_CANCEL_EVENT]) {
+        await act(async () => window.dispatchEvent(new CustomEvent(event, {
+          detail: { target: foreign, commandId: moleculeStructureBondColorCommandId("#0000ff") }
+        })));
+      }
+    }
+    expect(snapshot()).toEqual(before);
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("foreign window"));
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining("stale tab"));
+    await palette(PALETTE_COMMAND_COMMIT_EVENT);
+    expect(original().style.bondColor).toBe("#0000ff");
+    await command("edit.undo");
+    expect(snapshot()).toEqual(before);
   });
 
   it.each(["commit", "cancel"])("preserves a drawn bond when an uncommitted blue preview is followed by a green preview and %s", async ending => {
@@ -172,7 +193,7 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
     await palette(PALETTE_COMMAND_PREVIEW_EVENT);
     for (const value of [33, 34]) {
       await act(async () => window.dispatchEvent(new CustomEvent(PALETTE_COMMAND_COMMIT_EVENT, {
-        detail: { commandId: moleculeStructureBondLengthCommandId(value) }
+        detail: { target: currentPaletteTarget(), commandId: moleculeStructureBondLengthCommandId(value) }
       })));
     }
     expect(representativeMoleculeBondLengthPx(original())).toBeCloseTo(34);

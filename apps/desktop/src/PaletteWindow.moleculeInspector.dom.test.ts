@@ -28,6 +28,7 @@ import {
   PALETTE_COMMAND_EVENT,
   PALETTE_COMMAND_PREVIEW_EVENT
 } from "./window-manager";
+import type { ToolsetCommandPayload } from "./window-manager";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -149,6 +150,41 @@ describe("PaletteWindow molecule inspector bridge", () => {
       bondLengthInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     expect(commandsByChannel.get(PALETTE_COMMAND_COMMIT_EVENT)).toContain(moleculeStructureBondLengthCommandId(20));
+  });
+
+  it("keeps a slider gesture on A when a snapshot rebinds the shared palette to B", async () => {
+    const a = { windowId: "A", tabId: "tab-a" };
+    const b = { windowId: "B", tabId: "tab-b" };
+    const messages: ToolsetCommandPayload[] = [];
+    const record = (event: Event) => { messages.push((event as CustomEvent<ToolsetCommandPayload>).detail); };
+    window.addEventListener(PALETTE_COMMAND_PREVIEW_EVENT, record);
+    window.addEventListener(PALETTE_COMMAND_COMMIT_EVENT, record);
+    try {
+      await act(async () => {
+        root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" }));
+      });
+      const model = createMoleculeInspectorModel(selectedMoleculeDocument(), { selectedObjectIds: ["mol_palette"] });
+      const snapshot = createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model);
+      await act(async () => broadcastToolsetTextStyle({ ...snapshot, target: a }));
+      act(() => container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-structure")!.click());
+      const slider = container.querySelector<HTMLInputElement>('[aria-label="Target bond length slider"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "30");
+        slider.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      });
+      await act(async () => broadcastToolsetTextStyle({ ...snapshot, target: b }));
+      await act(async () => slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+      expect(messages.map(message => message.target)).toEqual([a, a]);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, "40");
+        slider.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      });
+      expect(messages.map(message => message.target)).toEqual([a, a, b, b]);
+    } finally {
+      window.removeEventListener(PALETTE_COMMAND_PREVIEW_EVENT, record);
+      window.removeEventListener(PALETTE_COMMAND_COMMIT_EVENT, record);
+    }
   });
 
   it("commits Left/Center/Right for a multi-bond selection and explains disabled state", async () => {

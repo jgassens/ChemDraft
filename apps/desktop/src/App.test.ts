@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -4317,15 +4318,16 @@ describe("ChemDraft desktop shell", () => {
     expect(mainCommandIds.filter((id) => id === structureRotate3dCommandId)).toHaveLength(0);
   });
 
-  it("routes palette events as command ids only", () => {
-    expect(createPaletteCommandPayload("tool.select")).toEqual({ commandId: "tool.select" });
-    expect(Object.keys(createPaletteCommandPayload("tool.select"))).toEqual(["commandId"]);
-    expect(createToolsetActiveToolPayload("tool.text")).toEqual({ commandId: "tool.text" });
+  it("routes palette command ids with their document target", () => {
+    expect(createPaletteCommandPayload("tool.select")).toEqual({ commandId: "tool.select", target: currentPaletteTarget() });
+    expect(Object.keys(createPaletteCommandPayload("tool.select"))).toEqual(["commandId", "target"]);
+    expect(createToolsetActiveToolPayload("tool.text")).toEqual({ commandId: "tool.text", target: currentPaletteTarget() });
     expect(createToolsetTextStylePayload({
       ...DefaultNativeTextStyle,
       color: "#1f5fbf",
       textAlign: "right"
     }, "superscript")).toEqual({
+      target: currentPaletteTarget(),
       currentTextStyle: {
         ...DefaultNativeTextStyle,
         color: "#1f5fbf",
@@ -4334,7 +4336,7 @@ describe("ChemDraft desktop shell", () => {
       currentTextScript: "superscript"
     });
     expect(createToolsetCommandPayload("plugin.fixture.toolset.ping")).toEqual({
-      commandId: "plugin.fixture.toolset.ping"
+      commandId: "plugin.fixture.toolset.ping", target: currentPaletteTarget()
     });
   });
 

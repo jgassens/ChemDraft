@@ -77,6 +77,8 @@ fn main() {
             "request_quit_after_close",
             "close_toolset_popover",
             "route_toolset_command",
+            "publish_palette_snapshot",
+            "palette_routing_state",
             "sync_plugin_menu_items",
             "read_clipboard_payload",
             "write_clipboard_items",
