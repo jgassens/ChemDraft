@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.10.19.00-codex";
+const CURRENT_BUILD_STAMP = "11.10.21.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -20643,6 +20643,13 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    const point = pagePointFromPointerEvent(event);
+    // Selecting a bracket mounts a corner handle over part of its repeat label. Keep
+    // label presses on the ordinary object path so the page's dblclick capture can edit it.
+    if (object?.type === "bracket" && point && bracketLabelContainsPoint(object, point)) {
+      handleObjectPointerDown(objectId, event);
+      return;
+    }
     if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
       return;
     }
@@ -20650,7 +20657,6 @@ export function MainWindow({
       openObjectResizeInput(objectId, corner);
       return;
     }
-    const point = pagePointFromPointerEvent(event);
     const selectedFragmentTarget = selectedNativeMoleculePart?.objectId === objectId
       ? nativeTransformableSelectionPart(selectedNativeMoleculePart)
       : undefined;
@@ -20716,6 +20722,7 @@ export function MainWindow({
     directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
+    handleObjectPointerDown,
     handleObjectResizeInputKeep,
     handleRotationInputKeep,
     openObjectResizeInput,
