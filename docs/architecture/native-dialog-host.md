@@ -34,9 +34,9 @@ failure reports an error in the document status; it never creates an in-page des
 Preferences retains the `preferences` label, its existing renderer, and its settings permissions.
 Its native frame is registered with this host: `place_window`, `sample_position`, the bounded
 position worker, and close flushing share `dialog-positions.json` under the `preferences` key.
-First open centres over the document. Subsequent opens restore the saved monitor-relative position
+First open centers over the document. Subsequent opens restore the saved monitor-relative position
 at the destination display scale. Finite saved frames on an existing monitor are clamped to its
-work area, including off-screen frames; a missing monitor uses the existing centring fallback.
+work area, including off-screen frames; a missing monitor uses the existing centering fallback.
 Minimized, maximized, fullscreen and suspended frames are excluded. Preferences excludes the
 position applied by placement and OS adjustments within two physical pixels per axis (or one
 logical pixel rounded up at the window's scale, whichever is larger). The placement marker remains
@@ -45,7 +45,7 @@ Retained-window reveal preserves its position. Windows uses document ownership w
 entry; macOS uses the host's floating level and activation policy. Owner dismissal closes it too.
 Preferences does not become a protocol draft window or receive dialog transport permissions.
 
-Native regression tests cover first-open centring, per-kind persistence/reopen at a different scale,
+Native regression tests cover first-open centering, per-kind persistence/reopen at a different scale,
 OS rounding and immediate user moves after placement, DPI-scaled tolerance, off-screen clamping
 and missing-monitor fallback. They require
 native execution on both platforms; follow the Preferences checks in the standing manual stress
@@ -57,13 +57,13 @@ Value-encoded `atom.problem.open.<object>.<atom>` commands open the `atomProblem
 focusable (!) badge or the atom context menu, including suppressed invalid atoms. The one live
 problem window retargets within a tab without changing its native frame; changing its originating
 tab closes the old session before opening the new one. It shares the modeless construction,
-document ownership, first-open centring, per-kind position persistence, floating-toolbar stacking
+document ownership, first-open centering, per-kind position persistence, floating-toolbar stacking
 and Windows taskbar policy. Native creation failure reports status without an in-page fallback.
 
 The window receives only a bounded explanation, typed action labels and a target version. Its
 actions are limited to hydrogens, the existing suggested charge, Ignore and Restore. Rust and the
 coordinator reject unavailable actions and stale target versions. The owner revalidates against
-the current drawing before patching; one labelled history entry selects the atom. Inactive-tab
+the current drawing before patching; one labeled history entry selects the atom. Inactive-tab
 actions update that tab's own history and atom selection. Opening never writes. Live updates show
 No problem after correction/deletion, and tab close/replacement settles the session normally.
 Suppression hides the badge only: validation still supplies the explanation and Restore action.
@@ -139,7 +139,7 @@ wait through a pending destination picker and resume afterward; the host retains
 it arrives before the picker receipt. Superseded form requests abort their local wait and ignore
 stale render completions. A native rasterization already started cannot be interrupted. Oversized previews report a
 specific error; the final export remains a separate explicit action.
-PDF previews show the PDF writer's shared SVG page layout in an image, labelled
+PDF previews show the PDF writer's shared SVG page layout in an image, labeled
 “Preview of the PDF page layout”, with PDF page-guide settings and a white background.
 They require no embedded PDF viewer in WKWebView or WebView2; final PDF generation is unchanged.
 Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
@@ -202,7 +202,7 @@ a toolbar even if that toolbar needs a later restore retry.
 Dialogs participate in `UTILITY_SUSPENSION` alongside panels and toolbars, using the existing #140
 relative stacking restore. A native message/file box hides them and restores only still-live
 sessions. Opening Page Size acquires no suspension. Dialog moves never update toolbar frames or
-logical toolbar visibility. First placement centres on the owner's usable frame and clamps to the
+logical toolbar visibility. First placement centers on the owner's usable frame and clamps to the
 monitor work area, using the destination monitor's scale. Placement first moves to that monitor,
 then sets client size at its DPI, measures the resulting outer frame and clamps that actual frame.
 This avoids Windows WM_DPICHANGED scaling an already destination-sized client twice.
@@ -240,7 +240,7 @@ height. The natural content height has a 1px floor, independent of the kind's re
 that minimum must never add an empty band. The destination monitor's OS work area already excludes
 the taskbar/menu bar/Dock; the shared host additionally reserves a 12 logical-pixel margin on every
 edge. Every initial/reopened client is capped to that area minus the *measured* title bar and
-borders. Placement re-centres the final outer frame on first open and restores the saved logical
+borders. Placement re-centers the final outer frame on first open and restores the saved logical
 outer origin on subsequent opens, clamping only to keep the frame inside the work area. Saved
 normalized offsets remain readable for file compatibility but no longer reconstruct the origin:
 that reconstruction changed the position whenever the newly measured size differed from the saved
@@ -329,10 +329,10 @@ typed callback and do not receive native window or download authority.
 
 ## Structure templates
 
-`template.insertDialog` opens the modeless `structureTemplates` kind, labelled
+`template.insertDialog` opens the modeless `structureTemplates` kind, labeled
 `dialog-main-structureTemplates-<slot>`, through the same opaque-host route in `App.tsx`.
 It starts at 620 × 700 logical pixels (minimum 420 × 360), resizes, and inherits document ownership,
-first centring, per-kind position persistence, utility suspension, focus and originating-tab dismissal
+first centering, per-kind position persistence, utility suspension, focus and originating-tab dismissal
 on both platforms. Reopening shows and focuses the retained window without resetting its search.
 Browser builds use the same `StructureTemplatePicker` body in an in-page fallback.
 
@@ -344,7 +344,7 @@ are reserved and deduplicated through the shared private transport. An `inserted
 the reservation for the next insertion without closing the window; errors allow an explicit retry.
 The owner dispatches `template.insert.<id>` into its command registry in the originating tab's context,
 including when another tab is active. Each insertion adds/selects one molecule through document
-patches at the fixed document bond length, centred in that tab's visible page area, with one labelled
+patches at the fixed document bond length, centered in that tab's visible page area, with one labeled
 Undo entry. Closing/replacing the source tab invalidates the session.
 
 The picker body loads lazily. It builds thumbnails from trusted built-in layouts through
@@ -370,12 +370,12 @@ snapshot revisions and cancellation semantics before they can use the host.
 
 ## Stage 2: modeless Export
 
-`export.open` opens the second registered kind, `export`, labelled `dialog-main-export-<slot>`.
+`export.open` opens the second registered kind, `export`, labeled `dialog-main-export-<slot>`.
 It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
 retain a session for the same tab. Export starts at a 520px logical width with content-fit height
 (520 × 620 before ready or without a measurement). Its 420 × 360 resize minimum is bounded by the
 fitted client. Its body scrolls above always-visible actions; it cannot minimize or maximize. Its ownership,
-floating level, macOS unparented/hides-on-deactivate behavior, first centring, per-kind position
+floating level, macOS unparented/hides-on-deactivate behavior, first centering, per-kind position
 persistence, and utility suspension are the same shared paths as Page Size. No AppKit child
 relationship or new global window privilege is introduced. Browser builds retain an in-page
 surface containing the very same Export form and validation.
@@ -404,7 +404,7 @@ extension after the panel returns. Overlong path receipts fail visibly before a 
 
 Results are `accepted`, `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
 or warning notice data. Main returns preparation/picker/write progress without completing the
-request receipt or releasing its reservation. Failed operations and cancelled
+request receipt or releasing its reservation. Failed operations and canceled
 panels release the reservation for an explicit retry. Completed exports keep Export disabled and
 show success and warning details inside the dialog until Close/Escape/Cmd-or-Ctrl+W/title-bar close.
 The original export functions, option mapping, PDF metadata generation, and rasterizer input are
@@ -580,12 +580,12 @@ bounded total and a timeout; stale/partial/error previews cannot enable Save. Na
 focus/ownership, monitor placement, position persistence and native-prompt suspension reuse
 the shared host unchanged. Browser builds use the same draft-only form in their fallback.
 
-## Custom colour slots
+## Custom color slots
 
 `customColor` is a modeless document-owned dialog (`dialog-main-customColor-<slot>`), initially
-460 × 480 logical pixels and resizable. It uses the shared centring, per-kind saved position,
+460 × 480 logical pixels and resizable. It uses the shared centering, per-kind saved position,
 Windows ownership/no-taskbar policy, and private session channels. Its strict snapshot contains
-only the title, swatch number (1–4), slot (1–2), and current normalized hex colour or null.
+only the title, swatch number (1–4), slot (1–2), and current normalized hex color or null.
 Hex, RGB and approximate CMYK input share the pure swatch parsers; the form previews valid values
 and sends only normalized RGB hex on OK. The owner persists the slot without applying it to the
 drawing, and Clear invokes the slot's registered clear command. Changing slots replaces the

@@ -3,40 +3,37 @@ use std::{ffi::OsString, fs, path::Path, sync::atomic::AtomicBool};
 use super::{
     pins,
     receipt::{self, InstallReceipt},
+    requirements::RequirementsProfile,
 };
 use crate::local_engine::{self, EngineSpec, InstallError, InstallErrorCode, InstallPhase};
 use local_engine::file_ops::{self, FileOps};
 use local_engine::install::{Download, InstallContext, RunStep, RECEIPT_FILE};
-use local_engine::platform::EnginePlatform;
+use local_engine::platform::{EnginePlatform, EngineTarget};
 
 pub struct NamingSpec;
 pub type SystemInstallIo = local_engine::install::SystemInstallIo<NamingSpec>;
 
 pub fn platform_supported(platform: &dyn EnginePlatform) -> Result<(), String> {
-    match platform.uv_asset() {
-        "uv-aarch64-apple-darwin.tar.gz" | "uv-x86_64-pc-windows-msvc.zip" => Ok(()),
-        "uv-x86_64-apple-darwin.tar.gz" => Err("The naming engine needs a Mac with Apple silicon: RDKit 2026.3.5 has no Intel Mac wheel.".into()),
-        _ => Err("The naming engine supports macOS Apple silicon and Windows x64.".into()),
+    match platform.target() {
+        // requirements_for selects Intel's direct-wheel lock, never the PyPI-only profile.
+        EngineTarget::MacosAarch64 | EngineTarget::MacosX86_64 | EngineTarget::WindowsX86_64 => {
+            Ok(())
+        }
+        _ => Err(
+            "The naming engine supports macOS Apple silicon, macOS Intel and Windows x64.".into(),
+        ),
     }
 }
 
 pub fn current_platform() -> Result<Box<dyn EnginePlatform>, String> {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let platform: Box<dyn EnginePlatform> = Box::new(local_engine::platform::MacPlatform::new(
-        local_engine::platform::MacArchitecture::Aarch64,
-    ));
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    let platform: Box<dyn EnginePlatform> = Box::new(local_engine::platform::WindowsPlatform);
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "windows", target_arch = "x86_64")
-    ))]
-    {
-        platform_supported(platform.as_ref())?;
-        Ok(platform)
-    }
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_arch = "x86_64"))))]
-    Err(format!("The naming engine is unavailable for {}-{}; macOS requires Apple silicon (no Intel RDKit wheel).", std::env::consts::OS, std::env::consts::ARCH))
+    platform_for_target(EngineTarget::current())
+}
+
+pub(super) fn platform_for_target(target: EngineTarget) -> Result<Box<dyn EnginePlatform>, String> {
+    let platform = local_engine::platform::for_target(target)
+        .map_err(|_| format!("The naming engine is unavailable for {target:?}."))?;
+    platform_supported(platform.as_ref())?;
+    Ok(platform)
 }
 
 pub fn centres_path(root: &Path) -> std::path::PathBuf {
@@ -117,10 +114,10 @@ impl EngineSpec for NamingSpec {
         pins::REQUIRED_DISK_BYTES
     }
     fn requirements() -> (&'static str, &'static str) {
-        (
-            "resources/naming/requirements.txt",
-            pins::REQUIREMENTS_LOCK_SHA256,
-        )
+        RequirementsProfile::for_target(EngineTarget::current()).lock()
+    }
+    fn requirements_for(platform: &dyn EnginePlatform) -> (&'static str, &'static str) {
+        RequirementsProfile::for_target(platform.target()).lock()
     }
     fn python_growth_bytes() -> u64 {
         75_000_000

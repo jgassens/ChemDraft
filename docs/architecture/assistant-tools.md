@@ -20,7 +20,7 @@ scoped capability invocation with the request's captured selection and inserted 
 Successful direct-patch receipts update the request's touched/inserted scope, so later host tools
 can operate on those insertions. Direct writes join the existing assistant history transaction.
 The embedding write request carries an abort signal; the document window rechecks it after any
-gesture wait, preventing a cancelled tool's queued write from committing.
+gesture wait, preventing a canceled tool's queued write from committing.
 
 The plugin registers `onAssistantToolCall(context, { sessionId, name, input }, signal)` beside
 `commandHandlers` in its worker registration. `createWorkerRoutedOptions` delegates to

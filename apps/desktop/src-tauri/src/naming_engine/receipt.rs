@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::pins;
+use super::{pins, requirements::RequirementsProfile};
 use crate::local_engine::{pins::UV_VERSION, platform::EnginePlatform};
 
 pub const RECEIPT_VERSION: u32 = 1;
@@ -20,6 +20,9 @@ pub struct InstallReceipt {
     pub orthonym_commit: String,
     pub orthonym_wheel_sha256: String,
     pub requirements_sha256: String,
+    // Original profiles omit this field, including when reading older v1 receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements_profile: Option<String>,
     pub centres_url: String,
     pub centres_bytes: u64,
     pub centres_sha256: String,
@@ -29,6 +32,7 @@ pub struct InstallReceipt {
 
 impl InstallReceipt {
     pub fn pinned(platform: &dyn EnginePlatform, disk_bytes: u64) -> Self {
+        let profile = RequirementsProfile::for_target(platform.target());
         Self {
             receipt_version: RECEIPT_VERSION,
             engine_dir: pins::DIR_NAME.into(),
@@ -39,7 +43,8 @@ impl InstallReceipt {
             orthonym_version: pins::ORTHONYM_VERSION.into(),
             orthonym_commit: pins::ORTHONYM_COMMIT.into(),
             orthonym_wheel_sha256: pins::ORTHONYM_WHEEL_SHA256.into(),
-            requirements_sha256: pins::REQUIREMENTS_LOCK_SHA256.into(),
+            requirements_sha256: profile.sha256.into(),
+            requirements_profile: profile.receipt_profile.map(String::from),
             centres_url: pins::CENTRES_URL.into(),
             centres_bytes: pins::CENTRES_BYTES,
             centres_sha256: pins::CENTRES_SHA256.into(),

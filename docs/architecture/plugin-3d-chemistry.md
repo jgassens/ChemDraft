@@ -4,7 +4,7 @@ Plugin API 0.1.15 provides command-scoped 3D chemistry through optional
 `context.chemistry.embed3d`, `minimize3d`, and `flatten3d` methods. A plugin receives them only
 when it declares `chemistry.compute`; no new permission is involved. The host runs all three in its
 in-process RDKit WASM worker, so the capability starts no process and performs no network access.
-Calls are valid only while the plugin's own command is active and are cancelled when that command
+Calls are valid only while the plugin's own command is active and are canceled when that command
 ends.
 
 `embed3d` runs ETKDGv3 with explicit hydrogens for each of 1–8 supplied SMILES components (seed 42
@@ -22,9 +22,9 @@ that mode is refused for a single component. It returns `{ model, forceField,
 clash, closestInterComponentHeavyAtomA?, method, warnings }`; `forceField` includes the field name, status,
 energy, and `iterationsBudget`. Its status is `converged`, `not-converged`, or `setup-failed`.
 `closestInterComponentHeavyAtomA` is a distance in Angstrom. Incoming and minimized 3D geometry
-is read back through RDKit. Only tetrahedral centres and double bonds explicitly specified in the
+is read back through RDKit. Only tetrahedral centers and double bonds explicitly specified in the
 signed input constrain the geometry; unspecified sites are ignored. Local tetrahedral parity and
-cis/trans reference ligands are compared in stable atom order, so symmetry and neighbouring
+cis/trans reference ligands are compared in stable atom order, so symmetry and neighboring
 unspecified sites cannot create a false CIP mismatch. A mismatch names the component and site:
 `Component <n>: minimize3d <input|result> would change specified tetrahedral stereo at centre <atom>; restore the input geometry.`
 or `Component <n>: minimize3d <input|result> would change specified E/Z stereo at bond <a>-<b>; restore the input geometry.`
@@ -44,7 +44,7 @@ This is a contact screen, not proof that an arrangement above the threshold is p
 
 `flatten3d` has a 5-second work/queue timeout, excluding bounded cold startup, and accepts either an orthonormal row-major 3×3 rotation or
 `"auto"`. It uses the shared Spin 3D flattening math to create one native molecule per component,
-with 2D coordinates, wedges/hashes only at input-specified centres, depth by atom, and warnings.
+with 2D coordinates, wedges/hashes only at input-specified centers, depth by atom, and warnings.
 It checks incoming geometry with the same input-specified stereo rule (phase `flatten3d input`).
 Unspecified tetrahedral sites receive no wedge/hash. Specified stereo must survive the final
 canonical isomeric SMILES read-back exactly.
@@ -63,7 +63,7 @@ fail specifically, for example:
 `Component 1 ([13CH3]CO) carries isotope labels (13C), which ChemDraft drawings cannot store yet; flatten3d refuses rather than drop them.`
 Embedding and minimization still preserve isotopes in the 3D model. The worker returns objects only:
 a plugin with
-`document.write` inserts them with `documents.applyPatch`, making that command one labelled undo
+`document.write` inserts them with `documents.applyPatch`, making that command one labeled undo
 entry per call, including a batch. The result is `{ objects, depthByAtom, method, warnings }`.
 Returned molecule frames use the shared SMILES-paste geometry helper, including its horizontal
 and vertical atom-label padding. This frame normalization does not change atoms or `depthByAtom`.
@@ -116,10 +116,10 @@ The reproducible command and fixture details are in the chemistry3d README.
 
 Placement is a host responsibility. Flattening is document-independent and its origin-centered
 coordinates are not page placement. The direct-write path prepares insertion, any needed group
-translation and selection together before its one labelled history commit. In-page inserts and
+translation and selection together before its one labeled history commit. In-page inserts and
 groups anchored to pre-existing objects keep their authored placement. The same off-page batch inserted twice is
 covered by mounted MainWindow tests with macOS and Windows shortcut detection, including viewport
-bounds, unchanged component offsets, selection, labelled Undo and exact Redo.
+bounds, unchanged component offsets, selection, labeled Undo and exact Redo.
 
 The write-path inspection found only one history commit per `applyPatch`: the chem-core batch and
 selection patches do not push history themselves, and neither commit normalization nor a

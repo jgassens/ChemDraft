@@ -1,6 +1,6 @@
 use super::*;
 use crate::local_engine::{
-    platform::{MacArchitecture, MacPlatform, WindowsPlatform},
+    platform::{EngineTarget, MacArchitecture, MacPlatform, WindowsPlatform},
     process::SidecarProtocol,
 };
 use std::{ffi::OsString, fs, process::Command};
@@ -90,6 +90,211 @@ fn bundled_lock_matches_pin_and_wheel_provenance() {
         "461987b947f76e41ff0baa6c2aa19ecd79cacd0b"
     );
     assert_eq!(pins::REQUIRED_DISK_BYTES, 1_000_000_000);
+}
+
+#[test]
+fn intel_input_keeps_the_original_pins_except_for_the_rdkit_source() {
+    let original = include_str!("../../resources/naming/requirements.in");
+    let intel = include_str!("../../resources/naming/requirements-macos-x86_64.in");
+    let pins = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(String::from)
+            .collect()
+    };
+    let mut expected = pins(original);
+    let wheel = "https://github.com/jgassens/ChemDraft-Engines/releases/download/rdkit-2026.3.5-macos-x86_64-1/rdkit-2026.3.5-cp312-cp312-macosx_11_0_x86_64.whl";
+    *expected
+        .iter_mut()
+        .find(|pin| pin.starts_with("rdkit=="))
+        .expect("RDKit pin") = format!("rdkit @ {wheel}");
+    assert_eq!(pins(intel), expected);
+    assert!(intel.contains("uv pip compile requirements-macos-x86_64.in --python-version 3.12 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt"));
+}
+
+#[test]
+fn intel_bundled_lock_matches_pin_and_wheel_provenance() {
+    let profile = requirements::RequirementsProfile::for_target(EngineTarget::MacosX86_64);
+    // Deliberately a runtime read: if the Intel lock changes, re-lock with the command in
+    // requirements-macos-x86_64.in and update the pinned hash below.
+    let lock = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(profile.path))
+        .expect("Intel RDKit lock is missing; re-lock with the command in requirements-macos-x86_64.in and update REQUIREMENTS_LOCK_SHA256_MACOS_X86_64");
+    assert_ne!(
+        profile.sha256,
+        "0".repeat(64),
+        "set the real Intel lock hash"
+    );
+    assert_eq!(local_engine::pins::text_sha256(&lock), profile.sha256);
+    let text = String::from_utf8(lock).expect("UTF-8 lock");
+    assert!(text.contains("orthonym==1.0.8"));
+    assert!(text.contains(pins::ORTHONYM_WHEEL_SHA256));
+    let rdkit = text
+        .split("rdkit @ ")
+        .nth(1)
+        .expect("direct RDKit reference");
+    assert!(rdkit.starts_with("https://github.com/jgassens/ChemDraft-Engines/releases/download/rdkit-2026.3.5-macos-x86_64-1/rdkit-2026.3.5-cp312-cp312-macosx_11_0_x86_64.whl"));
+    assert!(
+        rdkit.contains("--hash=sha256:"),
+        "direct wheel must be hash-locked"
+    );
+}
+
+#[test]
+fn requirements_profiles_select_the_lock_from_the_explicit_build_target() {
+    for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+        let profile = requirements::RequirementsProfile::for_target(target);
+        assert_eq!(profile.path, "resources/naming/requirements.txt");
+        assert_eq!(
+            profile.sha256,
+            "ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a"
+        );
+        assert_eq!(profile.receipt_profile, None);
+        let platform = install::platform_for_target(target).expect("original platform");
+        assert_eq!(
+            NamingSpec::requirements_for(platform.as_ref()),
+            profile.lock()
+        );
+    }
+    let profile = requirements::RequirementsProfile::for_target(EngineTarget::MacosX86_64);
+    assert_eq!(
+        profile.path,
+        "resources/naming/requirements-macos-x86_64.txt"
+    );
+    assert_eq!(profile.sha256, pins::REQUIREMENTS_LOCK_SHA256_MACOS_X86_64);
+    assert_ne!(profile.sha256, pins::REQUIREMENTS_LOCK_SHA256);
+    assert_eq!(profile.receipt_profile, Some("macos-x86_64"));
+    assert_eq!(
+        NamingSpec::requirements(),
+        requirements::RequirementsProfile::for_target(EngineTarget::current()).lock()
+    );
+}
+
+// Literal bytes from the original v1 schema and pins, independent of current serialization.
+fn original_receipt_fixture(target: EngineTarget) -> &'static str {
+    match target {
+        EngineTarget::MacosAarch64 => {
+            r#"{
+  "receiptVersion": 1,
+  "engineDir": "naming-engine",
+  "uvVersion": "0.12.18",
+  "uvAsset": "uv-aarch64-apple-darwin.tar.gz",
+  "uvSha256": "cf40e0c6a202190ccd9e0406dcfdd5b2d6668a9a5c779b17948963df32aafe5b",
+  "pythonVersion": "3.12",
+  "orthonymVersion": "1.0.8",
+  "orthonymCommit": "461987b947f76e41ff0baa6c2aa19ecd79cacd0b",
+  "orthonymWheelSha256": "ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d",
+  "requirementsSha256": "ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a",
+  "centresUrl": "https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar",
+  "centresBytes": 2291742,
+  "centresSha256": "6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb",
+  "installedAt": "2026-10-21T00:00:00+00:00",
+  "diskBytes": 123
+}"#
+        }
+        EngineTarget::WindowsX86_64 => {
+            r#"{
+  "receiptVersion": 1,
+  "engineDir": "naming-engine",
+  "uvVersion": "0.12.18",
+  "uvAsset": "uv-x86_64-pc-windows-msvc.zip",
+  "uvSha256": "cae6a3bc25239f83dffb467a4b180508d9da23986c04639ebfa44e43e6a84bff",
+  "pythonVersion": "3.12",
+  "orthonymVersion": "1.0.8",
+  "orthonymCommit": "461987b947f76e41ff0baa6c2aa19ecd79cacd0b",
+  "orthonymWheelSha256": "ffd4f69d95349887c3fd762197464dadff81a1cf494fe42f6a2bcd7d6674393d",
+  "requirementsSha256": "ec5021b4365d77936c99ae71f3057a41c946149e67d8342de24c867edd6d9a2a",
+  "centresUrl": "https://github.com/SiMolecule/centres/releases/download/1.2.1/centres.jar",
+  "centresBytes": 2291742,
+  "centresSha256": "6c5d5cafa9393ed7b667a2340222348cd15a9bbdd0d1b92518229f26cc5e87fb",
+  "installedAt": "2026-10-21T00:00:00+00:00",
+  "diskBytes": 123
+}"#
+        }
+        other => panic!("no original receipt for {other:?}"),
+    }
+}
+
+#[test]
+fn original_receipts_keep_the_previous_bytes_and_remain_accepted() {
+    for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+        let platform = install::platform_for_target(target).expect("platform");
+        let fixture = original_receipt_fixture(target);
+        let old = receipt::parse_receipt(fixture).expect("original v1 receipt");
+        assert!(old.matches_pins(platform.as_ref()));
+        assert_eq!(old.requirements_profile, None);
+        let mut fresh = InstallReceipt::pinned(platform.as_ref(), 123);
+        fresh.installed_at = "2026-10-21T00:00:00+00:00".into();
+        let root = TestRoot::new("receipt-bytes");
+        let path = root.0.join(RECEIPT_FILE);
+        for receipt in [old, fresh] {
+            NamingSpec::write_receipt(&path, &receipt).expect("write v1 receipt");
+            assert_eq!(fs::read(&path).expect("receipt bytes"), fixture.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn cross_profile_receipts_are_rejected_even_with_matching_uv_pins() {
+    let intel = install::platform_for_target(EngineTarget::MacosX86_64).expect("Intel");
+    for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+        let original = install::platform_for_target(target).expect("original platform");
+        for (source, destination) in [
+            (intel.as_ref(), original.as_ref()),
+            (original.as_ref(), intel.as_ref()),
+        ] {
+            let mut receipt = InstallReceipt::pinned(source, 123);
+            assert!(receipt.matches_pins(source));
+            receipt.uv_asset = destination.uv_asset().into();
+            receipt.uv_sha256 = destination.uv_sha256().into();
+            assert!(!receipt.matches_pins(destination));
+            // The optional profile marker independently guards even coincident lock hashes.
+            receipt.requirements_sha256 =
+                requirements::RequirementsProfile::for_target(destination.target())
+                    .sha256
+                    .into();
+            assert!(!receipt.matches_pins(destination));
+            let root = TestRoot::new("cross-profile");
+            NamingSpec::write_receipt(&root.0.join(RECEIPT_FILE), &receipt).expect("write");
+            let status = installed_status(&root.0, destination, 0);
+            assert_eq!(status.state, EngineStatus::Broken);
+            assert!(status.detail.expect("pins detail").contains("pins differ"));
+            assert!(!local_engine::install::is_healthy::<NamingSpec>(
+                &root.0,
+                destination
+            ));
+            assert!(!NamingSpec::is_restorable(&root.0, destination));
+        }
+    }
+}
+
+#[test]
+fn intel_receipts_require_the_profile_marker_and_its_lock_hash() {
+    let platform = install::platform_for_target(EngineTarget::MacosX86_64).expect("Intel");
+    let receipt = InstallReceipt::pinned(platform.as_ref(), 123);
+    let value = serde_json::to_value(&receipt).expect("JSON");
+    assert_eq!(value["requirementsProfile"], "macos-x86_64");
+    assert!(receipt.matches_pins(platform.as_ref()));
+    for replacement in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!("other")),
+    ] {
+        let mut incomplete = value.clone();
+        match replacement {
+            Some(value) => incomplete["requirementsProfile"] = value,
+            None => {
+                incomplete
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("requirementsProfile");
+            }
+        }
+        let incomplete = receipt::parse_receipt(&incomplete.to_string()).expect("v1");
+        assert!(!incomplete.matches_pins(platform.as_ref()));
+    }
+    let mut stale = receipt;
+    stale.requirements_sha256 = pins::REQUIREMENTS_LOCK_SHA256.into();
+    assert!(!stale.matches_pins(platform.as_ref()));
 }
 
 #[test]
@@ -193,61 +398,149 @@ fn oversized_smiles_are_refused_before_encoding_or_spawning() {
 }
 
 #[test]
-fn intel_mac_is_unsupported_before_install() {
+fn intel_mac_is_supported_with_its_own_requirements_profile() {
     assert!(install::platform_supported(&MacPlatform::new(MacArchitecture::Aarch64)).is_ok());
     assert!(install::platform_supported(&WindowsPlatform).is_ok());
     let intel = MacPlatform::new(MacArchitecture::X86_64);
-    assert!(install::platform_supported(&intel)
-        .expect_err("unsupported")
-        .contains("Intel"));
-    let root = TestRoot::new("intel");
-    let paths = InstallPaths {
-        app_data: root.0.clone(),
-        requirements: root.0.join("absent-lock"),
+    assert!(install::platform_supported(&intel).is_ok());
+    let platform = install::platform_for_target(EngineTarget::MacosX86_64).expect("Intel");
+    assert_eq!(platform.target(), EngineTarget::MacosX86_64);
+    assert_eq!(platform.uv_asset(), "uv-x86_64-apple-darwin.tar.gz");
+    assert_eq!(
+        NamingSpec::requirements_for(platform.as_ref()),
+        (
+            "resources/naming/requirements-macos-x86_64.txt",
+            pins::REQUIREMENTS_LOCK_SHA256_MACOS_X86_64,
+        )
+    );
+    assert!(install::platform_for_target(EngineTarget::Unsupported).is_err());
+}
+
+#[test]
+fn original_install_arguments_remain_byte_identical() {
+    for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+        let platform = install::platform_for_target(target).expect("platform");
+        let root = Path::new("engine");
+        let args = local_engine::install::pip_install_args::<NamingSpec>(
+            platform.venv_python(root).into_os_string(),
+            root.join("requirements.txt"),
+        );
+        let python = match target {
+            EngineTarget::MacosAarch64 => root.join("venv").join("bin").join("python"),
+            EngineTarget::WindowsX86_64 => root.join("venv").join("Scripts").join("python.exe"),
+            _ => unreachable!(),
+        };
+        let expected: Vec<OsString> = vec![
+            "pip".into(),
+            "install".into(),
+            "--python".into(),
+            python.into_os_string(),
+            "--require-hashes".into(),
+            "--compile-bytecode".into(),
+            "--requirement".into(),
+            root.join("requirements.txt").into_os_string(),
+        ];
+        assert_eq!(args, expected, "{target:?}");
+        assert_eq!(NamingSpec::python_version(), "3.12");
+    }
+}
+
+#[test]
+fn installer_checks_the_selected_profile_hash_before_installing_packages() {
+    use local_engine::{
+        install::{Download, InstallIo, ProgressReporter, RunStep, RunWatch},
+        platform::EnginePlatform,
     };
-    struct NoIo;
-    impl local_engine::install::InstallIo for NoIo {
+
+    // No downloads or subprocesses: stop as soon as package installation would start.
+    #[derive(Default)]
+    struct LockCheckIo(AtomicBool);
+    impl InstallIo for LockCheckIo {
         fn download(
             &self,
-            _: local_engine::install::Download<'_>,
+            _: Download<'_>,
             _: &Path,
             _: &AtomicBool,
-            _: &dyn local_engine::install::ProgressReporter,
+            _: &dyn ProgressReporter,
         ) -> Result<(), InstallError> {
-            panic!("download must not start");
+            Ok(())
         }
         fn extract_uv(
             &self,
-            _: &dyn local_engine::platform::EnginePlatform,
+            _: &dyn EnginePlatform,
             _: &Path,
             _: &Path,
         ) -> Result<(), InstallError> {
-            panic!("extract must not start");
+            Ok(())
         }
         fn run(
             &self,
-            _: &dyn local_engine::platform::EnginePlatform,
-            _: local_engine::install::RunStep,
+            _: &dyn EnginePlatform,
+            step: RunStep,
             _: &Path,
             _: &[OsString],
             _: &[(OsString, OsString)],
             _: &AtomicBool,
-            _: Option<local_engine::install::RunWatch<'_>>,
+            _: Option<RunWatch<'_>>,
         ) -> Result<(), InstallError> {
-            panic!("run must not start");
+            if step == RunStep::InstallPackages {
+                self.0.store(true, Ordering::SeqCst);
+                return Err(InstallError::failed("test stopped before package install"));
+            }
+            Ok(())
         }
     }
-    let error = local_engine::install::install::<NamingSpec>(
-        &paths,
-        &intel,
-        &NoIo,
-        &AtomicBool::new(false),
-        &|_| {},
-        pins::REQUIRED_DISK_BYTES,
-    )
-    .expect_err("Intel refused");
-    assert_eq!(error.code, local_engine::InstallErrorCode::Unsupported);
-    assert!(!paths.partial_dir_for::<NamingSpec>().exists());
+
+    for target in [
+        EngineTarget::MacosAarch64,
+        EngineTarget::MacosX86_64,
+        EngineTarget::WindowsX86_64,
+    ] {
+        let platform = install::platform_for_target(target).expect("platform");
+        for tampered in [false, true] {
+            let root = TestRoot::new("lock-check");
+            let paths = InstallPaths {
+                app_data: root.0.clone(),
+                requirements: root.0.join("lock.txt"),
+            };
+            let original = include_bytes!("../../resources/naming/requirements.txt");
+            fs::write(
+                &paths.requirements,
+                if tampered {
+                    b"tampered".as_slice()
+                } else {
+                    original
+                },
+            )
+            .expect("lock fixture");
+            let io = LockCheckIo::default();
+            let error = local_engine::install::install::<NamingSpec>(
+                &paths,
+                platform.as_ref(),
+                &io,
+                &AtomicBool::new(false),
+                &|_| {},
+                pins::REQUIRED_DISK_BYTES,
+            )
+            .expect_err("test install stops");
+            if target == EngineTarget::MacosX86_64 || tampered {
+                assert_eq!(error.code, local_engine::InstallErrorCode::ChecksumMismatch);
+                let profile = requirements::RequirementsProfile::for_target(target);
+                assert!(error.message.contains(profile.sha256));
+                assert!(
+                    !io.0.load(Ordering::SeqCst),
+                    "unverified packages must not install"
+                );
+            } else {
+                assert!(
+                    io.0.load(Ordering::SeqCst),
+                    "original lock remains accepted"
+                );
+                assert_eq!(error.message, "test stopped before package install");
+            }
+            assert!(!paths.partial_dir_for::<NamingSpec>().exists());
+        }
+    }
 }
 
 const POISON_KEYS: &[&str] = &[

@@ -1,0 +1,23 @@
+# Intel Mac (macOS x86_64) input for the naming engine, on Python 3.12.
+# RDKit 2026.3.5 has no PyPI cp312 Intel Mac wheel. Use the macOS 11 wheel
+# built by jgassens/ChemDraft-Engines; every other input pin stays unchanged.
+# Re-lock from this directory with exactly:
+#
+#   uv pip compile requirements-macos-x86_64.in --python-version 3.12 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
+#
+# Release rdkit-2026.3.5-macos-x86_64-1 is published; its wheel SHA-256 is
+# 05e40941bf81748b58d3d80bd3c1bd37f52d6d1cf2ae816bbfe615eb43c9c304.
+# --generate-hashes records the direct URL hash for uv pip install --require-hashes.
+# After re-locking, set REQUIREMENTS_LOCK_SHA256_MACOS_X86_64 in
+# src/naming_engine/pins.rs to the LF-normalized lock SHA-256.
+# See docs/architecture/naming-engine.md for the remaining Intel validation.
+
+# Orthonym 1.0.8, the PyPI wheel (pure Python, MIT). Its wheel tree is identical, file for file, to
+# src/orthonym at tag v1.0.8 = commit 461987b947f76e41ff0baa6c2aa19ecd79cacd0b.
+orthonym==1.0.8
+
+# Orthonym's own exact runtime pins (METADATA Requires-Dist). Repeated here so a change to either
+# is a visible edit to this file rather than only to the lock.
+rdkit @ https://github.com/jgassens/ChemDraft-Engines/releases/download/rdkit-2026.3.5-macos-x86_64-1/rdkit-2026.3.5-cp312-cp312-macosx_11_0_x86_64.whl
+jpype1==1.7.1
+lxml==6.1.3

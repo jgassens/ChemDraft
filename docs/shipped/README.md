@@ -1,11 +1,11 @@
 # Shipped slices
 
-## Custom colours and bond tools (2026-11-10)
+## Custom colors and bond tools (2026-11-10)
 
-PR #340 adds persistent custom colour swatches to the Main toolbar's customization gallery and
-applies their colours to selected objects. Double and Triple Bond join the default Main toolbar;
-Chain moves to the gallery. Used object colours also round-trip through the CDXML colour table.
-Empty swatches open the colour editor, and toolbar layout metadata remains readable by 1.1.1.
+PR #340 adds persistent custom color swatches to the Main toolbar's customization gallery and
+applies their colors to selected objects. Double and Triple Bond join the default Main toolbar;
+Chain moves to the gallery. Used object colors also round-trip through the CDXML color table.
+Empty swatches open the color editor, and toolbar layout metadata remains readable by 1.1.1.
 See the [manual checklist](../manual-stress-checklist.md).
 
 ## CDXML and CDX fidelity (2026-11-10)
@@ -91,7 +91,7 @@ register CDX as a file association. See the [manual checklist](../manual-stress-
 
 ## Default double-bond placement (2026-11-10)
 
-PR #280 adds a persistent Offset or Centred preference for newly drawn double bonds. Existing
+PR #280 adds a persistent Offset or Centered preference for newly drawn double bonds. Existing
 bonds and explicit placement in ring and structure templates retain their display. See the
 [manual checklist](../manual-stress-checklist.md).
 
@@ -129,7 +129,7 @@ Edits use registered value-specific commands, live preview and one Undo entry pe
 Escape/cancel restores the starting document. Settings persist in native documents and share
 canvas/export geometry. Only selected wavy art paths change; molecular bonds and other graphics
 are untouched. Lines without wave metadata retain main's legacy geometry until explicitly adjusted.
-Keyboard slider steps have labelled Undo entries; an open menu or dialog gets Escape before a drag.
+Keyboard slider steps have labeled Undo entries; an open menu or dialog gets Escape before a drag.
 See [the implementation notes](../wavy-lines-handoff.md) and the
 [macOS/Windows manual checklist](../manual-stress-checklist.md).
 
@@ -144,7 +144,7 @@ survives save/reopen and opt-out and uses the same geometry in canvas and SVG/PD
 Moves and transforms retain the previous chemistry association rules in one exported pure policy,
 which reports reassociation for a future owner decision. Charges may change chemical association;
 radicals/lone pairs retain sticky atom anchors while in range; valence warnings never reassign a mark to a different atom.
-Edits have labelled Undo entries. CDXML warns by mark ID that its visible annotation, including
+Edits have labeled Undo entries. CDXML warns by mark ID that its visible annotation, including
 position, size, thickness and rotation, survives only in the embedded native payload.
 Native interaction checks remain in the shared [manual checklist](../manual-stress-checklist.md).
 
@@ -166,7 +166,7 @@ dialog kind). Every name is read back through OPSIN under the exact policy in
 `document-workflow-core/structureName.ts`: a name is shown only if it parses back to the same
 structure, and anything else is declined rather than guessed. Plugin API 0.1.7 adds
 `structureToName` and a `chemicalName` report section. The official plugin is
-`jgassens/ChemDraft-Orthonym-Plugin`. Components, pins and licences are in `NOTICE` and
+`jgassens/ChemDraft-Orthonym-Plugin`. Components, pins and licenses are in `NOTICE` and
 `docs/architecture/dependency-inventory.md`; design in `docs/architecture/naming-engine.md`.
 Intel Macs report the engine unsupported. The hands-on pass is in `docs/manual-stress-checklist.md`.
 
@@ -176,7 +176,7 @@ The movable Export dialog shares its form with the browser fallback. Preferences
 “Export preview and size presets”, off by default, with live updates in open dialogs.
 Enabled exports offer page/content cropping, linked or independent dimensions, DPI,
 background controls, renderer warnings, and slide/poster/publication size presets.
-PDF previews display the shared SVG page layout as an image on both platforms, labelled
+PDF previews display the shared SVG page layout as an image on both platforms, labeled
 “Preview of the PDF page layout”; final PDF generation is unchanged. Preview delivery
 retains its 5 MiB cap and validation. The document owner ignores presentation options
 when its preference is off, including requests from a dialog with stale settings.
@@ -188,7 +188,7 @@ preserves the existing quit/session flush; enabled prompts only for dirty tabs w
 Save / Discard / Cancel. Save covers every dirty tab, and cancellation or failed saving
 keeps the app open. The modal uses `role="dialog"` and `aria-modal="true"` so utility
 windows hide. PR #99's grace period and exit watchdog remain; the grace pauses only
-after the mounted dialog is acknowledged, and cancelled requests invalidate old timers.
+after the mounted dialog is acknowledged, and canceled requests invalidate old timers.
 Session restoration and Discard's session retention are unchanged.
 The 2026-10-14 review fixes save dirty documents by ID, permit Save As before shutdown,
 re-arm the flush grace after Save/Discard, scope prompt commands to the document window,
@@ -262,7 +262,7 @@ Branch `agentctl/fusion-20261010/ring-fusion-valence`. A ring tool clicked on a 
 was already a four-bond carbon fused anyway and left a five-bond carbon with a "Fused" status
 (AGENTS.md section 7, Chemistry invariants). One result-based guard in `documentWorkflow.ts`
 (`nativeRingPlacementValenceRefusal`) now judges every ring placement that changes an existing
-molecule (bond fusion, closure onto a neighbouring ring, spiro attachment, the cyclic-bond hotkey's
+molecule (bond fusion, closure onto a neighboring ring, spiro attachment, the cyclic-bond hotkey's
 closure): every pre-existing atom whose bond-order use plus radicals rose must still be supported at
 its element and formal charge, or at its label's free valence when it is a group or spelled label,
 read with the drawing tools' label context (bonded, typed, and recorded or drawn bond side). Element
@@ -273,7 +273,7 @@ formulas, and unrecognized text) are skipped.
   previewed and committed as a separate ring, the existing molecule untouched, with a status naming
   why: "an atom on that bond has no free valence", "the ring would close onto an atom with no free
   valence" (an existing atom the ring gains a bond to), or "the ring's double bonds would overfill a
-  neighbouring atom" (an atom whose valence rose only because an aromatic template re-paired the
+  neighboring atom" (an atom whose valence rose only because an aromatic template re-paired the
   double bonds), beside the spiro reason "that atom has no free valence". No up-front prediction
   refuses a spiro ring any more, so a benzene spiro on a one-bond S (S(IV)) or a two-bond P (P(V))
   attaches.
@@ -294,7 +294,7 @@ Windows hands-on verification is pending; the change is shared TypeScript with n
 
 ## Label anchoring (2026-10-10, branch `claude/label-anchoring`, jgassens/ChemDraft#97)
 
-A group label such as "OMe" drew centred on its atom, so its bond met the middle of the text, and a
+A group label such as "OMe" drew centered on its atom, so its bond met the middle of the text, and a
 group bonded on its right still read left to right ("OMe–C"). Now the bond meets the atom it bonds
 to, and the label reads toward its bond ("MeO–C"). Display only: the stored label, its recorded bond
 side and its chemistry never change. Two commits:
@@ -324,7 +324,7 @@ side and its chemistry never change. Two commits:
     Spin 3D overlay places a label from its projected bonds each frame (`nonElementAtomLabelPlacement`).
     The overlay opens on the conformer's own view, not the drawing's layout, so a label there reads
     toward its bond as the overlay draws it, which can differ from the flat drawing.
-  - Only under the default (automatic) label alignment; an explicit left, centre or right alignment
+  - Only under the default (automatic) label alignment; an explicit left, center or right alignment
     keeps the old layout.
 
 Stress numbers (`labelAnchoring.test.ts`, 15 px labels, 40 px bonds): the bond now stops 7–7.8 px
@@ -332,11 +332,11 @@ from the atom along a horizontal bond, where it stopped 11.3–36.4 px away befo
 on the right: 36.4 → 7.4 px). It never runs into the text: the gap between the bond's end and the label's box
 is 0–0.8 px in all 20 cases.
 
-Known limitations: element labels ("OH", "NH2", "CH3") keep their established centred geometry, and so
-do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centred. Two width
-models now coexist: anchored labels use Helvetica's advance widths, centred labels keep the flat
+Known limitations: element labels ("OH", "NH2", "CH3") keep their established centered geometry, and so
+do bare formulas ("CONH2") and unrecognised text. The inline label editor stays centered. Two width
+models now coexist: anchored labels use Helvetica's advance widths, centered labels keep the flat
 estimate (0.62 em a letter) their established geometry is built on. Another font family places the
-anchored letter slightly off centre. A cyano
+anchored letter slightly off center. A cyano
 label whose recorded side and drawn side differ (written, then turned round) is drawn as its text
 reads in the drawing, as before.
 
@@ -358,7 +358,7 @@ PRs make the label mean its group.
   ("COEt") is left unrecognized instead of read as C–OEt, and "CN" counts in a composite only last,
   after its head ("CNO" stays a bare formula). Cyano reads as cyano unless its bond comes from the
   label's right: "CN", "SCN" or "OCN" with the bond on the right means the N-bonded isomer, so it
-  stays a bare formula. The side is recorded on the atom (`labelBondSide`, with the neighbour it was
+  stays a bare formula. The side is recorded on the atom (`labelBondSide`, with the neighbor it was
   read against) when the label or its bond is written: every label and bond edit, opening a file and
   importing CDXML (the test that draws OH as HO). It is read from there, never from the coordinates,
   so moving, rotating, flipping, cleanup and Spin flatten never change what a label means; the
@@ -381,10 +381,10 @@ PRs make the label mean its group.
   switch leaves the state it lands on untouched. The session autosave, the quit and window-close
   flush, Save and export write the document as the open edit's close would leave it. Restarting an
   edit on the same atom continues the session. Other labels keep the editor's typed (literal)
-  behaviour: a "C" typed on a hidden carbon is a typed C. The structure editor returns no atom
+  behavior: a "C" typed on a hidden carbon is a typed C. The structure editor returns no atom
   identity, so a save carries a record only when it can prove which atom is which (the atom and bond
   counts are unchanged and the atoms match up only one way) and the label is still bonded to its
-  recorded neighbour. Otherwise every side-dependent label is read again from its drawing and the
+  recorded neighbor. Otherwise every side-dependent label is read again from its drawing and the
   status line names each with its reading, whether or not that changed.
 - **Formula, SMILES, molfile, analysis, plugins, CLI identity**: valid groups are expanded into real
   atoms appended after the drawn ones, so drawn indices never move, and the native formula is
@@ -399,7 +399,7 @@ PRs make the label mean its group.
 Known limitations: Spin 3D, its sidecar, cleanup re-layout, flatten and the CIP guard
 (`stereoPerceptionMolfile`) still see one placeholder atom per label, since their atom-count and
 index contracts need one molfile atom per drawn atom. The user sees no wrong chemistry there: the guard
-only compares a perception with itself, and a placeholder can add a centre to it but never hide one.
+only compares a perception with itself, and a placeholder can add a center to it but never hide one.
 CDXML still writes a group label as `Element="OMe"` (it round-trips, but external readers see no
 structure); a bonded "Ar", "Ac", "Pr" or "Ts" goes out as its label too, with a warning, never as the
 element. Molfile import does not contract `SUP` S-groups back into labels. Native masses differ
@@ -422,7 +422,7 @@ share a pure label/valence decision; elements and matching multi-bond labels sti
 Attachments preview the committed geometry, use the bond tools' placement planner, select the
 new atom on deliberate commits, and explain the result in the status line. Full-valence atoms
 fall back to relabelling with a specific message. Escape restores the original graph; inline
-edits have one labelled undo entry and hover continuation reuses its first-letter entry.
+edits have one labeled undo entry and hover continuation reuses its first-letter entry.
 The abbreviation-label close rule runs first: returning to a recorded or side-dependent starting
 label restores it exactly, without an attachment or undo entry. Ordinary retyped elements still
 become literal labels. Save/export/autosave use the close decision while the editor stays open;
@@ -455,9 +455,9 @@ to behave the same on macOS and Windows; Windows hands-on verification is pendin
   lobe placed on an atom snaps its tip there and rotates about that tip.
 - **Chemistry-aware drawing features.** A Text-tool click on an atom opens its label editor. Automatic
   text-to-label conversion is only for freshly placed text on the atom itself; the explicit Convert
-  Text to Atom Label command reaches one bond length. Centred double-bond position is available from
+  Text to Atom Label command reaches one bond length. Centered double-bond position is available from
   the inspector and canvas drag, imports and exports as CDXML `Center`, and is preserved through
-  clipboard, save/reopen, Spin 3D, flatten, and export. Acyclic C=X double bonds default to centred
+  clipboard, save/reopen, Spin 3D, flatten, and export. Acyclic C=X double bonds default to centered
   placement. Position commands target every double bond
   of wholly selected molecules, while part selections target their selected bonds. Every spin uses
   one planner path with stereo and bold display suppressed during the spin. The pre-existing ring
@@ -468,7 +468,7 @@ to behave the same on macOS and Windows; Windows hands-on verification is pendin
 
 Decisions: Undo remains reachable through Edit ▸ Undo, ⌘Z/Ctrl+Z, and Customize Main Toolbar; there
 is no default toolbar button. Lobes snap to atoms only during placement and are not anchored
-afterwards. Centred double-bond commands apply to all double bonds of wholly selected molecules.
+afterwards. Centered double-bond commands apply to all double bonds of wholly selected molecules.
 
 Open items: the owner's screenshot circles the four-membered ring of a sketch-style penicillin core,
 but what that circle marks is unknown. A fresh text box cannot be auto-converted through real
@@ -547,7 +547,7 @@ Windows surfaces), this branch shipped four slices.
   memoized, with handlers routed through `useStableCallbacks`, and molecule SVG plans are cached per
   object. Undo is bounded by retained size, counting shared objects once. On a 5,000-molecule page a
   single-object edit went from about 1 s to about 180 ms, and the heap no longer grows with each edit.
-- **Molecular Inspector reads the drawing.** Properties analyse a V3000 molfile of the live atom and
+- **Molecular Inspector reads the drawing.** Properties analyze a V3000 molfile of the live atom and
   bond graph instead of the object's `structure` string, which was empty for imported molecules and a
   lossy SMILES for fused rings. Condensed labels such as OH and NH2 are spelled with their hydrogens,
   counting aromatic bonds at their Kekulé orders (merged with the aromatic slice above); a label on
@@ -585,11 +585,11 @@ all?) before it can be reproduced.
 A headless `pnpm chemdraft <subcommand>` CLI and a stdio MCP server exposing the same operations, so
 an AI agent can do chemistry through the app's own chemistry stack instead of guessing at structures
 or numbers. Eight subcommands: `render` (SMILES → cropped SVG/PNG; PR #41 shipped this alone first as
-`pnpm render`, then PR #45 superseded it inside the full toolkit), `grid` (many SMILES → one labelled
+`pnpm render`, then PR #45 superseded it inside the full toolkit), `grid` (many SMILES → one labeled
 multiple-choice image), `reaction` (reaction SMILES or explicit reactant/agent/product → a scheme with
 plus signs, arrow, and charged formula labels), `analyze` (properties, pKa with intervals and source
 atoms, m/z table, provenance report), `name` (IUPAC/trivial name → SMILES via the vendored OPSIN,
-refusing ambiguous names unless overridden), `stereo` (R/S centres, E/Z bonds, unspecified and
+refusing ambiguous names unless overridden), `stereo` (R/S centers, E/Z bonds, unspecified and
 unrepresentable stereo), `nmr` (¹H/¹³C shifts and a stick spectrum via the NMR predictor plugin,
 loaded at run time from its separate repo), and `export` (cdxml/pdf/sdf/mol/smi). `packages/chemdraft-mcp`
 wraps all eight as MCP tools; each call gets its own output directory and calls run one at a time.
@@ -754,7 +754,7 @@ paste remaps their molecule anchors, and Cut removes the same objects and parts 
 
 ### Paste at the pointer and the bare-canvas Paste menu
 
-Selection paste centres the copied bounds at the pointer's page position, with repeated pastes
+Selection paste centers the copied bounds at the pointer's page position, with repeated pastes
 offset through the existing placement state. A right-click on empty canvas offers Paste, and a
 right-click over a selected fragment preserves that fragment instead of promoting its whole molecule.
 An empty Copy is swallowed so the web view cannot put the app's own markup on the clipboard.
@@ -993,7 +993,7 @@ arrow resize transforms the endpoints, not just the frame; axis-aligned arrows g
 contains their glyph; formula text distinguishes a charge magnitude from an atom count and keeps
 span styling; Escape cancels an in-flight placement instead of arming it; brackets and arrows are
 painted once; brackets and curved art warn when they degrade in foreign CDXML; chains stop at the
-page edge and rebuild in one pass; stamps centre on the click and clear stale interaction state;
+page edge and rebuild in one pass; stamps center on the click and clear stale interaction state;
 arrows and orbitals can start on top of an existing object; and the Customize gallery offers
 neither transitional stubs nor the compat-only art variants.
 

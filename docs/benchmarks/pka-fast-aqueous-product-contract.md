@@ -31,7 +31,7 @@ Companion evidence: [competitor benchmark](./pka-fast-aqueous-competitor-benchma
 | Public method id | `dimorphite.ionizable-sites` |
 | Method-contract version | `2.6.0` |
 | Site engine | `dimorphite-site-table` `2.0.2`; 46 SMARTS entries |
-| Shipped value model | acid-state, site-centred message-passing ensemble |
+| Shipped value model | acid-state, site-centered message-passing ensemble |
 | Architecture | 4 members; 30 atom features; 5 bond features; hidden width 96; 3 message-passing layers; 60 epochs |
 | Conjugate-base input | no |
 | Shell/radial features | no |
@@ -144,7 +144,7 @@ measure whether the product finds the correct event.
 | Measure | Value |
 |---|---:|
 | Rows | 12,096 |
-| Split | five folds, labelled `Bemis-Murcko scaffold` in the artifact |
+| Split | five folds, labeled `Bemis-Murcko scaffold` in the artifact |
 | Scaffold groups | 4,626 |
 | MAE | 0.7281 pKa units |
 | RMSE | 1.1917 |
@@ -255,7 +255,7 @@ and [`pkaGnn.ts`](../../packages/rdkit-adapter/src/pkaGnn.ts).
 
 ### E. Hammett-supported subset
 
-On the 342 labelled OOF sites where the current Hammett relationship applies, the GNN alone has MAE
+On the 342 labeled OOF sites where the current Hammett relationship applies, the GNN alone has MAE
 0.5086, Hammett has MAE 0.2594, and the inverse-error-weighted consensus has MAE 0.2394. Its interval
 covers 89.47% on that same subset. The benzoic-acid component is partly circular because those constants
 define the relationship; this is a narrow supported-domain correction, not general pKa accuracy.

@@ -42,6 +42,9 @@ it.each(["left", "right"] as const)("names the exported format in every visible-
       expect(cdxWarning).toEqual({ ...xmlWarning, message: xmlWarning!.message.replace("visible CDXML", "visible CDX") });
     }
     expect(cdx.warnings.find(warning => warning.code === "cdxml.text_format_native_only")!.message.includes("preserved only in the embedded")).toBe(embedNativePayload);
+    const textFormatWarning = xml.warnings.find(warning => warning.code === "cdxml.text_format_native_only")!;
+    expect(textFormatWarning.message).toContain("keeps per-character (run) colors, bold/italic and subscript/superscript");
+    expect(textFormatWarning.message).toContain("but not formatting applied to the whole text box (font, size, bold, italic, alignment, spacing)");
     const xmlLabelWarning = xml.warnings.find(warning => warning.code === "cdxml.label_bond_side_turned")!;
     const cdxLabelWarning = cdx.warnings.find(warning => warning.code === "cdxml.label_bond_side_turned")!;
     expect(xmlLabelWarning.message.includes("embedded document")).toBe(embedNativePayload);

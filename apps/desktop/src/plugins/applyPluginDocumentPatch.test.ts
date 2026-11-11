@@ -5,16 +5,24 @@ import {
   DocumentObjectSchema,
   redo,
   undo,
+  type BracketObject,
   type DocumentHistory,
   type DocumentObject,
   type MoleculeObject
 } from "@chemdraft/chem-core";
+import { resolveStructureTemplateName, setReactionArrowConditions, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
+import { repeatUnitMolfileGroups } from "@chemdraft/export-engine";
 import { ProposedDocumentPatchSchema, type NormalizedProposedDocumentPatch } from "@chemdraft/plugin-api";
-import { PluginHost } from "@chemdraft/plugin-host";
+import { assertPluginPatchWriteScope, PluginHost } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { objectRect, overlaps } from "../assistant/placement";
-import { resolveStructureTemplateName, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
-import { translateDocumentPage, translateInsertedDocumentObjects } from "../documentWorkflow";
+import {
+  createNativeArtLineGraphicObject,
+  moveDocumentObjects,
+  normalizeCommittedDocument,
+  translateDocumentPage,
+  translateInsertedDocumentObjects
+} from "../documentWorkflow";
 
 import {
   applyAcceptedPluginProposal,
@@ -40,6 +48,20 @@ function moleculeObject(): MoleculeObject {
     superatoms: [],
     rGroups: []
   };
+}
+
+function repeatUnitObjects(): [MoleculeObject, BracketObject, BracketObject] {
+  const molecule: MoleculeObject = { ...moleculeObject(), id: "mol", structure: "CC",
+    atoms: [
+      { id: "a1", element: "C", x: 100, y: 120, formalCharge: 0 },
+      { id: "a2", element: "C", x: 130, y: 120, formalCharge: 0 }
+    ],
+    bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
+  };
+  const open: BracketObject = { id: "open", type: "bracket", bracketKind: "square", side: "open",
+    pairId: "pair", repeatUnit: true, bracketUsage: "sru", containedObjectIds: [molecule.id],
+    x: 70, y: 96, width: 16, height: 120, rotation: 0, style: {} };
+  return [molecule, open, { ...open, id: "close", side: "close", x: 250, label: "n" }];
 }
 
 describe("desktop direct plugin patch application", () => {
@@ -141,6 +163,85 @@ describe("desktop direct plugin patch application", () => {
     expect(inserted).toEqual(object);
     expect(overlaps(objectRect(inserted), objectRect(existing))).toBe(true);
     expect(result.document.pages[0].height).toBe(page.height);
+  });
+
+  it("preserves two independent exportable SRUs when the same insertion batch is applied twice (F1a)", () => {
+    const document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const proposed = ProposedDocumentPatchSchema.parse({ reason: "Insert repeat unit", patch: {
+      op: "batch", patches: repeatUnitObjects().map(object => ({ op: "addObject", pageId, object }))
+    } });
+    const first = applyPluginDocumentPatch(document, proposed);
+    const firstMolecules = first.document.pages[0].objects.filter(object => object.type === "molecule");
+    expect(repeatUnitMolfileGroups(first.document, firstMolecules, [])).toHaveLength(1);
+
+    const second = applyPluginDocumentPatch(first.document, proposed);
+    const objects = second.document.pages[0].objects;
+    const molecules = objects.filter(object => object.type === "molecule");
+    expect(new Set(objects.map(object => object.id)).size).toBe(6);
+    expect(repeatUnitMolfileGroups(second.document, molecules, [])).toHaveLength(2);
+    expect(objects.slice(0, 3)).toEqual(first.document.pages[0].objects);
+    const brackets = objects.filter(object => object.type === "bracket");
+    expect(brackets).toHaveLength(4);
+    expect(new Set(brackets.map(bracket => bracket.pairId)).size).toBe(2);
+    for (const molecule of molecules) {
+      const pair = brackets.filter(bracket => bracket.containedObjectIds.includes(molecule.id));
+      expect(pair).toHaveLength(2);
+      expect(pair[0].pairId).toBeDefined();
+      expect(pair[1].pairId).toBe(pair[0].pairId);
+      expect(pair.map(bracket => bracket.side)).toEqual(["open", "close"]);
+      expect(pair.every(bracket => bracket.repeatUnit && bracket.bracketUsage === "sru")).toBe(true);
+      expect(pair[1].label).toBe("n");
+    }
+  });
+
+  it("rebases bracket crossing-bond owners to the inserted molecule on an id collision (F1b)", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const [molecule, open, close] = repeatUnitObjects();
+    document = applyPatch(document, { op: "addObject", pageId, object: molecule });
+    const objects = [molecule, ...[open, close].map(bracket => ({ ...bracket,
+      crossingBondIds: [{ objectId: molecule.id, bondId: "b1" }]
+    }))];
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Copy bracketed molecule", patch: {
+      op: "batch", patches: objects.map(object => ({ op: "addObject", pageId, object }))
+    } }));
+    const [original, inserted, ...brackets] = result.document.pages[0].objects;
+    expect(original).toEqual(molecule);
+    expect(inserted.id).not.toBe(molecule.id);
+    for (const bracket of brackets) {
+      expect(bracket).toMatchObject({ containedObjectIds: [inserted.id],
+        crossingBondIds: [{ objectId: inserted.id, bondId: "b1" }] });
+    }
+  });
+
+  it("attaches copied reaction conditions to the rebased arrow so they follow its movement (F3)", () => {
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    const arrow = createNativeArtLineGraphicObject(document, { x: 150, y: 300 }, { x: 390, y: 300 }, "tool.art.reactionArrow")!;
+    document = applyPatch(document, { op: "addObject", pageId, object: arrow });
+    document = setReactionArrowConditions(document, arrow.id, { side: "above", spans: [{ text: "80 °C", script: "normal" }] });
+    const originalObjects = document.pages[0].objects;
+    const originalConditions = originalObjects.find(object => object.type === "text")!;
+    const result = applyPluginDocumentPatch(document, ProposedDocumentPatchSchema.parse({ reason: "Copy arrow and conditions", patch: {
+      op: "batch", patches: originalObjects.map(object => ({ op: "addObject", pageId, object }))
+    } }));
+    const copies = result.document.pages[0].objects.filter(object => result.receipt.objectIds.includes(object.id));
+    const copiedArrow = copies.find(object => object.type === "graphic")!;
+    const copiedConditions = copies.find(object => object.type === "text")!;
+    expect(copiedArrow.id).not.toBe(arrow.id);
+    expect(copiedConditions.id).not.toBe(originalObjects[1].id);
+    expect.soft(copiedConditions.arrowAttachment?.parentObjectId).toBe(copiedArrow.id);
+    expect(copiedConditions.arrowAttachment).toEqual({ ...originalConditions.arrowAttachment,
+      parentObjectId: copiedArrow.id });
+
+    // Move clear of the original group: ordinary arrow moves still run the release collision
+    // solver, which may reposition automatic labels beside an overlapping arrow/conditions copy.
+    const moved = normalizeCommittedDocument(moveDocumentObjects(result.document, [copiedArrow.id], 350, 0));
+    const movedConditions = moved.pages[0].objects.find(object => object.id === copiedConditions.id)!;
+    expect(movedConditions.x).toBeCloseTo(copiedConditions.x + 350);
+    expect(movedConditions.y).toBeCloseTo(copiedConditions.y);
+    expect(moved.pages[0].objects.slice(0, originalObjects.length)).toEqual(originalObjects);
   });
 
   it.each([undefined, { x: 300, y: 400, width: 200, height: 200 }])("preserves authored on-page geometry with viewport %j", bounds => {
@@ -397,6 +498,7 @@ describe("desktop direct plugin patch application", () => {
     const pageId = document.pages[0].id;
     document = applyPatch(document, { op: "addObject", pageId, object: moleculeObject() });
     const host = new PluginHost({
+      getActiveDocument: () => document,
       getSelection: () => ({ objectIds: [], molecules: [] }),
       applyDocumentPatch: (request) => {
         const result = applyPluginDocumentPatch(document, request.patch);
@@ -807,6 +909,58 @@ describe("accepting a proposal into a document it was not laid out for", () => {
 });
 
 describe("plugin writes during a canvas gesture", () => {
+  it.each([false, true])("rechecks the invocation's scope after the gesture commits (new bracket = %s)", async attachBracket => {
+    let gesture = true;
+    const gate = createPluginWriteGate({ isGestureActive: () => gesture,
+      setTimer: () => 1, clearTimer: () => undefined });
+    const [molecule, open, close] = repeatUnitObjects();
+    let document = createEmptyDocument();
+    const pageId = document.pages[0].id;
+    document = applyPatch(document, { op: "addObject", pageId, object: molecule });
+    document = applyPatch(document, { op: "setSelection", objectIds: [molecule.id] });
+    const commit = vi.fn();
+    const queued = vi.fn();
+    const host = new PluginHost({ getActiveDocument: () => document,
+      applyDocumentPatch: request => {
+        queued();
+        return gate.run(() => {
+          assertPluginPatchWriteScope(document, request.patch, request.writeScopeObjectIds);
+          const result = applyPluginDocumentPatch(document, request.patch);
+          document = result.document;
+          commit();
+          return result.receipt;
+        });
+      }
+    });
+    host.registerPlugin({ id: "org.test.gesture", name: "Gesture", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.gesture.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.gesture.run": ctx => ctx.documents.applyPatch!({ reason: "Remove selected molecule", patch: {
+      op: "removeObject", objectId: molecule.id
+    } }) } });
+    const pending = host.invokeCommand("plugin.gesture.run");
+    await vi.waitFor(() => expect(queued).toHaveBeenCalledOnce());
+    expect(gate.pending()).toBe(1);
+    expect(commit).not.toHaveBeenCalled();
+    if (attachBracket) {
+      document = applyPatch(document, { op: "batch", patches: [open, close].map(object => ({ op: "addObject", pageId, object })) });
+      // A later selection must not broaden the original command's grant.
+      document = applyPatch(document, { op: "setSelection", objectIds: [molecule.id, open.id, close.id] });
+    }
+    const afterGesture = document;
+    gesture = false;
+    gate.flush();
+    if (attachBracket) {
+      await expect(pending).rejects.toThrow('Removing "mol" would change bracket "open", which is not selected');
+      expect(document).toBe(afterGesture);
+      expect(commit).not.toHaveBeenCalled();
+    } else {
+      await expect(pending).resolves.toMatchObject({ applied: true });
+      expect(commit).toHaveBeenCalledOnce();
+      expect(document.pages[0].objects).toEqual([]);
+    }
+    gate.dispose();
+  });
+
   it("runs at once when no gesture is active", async () => {
     const gate = createPluginWriteGate({ isGestureActive: () => false });
     await expect(gate.run(() => "applied")).resolves.toBe("applied");

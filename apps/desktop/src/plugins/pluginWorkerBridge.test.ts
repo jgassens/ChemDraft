@@ -35,7 +35,7 @@ import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
 import { createBundledPluginDescriptors, createWorkerRoutedOptions } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
-import { createEmptyDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, MoleculeObjectSchema } from "@chemdraft/chem-core";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
 
 type MessageListener = (event: { data: unknown }) => void;
@@ -857,12 +857,13 @@ describe("documents.applyPatch survives the worker boundary", () => {
             patch: {
               op: "addObject",
               pageId: "page_001",
-              object: { id: "mol_worker" }
-            } as never
+              object: MoleculeObjectSchema.parse({ id: "mol_worker", type: "molecule",
+                x: 0, y: 0, width: 10, height: 10, structureFormat: "smiles", structure: "C" })
+            }
           })
       }
     };
-    const host = new PluginHost({ applyDocumentPatch });
+    const host = new PluginHost({ applyDocumentPatch, getActiveDocument: () => createEmptyDocument() });
     const bridge = startWorkerRoutedPlugin(registration);
     host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
 

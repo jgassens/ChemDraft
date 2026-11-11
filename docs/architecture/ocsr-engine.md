@@ -23,7 +23,7 @@ plugin id. For such an entry the single **Install** button does both installs:
    installed or the computer is unsupported.
 2. Confirming installs the plugin, then immediately starts the engine install in the plugin's row,
    with the same progress display as the first-use dialog.
-3. If the engine install fails or is cancelled, the plugin stays installed. The row names the error in
+3. If the engine install fails or is canceled, the plugin stays installed. The row names the error in
    plain words and offers **Install engine again** as a full-size button. The engine row never uses a
    text link: **Install engine**, **Cancel install** and **Remove engine** are all ordinary buttons.
 
@@ -126,7 +126,7 @@ waits for the sweep: all three take one staging lock before touching these direc
    absolute interpreter paths embedded in `python.exe` and `pythonw.exe` (see Adding Windows).
 9. **Prove it.** `python -c "import cv2, molscribe, numpy, torch, torchvision"` runs from the final
    location. This is the only check that the relocation worked, so it runs after the swap, not before.
-   If the launcher rewrite or probe fails or is cancelled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
+   If the launcher rewrite or probe fails or is canceled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
    a failed reinstall never costs the user a working engine. On success the previous tree is removed.
 
 Every child process runs with inherited `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*` and `CONDA*`
@@ -523,7 +523,7 @@ no focus, traps nothing, and covers only its corner, so the user keeps drawing. 
 that asked, the stage in plain words, a bar and the elapsed time, and offers **Cancel**. Only the
 stage line is a live region (`role="status"`, `aria-live="polite"`); the clock ticks every second and
 is kept out of it. It is shown from the moment a plugin hands an image to recognition until the
-result is ready, the recognition fails, or it is cancelled — except while the install dialog is open,
+result is ready, the recognition fails, or it is canceled — except while the install dialog is open,
 which is the feedback then.
 
 | Stage | Text | Bar |
@@ -547,7 +547,7 @@ result, which the next recognition uses.
 silent on it) and hides the card; if the engine was already recognizing, the controller also calls
 `cancelRecognition`, which kills the sidecar through `ocsr_recognize_cancel`. An abandoned plugin
 invocation cancels the same way. A recognition started right after a cancel waits (up to 10 s) for
-the cancelled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
+the canceled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
 a second request while one is shown is answered `busy` without disturbing the first.
 
 **Engine-neutral.** Stages travel through `StructureRecognitionEngine` —
@@ -621,10 +621,10 @@ handling as all other uv runs. Failure or cancellation rolls the swap back just 
 Restoring `previous` during rollback or interrupted-install reconciliation refreshes the launchers
 again at the final path; a failed startup reconciliation retains the previous tree for a later retry.
 The startup sweep uses local process IO without constructing an HTTP client. During reinstall,
-a non-cancelled recovery failure is logged with its stderr tail and the unusable old trees are
+a non-canceled recovery failure is logged with its stderr tail and the unusable old trees are
 discarded so the fresh install can proceed. If that new install fails, no broken rollback is restored.
 Cancellation still aborts reinstall and preserves the previous tree.
-Rollback always renames the old engine back. If already cancelled, it skips the refresh because the
+Rollback always renames the old engine back. If already canceled, it skips the refresh because the
 old launchers already name the final path; no new child starts after cancellation or app exit.
 The legacy-receipt check also refreshes Windows launchers before its Python probe. Unix does nothing
 extra: symlink relocation already repairs its venv interpreter.

@@ -20,7 +20,7 @@ individual tools also check their own permissions. Declare `apiVersion: "^0.1.9"
 
 Keep the plugin's submit command pending for the whole run. At Send, call
 `assistant.beginRequest({ prompt, label? })`: the host captures the document tab and selection
-and opens a labelled transaction. Tools may change only that selection plus objects inserted
+and opens a labeled transaction. Tools may change only that selection plus objects inserted
 earlier in the same request. Changing the selection during a run never widens its scope; an empty
 selection permits additions only. Results land directly on the page, with no approval window.
 
@@ -145,7 +145,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance for the offline name dictionary (#318).
 API 0.1.23 adds native wavy single bonds (#327).
 Set `MoleculeBond.display.bondStyle: "wavy"` only with `order: "single"`; the schema rejects other orders.
-`fromAtomId` is the explicitly unknown stereocentre. Preserve both endpoints when copying; never
+`fromAtomId` is the explicitly unknown stereocenter. Preserve both endpoints when copying; never
 assign R/S there. The SDK exports `MoleculeBond` and `MoleculeBondDisplay`; plugins using wavy bonds
 should declare `^0.1.23`.
 API 0.1.24 adds reaction `arrowObjectIds`/`plusObjectIds` for shared scheme arrows and plus signs (#335),
@@ -157,7 +157,7 @@ It is allowed only on double bonds; plugins must preserve it when copying bonds 
 API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
 patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
-`isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
+`isotope` field; other labeled atoms (including hydrogen-1) carry the mass number in `isotope`.
 Plugins using isotope fields should declare `^0.1.16`.
 API 0.1.18 adds command-scoped `documents.insertTable`; plugins using it should declare `^0.1.18`.
 API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
@@ -468,7 +468,7 @@ Every result status is significant: `declined` means no name passed host policy;
 `noVerifiedName`, `notFullyVerified`, `unsupportedElement`, `unnameable`, `engineLimit`,
 `structureNotExact`, and `tooLarge` (the raw naming-engine limit is available as `limitCode` where
 applicable). `engineNotInstalled` means the user declined or did not finish host-owned installation;
-`cancelled` means the user cancelled or abandoned the invocation and the plugin should stay silent;
+`cancelled` means the user canceled or abandoned the invocation and the plugin should stay silent;
 `unsupported` identifies a platform, host, or OPSIN-runtime limitation; and `failed` has one of
 `engineCrashed`, `timeout`, `busy`, `installFailed`, or `invalidResult` plus a message. Never show a
 partial or unverified name: only `named` carries a name. A failed engine install is `failed` with `installFailed`, rather than a chemical decline.
@@ -480,7 +480,7 @@ proof beyond that limitation.
 
 **`proposedPatch` without `document.read`.** The insertion the host builds for a recognized structure is
 laid out against the active document — its page id, an object id derived from the document's object
-count, and page-centre coordinates. A plugin that did not declare `document.read` must not learn those,
+count, and page-center coordinates. A plugin that did not declare `document.read` must not learn those,
 so it receives `proposedPatch.patch` as an opaque `{ op: "hostHeldRecognition", ref }`
 (`HostHeldRecognitionPatchOp` in `@chemdraft/plugin-api`). Pass the `proposedPatch` to
 `documents.proposePatch` unchanged — adding warnings is fine; the host's reason, warnings, and review
@@ -564,10 +564,10 @@ These atom indices are one-based in the complete model; component numbers are on
 The model includes a host-signed `modelToken` over its atoms and bonds. A plugin may change its
 coordinates, but never its chemical graph. `flatten3d({ model, view })` accepts an orthonormal,
 row-major 3×3 rotation (nine numbers) or `"auto"`; it returns one native molecule per component,
-2D coordinates, wedges/hashes for input-specified centres, `depthByAtom`, and warnings. It uses the same
+2D coordinates, wedges/hashes for input-specified centers, `depthByAtom`, and warnings. It uses the same
 flattening as Spin 3D and refuses a component whose stereochemistry would not survive. It returns
 `{ objects, depthByAtom, method, warnings }`: inserting them requires `document.write` and
-`documents.applyPatch`, so each call (including one batch) creates one labelled undo entry.
+`documents.applyPatch`, so each call (including one batch) creates one labeled undo entry.
 Returned molecule frames use the same padded atom/label bounds as SMILES paste, without changing
 projected atoms or `depthByAtom`. Placement measures molecules by the union of their frame and atom
 extents, even for plugin-supplied objects with inconsistent frames; other objects use their existing bounds.
@@ -616,9 +616,9 @@ Each plugin may run one 3D call and queue eight; further calls
 fail with `Plugin "<id>" 3D chemistry is busy: at most 1 running call and 8 queued calls are allowed.`
 The app shares at most two reusable RDKit 3D workers. Command end cancels running work and clears
 that plugin's queue; timeout or cancellation terminates the affected worker.
-Minimization checks only the tetrahedral centres and E/Z bonds explicitly specified in each
+Minimization checks only the tetrahedral centers and E/Z bonds explicitly specified in each
 component's signed SMILES, both before and after optimization. Unspecified sites are ignored.
-Refusals identify the component and one-based centre or bond, for example
+Refusals identify the component and one-based center or bond, for example
 `Component 1: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry.`
 or `Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.`
 Flattening checks incoming geometry by the same rule (phase `flatten3d input`), keeps specified
@@ -834,8 +834,14 @@ const receipt = await context.documents.applyPatch?.({
 `applyPatch` is absent without `document.write`, and a retained method reference rejects after the
 command invocation ends. It may insert objects and annotations, and update, move, remove, or reorder
 only objects selected when that command started plus its accepted insertions. Flat batches of
-1–256 operations are atomic. The direct write is one undo entry labelled with the plugin and command;
+1–256 operations are atomic. The direct write is one undo entry labeled with the plugin and command;
 it does not open the proposal review tray/window. Assistant writes join one transaction per request.
+
+The host also refuses indirect changes outside that scope. For example, removing a selected molecule
+is refused if it would remove membership references from an unselected bracket; select the bracket
+as well. Editing a selected bracket's label or repeat count may refresh derived warnings on enclosed
+molecules without selecting them. The host checks again against the commit-time document after any
+canvas gesture wait. Writes are refused when no active document is available to validate the scope.
 
 ### Native tables (0.1.18)
 
@@ -844,9 +850,9 @@ Plugins may read the optional `tableStyle.autoColumnMinEm` minimum auto column w
 
 Declare `document.write` and `apiVersion: "^0.1.18"`. The optional
 `context.documents.insertTable(spec: PluginTableSpec)` validates untrusted input with the shared
-table builder, places it beside the command's selection (or at the viewport centre), and uses the
+table builder, places it beside the command's selection (or at the viewport center), and uses the
 same command-scoped direct-patch path. It returns `AppliedPatchReceipt`, leaves the native table
-selected, and creates one undo entry labelled **Insert table**. The inserted table is in scope for
+selected, and creates one undo entry labeled **Insert table**. The inserted table is in scope for
 later `applyPatch` calls during that command. A retained method rejects after the command ends.
 
 ```ts
@@ -1018,12 +1024,60 @@ each plugin's id, display name, description, exact GitHub repository, and releas
 no network discovery. The **Available** section of **Add or Remove Plugins** lists every catalog entry
 that is not installed and offers a one-click **Install** action.
 
-The desktop host fetches the latest stable release only from that catalog entry's repository and
+The desktop host fetches stable releases only from that catalog entry's repository and
 requires the exact versioned ZIP and `.zip.sha256` asset names. It applies the same redirect-host,
 download-size, checksum, archive, manifest, API, permission, and worker-handshake gates used by
 manual package installs and updates. Before either an official install or an update is committed, the
 ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
 its same-origin-only CSP and receives no network or filesystem capability for this workflow.
+
+**Release body markers (required for official releases).** Every official plugin release,
+including **NMR Shift Predictor**, **MolScribe OCSR**, and **Orthonym**, MUST include both
+machine-readable lines in its GitHub release body. The exact format is
+`ChemDraft-Plugin-API: <manifest apiVersion>` and `ChemDraft-Min-App: <minimum app version>`,
+each on its own line with one space after the colon. For example:
+
+```text
+ChemDraft-Plugin-API: ^0.1.25
+ChemDraft-Min-App: 1.2.0
+```
+
+Set `ChemDraft-Plugin-API` to the manifest's `apiVersion` (an exact Semantic Version, caret range,
+or tilde range, as supported by the install gate). `ChemDraft-Min-App` is the minimum ChemDraft
+version to display to users, as a plain `MAJOR.MINOR.PATCH` release version without a prerelease
+or build suffix. Each marker value is limited to 64 characters; longer, missing, malformed, or
+duplicate markers are treated as unknown.
+When the host API is too old, an incompatible marker says **Needs ChemDraft 1.2.0 or later**, or
+**Needs a newer ChemDraft** without a valid minimum app version. When the host API is newer than
+the release supports, it says **Not yet available for this ChemDraft version**. Neither case
+offers or downloads that release when metadata is available; the host first looks for a compatible
+fallback. An installed version equal to or newer than the latest release stays **Up to date**
+regardless of markers. A release without a valid API marker keeps the existing version-based flow.
+The install-time gate remains the real compatibility check, even when release markers are present.
+
+For a fresh catalog install or installed-plugin update whose latest release is incompatible, the
+host checks only the first 20 releases at
+`https://api.github.com/repos/<repository>/releases?per_page=20`, skipping drafts and prereleases.
+It chooses the newest version with a compatible API marker, or the newest release with
+unknown compatibility only if no usable marked compatible release exists. Installed-plugin updates
+consider only versions newer than the installed version. A candidate with malformed or missing
+assets is skipped in favor of the next candidate; if none is usable, the existing asset error is
+reported. Fresh-install package review explains the selected version and reason. If no compatible
+or unknown candidate exists, the appropriate incompatibility message is shown without downloading.
+All selected packages still pass the unchanged install gates; an installed plugin is never changed
+by checking or preparing a package.
+
+GitHub rate limits (HTTP 403 with `x-ratelimit-remaining: 0`, or HTTP 429), offline/network failures,
+and metadata timeouts stay silent during background automatic checks and are not retried in a loop.
+User-initiated **Check for updates** shows **Couldn't reach GitHub to check for plugin updates. Try again later.**
+**Install from the catalog** shows **Couldn't reach GitHub to download the plugin. Try again later.**
+Metadata failures are logged with the URL host and error kind, including allowlist denials.
+If the release list is unavailable,
+the host falls back to the latest release by version and leaves compatibility enforcement to the
+install-time gate. If latest metadata itself is unavailable, existing offers remain unchanged;
+without version and asset metadata, a new offer or fresh install waits for a later check. These
+metadata outages open no error dialog. A successful fallback still shows the inline metadata status
+for a user-initiated action. Package download and validation failures still report errors.
 
 On macOS and Windows, ChemDraft automatically checks installed official plugins daily, starting
 15 seconds after the installed catalog is ready. **Check for plugin updates automatically** in

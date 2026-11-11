@@ -28,7 +28,7 @@ decodes Unicode correctly before `Set-Content` writes it. Prefer the command's
 Shell state may reset between tool calls: set `$checkout`, `$scratch` and
 console encoding again in each call, or substitute literal paths.
 
-Unless labelled otherwise, the following single-line commands work in both
+Unless labeled otherwise, the following single-line commands work in both
 shells. Node snippets only prepare/read files; they do not compute chemistry
 or draw structures. Read `ok` and warnings after every ChemDraft command.
 View each final image once. Keep all input SMILES and options with the document.
@@ -189,11 +189,11 @@ style with `--style document --dpi 300` and insert it at the SVG's reported
 physical size, not a fitted width. Check contrast against the slide
 background. Keep the SMILES/options.
 Known limitation: `render` still paints an opaque white patch behind each
-atom label (the O and OH here) on a transparent background. On a coloured
+atom label (the O and OH here) on a transparent background. On a colored
 slide, build the figure with `document --style document`, set
 `molecule.style.atomLabelBackgroundColor` to `"transparent"`, and render it
 with `render-document --style document --background transparent`
-([art](art.md)). This document-style path keeps the figure's colours and the
+([art](art.md)). This document-style path keeps the figure's colors and the
 transparent label background; it changes only its fixed physical sizes.
 
 ## 10. Human hand-edit loop via CDXML
@@ -214,11 +214,11 @@ check on each platform. Do not automate editing through the testing bridge.
 
 A request for a named chemist's or journal's style is a set of visual
 conventions to reproduce, not something to refuse. Nicolaou is a style,
-not a molecule. Its calling card is vivid colour: every lettered ring
-filled with its own loud, saturated colour, no two neighbouring rings
-alike. Ring letters in italic serif, H drawn at ring-fusion stereocentres
+not a molecule. Its calling card is vivid color: every lettered ring
+filled with its own loud, saturated color, no two neighboring rings
+alike. Ring letters in italic serif, H drawn at ring-fusion stereocenters
 and Me labels on ring methyls complete it. Pastel tints, or black and
-white with ring letters, are not the style: the coloured figure is the
+white with ring letters, are not the style: the colored figure is the
 answer, not an optional variant. All of it is native document art
 ([art](art.md)).
 
@@ -286,7 +286,7 @@ each call creates unique decoration IDs and groups only its own artwork.
    Rings are ranked by chemistry: aromatic first, then the larger ring,
    then more heteroatoms, then a canonical atom rank computed from the
    molecular graph (element, charge, degree and H count, refined over
-   neighbours), lowest first. The walk starts at the first-ranked terminal
+   neighbors), lowest first. The walk starts at the first-ranked terminal
    ring (the first-ranked ring when there is none, as in a cage), unless
    `start` names one; from each ring it goes on to rings sharing a bond
    before rings sharing only atoms, each set in rank order. Only atoms the
@@ -296,17 +296,17 @@ each call creates unique decoration IDs and groups only its own artwork.
 3. **Where the letter goes.** At the most open point inside its ring,
    clear of atoms, bonds and labels (such as a gem-dimethyl pointing into
    the ring), in bold italic serif at 20 px, shrinking only to fit.
-4. **Letter colour.** Ring letters are white on a dark fill and near-black
+4. **Letter color.** Ring letters are white on a dark fill and near-black
    on a light one, chosen by the fill's relative luminance as drawn (white
    below 0.34). All atom labels on fills, including ring atoms and inward
    substituents, use the same luminance rule and a transparent per-atom
-   background (no halo). The renderer preserves authored text colours;
+   background (no halo). The renderer preserves authored text colors;
    its default halos match the fill beneath them. Fills are plain polygons
-   reaching the atom centres and bond lines.
-5. **Fill colours.** Twelve saturated colours in letter order, so each
-   ring gets its own; beyond twelve, a greedy colouring over ring
+   reaching the atom centers and bond lines.
+5. **Fill colors.** Twelve saturated colors in letter order, so each
+   ring gets its own; beyond twelve, a greedy coloring over ring
    adjacency keeps rings that share an atom apart.
-6. **Fusion H.** At every CH stereocentre shared by two lettered rings,
+6. **Fusion H.** At every CH stereocenter shared by two lettered rings,
    the wedge or hash that starts there moves onto a new explicit H with
    the opposite style (a wedged ring bond becomes a hashed H), and the
    ring bond goes plain. The H points outward in the clearest direction,
@@ -315,18 +315,18 @@ each call creates unique decoration IDs and groups only its own artwork.
    wedge is a change like any other: `render-document` must read the
    drawing with its new H as the same molecule (the same standard
    InChIKey, since explicit H changes the SMILES string) with the same
-   stereocentre counts. An H that fails is taken back out, its ring bond
+   stereocenter counts. An H that fails is taken back out, its ring bond
    keeps the wedge, and it is reported (`UNDONE: fusion H`).
 7. **Me.** Methyls on lettered rings are drawn CH3 in `<name>-carbon.json`,
    the true structure and the editable file. Its CH3 labels are wider than
-   Me and can crowd neighbours. `<name>-nicolaou.json` relabels them Me
+   Me and can crowd neighbors. `<name>-nicolaou.json` relabels them Me
    for the picture only: a Me label is a placeholder atom (`*`), not a
    carbon ([art](art.md), pattern 2).
 8. **Layout.** Before styling, `style` compares three drawings of the
    same molecule: ChemDraft's build, ChemDraft's layout of the canonical
    SMILES (another atom order) and PubChem's own 2D record, fetched by
    CID. PubChem's atoms are matched to the document's and every wedge is
-   re-drawn so each stereocentre keeps its handedness. Each layout is
+   re-drawn so each stereocenter keeps its handedness. Each layout is
    scored (lower is cleaner): 40 per bond crossing, 12 per bond, atom or
    label on a fill not its own, 10 per bond-length square of fill over
    fill, 20 per clashing atom pair, 6 per bond more than 25% off standard
@@ -344,15 +344,15 @@ each call creates unique decoration IDs and groups only its own artwork.
    turned or mirrored about its attachment atom, bond lengths kept, to the
    clearest placement off every fill that lands on no atom and crosses no
    bond. A mirror image swaps the wedges inside the group, so its own
-   stereocentres keep their handedness.
+   stereocenters keep their handedness.
 10. **Labels that touch.** A substituent whose label touches another
    label, a bond or a fusion H (where the H will go is worked out first)
    is turned by up to 60 degrees, never onto a fill.
 11. **Every move is checked.** A new layout, every move in rules 9 and
    10, and every turn the options' `rotate` asks for must keep each
-   stereocentre's drawn handedness (checked at once, in the script) and
+   stereocenter's drawn handedness (checked at once, in the script) and
    read in `render-document` as the same canonical SMILES with the same
-   specified and unspecified stereocentre counts as the build's own
+   specified and unspecified stereocenter counts as the build's own
    drawing (checked for all kept moves together, then one by one if that
    fails). A move or turn that fails is undone and reported (`UNDONE`),
    and for rules 9 and 10 the next placement is tried; a substituent that
@@ -368,10 +368,10 @@ each call creates unique decoration IDs and groups only its own artwork.
 13. **Identity.** `check` requires every rendered InChIKey to equal
    PubChem's own InChIKey: for the picture, with each Me read back as C,
    since Me is a placeholder atom. The specified and unspecified
-   stereocentre counts must equal PubChem's, and they come from the
+   stereocenter counts must equal PubChem's, and they come from the
    carbon document's renders (the PNG/SVG and the `.chemdraft`). The
    picture's own counts are not compared: with Me as a placeholder, its
-   render reads 0 specified and every stereocentre unspecified, so its
+   render reads 0 specified and every stereocenter unspecified, so its
    proof is the InChIKey alone.
 14. **Figure checks.** `style` checks the finished drawing, and `check`
    checks every rendered document again, against these limits
@@ -386,7 +386,7 @@ each call creates unique decoration IDs and groups only its own artwork.
    | Shrunk letter | a ring letter had to shrink below 14 px (set at 20 px), or found no room at all |
    | Hidden ring | more than 40% of a lettered ring's area lies under another lettered ring's fill |
    | Fill under a label | an emitted ring-fill path covers part of a label box for that ring's own atom on the outline |
-   | Dropped fusion H | a fusion CH stereocentre (rule 6) is left without its H, for want of room, a touch or an `UNDONE` |
+   | Dropped fusion H | a fusion CH stereocenter (rule 6) is left without its H, for want of room, a touch or an `UNDONE` |
 
    Either command then prints `Figure checks FAILED` with one line per
    fault, naming the ring, bond or atom and the measured value, and exits
@@ -466,7 +466,7 @@ below.
 The `analyze` and `stereo` lines are the pre-check of the SKILL.md core
 workflow: before drawing, the formula must equal the one `pubchem`
 printed, and `stereo` must agree with PubChem's stereo counts. `stereo`
-counts stereocentres and stereo double bonds together, so compare
+counts stereocenters and stereo double bonds together, so compare
 `specifiedCount` with `definedAtomStereo + definedBondStereo` and
 `unspecifiedCount` with `undefinedAtomStereo + undefinedBondStereo`
 (brevetoxin B: 23 + 1 = 24 specified, its Z alkene included), and the
@@ -476,7 +476,7 @@ Stop if any differs.
 `style` prints the layout it chose with every candidate's score, each
 substituent it moved, undid or could not clear, what remains (crossings,
 items on a fill not their own, fill overlap, clashing atoms, stretched
-bonds), then each ring's letter, colour and chemistry, the fusion H and Me
+bonds), then each ring's letter, color and chemistry, the fusion H and Me
 it added, any warning, and the figure checks (rule 14), passed or
 `FAILED` with a list; `<name>-style.json` keeps the same under `layout`
 and `quality`. `check` prints PubChem's InChIKey and stereo counts beside
@@ -488,17 +488,17 @@ it) or a figure check fails.
 ### A figure that fails the checks is not finished
 
 When `style` or `check` prints `Figure checks FAILED`, do not deliver the
-coloured figure as finished, and do not describe it as clean. Tell the
+colored figure as finished, and do not describe it as clean. Tell the
 user exactly what failed, in the script's words (which ring is a sliver,
 which bond or wedge is stretched and by how much, which letter shrank,
 which ring is hidden, whether a fill is under a label, which fusion H is missing). Then offer either the
 plain drawing (no fills: the same document without `ringStyles` and
-letters, or ChemDraft's ordinary render of the SMILES), or the coloured
+letters, or ChemDraft's ordinary render of the SMILES), or the colored
 figure with those failures named beside it. First try the forced layouts
 (`"layout": "canonical"`, then `"pubchem"`, then `"build"`): one of them
 may pass. Never hide a failure by moving ring atoms by hand.
 
-**Caged and bridged polycycles.** The style step colours and letters the
+**Caged and bridged polycycles.** The style step colors and letters the
 2D skeleton it is given; it never moves a ring atom, so it cannot repair
 a poor skeleton. Caged and bridged ring systems (morphine, strychnine)
 depend on ChemDraft's 2D layout, which today draws some of their rings as
@@ -509,10 +509,10 @@ rather than deliver the figure as finished.
 ### Look, fix, look again
 
 Open each PNG at full size and check: every letter sits in the ring the
-convention names and reads on its fill; the colours are loud and no two
+convention names and reads on its fill; the colors are loud and no two
 touching rings match; every wedge and hash is where it was, including on
 each new H; no label is clipped or sits on another label or a letter. Ring
-fills reach every bond line as plain atom-centre polygons. All labels on fills
+fills reach every bond line as plain atom-center polygons. All labels on fills
 use luminance-contrast text and no halo in this recipe. Default renderer halos
 match each fill beneath them, clipped per ring, with paper elsewhere.
 The figure check rejects any fill with a hole, evenodd notch or extra vertices.
@@ -529,7 +529,7 @@ The figure check rejects any fill with a hole, evenodd notch or extra vertices.
   options (positive turns clockwise on the page; take the ids from
   `check`, which prints each label's atom and the atom it hangs from).
   The turn runs before the fill and label steps and is checked like
-  every move: if it would change a stereocentre, `style` undoes it and
+  every move: if it would change a stereocenter, `style` undoes it and
   prints `UNDONE` with the reason, so pick another angle. This is rarely
   needed: the label step clears most pairs itself.
 - **A crossing or overlap remains.** `style` names it. Some ring systems
@@ -560,7 +560,7 @@ user asks for it.
 
 Run from empty folders with the commands above, with no `rotate` entries
 (2026-10-10). Atom ids belong to these builds; read your own. All five
-match PubChem's InChIKey and stereocentre counts; three pass the figure
+match PubChem's InChIKey and stereocenter counts; three pass the figure
 checks and two fail them.
 
 | Molecule (PubChem CID) | Options | What `style` did | Checked |
@@ -650,8 +650,8 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render-document
 ```
 
 Verified: the reported canonical SMILES equals the source's (InChIKey
-`JGSARLDLIJGVTE-MBNYWOFBSA-N`), with 3 specified stereocentres. The 1
-unspecified centre is the bridgehead N, which the plain `render` and
+`JGSARLDLIJGVTE-MBNYWOFBSA-N`), with 3 specified stereocenters. The 1
+unspecified center is the bridgehead N, which the plain `render` and
 `stereo` report the same way; do not add stereo to it.
 
 Then look at every wedge and hash in the sketched PNG at full size. The

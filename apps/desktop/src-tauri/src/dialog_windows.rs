@@ -151,6 +151,19 @@ fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> St
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_dialog_title_bar_style() -> tauri::TitleBarStyle {
+    // Tauri 2.11.2's Visible style enables NSWindowStyleMask::FullSizeContentView.
+    // With that mask, setContentSize includes the title bar: a 271pt request produces
+    // a 271pt frame and only 239pt of usable WebKit content. Tauri's inner_size can
+    // still report 271pt, hiding the loss from work-area fitting and persistence.
+    // Transparent is its only decorated style without FullSizeContentView. Select it
+    // at construction so initial size, setContentSize, minimums and saved client sizes
+    // all exclude decorations. configure_on_main restores the opaque appearance before
+    // reveal without changing the style mask or the size units.
+    tauri::TitleBarStyle::Transparent
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Message {
@@ -1262,6 +1275,8 @@ struct PreferencesLayout {
     programmatic_client: Option<(u32, u32)>,
     programmatic_position: Option<(i32, i32)>,
     pending_move: Option<(Instant, SavedPosition)>,
+    last_normal: Option<NormalFrame>,
+    recovery_pending: bool,
 }
 impl Default for PreferencesLayout {
     fn default() -> Self {
@@ -1273,11 +1288,23 @@ impl Default for PreferencesLayout {
             programmatic_client: None,
             programmatic_position: None,
             pending_move: None,
+            last_normal: None,
+            recovery_pending: false,
         }
     }
 }
 impl PreferencesLayout {
+    fn report_content(&mut self, measured: Option<MeasuredContent>) -> bool {
+        let first_ready = !self.ready;
+        self.ready = true;
+        self.content_fit = measured;
+        first_ready
+    }
+
     fn record_move(&mut self, position: (i32, i32), scale: f64, saved: SavedPosition) {
+        if !valid_saved_frame(&saved) {
+            return;
+        }
         // Native placement may be rounded or constrained by a few physical pixels.
         // Retain the marker through those events, but accept a user's larger move immediately.
         let tolerance = scale.ceil().max(2.0);
@@ -1289,6 +1316,24 @@ impl PreferencesLayout {
         }
         self.applied_position = None;
         self.pending_move = Some((Instant::now(), saved));
+    }
+
+    fn record_frame(&mut self, normal: Option<NormalFrame>, resized: bool) {
+        let Some(normal) = normal else {
+            return;
+        };
+        let mut saved = normal.saved.clone();
+        if !resized {
+            saved.size = self.pending_move.as_ref().and_then(|(_, saved)| saved.size);
+        }
+        let physical = normal.physical;
+        self.last_normal = Some(normal);
+        if resized {
+            self.applied_position = None;
+            self.pending_move = Some((Instant::now(), saved));
+        } else {
+            self.record_move(physical.position, physical.scale, saved);
+        }
     }
 }
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
@@ -1629,7 +1674,9 @@ pub(crate) async fn dialog_open(
     // Let the activation click reach dialog controls on macOS. Other platforms retain
     // their existing click behavior; first-mouse acceptance is an AppKit policy.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder
+        .accept_first_mouse(true)
+        .title_bar_style(macos_dialog_title_bar_style());
     #[cfg(not(target_os = "macos"))]
     let builder = builder;
     // On Windows .parent is a top-level OWNER, never a child control. macOS stays unparented.
@@ -1929,6 +1976,8 @@ pub(crate) fn prepare_preferences() {
         programmatic_client: None,
         programmatic_position: None,
         pending_move: None,
+        last_normal: None,
+        recovery_pending: false,
     });
 }
 #[tauri::command]
@@ -1950,17 +1999,17 @@ pub(crate) async fn preferences_ready(
             .preferences
             .as_mut()
             .ok_or("Preferences is not open")?;
-        let reveal = !state.ready;
-        state.ready = true;
-        state.content_fit = measured;
-        reveal
+        state.report_content(measured)
     };
+    // Preferences has a scrolling body. Subsequent observers are metadata only, including
+    // reports while hidden, suspended or iconic: no placement or minimum-size setters.
+    if !reveal {
+        return Ok(());
+    }
     let target = window.clone();
     super::run_on_main_thread_blocking(&window, move || {
-        place_content_window(&target, "preferences", measured, !reveal)?;
-        if reveal {
-            show_on_main(&target)?;
-        }
+        place_content_window(&target, "preferences", measured, false)?;
+        show_on_main(&target)?;
         Ok(())
     })
     .and_then(|result| result)
@@ -1973,20 +2022,6 @@ pub(crate) fn show_preferences<R: Runtime>(window: &tauri::WebviewWindow<R>) -> 
         .as_ref()
         .is_some_and(|p| p.ready);
     if ready {
-        // A retained Preferences window may outlive its saved display. Re-centre it over the
-        // document before the shared reveal path clamps the live frame to the current screen.
-        let positions = read_positions(window.app_handle());
-        if let Some(saved) = positions.get("preferences") {
-            let monitors: Vec<_> = window
-                .available_monitors()
-                .map_err(|e| e.to_string())?
-                .iter()
-                .map(|monitor| WorkArea::from_monitor(monitor).inset(12.0))
-                .collect();
-            if restorable_position(Some(saved), &monitors).is_none() {
-                place_content_window(window, "preferences", None, false)?;
-            }
-        }
         show_on_main(window)?;
     }
     Ok(())
@@ -2055,28 +2090,35 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     {
         return Err("Dialog owner is hidden".into());
     }
-    mark_transient(window.label());
-    window.unminimize().map_err(|e| e.to_string())?;
-    let (kind, content_fit) = if window.label() == super::PREFERENCES_WINDOW_LABEL {
-        let content_fit = REGISTRY
+    let preferences = window.label() == super::PREFERENCES_WINDOW_LABEL;
+    if preferences {
+        if let Some(state) = REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .preferences
-            .as_ref()
-            .and_then(|state| state.content_fit);
-        ("preferences".to_string(), content_fit)
+            .as_mut()
+        {
+            state.recovery_pending = true;
+        }
     } else {
-        REGISTRY
+        mark_transient(window.label());
+    }
+    window.unminimize().map_err(|e| e.to_string())?;
+    if !preferences {
+        let (kind, content_fit) = REGISTRY
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .sessions
             .values()
             .find(|s| s.registration.window_label == window.label())
             .map(|s| (s.snapshot.dialog_kind.clone(), s.content_fit))
-            .ok_or("Unknown dialog window")?
-    };
-    place_content_window(window, &kind, content_fit, true)?;
+            .ok_or("Unknown dialog window")?;
+        place_content_window(window, &kind, content_fit, true)?;
+    }
     window.show().map_err(|e| e.to_string())?;
+    if preferences {
+        recover_preferences_frame(window)?;
+    }
     configure_on_main(window)?;
     window.set_focus().map_err(|e| e.to_string())?;
     bring_to_front_on_main(window)
@@ -2090,6 +2132,8 @@ pub(crate) fn configure_on_main<R: Runtime>(
         use objc2_app_kit::NSWindow;
         let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
         let native = unsafe { ptr.as_ref() }.ok_or("Could not access native dialog window")?;
+        // Keep the ordinary opaque title bar without re-enabling FullSizeContentView.
+        native.setTitlebarAppearsTransparent(false);
         // AppKit children adopt the document's normal level and deactivate visibility.
         // Stay unparented, like floating toolbars; registry ownership handles dismissal.
         native.setLevel(dialog_window_level());
@@ -2199,6 +2243,276 @@ struct SavedPosition {
     offset_x: f64,
     offset_y: f64,
 }
+fn valid_client_size((width, height): (f64, f64)) -> bool {
+    // 32767 is a Win32 sizing sentinel, not a usable dialog dimension. Bound stored
+    // logical dimensions too, before they can be multiplied by a destination DPI.
+    [width, height]
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0 && *value < 32767.0)
+}
+fn valid_saved_frame(saved: &SavedPosition) -> bool {
+    [saved.x, saved.y, saved.offset_x, saved.offset_y]
+        .iter()
+        .all(|value| value.is_finite())
+        && saved.size.is_none_or(valid_client_size)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PhysicalNormalFrame {
+    position: (i32, i32),
+    outer: (u32, u32),
+    client: (u32, u32),
+    scale: f64,
+}
+
+#[derive(Clone)]
+struct NormalFrame {
+    saved: SavedPosition,
+    physical: PhysicalNormalFrame,
+}
+impl NormalFrame {
+    fn validated(work: &WorkArea, physical: PhysicalNormalFrame) -> Option<Self> {
+        let PhysicalNormalFrame {
+            position,
+            outer,
+            client,
+            scale,
+        } = physical;
+        if !scale.is_finite()
+            || scale <= 0.0
+            || (scale - work.scale).abs() > 0.001
+            || [outer.0, outer.1, client.0, client.1]
+                .iter()
+                .any(|value| *value == 0 || *value == 32767)
+            || client.0 > outer.0
+            || client.1 > outer.1
+            // Reject torn client/outer reads, including decoration-sized client remnants.
+            || f64::from(outer.0 - client.0) > 256.0 * scale
+            || f64::from(outer.1 - client.1) > 256.0 * scale
+        {
+            return None;
+        }
+        let x = f64::from(position.0) / scale;
+        let y = f64::from(position.1) / scale;
+        // Only the known parked point outside the sampled monitor is special. Negative
+        // coordinates (even below -32000 on a large desktop) are otherwise legitimate.
+        if position == (-32000, -32000)
+            && !(x >= work.x && x < work.x + work.width && y >= work.y && y < work.y + work.height)
+        {
+            return None;
+        }
+        let work = WorkArea {
+            scale,
+            ..work.clone()
+        };
+        // This is the sole physical -> logical client conversion for a sampled frame.
+        let saved = saved_frame(
+            &work,
+            position,
+            outer,
+            Some((f64::from(client.0) / scale, f64::from(client.1) / scale)),
+        );
+        valid_saved_frame(&saved).then_some(Self { saved, physical })
+    }
+
+    fn reachable(&self, monitors: &[WorkArea]) -> bool {
+        let width = f64::from(self.physical.outer.0) / self.physical.scale;
+        let height = f64::from(self.physical.outer.1) / self.physical.scale;
+        monitors.iter().any(|work| {
+            self.saved.x >= work.x
+                && self.saved.y >= work.y
+                && self.saved.x + width <= work.x + work.width
+                && self.saved.y + height <= work.y + work.height
+        })
+    }
+
+    fn close_frame(
+        self,
+        programmed_client: Option<(u32, u32)>,
+        programmed_position: Option<(i32, i32)>,
+    ) -> Option<SavedPosition> {
+        if programmed_client == Some(self.physical.client)
+            && programmed_position == Some(self.physical.position)
+        {
+            return None;
+        }
+        let mut saved = self.saved;
+        if programmed_client == Some(self.physical.client) {
+            saved.size = None;
+        }
+        Some(saved)
+    }
+}
+
+#[cfg(windows)]
+fn native_normal_geometry<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Option<PhysicalNormalFrame> {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        },
+        UI::{
+            HiDpi::GetDpiForWindow,
+            WindowsAndMessaging::{
+                GetClientRect, GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowRect,
+                IsIconic, IsWindowVisible, IsZoomed, GWL_EXSTYLE, GW_OWNER, SW_HIDE, SW_SHOWNORMAL,
+                WINDOWPLACEMENT, WS_EX_TOOLWINDOW,
+            },
+        },
+    };
+    let hwnd = window.hwnd().ok()?.0 as _;
+    let owner = window
+        .app_handle()
+        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+    let owner_hwnd = owner.hwnd().ok()?.0 as _;
+    // SAFETY: these handles belong to live Tauri windows; every output is initialized and sized.
+    unsafe {
+        let native_owner = GetWindow(hwnd, GW_OWNER);
+        if IsIconic(hwnd) != 0
+            || IsZoomed(hwnd) != 0
+            || IsIconic(owner_hwnd) != 0
+            || IsWindowVisible(owner_hwnd) == 0
+            || (!native_owner.is_null()
+                && (IsIconic(native_owner) != 0 || IsWindowVisible(native_owner) == 0))
+        {
+            return None;
+        }
+        let mut placement = WINDOWPLACEMENT {
+            length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetWindowPlacement(hwnd, &mut placement) == 0
+            || !(placement.showCmd == SW_SHOWNORMAL as u32
+                || (placement.showCmd == SW_HIDE as u32 && IsWindowVisible(hwnd) == 0))
+            || GetWindowRect(hwnd, &mut outer) == 0
+            || GetClientRect(hwnd, &mut client) == 0
+            || GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) == 0
+        {
+            return None;
+        }
+        let offset = if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW == 0 {
+            (
+                info.rcWork.left - info.rcMonitor.left,
+                info.rcWork.top - info.rcMonitor.top,
+            )
+        } else {
+            (0, 0)
+        };
+        // GetWindowRect is in SCREEN coordinates. Only rcNormalPosition is in workspace
+        // coordinates; add its work-area inset once, never the monitor origin (see main placement).
+        let normal = placement.rcNormalPosition;
+        if !normal_rect_matches_live(
+            (outer.left, outer.top, outer.right, outer.bottom),
+            (normal.left, normal.top, normal.right, normal.bottom),
+            offset,
+        ) {
+            // In particular, do not accept a stale live read during native restoration.
+            return None;
+        }
+        let dimension =
+            |end: i32, start: i32| u32::try_from(i64::from(end) - i64::from(start)).ok();
+        let dpi = GetDpiForWindow(hwnd);
+        if dpi == 0 {
+            return None;
+        }
+        if IsIconic(hwnd) != 0
+            || IsZoomed(hwnd) != 0
+            || IsIconic(owner_hwnd) != 0
+            || IsWindowVisible(owner_hwnd) == 0
+            || (!native_owner.is_null()
+                && (IsIconic(native_owner) != 0 || IsWindowVisible(native_owner) == 0))
+        {
+            return None;
+        }
+        Some(PhysicalNormalFrame {
+            position: (outer.left, outer.top),
+            outer: (
+                dimension(outer.right, outer.left)?,
+                dimension(outer.bottom, outer.top)?,
+            ),
+            client: (
+                dimension(client.right, client.left)?,
+                dimension(client.bottom, client.top)?,
+            ),
+            scale: f64::from(dpi) / 96.0,
+        })
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normal_rect_matches_live(
+    live: (i32, i32, i32, i32),
+    normal: (i32, i32, i32, i32),
+    offset: (i32, i32),
+) -> bool {
+    [
+        (live.0, normal.0, offset.0),
+        (live.1, normal.1, offset.1),
+        (live.2, normal.2, offset.0),
+        (live.3, normal.3, offset.1),
+    ]
+    .iter()
+    .all(|(live, normal, offset)| {
+        (i64::from(*live) - i64::from(*normal) - i64::from(*offset)).abs() <= 1
+    })
+}
+
+#[cfg(not(windows))]
+fn native_normal_geometry<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Option<PhysicalNormalFrame> {
+    let owner = window
+        .app_handle()
+        .get_webview_window(super::MAIN_WINDOW_LABEL)?;
+    if window.is_minimized().ok()?
+        || window.is_maximized().ok()?
+        || owner.is_minimized().ok()?
+        || !owner.is_visible().ok()?
+    {
+        return None;
+    }
+    let position = window.outer_position().ok()?;
+    let outer = window.outer_size().ok()?;
+    let client = window.inner_size().ok()?;
+    Some(PhysicalNormalFrame {
+        position: (position.x, position.y),
+        outer: (outer.width, outer.height),
+        client: (client.width, client.height),
+        scale: window.scale_factor().ok()?,
+    })
+}
+
+fn sample_normal_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Option<NormalFrame> {
+    if window.is_fullscreen().ok()? {
+        return None;
+    }
+    // Read state and geometry on both sides of the monitor lookup. A minimize, DPI change,
+    // or torn sizing read must not become either placement input or pending persistence.
+    let before = native_normal_geometry(window)?;
+    let work = WorkArea::from_monitor(&window.current_monitor().ok()??).inset(12.0);
+    let after = native_normal_geometry(window)?;
+    stable_normal_frame(&work, Some(before), Some(after))
+}
+
+fn stable_normal_frame(
+    work: &WorkArea,
+    before: Option<PhysicalNormalFrame>,
+    after: Option<PhysicalNormalFrame>,
+) -> Option<NormalFrame> {
+    let before = before?;
+    if Some(before) != after {
+        return None;
+    }
+    NormalFrame::validated(work, before)
+}
 #[derive(Clone, Debug)]
 struct WorkArea {
     id: String,
@@ -2251,12 +2565,7 @@ fn restorable_position<'a>(
     saved: Option<&'a SavedPosition>,
     monitors: &[WorkArea],
 ) -> Option<&'a SavedPosition> {
-    saved.filter(|p| {
-        [p.x, p.y, p.offset_x, p.offset_y]
-            .iter()
-            .all(|v| v.is_finite())
-            && monitors.iter().any(|m| m.id == p.monitor)
-    })
+    saved.filter(|p| valid_saved_frame(p) && monitors.iter().any(|m| m.id == p.monitor))
 }
 fn saved_frame(
     work: &WorkArea,
@@ -2302,9 +2611,10 @@ fn dialog_client_size(
     )
 }
 fn remembered_client_size(saved: Option<&SavedPosition>, resizable: bool) -> Option<(f64, f64)> {
-    saved.filter(|_| resizable)?.size.filter(|(width, height)| {
-        width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
-    })
+    saved
+        .filter(|_| resizable)?
+        .size
+        .filter(|size| valid_client_size(*size))
 }
 fn custom_color_refit_size(
     fit: MeasuredContent,
@@ -2373,6 +2683,120 @@ fn place_content_window<R: Runtime>(
     content_fit: Option<MeasuredContent>,
     current_frame: bool,
 ) -> Result<(), String> {
+    // Defence in depth for any content-fit/reveal caller: Preferences never refits after
+    // ready. Only the explicit, cached off-screen recovery path may place a retained frame.
+    if kind == "preferences" && current_frame {
+        return Ok(());
+    }
+    place_content_window_from_frame(window, kind, content_fit, current_frame, None, None)
+}
+
+fn recover_preferences_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<bool, String> {
+    let mut retained = {
+        let registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(state) = registry.preferences.as_ref() else {
+            return Ok(true);
+        };
+        if !state.recovery_pending {
+            return Ok(true);
+        }
+        state.last_normal.clone()
+    };
+    if retained.is_none() {
+        // Initial placement may have finished before native geometry became readable. Seed
+        // the cache only from a completed normal restoration, never from a hidden/iconic read.
+        if !window.is_visible().unwrap_or(false) {
+            return Ok(false);
+        }
+        let Some(normal) = sample_normal_frame(window) else {
+            return Ok(false);
+        };
+        if let Some(state) = REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preferences
+            .as_mut()
+        {
+            state.last_normal = Some(normal.clone());
+        }
+        retained = Some(normal);
+    }
+    let monitors: Vec<_> = window
+        .available_monitors()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(|monitor| WorkArea::from_monitor(monitor).inset(12.0))
+        .collect();
+    let recovered = recover_retained_frame(retained.as_ref(), &monitors, || {
+        // This is reached only for an unreachable cached frame, after show/unminimize.
+        // Invalid or still-restoring native geometry defers recovery to a later event.
+        let Some(normal) = sample_normal_frame(window) else {
+            return Ok(false);
+        };
+        // Native setters can synchronously dispatch move/resize events. Those events must
+        // not recursively start recovery; placement's normal transient tags handle them.
+        if let Some(state) = REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preferences
+            .as_mut()
+        {
+            state.recovery_pending = false;
+        }
+        let result = place_content_window_from_frame(
+            window,
+            "preferences",
+            None,
+            true,
+            retained.as_ref(),
+            Some(normal),
+        );
+        if result.is_err() {
+            if let Some(state) = REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .preferences
+                .as_mut()
+            {
+                state.recovery_pending = true;
+            }
+        }
+        result?;
+        Ok(true)
+    })?;
+    if recovered {
+        if let Some(state) = REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .preferences
+            .as_mut()
+        {
+            state.recovery_pending = false;
+        }
+    }
+    Ok(recovered)
+}
+
+fn recover_retained_frame(
+    retained: Option<&NormalFrame>,
+    monitors: &[WorkArea],
+    recover: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if retained.is_none_or(|frame| frame.reachable(monitors)) {
+        // In the common case reveal does not even sample the freshly unminimized frame.
+        return Ok(true);
+    }
+    recover()
+}
+
+fn place_content_window_from_frame<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    kind: &str,
+    content_fit: Option<MeasuredContent>,
+    current_frame: bool,
+    retained: Option<&NormalFrame>,
+    normal: Option<NormalFrame>,
+) -> Result<(), String> {
     let app = window.app_handle();
     let owner = app
         .get_webview_window(super::MAIN_WINDOW_LABEL)
@@ -2390,40 +2814,26 @@ fn place_content_window<R: Runtime>(
         .collect();
     let position = owner.inner_position().map_err(|e| e.to_string())?;
     let owner_size = owner.inner_size().map_err(|e| e.to_string())?;
-    let frame = window.outer_size().map_err(|e| e.to_string())?;
-    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let normal = normal.or_else(|| sample_normal_frame(window));
+    if current_frame && normal.is_none() {
+        return Ok(());
+    }
+    let frame = normal
+        .as_ref()
+        .map(|normal| normal.physical.outer)
+        .unwrap_or((0, 0));
+    let scale = normal
+        .as_ref()
+        .map_or(work.scale, |normal| normal.physical.scale);
     let positions = read_positions(app);
     let spec = kind_spec(kind)?;
-    let live_frame = if current_frame {
-        let work = window
-            .current_monitor()
-            .map_err(|e| e.to_string())?
-            .as_ref()
-            .map(|m| WorkArea::from_monitor(m).inset(12.0))
-            .unwrap_or_else(|| work.clone());
-        let position = window.outer_position().map_err(|e| e.to_string())?;
-        let outer = window.outer_size().map_err(|e| e.to_string())?;
-        let client = window.inner_size().map_err(|e| e.to_string())?;
-        Some(saved_frame(
-            &work,
-            (position.x, position.y),
-            (outer.width, outer.height),
-            Some((
-                f64::from(client.width) / scale,
-                f64::from(client.height) / scale,
-            )),
-        ))
-    } else {
-        None
-    };
+    let live_frame = current_frame
+        .then_some(retained.or(normal.as_ref()))
+        .flatten()
+        .map(|frame| &frame.saved);
     let saved = live_frame
-        .as_ref()
         .or_else(|| positions.get(kind))
-        .filter(|position| {
-            [position.x, position.y, position.offset_x, position.offset_y]
-                .iter()
-                .all(|value| value.is_finite())
-        });
+        .filter(|position| valid_saved_frame(position));
     let mut client_size = dialog_client_size(&spec, content_fit, saved, current_frame);
     if current_frame && kind == "customColor" {
         if let Some(fit) = content_fit {
@@ -2444,10 +2854,12 @@ fn place_content_window<R: Runtime>(
     }
     // A user size remains useful after its display is removed; its position does not.
     let saved = restorable_position(saved, &monitors);
-    let client = window.inner_size().map_err(|e| e.to_string())?;
+    let client = normal
+        .as_ref()
+        .map_or((0, 0), |normal| normal.physical.client);
     let size = (
-        client_size.0 + f64::from(frame.width.saturating_sub(client.width)) / scale,
-        client_size.1 + f64::from(frame.height.saturating_sub(client.height)) / scale,
+        client_size.0 + f64::from(frame.0.saturating_sub(client.0)) / scale,
+        client_size.1 + f64::from(frame.1.saturating_sub(client.1)) / scale,
     );
     let (mut x, mut y, destination_scale) = position_for(
         saved,
@@ -2465,7 +2877,7 @@ fn place_content_window<R: Runtime>(
         .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
         .unwrap_or(&work);
     // Content changes grow from the live origin, only moving to stay inside the work area.
-    if let Some(live) = live_frame.as_ref() {
+    if let Some(live) = live_frame.filter(|_| saved.is_some()) {
         x = live.x * destination_scale;
         y = live.y * destination_scale;
     }
@@ -2558,11 +2970,11 @@ fn place_content_window<R: Runtime>(
             Ok(())
         },
         || {
-            let outer = window.outer_size().map_err(|e| e.to_string())?;
-            let client = window.inner_size().map_err(|e| e.to_string())?;
+            let normal = sample_normal_frame(window)
+                .ok_or("Dialog frame is not yet a stable normal frame")?;
             Ok(DialogFrame {
-                outer: (outer.width, outer.height),
-                client: (client.width, client.height),
+                outer: normal.physical.outer,
+                client: normal.physical.client,
             })
         },
         |size| window.set_min_size(Some(size)).map_err(|e| e.to_string()),
@@ -2572,6 +2984,18 @@ fn place_content_window<R: Runtime>(
     remember_programmatic_client(window.label(), (client.width, client.height));
     let position = window.outer_position().map_err(|e| e.to_string())?;
     remember_programmatic_position(window.label(), (position.x, position.y));
+    if kind == "preferences" {
+        if let Some(normal) = sample_normal_frame(window) {
+            if let Some(state) = REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .preferences
+                .as_mut()
+            {
+                state.last_normal = Some(normal);
+            }
+        }
+    }
     Ok(())
 }
 struct TemplatePlacement<'a> {
@@ -2854,6 +3278,7 @@ fn should_persist(
         && ready
         && !transient
 }
+#[cfg(test)]
 fn preferences_close_frame(
     work: &WorkArea,
     position: (i32, i32),
@@ -2862,16 +3287,16 @@ fn preferences_close_frame(
     programmed_client: Option<(u32, u32)>,
     programmed_position: Option<(i32, i32)>,
 ) -> Option<SavedPosition> {
-    if programmed_client == Some(client) && programmed_position == Some(position) {
-        return None;
-    }
-    // A reveal/DPI clamp is not a user resize. Keep the remembered size when only the
-    // position changed; a resize whose event has not arrived yet still captures its size.
-    let size = (programmed_client != Some(client)).then_some((
-        f64::from(client.0) / work.scale,
-        f64::from(client.1) / work.scale,
-    ));
-    Some(saved_frame(work, position, outer, size))
+    NormalFrame::validated(
+        work,
+        PhysicalNormalFrame {
+            position,
+            outer,
+            client,
+            scale: work.scale,
+        },
+    )?
+    .close_frame(programmed_client, programmed_position)
 }
 fn sample_preferences_position<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -2907,34 +3332,34 @@ fn sample_preferences_position<R: Runtime>(
     ) {
         return None;
     }
-    let Ok(position) = window.outer_position() else {
+    let normal = sample_normal_frame(window)?;
+    let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
+    let state = registry.preferences.as_mut()?;
+    if state.recovery_pending {
         return None;
-    };
-    let Ok(Some(monitor)) = window.current_monitor() else {
-        return None;
-    };
-    let m = WorkArea::from_monitor(&monitor).inset(12.0);
-    let Ok(size) = window.outer_size() else {
-        return None;
-    };
-    let client = window.inner_size().ok()?;
-    preferences_close_frame(
-        &m,
-        (position.x, position.y),
-        (size.width, size.height),
-        (client.width, client.height),
-        programmed_client,
-        programmed_position,
-    )
+    }
+    state.last_normal = Some(normal.clone());
+    normal.close_frame(programmed_client, programmed_position)
 }
 fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
     let app = window.app_handle();
+    // Never hold REGISTRY across native reads. Invalid samples leave all markers, the last
+    // normal frame and any pending user write untouched.
+    let Some(normal) = sample_normal_frame(window) else {
+        return;
+    };
+    let PhysicalNormalFrame {
+        position, client, ..
+    } = normal.physical;
     let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
     let (ready, transient_until, programmatic_client, programmatic_position, pending_move) =
         if window.label() == super::PREFERENCES_WINDOW_LABEL {
             let Some(state) = registry.preferences.as_mut() else {
                 return;
             };
+            if state.recovery_pending {
+                return;
+            }
             (
                 state.ready,
                 &mut state.transient_until,
@@ -2977,19 +3402,13 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
     ) {
         return;
     }
-    let Ok(client) = window.inner_size() else {
-        return;
-    };
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
     if transient_frame_event(
         Instant::now() < *transient_until,
         resized,
         *programmatic_client,
-        (client.width, client.height),
+        client,
         *programmatic_position,
-        (position.x, position.y),
+        position,
     ) {
         return;
     }
@@ -3004,42 +3423,23 @@ fn persist_move<R: Runtime>(window: &tauri::WebviewWindow<R>, resized: bool) {
         && !super::UTILITY_SUSPENSION
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .persist_move(window.label(), (position.x, position.y))
+            .persist_move(window.label(), position)
     {
         return;
     }
-    let Ok(Some(monitor)) = window.current_monitor() else {
-        return;
-    };
-    let m = WorkArea::from_monitor(&monitor).inset(12.0);
-    let Ok(outer) = window.outer_size() else {
-        return;
-    };
     let size = if resized {
-        Some((
-            f64::from(client.width) / m.scale,
-            f64::from(client.height) / m.scale,
-        ))
+        normal.saved.size
     } else {
         pending_move.as_ref().and_then(|(_, saved)| saved.size)
     };
-    let saved = saved_frame(
-        &m,
-        (position.x, position.y),
-        (outer.width, outer.height),
-        size,
-    );
+    let mut saved = normal.saved.clone();
+    saved.size = size;
     if window.label() == super::PREFERENCES_WINDOW_LABEL {
         let state = registry
             .preferences
             .as_mut()
             .expect("Preferences state was checked above");
-        if resized {
-            state.applied_position = None;
-            state.pending_move = Some((Instant::now(), saved));
-        } else {
-            state.record_move((position.x, position.y), m.scale, saved);
-        }
+        state.record_frame(Some(normal), resized);
     } else {
         *pending_move = Some((Instant::now(), saved));
     }
@@ -3117,8 +3517,11 @@ fn debounce_positions(
 }
 fn merge_positions(positions: &mut HashMap<String, SavedPosition>, writes: PositionWrites) {
     for (kind, mut saved) in writes {
+        if !valid_saved_frame(&saved) {
+            continue;
+        }
         if saved.size.is_none() {
-            saved.size = positions.get(&kind).and_then(|previous| previous.size);
+            saved.size = remembered_client_size(positions.get(&kind), true);
         }
         positions.insert(kind, saved);
     }
@@ -3174,7 +3577,7 @@ fn flush_preferences_to(
     let current = if close == PreferencesClose::Destroyed {
         None
     } else {
-        capture()
+        capture().filter(valid_saved_frame)
     };
     // Serialize snapshot + write with the worker so immediate close/reopen sees the latest frame.
     let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
@@ -3182,7 +3585,8 @@ fn flush_preferences_to(
     let pending = registry
         .preferences
         .as_mut()
-        .and_then(|p| p.pending_move.take());
+        .and_then(|p| p.pending_move.take())
+        .filter(|(_, saved)| valid_saved_frame(saved));
     if close == PreferencesClose::Destroyed {
         registry.preferences = None;
     }
@@ -3218,6 +3622,9 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
             if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
                 let target = webview.clone();
                 if let Err(error) = super::run_on_main_thread_blocking(&webview, move || {
+                    if target.label() == super::PREFERENCES_WINDOW_LABEL {
+                        recover_preferences_frame(&target)?;
+                    }
                     bring_to_front_on_main(&target)
                 })
                 .and_then(|result| result)
@@ -3255,6 +3662,16 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
         }
         WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
             if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                if window.label() == super::PREFERENCES_WINDOW_LABEL {
+                    match recover_preferences_frame(&webview) {
+                        Ok(true) => {}
+                        Ok(false) => return,
+                        Err(error) => {
+                            eprintln!("Could not recover Preferences frame: {error}");
+                            return;
+                        }
+                    }
+                }
                 persist_move(&webview, matches!(event, WindowEvent::Resized(_)));
             }
         }
@@ -3490,6 +3907,8 @@ mod tests {
             (800.0, -1.0),
             (800.0, f64::NAN),
             (f64::INFINITY, 600.0),
+            (32767.0, 600.0),
+            (800.0, 32767.0),
         ] {
             let invalid = SavedPosition {
                 size: Some(size),
@@ -4886,6 +5305,19 @@ mod tests {
         calls: Vec<&'static str>,
     }
     impl SimulatedDialog {
+        fn set_appkit_content_size(&mut self, size: tauri::LogicalSize<f64>) {
+            // Model the AppKit/WebKit distinction that Tauri's default Visible style hides:
+            // FullSizeContentView makes the requested content view include the title bar,
+            // while the DOM viewport excludes it. Transparent disables that mask.
+            self.client = if macos_dialog_title_bar_style() == tauri::TitleBarStyle::Transparent {
+                size
+            } else {
+                tauri::LogicalSize::new(
+                    size.width - self.decoration.width,
+                    size.height - self.decoration.height,
+                )
+            };
+        }
         fn frame(&self) -> DialogFrame {
             let client = self.client.to_physical::<u32>(self.scale);
             let outer = tauri::LogicalSize::new(
@@ -4903,6 +5335,7 @@ mod tests {
             placement
                 .apply(
                     |x, y| {
+                        dialog.borrow_mut().calls.push("move");
                         move_dialog(
                             macos,
                             (x, y, work.scale),
@@ -4917,12 +5350,13 @@ mod tests {
                         )
                     },
                     |width, height| {
+                        dialog.borrow_mut().calls.push("resize");
                         resize_dialog_client(
                             macos,
                             tauri::PhysicalSize::new(width, height),
                             work.scale,
                             |logical| {
-                                dialog.borrow_mut().client = logical;
+                                dialog.borrow_mut().set_appkit_content_size(logical);
                                 Ok(())
                             },
                             |physical| {
@@ -4933,6 +5367,7 @@ mod tests {
                     },
                     || Ok(dialog.borrow().frame()),
                     |minimum| {
+                        dialog.borrow_mut().calls.push("minimum");
                         dialog.borrow_mut().set_minimum(minimum);
                         Ok(())
                     },
@@ -4963,6 +5398,519 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn macos_dialog_builders_exclude_title_bar_from_initial_and_fitted_client_sizes() {
+        // The mock runtime cannot expose NSWindow style masks. Guard both construction
+        // paths as well as the math below; Preferences has a separate builder/protocol.
+        let source = include_str!("dialog_windows.rs");
+        let dialog_builder = source
+            .split("let builder = WebviewWindowBuilder::new(")
+            .nth(1)
+            .unwrap()
+            .split("let dialog_window = match builder.build()")
+            .next()
+            .unwrap();
+        assert!(dialog_builder.contains(".title_bar_style(macos_dialog_title_bar_style())"));
+        let lib = include_str!("lib.rs");
+        let preferences_builder = lib
+            .split("fn create_or_raise_preferences_window<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("let window = builder.build()")
+            .next()
+            .unwrap();
+        assert!(preferences_builder
+            .contains(".title_bar_style(dialog_windows::macos_dialog_title_bar_style())"));
+
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let mut native = SimulatedDialog {
+                    scale,
+                    client: tauri::LogicalSize::new(1.0, 1.0),
+                    minimum: tauri::LogicalSize::new(1.0, 1.0),
+                    position: tauri::LogicalPosition::new(0.0, 0.0),
+                    decoration: tauri::LogicalSize::new(border, title_bar),
+                    queue: Vec::new(),
+                    calls: Vec::new(),
+                };
+                // Initial builder dimensions, followed by the four measured ready/refit sizes.
+                for (width, height) in [
+                    (640.0, 600.0),
+                    (420.0, 271.0),
+                    (480.0, 357.0),
+                    (520.0, 618.0),
+                    (480.0, 235.0),
+                ] {
+                    let request = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+                    let client = std::cell::RefCell::new(&mut native);
+                    resize_dialog_client(
+                        macos,
+                        request,
+                        scale,
+                        |size| {
+                            client.borrow_mut().set_appkit_content_size(size);
+                            Ok(())
+                        },
+                        |size| {
+                            // Windows must receive exactly the same physical client request.
+                            assert_eq!(size, request);
+                            client.borrow_mut().client = size.to_logical(scale);
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    let frame = native.frame();
+                    assert_eq!(frame.client, (request.width, request.height));
+                    assert_eq!(
+                        frame.outer,
+                        (
+                            request.width + (border * scale) as u32,
+                            request.height + (title_bar * scale) as u32,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_content_fit_kind_requests_at_least_its_measured_client_height() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "screen".into(),
+                    x: 12.0,
+                    y: 42.0,
+                    width: 2536.0,
+                    height: 936.0,
+                    scale,
+                };
+                for (kind, height) in [
+                    ("preferences", 700.0),
+                    ("pageSize", 271.0),
+                    ("vibeCodeGuide", 357.0),
+                    ("export", 618.0),
+                    ("insertTable", 235.0),
+                    ("customColor", 320.0),
+                    ("arrangementSpacing", 400.0),
+                    ("engineInstall", 480.0),
+                    ("toolInstall", 460.0),
+                ] {
+                    let spec = kind_spec(kind).unwrap();
+                    assert!(spec.fit_content);
+                    let content = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({"contentHeight":height,"pixelRatio":scale})),
+                        Some(scale),
+                    );
+                    let client_size = dialog_client_size(&spec, content, None, false);
+                    assert!(client_size.1 >= height, "{kind}: requested {client_size:?}");
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(border, title_bar),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size,
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    let frame = dialog.borrow().frame();
+                    assert!(f64::from(frame.client.1) >= height * scale, "{kind}");
+                    assert_eq!(frame.client.1, (height * scale).ceil() as u32, "{kind}");
+                    assert_eq!(frame.outer.1, frame.client.1 + (title_bar * scale) as u32);
+                    assert!(f64::from(frame.outer.1) <= work.height * scale);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_and_dialog_reopens_persist_client_height_without_accumulating_title_bars() {
+        use std::cell::RefCell;
+        for (macos, border, title_bar) in [(true, 0.0, 32.0), (false, 16.0, 40.0)] {
+            for kind in ["preferences", "pageSize", "export", "insertTable"] {
+                let spec = kind_spec(kind).unwrap();
+                let mut saved = None;
+                // Reopen on displays with different backing scales, always in client units.
+                for scale in [2.0, 1.0, 1.5, 2.0] {
+                    let work = WorkArea {
+                        id: "screen".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        width: 1600.0,
+                        height: 1000.0,
+                        scale,
+                    };
+                    let mut preferences = PreferencesLayout::default();
+                    // Preferences fits on first open, then preserves a saved user viewport
+                    // even when a later ready reports more content than that viewport holds.
+                    let height = if kind == "preferences" && saved.is_some() {
+                        800.0
+                    } else {
+                        356.0
+                    };
+                    let content = MeasuredContent::new(
+                        ContentFit::from_ready(&json!({"contentHeight":height,"pixelRatio":scale})),
+                        Some(scale),
+                    );
+                    assert!(preferences.report_content(content));
+                    let dialog = RefCell::new(SimulatedDialog {
+                        scale,
+                        client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                        minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                        position: tauri::LogicalPosition::new(100.0, 100.0),
+                        decoration: tauri::LogicalSize::new(border, title_bar),
+                        queue: Vec::new(),
+                        calls: Vec::new(),
+                    });
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (100.0 * scale, 100.0 * scale, scale),
+                            client_size: dialog_client_size(&spec, content, saved.as_ref(), false),
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: None,
+                        },
+                    );
+                    // preferences_ready must not refit subsequent content reports.
+                    assert!(!preferences.report_content(content));
+                    let frame = dialog.borrow().frame();
+                    assert_eq!(frame.client.1, (356.0 * scale) as u32, "{kind}");
+                    assert_eq!(frame.outer.1, ((356.0 + title_bar) * scale) as u32);
+                    let normal = NormalFrame::validated(
+                        &work,
+                        PhysicalNormalFrame {
+                            position: ((100.0 * scale) as i32, (100.0 * scale) as i32),
+                            client: frame.client,
+                            outer: frame.outer,
+                            scale,
+                        },
+                    )
+                    .unwrap();
+                    saved = Some(
+                        serde_json::from_slice::<SavedPosition>(
+                            &serde_json::to_vec(&normal.close_frame(None, None).unwrap()).unwrap(),
+                        )
+                        .unwrap(),
+                    );
+                    assert_eq!(saved.as_ref().unwrap().size.unwrap().1, 356.0);
+                }
+            }
+        }
+    }
+
+    fn normal_test_frame(scale: f64) -> PhysicalNormalFrame {
+        PhysicalNormalFrame {
+            position: ((240.0 * scale) as i32, (180.0 * scale) as i32),
+            outer: ((576.0 * scale) as u32, (460.0 * scale) as u32),
+            client: ((560.0 * scale) as u32, (420.0 * scale) as u32),
+            scale,
+        }
+    }
+
+    #[test]
+    fn preferences_ready_and_reveal_preserve_user_events_close_and_owner_restore() {
+        use std::cell::RefCell;
+        for macos in [false, true] {
+            for scale in [1.0, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "screen".into(),
+                    x: 12.0,
+                    y: 12.0,
+                    width: 1176.0,
+                    height: 876.0,
+                    scale,
+                };
+                let spec = kind_spec("preferences").unwrap();
+                let content = MeasuredContent::new(
+                    ContentFit::from_ready(&json!({"contentHeight":2400.0,"pixelRatio":scale})),
+                    Some(scale),
+                );
+                let initial = normal_test_frame(scale);
+                let mut saved = NormalFrame::validated(&work, initial).unwrap().saved;
+                let dialog = RefCell::new(SimulatedDialog {
+                    scale,
+                    client: tauri::LogicalSize::new(560.0, 420.0),
+                    minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                    position: tauri::LogicalPosition::new(240.0, 180.0),
+                    decoration: tauri::LogicalSize::new(
+                        if macos { 0.0 } else { 16.0 },
+                        if macos { 28.0 } else { 40.0 },
+                    ),
+                    queue: Vec::new(),
+                    calls: Vec::new(),
+                });
+                // A new ready restores disk once; close/reopen starts a new ready lifecycle.
+                for reopened in [false, true] {
+                    let mut state = PreferencesLayout::default();
+                    assert!(state.report_content(content));
+                    SimulatedDialog::place(
+                        &dialog,
+                        macos,
+                        DialogPlacement {
+                            position: (saved.x * scale, saved.y * scale, scale),
+                            client_size: dialog_client_size(&spec, content, Some(&saved), false),
+                            content,
+                            work: &work,
+                            spec: &spec,
+                            fit_content: true,
+                            template: Some(TemplatePlacement {
+                                saved: Some(&saved),
+                                owner_rect: (0.0, 0.0, 1200.0, 900.0),
+                            }),
+                        },
+                    );
+                    if !reopened {
+                        assert_eq!(
+                            dialog.borrow().position,
+                            tauri::LogicalPosition::new(240.0, 180.0)
+                        );
+                        // Genuine native move, then resize, rather than another placement call.
+                        dialog.borrow_mut().position = tauri::LogicalPosition::new(300.0, 240.0);
+                        let mut moved = initial;
+                        moved.position = ((300.0 * scale) as i32, (240.0 * scale) as i32);
+                        state.record_frame(
+                            stable_normal_frame(&work, Some(moved), Some(moved)),
+                            false,
+                        );
+                        dialog.borrow_mut().client = tauri::LogicalSize::new(620.0, 460.0);
+                    }
+                    let user = {
+                        let native = dialog.borrow();
+                        let position = native.position.to_physical::<i32>(scale);
+                        let frame = native.frame();
+                        PhysicalNormalFrame {
+                            position: (position.x, position.y),
+                            outer: frame.outer,
+                            client: frame.client,
+                            scale,
+                        }
+                    };
+                    state.record_frame(stable_normal_frame(&work, Some(user), Some(user)), true);
+                    dialog.borrow_mut().calls.clear();
+                    for _ in 0..3 {
+                        // This is the same first-ready policy used by preferences_ready.
+                        // A later report must not enter placement at all, even to set minimums.
+                        assert!(
+                            !state.report_content(content),
+                            "a later Preferences report requested placement"
+                        );
+                    }
+                    assert!(dialog.borrow().calls.is_empty());
+                    assert_eq!(state.content_fit.unwrap().logical_height(1.0), 2400.0);
+                    // Owner minimize/restore and a stale read immediately after unminimize.
+                    // Native state guards turn an iconic owner/dialog into no snapshot.
+                    state.record_frame(stable_normal_frame(&work, None, Some(user)), true);
+                    assert!(recover_retained_frame(
+                        state.last_normal.as_ref(),
+                        std::slice::from_ref(&work),
+                        || panic!("reachable reveal sampled or reapplied the live frame"),
+                    )
+                    .unwrap());
+                    assert!(dialog.borrow().calls.is_empty());
+                    let captured = state
+                        .last_normal
+                        .clone()
+                        .unwrap()
+                        .close_frame(None, None)
+                        .unwrap();
+                    saved =
+                        serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
+                    assert_eq!(
+                        (saved.x, saved.y, saved.size),
+                        (300.0, 240.0, Some((620.0, 460.0)))
+                    );
+                    assert_eq!(
+                        dialog.borrow().position,
+                        tauri::LogicalPosition::new(300.0, 240.0)
+                    );
+                    assert_eq!(
+                        dialog.borrow().client,
+                        tauri::LogicalSize::new(620.0, 460.0)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_and_iconic_snapshots_never_replace_pending_persisted_or_retained_frames() {
+        for scale in [1.0, 1.5, 2.0] {
+            let work = WorkArea {
+                id: "screen".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 1200.0,
+                height: 900.0,
+                scale,
+            };
+            let valid = normal_test_frame(scale);
+            let mut state = PreferencesLayout::default();
+            state.record_frame(stable_normal_frame(&work, Some(valid), Some(valid)), true);
+            let expected = state.pending_move.as_ref().unwrap().1.clone();
+            for invalid in [
+                None, // IsIconic on either the dialog or its owner; failed native reads.
+                Some(PhysicalNormalFrame {
+                    position: (-32000, -32000),
+                    ..valid
+                }),
+                Some(PhysicalNormalFrame {
+                    outer: (32767, 32767),
+                    client: (32767, 32767),
+                    ..valid
+                }),
+                Some(PhysicalNormalFrame {
+                    client: (0, 0),
+                    ..valid
+                }),
+                Some(PhysicalNormalFrame {
+                    client: (valid.outer.0 + 1, valid.client.1),
+                    ..valid
+                }),
+            ] {
+                let rejected = stable_normal_frame(&work, invalid, invalid);
+                assert!(rejected.is_none());
+                state.record_frame(rejected, true);
+                assert_eq!(state.pending_move.as_ref().unwrap().1.size, expected.size);
+                assert_eq!(state.last_normal.as_ref().unwrap().physical, valid);
+                assert!(recover_retained_frame(
+                    state.last_normal.as_ref(),
+                    std::slice::from_ref(&work),
+                    || panic!("invalid frame became a full-work-area placement input")
+                )
+                .unwrap());
+            }
+            // Close's invalid live capture must not win over a valid queued event or disk.
+            let path = preferences_test_path("invalid-native");
+            write_positions(&path, vec![("preferences".into(), expected.clone())]);
+            let registry = Mutex::new(Registry {
+                preferences: Some(state),
+                ..Registry::default()
+            });
+            let invalid_saved = SavedPosition {
+                size: Some((32767.0, 32767.0)),
+                ..expected.clone()
+            };
+            flush_preferences_to(&registry, &path, PreferencesClose::Close, || {
+                Some(invalid_saved.clone())
+            });
+            write_positions(&path, vec![("preferences".into(), invalid_saved)]);
+            let positions: HashMap<String, SavedPosition> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let saved = &positions["preferences"];
+            assert_eq!(
+                (saved.x, saved.y, saved.size),
+                (240.0, 180.0, expected.size)
+            );
+            assert!(restorable_position(Some(saved), std::slice::from_ref(&work)).is_some());
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn retained_recovery_waits_for_normal_geometry_and_dpi_conversion_happens_once() {
+        // A valid but stale pre-restore rectangle must also be rejected, without confusing
+        // screen coordinates with WINDOWPLACEMENT's workspace coordinates on negative monitors.
+        assert!(normal_rect_matches_live(
+            (-1800, 180, -1224, 640),
+            (-1840, 156, -1264, 616),
+            (40, 24),
+        ));
+        assert!(!normal_rect_matches_live(
+            (240, 180, 816, 640),
+            (-1840, 156, -1264, 616),
+            (40, 24),
+        ));
+        for source_scale in [1.0, 1.5, 2.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                let work = WorkArea {
+                    id: "destination".into(),
+                    x: -2000.0,
+                    y: 0.0,
+                    width: 1600.0,
+                    height: 1000.0,
+                    scale,
+                };
+                let before = normal_test_frame(source_scale);
+                let after = PhysicalNormalFrame {
+                    position: ((-1800.0 * scale) as i32, (180.0 * scale) as i32),
+                    ..normal_test_frame(scale)
+                };
+                // A torn DPI transition is never a user resize or a placement input.
+                assert!(stable_normal_frame(&work, Some(before), Some(after)).is_none());
+                if scale != source_scale {
+                    assert!(stable_normal_frame(&work, Some(before), Some(before)).is_none());
+                }
+                let restored = stable_normal_frame(&work, Some(after), Some(after)).unwrap();
+                assert_eq!(restored.saved.size, Some((560.0, 420.0)));
+                assert_eq!((restored.saved.x, restored.saved.y), (-1800.0, 180.0));
+                assert!(restored.reachable(std::slice::from_ref(&work)));
+                let retained = NormalFrame::validated(
+                    &WorkArea {
+                        scale: source_scale,
+                        ..work.clone()
+                    },
+                    before,
+                )
+                .unwrap();
+                assert!(!recover_retained_frame(
+                    Some(&retained),
+                    std::slice::from_ref(&work),
+                    || {
+                        // Stale parked geometry immediately after unminimize: wait, without setters.
+                        let stale = PhysicalNormalFrame {
+                            position: (-32000, -32000),
+                            ..after
+                        };
+                        Ok(stable_normal_frame(&work, Some(stale), Some(stale)).is_some())
+                    }
+                )
+                .unwrap());
+                assert!(recover_retained_frame(
+                    Some(&retained),
+                    std::slice::from_ref(&work),
+                    || {
+                        assert_eq!(restored.saved.size, retained.saved.size);
+                        Ok(true)
+                    }
+                )
+                .unwrap());
+                // Negative monitor coordinates have no arbitrary minimum-value cutoff.
+                let far_work = WorkArea {
+                    x: -40000.0,
+                    y: -40000.0,
+                    width: 10000.0,
+                    height: 10000.0,
+                    scale: 1.0,
+                    ..work.clone()
+                };
+                let far_frame = PhysicalNormalFrame {
+                    position: (-32000, -32000),
+                    ..normal_test_frame(1.0)
+                };
+                assert!(NormalFrame::validated(&far_work, far_frame).is_some());
+            }
+        }
+    }
+
     #[test]
     fn preferences_saved_and_live_frames_survive_tall_content_and_reopen() {
         use std::cell::RefCell;
@@ -5839,6 +6787,7 @@ mod tests {
                 programmatic_client: Some((600, 400)),
                 programmatic_position: Some((100, 200)),
                 pending_move: None,
+                ..PreferencesLayout::default()
             });
             let session = registry.sessions.get_mut(&registration.host_id).unwrap();
             session.transient_until = now + Duration::from_millis(500);
