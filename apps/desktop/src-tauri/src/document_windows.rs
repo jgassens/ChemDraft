@@ -202,10 +202,11 @@ impl DocumentWindowRegistry {
         if let Some((owner, _, _)) = super::dialog_windows::dialog_label_parts(label) {
             return windows.get(owner).cloned();
         }
-        if label.starts_with("toolset-")
-            || label.starts_with("plugin-panel-")
-            || label == "spin3d-debugger"
-        {
+        if label.starts_with("plugin-panel-") {
+            return super::panel_ownership::owner_id(label)
+                .and_then(|id| windows.get(&id).cloned());
+        }
+        if label.starts_with("toolset-") || label == "spin3d-debugger" {
             // Palette and panel ownership belongs to the later multi-window tasks.
             return windows.get("main").cloned();
         }

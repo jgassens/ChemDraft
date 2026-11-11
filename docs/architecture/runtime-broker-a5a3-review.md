@@ -156,7 +156,7 @@ macOS Apple silicon, macOS Intel and Windows native execution are **unverified**
 must run the native gauntlet and app checks after the actual ownership cutover. No native build,
 launch or full gauntlet is claimed here.
 
-## Remaining work and A5b
+## Remaining work — native verification after A5b
 
 **A5a implementation is complete**, including production hidden-host startup, native adapter
 method/direction/target checks, minimal host service grants and asynchronous readiness. The first
@@ -171,11 +171,25 @@ macOS Apple silicon, macOS Intel and Windows: hidden focus/menu/taskbar/session 
 dialog suspension/focus, chosen-file reads and plugin install/update, naming/recognition,
 panel/overlay/prompt actions, proposals and assistant history.
 
-A5b owns the remaining multi-document seams: extend the first-document client/core routing in
-`runtimeHostSession`; bind panel/overlay labels, actions, native ownership and persistence by source
-window/tab; route prompts, image requests and fixed file pickers to the correct document. Keep all
-history, proposal preparation, dialog coordinators and final write checks local. Existing single-window
-labels/keys remain unchanged. Do not enable another document window in this task.
+**A5b implementation is complete** at build `11.11.02.15-codex`. The production host admits
+multiple document clients without constructing another runtime. Panels, native owners/frame keys,
+panel actions, overlay subscriptions/content/transcripts and assistant history are window-bound.
+MainWindow captures queued Send targets and scope before waiting; assistant `callTool` selects the
+captured request rather than the first request for a plugin. Prompt/image/file-picker presentation
+also returns to its source window. See [the A5b binding and verification table](runtime-broker.md#a5b-window-presentation--complete).
+
+No existing fixture or assertion was edited. New tests cover two production clients, contribution
+proxies, panel prompt/select/button routing, capture across activation, owner-only close and plugin
+notification, late-result refusal, independent overlay positions, source-only prompts, and identical
+assistant history/selection with Undo/Redo making no AI call. The existing broker, scope, panels,
+overlay, assistant, worker and native-contract suites pass unchanged.
+
+Remaining work is coordinator verification: Cargo fmt/clippy/tests and packaged execution on macOS
+Apple silicon, macOS Intel and Windows. Check the encoded native owner/Windows HWND, AppKit focus
+return, no taskbar entry, deferred-close cleanup, monitor-scale restore, single-window parity and
+two-window panel/prompt/overlay/assistant behavior. The new Rust tests were formatted but not run,
+per the worker's no-Cargo instruction. No second-window UI or tab move is enabled here; A6/A7 and
+the held A10b implementation remain separate tasks.
 
 The new host-services grant is exact-`runtime`: existing engines/controllers, scoped plugin storage/
 staging and the unchanged release URL allowlist. Image read/stat depend on the native picker scope.

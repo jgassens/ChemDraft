@@ -176,6 +176,29 @@ export class RuntimeBrokerDocument {
     finally { this.armedSelectionWarnings = previous; }
   }
 
+  private preparedInvocation?: RuntimeInvocation;
+
+  /** Capture at the UI's Send/click boundary, before its per-command queue waits. The returned
+   * closure still enters the ordinary registry and all live permission/ownership/write checks. */
+  prepareCommand(commandId: string, input?: PluginCommandInput, options?: { selectionWarnings?: string[] }): () => Promise<unknown> {
+    const pluginId = this.ownedCommands.get(commandId);
+    const tabId = this.port.activeTabId(), state = this.port.read(tabId);
+    if (!pluginId || !state || this.disposed) throw new Error("The plugin command's document is unavailable.");
+    const invocation = RuntimeInvocationSchema.parse({ id: crypto.randomUUID(), pluginId, commandId,
+      target: { windowId: this.port.windowId, tabId }, documentKey: state.documentKey,
+      writeScopeObjectIds: [...state.document.selection.objectIds] });
+    const snapshot = input === undefined ? undefined : structuredClone(input);
+    let used = false;
+    return () => {
+      if (used) return Promise.reject(new Error("This captured plugin command was already invoked."));
+      used = true;
+      const previous = this.preparedInvocation;
+      this.preparedInvocation = invocation;
+      try { return this.invokeCommand(commandId, snapshot, options); }
+      finally { this.preparedInvocation = previous; }
+    };
+  }
+
   /** Host-owned undo entry registration; no wire method can register or replace an undo callback. */
   recordOwnTransaction(invocationId: string, transactionId: string, undo: () => boolean): void {
     const binding = this.bindings.get(invocationId);
@@ -198,10 +221,14 @@ export class RuntimeBrokerDocument {
 
   private async dispatch(pluginId: string, commandId: string, input?: PluginCommandInput, capturedTabId?: string, selectionWarnings?: string[]): Promise<unknown> {
     if (this.disposed) throw new Error("The document window closed; plugin invocation refused.");
-    const tabId = capturedTabId ?? this.port.activeTabId();
+    const prepared = this.preparedInvocation;
+    const tabId = prepared?.target.tabId ?? capturedTabId ?? this.port.activeTabId();
     const state = this.port.read(tabId);
     if (!state) throw new Error("The plugin command's document tab was closed; nothing was inserted.");
-    const invocation = RuntimeInvocationSchema.parse({ id: crypto.randomUUID(), target: { windowId: this.port.windowId, tabId },
+    if (prepared && (prepared.commandId !== commandId || prepared.pluginId !== pluginId || prepared.documentKey !== state.documentKey)) {
+      throw new Error("The captured plugin command's document was closed or replaced.");
+    }
+    const invocation = prepared ?? RuntimeInvocationSchema.parse({ id: crypto.randomUUID(), target: { windowId: this.port.windowId, tabId },
       documentKey: state.documentKey, pluginId, commandId, writeScopeObjectIds: [...state.document.selection.objectIds] });
     this.bindings.set(invocation.id, { invocation: structuredClone(invocation), scope: new Set(invocation.writeScopeObjectIds),
       stop: new AbortController(), transactions: new Map(), selectionWarnings: selectionWarnings ?? this.armedSelectionWarnings });

@@ -70,7 +70,7 @@ struct Broker {
 #[derive(Default)]
 pub(crate) struct State(Mutex<Broker>);
 
-fn document_label(label: &str) -> bool {
+pub(crate) fn document_label(label: &str) -> bool {
     label.len() <= 128
         && (label == "main" || label.strip_prefix("doc-").is_some_and(|id| !id.is_empty()))
         && label
@@ -154,6 +154,7 @@ fn authorize_message(sender: &str, recipient: &str, bytes: &[u8]) -> Result<(), 
     let method = text("method").ok_or("Missing runtime broker method.")?;
     let runtime_destination = match method {
         "initializeRuntime"
+        | "runtimeDocumentClosed"
         | "invokeCommand"
         | "getContributions"
         | "getRuntimeView"
@@ -198,7 +199,11 @@ fn authorize_message(sender: &str, recipient: &str, bytes: &[u8]) -> Result<(), 
                 .ok_or("Missing runtime request payload.")?;
             if matches!(
                 method,
-                "initializeRuntime" | "getContributions" | "getRuntimeView" | "getCoreCommands"
+                "initializeRuntime"
+                    | "runtimeDocumentClosed"
+                    | "getContributions"
+                    | "getRuntimeView"
+                    | "getCoreCommands"
             ) {
                 if !payload
                     .as_object()
@@ -303,7 +308,33 @@ impl Chunk {
 
 impl Broker {
     fn forget(&mut self, label: &str) {
-        self.peers.remove(label);
+        let connection = self
+            .peers
+            .remove(label)
+            .map(|peer| peer.connection)
+            .unwrap_or_else(|| self.next_connection.to_string());
+        // Native lifecycle delivery, on the same private connection as ordinary replies.
+        // The renderer cannot nominate another window; no generic event is involved.
+        if document_label(label) {
+            if let Some(host) = self.peers.get(HOST) {
+                let bytes = serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "kind": "request", "id": format!("closed-{connection}"),
+                    "method": "runtimeDocumentClosed", "payload": {}
+                }))
+                .expect("native close notification is serializable");
+                let _ = host.channel.send(Delivery {
+                    sender: label.into(),
+                    connection: host.connection.clone(),
+                    chunk: Chunk {
+                        transfer_id: format!("closed-{connection}"),
+                        index: 0,
+                        total: 1,
+                        bytes: bytes.len(),
+                        data: STANDARD.encode(bytes),
+                    },
+                });
+            }
+        }
         self.partials
             .retain(|sender, partial| sender != label && partial.recipient != label);
     }
@@ -526,6 +557,7 @@ pub(crate) async fn runtime_broker_disconnect(
 }
 
 pub(crate) fn forget_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    crate::close_owned_plugin_panels(app, label);
     app.state::<State>()
         .0
         .lock()

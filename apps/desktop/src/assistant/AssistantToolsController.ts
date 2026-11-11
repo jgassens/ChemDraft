@@ -24,6 +24,7 @@ const assistantToolDeadlineMs = (name: string): number =>
 interface Request {
   pluginId: string;
   tabId: string;
+  windowId?: string;
   selection: string[];
   inserted: Set<string>;
   touched: Set<string>;
@@ -85,8 +86,10 @@ export class AssistantToolsController implements PluginHostAssistant {
     const manifest = this.plugin(plugin);
     if (typeof input?.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 20_000 ||
       (input.label !== undefined && (typeof input.label !== "string" || input.label.length > 200))) throw new Error("Invalid assistant request prompt or label.");
-    if (this.starting.has(plugin.id) || [...this.requests.values()].some(r => r.pluginId === plugin.id && !r.ended)) throw new Error("This plugin already has an assistant request running.");
-    this.starting.add(plugin.id);
+    const windowId = provider?.target?.windowId ?? "main";
+    const startingKey = JSON.stringify([plugin.id, windowId]);
+    if (this.starting.has(startingKey) || [...this.requests.values()].some(r => r.pluginId === plugin.id && (r.windowId ?? "main") === windowId && !r.ended)) throw new Error("This plugin already has an assistant request running.");
+    this.starting.add(startingKey);
     let remote: RuntimeAssistantBinding | undefined;
     try {
       remote = provider && this.options.captureRequest ? await this.options.captureRequest(provider, input.label ?? input.prompt) : undefined;
@@ -105,7 +108,7 @@ export class AssistantToolsController implements PluginHostAssistant {
       const services = this.options.createContext({ plugin: manifest, tabId, getDocument });
       const requestId = captured?.requestId ?? localTransactions!.beginAssistantTransaction({ pluginId: plugin.id, runId: crypto.randomUUID(), tabId,
         label: input.label ?? input.prompt, sendSelection: { objectIds: selection } });
-      const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
+      const request: Request = { pluginId: plugin.id, tabId, windowId, selection, inserted: new Set(), touched: new Set(), transactions,
         remote: captured, ended: false, cancellations: new Map(), opening: 0,
         context: { ...services, ...(captured ? { getViewportRect: () => captured.viewport() } : {}), plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
           chemistry: { ...services.chemistry, reactionProductAligner: async () => {
@@ -121,11 +124,17 @@ export class AssistantToolsController implements PluginHostAssistant {
     } catch (error) {
       await remote?.end([]).catch(() => undefined);
       throw error;
-    } finally { this.starting.delete(plugin.id); }
+    } finally { this.starting.delete(startingKey); }
   }
 
-  async callTool(plugin: Plugin, input: Parameters<PluginAssistantAPI["callTool"]>[0]): Promise<PluginAssistantToolResult> {
-    const entry = [...this.requests].find(([, r]) => r.pluginId === plugin.id && !r.ended);
+  callCapturedTool(plugin: Plugin, input: Parameters<PluginAssistantAPI["callTool"]>[0], provider: PluginInvocationDocumentProvider) {
+    return this.callTool(plugin, input, provider);
+  }
+
+  async callTool(plugin: Plugin, input: Parameters<PluginAssistantAPI["callTool"]>[0], provider?: PluginInvocationDocumentProvider): Promise<PluginAssistantToolResult> {
+    const target = provider?.target;
+    const entry = [...this.requests].find(([, r]) => r.pluginId === plugin.id && !r.ended &&
+      (!target || ((r.windowId ?? "main") === target.windowId && r.tabId === target.tabId)));
     if (!entry) throw new Error("No assistant request is running.");
     return this.call(plugin, entry[0], input);
   }
@@ -328,8 +337,12 @@ export class AssistantToolsController implements PluginHostAssistant {
       this.abandonRequest(id, request);
     }
   }
-  closeAllForTab(tabId: string): void {
-    for (const [id, request] of this.requests) if (request.tabId === tabId) this.abandonRequest(id, request);
+  closeAllForWindow(windowId: string): void {
+    for (const [id, request] of this.requests) if ((request.windowId ?? "main") === windowId) this.abandonRequest(id, request);
+  }
+
+  closeAllForTab(tabId: string, windowId = "main"): void {
+    for (const [id, request] of this.requests) if (request.tabId === tabId && (request.windowId ?? "main") === windowId) this.abandonRequest(id, request);
   }
   private abandonRequest(id: string, request: Request): void {
     request.ended = true;

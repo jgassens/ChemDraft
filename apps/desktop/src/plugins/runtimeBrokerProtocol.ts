@@ -62,6 +62,7 @@ export const RuntimeContributionsSchema = z.object({
 export type RuntimeContributions = z.infer<typeof RuntimeContributionsSchema>;
 
 export const runtimeMethods = {
+  runtimeDocumentClosed: { request: z.object({}).strict(), response: z.null(), destination: "runtime" },
   initializeRuntime: { request: z.object({}).strict(), response: z.null(), destination: "runtime" },
   chooseRuntimeFile: { request: z.object({ kind: z.enum(["pluginPackage", "image"]) }).strict(),
     response: z.string().nullable(), destination: "document" },

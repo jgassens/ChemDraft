@@ -11,6 +11,7 @@ export interface RuntimeAssistantBinding {
   withToolInvocation<T>(name: string, scope: readonly string[], run: (provider: PluginInvocationDocumentProvider) => Promise<T>): Promise<T>;
   requestId: string;
   tabId: string;
+  windowId?: string;
   selection: string[];
   read(): ChemDraftDocument;
   viewport(): RuntimeAssistantSnapshot["viewport"];
@@ -49,7 +50,7 @@ export function createRuntimeAssistantClient(broker: RuntimeBroker) {
           try { return await run(brokerDocumentProvider(broker, invocation)); }
           finally { await broker.call(session.target.windowId, "endInvocation", invocationReference(invocation)).catch(() => undefined); }
         },
-        requestId: session.requestId, tabId: session.target.tabId, selection,
+        requestId: session.requestId, tabId: session.target.tabId, windowId: session.target.windowId, selection,
         read: () => snapshot.document, viewport: () => snapshot.viewport,
         refresh: async () => { snapshot = await broker.call(session.target.windowId, "assistantRead", session); },
         write: (after, touchedIds, selectionDocument) => { prepared = { after, touchedIds: [...touchedIds], selectionDocument }; },

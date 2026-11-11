@@ -26,6 +26,7 @@ export type RecognitionActivityStage = "checking" | "starting" | "reading" | "va
 
 /** The recognition the progress indicator shows. */
 export interface RecognitionActivity {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -49,6 +50,7 @@ const CANCELLED_CALL_GRACE_MS = 10_000;
 const MAX_ENGINE_CHECK_WAITS = 3;
 
 export interface OpenStructureRecognitionInstall {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -297,7 +299,8 @@ export class StructureRecognitionController {
     plugin: { id: string; name: string },
     image: PluginProvidedImage,
     signal: AbortSignal,
-    prepareResult: PrepareRecognitionResult = this.prepareResult
+    prepareResult: PrepareRecognitionResult = this.prepareResult,
+    windowId = "main"
   ): Promise<PluginRecognitionResult> {
     if (signal.aborted) return { status: "cancelled" };
     // One at a time: the engine runs one recognition, and the indicator shows one.
@@ -305,6 +308,7 @@ export class StructureRecognitionController {
       return recognitionFailure("busy", "Another image is already being recognized.");
     }
     const active: ActiveRecognition = {
+      ...(windowId === "main" ? {} : { windowId }),
       id: this.nextId++,
       pluginId: plugin.id,
       pluginName: plugin.name,
@@ -360,7 +364,7 @@ export class StructureRecognitionController {
 
     if (status.state !== "installed") {
       // The install dialog replaces the indicator while it is open (see getActiveRecognition).
-      const outcome = await this.requestInstall(plugin, status, stopped);
+      const outcome = await this.requestInstall(plugin, status, stopped, active.windowId);
       this.publishActivity();
       // A cancel or an abandoned invocation is the user's own act: the plugin stays silent. Only a
       // declined or incomplete install is `engineNotInstalled`, which a plugin may explain.
@@ -454,6 +458,7 @@ export class StructureRecognitionController {
   private publishActivity(): void {
     const active = this.active;
     this.activitySnapshot = active && {
+      ...(active.windowId ? { windowId: active.windowId } : {}),
       id: active.id,
       pluginId: active.pluginId,
       pluginName: active.pluginName,
@@ -614,13 +619,15 @@ export class StructureRecognitionController {
   private requestInstall(
     plugin: { id: string; name: string },
     status: StructureRecognitionEngineStatus,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    windowId = "main"
   ): Promise<InstallRequestOutcome> {
     if (signal?.aborted) return Promise.resolve("cancelled");
     // Nobody can answer a dialog (or one is already open): the engine is simply not installed.
     if (this.pending || this.presenters === 0) return Promise.resolve("declined");
     return new Promise<InstallRequestOutcome>((resolve) => {
       const pending: PendingInstall = {
+        ...(windowId === "main" ? {} : { windowId }),
         id: this.nextId++,
         pluginId: plugin.id,
         pluginName: plugin.name,

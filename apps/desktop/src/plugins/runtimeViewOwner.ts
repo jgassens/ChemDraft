@@ -7,11 +7,13 @@ import type { PreparedPluginUpdate, PluginUpdateOffer } from "./pluginUpdates";
 import { PluginReleaseMetadataUnavailableError } from "./pluginUpdates";
 import { PluginInstallError } from "./installPluginPackage";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./fixturePlugin";
+import type { PickedPluginPackage } from "./pickPluginPackage";
 import type { CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
 
 /** Only this owner-side adapter knows the real host/controllers. It never transmits them. */
-export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeBroker, clients: () => readonly string[]): (() => void) & { publish(): void } {
+export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeBroker, clients: () => readonly string[], presentation?: { pickPackage(windowId: string): Promise<PickedPluginPackage | undefined> }): (() => void) & { publish(): void } {
   const runtime = owner.runtime;
+  const documentNames = new Map<string, string>();
   // Archive bytes and worker descriptors stay with their owner. The manager reviews metadata and
   // returns an opaque receipt, so an otherwise valid large package never exceeds a broker message.
   const packages = new Map<string, PluginPackageInspection>();
@@ -28,27 +30,32 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
   };
   const restoreTokens = new WeakMap<CanvasOverlayDraftRestore, number>();
   let nextRestoreToken = 0;
-  const restore = (id: string) => {
-    const value = runtime.getCanvasOverlayDraftRestore(id);
+  const restore = (id: string, windowId: string) => {
+    const value = runtime.getCanvasOverlayDraftRestore(id, windowId);
     if (!value) return undefined;
     if (!restoreTokens.has(value)) restoreTokens.set(value, ++nextRestoreToken);
     return { ...value, token: restoreTokens.get(value)! };
   };
-  const topics = () => ({
+  const activityForWindow = (windowId: string) => {
+    const activity = runtime.recognition.getActiveRecognition();
+    return activity && (activity.windowId ?? "main") === windowId ? activity : undefined;
+  };
+  const topics = (windowId: string) => ({
     naming: { status: runtime.naming.getStatus(), run: runtime.naming.getInstallRun(), activity: runtime.naming.getActivity() },
-    overlayStatus: [...runtime.getCanvasOverlayStatuses()],
-    overlayTranscript: [...runtime.getCanvasOverlayTranscripts()],
-    overlayContent: { contents: [...runtime.getCanvasOverlayContents()], restores: runtime.listCanvasOverlays().map(({ overlay }) => [overlay.id, restore(overlay.id)]) },
-    overlayOpen: [...runtime.getCanvasOverlayOpenRequests()],
-    activity: runtime.recognition.getActiveRecognition(),
+    overlayStatus: [...runtime.getCanvasOverlayStatuses(windowId)],
+    overlayTranscript: [...runtime.getCanvasOverlayTranscripts(windowId)],
+    overlayContent: { contents: [...runtime.getCanvasOverlayContents(windowId)], restores: runtime.listCanvasOverlays().map(({ overlay }) => [overlay.id, restore(overlay.id, windowId)]) },
+    overlayOpen: [...runtime.getCanvasOverlayOpenRequests(windowId)],
+    activity: activityForWindow(windowId),
     progress: runtime.recognition.getInstallRun()
   });
-  const snapshot = (): RuntimeViewState => {
+  const snapshot = (windowId: string): RuntimeViewState => {
     const view = owner.read();
     const { runtime: _runtime, bundledPlugins, installedPlugins, isPluginCommand: _is, ...rest } = view;
     const state: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(rest)) if (typeof value !== "function") state[key] = value;
-    const prompt = view.openTextPrompt;
+    const prompt = view.openTextPrompt && (view.openTextPrompt.windowId ?? "main") === windowId ? view.openTextPrompt : undefined;
+    state.openTextPrompt = undefined;
     if (prompt) state.openTextPrompt = { id: prompt.id, pluginId: prompt.pluginId, pluginName: prompt.pluginName, request: prompt.request };
     const proposals = runtime.host.listProposedPatches("pending");
     const liveIds = new Set(proposals.map(proposal => proposal.id));
@@ -69,6 +76,11 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     });
     return {
       ...state as Omit<RuntimeViewState, "bundledPlugins" | "installedPlugins" | "availableActions" | "proposals" | "proposalTabs" | "toolsets" | "commands">,
+      openPanel: runtime.panels.getOpenPanel(windowId),
+      detachedPanels: runtime.panels.getDetachedPanels(windowId).map(panel => clients().length > 1
+        ? { ...panel, documentName: documentNames.get(windowId) } : panel),
+      openImageRequest: view.openImageRequest && (view.openImageRequest.windowId ?? "main") === windowId ? view.openImageRequest : undefined,
+      openRecognitionInstall: view.openRecognitionInstall && (view.openRecognitionInstall.windowId ?? "main") === windowId ? view.openRecognitionInstall : undefined,
       bundledPlugins: bundledPlugins.map(({ manifest }) => ({ manifest })),
       installedPlugins: installedPlugins.map(({ record, manifest }) => ({ record, manifest })),
       availableActions: Object.entries(view).flatMap(([key, value]) => typeof value === "function" && isRuntimeViewAction(key) ? [key] : []),
@@ -79,23 +91,38 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     };
   };
   const publish = (topic: string, value: unknown) => { void broker.broadcastView(clients(), topic, encodeRuntimeView(value)).catch(() => undefined); };
-  const publishState = () => publish("state", snapshot());
+  const publishForWindow = (topic: string, read: (windowId: string) => unknown) => {
+    for (const windowId of clients()) void broker.broadcastView([windowId], topic, encodeRuntimeView(read(windowId))).catch(() => undefined);
+  };
+  const publishState = () => publishForWindow("state", snapshot);
   const describeError = (cause: unknown) => ({
     message: cause instanceof Error ? cause.message : String(cause),
     installCode: cause instanceof PluginInstallError ? cause.code : undefined,
     metadataKind: cause instanceof PluginReleaseMetadataUnavailableError ? cause.kind : undefined
   });
-  const action = ({ action, args: encoded }: RuntimeViewAction): unknown => {
+  const action = ({ action, args: encoded }: RuntimeViewAction, windowId: string): unknown => {
     const args = decodeRuntimeView<unknown[]>(encoded);
     const view = owner.read();
+    const request = action === "submitTextPrompt" || action === "cancelTextPrompt" ? runtime.prompts.getOpenPrompt()
+      : ["acquireImage", "openImagePermissionSettings", "refreshImagePermission", "relaunchForImagePermission", "cancelImageRequest"].includes(action)
+        ? runtime.images.getOpenRequest()
+        : ["installRecognitionEngine", "cancelRecognitionEngineInstall", "declineRecognitionEngineInstall"].includes(action) ? runtime.recognition.getOpenInstall() : undefined;
+    if (request && (request.windowId ?? "main") !== windowId) throw new Error("This presentation belongs to another document window.");
     switch (action) {
       case "invokePluginCommand": {
         const warnings: string[] = [];
-        return view.invokePluginCommand(args[0] as string, { input: args[1] as PluginCommandInput | undefined,
-          selectionWarnings: args[2] ? warnings : undefined }).then(
-          result => ({ result, warnings }), cause => ({ error: describeError(cause), warnings }));
+        const commandId = args[0] as string;
+        if (!runtime.host.commands.get(commandId)?.pluginId) return broker.call(windowId, "invokeCoreCommand",
+          { commandId, input: args[1] as PluginCommandInput | undefined, permissions: [] }).then(result => ({ result, warnings }));
+        return broker.call(windowId, "captureDocumentTarget", { windowId }).then(captured =>
+          broker.call(windowId, "invokeDocumentPlugin", { ...captured, commandId,
+            input: args[1] as PluginCommandInput | undefined, collectWarnings: !!args[2] })).then(
+          result => {
+            const reply = result as { result?: unknown; error?: string; warnings: string[] };
+            return { ...reply, error: reply.error ? describeError(reply.error) : undefined };
+          }, cause => ({ error: describeError(cause), warnings }));
       }
-      case "pickPackage": return view.pickPackage?.().then(picked => picked && ({ ...picked, inspection: retainPackage(picked.inspection) }));
+      case "pickPackage": return (presentation ? presentation.pickPackage(windowId) : view.pickPackage?.())?.then(picked => picked && ({ ...picked, inspection: retainPackage(picked.inspection) }));
       case "installPackage": return view.installPackage?.(packageFor(args[0]));
       case "prepareOfficialPluginInstall": return view.prepareOfficialPluginInstall?.(args[0] as string).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection) }));
       case "uninstallInstalledPlugin": return view.uninstallInstalledPlugin?.(args[0] as string);
@@ -103,7 +130,7 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
       case "prepareInstalledPluginUpdate": return view.prepareInstalledPluginUpdate?.(args[0] as PluginUpdateOffer).then(prepared => ({ ...prepared, inspection: retainPackage(prepared.inspection) }));
       case "updateInstalledPlugin": return view.updateInstalledPlugin?.({ ...args[0] as PreparedPluginUpdate, inspection: packageFor((args[0] as PreparedPluginUpdate).inspection) });
       case "discardPreparedPackages": return packages.clear();
-      case "closePanel": return runtime.panels.closePanel();
+      case "closePanel": return runtime.panels.closePanel(windowId);
       case "submitTextPrompt": return runtime.prompts.submit(args[0] as number, args[1] as string);
       case "cancelTextPrompt": return runtime.prompts.cancel(args[0] as number);
       case "acquireImage": return runtime.images.acquire(args[0] as number, args[1] as PluginImageSource);
@@ -119,9 +146,9 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
       case "cancelRunningRecognitionEngineInstall": return view.cancelRunningRecognitionEngineInstall();
       case "uninstallRecognitionEngine": return view.uninstallRecognitionEngine();
       case "cancelRecognition": return view.cancelRecognition(args[0] as number);
-      case "closeDetachedPanel": return runtime.panels.closeDetachedPanel(args[0] as string, args[1] as string);
-      case "detachPanel": return runtime.panels.detachPanel(args[0] as string, args[1] as string);
-      case "reattachPanel": return runtime.panels.reattachPanel(args[0] as string, args[1] as string);
+      case "closeDetachedPanel": return runtime.panels.closeDetachedPanel(args[0] as string, args[1] as string, windowId);
+      case "detachPanel": return runtime.panels.detachPanel(args[0] as string, args[1] as string, windowId);
+      case "reattachPanel": return runtime.panels.reattachPanel(args[0] as string, args[1] as string, windowId);
       case "reportDiagnostic": return runtime.panels.reportDiagnostic(args[0] as string, args[1] as string);
       case "applyEnabled": return owner.applyEnabled(args[0] as string[]);
       case "namingCancelActivity": return runtime.naming.cancelNaming(args[0] as number);
@@ -132,11 +159,11 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
       case "consentList": return runtime.externalTools.consentList();
       case "consentRevoke": return runtime.externalTools.consentRevoke(args[0] as Parameters<typeof runtime.externalTools.consentRevoke>[0], args[1] as string);
       case "clearDraftRestore": {
-        const current = runtime.getCanvasOverlayDraftRestore(args[0] as string);
+        const current = runtime.getCanvasOverlayDraftRestore(args[0] as string, windowId);
         if (args[1] !== undefined && (!current || restoreTokens.get(current) !== args[1])) return false;
-        return runtime.clearCanvasOverlayDraftRestore(args[0] as string, current);
+        return runtime.clearCanvasOverlayDraftRestore(args[0] as string, current, windowId);
       }
-      case "closeProposalDocumentTab": return runtime.closeProposalDocumentTab(args[0] as string, args[1] as string);
+      case "closeProposalDocumentTab": return runtime.closeProposalDocumentTab(args[0] as string, args[1] as string, windowId);
       case "proposalDocumentTab": return runtime.proposalDocumentTab(args[0] as string);
       case "listCanvasOverlays": return runtime.listCanvasOverlays();
       case "screenCaptureOf": return !!runtime.host.recognitionScreenCaptureOf(args[0] as string);
@@ -161,6 +188,8 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     broker.handle("setDocumentMetadata", (request, sender) => {
       if (request.target.windowId !== sender) throw new Error("Document metadata belongs to another window.");
       runtime.updateDocumentTabTitles(request.titles, sender);
+      const title = request.titles.find(tab => tab.id === request.target.tabId)?.title;
+      if (title) documentNames.set(sender, title);
       publishState();
       return null;
     }),
@@ -177,23 +206,20 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
       } finally { runtime.host.settleProposedPatchAcceptance(request.proposalId, token, committed); }
       return null;
     }),
-    broker.handle("getRuntimeView", () => encodeRuntimeView({ state: snapshot(), topics: topics() })),
-    broker.handle("runtimeViewAction", request => {
+    broker.handle("getRuntimeView", (_request, sender) => encodeRuntimeView({ state: snapshot(sender), topics: topics(sender) })),
+    broker.handle("runtimeViewAction", (request, sender) => {
       try {
-        const result = action(request);
+        const result = action(request, sender);
         return result instanceof Promise ? result.then(success, failure) : success(result);
       } catch (cause) { return failure(cause); }
     }),
     owner.subscribe(publishState),
     runtime.naming.subscribe(() => publish("naming", { status: runtime.naming.getStatus(), run: runtime.naming.getInstallRun(), activity: runtime.naming.getActivity() })),
-    runtime.subscribeCanvasOverlayStatus(() => publish("overlayStatus", [...runtime.getCanvasOverlayStatuses()])),
-    runtime.subscribeCanvasOverlayTranscript(() => publish("overlayTranscript", [...runtime.getCanvasOverlayTranscripts()])),
-    runtime.subscribeCanvasOverlayContent(() => publish("overlayContent", {
-      contents: [...runtime.getCanvasOverlayContents()],
-      restores: runtime.listCanvasOverlays().map(({ overlay }) => [overlay.id, restore(overlay.id)])
-    })),
-    runtime.subscribeCanvasOverlayOpen(() => publish("overlayOpen", [...runtime.getCanvasOverlayOpenRequests()])),
-    runtime.recognition.subscribeActivity(() => publish("activity", runtime.recognition.getActiveRecognition())),
+    runtime.subscribeCanvasOverlayStatus(() => publishForWindow("overlayStatus", windowId => topics(windowId).overlayStatus)),
+    runtime.subscribeCanvasOverlayTranscript(() => publishForWindow("overlayTranscript", windowId => topics(windowId).overlayTranscript)),
+    runtime.subscribeCanvasOverlayContent(() => publishForWindow("overlayContent", windowId => topics(windowId).overlayContent)),
+    runtime.subscribeCanvasOverlayOpen(() => publishForWindow("overlayOpen", windowId => topics(windowId).overlayOpen)),
+    runtime.recognition.subscribeActivity(() => publishForWindow("activity", activityForWindow)),
     runtime.recognition.subscribe(() => publish("progress", runtime.recognition.getInstallRun()))
   ];
   // Proposal notifications are a separate callback from PluginHost.subscribe.
@@ -203,7 +229,9 @@ export function bindRuntimeViewOwner(owner: PluginRuntimeOwner, broker: RuntimeB
     previewSources.clear();
   }, { publish: () => {
     publishState();
-    for (const [topic, value] of Object.entries(topics())) publish(topic, value);
+    for (const windowId of clients()) for (const [topic, value] of Object.entries(topics(windowId))) {
+      void broker.broadcastView([windowId], topic, encodeRuntimeView(value)).catch(() => undefined);
+    }
   } });
 
 }

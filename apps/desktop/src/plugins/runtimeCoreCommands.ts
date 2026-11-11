@@ -5,18 +5,20 @@ import { RuntimeBroker } from "./runtimeBroker";
  * data; the document's registry remains the sole owner of core handlers and their live state. */
 export class RuntimeCoreCommandRegistry extends CommandRegistry {
   private definitions: CommandDefinition[] = [];
-  private revision = -1;
+  private readonly revisions = new Map<string, number>();
   readonly dispose: () => void;
   readonly ready: Promise<void>;
   constructor(private readonly broker: RuntimeBroker, private readonly documentWindow: string, strictInitialization = false) {
     super();
     this.dispose = broker.handle("setCoreCommands", ({ commands, revision }, sender) => {
-      if (sender !== documentWindow) throw new Error("Core commands belong to another document window.");
-      if (revision > this.revision) { this.definitions = commands; this.revision = revision; }
+      if (revision > (this.revisions.get(sender) ?? -1)) {
+        this.revisions.set(sender, revision);
+        if (sender === documentWindow) this.definitions = commands;
+      }
       return null;
     });
     this.ready = broker.call(documentWindow, "getCoreCommands", {}, strictInitialization ? 15_000 : undefined).then(commands => {
-      if (this.revision < 0) this.definitions = commands;
+      if (!this.revisions.has(documentWindow)) this.definitions = commands;
     }).catch(error => { if (strictInitialization) throw error; });
   }
   private core(): CommandDefinition[] { return this.definitions; }

@@ -11,37 +11,38 @@ import { ImageSourceRegistry, fileImageSourceWithPicker, screenRegionImageSource
 import { pickPluginPackage } from "./pickPluginPackage";
 
 /** Called only by the hidden host route. The first authenticated document supplies core definitions
- * before the sole owner registers plugins. A5b will extend document-specific presentation binding. */
+ * before the sole owner registers plugins. Each subsequent document shares that owner. */
 export function bindRuntimeHostSession(broker: RuntimeBroker, createOwner = createPluginRuntimeOwner) {
   if (broker.label !== "runtime") throw new Error("Only the hidden runtime host may construct the owner.");
   let initialization: Promise<null> | undefined;
-  let documentWindow: string | undefined;
+  const documentWindows = new Set<string>();
+  let ownerRuntime: ReturnType<typeof createOwner>["runtime"] | undefined;
   let disposed = false;
   const stops: Array<() => void> = [];
   const stop = broker.handle("initializeRuntime", (_request, sender) => {
-    if (documentWindow && documentWindow !== sender) throw new Error("Runtime presentation is already bound to another document window.");
-    documentWindow = sender;
+    documentWindows.add(sender);
+    ownerRuntime?.openDocumentWindow(sender);
     initialization ??= (async () => {
       const registry = new RuntimeCoreCommandRegistry(broker, sender, true);
       stops.push(registry.dispose);
       await registry.ready;
       if (disposed) throw new Error("The runtime host closed during startup.");
-      const clients = () => [sender];
+      const clients = () => [...documentWindows];
       const publish = (topic: string, value: unknown) => {
         void broker.broadcastView(clients(), topic, encodeRuntimeView(value)).catch(() => undefined);
       };
       const assistant = createRuntimeAssistantClient(broker);
       const dialogs = createRuntimeDialogClient(broker);
       stops.push(assistant.dispose, dialogs.dispose);
-      const chooseFile = (kind: "pluginPackage" | "image") => broker.call(sender, "chooseRuntimeFile", { kind });
+      const chooseFile = (windowId: string, kind: "pluginPackage" | "image") => broker.call(windowId, "chooseRuntimeFile", { kind });
       const owner = createOwner({
         dataOnly: true, commandRegistry: registry, createStorage: createPersistentPluginStorage,
         getActiveDocument: () => undefined, getSelection: () => ({ objectIds: [], molecules: [] }),
         captureAssistantRequest: assistant.begin,
         dialogPort: target => target ? dialogs.forTarget(target) : undefined,
-        pickPackage: () => pickPluginPackage({ chooseFile: () => chooseFile("pluginPackage") }),
+        pickPackage: () => pickPluginPackage({ chooseFile: () => chooseFile(sender, "pluginPackage") }),
         imageSourceRegistry: new ImageSourceRegistry([
-          fileImageSourceWithPicker(() => chooseFile("image")), screenRegionImageSourceProvider
+          fileImageSourceWithPicker(windowId => chooseFile(windowId ?? sender, "image")), screenRegionImageSourceProvider
         ]),
         forwardUnboundCommand: async (commandId, options) => {
           const captured = await broker.call(sender, "captureDocumentTarget", { windowId: sender });
@@ -55,9 +56,11 @@ export function bindRuntimeHostSession(broker: RuntimeBroker, createOwner = crea
         onPluginUpdateStatus: text => publish("pluginUpdateStatus", text),
         onProposedPatchesChanged: () => publish("proposalsChanged", null)
       });
+      ownerRuntime = owner.runtime;
+      for (const windowId of documentWindows) owner.runtime.openDocumentWindow(windowId);
       stops.push(() => owner.dispose());
       const host = new RuntimeBrokerHost(broker, () => owner.runtime, clients);
-      const view = bindRuntimeViewOwner(owner, broker, clients);
+      const view = bindRuntimeViewOwner(owner, broker, clients, { pickPackage: windowId => pickPluginPackage({ chooseFile: () => chooseFile(windowId, "pluginPackage") }) });
       stops.push(() => host.dispose(), view);
       owner.start();
       return null;
@@ -67,5 +70,10 @@ export function bindRuntimeHostSession(broker: RuntimeBroker, createOwner = crea
     });
     return initialization;
   });
-  return () => { disposed = true; stop(); for (const dispose of stops.splice(0).reverse()) dispose(); };
+  const stopClosed = broker.handle("runtimeDocumentClosed", (_request, sender) => {
+    documentWindows.delete(sender);
+    ownerRuntime?.closeDocumentWindow(sender);
+    return null;
+  });
+  return () => { disposed = true; stopClosed(); stop(); for (const dispose of stops.splice(0).reverse()) dispose(); };
 }

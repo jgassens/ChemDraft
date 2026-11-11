@@ -224,7 +224,7 @@ fn restore<R: Runtime>(window: &tauri::Window<R>) -> Result<Status, String> {
     let state = window.state::<State>();
     let restored = state.restore(window.label(), |normal| {
         let (placement, restored) =
-            super::plugin_panel_restore_geometry(window.app_handle(), &normal)
+            super::plugin_panel_restore_geometry(window.app_handle(), window.label(), &normal)
                 .ok_or("Could not place the restored panel on an attached monitor.")?;
         apply(window, placement)?;
         // Save the target rather than reading back a minimized owner's parking coordinates.

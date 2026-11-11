@@ -30,7 +30,7 @@ export interface ImageSourceProvider {
   label: string;
   isAvailable(): Promise<boolean>;
   permission?: ImageSourcePermission;
-  acquire(signal: AbortSignal): Promise<ProvidedImage | "cancelled">;
+  acquire(signal: AbortSignal, windowId?: string): Promise<ProvidedImage | "cancelled">;
 }
 
 export class ImageSourceError extends Error {
@@ -104,8 +104,8 @@ export const fileImageSourceProvider: ImageSourceProvider = {
 };
 
 /** Keep the native picker in the document; the runtime still reads and validates the image. */
-export function fileImageSourceWithPicker(chooseFile: () => Promise<string | null>): ImageSourceProvider {
-  return { ...fileImageSourceProvider, acquire: signal => acquireFileImage(signal, chooseFile) };
+export function fileImageSourceWithPicker(chooseFile: (windowId?: string) => Promise<string | null>): ImageSourceProvider {
+  return { ...fileImageSourceProvider, acquire: (signal, windowId) => acquireFileImage(signal, () => chooseFile(windowId)) };
 }
 
 async function acquireFileImage(signal: AbortSignal, chooseFile?: () => Promise<string | null>): Promise<ProvidedImage | "cancelled"> {

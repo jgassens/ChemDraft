@@ -499,6 +499,8 @@ export type PluginHostAssistant = {
 } & { closeAllForPlugin(pluginId: string): void;
   beginCapturedRequest?(plugin: { id: string; name: string }, request: Parameters<PluginAssistantAPI["beginRequest"]>[0],
     provider: PluginInvocationDocumentProvider): ReturnType<PluginAssistantAPI["beginRequest"]>;
+  callCapturedTool?(plugin: { id: string; name: string }, request: Parameters<PluginAssistantAPI["callTool"]>[0],
+    provider: PluginInvocationDocumentProvider): ReturnType<PluginAssistantAPI["callTool"]>;
 };
 
 export interface PluginHostOptions {
@@ -508,10 +510,10 @@ export interface PluginHostOptions {
   minimize3d?: (request: PluginMinimize3DRequest, signal: AbortSignal) => Promise<PluginMinimize3DResult>;
   flatten3d?: (request: PluginFlatten3DRequest, signal: AbortSignal) => Promise<PluginFlatten3DResult>;
   overlays?: {
-    setStatus(pluginId: string, overlayId: string, text: string): void | Promise<void>;
-    setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[]): void | Promise<void>;
-    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean; restoreDraft?: string }): void | Promise<void>;
-    open?(pluginId: string, overlayId: string, focus: boolean): void | Promise<void>;
+    setStatus(pluginId: string, overlayId: string, text: string, provider?: PluginInvocationDocumentProvider): void | Promise<void>;
+    setTranscript?(pluginId: string, overlayId: string, entries: PluginOverlayTranscriptEntry[], provider?: PluginInvocationDocumentProvider): void | Promise<void>;
+    setContent?(pluginId: string, overlayId: string, sections: PluginOverlayContentSection[], prompt?: { disabled?: boolean; restoreDraft?: string }, provider?: PluginInvocationDocumentProvider): void | Promise<void>;
+    open?(pluginId: string, overlayId: string, focus: boolean, provider?: PluginInvocationDocumentProvider): void | Promise<void>;
   };
   assistant?: PluginHostAssistant;
   commandRegistry?: CommandRegistry;
@@ -529,12 +531,13 @@ export interface PluginHostOptions {
    *  supplies a disk-backed implementation; the host stays platform-free. */
   createStorage?: (pluginId: string) => PluginStorage;
   /** Renders a validated panel report; absent hosts simply expose no panels API. */
-  showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport) => void | Promise<void>;
+  showPanelReport?: (pluginId: string, panelId: string, report: PluginPanelReport, provider?: PluginInvocationDocumentProvider) => void | Promise<void>;
   /** Shows host-owned text-prompt UI. The signal aborts when the command ends or plugin unregisters. */
   promptText?: (
     plugin: { id: string; name: string },
     request: NormalizedPluginPromptTextRequest,
-    signal: AbortSignal
+    signal: AbortSignal,
+    provider?: PluginInvocationDocumentProvider
   ) => PluginPromptTextResult | Promise<PluginPromptTextResult>;
   /** Host-managed AI command-line tools. Plugins never supply argv or environment variables. */
   externalTools?: PluginHostExternalTools;
@@ -542,7 +545,8 @@ export interface PluginHostOptions {
   requestImage?: (
     plugin: { id: string; name: string },
     request: NormalizedPluginImageRequest,
-    signal: AbortSignal
+    signal: AbortSignal,
+    provider?: PluginInvocationDocumentProvider
   ) => PluginImageRequestResult | Promise<PluginImageRequestResult>;
   /** Runs host-owned local recognition. The image has already been verified as one handed to this
    * invocation; installation and any user consent stay entirely on the embedding host side. A
@@ -885,6 +889,10 @@ export class PluginHost {
         return this.assistant.beginCapturedRequest({ id: pluginId, name: plugin.manifest.name },
           args[0] as Parameters<PluginAssistantAPI["beginRequest"]>[0], documentProvider) as ReturnType<PluginAssistantAPI[K]>;
       }
+      if (method === "callTool" && documentProvider && this.assistant.callCapturedTool) {
+        return this.assistant.callCapturedTool({ id: pluginId, name: plugin.manifest.name },
+          args[0] as Parameters<PluginAssistantAPI["callTool"]>[0], documentProvider) as ReturnType<PluginAssistantAPI[K]>;
+      }
       const fn = this.assistant[method] as unknown as (plugin: { id: string; name: string }, ...args: Parameters<PluginAssistantAPI[K]>) => ReturnType<PluginAssistantAPI[K]>;
       return fn.call(this.assistant, { id: pluginId, name: plugin.manifest.name }, ...args);
     };
@@ -939,7 +947,7 @@ export class PluginHost {
               throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
             }
             if (!this.overlays) throw new PluginHostError("This host provides no canvas overlays.");
-            await this.overlays.setStatus(pluginId, parsed.overlayId, parsed.text);
+            await this.overlays.setStatus(pluginId, parsed.overlayId, parsed.text, ...(documentProvider ? [documentProvider] as const : []));
           },
           setTranscript: async request => {
             this.requirePermission(pluginId, "ui.canvas");
@@ -949,7 +957,7 @@ export class PluginHost {
               throw new PluginHostError(`Plugin "${pluginId}" does not own overlay "${parsed.overlayId}".`);
             }
             if (!this.overlays?.setTranscript) throw new PluginHostError("This host provides no canvas transcripts.");
-            await this.overlays.setTranscript(pluginId, parsed.overlayId, parsed.entries);
+            await this.overlays.setTranscript(pluginId, parsed.overlayId, parsed.entries, ...(documentProvider ? [documentProvider] as const : []));
           },
           setContent: async request => {
             this.requirePermission(pluginId, "ui.canvas");
@@ -967,7 +975,7 @@ export class PluginHost {
             }
             requireOwnReportCommands(report);
             if (!this.overlays?.setContent) throw new PluginHostError("This host provides no canvas content.");
-            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections, parsed.prompt);
+            await this.overlays.setContent(pluginId, parsed.overlayId, parsed.sections, parsed.prompt, ...(documentProvider ? [documentProvider] as const : []));
           },
           open: async request => {
             this.requirePermission(pluginId, "ui.canvas");
@@ -977,7 +985,7 @@ export class PluginHost {
               throw new PluginHostError("Opening an overlay requires the plugin's own command to be running.");
             }
             if (!this.overlays?.open) throw new PluginHostError("This host cannot open canvas overlays.");
-            await this.overlays.open(pluginId, parsed.overlayId, parsed.focus === true);
+            await this.overlays.open(pluginId, parsed.overlayId, parsed.focus === true, ...(documentProvider ? [documentProvider] as const : []));
           }
         }
       : undefined;
@@ -993,7 +1001,7 @@ export class PluginHost {
               // Every call, including an open panel's updates, forwards only the detached snapshot.
               const parsedReport = PluginPanelReportSchema.parse(report);
               requireOwnReportCommands(parsedReport);
-              await this.showPanelReport?.(pluginId, panelId, parsedReport);
+              await this.showPanelReport?.(pluginId, panelId, parsedReport, ...(documentProvider ? [documentProvider] as const : []));
             }
           }
         : undefined;
@@ -1729,7 +1737,8 @@ export class PluginHost {
           this.promptText(
             { id: plugin.manifest.id, name: plugin.manifest.name },
             parsedRequest,
-            abortController.signal
+            abortController.signal,
+            ...(this.invocationDocumentProvider(invocationToken) ? [this.invocationDocumentProvider(invocationToken)!] as const : [])
           )
         ),
         cancelledOnAbort
@@ -1780,7 +1789,8 @@ export class PluginHost {
           this.requestImage(
             { id: plugin.manifest.id, name: plugin.manifest.name },
             parsedRequest,
-            abortController.signal
+            abortController.signal,
+            ...(this.invocationDocumentProvider(invocationToken) ? [this.invocationDocumentProvider(invocationToken)!] as const : [])
           )
         ),
         cancelledOnAbort

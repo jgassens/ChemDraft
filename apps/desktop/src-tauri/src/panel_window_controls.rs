@@ -46,11 +46,10 @@ pub(super) async fn hide_plugin_panel_from_main(
     window: tauri::WebviewWindow,
     label: String,
 ) -> Result<(), String> {
-    authorize_main_hide(
-        &app.state::<super::document_windows::DocumentWindowRegistry>(),
-        window.label(),
-        &label,
-    )?;
+    let documents = app.state::<super::document_windows::DocumentWindowRegistry>();
+    let authorize_main_hide =
+        |caller: &str, target: &str| self::authorize_main_hide(&documents, caller, target);
+    authorize_main_hide(window.label(), &label)?;
     // A panel that was never opened or is already gone has nothing to hide.
     let Some(target) = tauri::Manager::get_webview_window(&app, &label) else {
         return Ok(());

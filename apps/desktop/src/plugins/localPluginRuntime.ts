@@ -91,7 +91,8 @@ export function createLocalPluginRuntimeSession(providers: RuntimeDocumentProvid
   const document = new RuntimeBrokerDocument(documentBroker, port);
   void host.broadcastContributions().catch(() => undefined);
   const unbind = bindRuntimeViewOwner(owner, hostBroker, () => [windowId]);
-  const client = new RuntimeViewClient(documentBroker, remote ? ((id, options) => document.invokeCommand(id, options?.input, options)) : undefined, remote);
+  const client = new RuntimeViewClient(documentBroker, remote ? ((id, options) => document.invokeCommand(id, options?.input, options)) : undefined, remote,
+    Promise.resolve(), remote ? ((id, options) => document.prepareCommand(id, options?.input, options)) : undefined);
   if (remote) unbind.publish();
   const initialTab = port.activeTabId(), initialState = port.read(initialTab);
   if (initialState) void documentBroker.call("runtime", "setDocumentMetadata", {

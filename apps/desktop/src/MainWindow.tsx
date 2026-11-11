@@ -1776,7 +1776,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.01.11-codex";
+const CURRENT_BUILD_STAMP = "11.11.02.15-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3946,9 +3946,9 @@ export function MainWindow({
   const assistantTransactions = useMemo(() => getAssistantTransactions(assistantHistoryPort), [assistantHistoryPort]);
   useEffect(() => {
     assistantHistoryMountedRef.current = true;
-    const unregister = registerAssistantHistoryPort(assistantHistoryPort);
+    const unregister = registerAssistantHistoryPort(assistantHistoryPort, documentIdentities.windowId);
     return () => { assistantHistoryMountedRef.current = false; unregister(); };
-  }, [assistantHistoryPort]);
+  }, [assistantHistoryPort, documentIdentities.windowId]);
   /** Drag-session commits install their history entry directly so undo lands on the pre-drag
    *  document — `commitDocumentChange` would record the last preview frame instead. This is that
    *  shared install plus the unsaved-changes bookkeeping every document mutation owes. */
@@ -12843,10 +12843,11 @@ export function MainWindow({
     for (const panel of pluginRuntime.detachedPanels) {
       const key = pluginPanelIdentityKey(panel.pluginId, panel.panelId);
       let payload = pluginPanelReportsRef.current.get(key);
-      if (!payload || payload.report !== panel.report) {
+      if (!payload || payload.report !== panel.report || payload.documentName !== panel.documentName) {
         payload = {
           pluginId: panel.pluginId,
           panelId: panel.panelId,
+          ...(panel.documentName ? { documentName: panel.documentName } : {}),
           report: panel.report,
           commandId: panel.commandId,
           revision: ++pluginPanelRevisionRef.current
@@ -12864,7 +12865,7 @@ export function MainWindow({
             pluginId: panel.pluginId,
             panelId: panel.panelId,
             ...panel.preferredWindowSize,
-            title: panel.report.title || panel.title,
+            title: `${panel.report.title || panel.title}${panel.documentName ? ` — ${panel.documentName}` : ""}`,
             focus: false
           });
           void perfHook(() => nativeWindowShown(open));
@@ -13361,13 +13362,14 @@ export function MainWindow({
       const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
       pluginCommandGenerationsRef.current.set(queueKey, generation);
       const previous = pluginCommandQueuesRef.current.get(queueKey) ?? Promise.resolve();
+      const selectionWarnings: string[] = [];
+      const capturedCommand = pluginRuntime.runtime.prepareCommand?.(commandId, { selectionWarnings, input: options?.input });
       setPendingPluginCommands(current => new Set(current).add(queueKey));
       const run = previous
         .catch(() => undefined)
         .then(async () => {
           // Collected per invocation: only this command's own selection reads can add to it.
-          const selectionWarnings: string[] = [];
-          const result = await invokePluginCommand(commandId, { selectionWarnings, input: options?.input });
+          const result = await (capturedCommand ? capturedCommand() : invokePluginCommand(commandId, { selectionWarnings, input: options?.input }));
           if (!mountedRef.current || pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
@@ -13424,6 +13426,7 @@ export function MainWindow({
     pluginCommandExists,
     pluginRuntime.diagnostics,
     pluginRuntime.plugins,
+    pluginRuntime.runtime,
     publishAnalysisWindow,
     restoreDocumentHistory,
     showAnalyzerNotice
@@ -13507,7 +13510,7 @@ export function MainWindow({
     const identity = sourceLabel === undefined
       ? !isDesktopRuntime() ? pluginRuntime.openPanel : undefined
       : parsePluginPanelWindowLabel(sourceLabel);
-    if (!identity) {
+    if (!identity || (identity.windowId ?? "main") !== documentIdentities.windowId) {
       refuse("This panel is no longer open.");
       return;
     }
@@ -23065,7 +23068,7 @@ export function MainWindow({
             const manifest = pluginRuntime.plugins.find(plugin => plugin.id === pluginId);
             const panel = manifest?.contributes.panels[0];
             const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
-            return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+            return <PluginCanvasOverlay key={`${documentIdentities.windowId}:${pluginId}:${overlay.id}`} windowId={documentIdentities.windowId} overlay={overlay}
               dockIndex={dockIndex}
               dockCount={dockCount}
               shortcutPlatform={shortcutPlatform}

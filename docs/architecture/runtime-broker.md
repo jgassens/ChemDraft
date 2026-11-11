@@ -1,4 +1,4 @@
-# Runtime broker — A5a complete
+# Runtime broker — A5 complete
 
 A5a-6 enables the hidden `runtime` webview at desktop startup in production on macOS Apple
 silicon, macOS Intel and Windows. Only its `RuntimeHostWindow` / `runtimeHostSession` path
@@ -10,9 +10,9 @@ their explicit in-process service; a desktop host failure never selects that pat
 The document keeps its command handlers, drawing state, selection, history, gesture/page-fit gates,
 dialog coordinator and final synchronous write checks. No plugin permission or captured write-scope
 check is removed. One-document panel labels, persistence keys and presentation remain unchanged.
-A5b must bind those surfaces per document before another document window is enabled.
+A5b now binds presentation per document window. Another document window is not enabled by this task.
 
-Build stamp: `11.11.01.11-codex`. Implementation is complete; native execution remains unverified
+Build stamp: `11.11.02.15-codex`. Implementation is complete; native execution remains unverified
 by this worker (the coordinator runs Cargo and packaged app checks). See
 [the adapter review](runtime-broker-a5a3-review.md).
 
@@ -51,8 +51,8 @@ Neither implementation uses the generic Tauri event bus for broker delivery.
 
 | Method/message | Direction | Target handling | Check location |
 | --- | --- | --- | --- |
-| `initializeRuntime` | Document → runtime | First authenticated document fixes the current presentation peer; shared initialization promise | Host awaits core definitions before the sole owner factory; finite document readiness deadline |
-| `chooseRuntimeFile` | Runtime → document | Fixed package/image picker choice for the current single-document presentation peer | Native sender/direction checks; existing document picker/suspension and chosen-file scope checks |
+| `initializeRuntime` | Document → runtime | First authenticated document initializes the sole owner; later documents join its client set; shared initialization promise | Host awaits core definitions before the sole owner factory; finite document readiness deadline |
+| `chooseRuntimeFile` | Runtime → document | Fixed package/image picker choice addressed to the requesting document | Native sender/direction checks; existing document picker/suspension and chosen-file scope checks |
 | `invokeCommand` | Document → runtime | Document captures `{windowId, tabId}`, drawing incarnation key, invocation id, plugin/command ownership and selection ids before dispatch | `RuntimeBrokerDocument.dispatch`; runtime verifies sender equals target window and plugin owns registered command; existing `PluginHost` checks permissions |
 | `getDocument` | Runtime → captured document | Every request carries the same invocation reference; reads the requested tab even if another tab/window activates | Document checks its locally retained invocation, window/tab, plugin/command, current drawing key and tab existence |
 | `getSelection` | Runtime → captured document | Same fixed target; reads that tab's current selection, without widening Send-time write scope | Same document-side binding/key/existence checks; host returns an independent frozen snapshot |
@@ -66,9 +66,10 @@ Neither implementation uses the generic Tauri event bus for broker delivery.
 | `assistantOpenInvocation` | Runtime → captured document | Extra tools receive child invocations with the request's fixed target and a narrowed grant | Local request scope and ordinary invocation write checks; successful receipts alone grow grants |
 | `runtimeDialogRequest/Action` | Runtime ↔ requesting document | Open/update/close snapshots retain source window/tab/key; only that document owns a coordinator | Bounded existing dialog snapshot schemas, exact session/target/sender checks and native coordinator authorization |
 | `setDocumentMetadata/setCoreCommands` | Document → runtime | Title/command definitions are revisioned data snapshots | Authenticated document sender; core dispatch still checks live document permissions/enabled state |
-| `getRuntimeView` | Document → runtime host | Serializable view/controller-source snapshots | Broker peer/direction/correlation/byte checks; owner projects data only |
+| `runtimeDocumentClosed` | Native lifecycle/document → runtime | Close only that sender's panels, assistant requests and presentation state | Native injected source, private host channel and connection generation; cleanup is idempotent |
+| `getRuntimeView` | Document → runtime host | Serializable view/controller-source snapshots filtered by the authenticated source window | Broker peer/direction/correlation/byte checks; owner projects data only |
 | `runtimeViewAction` | Document → runtime host | Fixed action name and argument schema; no arbitrary method path | Existing host/controller/install gates retained; receipts resolve original owner-held inspections |
-| `runtimeView` | Runtime host → document | General state and separate overlay/naming/recognition/progress topics | Only runtime sender; detached snapshots and stable-value reconciliation |
+| `runtimeView` | Runtime host → document | Addressed state plus per-window overlay and recognition activity topics | Only runtime sender; detached snapshots and stable-value reconciliation |
 
 The native transport authenticates the sender and enforces registry membership and method direction
 before forwarding. The broker's payload schemas, invocation bindings, permission gates and document
@@ -217,19 +218,64 @@ The private native transport, tab-addressed commit port, owner/view split, captu
 assistant/dialog adapters, asynchronous proposals/views, native method validation and production
 hidden-host startup are implemented. No second document window is enabled by this task.
 
-## A5b seams
+## A5b window presentation — complete
 
-- `runtimeHostSession` currently binds presentation/core-definition routing to the first authenticated
-  document. Extend its client set and target-specific routing before admitting another document;
-  never create another owner or retarget a running invocation on activation.
-- Bind panel publication, action routing, labels, native ownership and persistence to the originating
-  window/tab. Current single-document labels and keys are intentionally unchanged.
-- Bind each canvas overlay and its draft/open/status subscriptions and saved placement per document
-  window. The hidden host renders no canvas or activity UI.
-- Route prompt/image/install presentation and the fixed native file-picker requests to their source
-  document when multiple documents exist; keep captured targets through asynchronous waits.
-- Keep core handlers, dialog coordinators, assistant transaction managers, history callbacks,
-  proposal preparation and final permission/scope/content checks in each committing document.
+`runtimeHostSession` retains one initialization promise and one owner, with a set of authenticated
+document clients. Every client refreshes the complete contribution snapshot and installs the same
+command/menu/toolbar/panel/overlay proxies. Registration still crosses the runtime's `ui.toolbar`
+gate and rollback boundary; no document constructs a host or worker. Core action dispatch and
+fixed native package/image pickers return to the requesting document rather than the initializer.
+
+Presentation callbacks in `plugin-host` carry the invocation's captured embedding provider. These
+optional callback arguments are host-only; they add no plugin capability or public API version.
+The existing schema, command ownership, `ui.panel`/`ui.canvas`, lifetime and document-write checks
+remain mandatory. Retained report/status callbacks keep their original source, even after the
+command ends. Closing an owner tombstones its presentation so late results cannot reopen its panels.
+
+| Surface | Binding and checks | Proving test |
+| --- | --- | --- |
+| Panels | Controller entries and in-app slots are keyed by window + plugin + panel. A view contains only its owner's panels. Prompt/select/button actions resolve control metadata in that document and enter its ordinary command proxy. | `runtimeWindowBinding.dom.test.ts`; unchanged panel/controller/MainWindow DOM suites |
+| Native panel identity | `main` retains `plugin-panel-v1x<plugin hex>x<panel hex>` and its frame key. Other owners use `plugin-panel-v2x<window hex>x<plugin hex>x<panel hex>`. Malformed v2 never falls back to main. Native open, publication and hide recheck registry ownership; event identity includes the owner. | New `panel_ownership.rs` tests; unchanged `PluginPanelWindow.dom.test.ts` |
+| Native focus/placement | Windows builder parent is the encoded document HWND; AppKit attachment and both focus-return paths use the same registry owner. Default placement and lost-monitor recovery use that owner's destination scale. Existing unfocused/nonfocusable/no-taskbar/frame guards remain. | Native source guards; packaged verification remains below |
+| Close | Native destruction/navigation destroys only that document's panels and removes its deferred restores. Disconnect sends `runtimeDocumentClosed` on the private runtime channel, even if membership pruning removed the closing peer. The runtime removes that client, notifies each panel's plugin once, and clears its assistant/prompt/image/overlay state. | Two-client close/late-report test; new native disconnect test (not executed) |
+| Assistant/history | The broker addresses the document's own history port and transaction manager. The local compatibility history registry is keyed by window, replacing its single slot. Concurrent requests for one plugin are separated by window; `callTool` resolves the captured window/tab rather than the first plugin request. Closing a tab includes its window. | `runtimeWindowAssistant.test.ts`; unchanged `runtimeAssistantForwarding.test.ts` and real MainWindow Undo/Redo suite |
+| Send capture | MainWindow prepares a one-use command closure before its command queue waits. It retains window/tab/incarnation and Send selection, then enters the ordinary registry and commit-time checks. Activation cannot redirect it or widen its write grant. | Two-client queued-Send test; unchanged write-scope and broker tests |
+| Overlays | MainWindow passes its captured window id in the React key and storage key. Owner maps, draft-restore tokens, content, status, transcript and open requests are window-scoped and published separately to each client. Gestures and exports keep the existing hiding path. | `PluginCanvasOverlay.windows.dom.test.tsx`, two-client presentation suite; unchanged 100-case overlay DOM suite |
+| Prompts/images | Requests retain their source window before awaits. Only that view shows/answers the prompt or image request; the chosen-file request returns to that document. Recognition install/activity retains the same source. | Two-client prompt/refusal test; unchanged prompt, image-provider/controller/dialog and recognition suites |
+
+When more than one document exists, panel chrome also shows its owning window's current document
+name. A single window retains its existing panel title, labels, frame keys and overlay position keys.
+The async initial-view adapter merges topic snapshots independently of state revisions, so joining
+or metadata notifications cannot discard an overlay's initial content.
+
+### Hooks retained for the later tab hand-off
+
+The source port still resolves tabs by id. `DrawingIncarnations.replace/remove` and
+`RuntimeBrokerDocument.invalidateTab` invalidate queued or running source writes; they do not
+retarget an old invocation. `AssistantTransactions.hasRunningForTab(tabId)` lets the later hand-off
+refuse a move during a request. Panel ownership remains with the source window. No tab-moving,
+window-creation, session or close-versus-quit policy is introduced here.
+
+### A5b verification handoff
+
+Existing test fixtures and assertions are unchanged. New fixtures use two document ids with the
+same tab id intentionally, and generated assistant insertion ids are normalized only for the
+cross-target history comparison. The source-text panel-hide guard retains its original call shape
+through a window-local authorizer that still runs the full registry/owner check.
+
+Scoped Vitest runs use explicit paths, at most two files per run, and
+`--configLoader runner --no-cache --maxWorkers=1 --testTimeout=30000`. They cover production
+two-client startup, contributions, panels, prompts, overlays, assistant history, broker/native
+transport contracts, original write scope, real MainWindow commits, worker registration and the
+existing image/recognition paths. The worker report records final TypeScript, web-build, whitespace
+and standalone Rust-format results.
+
+No install, Cargo, native build or native launch was run. macOS Apple silicon, macOS Intel and
+Windows are **unverified natively**. The coordinator must run Rust fmt/clippy/tests and packaged
+single-window checks on both OSes, then the two-window pass when creation is enabled: panel parent/
+focus return/no-taskbar, owner-close cleanup and plugin notification, mixed-DPI placement/restoration,
+prompt/image routing, independent overlay placement/content and captured assistant Undo/Redo.
+Recommended next task: that native verification before integrating A5 and proceeding to A6/A7.
 
 ## A5a-6 verification handoff
 
@@ -250,7 +296,7 @@ TypeScript results. No install, Cargo, native build or application launch was ru
 (Apple silicon and Intel) and Windows remain **unverified**: run Rust fmt/clippy/tests and packaged
 startup, then check hidden focus/taskbar/menu/session exclusion, chosen-file reads and package
 install/update, prompts, naming/recognition, panels/overlays and assistant Undo/Redo with one document.
-Recommended next task: coordinator native verification, then A5b per-document presentation binding.
+Recommended next task: coordinator native verification; A5b presentation binding is complete above.
 
 ## Earlier verification and limits
 

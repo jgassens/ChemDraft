@@ -60,7 +60,8 @@ export function createRuntimeDocumentSession(providers: RuntimeDocumentProviders
     if (error instanceof Error && error.message.startsWith("Plugin runtime host failed to start:")) throw error;
     throw runtimeStartupError(error);
   });
-  const client = new RuntimeViewClient(broker, (id, options) => document.invokeCommand(id, options?.input, options), true, startup);
+  const client = new RuntimeViewClient(broker, (id, options) => document.invokeCommand(id, options?.input, options), true, startup,
+    (id, options) => document.prepareCommand(id, options?.input, options));
   void client.ready.catch(error => current.onPluginUpdateStatus?.(error instanceof Error ? error.message : String(error)));
   let stopActivity: (() => void) | undefined;
   let started = false;

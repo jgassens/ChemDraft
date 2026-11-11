@@ -22,6 +22,7 @@ mod ocsr_engine;
 mod opsin;
 mod palette_routing;
 mod panel_full_size;
+mod panel_ownership;
 mod panel_window;
 mod panel_window_controls;
 mod panel_window_frame;
@@ -3886,7 +3887,11 @@ fn validate_plugin_panel_event(
         | "chemdraft://plugin-panel-closed" => {
             let plugin_id = payload["pluginId"].as_str().ok_or("Missing panel owner.")?;
             let panel_id = payload["panelId"].as_str().ok_or("Missing panel id.")?;
-            if plugin_panel_identity_window_label(plugin_id, panel_id) != label {
+            let owner = payload
+                .get("windowId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("main");
+            if plugin_panel_owned_identity_window_label(plugin_id, panel_id, owner) != label {
                 return Err("This event does not belong to its source panel.".into());
             }
             Ok(())
@@ -3930,7 +3935,14 @@ fn plugin_panel_event_forward(
                 )
                 && panel_window::is_active(&target)?
             {
-                return emit_command_to_main(target.app_handle(), &shortcut.document_command_id());
+                let owner = owned_document_webview(target.app_handle(), target.label())
+                    .ok_or("Panel document owner is not available.")?;
+                return dispatch_dom_command_event(
+                    &owner,
+                    &NativeCommandPayload {
+                        command_id: shortcut.document_command_id(),
+                    },
+                );
             }
             Ok(())
         })?;
@@ -4220,6 +4232,36 @@ const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-
 const PLUGIN_PANEL_REPORT_CLEARED_EVENT: &str = "chemdraft://plugin-panel-report-cleared";
 const PLUGIN_PANEL_CLOSED_EVENT: &str = "chemdraft://plugin-panel-closed";
 
+/// Destruction/navigation cleanup is scoped to the source document, independently of activation.
+/// Broker disconnect notifies the sole runtime so each plugin also receives its close callback.
+fn close_owned_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>, source: &str) {
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let owner_id = registry
+        .owner_of(source)
+        .filter(|owner| owner.native_label == source)
+        .map(|owner| owner.window_id)
+        // Broker document ids equal native labels. Destruction can follow registry removal.
+        .or_else(|| runtime_broker::document_label(source).then(|| source.to_owned()));
+    let Some(owner_id) = owner_id else {
+        return;
+    };
+    UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .close_panels_for_owner(&owner_id);
+    for (label, panel) in app.webview_windows() {
+        if panel_ownership::owner_id(&label).as_deref() == Some(owner_id.as_str()) {
+            UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .closed(&label);
+            let webview: &tauri::Webview<R> = panel.as_ref();
+            let _ = persist_plugin_panel_geometry(&webview.window());
+            let _ = panel.destroy();
+        }
+    }
+}
+
 /// Mirror panelBridge.ts's UTF-8 hex identity, including the plugin owner: contributed panel ids
 /// alone are not unique. Extra payload fields (such as the report revision) are intentionally ignored.
 fn cancel_plugin_panel_restore(
@@ -4231,6 +4273,7 @@ fn cancel_plugin_panel_restore(
     struct PanelIdentity {
         plugin_id: String,
         panel_id: String,
+        window_id: Option<String>,
     }
     let Ok(identity) = serde_json::from_str::<PanelIdentity>(payload) else {
         return;
@@ -4238,14 +4281,27 @@ fn cancel_plugin_panel_restore(
     if identity.plugin_id.is_empty() || identity.panel_id.is_empty() {
         return;
     }
-    let label = plugin_panel_identity_window_label(&identity.plugin_id, &identity.panel_id);
+    let label = plugin_panel_owned_identity_window_label(
+        &identity.plugin_id,
+        &identity.panel_id,
+        identity.window_id.as_deref().unwrap_or("main"),
+    );
     suspension
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .closed(&label);
 }
 
+#[cfg(test)]
 fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String {
+    plugin_panel_owned_identity_window_label(plugin_id, panel_id, "main")
+}
+
+fn plugin_panel_owned_identity_window_label(
+    plugin_id: &str,
+    panel_id: &str,
+    window_id: &str,
+) -> String {
     let hex = |value: &str| {
         value
             .as_bytes()
@@ -4253,7 +4309,16 @@ fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
-    plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
+    if window_id == "main" {
+        plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
+    } else {
+        plugin_panel_window_label(&format!(
+            "v2x{}x{}x{}",
+            hex(window_id),
+            hex(plugin_id),
+            hex(panel_id)
+        ))
+    }
 }
 
 fn is_plugin_panel_window_label(label: &str) -> bool {
@@ -4862,6 +4927,23 @@ async fn open_plugin_panel_window(
         // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
         // recipient so proposal snapshots and replies never enter that shared event bus.
         if let Some(target) = app.get_webview_window(&publication.target_label) {
+            if publication.event == "chemdraft://plugin-panel-report" {
+                if let (Some(name), Some(title)) = (
+                    publication
+                        .payload
+                        .get("documentName")
+                        .and_then(serde_json::Value::as_str),
+                    publication
+                        .payload
+                        .get("report")
+                        .and_then(|report| report.get("title"))
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    target
+                        .set_title(&format!("ChemDraft {title} — {name}"))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
             target.eval(script).map_err(|error| error.to_string())?;
         }
         return Ok(());
@@ -4871,6 +4953,16 @@ async fn open_plugin_panel_window(
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
+    let label = plugin_panel_window_label(&request.panel_id);
+    let registry = window.state::<document_windows::DocumentWindowRegistry>();
+    if !registry.is_document_window(window.label())
+        || registry.owner_of(&label).is_none_or(|owner| {
+            owner.native_label != window.label()
+                || registry.document_window(&owner.window_id).is_none()
+        })
+    {
+        return Err("This panel belongs to another document window.".into());
+    }
     let _creation = lock_window_creation()?;
     dispatch_plugin_panel_open(
         &UTILITY_SUSPENSION,
@@ -4994,6 +5086,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     let label = plugin_panel_window_label(&request.panel_id);
+    let documents = app.state::<document_windows::DocumentWindowRegistry>();
+    let owner_binding = documents
+        .owner_of(&label)
+        .and_then(|owner| documents.document_window(&owner.window_id))
+        .ok_or("Panel document owner is closed or closing.")?;
+    let owner = app
+        .get_webview_window(&owner_binding.native_label)
+        .ok_or("Panel document owner is not available.")?;
     let presentation = request.presentation(restoring);
     if let Some(window) = app.get_webview_window(&label) {
         if restoring {
@@ -5057,12 +5157,24 @@ fn build_or_show_plugin_panel<R: Runtime>(
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
     if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
-        if let Some(main) = active_document_webview(app) {
-            builder = builder.parent(&main).map_err(|error| error.to_string())?;
-        }
+        builder = builder.parent(&owner).map_err(|error| error.to_string())?;
     }
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
+    // A close racing native construction must not leave an orphan HWND or AppKit child.
+    if documents
+        .document_window(&owner_binding.window_id)
+        .is_none_or(|current| {
+            current.created_at != owner_binding.created_at
+                || current.native_label != owner_binding.native_label
+        })
+        || app
+            .get_webview_window(&owner_binding.native_label)
+            .is_none()
+    {
+        let _ = window.destroy();
+        return Err("Panel document owner closed during creation.".into());
+    }
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
         #[cfg(target_os = "macos")]
@@ -5120,7 +5232,10 @@ fn plugin_panel_initial_geometry<R: Runtime>(
     let placement = saved
         .as_ref()
         .and_then(|frame| plugin_panel_saved_placement(app, frame))
-        .or_else(|| plugin_panel_default_placement(app, width, height));
+        .or_else(|| {
+            let owner = owned_document_webview(app, &plugin_panel_window_label(&request.panel_id))?;
+            plugin_panel_placement_for_owner(app, &owner, width, height)
+        });
     (width, height, placement)
 }
 
@@ -5138,6 +5253,7 @@ fn plugin_panel_saved_placement<R: Runtime>(
 
 fn plugin_panel_restore_geometry<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    label: &str,
     saved: &panel_window_frame::Frame,
 ) -> Option<(panel_window_frame::Placement, panel_window_frame::Frame)> {
     let monitors = app.available_monitors().unwrap_or_default();
@@ -5152,21 +5268,21 @@ fn plugin_panel_restore_geometry<R: Runtime>(
         return Some((placement, frame));
     }
     let (width, height) = panel_window_frame::default_size(None, None);
-    let placement = plugin_panel_default_placement(app, width, height)?;
-    let main = active_document_webview(app)?;
+    let main = owned_document_webview(app, label)?;
+    let placement = plugin_panel_placement_for_owner(app, &main, width, height)?;
     let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
     let frame =
         panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
     Some((placement, frame))
 }
 
-fn plugin_panel_default_placement<R: Runtime>(
+fn plugin_panel_placement_for_owner<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    main: &tauri::WebviewWindow<R>,
     width: f64,
     height: f64,
 ) -> Option<panel_window_frame::Placement> {
-    let position = analysis_window_initial_position(app, width, height)?;
-    let main = active_document_webview(app)?;
+    let position = analysis_window_initial_position(app, main, width, height)?;
     let monitor = main.current_monitor().ok().flatten()?;
     let scale = monitor.scale_factor();
     let position = position.to_physical::<i32>(scale);
@@ -5180,10 +5296,10 @@ fn plugin_panel_default_placement<R: Runtime>(
 
 fn analysis_window_initial_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    main: &tauri::WebviewWindow<R>,
     width: f64,
     height: f64,
 ) -> Option<tauri::LogicalPosition<f64>> {
-    let main = active_document_webview(app)?;
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);

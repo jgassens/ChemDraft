@@ -41,6 +41,7 @@ export interface PluginRuntimeClient extends Pick<DesktopPluginRuntime,
   discardPreparedPackages(): void;
   /** Authorization at Send needs the owner's live declaration, beyond the render snapshot. */
   readCanvasOverlays(): Promise<ReturnType<DesktopPluginRuntime["listCanvasOverlays"]>>;
+  prepareCommand?: (id: string, options?: { input?: import("@chemdraft/plugin-api").PluginCommandInput; selectionWarnings?: string[] }) => () => Promise<unknown>;
   /** The callback remains in the committing document; only its one-use receipt is sent. */
   acceptPreparedProposal(id: string, target: RuntimeTarget, documentKey: string, commit: () => void): Promise<void>;
 }
@@ -75,7 +76,7 @@ export class RuntimeViewClient {
   readonly runtime: PluginRuntimeClient;
 
   constructor(private readonly broker: RuntimeBroker, invokeCommand?: PluginRuntimeClient["invokeCommand"], private readonly asynchronous = !broker.supportsImmediate,
-    private readonly startup: Promise<void> = Promise.resolve()) {
+    private readonly startup: Promise<void> = Promise.resolve(), prepareCommand?: PluginRuntimeClient["prepareCommand"]) {
     this.stopProposalCommit = broker.handle("commitProposal", request => {
       const prepared = this.preparations.get(request.preparationId);
       const expected = prepared?.request;
@@ -109,13 +110,20 @@ export class RuntimeViewClient {
       this.topics.set(topic, value);
       this.notify(topic);
     });
-    const revision = this.stateRevision;
-    this.ready = asynchronous ? startup.then(() => broker.call(RUNTIME_HOST_LABEL, "getRuntimeView", {})).then(async encoded => {
+    this.ready = asynchronous ? startup.then(async () => {
+      const revision = this.stateRevision;
+      const requestedTopics = new Map(this.topics);
+      const encoded = await broker.call(RUNTIME_HOST_LABEL, "getRuntimeView", {});
       const initial = decodeRuntimeView<{ state: RuntimeViewState; topics: Record<string, unknown> }>(encoded);
       const state = await this.resolvePreviewsAsync(initial.state);
-      if (this.disposed || this.stateRevision !== revision) return;
-      for (const [topic, value] of Object.entries(initial.topics)) this.topics.set(topic, value);
-      this.applyState(state);
+      if (this.disposed) return;
+      for (const [topic, value] of Object.entries(initial.topics)) {
+        if (this.topics.get(topic) !== requestedTopics.get(topic)) continue;
+        if (JSON.stringify(this.topics.get(topic)) === JSON.stringify(value)) continue;
+        this.topics.set(topic, value);
+        this.notify(topic);
+      }
+      if (this.stateRevision === revision) this.applyState(state);
     }).then(() => { this.initialized = true; }) : Promise.resolve();
     if (!asynchronous) this.initialized = true;
     void this.ready.catch(error => {
@@ -127,6 +135,12 @@ export class RuntimeViewClient {
     const call = <T>(action: RuntimeViewAction["action"], ...args: unknown[]): Promise<T> => this.call<T>(action, ...args);
     const subscribe = (listener: () => void) => this.subscribe("contributions", listener);
     this.runtime = {
+      prepareCommand: prepareCommand && ((id, options) => {
+        try {
+          if (!this.initialized) throw this.startupFailure ?? new Error("Plugin runtime host is starting. Try the plugin command again when it is ready.");
+          return prepareCommand(id, options);
+        } catch (error) { return () => Promise.reject(error); }
+      }),
       host: {
         getPlugin: id => { const manifest = this.state.plugins.find(plugin => plugin.id === id); return manifest && { manifest }; },
         listPlugins: () => [...this.state.plugins], subscribe,

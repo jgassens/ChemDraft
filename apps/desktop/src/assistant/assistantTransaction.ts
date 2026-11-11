@@ -75,6 +75,11 @@ export class AssistantTransactions {
       (tabId === undefined || tx.tabId === tabId))?.[0];
   }
 
+  /** The later tab hand-off must refuse a move until its Send-bound request ends. */
+  hasRunningForTab(tabId: string): boolean {
+    return [...this.transactions.values()].some(transaction => transaction.tabId === tabId && !transaction.ended);
+  }
+
   /** Tool calls and direct documents.applyPatch writes share the request's single question. */
   pageEnlargementConsent(txId: string, platform?: ShortcutPlatform): PageEnlargementConsent {
     const tx = this.running(txId);

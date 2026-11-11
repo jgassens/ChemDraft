@@ -55,6 +55,32 @@ fn connect(broker: &mut Broker, documents: &DocumentWindowRegistry, label: &str)
 }
 
 #[test]
+fn native_disconnect_notifies_the_host_even_after_closing_membership_pruned_the_peer() {
+    let documents = ready_documents();
+    let mut broker = Broker::default();
+    let (channel, received) = capture();
+    let host_connection = broker.connect(&documents, HOST, HOST, channel).unwrap();
+    connect(&mut broker, &documents, "main");
+    let second = connect(&mut broker, &documents, "doc-b");
+    documents.begin_closing("main");
+    broker.prune(&documents);
+    assert!(received.lock().unwrap().is_empty());
+    broker.forget("main");
+    assert!(broker.check_connection("doc-b", &second).is_ok());
+    let received = received.lock().unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["sender"], "main");
+    assert_eq!(received[0]["connection"], host_connection);
+    let bytes = STANDARD
+        .decode(received[0]["chunk"]["data"].as_str().unwrap())
+        .unwrap();
+    let message: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(message["method"], "runtimeDocumentClosed");
+    assert_eq!(message["payload"], json!({}));
+    assert!(authorize_message("main", HOST, &bytes).is_ok());
+}
+
+#[test]
 fn hidden_builder_flags_and_registry_exclusion_are_shared_on_both_platforms() {
     let config = runtime_window_config();
     assert_eq!(config.label, "runtime");
