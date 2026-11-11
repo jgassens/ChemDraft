@@ -18,8 +18,9 @@ import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MainWindow } from "./MainWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createSelectionClipboardPayload, documentObjectVisualBounds,
-  insertSmilesMolecule, serializeSelectionClipboardPayload } from "./documentWorkflow";
+  insertSmilesMolecule, serializeSelectionClipboardPayload, setDocumentCustomPageSize } from "./documentWorkflow";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
@@ -29,6 +30,7 @@ vi.mock("@chemdraft/document-workflow-core", async original => ({ ...await origi
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 let root: Root;
 let container: HTMLDivElement;
+let restorePrompt: (() => void) | undefined;
 vi.setConfig({ testTimeout: 60_000 });
 describe("template SMILES paste", () => {
   // Exact 242-character Windows runbook input, retained here without an external-file dependency.
@@ -42,7 +44,7 @@ describe("template SMILES paste", () => {
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); restorePrompt?.(); restorePrompt = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   async function mount(drawing: ChemDraftDocument, platform?: "macos" | "windows") {
     await act(async () => root.render(<MainWindow initialDocument={drawing} shortcutPlatform={platform} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     return { port: getAssistantHistoryPort() };
@@ -51,6 +53,47 @@ describe("template SMILES paste", () => {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
   describe.each(["macos", "windows"] as const)("repeat paste (%s clipboard)", platform => {
+    it.each(["text", "SMILES", "SMILES list", "native selection"])("offers page fit for an oversized first %s paste and inserts only after accepting", async kind => {
+      const drawing = setDocumentCustomPageSize(createEmptyDocument(), { width: 20, height: 20, unit: "css-px" });
+      const { port } = await mount(drawing, platform);
+      let answer!: (choice: string) => void;
+      const prompt = vi.fn((_options: NativePromptOptions) => new Promise<string>(resolve => { answer = resolve; }));
+      restorePrompt = setNativePromptProvider(prompt);
+      vi.spyOn(depictionClient, "depictSmilesOffThread").mockImplementation(async smiles => ({
+        depiction: ocl.depictSmiles2D(smiles), stereoCount: 0
+      }));
+      const source = insertSmilesMolecule(createEmptyDocument(), { x: 300, y: 300 }, ocl.depictSmiles2D("CCO"), "CCO");
+      const type = kind === "native selection" ? CHEMDRAFT_SELECTION_CLIPBOARD_TYPE
+        : platform === "macos" ? "public.utf8-plain-text" : "text/plain";
+      const text = kind === "native selection" ? serializeSelectionClipboardPayload(createSelectionClipboardPayload(source)!)
+        : kind === "text" ? "Ordinary caption" : kind === "SMILES" ? "CCO" : "CCO\nCCN";
+      vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValueOnce({ types: [type], textItems: [{ type, text }] });
+      const before = port.read("initial")!;
+      await command("clipboard.paste");
+      await act(async () => { await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce(), { timeout: 5_000 }); });
+      expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
+        message: "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.",
+        choices: [{ id: "enlarge" }, { id: "keep" }] });
+      expect(port.read("initial")).toEqual(before);
+      await act(async () => { answer("enlarge"); });
+      const after = port.read("initial")!;
+      const objects = after.pages[0]!.objects;
+      expect(objects).toHaveLength(kind === "SMILES list" ? 2 : 1);
+      expect(after.selection.objectIds).toEqual(objects.map(object => object.id));
+      expect(after.pages[0]!.width > 20 || after.pages[0]!.height > 20).toBe(true);
+      for (const object of objects) {
+        const bounds = documentObjectVisualBounds(object, objects);
+        expect(bounds.x).toBeGreaterThanOrEqual(-1e-6);
+        expect(bounds.y).toBeGreaterThanOrEqual(-1e-6);
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(after.pages[0]!.width + 1e-6);
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(after.pages[0]!.height + 1e-6);
+      }
+      await command("edit.undo");
+      expect(port.read("initial")).toEqual(before);
+      await command("edit.redo");
+      expect(port.read("initial")).toEqual(after);
+      expect(prompt).toHaveBeenCalledOnce();
+    });
     const strings = ["[2H]C", "[3H]C", "C[13CH3]", "[18OH2]", "[15NH3]"];
     async function setup(edge: false | true | "bottom-right" = false) {
       const { port } = await mount(createEmptyDocument(), platform);
@@ -61,7 +104,7 @@ describe("template SMILES paste", () => {
       // on the page, and use the real zoom commands for its page-to-client scale.
       const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
       Object.defineProperties(canvas, { clientWidth: { value: 600 }, clientHeight: { value: 600 } });
-      vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0 } as DOMRect);
+      vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 600, bottom: 600, width: 600, height: 600 } as DOMRect);
       vi.spyOn(container.querySelector(".page")!, "getBoundingClientRect").mockReturnValue({
         left: edge ? 300 - (edge === "bottom-right" ? page.width - 5 : 5) * scale : 0,
         top: edge ? 300 - (edge === "bottom-right" ? page.height - 5 : 300) * scale : 0
@@ -88,6 +131,42 @@ describe("template SMILES paste", () => {
       }
       return { port, paste };
     }
+    it.each([false, true])("keeps the invocation anchor and repeat count when the pointer moves during slow depiction (list=%s)", async list => {
+      const { port, paste } = await setup();
+      const movePointer = async (x: number, y: number) => {
+        const event = new MouseEvent("pointermove", {
+          bubbles: true, clientX: x, clientY: y
+        });
+        Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        await act(async () => container.querySelector(".page")!.dispatchEvent(event));
+      };
+      await movePointer(180, 240);
+      let finish!: (result: Awaited<ReturnType<typeof depictionClient.depictSmilesOffThread>>) => void;
+      const slow = vi.spyOn(depictionClient, "depictSmilesOffThread")
+        .mockImplementation(async smiles => ({ depiction: ocl.depictSmiles2D(smiles), stereoCount: 0 }))
+        .mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+      const type = platform === "macos" ? "public.utf8-plain-text" : "text/plain";
+      vi.mocked(clipboard.readClipboardPayload).mockResolvedValueOnce({ types: [type],
+        textItems: [{ type, text: list ? "CCO\nCCN" : "CCO" }] });
+      await command("clipboard.paste");
+      await act(async () => { await vi.waitFor(() => expect(slow).toHaveBeenCalled()); });
+      await movePointer(420, 460);
+      expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+      await act(async () => {
+        finish({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0 });
+        await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects,
+          container.querySelector("[role=status]")?.textContent ?? "missing status").toHaveLength(list ? 2 : 1), { timeout: 5_000 });
+      });
+      expect(port.read("initial")!.pages[0]!.objects.every(object => object.type === "molecule")).toBe(true);
+      const payload = createSelectionClipboardPayload(port.read("initial")!)!;
+      expect(payload.bounds.centerX).toBeCloseTo(180, 6);
+      expect(payload.bounds.centerY).toBeCloseTo(240, 6);
+      // Returning to the invocation point must continue the first paste's counter.
+      await movePointer(180, 240);
+      const next = await paste("CCO");
+      expect(next.centre.x).toBeCloseTo(204, 6);
+      expect(next.centre.y).toBeCloseTo(264, 6);
+    });
     it("offsets the same asynchronous SMILES pasted twice through clipboard.paste", async () => {
       const { paste, port } = await setup();
       const first = await paste(strings[0]!);

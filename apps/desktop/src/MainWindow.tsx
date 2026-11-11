@@ -6964,9 +6964,12 @@ export function MainWindow({
     } : point;
   }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
 
-  const pastePointForViewport = useCallback((): ClientPoint =>
-    pastePointerPagePoint() ?? viewportCentrePagePoint(),
-  [pastePointerPagePoint, viewportCentrePagePoint]);
+  // Capture before any clipboard read or depiction awaits. The optional pointer also
+  // identifies the repeat-paste sequence; resolving it again at commit can reset that sequence.
+  const captureClipboardPasteAnchor = useCallback(() => {
+    const pointer = pastePointerPagePoint();
+    return { pointer, point: pointer ?? viewportCentrePagePoint(), imagePoint: viewportCentrePagePoint(false) };
+  }, [pastePointerPagePoint, viewportCentrePagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -7194,7 +7197,7 @@ export function MainWindow({
   // All clipboard insertions share the native repeat-paste placement and one undo entry.
   // Record the committed snapshot only after insertion; async SMILES preparation must not
   // clear the preceding paste's placement while loading/verifying its depiction.
-  const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, label?: string,
+  const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, anchor: ReturnType<typeof captureClipboardPasteAnchor>, label?: string,
     nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
     const before = documentRef.current;
     if (nextDocument === before) return false;
@@ -7202,11 +7205,12 @@ export function MainWindow({
     if (!payload) return false;
     const page = before.pages[0]!;
     if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
-      setStatus("Couldn't paste: the clipboard content is larger than the page. Choose a larger page before pasting.");
-      return false;
+      // Oversized content retains its prepared placement and the existing explicit page-size
+      // choice. Repeat offsets and clamping apply only when the payload fits the current page.
+      return commitDocumentChangeWithPageFit(nextDocument, label);
     }
     const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
-      page, pastePointerPagePoint(), nativePayload ? 1 : 0);
+      page, anchor.pointer, nativePayload ? 1 : 0);
     const existingIds = new Set(page.objects.map(object => object.id));
     const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
     const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
@@ -7214,18 +7218,18 @@ export function MainWindow({
     if (!commitDocumentChange(placed, label)) return false;
     selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
     return true;
-  }, [commitDocumentChange, pastePointerPagePoint]);
+  }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
 
-  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      detectedPayload.kind === "image" ? viewportCentrePagePoint(false) : pastePointForViewport(),
+      detectedPayload.kind === "image" ? anchor.imagePoint : anchor.point,
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      if (!commitClipboardPaste(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined)) return;
+      if (!commitClipboardPaste(result.document, anchor, detectedPayload.kind === "image" ? "Paste Picture" : undefined)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -7235,11 +7239,11 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
+  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, pictureFallback = false): Promise<{
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false): Promise<{
     outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
   }> => {
     const terminalResult = () => {
@@ -7255,7 +7259,7 @@ export function MainWindow({
       let terminal = pictureFallback ? terminalResult() : undefined;
       if (terminal) return terminal;
       const layoutDocument = documentRef.current;
-      const point = pastePointForViewport();
+      const point = anchor.point;
       const parsed = await depictSmilesForPaste(smilesText, { signal }, {
         document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
@@ -7305,7 +7309,7 @@ export function MainWindow({
       terminal = terminalResult();
       if (terminal) return terminal;
       if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-      if (!commitClipboardPaste(nextDocument, "Paste SMILES")) return { outcome: "terminal" };
+      if (!commitClipboardPaste(nextDocument, anchor, "Paste SMILES")) return { outcome: "terminal" };
       resetPasteUiState();
       setPageFitPrompt(undefined);
       const pasteStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
@@ -7324,26 +7328,26 @@ export function MainWindow({
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
-  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
+  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     if (!parsed.ok) { setStatus(parsed.reason); return; }
     try {
-      const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
+      const result = pasteTableIntoDocument(documentRef.current, parsed, anchor.point, textStyleDefaults,
         prefix => `${prefix}-${crypto.randomUUID()}`);
-      if (!commitClipboardPaste(result.document, "Paste table")) return;
+      if (!commitClipboardPaste(result.document, anchor, "Paste table")) return;
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
       setStatus(tableValidationMessage(error));
     }
-  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
-  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, pictureFallback = false):
+  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false):
     Promise<{ outcome: "success" | "no-structure" | "terminal"; pasteAsText: boolean; status?: string }> | undefined => {
     const pasteDocument = documentRef.current;
     const terminalResult = (checkDocument = false) => {
@@ -7361,7 +7365,7 @@ export function MainWindow({
       setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
     }, {
       signal, inspectInput: verifySmilesPasteInput,
-      templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+      templatePlacement: { document: pasteDocument, centre: anchor.point }
     });
     if (!pendingList) return undefined;
     return pendingList.then(async (parsed) => {
@@ -7373,7 +7377,7 @@ export function MainWindow({
       terminal = terminalResult(true);
       if (terminal) return terminal;
       const result = insertSmilesMoleculeGrid(
-        pasteDocument, pastePointForViewport(), entries);
+        pasteDocument, anchor.point, entries);
       parsed.failures.push(...verified.failures);
       const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
         failure.error.includes("the RDKit engine did not load:"));
@@ -7398,7 +7402,7 @@ export function MainWindow({
       };
       const status = makeStatus("No SMILES structures were pasted");
       if (result.objectIds.length > 0) {
-        if (!commitClipboardPaste(result.document, "Paste SMILES list")) return { outcome: "terminal" as const, pasteAsText: false };
+        if (!commitClipboardPaste(result.document, anchor, "Paste SMILES list")) return { outcome: "terminal" as const, pasteAsText: false };
         setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems)));
         resetPasteUiState();
         setPageFitPrompt(undefined);
@@ -7416,9 +7420,9 @@ export function MainWindow({
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
     });
-  }, [commitClipboardPaste, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
+  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
     if (detectedPayload.kind === "size-refused") {
       setStatus(detectedPayload.message);
@@ -7432,7 +7436,7 @@ export function MainWindow({
       return;
     }
     if (detectedPayload.kind === "inchi") {
-      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
+      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }, anchor);
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
       return;
     }
@@ -7444,21 +7448,21 @@ export function MainWindow({
           ? readTableClipboardPaste(stripClipboardPictures(rawPayload), html => new DOMParser().parseFromString(html, "text/html"))
           : undefined;
         if (!table || (detectedPayload.fallbackImage && !tableClipboardResultOutranksPicture(table))) return false;
-        applyTableClipboardResult(table);
+        applyTableClipboardResult(table, anchor);
         return true;
       };
       const pasteFallbackImage = () => {
         if (!detectedPayload.fallbackImage) return false;
         if (pasteAsTable()) return true;
         const image = detectedPayload.fallbackImage;
-        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
+        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }), anchor);
         return true;
       };
       const pasteAsText = () => {
         if (pasteAsTable()) return true;
         applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
           ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
-          : { ...detectedPayload, kind: "plain-text" });
+          : { ...detectedPayload, kind: "plain-text" }, anchor);
         return false;
       };
       const finishSingleFallback = ({ reason, failed }: Awaited<ReturnType<typeof renderPastedSmiles>>) => {
@@ -7485,11 +7489,11 @@ export function MainWindow({
             if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
             if (listAbort.signal.aborted) return;
             if (candidate.kind === "smiles") {
-              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, anchor, true);
               if (result.outcome !== "no-structure") return;
               firstFallback ??= () => finishSingleFallback(result);
             } else {
-              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, true);
+              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, anchor, true);
               if (result && result.outcome !== "no-structure") return;
               firstFallback ??= () => finishListFallback(result);
             }
@@ -7504,7 +7508,7 @@ export function MainWindow({
       if ((detectedPayload.kind === "smiles" || looksLikeSmiles(trimmedText)) && !/\s/.test(trimmedText)) {
         // Keep ordinary single SMILES pastes independent of later pastes, as before.
         // Only lists and picture candidate loops register their cancellation controller.
-        void renderPastedSmiles(trimmedText, new AbortController().signal).then(result => {
+        void renderPastedSmiles(trimmedText, new AbortController().signal, anchor).then(result => {
           if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (result.outcome !== "no-structure") return;
           if (!pasteFallbackImage()) finishSingleFallback(result);
@@ -7513,7 +7517,7 @@ export function MainWindow({
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
-      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal);
+      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal, anchor);
       if (!pendingList) {
         if (!pasteFallbackImage()) pasteAsText();
         return;
@@ -7525,10 +7529,10 @@ export function MainWindow({
       });
       return;
     }
-    applySyncClipboardPayload(detectedPayload);
+    applySyncClipboardPayload(detectedPayload, anchor);
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
-  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const warnings: string[] = [];
@@ -7543,7 +7547,7 @@ export function MainWindow({
       return;
     }
 
-    if (!commitClipboardPaste(nextDocument, undefined, payload)) return;
+    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7775,7 +7779,7 @@ export function MainWindow({
     }
   }, [documentWithTableDraft]);
 
-  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>, anchor = captureClipboardPasteAnchor()) => {
     smilesListPasteAbortRef.current?.abort();
     let rawPayload: ClipboardReadPayload | undefined;
     let readFailure: string | undefined;
@@ -7800,17 +7804,17 @@ export function MainWindow({
       if (guarded.kind === "refused") { setStatus(guarded.message); return; }
       const { payload, decision } = guarded;
       if (decision.kind === "selection") {
-        applySelectionClipboardPayload(decision.payload);
+        applySelectionClipboardPayload(decision.payload, anchor);
         return;
       }
       if (decision.kind === "table") {
-        applyTableClipboardResult(decision.result);
+        applyTableClipboardResult(decision.result, anchor);
         return;
       }
 
       const detectedPayload = decision.payload;
       if (detectedPayload.kind !== "empty") {
-        applyDetectedClipboardPayload(detectedPayload, payload);
+        applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         return;
       }
     }
@@ -7818,13 +7822,13 @@ export function MainWindow({
     // Only reuse the last in-app ChemDraft selection when the clipboard has nothing usable;
     // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
     if (selectionClipboardPayloadRef.current) {
-      applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+      applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
       return;
     }
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text))) {
@@ -13699,12 +13703,13 @@ export function MainWindow({
         return;
       }
 
+      const anchor = captureClipboardPasteAnchor();
       if (!event.clipboardData) {
         // Some desktop WebView paste events arrive without populated clipboardData; read natively
         // so keyboard paste of CDXML/SMILES/ChemDraft payloads still works.
         if (isDesktopRuntime()) {
           event.preventDefault();
-          void pasteClipboard();
+          void pasteClipboard(undefined, anchor);
         }
         return;
       }
@@ -13718,7 +13723,7 @@ export function MainWindow({
       // through DataTransfer. Read natively before a text/plain fallback can lose formatting;
       // pasteClipboard makes the same table decision on the native payload, then on this snapshot.
       if (isDesktopRuntime()) {
-        void pasteClipboard(domPayload);
+        void pasteClipboard(domPayload, anchor);
         return;
       }
       void domPayload.then((unguardedPayload) => {
@@ -13727,18 +13732,18 @@ export function MainWindow({
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
         const { payload, decision } = guarded;
         if (decision.kind === "selection") {
-          applySelectionClipboardPayload(decision.payload);
+          applySelectionClipboardPayload(decision.payload, anchor);
           return;
         }
         if (decision.kind === "table") {
-          applyTableClipboardResult(decision.result);
+          applyTableClipboardResult(decision.result, anchor);
           return;
         }
         const detectedPayload = decision.payload;
         if (detectedPayload.kind !== "empty") {
-          applyDetectedClipboardPayload(detectedPayload, payload);
+          applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         } else if (selectionClipboardPayloadRef.current) {
-          applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+          applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
         }
       }).catch((error: unknown) => {
         setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
@@ -13753,7 +13758,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
