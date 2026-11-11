@@ -5,6 +5,7 @@ mod pins;
 mod process;
 mod protocol;
 mod receipt;
+mod requirements;
 
 use serde::Serialize;
 use std::{
