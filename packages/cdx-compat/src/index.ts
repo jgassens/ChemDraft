@@ -53,6 +53,7 @@ import {
   type CdxElement
 } from "./cdxBinary";
 import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
+import { cdxmlToCssPx, cssPxToCdxml, formatNumber, formatPoint } from "./coordinates";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -259,9 +260,6 @@ const legacyVisibleXmlParser = new XMLParser({
 });
 
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-const cssPxPerInch = 96;
-const cdxmlPointsPerInch = 72;
-const cdxmlScale = cdxmlPointsPerInch / cssPxPerInch;
 const nativeImportTimestamp = "2026-05-29T00:00:00.000Z";
 const defaultCdxmlStrokeColor = "#000000";
 const defaultCdxmlFillColor = "none";
@@ -5811,13 +5809,6 @@ function formatColorComponent(value: number): string {
   return formatNumber(Math.max(0, Math.min(255, value)) / 255);
 }
 
-/** CDXML 2D positions are "x y" — see the CDXCoordinates note that the y-first order belongs to
- *  BINARY CDX, not CDXML. ChemDraft wrote y-first through codec v1; v2 writes spec order, and a v1
- *  file's visible layer is transposed on import (see {@link transposeImportedObject}). */
-function formatPoint(point: Point): string {
-  return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))}`;
-}
-
 function formatXyPoint(point: Point): string {
   return `${formatNumber(cssPxToCdxml(point.x))} ${formatNumber(cssPxToCdxml(point.y))} 0`;
 }
@@ -5886,19 +5877,6 @@ function parseCdxmlXyBoundingBox(box: string | undefined): { x: number; y: numbe
     width: Math.max(1, cdxmlToCssPx(right - left)),
     height: Math.max(1, cdxmlToCssPx(bottom - top))
   };
-}
-
-function cssPxToCdxml(value: number): number {
-  return value * cdxmlScale;
-}
-
-function cdxmlToCssPx(value: number): number {
-  return value / cdxmlScale;
-}
-
-function formatNumber(value: number): string {
-  const fixed = value.toFixed(4);
-  return fixed.replace(/\.?0+$/, "") || "0";
 }
 
 function boundsForAtoms(atoms: readonly MoleculeAtom[]): { x: number; y: number; width: number; height: number } {
