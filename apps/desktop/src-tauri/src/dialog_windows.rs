@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{LazyLock, Mutex},
+    sync::{Arc, Condvar, LazyLock, Mutex},
     time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -3878,23 +3878,16 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
     if writes.is_empty() {
         return;
     }
-    if path
-        .parent()
-        .is_some_and(|parent| std::fs::create_dir_all(parent).is_err())
-    {
-        return;
-    }
     let mut positions: HashMap<String, SavedPosition> = std::fs::read(path)
         .ok()
         .filter(|b| b.len() <= MAX_BYTES)
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     merge_positions(&mut positions, writes);
-    if let Ok(bytes) = serde_json::to_vec(&positions) {
-        use std::io::Write;
-        if let Err(error) = std::fs::File::create(path)
-            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
-        {
+    if let Ok(contents) = serde_json::to_string(&positions) {
+        // Quit can abandon the worker at its deadline. Publish only a complete replacement,
+        // using the shared sibling-temp + rename helper (including Windows retry handling).
+        if let Err(error) = super::write_file_atomic(path, &contents) {
             eprintln!("Could not persist dialog frames: {error}");
         }
     }
@@ -3913,21 +3906,66 @@ fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) 
 }
 
 /// Quit can destroy dialogs on the event loop while an earlier position write is stuck.
-/// Never make AppKit's reply queue wait for POSITION_IO or filesystem I/O in those callbacks.
+/// Never make the event loop wait for POSITION_IO or filesystem I/O in those callbacks,
+/// on either platform. The bounded quit drain waits for the registered workers instead.
 fn defer_quit_close_persistence() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        super::quit_in_progress() && objc2::MainThreadMarker::new().is_some()
+    super::quit_in_progress()
+}
+
+#[derive(Default)]
+struct PositionWriteTracker {
+    pending: Mutex<usize>,
+    finished: Condvar,
+}
+
+impl PositionWriteTracker {
+    fn register(self: &Arc<Self>) -> PositionWriteGuard {
+        *self.pending.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+        PositionWriteGuard(self.clone())
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
+
+    fn drain(&self) {
+        let pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        drop(
+            self.finished
+                .wait_while(pending, |pending| *pending != 0)
+                .unwrap_or_else(|p| p.into_inner()),
+        );
     }
 }
 
+struct PositionWriteGuard(Arc<PositionWriteTracker>);
+
+impl Drop for PositionWriteGuard {
+    fn drop(&mut self) {
+        *self.0.pending.lock().unwrap_or_else(|p| p.into_inner()) -= 1;
+        self.0.finished.notify_all();
+    }
+}
+
+static POSITION_WRITES: LazyLock<Arc<PositionWriteTracker>> = LazyLock::new(Default::default);
+
+/// Called only inside the quit drain's existing timeout/deadline, never on AppKit's reply queue.
+pub(crate) fn drain_pending_position_writes() {
+    POSITION_WRITES.drain();
+}
+
 fn persist_close_with(defer: bool, persist: impl FnOnce() + Send + 'static) {
+    persist_close_tracked_with(&POSITION_WRITES, defer, persist);
+}
+
+fn persist_close_tracked_with(
+    tracker: &Arc<PositionWriteTracker>,
+    defer: bool,
+    persist: impl FnOnce() + Send + 'static,
+) {
+    // Register before spawning: a fast renderer confirmation must see even an unscheduled write.
+    let pending = tracker.register();
     if defer {
-        std::thread::spawn(persist);
+        std::thread::spawn(move || {
+            let _pending = pending;
+            persist();
+        });
     } else {
         persist();
     }
@@ -4087,6 +4125,117 @@ mod tests {
         let writer = finished.clone();
         persist_close_with(false, move || writer.store(true, Ordering::SeqCst));
         assert!(finished.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn quit_drain_waits_for_preferences_and_dialog_frames_after_fast_session_confirmation() {
+        for platform in ["macos", "windows"] {
+            let path = preferences_test_path(platform);
+            let tracker = Arc::new(PositionWriteTracker::default());
+            let io = Arc::new(Mutex::new(()));
+            let held = io.lock().unwrap();
+            let expected = preferences_native_frame(platform, 1.5, false).unwrap();
+            for kind in ["preferences", "export"] {
+                let path = path.clone();
+                let io = io.clone();
+                let saved = expected.clone();
+                persist_close_tracked_with(&tracker, true, move || {
+                    let _io = io.lock().unwrap();
+                    write_positions(&path, vec![(kind.into(), saved)]);
+                });
+            }
+            assert_eq!(*tracker.pending.lock().unwrap(), 2);
+            let draining = tracker.clone();
+            let (confirmed, confirmation) = std::sync::mpsc::channel();
+            let (exited, exit) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                exited
+                    .send(crate::session_coordinator::with_timeout(
+                        Duration::from_secs(2),
+                        move || {
+                            crate::drain_quit_persistence_with(
+                                || {
+                                    confirmed.send(()).unwrap();
+                                    Ok(())
+                                },
+                                || draining.drain(),
+                            )
+                        },
+                    ))
+                    .unwrap();
+            });
+            confirmation.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(
+                exit.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(held);
+            exit.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+            worker.join().unwrap();
+            let positions: HashMap<String, SavedPosition> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(positions.len(), 2);
+            for kind in ["preferences", "export"] {
+                assert_eq!(
+                    serde_json::to_value(&positions[kind]).unwrap(),
+                    serde_json::to_value(&expected).unwrap()
+                );
+            }
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn quit_drain_deadline_abandons_blocked_frames_without_truncating_the_saved_file() {
+        for platform in ["macos", "windows"] {
+            let path = preferences_test_path(platform);
+            let tracker = Arc::new(PositionWriteTracker::default());
+            let io = Arc::new(Mutex::new(()));
+            let held = io.lock().unwrap();
+            let expected = preferences_native_frame(platform, 1.0, false).unwrap();
+            write_positions(&path, vec![("preferences".into(), expected.clone())]);
+            let original = std::fs::read(&path).unwrap();
+            let worker_path = path.clone();
+            let worker_io = io.clone();
+            persist_close_tracked_with(&tracker, true, move || {
+                let _io = worker_io.lock().unwrap();
+                write_positions(&worker_path, vec![("export".into(), expected)]);
+            });
+            let draining = tracker.clone();
+            let result =
+                crate::session_coordinator::with_timeout(Duration::from_millis(20), move || {
+                    crate::drain_quit_persistence_with(|| Ok(()), || draining.drain())
+                });
+            assert!(result.unwrap_err().contains("timed out"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            drop(held);
+            crate::session_coordinator::with_timeout(Duration::from_secs(2), move || {
+                tracker.drain();
+                Ok(())
+            })
+            .unwrap();
+            let positions: HashMap<String, SavedPosition> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(positions.len(), 2);
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_session_flush_still_drains_accepted_position_writes() {
+        let drained = std::cell::Cell::new(false);
+        assert_eq!(
+            crate::drain_quit_persistence_with(
+                || Err("session disk full".into()),
+                || drained.set(true),
+            ),
+            Err("session disk full".into())
+        );
+        assert!(drained.get());
     }
 
     #[test]
