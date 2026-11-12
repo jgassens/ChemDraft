@@ -2593,8 +2593,12 @@ fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
     // Windows keeps the existing webview flow, including saving before the installer takes over.
     #[cfg(not(target_os = "macos"))]
-    if let Err(error) = emit_command_to_main(app, CHECK_FOR_UPDATES_COMMAND_ID) {
-        eprintln!("Could not route the update check: {error}");
+    if let Some(target) = active_document_webview(app) {
+        if let Err(error) =
+            dispatch_document_menu_command(app, target.label(), CHECK_FOR_UPDATES_COMMAND_ID)
+        {
+            eprintln!("Could not route the update check: {error}");
+        }
     }
 }
 
@@ -8947,6 +8951,11 @@ fn handle_document_menu_event<R: Runtime>(
             return Ok(());
         }
         dispatch_document_menu_command(app, &target, command)?;
+        // Native check items toggle before dispatch. Even reselecting the active document must
+        // restore the registry's checkmarks; it produces no focus change or new JS snapshot.
+        if command.starts_with(document_menus::ACTIVATE_PREFIX) {
+            apply_current_menu_state(app, &target).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -9532,7 +9541,15 @@ fn create_document_menu<R: Runtime>(
         snapshot.view,
         &snapshot.plugin_items,
     )?;
-    apply_menu_state(menu.items()?, &snapshot, target.is_some())?;
+    apply_menu_state(
+        menu.items()?,
+        &snapshot,
+        target.is_some(),
+        registry
+            .active_document_window()
+            .as_ref()
+            .map(|w| w.window_id.as_str()),
+    )?;
     Ok(menu)
 }
 
@@ -9545,7 +9562,15 @@ fn apply_current_menu_state<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     let menu = app.get_webview_window(label).and_then(|w| w.menu());
     if let Some(menu) = menu {
-        apply_menu_state(menu.items()?, &menu_snapshot(app, label), true)?;
+        apply_menu_state(
+            menu.items()?,
+            &menu_snapshot(app, label),
+            true,
+            app.state::<document_windows::DocumentWindowRegistry>()
+                .active_document_window()
+                .as_ref()
+                .map(|w| w.window_id.as_str()),
+        )?;
     } else {
         install_document_menu(app, Some(label))?;
     }
@@ -9556,6 +9581,7 @@ fn apply_menu_state<R: Runtime>(
     items: Vec<MenuItemKind<R>>,
     snapshot: &document_menus::Snapshot,
     has_document: bool,
+    active_document_id: Option<&str>,
 ) -> tauri::Result<()> {
     for item in items {
         let id = item.id().as_ref();
@@ -9571,8 +9597,10 @@ fn apply_menu_state<R: Runtime>(
         } else {
             Some(document_menus::enabled_without_document(command))
         };
-        let checked = if command.starts_with(document_menus::ACTIVATE_PREFIX) {
-            None
+        let checked = if let Some(checked) =
+            document_menus::activation_checked(command, active_document_id)
+        {
+            Some(checked)
         } else if command == "view.toggleRulers" {
             Some(snapshot.view.rulers_visible)
         } else if command == "view.toggleCrosshairs" {
@@ -9607,7 +9635,7 @@ fn apply_menu_state<R: Runtime>(
                 if !has_document && !matches!(text.as_str(), "ChemDraft" | "File" | "Help") {
                     menu.set_enabled(false)?;
                 }
-                apply_menu_state(menu.items()?, snapshot, has_document)?;
+                apply_menu_state(menu.items()?, snapshot, has_document, active_document_id)?;
             }
             _ => {}
         }
@@ -11712,6 +11740,63 @@ mod tests {
             .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
             .and_then(|value| value.split_once("</string>"))
             .map(|(feed, _)| feed.to_string())
+    }
+
+    #[test]
+    fn windows_update_dispatch_uses_the_active_document_and_the_menu_dispatcher() {
+        // Read the non-macOS branch on every test host: macOS compilation cannot see stale names.
+        let source = include_str!("lib.rs");
+        let updater = source
+            .split("fn check_for_updates<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("#[derive(Debug, PartialEq, Eq)]")
+            .next()
+            .unwrap();
+        let windows = updater
+            .split("#[cfg(not(target_os = \"macos\"))]")
+            .nth(1)
+            .unwrap();
+        assert!(windows.contains("if let Some(target) = active_document_webview(app)"));
+        assert!(windows.contains(
+            "dispatch_document_menu_command(app, target.label(), CHECK_FOR_UPDATES_COMMAND_ID)"
+        ));
+        let registry = ready_document_registry();
+        registry.register("b", "doc-b").unwrap();
+        registry.set_ready("b");
+        for label in ["main", "doc-b", "main"] {
+            registry.mark_activated(label);
+            assert_eq!(
+                registry.active_document_window().unwrap().native_label,
+                label
+            );
+        }
+        registry.remove("main");
+        registry.remove("b");
+        assert!(registry.active_document_window().is_none());
+    }
+
+    #[test]
+    fn activation_menu_click_reconciles_checks_without_waiting_for_a_snapshot_or_focus_change() {
+        let source = include_str!("lib.rs");
+        let dispatch = source
+            .split("fn handle_document_menu_event<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("fn dispatch_document_menu_command")
+            .next()
+            .unwrap();
+        assert!(dispatch.contains("if command.starts_with(document_menus::ACTIVATE_PREFIX) {\n            apply_current_menu_state(app, &target)"));
+        let reconciliation = source
+            .split("fn apply_menu_state<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("fn build_insert_submenu")
+            .next()
+            .unwrap();
+        assert!(reconciliation
+            .contains("document_menus::activation_checked(command, active_document_id)"));
+        assert!(reconciliation.contains("item.set_checked(checked)?"));
     }
 
     #[test]

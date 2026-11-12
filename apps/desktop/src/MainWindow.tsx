@@ -22133,7 +22133,10 @@ export function MainWindow({
     stageNativeMenuSnapshot({
       commands: flattenAppMenuCommands(appMenuSections).map(item => ({
         commandId: item.commandId,
-        enabled: item.enabled && coreCommandBindings.get(item.commandId)?.spec.enabled !== false,
+        // As in the previous native menu, history must reach focused text editors even when
+        // drawing history is empty. invokeCommand routes text undo/redo before the registry.
+        enabled: editHistoryDirection(item.commandId) !== undefined ||
+          (item.enabled && coreCommandBindings.get(item.commandId)?.spec.enabled !== false),
         checked: item.checked
       })),
       title: documentTabs.find(tab => tab.id === activeDocumentTabId)?.title ?? "Untitled"

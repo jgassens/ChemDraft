@@ -132,6 +132,13 @@ pub fn installation_labels(
     }
 }
 
+/// Window checkmarks follow native activation, never a webview's potentially stale snapshot.
+pub fn activation_checked(command: &str, active_document_id: Option<&str>) -> Option<bool> {
+    command
+        .strip_prefix(ACTIVATE_PREFIX)
+        .map(|id| Some(id) == active_document_id)
+}
+
 pub fn enabled_without_document(command: &str) -> bool {
     matches!(
         command,
@@ -275,5 +282,33 @@ mod tests {
             assert_eq!(owns_accelerators(is_macos, Some("main"), None), is_macos);
             assert_eq!(owns_accelerators(is_macos, None, None), is_macos);
         }
+    }
+
+    #[test]
+    fn activation_checks_restore_the_active_row_even_when_activation_does_not_change() {
+        let registry = documents();
+        for is_macos in [true, false] {
+            for label in ["main", "main", "doc-b", "doc-b", "main"] {
+                registry.mark_activated(label);
+                let active = registry.active_document_window().unwrap();
+                for id in ["main", "b"] {
+                    // Simulate the clicked native checkbox toggling away from its initial value.
+                    let toggled = id != active.window_id;
+                    let command = item_id(
+                        (!is_macos).then_some(label),
+                        &format!("{ACTIVATE_PREFIX}{id}"),
+                    );
+                    let command = decode_item(&command).map(|(_, id)| id).unwrap_or(&command);
+                    let reconciled = activation_checked(command, Some(&active.window_id)).unwrap();
+                    assert_eq!(reconciled, id == active.window_id);
+                    assert_ne!(reconciled, toggled);
+                }
+            }
+        }
+        assert_eq!(
+            activation_checked("window.activate.main", None),
+            Some(false)
+        );
+        assert_eq!(activation_checked("view.toggleRulers", Some("main")), None);
     }
 }

@@ -776,13 +776,13 @@ describe("documents in one window", () => {
     }, reviewSourceLabel);
   });
 
-  async function mountHoverChain() {
+  async function mountHoverChain(shortcutPlatform?: ShortcutPlatform) {
     act(() => root!.unmount());
     container.innerHTML = "";
     vi.mocked(createPluginRuntime).mockClear();
     saveKeybindingSettings({ scheme: "chemdraft" });
     const chain = applyNativeChainTool(createPhase4Document("Hover cancellation"), { x: 80, y: 300 }, { x: 700, y: 300 });
-    await mount(selectDocumentObjects(chain, chain.pages[0]!.id, []));
+    await mount(selectDocumentObjects(chain, chain.pages[0]!.id, []), false, shortcutPlatform);
     await command("tool.bond");
     const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
     for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
@@ -813,6 +813,45 @@ describe("documents in one window", () => {
       });
     }
   }
+
+  it.each(["macos", "windows"] as const)("keeps native Undo/Redo available for an uncommitted label with no drawing history on %s", async platform => {
+    await mountHoverChain(platform);
+    native.savePicker.mockResolvedValueOnce("/tmp/label-history.chemdraft");
+    await command("document.save");
+    await command("tool.atom");
+    const molecule = hoverMolecule();
+    const atom = molecule.atoms[1]!;
+    const scale = (bridge().snapshot().viewport as { scale: number }).scale;
+    const target = container.querySelector(`[data-object-id="${molecule.id}"]`)!;
+    await act(async () => target.dispatchEvent(new MouseEvent("pointerdown", {
+      bubbles: true, cancelable: true, button: 0, clientX: atom.x * scale, clientY: atom.y * scale
+    })));
+    await vi.waitFor(() => expect(document.activeElement).toBe(labelEditor()));
+    expect(labelEditor()).not.toBeNull();
+    await labelKey("N");
+    expect(labelEditor()?.value).toContain("N");
+    expect(container.querySelector("[data-can-undo]")?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector("[data-can-redo]")?.getAttribute("data-can-redo")).toBe("false");
+    const publication = vi.mocked(nativeInvoke).mock.calls.filter(([name]) => name === "publish_menu_snapshot").at(-1);
+    expect(publication?.[1]).toMatchObject({ snapshot: { commands: expect.arrayContaining([
+      { commandId: "edit.undo", enabled: true, checked: undefined },
+      { commandId: "edit.redo", enabled: true, checked: undefined }
+    ]) } });
+    const before = bridge().snapshot().document;
+    const original = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const textHistory = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: textHistory });
+    try {
+      for (const direction of ["undo", "redo"]) {
+        await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: `edit.${direction}` } })));
+        expect(textHistory).toHaveBeenLastCalledWith(direction);
+        expect(bridge().snapshot().document).toEqual(before);
+      }
+    } finally {
+      if (original) Object.defineProperty(document, "execCommand", original);
+      else delete (document as Partial<Document>).execCommand;
+    }
+  });
 
   it("Escape preserves an accepted chemistry proposal between the first hover letter and the draft", async () => {
     await mountHoverChain();
