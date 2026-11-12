@@ -104,33 +104,40 @@ export function planDocumentPageFit(before: ChemDraftDocument, proposed: ChemDra
 
 /** Page layout and content are returned together, for ONE existing history commit. */
 export function applyPageFitDecision(plan: PageFitPlan, enlarge: boolean): ChemDraftDocument {
-  if (!enlarge) return plan.keep;
-  return plan.growth.reduce((document, growth) => {
+  return applyPageFitTransform(plan.keep, enlarge ? plan.growth : []);
+}
+
+/** Replay only the host-owned resize and translation on any baseline. Use the SAME growth
+ * records as the committed insertion; replanning without that insertion would give a different fit.
+ */
+export function applyPageFitTransform(document: ChemDraftDocument, growth: PageFitPlan["growth"]): ChemDraftDocument {
+  return growth.reduce((document, growth) => {
     const page = document.pages.find(page => page.id === growth.pageId)!;
     const unit = pageLayoutSourceUnit(page.layout);
     const resized = applyPatch(document, { op: "updatePageLayout", pageId: page.id,
       layout: createCustomPageLayout(cssPxToPageSize(growth.width, unit), cssPxToPageSize(growth.height, unit), unit, page.margin) });
     return translateDocumentPage(resized, page.id, growth.shiftX ?? 0, growth.shiftY ?? 0);
-  }, plan.keep);
+  }, document);
 }
 
 /** Fitting commits stay synchronous. The caller owns history and rechecks its captured tab/document
  * after the native box: a late answer must never overwrite a gesture, edit, undo or replaced tab.
+ * The commit callback also receives the applied host transform for checking writes against a baseline.
  */
 export function commitWithPageFit(before: ChemDraftDocument, proposed: ChemDraftDocument,
-  commit: (document: ChemDraftDocument) => void,
+  commit: (document: ChemDraftDocument, fitBaseline: (baseline: ChemDraftDocument) => ChemDraftDocument) => void,
   options: { consent?: PageEnlargementConsent; signal?: AbortSignal; isCurrent?: () => boolean;
     onCommit?: (document: ChemDraftDocument, outcome: { decision: "fits" | "enlarge" | "keep"; plan: PageFitPlan }) => void } = {}
 ): Promise<void> | undefined {
   options.signal?.throwIfAborted();
   const plan = planDocumentPageFit(before, proposed);
-  if (!plan.growth.length) { commit(proposed); options.onCommit?.(proposed, { decision: "fits", plan }); return undefined; }
+  if (!plan.growth.length) { commit(proposed, baseline => baseline); options.onCommit?.(proposed, { decision: "fits", plan }); return undefined; }
   return (options.consent ?? new PageEnlargementConsent()).confirm(options.signal).then(decision => {
     options.signal?.throwIfAborted();
     if (decision === "unanswered") throw new Error("No answer to the enlarge-page question; nothing was inserted.");
     if (options.isCurrent && !options.isCurrent()) throw new Error("The drawing changed while the page question was open; try the action again.");
     const document = applyPageFitDecision(plan, decision === "enlarge");
-    commit(document);
+    commit(document, baseline => applyPageFitTransform(baseline, decision === "enlarge" ? plan.growth : []));
     options.onCommit?.(document, { decision, plan });
   });
 }
