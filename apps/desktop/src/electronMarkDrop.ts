@@ -1,6 +1,6 @@
 import { applyPatch, nativeDrawingStyleFromObjectStyle,
   type ChemDraftDocument, type ElectronMarkObject, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
-import { atomDisplayLabel } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, transformPointForObject } from "@chemdraft/layout-engine";
 import { documentDrawingDefaults, nativeAtomChargeSupportsValence, nativeAtomExternalValence,
   nativeElementFromAtomLabel, phase4Timestamp, type PagePoint } from "@chemdraft/document-workflow-core";
 import { electronMarkAtomContribution, electronMarkChemistryChanges, findDocumentObject,
@@ -18,8 +18,11 @@ export function electronMarkDropTarget(
   let nearest: NativeMoleculeDeleteTarget | undefined;
   for (const object of document.pages.find(page => page.id === pageId)?.objects ?? []) {
     if (object.type !== "molecule" || !isEditableNativeMoleculeGraph(object)) continue;
+    // Atom coordinates precede the molecule's SVG rotation. Invert that same frame transform
+    // for both preview and commit, so the target is the atom drawn under the pointer.
+    const localPoint = transformPointForObject({ ...object, rotation: -object.rotation }, point);
     for (const atom of object.atoms) {
-      const distanceToPointer = Math.hypot(point.x - atom.x, point.y - atom.y);
+      const distanceToPointer = Math.hypot(localPoint.x - atom.x, localPoint.y - atom.y);
       if (distanceToPointer <= radius && (!nearest || distanceToPointer < nearest.distanceToPointer)) {
         nearest = { kind: "atom", objectId: object.id, atomId: atom.id, distanceToPointer };
       }
@@ -102,13 +105,13 @@ export function dropElectronMark(
   }
 
   let moved = moveDocumentObject(document, markId, position);
-  if (destination) {
-    moved = applyPatch(moved, { op: "updateObject", objectId: markId,
-      changes: { anchor, atomAssociation: "explicit" } }, { now: phase4Timestamp });
-  }
-  let after = normalizeCommittedDocument(moved, {
-    floatingElectronMarkIds: !target && !source ? new Set([markId]) : undefined
-  });
+  // Record the decision on the document, including an intentional floating drop. The existing
+  // explicit flag makes either anchor durable across normalization, native save and reopen.
+  moved = applyPatch(moved, { op: "updateObject", objectId: markId,
+    changes: { anchor: destination ? anchor : { kind: "point", point: {
+      x: position.x + mark.width / 2, y: position.y + mark.height / 2
+    } }, atomAssociation: "explicit" } }, { now: phase4Timestamp });
+  let after = normalizeCommittedDocument(moved);
   const finalMark = findDocumentObject(after, markId) as ElectronMarkObject;
   const finalDestination = associatedAtom(after, finalMark.anchor);
   if (destination && (!finalDestination || finalDestination.molecule.id !== destination.molecule.id ||

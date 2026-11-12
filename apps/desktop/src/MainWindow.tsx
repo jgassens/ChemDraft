@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.12.09.55-codex";
+const CURRENT_BUILD_STAMP = "11.12.10.40-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3917,14 +3917,12 @@ export function MainWindow({
   const commitDocumentHistoryFrom = useCallback((
     startDocument: ChemDraftDocument,
     nextDocument: ChemDraftDocument,
-    undoLabel?: string,
-    options: { normalized?: boolean } = {}
+    undoLabel?: string
   ) => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
-    // Direct electron-mark drops already normalized with their narrower capture policy.
-    const present = options.normalized ? nextDocument : normalizeCommittedDocument(nextDocument);
+    const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     try {
@@ -16601,7 +16599,7 @@ export function MainWindow({
         replacePresentDocument(drag.startDocument);
         return false;
       }
-      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel, { normalized: true });
+      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel);
       return true;
     }
     const moved = objectDragDocument(drag, point);

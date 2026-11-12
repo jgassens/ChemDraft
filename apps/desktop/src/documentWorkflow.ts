@@ -7545,7 +7545,10 @@ export function applyChargeToolAtNativeAtom(
   return point
     ? addChargeMarkAtPoint(document, page.id, normalized, point, {
         objectId: molecule.id,
-        atomId: target.atomId
+        atomId: target.atomId,
+        // Page-space placement must retain the chosen atom through legacy local-distance
+        // reconciliation. Leave unrotated tool marks byte-for-byte unchanged.
+        explicit: molecule.rotation !== 0
       })
     : document;
 }
@@ -7663,11 +7666,14 @@ export function nativeChargePlacementPointForAtom(
   const growth = previewNativeMoleculeBondGrowth(molecule, atom, pageWidth, pageHeight);
   // Direct drops supply their mark and have an explicit association. New tool marks must keep
   // the legacy point: label clearance can push them outside distance-based association.
-  return electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
+  const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
     growthPoint: growth && growth.atomId === atomId && !growth.targetAtomId ? growth.newAtomPoint : undefined,
     mark,
     avoidLabelOverlap: mark !== undefined
   });
+  // Growth and label clearance use the atom's local frame. Both drops and the charge tool
+  // store the mark separately in page coordinates, beside the rendered atom.
+  return localPoint && transformPointForObject(molecule, localPoint);
 }
 
 /** The growth the on-canvas arrow is showing: where the new atom lands, or which existing atom
@@ -8210,7 +8216,7 @@ function addChargeMarkAtPoint(
   pageId: string,
   spec: NativeElectronMarkSpec,
   point: PagePoint,
-  anchorAtom?: { objectId: string; atomId: string }
+  anchorAtom?: { objectId: string; atomId: string; explicit?: boolean }
 ): ChemDraftDocument {
   const page = firstPage(document);
   const halfSize = nativeChargeMarkSizePx / 2;
@@ -8237,6 +8243,7 @@ function addChargeMarkAtPoint(
     anchor: anchorAtom
       ? { kind: "atom" as const, objectId: anchorAtom.objectId, atomId: anchorAtom.atomId }
       : { kind: "point" as const, point: center },
+    ...(anchorAtom?.explicit ? { atomAssociation: "explicit" as const } : {}),
     ...(spec.kind === "charge"
       ? {
           charge: spec.charge,
@@ -8265,8 +8272,9 @@ function addChargeMarkAtPoint(
  * that makes it self-contained: `atom.markCharge` records exactly the portion of
  * `atom.formalCharge` the marks contributed. Each pass strips that portion back out (recovering
  * the atom's intrinsic, drawn/imported charge), re-assigns every mark to its nearest
- * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
- * copies pasted without their mark all settle correctly with no history diffing.
+ * atom unless its association is explicit, and writes both fields fresh — so deleted marks,
+ * moved molecules, edited elements, and copies pasted without their mark all settle correctly
+ * with no history diffing.
  */
 export type CommittedDocumentNormalizationOptions = NativeElectronMarkAssignmentOptions;
 
@@ -8536,6 +8544,11 @@ export function electronMarkMoveAssociation(
   options: ElectronMarkMoveAssociationOptions = {}
 ): ElectronMarkMoveAssociationResult {
   const operation = options.operation ?? "move";
+  // Layout/appearance edits cannot erase an intentional floating drop. A later direct atom
+  // drop can replace it; newly pasted copies retain their existing separate association policy.
+  if (mark.atomAssociation === "explicit" && mark.anchor.kind === "point" && operation !== "paste") {
+    return { anchor: from.x === to.x && from.y === to.y ? mark.anchor : { ...mark.anchor, point: to } };
+  }
   // Turning/resizing a dropped mark about its own centre changes only its appearance.
   if (mark.atomAssociation === "explicit" && operation !== "paste" && from.x === to.x && from.y === to.y) {
     return { anchor: mark.anchor };
