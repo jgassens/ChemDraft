@@ -2210,8 +2210,8 @@ async fn suspend_toolset_windows(
                     ))
                 })
                 .collect::<Result<_, String>>()?;
-            // Only the first acquisition reads the native order. A nested prompt must keep the
-            // first snapshot, including while waiting for a minimized document to return.
+            // Only the first acquisition reads the native order. Nested prompts and re-acquisition
+            // during pending restoration keep the original order; newly visible windows join it.
             let top_to_bottom = if UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
