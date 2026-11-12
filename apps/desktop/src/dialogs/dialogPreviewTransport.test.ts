@@ -9,6 +9,21 @@ function chunks(value: unknown) {
   return parts.map((text, index) => ({ previewChunk: { requestId: "request-1", index, total: parts.length, text } }));
 }
 describe("private preview chunks", () => {
+  it("reassembles previews for each owner without accepting a foreign owner's label", async () => {
+    for (const ownerWindowId of ["doc-a", "doc-b"]) {
+      const handler = vi.fn(), stop = await subscribeDialogHost(`host-${ownerWindowId}`, handler);
+      const channel = ipc.channels.at(-1)!;
+      const delivery = previewDelivery();
+      delivery.message.ownerWindowId = ownerWindowId;
+      delivery.senderWindowId = ownerWindowId;
+      delivery.windowLabel = `dialog-${ownerWindowId}-export-1`;
+      for (const part of chunks(delivery)) channel.onmessage(part);
+      expect(handler).toHaveBeenCalledExactlyOnceWith(delivery.message);
+      for (const part of chunks({ ...delivery, windowLabel: "dialog-main-export-1" })) channel.onmessage(part);
+      expect(handler).toHaveBeenCalledTimes(1);
+      stop();
+    }
+  });
   it("reassembles only complete ordered preview deliveries and clears on unsubscribe", async () => {
     const handler = vi.fn(), stop = await subscribeDialogHost("host", handler);
     const channel = ipc.channels.at(-1)!;

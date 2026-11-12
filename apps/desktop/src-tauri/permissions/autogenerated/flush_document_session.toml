@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-flush-document-session"
+description = "Enables the flush_document_session command without any pre-configured scope."
+commands.allow = ["flush_document_session"]
+
+[[permission]]
+identifier = "deny-flush-document-session"
+description = "Denies the flush_document_session command without any pre-configured scope."
+commands.deny = ["flush_document_session"]

@@ -3,7 +3,7 @@
   "identifier": "plugin-updates",
   "description": "Allow only the main ChemDraft window to check and download allowlisted plugin releases.",
   "windows": [
-    "main"
+    "main", "doc-*"
   ],
   "permissions": [
     {
@@ -11,6 +11,9 @@
       "allow": [
         {
           "url": "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases/latest"
+        },
+        {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases?per_page=20"
         },
         {
           "url": "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/*/nmr-predictor-*.zip"
@@ -22,6 +25,9 @@
           "url": "https://api.github.com/repos/jgassens/ChemDraft-OPSIN-Plugin/releases/latest"
         },
         {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-OPSIN-Plugin/releases?per_page=20"
+        },
+        {
           "url": "https://github.com/jgassens/ChemDraft-OPSIN-Plugin/releases/download/*/opsin-name-to-structure-*.zip"
         },
         {
@@ -31,6 +37,9 @@
           "url": "https://api.github.com/repos/jgassens/ChemDraft-MolScribe-Plugin/releases/latest"
         },
         {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-MolScribe-Plugin/releases?per_page=20"
+        },
+        {
           "url": "https://github.com/jgassens/ChemDraft-MolScribe-Plugin/releases/download/*/molscribe-ocsr-*.zip"
         },
         {
@@ -38,6 +47,9 @@
         },
         {
           "url": "https://api.github.com/repos/jgassens/ChemDraft-Orthonym-Plugin/releases/latest"
+        },
+        {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-Orthonym-Plugin/releases?per_page=20"
         },
         {
           "url": "https://github.com/jgassens/ChemDraft-Orthonym-Plugin/releases/download/*/orthonym-naming-*.zip"

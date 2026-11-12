@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { DIALOG_PREVIEW_MAX_BYTES, parseDialogMessage, type DialogMessage, type DialogRegistration, type DialogCloseReason } from "./dialogProtocol";
+import { parseDialogLabel } from "./dialogLabels";
 
 /** Only the per-invoke IPC channel supplies these deliveries; never subscribe to the event bus. */
 export interface DialogDelivery { senderWindowId: string; windowLabel: string; message: unknown }
@@ -12,6 +13,7 @@ export interface DialogTransport {
 // Keep in step with Rust: larger JSON enters Tauri's app-wide fetch queue.
 const PREVIEW_CHUNK_TEXT_BYTES = 7168;
 const PREVIEW_CHANNEL_BYTES = 8191;
+const hostOwners = new Map<string, { ownerWindowId: string }>();
 let ownerHandler: ((delivery: DialogDelivery) => void) | undefined;
 export const nativeDialogTransport: DialogTransport = {
   subscribe: async handler => {
@@ -31,6 +33,8 @@ export const nativeDialogTransport: DialogTransport = {
 /** Rust authenticates the calling window before retaining this channel or replaying a snapshot. */
 export async function subscribeDialogHost(hostId: string, handler: (message: DialogMessage) => void): Promise<() => void> {
   let active = true;
+  let registeredLabel: string | undefined;
+  let authority: { ownerWindowId: string } | undefined;
   const channel = new Channel<DialogDelivery | { previewChunk: { requestId: string; index: number; total: number; text: string } }>();
   let partial: { id: string; total: number; next: number; text: string } | undefined;
   channel.onmessage = delivery => {
@@ -49,19 +53,32 @@ export async function subscribeDialogHost(hostId: string, handler: (message: Dia
       partial = undefined;
       try { delivery = JSON.parse(serialized) as DialogDelivery; } catch { return; }
       if (!delivery || typeof delivery !== "object" || Array.isArray(delivery) || "previewChunk" in delivery) return;
-      const preview = parseDialogMessage(delivery.message);
+      const preview = parseDialogMessage(delivery.message, parseDialogLabel(delivery.windowLabel)?.ownerWindowId);
       if (!preview || preview.requestId !== requestId || preview.type !== "result" || preview.data.status !== "preview") return;
     }
-    const message = parseDialogMessage(delivery.message);
-    if (active && message && delivery.senderWindowId === message.ownerWindowId) handler(message);
+    // This envelope arrived only on the channel registered by Rust for this native dialog.
+    // The label carries the owner; a dialog route itself deliberately contains no document id.
+    const label = parseDialogLabel(delivery.windowLabel);
+    if (!label || registeredLabel !== undefined && delivery.windowLabel !== registeredLabel) return;
+    const message = parseDialogMessage(delivery.message, label.ownerWindowId);
+    if (active && message && message.dialogKind === label.kind && delivery.senderWindowId === message.ownerWindowId) {
+      registeredLabel = delivery.windowLabel;
+      authority ??= { ownerWindowId: message.ownerWindowId };
+      hostOwners.set(hostId, authority);
+      handler(message);
+    }
   };
-  const stop = () => { active = false; partial = undefined; };
+  const stop = () => {
+    active = false; partial = undefined;
+    if (authority && hostOwners.get(hostId) === authority) hostOwners.delete(hostId);
+  };
   try {
     await invoke("dialog_request", { hostId, protocolVersion: 1, requestId: crypto.randomUUID(), channel });
     return stop;
   } catch (error) { stop(); throw error; }
 }
 export async function sendDialogMessage(hostId: string, message: DialogMessage): Promise<void> {
-  if (!parseDialogMessage(message)) throw new Error("Invalid dialog message");
+  const ownerWindowId = hostOwners.get(hostId)?.ownerWindowId;
+  if (!ownerWindowId || !parseDialogMessage(message, ownerWindowId)) throw new Error("Invalid dialog message");
   await invoke("dialog_send", { hostId, message });
 }

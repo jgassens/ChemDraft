@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { currentPaletteTarget } from "./paletteTarget";
 import { objectCustomColorCommandId } from "../commands";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -85,9 +86,10 @@ describe("window-manager palette preview transport", () => {
     await sendPaletteCommandCommit("molecule.structure.bondLength:96");
     await sendPaletteCommandCancel("palette.preview.cancel");
 
-    expect(preview).toHaveBeenCalledWith("molecule.structure.bondLength:96");
-    expect(commit).toHaveBeenCalledWith("molecule.structure.bondLength:96");
-    expect(cancel).toHaveBeenCalledWith("palette.preview.cancel");
+    // A3 carries the captured document target alongside the command on both transports.
+    expect(preview).toHaveBeenCalledExactlyOnceWith("molecule.structure.bondLength:96", currentPaletteTarget());
+    expect(commit).toHaveBeenCalledExactlyOnceWith("molecule.structure.bondLength:96", currentPaletteTarget());
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel", currentPaletteTarget());
 
     unlistenPreview();
     unlistenCommit();
@@ -120,7 +122,7 @@ describe("window-manager palette preview transport", () => {
       const forward = sendPaletteCommand(command, { preserveInputFocus: true });
       await started;
       expect(native.invoke).toHaveBeenCalledExactlyOnceWith("route_toolset_command", {
-        commandId: "molecule.structure.bondLength:31", commit: true
+        commandId: "molecule.structure.bondLength:31", target: currentPaletteTarget(), commit: true
       });
       release();
       await Promise.all([commit, forward]);
@@ -139,9 +141,9 @@ describe("window-manager palette preview transport", () => {
     await sendPaletteCommandCancel("palette.preview.cancel");
 
     expect(tauriEventBus.emit.mock.calls).toEqual([
-      ["chemdraft://palette-command-preview", { commandId }],
-      ["chemdraft://palette-command-commit", { commandId }],
-      ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel" }]
+      ["chemdraft://palette-command-preview", { commandId, target: currentPaletteTarget() }],
+      ["chemdraft://palette-command-commit", { commandId, target: currentPaletteTarget() }],
+      ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel", target: currentPaletteTarget() }]
     ]);
     expect(native.invoke).not.toHaveBeenCalled();
   });
@@ -197,8 +199,8 @@ describe("window-manager palette preview transport", () => {
     reject(new Error("Event delivery failed"));
     await Promise.all([rejection, settle, forward]);
     expect(native.invoke.mock.calls).toEqual([
-      ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", commit: true }],
-      ["route_toolset_command", { commandId: "document.nextTab" }]
+      ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", target: currentPaletteTarget(), commit: true }],
+      ["route_toolset_command", { commandId: "document.nextTab", target: currentPaletteTarget() }]
     ]);
   });
 
@@ -229,9 +231,9 @@ describe("window-manager palette preview transport", () => {
       await Promise.all([settle, forward]);
       await sendPaletteCommand("document.save");
       expect(native.invoke.mock.calls).toEqual([
-        ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", commit: true }],
-        ["route_toolset_command", { commandId: "document.nextTab" }],
-        ["route_toolset_command", { commandId: "document.save" }]
+        ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", target: currentPaletteTarget(), commit: true }],
+        ["route_toolset_command", { commandId: "document.nextTab", target: currentPaletteTarget() }],
+        ["route_toolset_command", { commandId: "document.save", target: currentPaletteTarget() }]
       ]);
     } finally {
       // The emit stays unresolved through every assertion; release only for test isolation.
@@ -263,10 +265,11 @@ describe("window-manager palette preview transport", () => {
 
     expect(handler).toHaveBeenCalledTimes(2);
     expect(handler).toHaveBeenNthCalledWith(1, {
+      target: currentPaletteTarget(),
       toolsetId: "core.main",
       edit: { kind: "addSpacer", groupId: "core.main.selection", index: 0 }
     });
-    expect(handler).toHaveBeenNthCalledWith(2, { toolsetId: "core.main", edit: { kind: "exitCustomize" } });
+    expect(handler).toHaveBeenNthCalledWith(2, { target: currentPaletteTarget(), toolsetId: "core.main", edit: { kind: "exitCustomize" } });
 
     unlisten();
   });
@@ -297,7 +300,7 @@ describe("window-manager palette preview transport", () => {
 
     await broadcastToolsetCustomizeMode({ toolsetId: "core.main", active: true });
 
-    expect(handler).toHaveBeenCalledWith({ toolsetId: "core.main", active: true });
+    expect(handler).toHaveBeenCalledWith({ target: currentPaletteTarget(), toolsetId: "core.main", active: true });
 
     unlisten();
   });

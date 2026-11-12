@@ -1,12 +1,15 @@
+import { useDialogContentReady } from "./dialogContentFit";
 import { useEffect, useRef } from "react";
 import { detectDialogPlatform, type DialogPlatform, type ToolInstallAction, type ToolInstallSnapshot } from "./dialogProtocol";
 
 const formatBytes = (bytes: number) => bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
 
-export function ToolInstallForm({ snapshot, onAction, busy = false, error, platform = detectDialogPlatform() }: {
+export function ToolInstallForm({ snapshot, onAction, onReady, busy = false, error, platform = detectDialogPlatform() }: {
+  onReady?(element: HTMLElement): void;
   snapshot: ToolInstallSnapshot; onAction(action: ToolInstallAction): void;
   busy?: boolean; error?: string; platform?: DialogPlatform;
 }) {
+  const root = useDialogContentReady<HTMLElement>(onReady);
   const close = useRef<HTMLButtonElement>(null);
   useEffect(() => { close.current?.focus(); }, []);
   useEffect(() => {
@@ -22,7 +25,8 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
   const { state } = snapshot;
   const needsDownload = snapshot.requiredDiskBytes > 0 && state.status !== "installed";
   const intent = snapshot.intent ?? (needsDownload ? "download" : "use");
-  return <section role="dialog" aria-label={snapshot.title} style={{ padding: 20 }}>
+  return <section ref={root} className="cd-dialog-fit cd-install-form" role="dialog" aria-label={snapshot.title} style={{ padding: 20, boxSizing: "border-box" }}>
+    <div className="cd-dialog-fit-body">
     <h2>{intent === "update" ? `Update ${snapshot.toolName}` : snapshot.toolName}</h2>
     <p>Requested by {snapshot.pluginName} ({snapshot.pluginId})</p>
     {state.status === "notInstalled" ? <p>Download from {snapshot.publisher}: version {snapshot.version}, from {snapshot.downloadHost}, {formatBytes(snapshot.downloadBytes)}.</p> : null}
@@ -37,7 +41,8 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
     {state.status === "failed" ? <p role="alert">{state.message}</p> : null}
     {state.status === "broken" ? <p role="alert">{state.detail}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
-    <div className="cd-page-size-buttons">
+    </div>
+    <div className="cd-page-size-buttons cd-dialog-fit-footer">
       {snapshot.buttons.includes("install") ? <button type="button" disabled={busy} onClick={() => onAction("install")}>{intent === "update" ? "Update" : "Install"}</button> : null}
       {snapshot.buttons.includes("allow") ? <button type="button" disabled={busy} onClick={() => onAction("allow")}>{intent === "update" ? "Update" : "Allow"}</button> : null}
       {snapshot.buttons.includes("cancelInstall") ? <button type="button" onClick={() => onAction("cancelInstall")}>Cancel installation</button> : null}

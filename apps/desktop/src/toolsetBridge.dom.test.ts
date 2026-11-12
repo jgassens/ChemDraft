@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
@@ -170,14 +171,14 @@ describe("toolset bridge interactions", () => {
     await act(async () => { routeCommand("document.new"); });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-template-id="beta-cyclodextrin"]')!.click(); });
     expect(container.querySelector('.page [data-object-id^="mol_template"]')).toBeNull();
-    await act(async () => { routeCommand("document.activateTab.initial"); });
+    await act(async () => { routeCommand(`document.activateTab.${initialDocumentTabId()}`); });
     expect(container.querySelector('.page [data-object-id^="mol_template"]')).not.toBeNull();
     expect(container.querySelector('.cd-template-browser [role="dialog"]')).not.toBeNull();
     act(() => container.querySelector<HTMLElement>(".canvas-region")!.focus());
     await act(async () => { routeCommand("edit.undo"); });
     expect(container.querySelector('.page [data-object-id^="mol_template"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Insert β-Cyclodextrin");
-    await act(async () => { routeCommand("document.closeTab.initial"); });
+    await act(async () => { routeCommand(`document.closeTab.${initialDocumentTabId()}`); });
     await act(async () => { [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Don't Save")!.click(); });
     expect(container.querySelector('.cd-template-browser')).toBeNull();
   }, 20_000);

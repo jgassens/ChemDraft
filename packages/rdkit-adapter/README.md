@@ -7,6 +7,12 @@ ETKDGv3 conformers run on the vendored, custom RDKit MinimalLib WebAssembly buil
 owned by `@chemdraft/analysis-core`. It is an engine adapter, not a document or UI
 package, as required by AGENTS.md §6 Package boundaries.
 
+Unknown/query bond orders are outside the analysis contract: the engine's JSON evidence is checked
+before composition or descriptor calculation. Every requested method returns `unsupported` with
+`structure.unknown_bond_order` and no result payload, including formula, average/exact mass and
+identifiers. The legacy adapter and CLI/MCP analysis share this behavior; identifier export also
+declines. Known bonds, including aromatic and coordination bonds, keep their existing behavior.
+
 ## Entry points
 
 | Import | Exports and intended caller |

@@ -3,7 +3,7 @@
   "identifier": "external-tools",
   "description": "External tool management and execution for the document window.",
   "windows": [
-    "main"
+    "main", "doc-*"
   ],
   "permissions": [
     "allow-external-tool-status",

@@ -1,5 +1,7 @@
 import { adoptDerivedDocument, isEngineDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { getAssistantHistoryPort, type AssistantHistoryPort } from "./historyPort";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { PageEnlargementConsent } from "../pageEnlargement";
 
 export interface BeginAssistantTransaction {
   pluginId: string;
@@ -20,6 +22,7 @@ interface Transaction extends BeginAssistantTransaction {
   ended: boolean;
   interrupted: boolean;
   after?: WeakRef<ChemDraftDocument>;
+  pageConsent?: PageEnlargementConsent;
 }
 
 export interface AssistantTransactionResult {
@@ -72,13 +75,26 @@ export class AssistantTransactions {
       (tabId === undefined || tx.tabId === tabId))?.[0];
   }
 
+  /** The later tab hand-off must refuse a move until its Send-bound request ends. */
+  hasRunningForTab(tabId: string): boolean {
+    return [...this.transactions.values()].some(transaction => transaction.tabId === tabId && !transaction.ended);
+  }
+
+  /** Tool calls and direct documents.applyPatch writes share the request's single question. */
+  pageEnlargementConsent(txId: string, platform?: ShortcutPlatform): PageEnlargementConsent {
+    const tx = this.running(txId);
+    return tx.pageConsent ??= new PageEnlargementConsent(platform);
+  }
+
   /** Call only after the host has validated the patch and fixed write scope. No tool is retained. */
-  writeAssistantTransaction(txId: string, after: ChemDraftDocument, touchedIds: readonly string[] = []): void {
+  writeAssistantTransaction(txId: string, after: ChemDraftDocument, touchedIds: readonly string[] = [],
+    selectionDocument: ChemDraftDocument = after): void {
     const tx = this.running(txId);
     const current = this.document(tx.tabId);
     if (after === current) return;
     const previous = new Map(current.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
-    for (const object of after.pages.flatMap(page => page.objects)) {
+    // Host page translation moves unrelated content without making it assistant-selected.
+    for (const object of selectionDocument.pages.flatMap(page => page.objects)) {
       const before = previous.get(object.id);
       if (before !== object && JSON.stringify(before) !== JSON.stringify(object)) tx.touched.add(object.id);
     }
@@ -103,12 +119,24 @@ export class AssistantTransactions {
       this.port.select(tx.tabId, selected, tx.label);
       tx.after = new WeakRef(this.document(tx.tabId));
     }
+    return this.finish(tx, selected);
+  }
+
+  /** A closed or replaced drawing has no history/selection left for this request to amend. */
+  cancelAssistantTransaction(txId: string): AssistantTransactionResult {
+    const tx = this.running(txId);
+    tx.openEntry = false;
+    tx.after = undefined;
+    return this.finish(tx, []);
+  }
+
+  private finish(tx: Transaction, touchedIds: string[]): AssistantTransactionResult {
     tx.ended = true;
     tx.snapshot = undefined;
     if (![...this.transactions.values()].some(candidate => !candidate.ended)) {
       this.unsubscribe?.(); this.unsubscribe = undefined;
     }
-    return { split: tx.split, touchedIds: selected };
+    return { split: tx.split, touchedIds };
   }
 
   undoOwnTransaction(txId: string): boolean {

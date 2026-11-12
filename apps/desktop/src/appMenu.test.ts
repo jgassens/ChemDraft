@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
+import { NativeStylePresets } from "@chemdraft/chem-core";
 
 import {
   buildAppMenuModel,
@@ -16,6 +17,7 @@ import {
 } from "./appMenu";
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
+import { nativeStylePresetCommandId } from "./commands";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -59,6 +61,22 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
+    const context = { ...EMPTY_CONTEXT, platform };
+    const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
+    const aliases: AppMenuCommand[] = ["first", "second"].map(name => ({
+      kind: "command", id: `menu.test.${name}`, commandId: `plugin.test.${name}`,
+      label: name, enabled: true, pluginContributed: true
+    }));
+    const model = buildAppMenuModel({ ...context, pluginMenuItems: aliases.map(command => ({ location: "structure", command })) });
+    const structure = model.find(section => section.id === "structure")!;
+    expect(base.items.slice(-NativeStylePresets.length)).toEqual(NativeStylePresets.map(preset =>
+      expect.objectContaining({ kind: "command", commandId: nativeStylePresetCommandId(preset.id) })));
+    expect(structure.items.slice(0, base.items.length)).toEqual(base.items);
+    expect(structure.items.slice(base.items.length)).toEqual([expect.objectContaining({ kind: "separator" }), ...aliases]);
+    expect(nativeRoutedCommandIds(model)).toEqual(nativeRoutedCommandIds(buildAppMenuModel(context)));
+  });
+
   it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
@@ -122,7 +140,7 @@ describe("app menu model", () => {
     const install = source.split("fn install_app_menu<R: Runtime>")[1]?.split("fn reinstall_app_menu")[0];
     expect(install).toContain('#[cfg(target_os = "macos")]\n    app.set_menu(menu)?;');
     expect(install).toContain('#[cfg(not(target_os = "macos"))]');
-    expect(install).toContain("app.get_webview_window(MAIN_WINDOW_LABEL)");
+    expect(install).toContain("active_document_webview(app)");
     expect(install).toContain("window.set_menu(menu)?;");
   });
 
@@ -240,6 +258,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"
@@ -309,6 +328,7 @@ describe("app menu model", () => {
       "Insert",
       "View",
       "Structure",
+      "Tools",
       "Analyze",
       "Plugins",
       "Help"

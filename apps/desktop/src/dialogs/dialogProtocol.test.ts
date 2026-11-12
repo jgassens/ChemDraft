@@ -6,6 +6,21 @@ import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validat
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
 describe("dialog contract", () => {
+  it("validates a captured document owner and refuses cross-owner or utility envelopes", () => {
+    const message = { ...snapshot(), ownerWindowId: "doc-other" };
+    expect(parseDialogMessage(message, "doc-other")).toEqual(message);
+    expect(parseDialogMessage(message, "main")).toBeUndefined();
+    expect(parseDialogMessage(snapshot(), "doc-other")).toBeUndefined();
+    for (const utility of ["preferences", "toolset-core-main", "dialog-main-pageSize-1", "runtime", "doc-a\n"]) {
+      expect(parseDialogMessage({ ...message, ownerWindowId: utility }, utility)).toBeUndefined();
+    }
+    expect(validateDialogDelivery(message, "doc-other", message, "dialog-doc-other-pageSize-1")).toEqual(message);
+    expect(validateDialogDelivery(message, "main", message, "dialog-doc-other-pageSize-1")).toBeUndefined();
+    expect(validateDialogDelivery(message, "doc-other", message, "dialog-main-pageSize-1")).toBeUndefined();
+    const other = { ...message, ownerWindowId: "doc-b" };
+    expect(parseDialogMessage(other, "doc-b")).toEqual(other);
+    expect(validateDialogDelivery(other, "doc-b", message, "dialog-doc-other-pageSize-1")).toBeUndefined();
+  });
   it("accepts only the registered sender and current envelope", () => {
     const s = snapshot();
     const ready: DialogMessage = { ...s, type: "ready", data: {} };
@@ -157,4 +172,16 @@ it("validates the template picker snapshot and its restricted actions", () => {
     expect(parseDialogMessage({ ...message, type: "action", data })).toBeUndefined();
   }
   expect(parseDialogMessage({ ...message, type: "result", data: { status: "inserted" } })).toBeDefined();
+});
+
+it("validates bounded conditions drafts and rejects extra fields and mismatched actions",()=>{
+  const draft={side:"above",spans:[{text:"K",script:"normal"},{text:"2",script:"subscript"},{text:"CO3",script:"normal"}]};
+  const conditions={...snapshot(),dialogKind:"reactionConditions",data:{title:"Drawing",arrowId:"arrow",draft}};
+  expect(parseDialogMessage(conditions)).toEqual(conditions);
+  expect(parseDialogMessage({...conditions,type:"action",data:{action:"apply",draft}})).toBeDefined();
+  for(const data of [{action:"apply",width:1,height:1,unit:"inch"},{action:"apply",draft:{...draft,path:"private"}},
+    {action:"apply",draft:{side:"above",spans:[{text:"x",script:"html"}]}},
+    {action:"apply",draft:{side:"above",spans:[{text:"x".repeat(2001),script:"normal"}]}},
+    {action:"cancel",draft}])
+    expect(parseDialogMessage({...conditions,type:"action",data})).toBeUndefined();
 });

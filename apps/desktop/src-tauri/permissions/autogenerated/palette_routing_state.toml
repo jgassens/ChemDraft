@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-palette-routing-state"
+description = "Enables the palette_routing_state command without any pre-configured scope."
+commands.allow = ["palette_routing_state"]
+
+[[permission]]
+identifier = "deny-palette-routing-state"
+description = "Denies the palette_routing_state command without any pre-configured scope."
+commands.deny = ["palette_routing_state"]

@@ -4,6 +4,7 @@ import type {
 } from "@chemdraft/plugin-api";
 
 export interface OpenPluginTextPrompt {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -29,7 +30,8 @@ export class PluginPromptTextController {
   promptText(
     plugin: { id: string; name: string },
     request: NormalizedPluginPromptTextRequest,
-    signal: AbortSignal
+    signal: AbortSignal,
+    windowId = "main"
   ): Promise<PluginPromptTextResult> {
     if (signal.aborted) {
       return Promise.resolve({ status: "cancelled" });
@@ -37,6 +39,7 @@ export class PluginPromptTextController {
     return new Promise<PluginPromptTextResult>((resolve) => {
       const prompt: PendingPluginTextPrompt = {
         id: this.nextId++,
+        ...(windowId === "main" ? {} : { windowId }),
         pluginId: plugin.id,
         pluginName: plugin.name,
         request,
@@ -48,6 +51,10 @@ export class PluginPromptTextController {
       signal.addEventListener("abort", prompt.onAbort, { once: true });
       this.notify();
     });
+  }
+
+  closeWindow(windowId: string): void {
+    for (const prompt of [...this.pending]) if ((prompt.windowId ?? "main") === windowId) this.settle(prompt, { status: "cancelled" });
   }
 
   getOpenPrompt(): OpenPluginTextPrompt | undefined {

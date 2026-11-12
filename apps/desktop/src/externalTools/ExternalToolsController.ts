@@ -1,3 +1,5 @@
+import type { PluginInvocationDocumentProvider } from "@chemdraft/plugin-host";
+import type { RuntimeDialogTarget } from "../plugins/runtimeDialogProtocol";
 import { PluginExternalToolConsentListSchema, PluginExternalToolStatusSchema } from "@chemdraft/plugin-api";
 import type {
   PluginExternalToolCancelRequest, PluginExternalToolClearConversationRequest, PluginExternalToolInstallRequest,
@@ -9,8 +11,8 @@ import type { ExternalToolConsent, ExternalToolsEngine, ExternalToolStatus } fro
 import type { ExternalToolPlugin } from "./toolInstallSnapshot";
 
 export interface ExternalToolsPresenter {
-  consent(plugin: ExternalToolPlugin, status: ExternalToolStatus, signal: AbortSignal): Promise<"granted" | "declined">;
-  install(plugin: ExternalToolPlugin, status: ExternalToolStatus, signal: AbortSignal): Promise<ExternalToolStatus>;
+  consent(plugin: ExternalToolPlugin, status: ExternalToolStatus, signal: AbortSignal, target?: RuntimeDialogTarget): Promise<"granted" | "declined">;
+  install(plugin: ExternalToolPlugin, status: ExternalToolStatus, signal: AbortSignal, target?: RuntimeDialogTarget): Promise<ExternalToolStatus>;
 }
 const fail = (message: string): Error => Object.assign(new Error(message), { code: message });
 
@@ -32,11 +34,12 @@ export class ExternalToolsController implements PluginHostExternalTools {
     if (!request.refresh && cached) return cached;
     const value = PluginExternalToolStatusSchema.parse(await this.engine.status(request.tool, request.refresh, plugin.id)); this.statuses.set(this.key(plugin.id, request.tool), value); return value;
   }
-  async install(plugin: ExternalToolPlugin, request: PluginExternalToolInstallRequest, signal: AbortSignal): Promise<PluginExternalToolStatus> {
+  async install(plugin: ExternalToolPlugin, request: PluginExternalToolInstallRequest, signal: AbortSignal, provider?: PluginInvocationDocumentProvider): Promise<PluginExternalToolStatus> {
+    const target = dialogTarget(provider);
     return this.withPlugin(plugin.id, async (check, lifecycle) => {
       const status = await this.current(plugin, request.tool, true, check);
       check();
-      await this.ensureConsent(plugin, status, check, lifecycle);
+      await this.ensureConsent(plugin, status, check, lifecycle, target);
       check();
       if (!this.presenter) throw fail("External-tool installation UI is unavailable.");
       const combined = new AbortController();
@@ -44,7 +47,7 @@ export class ExternalToolsController implements PluginHostExternalTools {
       for (const source of [signal, lifecycle]) source.addEventListener("abort", abort, { once: true });
       if (signal.aborted || lifecycle.aborted) abort();
       try {
-        const installed = await this.presenter.install(plugin, status, combined.signal);
+        const installed = await this.presenter.install(plugin, status, combined.signal, target);
         check();
         this.statuses.set(this.key(plugin.id, request.tool), installed);
         return installed;
@@ -60,11 +63,12 @@ export class ExternalToolsController implements PluginHostExternalTools {
       return result;
     });
   }
-  async run(plugin: ExternalToolPlugin, request: PluginExternalToolRunRequest): Promise<PluginExternalToolRunHandle> {
+  async run(plugin: ExternalToolPlugin, request: PluginExternalToolRunRequest, provider?: PluginInvocationDocumentProvider): Promise<PluginExternalToolRunHandle> {
+    const target = dialogTarget(provider);
     return this.withPlugin(plugin.id, async (check, signal) => {
       const status = await this.current(plugin, request.tool, true, check);
       check();
-      await this.ensureConsent(plugin, status, check, signal);
+      await this.ensureConsent(plugin, status, check, signal, target);
       check();
       // Rust checks session ownership and reserves it atomically with the run binding.
       const run = await this.engine.runStart({ ...request, pluginId: plugin.id }).catch((error: unknown) => {
@@ -116,7 +120,7 @@ export class ExternalToolsController implements PluginHostExternalTools {
     const value = PluginExternalToolStatusSchema.parse(await this.engine.status(tool, refresh, plugin.id));
     check(); this.statuses.set(this.key(plugin.id, tool), value); return value;
   }
-  private async ensureConsent(plugin: ExternalToolPlugin, status: ExternalToolStatus, check: () => void, signal: AbortSignal): Promise<void> {
+  private async ensureConsent(plugin: ExternalToolPlugin, status: ExternalToolStatus, check: () => void, signal: AbortSignal, target?: RuntimeDialogTarget): Promise<void> {
     const key = this.key(plugin.id, status.tool);
     if (status.consented || this.statuses.get(key)?.consented) return;
     if (status.state === "unsupported") throw fail("unsupported");
@@ -125,7 +129,7 @@ export class ExternalToolsController implements PluginHostExternalTools {
     if (existing) { await existing; check(); return; }
     const presenter = this.presenter;
     const consent = (async () => {
-      const result = await presenter.consent(plugin, status, signal);
+      const result = await presenter.consent(plugin, status, signal, target);
       check();
       if (result !== "granted") throw fail("declined");
       await this.engine.consentSet(status.tool, plugin.id, true);
@@ -138,4 +142,9 @@ export class ExternalToolsController implements PluginHostExternalTools {
   }
   private assertOwner(pluginId: string, runId: string): void { if (this.runs.get(runId) !== pluginId) throw fail("notOwner"); }
   private key(pluginId: string, tool: string): string { return `${pluginId}\0${tool}`; }
+}
+
+function dialogTarget(provider?: PluginInvocationDocumentProvider): RuntimeDialogTarget | undefined {
+  const documentKey = provider?.getDocumentKey();
+  return provider?.target && documentKey ? { ...provider.target, documentKey } : undefined;
 }

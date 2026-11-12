@@ -72,6 +72,14 @@
     "returnType": "Result<(), String>"
   },
   {
+    "file": "dialog_windows.rs",
+    "name": "preferences_ready",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, data: Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "download_diagnosis.rs",
     "name": "diagnose_download_host",
     "async": true,
@@ -204,8 +212,8 @@
     "name": "quit_after_flush",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle",
-    "returnType": "()"
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64, error: Option<String>,",
+    "returnType": "Result<(), String>"
   },
   {
     "file": "lib.rs",
@@ -236,7 +244,7 @@
     "name": "cancel_quit",
     "async": true,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, request_id: u64",
+    "parameters": "window: tauri::WebviewWindow, request_id: u64, disposition: Option<QuitPromptCancellation>,",
     "returnType": "Result<bool, String>"
   },
   {
@@ -244,7 +252,7 @@
     "name": "request_quit_after_close",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, closing_window: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -314,17 +322,25 @@
   {
     "file": "lib.rs",
     "name": "load_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, fresh_start: Option<bool>,",
     "returnType": "Result<Option<serde_json::Value>, String>"
   },
   {
     "file": "lib.rs",
     "name": "save_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value, revision: u64, incarnation: u64, flush: bool, replace_preserved: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "flush_document_session",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
     "returnType": "Result<(), String>"
   },
   {
@@ -513,10 +529,26 @@
   },
   {
     "file": "lib.rs",
+    "name": "palette_routing_state",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "palette_routing::PaletteRoutingState"
+  },
+  {
+    "file": "lib.rs",
+    "name": "publish_palette_snapshot",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, event: String, payload: serde_json::Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "route_toolset_command",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>, commit: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, target: palette_routing::PaletteTarget, preserve_input_focus: Option<bool>, commit: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -660,7 +692,7 @@
     "name": "take_pending_open_document",
     "async": false,
     "generics": "",
-    "parameters": "state: tauri::State<'_, PendingOpenDocument>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: tauri::State<'_, PendingOpenDocument>,",
     "returnType": "Result<Option<NativeOpenDocumentPayload>, String>"
   },
   {
@@ -840,6 +872,30 @@
     "returnType": "Option<String>"
   },
   {
+    "file": "runtime_broker.rs",
+    "name": "runtime_broker_connect",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, sender: String, channel: Channel<Delivery>,",
+    "returnType": "Result<String, String>"
+  },
+  {
+    "file": "runtime_broker.rs",
+    "name": "runtime_broker_send",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, sender: String, connection: String, recipient: String, chunk: Chunk,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "runtime_broker.rs",
+    "name": "runtime_broker_disconnect",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, sender: String, connection: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "screen_capture.rs",
     "name": "screen_capture_available",
     "async": false,
@@ -901,6 +957,22 @@
     "async": false,
     "generics": "",
     "parameters": "app: AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "set_structure_search_enabled",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "open_structure_search",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, site: String, smiles: String,",
     "returnType": "Result<(), String>"
   }
 ]

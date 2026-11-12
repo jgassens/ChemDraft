@@ -3,7 +3,7 @@
   "identifier": "perf-probe",
   "description": "Bridge-gated monotonic clock and bounded timing log only; no general filesystem access.",
   "windows": [
-    "main",
+    "main", "doc-*",
     "dialog-main-*"
   ],
   "permissions": [

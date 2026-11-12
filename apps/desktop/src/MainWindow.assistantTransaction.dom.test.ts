@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -57,8 +58,8 @@ describe("MainWindow assistant history port", () => {
     vi.restoreAllMocks(); vi.unstubAllGlobals();
   });
 
-  const snapshotDocument = (): ChemDraftDocument => getAssistantHistoryPort().read("initial")!;
-  const begin = () => beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "run", tabId: "initial",
+  const snapshotDocument = (): ChemDraftDocument => getAssistantHistoryPort().read(initialDocumentTabId())!;
+  const begin = () => beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "run", tabId: initialDocumentTabId(),
     label: "Draw three captions", sendSelection: snapshotDocument().selection });
   function write(tx: string, id: string) {
     const object: TextObject = { id, type: "text", x: 100, y: 100, width: 100, height: 20,
@@ -147,12 +148,12 @@ describe("MainWindow assistant history port", () => {
     await act(async () => write(tx, "assistant_two"));
     expect(window.__CHEMDRAFT_AGENT__!.snapshot().document).toEqual(active);
     expect(snapshotDocument().selection.objectIds).toEqual(["assistant_one", "assistant_two"]);
-    await menu("document.closeTab.initial");
+    await menu(`document.closeTab.${initialDocumentTabId()}`);
     const discard = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(candidate => candidate.textContent === "Don't Save");
     expect(discard).toBeDefined();
     await act(async () => { discard!.click(); });
-    expect(getAssistantHistoryPort().read("initial")).toBeUndefined();
+    expect(getAssistantHistoryPort().read(initialDocumentTabId())).toBeUndefined();
     expect(() => writeAssistantTransaction(tx, active)).toThrow(/tab is closed/);
   });
 });

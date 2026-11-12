@@ -22,6 +22,7 @@ import {
   nativeTextStyleFromObjectStyle,
   pageLayoutMatchesSize,
   parseDocument,
+  readSerializedDocument,
   redo,
   serializeDocument,
   stylePresetToObjectStyle,
@@ -299,6 +300,21 @@ describe("page crossing overrides", () => {
 });
 
 describe("page layout presets and migration", () => {
+  it("retains optional page compatibility data through native serialization without backfilling older pages", () => {
+    const document = createEmptyDocument({ now: timestamp });
+    expect(deserializeDocument(serializeDocument(document)).pages[0].compatibility).toBeUndefined();
+    document.pages[0].compatibility = { sourceFormat: "cdxml", originalId: "1", warnings: [], unknown: {
+      cdxmlPageAttributes: { BoundingBox: "0 0 1080 1440", WidthPages: "2", HeightPages: "2" },
+      cdxmlRootPageAttributes: { PrintMargins: "36 36 36 36" }, cdxmlPageNativeSetup: "source setup snapshot"
+    } };
+    // Page compatibility is absent from the released strict 1.1.1 page schema.
+    expect(deserializeDocument(serializeDocument(document))).toEqual({
+      ...document, formatVersion: "1.2.0", minAppVersion: "1.2.0"
+    });
+    const edited = applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0].id, layout: createPageLayout("a4") }, { now: timestamp });
+    expect(edited.pages[0].compatibility).toEqual(document.pages[0].compatibility);
+  });
+
   it("converts required paper presets through the 96 CSS px per inch coordinate convention", () => {
     expect(createPageLayout("letter")).toMatchObject({
       widthPx: inchesToCssPx(8.5),
@@ -640,11 +656,7 @@ describe("native document validation and serialization", () => {
     expect(serializeDocument(engineDocument)).toBe(JSON.stringify(parseDocument(engineDocument), null, 2));
   });
 
-  it("degrades an unrecognized classifier to 'unknown' instead of failing the whole document", () => {
-    // A document written by a newer build, or imported from a format with a richer vocabulary. Every
-    // one of these enums spells "unknown" as a member precisely so this case has an answer; without
-    // the degrade, one such value fails its object, its page, and the entire file — the user sees an
-    // unopenable document rather than one arrow drawn plainly.
+  it("opens an unversioned document with unknown visual classifiers, warns and preserves them for re-save", () => {
     const document = createEmptyDocument({ id: "doc_future", now: timestamp });
     const serialized = JSON.parse(serializeDocument(document)) as {
       pages: Array<{ objects: unknown[] }>;
@@ -678,12 +690,15 @@ describe("native document validation and serialization", () => {
       }
     );
 
-    const restored = deserializeDocument(JSON.stringify(serialized));
+    const { document: restored, warnings } = readSerializedDocument(JSON.stringify(serialized));
+    expect(warnings).toHaveLength(2);
+    expect(warnings.every((warning) => warning.code === "NATIVE_VISUAL_ENUM_FALLBACK")).toBe(true);
     const [arrow, bracket] = restored.pages[0].objects.slice(-2);
     expect(arrow).toMatchObject({ type: "reaction-arrow", arrowKind: "unknown" });
     expect(bracket).toMatchObject({ type: "bracket", bracketKind: "unknown" });
     // The rest of the object survives intact — the endpoints are what make it still drawable.
     expect(arrow).toMatchObject({ end: { kind: "point", point: { x: 110, y: 16 } } });
+    expect(JSON.parse(serializeDocument(restored))).toMatchObject(serialized);
   });
 
   it("accepts optional molecule bond display metadata", () => {

@@ -3,7 +3,7 @@
   "identifier": "assistant-mcp",
   "description": "Assistant MCP sessions for the document window.",
   "windows": [
-    "main"
+    "main", "doc-*"
   ],
   "permissions": [
     "allow-assistant-mcp-session-open",

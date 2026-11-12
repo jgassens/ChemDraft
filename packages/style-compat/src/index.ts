@@ -23,7 +23,7 @@ export interface ChemDrawStyleSheetImportResult {
 export function importChemDrawStyleSheet(input: Uint8Array | ArrayBuffer | string): ChemDrawStyleSheetImportResult {
   const bytes = bytesFromInput(input);
   if (!hasChemDrawStyleHeader(bytes)) {
-    throw new Error("Unsupported style sheet: expected a ChemDraw .cds header.");
+    throw new Error("Unsupported style sheet: expected a .cds header.");
   }
 
   const strings = printableStrings(bytes);
@@ -43,7 +43,7 @@ export function importChemDrawStyleSheet(input: Uint8Array | ArrayBuffer | strin
   };
   const preset = {
     id: `imported.chemdraw-cds.${slugFromName(name ?? "style")}`,
-    name: name?.replace(/\.cds$/i, "") ?? "Imported ChemDraw Style",
+    name: name?.replace(/\.cds$/i, "") ?? "Imported Style",
     source: "imported",
     sourceFormat: "chemdraw-cds",
     sourceName: name,
@@ -274,8 +274,8 @@ function chemDrawStyleSheetWarnings(decodedFields: readonly string[]): Compatibi
   return [{
     code: decodedFields.length > 0 ? "style.cds.binary_subset_decode" : "style.cds.partial_binary_decode",
     message: decodedFields.length > 0
-      ? "Imported supported ChemDraw style-sheet drawing fields; unsupported binary .cds settings were ignored."
-      : "Imported ChemDraw style-sheet identity/font metadata and applied ChemDraft-supported drawing defaults; unsupported binary .cds settings were not decoded."
+      ? "Imported supported .cds style-sheet drawing fields; unsupported binary .cds settings were ignored."
+      : "Imported .cds style-sheet identity/font metadata and applied ChemDraft-supported drawing defaults; unsupported binary .cds settings were not decoded."
   }];
 }
 

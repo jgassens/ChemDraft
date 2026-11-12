@@ -3,7 +3,7 @@
 Run 2026-10-21. This repeats the August benchmark (`openclatura-structure-to-name.md`) with the same
 corpus, the same oracle, and the same scoring, on three engines:
 
-| Engine | Licence | Pinned to | Notes |
+| Engine | License | Pinned to | Notes |
 |---|---|---|---|
 | **Orthonym 1.0.8** (`Steinbeck-Lab/Orthonym`) | MIT | tag `v1.0.8` = commit `461987b947f76e41ff0baa6c2aa19ecd79cacd0b` | PyPI wheel byte-identical to the tag's `src/orthonym` |
 | **OpenClatura 0.4.3** (`lamalab-org/openclatura`) | MIT | commit `ca79ac8e04f8cfe67f9064825da3851ef0d8f707` ("release: prepare 0.4.3", 2026-10-13) | no git tag exists; PyPI wheel byte-identical to that commit's `src/openclatura`; `main` is 5 commits later, changing only the changelog, a GIF and a website script |
@@ -198,7 +198,7 @@ Results are in `structure-to-name-data/pubchem-*.csv`.
   None of the 69 is a name that a chemist following the IUPAC rules would read as a different
   compound. Some of PubChem's own spellings are the less correct ones; `pyrazolo[5,4-d]` for
   `pyrazolo[3,4-d]` is one example.
-- **The 11 tautomer cases favour Orthonym.** PubChem's record is the tautomer it registered, for example
+- **The 11 tautomer cases favor Orthonym.** PubChem's record is the tautomer it registered, for example
   `3-methyl-1H-pyridin-2-one` for a drawn `Cc1cccnc1O`, or `7H-purine` for a drawn 9H-purine.
   Orthonym's names (`3-methylpyridin-2-ol`, `9H-purine-2,6-diamine`) describe the tautomer that was
   actually drawn.
@@ -223,7 +223,7 @@ structures, and Orthonym's wider-tier names are structurally right but often uni
 - `(3-oxo-3-phenyl-4-oxa-3λ6-thiabuta-1,3-dien-1-yl)benzene` for phenyl styryl sulfone;
 - `1,3-dioxa-2-selenapropa-1,2-diene` for selenium dioxide.
 
-OPSIN reads them all correctly, but a user would not recognise many of them.
+OPSIN reads them all correctly, but a user would not recognize many of them.
 
 ## (c) The hand-checked cases
 
@@ -257,10 +257,10 @@ Orthonym.
 nothing else. That is too little to support a claim, and a stereo-rich corpus is the first follow-up.
 
 - **No engine lost or inverted a stereodescriptor anywhere** (stereo-lost: 0 in every run).
-- R/S centres, E/Z alkenes, and (R,R), (S,S) and *meso* tartaric acid all round-trip in all four
+- R/S centers, E/Z alkenes, and (R,R), (S,S) and *meso* tartaric acid all round-trip in all four
   configurations. Orthonym uses retained names with D/L for amino acids (`D-alanine`), which OPSIN reads
   correctly.
-- **Two adversarial labels are wrong.** The structure labelled `stereo-S-ibuprofen` is (R)-ibuprofen,
+- **Two adversarial labels are wrong.** The structure labeled `stereo-S-ibuprofen` is (R)-ibuprofen,
   and `stereo-L-alanine` is D-alanine; their partners are the reverse. All four configurations, OPSIN
   and RDKit's CIP labeller agree. The ids are kept as they are, for comparability with August.
 - **Cyclohexane-1,2,3,4,5-pentol.** Every engine gives (1R,2R,3R,4S,5R), and RDKit's new CIP labeller
@@ -272,13 +272,13 @@ nothing else. That is too little to support a claim, and a stereo-rich corpus is
 - Orthonym's default tier declines the stereo ring amide (`NO_VERIFIED_PIN`). The valid tier names it
   `N-[(S)-1,2,3,4-tetrahydronaphthalen-2-yl]acetamide`.
 - Orthonym's provenance row carries a `stereo_unexpressed` flag for a name that does not state a
-  stereocentre the input has. It was never set in this run.
+  stereocenter the input has. It was never set in this run.
 
 ## Where Orthonym's own check and the oracle disagree
 
 Orthonym's validation compares the **full standard InChIKey** of the input with that of OPSIN's reading
 of the name (`_self_consistency_full_key` in `namer.py`). That is looser than this oracle's exact
-canonical SMILES. The InChIKey normalises mobile hydrogens and charge-separated forms, so Orthonym
+canonical SMILES. The InChIKey normalizes mobile hydrogens and charge-separated forms, so Orthonym
 accepts a name for another resonance form, tautomer or protonation state of the drawn structure. Every
 disagreement in the run comes from that difference or from an OPSIN flag:
 
@@ -339,13 +339,13 @@ What the plugin must enforce, whatever Orthonym says:
    cyclohexanepentol shows this matters: rule 1 cannot verify a name that OPSIN cannot read, so such a
    name must be declined, not trusted.
 3. **Isotopes and radicals follow from rule 1.** They are named only when the round trip reproduces the
-   label or the unpaired electron exactly. OpenClatura would fail this on every labelled compound.
+   label or the unpaired electron exactly. OpenClatura would fail this on every labeled compound.
 4. **Declines carry Orthonym's reason** (`limit_code`: `UNSUPPORTED_ELEMENT`, `UNNAMEABLE`, and so on),
    per §8: unavailable and not-asked-for must look different.
 5. **Stereo:** make no stereo claim beyond these 11 cases until a stereo corpus has been run through the
    same harness.
 
-Costs and licence issues to settle before building it:
+Costs and license issues to settle before building it:
 
 - **Runtime.** Orthonym is Python with exact pins (`rdkit==2026.3.5`, `jpype1==1.7.1`, `lxml==6.1.3`), an
   in-process JVM through JPype, and two jars. It is about 15 MB of Python (`namer.py` alone is 11,500
@@ -353,13 +353,13 @@ Costs and licence issues to settle before building it:
   - The model for that is the MolScribe OCSR plugin: installed on explicit user action, run as a native
     process, `native.execute` declared (§4.1).
   - It can reuse ChemDraft's vendored JRE and OPSIN jar, as this run did.
-- **Licences.**
+- **Licenses.**
   - Orthonym, OpenClatura and OPSIN are MIT.
   - **The OPSIN jar bundles jna-inchi (LGPL-2.1) and JNA.** `jna-inchi-core` and its `libjnainchi`
     natives are inside `opsin-cli-2.9.0.jar`. ChemDraft already ships this jar, and the dependency table
     in `apps/desktop/src-tauri/resources/opsin/BUILD.md` lists six permissive libraries and omits
     jna-inchi. That table and `NOTICE` should be checked regardless of this plugin.
-  - **The centres jar (CIP labelling) is mixed.** centres itself is BSD-2-Clause by its LICENSE file,
+  - **The centres jar (CIP labeling) is mixed.** centres itself is BSD-2-Clause by its LICENSE file,
     although its Maven POM says LGPL-3.0. The shaded jar bundles **CDK 2.9 (LGPL-2.1-or-later)** and
     **javax.vecmath (GPL-2.0 with the Classpath Exception)**.
   - Orthonym ships neither jar and downloads them, checksum-pinned, on first use. A ChemDraft plugin
@@ -390,5 +390,5 @@ against August's 12 / 1 / 9. The difference is hydrogen counting.
 
 A secondary score with OPSIN reading radicals (`bench_roundtrip.py --allow-radicals`) changes two
 things. Orthonym's 2 radical names become round-trips. Three of OpenClatura 0.2.0's unparseable names
-become MISNAMED: H-phosphonates named `…phosphoryl…`, which OPSIN `-r` reads as P-centred radicals.
+become MISNAMED: H-phosphonates named `…phosphoryl…`, which OPSIN `-r` reads as P-centered radicals.
 Nothing else changes.

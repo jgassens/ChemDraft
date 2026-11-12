@@ -1,3 +1,4 @@
+import { useDialogContentReady } from "./dialogContentFit";
 import { useRef, type KeyboardEvent } from "react";
 import { detectDialogPlatform, validPageSize, type DialogPlatform, type PageSize, type PageUnit } from "./dialogProtocol";
 
@@ -15,11 +16,13 @@ export function convertPageSizeDraft(draft: PageSizeDraft, unit: PageUnit): Page
   return { width: convert(draft.width), height: convert(draft.height), unit };
 }
 /** Shared body for the native route and browser-only in-page fallback. Holds no document state. */
-export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy = false, error,
+export function PageSizeForm({ state, title, onReady, onChange, onCancel, onApply, busy = false, error,
   platform = detectDialogPlatform() }: {
+  onReady?(element: HTMLElement): void;
   state: PageSizeDraft; title: string; onChange(next: PageSizeDraft): void; onCancel(): void;
   onApply(size: PageSize): void; busy?: boolean; error?: string; platform?: DialogPlatform;
 }) {
+  const root = useDialogContentReady<HTMLElement>(onReady);
   const composing = useRef(false);
   const size = pageSizeFromDraft(state);
   const submit = () => { if (size && !busy && !composing.current) onApply(size); };
@@ -34,9 +37,9 @@ export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy =
       event.preventDefault();
     }
   };
-  return <section className="cd-page-size-form" aria-label="Custom page size" role="dialog" aria-busy={busy}
+  return <section ref={root} className="cd-page-size-form cd-dialog-fit" aria-label="Custom page size" role="dialog" aria-busy={busy}
     onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>
-    <h2>Custom Page Size</h2>
+    <div className="cd-dialog-fit-body"><h2>Custom Page Size</h2>
     <p>Drawing: <strong>{title}</strong></p>
     <p>Enter the page width and height. Margins are kept from the current page.</p>
     <div className="cd-page-size-fields">
@@ -45,13 +48,14 @@ export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy =
       <span aria-hidden="true">×</span>
       <label>Height<input type="number" min="0" max="100000" step="any" value={state.height}
         onChange={e => onChange({ ...state, height: e.target.value })} aria-describedby={!size ? "page-size-error" : undefined} /></label>
-      <label>Units<select value={state.unit} onChange={e => onChange(convertPageSizeDraft(state, e.target.value as PageUnit))}>
+      <label>Units<select className="native-dialog-panel-select" value={state.unit} onChange={e => onChange(convertPageSizeDraft(state, e.target.value as PageUnit))}>
         <option value="inch">Inches</option><option value="mm">Millimeters</option>
         {state.unit === "css-px" ? <option value="css-px">Pixels</option> : null}
       </select></label>
     </div>
     <p id="page-size-error" role="status">{error ?? (!size ? "Enter positive width and height (at most 100000)." : "")}</p>
-    <div className="cd-page-size-buttons"><button type="button" onClick={onCancel}>Cancel</button>
+    </div>
+    <div className="cd-page-size-buttons cd-dialog-fit-footer"><button type="button" onClick={onCancel}>Cancel</button>
       <button type="button" disabled={!size || busy} onClick={submit}>Apply</button></div>
   </section>;
 }

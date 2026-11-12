@@ -108,7 +108,7 @@ The installed host's PluginApiVersion is ${PluginApiVersion}. Set your new manif
 
 Declare the fewest permissions. The SDK's dangerous permissions are: ${dangerousPluginPermissions.map(permission => `\`${permission}\``).join(", ")}. A declared permission is not an unrestricted capability: use only the permission-gated host APIs available in the command context.
 
-Documents change only through patches during your plugin's own command. Each applyPatch call (including a batch) is one labelled undo entry. Change or remove only objects selected when the command started, plus objects that command inserted; leave changed objects selected. Assistant requests group writes into one undo entry. The authoring contract follows.
+Documents change only through patches during your plugin's own command. Each applyPatch call (including a batch) is one labeled undo entry. Change or remove only objects selected when the command started, plus objects that command inserted; leave changed objects selected. Assistant requests group writes into one undo entry. The authoring contract follows.
 
 ${rules}
 

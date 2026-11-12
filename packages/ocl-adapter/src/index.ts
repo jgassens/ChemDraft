@@ -289,7 +289,7 @@ function rewriteOriginalV2000Depiction(molfile: string, depiction: Depiction2D):
     if (!inputAtoms) throw new Error("Input V2000 structure contains an invalid bond line.");
     const bond = depictionBondByPair.get(numericAtomPairKey(inputAtoms.from, inputAtoms.to));
     if (!bond) throw new Error("OpenChemLib omitted a bond from its 2D depiction.");
-    const stereoCode = bond.wedge === "wedge" ? 1 : bond.wedge === "hashed" ? 6 : 0;
+    const stereoCode = bond.wedge === "wedge" ? 1 : bond.wedge === "hashed" ? 6 : bond.wedge === "wavy" ? 4 : 0;
     const originalStereoCode = Number.parseInt(line.slice(9, 12).trim(), 10) || 0;
     const from = bond.wedge ? bond.from : inputAtoms.from;
     const to = bond.wedge ? bond.to : inputAtoms.to;
@@ -309,12 +309,34 @@ function rewriteOriginalV2000Depiction(molfile: string, depiction: Depiction2D):
   ].join("\n");
 }
 
-/**
- * OCL compacts ordinary explicit hydrogens to the end while parsing a molfile. In doing so it may
- * move a non-hydrogen atom into the vacated slot as well, so reading index `i` directly from the
- * parsed molecule is not an input-order contract. Keep OCL's own parser-provided map beside every
- * parsed molecule and use it whenever values cross the adapter boundary by atom index.
- */
+/** OCL's MOL reader interprets single-bond either as an up bond. Read the explicit
+ * unknown centres from the source, including V3000's possibly nonsequential atom ids. */
+function molfileWavyBonds(molfile: string): { from: number; to: number }[] {
+  const blocks = v2000Blocks(molfile);
+  if (blocks) return blocks.bondLines.flatMap((line) => {
+    const atoms = v2000BondAtomIndices(line);
+    return atoms && Number(line.slice(6, 9)) === 1 && Number(line.slice(9, 12)) === 4 ? [atoms] : [];
+  });
+  const atomIds = new Map<string, number>();
+  const result: { from: number; to: number }[] = [];
+  let section = "";
+  const logical = molfile.replace(/-\r?\nM  V30 /g, "");
+  for (const line of logical.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields[0] !== "M" || fields[1] !== "V30") continue;
+    if (fields[2] === "BEGIN") { section = fields[3]!; continue; }
+    if (fields[2] === "END") { section = ""; continue; }
+    if (section === "ATOM") atomIds.set(fields[2]!, atomIds.size);
+    if (section === "BOND" && fields[3] === "1" && fields.includes("CFG=2")) {
+      const from = atomIds.get(fields[4]!), to = atomIds.get(fields[5]!);
+      if (from !== undefined && to !== undefined) result.push({ from, to });
+    }
+  }
+  return result;
+}
+
+/** OCL compacts explicit H and may move another atom into its slot. Keep the parser's map
+ * whenever values cross the adapter boundary; explicit unknown configuration overrides wedges. */
 function parseMolfileWithInputOrder(molfile: string): InputOrderedOclMolecule {
   const parsed = OCL.Molecule.fromMolfileWithAtomMap(molfile);
   const molecule = parsed.molecule as OclMolecule;
@@ -340,6 +362,19 @@ function parseMolfileWithInputOrder(molfile: string): InputOrderedOclMolecule {
     throw new Error("OpenChemLib could not preserve every molfile atom index.");
   }
 
+  for (const { from } of molfileWavyBonds(molfile)) {
+    const atom = originalToEngineAtom[from];
+    if (atom === undefined) continue;
+    for (let bond = 0; bond < molecule.getAllBonds(); bond++) {
+      const type = molecule.getBondType(bond);
+      if (molecule.getBondAtom(0, bond) === atom &&
+          (type === OCL.Molecule.cBondTypeUp || type === OCL.Molecule.cBondTypeDown)) {
+        molecule.setBondType(bond, OCL.Molecule.cBondTypeSingle);
+      }
+    }
+    molecule.setAtomConfigurationUnknown(atom, true);
+    molecule.setAtomParity(atom, OCL.Molecule.cAtomParityUnknown, false);
+  }
   const engineToOriginalBond = v2000EngineToOriginalBondMap(molfile, molecule, engineToOriginalAtom);
   return { molecule, originalToEngineAtom, engineToOriginalAtom, engineToOriginalBond };
 }
@@ -362,8 +397,8 @@ export interface DepictionBond2D {
   to: number;
   order: DepictionBondOrder;
   stereo?: "either";
-  /** Drawn stereo at the bond's narrow end (`from`): wedge (up), hashed (down), or none. */
-  wedge: "wedge" | "hashed" | null;
+  /** Drawn stereo at `from`: wedge (up), hashed (down), wavy (explicitly unknown), or none. */
+  wedge: "wedge" | "hashed" | "wavy" | null;
 }
 
 export interface Depiction2D {
@@ -407,11 +442,12 @@ function depictionOrder(mol: OclMolecule, bond: number): DepictionBondOrder {
 function inventDepiction2D(
   mol: OclMolecule,
   inputOrder: Pick<InputOrderedOclMolecule, "originalToEngineAtom" | "engineToOriginalAtom"> | undefined,
-  openUnspecifiedDoubleBonds: boolean
+  openUnspecifiedDoubleBonds: boolean,
+  keepMarkedAtomCoordinates = false
 ): Depiction2D {
   // Ordinary explicit H atoms are real ChemDraft atoms. OCL removes them by default during
   // coordinate invention, so keeping them is required for both atom identity and index mapping.
-  mol.inventCoordinates({ keepHydrogens: true });
+  mol.inventCoordinates({ keepHydrogens: true, ...(keepMarkedAtomCoordinates ? { keepMarkedAtomCoordinates: true } : {}) });
   mol.ensureHelperArrays(OCL.Molecule.cHelperParities);
 
   const up = OCL.Molecule.cBondTypeUp;
@@ -690,7 +726,7 @@ function inputHydrogenNeighbourCounts(brackets: TaggedBracketSmiles): Map<number
  * molecule's identity (canonical idcode compared before/after — belt and braces; the inventor only
  * writes coordinates and stereo bonds).
  */
-export function relayoutMolfile2D(molfile: string): Depiction2D {
+export function relayoutMolfile2D(molfile: string, options: { fixedAtomIndices?: readonly number[] } = {}): Depiction2D {
   // Only explicit input CTfile markers carry intent. OCL also reports unknown parity for
   // degenerate geometry, which must not turn an ordinary native bond into an open bond.
   const inputEitherPairs = new Set(v2000Blocks(molfile)?.bondLines.flatMap((line) => {
@@ -700,20 +736,40 @@ export function relayoutMolfile2D(molfile: string): Depiction2D {
   }));
   const parsed = parseMolfileWithInputOrder(molfile);
   const identityBefore = parsed.molecule.getIDCode();
-  const laidOut = inventDepiction2D(parsed.molecule, parsed, false);
+  for (const index of options.fixedAtomIndices ?? []) {
+    const engineIndex = parsed.originalToEngineAtom[index];
+    if (!Number.isInteger(index) || engineIndex === undefined) throw new Error("Invalid fixed atom index for 2D cleanup.");
+    parsed.molecule.setAtomMarker(engineIndex, true);
+  }
+  // Marked coordinates guide the inventor's attachment angles. The caller must still restore
+  // fixed coordinates exactly: OCL normalizes scale and may repack disconnected fragments.
+  const laidOut = inventDepiction2D(parsed.molecule, parsed, false, (options.fixedAtomIndices?.length ?? 0) > 0);
+  const waves = new Map(molfileWavyBonds(molfile).map((bond) => [numericAtomPairKey(bond.from, bond.to), bond]));
   const invented = {
     ...laidOut,
-    bonds: laidOut.bonds.map((bond) => inputEitherPairs.has(numericAtomPairKey(bond.from, bond.to))
-      ? { ...bond, stereo: "either" as const } : bond)
+    bonds: laidOut.bonds.map((bond) => {
+      const pair = numericAtomPairKey(bond.from, bond.to);
+      const wave = waves.get(pair);
+      return wave ? { ...bond, ...wave, wedge: "wavy" as const }
+        : inputEitherPairs.has(pair) ? { ...bond, stereo: "either" as const } : bond;
+    })
   };
   const depiction = { ...invented, molfile: rewriteOriginalV2000Depiction(molfile, invented) };
   // Reparse the actual serialized output. Comparing the same mutable OCL object before/after does
   // not validate the wedge/coordinate representation that crosses the adapter boundary.
-  const identityAfter = OCL.Molecule.fromMolfile(depiction.molfile).getIDCode();
+  const identityAfter = parseMolfileWithInputOrder(depiction.molfile).molecule.getIDCode();
   if (identityBefore !== identityAfter) {
     throw new Error("2D re-layout unexpectedly changed the molecule's identity.");
   }
   return depiction;
+}
+
+/** Read the actual final coordinates/wedges, including E/Z, isotopes, charges and radicals.
+ * Used after fitting a constrained layout back onto fixed native atoms. */
+export function assertConstrainedLayoutIdentity(before: string, after: string): void {
+  if (parseMolfileWithInputOrder(before).molecule.getIDCode() !== parseMolfileWithInputOrder(after).molecule.getIDCode()) {
+    throw new Error("Clean Up Selection refused: the constrained layout would change stereochemistry. The drawing was kept unchanged.");
+  }
 }
 
 /** Per-atom stereo verdict, index-aligned to the molfile's atom order (so index i corresponds to

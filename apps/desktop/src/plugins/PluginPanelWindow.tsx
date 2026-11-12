@@ -97,13 +97,13 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     }
     let disposed = false;
     const unlistenCleared = listenForPluginPanelReportCleared((next) => {
-      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) return;
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId || (next.windowId ?? "main") !== (identity.windowId ?? "main")) return;
       clearedRevisionRef.current = Math.max(clearedRevisionRef.current, next.revision);
       setPayload((current) => current && current.revision > next.revision ? current : undefined);
       setStaleness((current) => current && current.revision > next.revision ? current : undefined);
     });
     const unlistenReports = listenForPluginPanelReports((next) => {
-      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId || (next.windowId ?? "main") !== (identity.windowId ?? "main")) {
         return;
       }
       if (next.revision <= clearedRevisionRef.current) return;
@@ -123,13 +123,13 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       });
     });
     const unlistenAnalysis = listenForAnalysisWindowSnapshots((next) => {
-      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId || (next.windowId ?? "main") !== (identity.windowId ?? "main")) {
         return;
       }
       setAnalysisPayload((current) => (current && current.revision >= next.revision ? current : next));
     });
     const unlistenStaleness = listenForPluginPanelStaleness((next) => {
-      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId) {
+      if (next.pluginId !== identity.pluginId || next.panelId !== identity.panelId || (next.windowId ?? "main") !== (identity.windowId ?? "main")) {
         return;
       }
       // Keyed to the report revision it was computed for, so a late push can never mark a newer report.
@@ -153,7 +153,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       unlistenAnalysis();
       unlistenStaleness();
     };
-  }, [identity?.panelId, identity?.pluginId]);
+  }, [identity?.panelId, identity?.pluginId, identity?.windowId]);
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -171,7 +171,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   const stale = payload !== undefined && staleness?.revision === payload.revision && staleness.stale;
   const title = isCoreAnalysisWindow
     ? analysisWindowTitle(analysisPayload)
-    : payload?.report.title ?? "Plugin panel";
+    : `${payload?.report.title ?? "Plugin panel"}${payload?.documentName ? ` — ${payload.documentName}` : ""}`;
 
   const closeWindow = useCallback((): void => {
     // Await pending enlargement and the native restore so a failure stays visible and retryable.

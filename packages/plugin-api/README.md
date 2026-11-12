@@ -4,6 +4,10 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.23 adds bondStyle 'wavy' (single-bond either stereo), exposed through the public
+`MoleculeBond` / `MoleculeBondDisplay` types. Set `display.bondStyle: "wavy"` only on a single bond;
+its `fromAtomId` is the explicitly unknown stereocentre. Preserve its direction when copying.
+
 API 0.1.19 bounds panel reports with `PluginPanelReportLimits`: finite numbers, bounded strings,
 collections and aggregate counts, and at most 128 MiB of UTF-8 JSON. Structure atoms/bonds and
 spectrum peaks are capped per figure; their combined size is bounded by the report envelope.
@@ -84,3 +88,16 @@ plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, 
 
 API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
 Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.
+
+API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
+API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em.
+
+API 0.1.21 adds optional `chemistry.properties` (RDKit source composition and masses, gated by
+`chemistry.compute`) and `extraTools` on `assistant.createToolSession`. A worker registers
+`onAssistantToolCall(context, call, signal)` to handle its own session's tools. See
+`docs/plugin-architecture/AUTHORING.md` for validation, cancellation, and result limits.
+
+API 0.1.25 additively exposes native bracketUsage, repeatCount and molecule-scoped crossingBondIds through DocumentObject and ChemDraftDocument. Legacy repeatUnit remains supported.
+
+API 0.1.24 includes binary CDX import/export and optional reaction `arrowObjectIds`/`plusObjectIds`;
+shared scheme arrows and plus signs are referenced by id, never copied.

@@ -4,6 +4,7 @@ mod clipboard_images;
 mod clipboard_limits;
 mod dialog_windows;
 mod document_session;
+pub mod document_windows;
 mod download_diagnosis;
 mod export;
 mod external_tools;
@@ -19,7 +20,9 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod palette_routing;
 mod panel_full_size;
+mod panel_ownership;
 mod panel_window;
 mod panel_window_controls;
 mod panel_window_frame;
@@ -29,7 +32,10 @@ mod plugin_package;
 mod plugin_panel_acl_tests;
 mod plugin_starter;
 mod problem_reports;
+mod runtime_broker;
 mod screen_capture;
+mod session_coordinator;
+mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
@@ -37,6 +43,7 @@ mod webview_context_menus;
 #[cfg(test)]
 mod webview_context_menus_tests;
 mod window_drag;
+mod window_lifecycle;
 mod windows_clipboard;
 
 use clipboard_formats::{
@@ -45,7 +52,7 @@ use clipboard_formats::{
 use clipboard_images::{ClipboardImageItem, SkippedClipboardImageItem};
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -53,7 +60,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, TryRecvError},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -68,6 +75,7 @@ use tauri::{
     webview::PageLoadEvent,
     Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 use webview_context_menus::disable_default_context_menus;
 
 #[cfg(target_os = "macos")]
@@ -83,7 +91,44 @@ use objc2_foundation::NSString;
 #[cfg(target_os = "macos")]
 use tauri_plugin_sparkle_updater::SparkleUpdaterExt;
 
+// Identity of the first migrated/config-created window and its existing saved frame only.
 const MAIN_WINDOW_LABEL: &str = "main";
+
+#[cfg(test)]
+fn test_documents() -> document_windows::DocumentWindowRegistry {
+    document_windows::DocumentWindowRegistry::with_main()
+}
+
+#[cfg(test)]
+fn ready_document_registry() -> document_windows::DocumentWindowRegistry {
+    let registry = test_documents();
+    registry.set_ready("main");
+    registry
+}
+
+fn is_document_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .is_document_window(label)
+}
+
+fn active_document_webview<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<tauri::WebviewWindow<R>> {
+    let document = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window()?;
+    app.get_webview_window(&document.native_label)
+}
+
+fn owned_document_webview<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> Option<tauri::WebviewWindow<R>> {
+    let document = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(label)?;
+    app.get_webview_window(&document.native_label)
+}
 
 /// Helper processes (the Engine 3D sidecar, OPSIN's JVM) are console programs. Spawned from a
 /// GUI-subsystem app on Windows, each would flash a console window; CREATE_NO_WINDOW suppresses it.
@@ -109,7 +154,6 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-#[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 /// The two Close Window / Close Tab items (File and Window menus). Native window closes stay
 /// native; with multiple document tabs the main window routes document.closeTab to the webview.
@@ -146,6 +190,9 @@ static ENGINE3D_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Destroyed events would be recorded as user closes (visible: false) and clobber the saved
 /// open-palette set that the next launch restores.
 static APP_QUITTING: AtomicBool = AtomicBool::new(false);
+// Destruction can raise APP_QUITTING before any drain. Every exit caller joins this drain's
+// completion or original deadline; an AppKit reply finishes it without adding another wait.
+static EXIT_SESSION_DRAIN: ExitSessionDrain = ExitSessionDrain::new();
 
 /// Application-menu Quit on macOS, File ▸ Exit elsewhere.
 const APP_QUIT_COMMAND_ID: &str = "app.quit";
@@ -163,6 +210,7 @@ const EXIT_WATCHDOG: Duration = Duration::from_secs(2);
 static QUIT: QuitFlow = QuitFlow::new(&APP_QUITTING, QUIT_FLUSH_GRACE, EXIT_WATCHDOG);
 static ASK_TO_SAVE_ON_QUIT: AtomicBool = AtomicBool::new(false);
 const QUIT_PROMPT_REQUEST_EVENT: &str = "chemdraft://prompt-before-quit";
+const QUIT_CANCELLED_EVENT: &str = "chemdraft://quit-cancelled";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum QuitPromptPhase {
@@ -172,15 +220,132 @@ enum QuitPromptPhase {
     Flushing,
 }
 
-// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
-// system termination: never block logout/shutdown/restart with a save prompt.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
-    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum QuitPromptCancellation {
+    UserCancelled,
+    Deferred,
+    Failed,
 }
 
-/// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
-/// once `quitting` is set, the exit watchdog remains unchanged.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AppkitQuitDecision {
+    TerminateNow,
+    Prompt,
+    DeferReply,
+    WaitForReply,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_quit_decision(
+    is_macos: bool,
+    enabled: bool,
+    quitting: bool,
+    reply_pending: bool,
+    reason: u32,
+) -> AppkitQuitDecision {
+    if !is_macos {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    let ordinary = reason == 0 || reason == u32::from_be_bytes(*b"quit");
+    if reply_pending {
+        return if ordinary || quitting {
+            AppkitQuitDecision::WaitForReply
+        } else {
+            // A system termination supersedes an ordinary quit's visible save prompt.
+            AppkitQuitDecision::DeferReply
+        };
+    }
+    if quitting {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if enabled && ordinary {
+        return AppkitQuitDecision::Prompt;
+    }
+    AppkitQuitDecision::DeferReply
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppkitReplyState {
+    Idle,
+    Pending,
+    Claimed(bool),
+    Delivered,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl AppkitReplyState {
+    fn awaiting_delivery(self) -> bool {
+        matches!(self, Self::Pending | Self::Claimed(_))
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+type AppkitReplyTask = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// A dispatch failure leaves the reply claimed until the native fallback actually runs it.
+/// Both dispatchers share one consumable reply, even if a failed dispatcher retained its task.
+#[cfg(any(target_os = "macos", test))]
+fn dispatch_appkit_reply_with<E>(
+    flow: &'static QuitFlow,
+    terminate: bool,
+    on_main_thread: bool,
+    dispatch: impl FnOnce(AppkitReplyTask) -> Result<(), E>,
+    fallback: impl FnOnce(AppkitReplyTask),
+    reply: impl FnOnce() + Send + 'static,
+) -> Result<(), E> {
+    let reply = Mutex::new(Some(reply));
+    let deliver: AppkitReplyTask = std::sync::Arc::new(move || {
+        let reply = reply.lock().unwrap().take();
+        if let Some(reply) = reply {
+            let mut state = flow.state.lock().unwrap();
+            // A system request can revoke a queued NO before this main-thread task runs.
+            if state.appkit_reply != AppkitReplyState::Claimed(terminate) {
+                return;
+            }
+            state.appkit_reply = if terminate {
+                AppkitReplyState::Delivered
+            } else {
+                AppkitReplyState::Idle
+            };
+            state.appkit_deadline = None;
+            if !terminate {
+                state.flush_deadline = None;
+            }
+            drop(state);
+            // The AppKit callback and this delivery both run on the main thread, so no system
+            // termination callback can interleave between the decision above and the native reply.
+            reply();
+        }
+    });
+    if on_main_thread {
+        deliver();
+        return Ok(());
+    }
+    if let Err(error) = dispatch(deliver.clone()) {
+        fallback(deliver);
+        return Err(error);
+    }
+    Ok(())
+}
+
+struct QuitState {
+    prompt: (u64, QuitPromptPhase),
+    flush_deadline: Option<Instant>,
+    #[cfg(any(target_os = "macos", test))]
+    appkit_reply: AppkitReplyState,
+    // Invariant: a pending AppKit reply owns exactly one live deadline until answered;
+    // prompt acknowledgement, retirement and system supersession never invalidate it.
+    #[cfg(any(target_os = "macos", test))]
+    appkit_deadline: Option<u64>,
+    #[cfg(any(target_os = "macos", test))]
+    appkit_request_id: u64,
+}
+
+/// A quit's state and timings. Menu prompts can pause the grace and cancel a request;
+/// AppKit's reply handshake keeps its own deadline throughout every prompt phase.
 struct QuitFlow {
     /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
@@ -188,8 +353,10 @@ struct QuitFlow {
     quitting: &'static AtomicBool,
     /// Set once the exit watchdog is running, so it is started at most once.
     watchdog_armed: AtomicBool,
-    /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
-    prompt: Mutex<(u64, QuitPromptPhase)>,
+    /// Prompt validation, system supersession and reply claims share one atomic decision.
+    state: Mutex<QuitState>,
+    #[cfg(any(target_os = "macos", test))]
+    appkit_drain_started: AtomicBool,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -202,7 +369,18 @@ impl QuitFlow {
     ) -> Self {
         Self {
             requested: AtomicBool::new(false),
-            prompt: Mutex::new((0, QuitPromptPhase::Idle)),
+            state: Mutex::new(QuitState {
+                prompt: (0, QuitPromptPhase::Idle),
+                flush_deadline: None,
+                #[cfg(any(target_os = "macos", test))]
+                appkit_reply: AppkitReplyState::Idle,
+                #[cfg(any(target_os = "macos", test))]
+                appkit_deadline: None,
+                #[cfg(any(target_os = "macos", test))]
+                appkit_request_id: 0,
+            }),
+            #[cfg(any(target_os = "macos", test))]
+            appkit_drain_started: AtomicBool::new(false),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -256,29 +434,194 @@ trait QuitHost: Clone + Send + 'static {
     }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
+    /// Finishes the bounded persistence drain before the event-loop exit watchdog starts.
+    fn prepare_exit(&self) {}
+    /// Completes the pending AppKit termination handshake on the main thread.
+    #[cfg(any(target_os = "macos", test))]
+    fn reply_to_appkit_termination(&self, _flow: &'static QuitFlow, _terminate: bool) {
+        unreachable!("AppKit termination is only available on macOS");
+    }
+    #[cfg(any(target_os = "macos", test))]
+    fn drain_appkit_session(&self) -> Result<(), String>;
     /// Ends the process now, from the watchdog thread.
     fn force_exit(&self, waited: Duration, reason: QuitReason);
+}
+
+enum ExitSessionDrainState {
+    Idle,
+    Pending(Instant),
+    Finished,
+}
+
+struct ExitSessionDrain {
+    state: Mutex<ExitSessionDrainState>,
+    finished: Condvar,
+}
+
+impl ExitSessionDrain {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(ExitSessionDrainState::Idle),
+            finished: Condvar::new(),
+        }
+    }
+
+    fn finish(&self) {
+        *self.state.lock().unwrap() = ExitSessionDrainState::Finished;
+        self.finished.notify_all();
+    }
+
+    fn run(&self, deadline: Instant, drain: impl FnOnce(Duration)) {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            match *state {
+                ExitSessionDrainState::Idle => {
+                    *state = ExitSessionDrainState::Pending(deadline);
+                    drop(state);
+                    drain(deadline.saturating_duration_since(Instant::now()));
+                    self.finish();
+                    return;
+                }
+                ExitSessionDrainState::Pending(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return;
+                    }
+                    // Only this small state lock is held here, never a persistence lock.
+                    state = self.finished.wait_timeout(state, remaining).unwrap().0;
+                }
+                ExitSessionDrainState::Finished => return,
+            }
+        }
+    }
+}
+
+fn flush_session_before_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    APP_QUITTING.store(true, Ordering::SeqCst);
+    let now = Instant::now();
+    let deadline = now + remaining_quit_flush_grace(&QUIT, now);
+    EXIT_SESSION_DRAIN.run(deadline, |remaining| {
+        let app = app.clone();
+        if let Err(error) =
+            session_coordinator::with_timeout(remaining, move || drain_exit_persistence(&app))
+        {
+            eprintln!("Could not flush document session before quit: {error}");
+        }
+    });
+}
+
+fn flush_session<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let app = app.clone();
+    session_coordinator::with_timeout(QUIT_FLUSH_GRACE, move || drain_persistence(&app))
+}
+
+fn remaining_quit_flush_grace(flow: &QuitFlow, now: Instant) -> Duration {
+    flow.state
+        .lock()
+        .unwrap()
+        .flush_deadline
+        .map_or(flow.flush_grace, |deadline| {
+            deadline.saturating_duration_since(now)
+        })
+}
+
+fn drain_exit_persistence<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    dismiss_then_drain_with(
+        || dialog_windows::dismiss_all(app, "quit"),
+        || drain_persistence(app),
+    )
+}
+
+/// Capture final frames before draining, including when a clean document confirms a prompted
+/// quit without dismissing its dialogs. Destruction then has no uncaptured final frames.
+fn dismiss_then_drain_with(
+    dismiss_dialogs: impl FnOnce(),
+    drain: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    dismiss_dialogs();
+    drain()
+}
+
+fn drain_persistence<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    drain_quit_persistence_with(
+        || {
+            app.state::<session_coordinator::SessionCoordinator>()
+                .flush()
+        },
+        dialog_windows::drain_pending_position_writes,
+    )
+}
+
+/// Both kinds of persistence share the caller's single bounded wait. Even a failed session
+/// flush must allow already accepted final frame writes to finish before exit.
+fn drain_quit_persistence_with(
+    flush_session: impl FnOnce() -> Result<(), String>,
+    drain_positions: impl FnOnce(),
+) -> Result<(), String> {
+    let result = flush_session();
+    drain_positions();
+    result
+}
+
+#[cfg(test)]
+fn visit_quit_documents(
+    registry: &document_windows::DocumentWindowRegistry,
+    mut deliver: impl FnMut(&str) -> bool,
+) -> bool {
+    let mut delivered = false;
+    for document in registry.all_document_windows() {
+        delivered |= deliver(&document.native_label);
+    }
+    delivered
 }
 
 impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     fn ask_document_to_flush(&self) -> bool {
         // Native sessions settle before the final document flush, even with an unresponsive renderer.
-        dialog_windows::dismiss_owned(self, "quit");
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_FLUSH_REQUEST_EVENT, ())
-                .is_ok()
+        dialog_windows::dismiss_all(self, "quit");
+        begin_document_flush(self, window_lifecycle::FlushPurpose::Quit).1
     }
 
     fn ask_document_to_prompt(&self, request_id: u64) -> bool {
-        self.get_webview_window(MAIN_WINDOW_LABEL).is_some()
-            && self
-                .emit_to(MAIN_WINDOW_LABEL, QUIT_PROMPT_REQUEST_EVENT, request_id)
+        let first = self
+            .state::<window_lifecycle::DocumentLifecycle>()
+            .begin_prompts(document_labels(self));
+        // Every renderer gets its flush request even if the first save-choice window stalls.
+        begin_document_flush(self, window_lifecycle::FlushPurpose::PromptedQuit);
+        first.is_some_and(|label| {
+            let payload = if self
+                .state::<window_lifecycle::DocumentLifecycle>()
+                .last_window_close()
+            {
+                serde_json::json!({"requestId": request_id, "closingWindow": true})
+            } else {
+                serde_json::json!(request_id)
+            };
+            self.emit_to(&label, QUIT_PROMPT_REQUEST_EVENT, payload)
                 .is_ok()
+        })
     }
 
     fn exit(&self) {
         tauri::AppHandle::exit(self, 0);
+    }
+
+    fn prepare_exit(&self) {
+        // Includes final frames and accepted snapshots, using only the original grace's remainder.
+        flush_session_before_exit(self);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reply_to_appkit_termination(&self, flow: &'static QuitFlow, terminate: bool) {
+        if terminate {
+            EXIT_SESSION_DRAIN.finish();
+        }
+        macos_quit::reply_to_termination(self, flow, terminate);
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn drain_appkit_session(&self) -> Result<(), String> {
+        drain_exit_persistence(self)
     }
 
     /// Windows: `exit` only asks the event loop to stop, and the event loop runs on the main thread,
@@ -293,6 +636,7 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     #[cfg(windows)]
     fn force_exit(&self, waited: Duration, reason: QuitReason) {
         eprintln!("{}", forced_exit_message(reason, waited));
+        // No persistence here: the watchdog must outlive a coordinator stuck in a disk write.
         self.state::<ocsr_engine::OcsrEngineState>()
             .kill_for_forced_exit();
         self.state::<naming_engine::NamingEngineState>()
@@ -322,15 +666,47 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
     }
 }
 
+fn document_labels<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .all_document_windows()
+        .into_iter()
+        .filter(|window| window.lifecycle != document_windows::DocumentWindowLifecycle::Closing)
+        .map(|window| window.native_label)
+        .collect()
+}
+
+/// Quit and updater share the exact same renderer flush/acknowledgment protocol and disk drain.
+fn begin_document_flush<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    purpose: window_lifecycle::FlushPurpose,
+) -> (u64, bool) {
+    let labels = document_labels(app);
+    let any = !labels.is_empty();
+    let id = app
+        .state::<window_lifecycle::DocumentLifecycle>()
+        .begin_flush(purpose, labels.clone());
+    for label in labels {
+        if let Err(error) = app.emit_to(&label, QUIT_FLUSH_REQUEST_EVENT, id) {
+            app.state::<window_lifecycle::DocumentLifecycle>()
+                .acknowledge_flush(id, &label, Some(error.to_string()));
+        }
+    }
+    (id, any)
+}
+
 /// Quit without losing the last edits. The session autosave is an 800 ms debounce in the
 /// webview, so exiting straight away dropped anything edited in
 /// the last moment. Ask the document window to flush first; it confirms through `quit_after_flush`,
 /// and a grace timer quits regardless if the webview can't answer.
 fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if !prompt_waits_for_user(&QUIT) {
+        app.state::<window_lifecycle::DocumentLifecycle>()
+            .set_last_window_close(false);
+    }
     if ASK_TO_SAVE_ON_QUIT.load(Ordering::SeqCst) {
         // A repeated menu/Dock quit also reveals a prompt that was subsequently minimized.
         if prompt_waits_for_user(&QUIT) {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            if let Some(window) = active_document_webview(app) {
                 let reveal = window.clone();
                 let _ = window.run_on_main_thread(move || {
                     let _ = reveal.unminimize();
@@ -347,7 +723,7 @@ fn request_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 fn prompt_waits_for_user(flow: &QuitFlow) -> bool {
     matches!(
-        flow.prompt.lock().unwrap().1,
+        flow.state.lock().unwrap().prompt.1,
         QuitPromptPhase::AwaitingWindow | QuitPromptPhase::Showing
     )
 }
@@ -360,19 +736,161 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
         }
         return;
     }
+    arm_quit_flush_grace(flow, host);
     if !host.ask_document_to_flush() {
         quit_now_with(flow, host, QuitReason::NoDocument);
-        return;
     }
-    let host = host.clone();
+}
+
+fn arm_quit_flush_grace<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    let mut state = flow.state.lock().unwrap();
+    #[cfg(any(target_os = "macos", test))]
+    let appkit_request_id = {
+        if state.appkit_deadline.is_some() {
+            return;
+        }
+        state.appkit_request_id
+    };
+    let deadline = Instant::now() + flow.flush_grace;
+    state.flush_deadline = Some(deadline);
+    drop(state);
+    let timer_host = host.clone();
     thread::spawn(move || {
-        thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let state = flow.state.lock().unwrap();
+        #[cfg(any(target_os = "macos", test))]
+        if state.appkit_deadline.is_some() || state.appkit_request_id != appkit_request_id {
+            return;
+        }
+        quit_now_locked_with(flow, &timer_host, QuitReason::GraceExpired, state);
     });
 }
 
+#[cfg(test)]
+fn expire_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    quit_now_with(flow, host, QuitReason::GraceExpired);
+}
+
+/// Keep AppKit's original request open, including while the user decides in a save prompt.
+/// Repeated requests reuse the reply and the deadline; system termination bypasses any prompt.
+#[cfg(any(target_os = "macos", test))]
+fn request_appkit_quit_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    prompt_user: bool,
+) -> bool {
+    let mut state = flow.state.lock().unwrap();
+    if state.appkit_reply == AppkitReplyState::Idle {
+        if flow.quitting.load(Ordering::SeqCst) {
+            return false;
+        }
+        state.appkit_reply = AppkitReplyState::Pending;
+        state.appkit_request_id += 1;
+        let request_id = state.appkit_request_id;
+        state.appkit_deadline = Some(request_id);
+        let deadline = Instant::now() + flow.flush_grace;
+        state.flush_deadline = Some(deadline);
+        let timer_host = host.clone();
+        thread::spawn(move || {
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            expire_appkit_reply_with(flow, &timer_host, request_id);
+        });
+        flow.appkit_drain_started.store(false, Ordering::SeqCst);
+    } else {
+        match state.appkit_reply {
+            // A queued user cancellation has not answered AppKit yet. Revoke it atomically
+            // with invalidating the prompt; its delivery task will now do nothing.
+            AppkitReplyState::Claimed(false) if !prompt_user => {
+                state.appkit_reply = AppkitReplyState::Pending;
+            }
+            AppkitReplyState::Pending => {}
+            _ => return true,
+        }
+    }
+    if prompt_user {
+        drop(state);
+        request_prompted_quit_with(flow, host);
+    } else {
+        // Invalidates prompt timers and late user answers if logout/restart/shutdown arrives.
+        state.prompt.1 = QuitPromptPhase::Flushing;
+        let start_flush = !flow.requested.swap(true, Ordering::SeqCst);
+        drop(state);
+        if start_flush {
+            arm_quit_flush_grace(flow, host);
+            // Save already accepted snapshots even if the renderer never answers. Confirmation
+            // below drains again to include its final revision before delivering YES.
+            let drain_host = host.clone();
+            thread::spawn(move || {
+                if let Err(error) = drain_host.drain_appkit_session() {
+                    eprintln!("Could not flush accepted document sessions before quit: {error}");
+                }
+            });
+            let host = host.clone();
+            thread::spawn(move || {
+                // This includes Preferences/dialog-position persistence. AppKit must return
+                // TerminateLater before any disk write or POSITION_IO wait can hold it up.
+                if !host.ask_document_to_flush() {
+                    quit_now_with(flow, &host, QuitReason::NoDocument);
+                }
+            });
+        }
+    }
+    true
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn expire_appkit_reply_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, request_id: u64) {
+    let mut state = flow.state.lock().unwrap();
+    if state.appkit_deadline != Some(request_id) {
+        return;
+    }
+    // A queued Cancel has not answered AppKit yet. Once the deadline wins, its NO task
+    // becomes obsolete just as it does when system termination supersedes that Cancel.
+    if state.appkit_reply == AppkitReplyState::Claimed(false) {
+        state.appkit_reply = AppkitReplyState::Pending;
+    }
+    quit_now_locked_with(flow, host, QuitReason::GraceExpired, state);
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn complete_appkit_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    let mut state = flow.state.lock().unwrap();
+    if state.appkit_reply != AppkitReplyState::Pending {
+        return;
+    }
+    state.appkit_reply = AppkitReplyState::Claimed(true);
+    flow.quitting.store(true, Ordering::SeqCst);
+    drop(state);
+    host.reply_to_appkit_termination(flow, true);
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn cancel_appkit_prompt_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    request_id: u64,
+    disposition: QuitPromptCancellation,
+) -> bool {
+    let mut state = flow.state.lock().unwrap();
+    if !retire_quit_prompt(flow, &mut state, request_id) {
+        return false;
+    }
+    let reply_no = matches!(disposition, QuitPromptCancellation::UserCancelled)
+        && state.appkit_reply == AppkitReplyState::Pending;
+    if reply_no {
+        state.appkit_reply = AppkitReplyState::Claimed(false);
+    }
+    drop(state);
+    if reply_no {
+        host.reply_to_appkit_termination(flow, false);
+    }
+    // A failed save retires the interaction so editing can resume, but is never a NO reply.
+    !matches!(disposition, QuitPromptCancellation::Failed)
+}
+
 fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
-    let mut prompt = flow.prompt.lock().unwrap();
+    let mut state = flow.state.lock().unwrap();
+    let prompt = &mut state.prompt;
     if prompt.1 != QuitPromptPhase::Idle
         || flow.requested.load(Ordering::SeqCst)
         || flow.quitting.load(Ordering::SeqCst)
@@ -382,11 +900,10 @@ fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) ->
     prompt.0 += 1;
     prompt.1 = QuitPromptPhase::AwaitingWindow;
     let request_id = prompt.0;
-    drop(prompt);
+    drop(state);
+    arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
     if !host.ask_document_to_prompt(request_id) {
         quit_now_with(flow, host, QuitReason::NoDocument);
-    } else {
-        arm_prompt_grace(flow, host, request_id, QuitPromptPhase::AwaitingWindow);
     }
     Some(request_id)
 }
@@ -397,12 +914,27 @@ fn arm_prompt_grace<H: QuitHost>(
     request_id: u64,
     phase: QuitPromptPhase,
 ) {
+    let mut state = flow.state.lock().unwrap();
+    #[cfg(any(target_os = "macos", test))]
+    let appkit_request_id = {
+        if state.appkit_deadline.is_some() {
+            return;
+        }
+        state.appkit_request_id
+    };
+    let deadline = Instant::now() + flow.flush_grace;
+    state.flush_deadline = Some(deadline);
+    drop(state);
     let host = host.clone();
     thread::spawn(move || {
-        thread::sleep(flow.flush_grace);
-        let prompt = flow.prompt.lock().unwrap();
-        if *prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
-            quit_now_with(flow, &host, QuitReason::GraceExpired);
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        let state = flow.state.lock().unwrap();
+        #[cfg(any(target_os = "macos", test))]
+        if state.appkit_deadline.is_some() || state.appkit_request_id != appkit_request_id {
+            return;
+        }
+        if state.prompt == (request_id, phase) && !flow.quitting.load(Ordering::SeqCst) {
+            quit_now_locked_with(flow, &host, QuitReason::GraceExpired, state);
         }
     });
 }
@@ -412,7 +944,8 @@ fn resume_prompted_quit_with<H: QuitHost>(
     host: &H,
     request_id: u64,
 ) -> bool {
-    let mut prompt = flow.prompt.lock().unwrap();
+    let mut state = flow.state.lock().unwrap();
+    let prompt = &mut state.prompt;
     if prompt.0 != request_id
         || !matches!(
             prompt.1,
@@ -424,16 +957,67 @@ fn resume_prompted_quit_with<H: QuitHost>(
     }
     prompt.1 = QuitPromptPhase::Flushing;
     flow.requested.store(true, Ordering::SeqCst);
+    drop(state);
     arm_prompt_grace(flow, host, request_id, QuitPromptPhase::Flushing);
     true
 }
 
-/// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
-/// armed here and nowhere else, so it can never end a process whose session has not been flushed
-/// or given its grace. Only the first decision arms it, so its `reason` is the path that decided.
+/// The session is written, or its grace has run out. Reply to a deferred AppKit termination;
+/// otherwise arm the exit watchdog here and nowhere else, then request event-loop exit.
 fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
+    quit_now_locked_with(flow, host, reason, flow.state.lock().unwrap());
+}
+
+fn quit_now_locked_with<H: QuitHost>(
+    flow: &'static QuitFlow,
+    host: &H,
+    reason: QuitReason,
+    state: std::sync::MutexGuard<'_, QuitState>,
+) {
+    #[cfg(any(target_os = "macos", test))]
+    {
+        // Confirmation and deadline race for this transition. Late confirmations/timeouts
+        // must neither reply again nor fall through to AppHandle::exit.
+        match state.appkit_reply {
+            AppkitReplyState::Claimed(_) | AppkitReplyState::Delivered => return,
+            AppkitReplyState::Pending => {
+                // A menu repeat must not complete AppKit's handshake before the flush/deadline.
+                if reason == QuitReason::RepeatedRequest {
+                    return;
+                }
+                if reason == QuitReason::GraceExpired {
+                    let mut state = state;
+                    state.appkit_reply = AppkitReplyState::Claimed(true);
+                    flow.quitting.store(true, Ordering::SeqCst);
+                    drop(state);
+                    host.reply_to_appkit_termination(flow, true);
+                    return;
+                }
+                drop(state);
+                if !flow.appkit_drain_started.swap(true, Ordering::SeqCst) {
+                    // Never acquire the coordinator mutex on AppKit's main thread. The original
+                    // grace timer races this worker; neither a stuck write nor an error can veto.
+                    let host = host.clone();
+                    thread::spawn(move || {
+                        if let Err(error) = host.drain_appkit_session() {
+                            eprintln!("Could not flush document session before AppKit termination; quitting at the deadline: {error}");
+                        } else {
+                            complete_appkit_quit_with(flow, &host);
+                        }
+                    });
+                }
+                return;
+            }
+            AppkitReplyState::Idle => {
+                flow.quitting.store(true, Ordering::SeqCst);
+            }
+        }
+    }
     // Raised first so the palette teardown that follows isn't recorded as user closes.
+    #[cfg(not(any(target_os = "macos", test)))]
     flow.quitting.store(true, Ordering::SeqCst);
+    drop(state);
+    host.prepare_exit();
     if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
         let host = host.clone();
         let wait = flow.exit_watchdog;
@@ -448,15 +1032,36 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
 /// `async`, so it runs on a worker: a sync command runs on the main thread, and when a window build
 /// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
-/// 3 s grace ran out. Deciding here touches atomics, starts the watchdog and posts the exit request,
-/// none of which needs the main thread.
+/// 3 s grace ran out. Deciding here posts the exit request or AppKit reply to the main thread.
 #[tauri::command]
-async fn quit_after_flush(app: tauri::AppHandle) {
-    quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+async fn quit_after_flush(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    request_id: u64,
+    error: Option<String>,
+) -> Result<(), String> {
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let lifecycle = app.state::<window_lifecycle::DocumentLifecycle>();
+    let completed = lifecycle.acknowledge_flush(request_id, window.label(), error);
+    let quit_ready = completed == Some(window_lifecycle::FlushPurpose::Quit)
+        && lifecycle.flush_succeeded(request_id);
+    let prompted_ready = completed == Some(window_lifecycle::FlushPurpose::PromptedQuit)
+        && lifecycle.prompted_flush_finished()
+        && QUIT.requested.load(Ordering::SeqCst);
+    if quit_ready || prompted_ready {
+        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    }
+    Ok(())
 }
 
-fn authorize_quit_window(label: &str) -> Result<(), String> {
-    if label == MAIN_WINDOW_LABEL {
+fn authorize_quit_window(
+    registry: &document_windows::DocumentWindowRegistry,
+    label: &str,
+) -> Result<(), String> {
+    if registry.is_document_window(label) {
         Ok(())
     } else {
         Err("Only the document window can control quit prompts.".into())
@@ -464,7 +1069,8 @@ fn authorize_quit_window(label: &str) -> Result<(), String> {
 }
 
 fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> bool {
-    let mut prompt = flow.prompt.lock().unwrap();
+    let mut state = flow.state.lock().unwrap();
+    let prompt = &mut state.prompt;
     if !visible
         || prompt.0 != request_id
         || !matches!(
@@ -479,8 +1085,28 @@ fn acknowledge_quit_prompt(flow: &QuitFlow, request_id: u64, visible: bool) -> b
     true
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn cancel_quit_with(flow: &QuitFlow, request_id: u64) -> bool {
-    let mut prompt = flow.prompt.lock().unwrap();
+    let mut state = flow.state.lock().unwrap();
+    let retired = retire_quit_prompt(flow, &mut state, request_id);
+    if retired {
+        state.flush_deadline = None;
+    }
+    retired
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn cancel_prompt_without_appkit(
+    flow: &QuitFlow,
+    request_id: u64,
+    disposition: QuitPromptCancellation,
+) -> bool {
+    let retired = cancel_quit_with(flow, request_id);
+    retired && !matches!(disposition, QuitPromptCancellation::Failed)
+}
+
+fn retire_quit_prompt(flow: &QuitFlow, state: &mut QuitState, request_id: u64) -> bool {
+    let prompt = &mut state.prompt;
     if request_id == 0
         || prompt.0 != request_id
         || !matches!(
@@ -500,7 +1126,10 @@ async fn set_quit_prompt_enabled(
     window: tauri::WebviewWindow,
     enabled: bool,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     ASK_TO_SAVE_ON_QUIT.store(enabled, Ordering::SeqCst);
     Ok(())
 }
@@ -511,15 +1140,26 @@ async fn prepare_quit_prompt(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
-    if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let closing = app
+        .state::<window_lifecycle::DocumentLifecycle>()
+        .is_close(window.label(), request_id);
+    if !closing
+        && (!app
+            .state::<window_lifecycle::DocumentLifecycle>()
+            .is_prompt_owner(window.label())
+            || QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow))
         || QUIT.quitting.load(Ordering::SeqCst)
     {
         return Ok(false);
     }
     let reveal = window.clone();
     run_on_main_thread_blocking(&window, move || {
-        if *QUIT.prompt.lock().unwrap() != (request_id, QuitPromptPhase::AwaitingWindow)
+        if !closing
+            && QUIT.state.lock().unwrap().prompt != (request_id, QuitPromptPhase::AwaitingWindow)
             || QUIT.quitting.load(Ordering::SeqCst)
         {
             return Ok(false);
@@ -538,24 +1178,74 @@ async fn quit_prompt_showing(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
     let visible = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true);
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.is_close(window.label(), request_id) {
+        return Ok(visible);
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
     Ok(acknowledge_quit_prompt(&QUIT, request_id, visible))
 }
 
 #[tauri::command]
-async fn cancel_quit(window: tauri::WebviewWindow, request_id: u64) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
-    Ok(cancel_quit_with(&QUIT, request_id))
+async fn cancel_quit(
+    window: tauri::WebviewWindow,
+    request_id: u64,
+    disposition: Option<QuitPromptCancellation>,
+) -> Result<bool, String> {
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let disposition = disposition.unwrap_or(QuitPromptCancellation::UserCancelled);
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.cancel_close(window.label(), request_id) {
+        return Ok(!matches!(disposition, QuitPromptCancellation::Failed));
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    let cancelled = cancel_appkit_prompt_with(&QUIT, window.app_handle(), request_id, disposition);
+    #[cfg(not(target_os = "macos"))]
+    let cancelled = cancel_prompt_without_appkit(&QUIT, request_id, disposition);
+    let state = QUIT.state.lock().unwrap();
+    let retired = state.prompt == (request_id, QuitPromptPhase::Idle);
+    if retired {
+        lifecycle.cancel_prompts();
+    }
+    drop(state);
+    if retired {
+        for label in document_labels(window.app_handle()) {
+            let _ = window
+                .app_handle()
+                .emit_to(&label, QUIT_CANCELLED_EVENT, request_id);
+        }
+    }
+    Ok(cancelled)
 }
 
 #[tauri::command]
 async fn request_quit_after_close(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    closing_window: Option<bool>,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
-    request_quit(&app);
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    if closing_window.unwrap_or(false) {
+        request_close_window(&app, window.label());
+    } else {
+        request_quit(&app);
+    }
     Ok(())
 }
 
@@ -565,7 +1255,17 @@ async fn resume_quit_after_prompt(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<bool, String> {
-    authorize_quit_window(window.label())?;
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.is_close(window.label(), request_id) {
+        return Ok(lifecycle.resume_close(window.label(), request_id));
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(false);
+    }
     Ok(resume_prompted_quit_with(&QUIT, &app, request_id))
 }
 
@@ -575,16 +1275,283 @@ async fn confirm_prompted_quit(
     window: tauri::WebviewWindow,
     request_id: u64,
 ) -> Result<(), String> {
-    authorize_quit_window(window.label())?;
-    let prompt = QUIT.prompt.lock().unwrap();
-    if *prompt == (request_id, QuitPromptPhase::Flushing) && !QUIT.quitting.load(Ordering::SeqCst) {
-        quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
+    authorize_quit_window(
+        &window.state::<document_windows::DocumentWindowRegistry>(),
+        window.label(),
+    )?;
+    let lifecycle = window.state::<window_lifecycle::DocumentLifecycle>();
+    if lifecycle.close_confirmed(window.label(), request_id) {
+        finish_close_window(&app, &window, request_id).await?;
+        lifecycle.cancel_close(window.label(), request_id);
+        return Ok(());
+    }
+    if !lifecycle.is_prompt_owner(window.label()) {
+        return Ok(());
+    }
+    let state = QUIT.state.lock().unwrap();
+    if state.prompt == (request_id, QuitPromptPhase::Flushing)
+        && !QUIT.quitting.load(Ordering::SeqCst)
+    {
+        if let Some(next) = lifecycle.complete_prompt(window.label()) {
+            let mut state = state;
+            state.prompt.0 += 1;
+            state.prompt.1 = QuitPromptPhase::AwaitingWindow;
+            let next_request = state.prompt.0;
+            QUIT.requested.store(false, Ordering::SeqCst);
+            drop(state);
+            arm_prompt_grace(&QUIT, &app, next_request, QuitPromptPhase::AwaitingWindow);
+            app.emit_to(&next, QUIT_PROMPT_REQUEST_EVENT, next_request)
+                .map_err(|error| error.to_string())?;
+        } else if lifecycle.prompted_flush_finished() {
+            quit_now_locked_with(&QUIT, &app, QuitReason::FlushConfirmed, state);
+        }
+    }
+    Ok(())
+}
+
+/// A close always uses the dirty-choice protocol, independently of the quit preference.
+/// Windows' last document uses the existing all-window quit, including its bounded exit drain.
+fn request_close_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    if QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+        || prompt_waits_for_user(&QUIT)
+    {
+        return;
+    }
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    if !registry.is_document_window(label) {
+        return;
+    }
+    if app
+        .state::<session_coordinator::SessionCoordinator>()
+        .close_quits(&registry, cfg!(target_os = "macos"))
+    {
+        app.state::<window_lifecycle::DocumentLifecycle>()
+            .set_last_window_close(true);
+        request_prompted_quit_with(&QUIT, app);
+        return;
+    }
+    let lifecycle = app.state::<window_lifecycle::DocumentLifecycle>();
+    // Queue the close event before a competing quit can supersede its request. Once quit has
+    // claimed the flow, no late close event may replace its renderer prompt.
+    let state = QUIT.state.lock().unwrap();
+    if state.prompt.1 != QuitPromptPhase::Idle
+        || QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    if let Some(id) = lifecycle.begin_close(label) {
+        if let Err(error) = app.emit_to(
+            label,
+            QUIT_PROMPT_REQUEST_EVENT,
+            serde_json::json!({"requestId": id, "closingWindow": true}),
+        ) {
+            lifecycle.cancel_close(label, id);
+            eprintln!("Could not request document window close: {error}");
+        }
+    }
+}
+
+async fn finish_close_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    request_id: u64,
+) -> Result<(), String> {
+    // Commit closes serially with window construction. Two already-approved closes must not both
+    // decide they are non-last before either document has left the registry.
+    let _creation = lock_window_creation()?;
+    let owner = window
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is no longer registered")?;
+    let close_quits = app
+        .state::<session_coordinator::SessionCoordinator>()
+        .close_quits(
+            &window.state::<document_windows::DocumentWindowRegistry>(),
+            cfg!(target_os = "macos"),
+        );
+    let registry = window.state::<document_windows::DocumentWindowRegistry>();
+    // Serialize this transition with the quit request before any session entry is removed. A quit
+    // that wins keeps this window alive; a close that wins cannot own a later quit prompt.
+    claim_window_close(
+        &QUIT,
+        &registry,
+        &window.state::<window_lifecycle::DocumentLifecycle>(),
+        &owner.window_id,
+        request_id,
+    )?;
+    if close_quits {
+        // Its mandatory save choice is complete. Use A6's all-window flush/exit, without asking twice.
+        request_quit_with(&QUIT, app, false);
+        return Ok(());
+    }
+    // Move shared HWND ownership before destroying the old owner (Windows destroys owned HWNDs).
+    if let Err(error) = preserve_shared_utilities(app, window) {
+        registry.cancel_closing(&owner.window_id);
+        return Err(error);
+    }
+    let writer = app.clone();
+    let id = owner.window_id.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = cancelled.clone();
+    let result = session_coordinator::with_timeout(QUIT_FLUSH_GRACE, move || {
+        dialog_windows::dismiss_owned(&writer, &id, "ownerClose");
+        if worker_cancelled.load(Ordering::SeqCst) {
+            return Err("The document window close was cancelled".into());
+        }
+        let coordinator = writer.state::<session_coordinator::SessionCoordinator>();
+        coordinator.close_window(&id)?;
+        if worker_cancelled.load(Ordering::SeqCst) {
+            coordinator.cancel_window_close(&id)?;
+        }
+        drain_persistence(&writer)
+    });
+    if let Err(error) = result {
+        cancelled.store(true, Ordering::SeqCst);
+        registry.cancel_closing(&owner.window_id);
+        // Serialize behind any late disk write, without extending the close's bounded wait.
+        let app = app.clone();
+        let id = owner.window_id;
+        thread::spawn(move || {
+            let _ = app
+                .state::<session_coordinator::SessionCoordinator>()
+                .cancel_window_close(&id);
+        });
+        return Err(error);
+    }
+    let target = window.clone();
+    let owner_id = owner.window_id.clone();
+    let destroyed = run_on_main_thread_blocking(window, move || {
+        // Restore before destroying the owner: Windows can destroy its owned HWNDs first.
+        panel_full_size::restore_owned(target.app_handle(), &owner_id);
+        target.destroy().map_err(|error| error.to_string())
+    })
+    .and_then(|result| result);
+    if let Err(error) = destroyed {
+        registry.cancel_closing(&owner.window_id);
+        app.state::<session_coordinator::SessionCoordinator>()
+            .cancel_window_close(&owner.window_id)?;
+        return Err(error.to_string());
+    }
+    app.state::<session_coordinator::SessionCoordinator>()
+        .finish_window_close(&owner.window_id);
+    Ok(())
+}
+
+fn claim_window_close(
+    flow: &QuitFlow,
+    registry: &document_windows::DocumentWindowRegistry,
+    lifecycle: &window_lifecycle::DocumentLifecycle,
+    id: &str,
+    request_id: u64,
+) -> Result<(), String> {
+    let state = flow.state.lock().unwrap();
+    if state.prompt.1 != QuitPromptPhase::Idle
+        || flow.requested.load(Ordering::SeqCst)
+        || flow.quitting.load(Ordering::SeqCst)
+    {
+        return Err("Application quit superseded this window close".into());
+    }
+    let owner = registry
+        .document_window(id)
+        .ok_or("Document window is no longer registered")?;
+    // Quit invalidates close identities in begin_prompts. Revalidate under the quit lock even
+    // after cancellation returns it to Idle: the old save choice cannot authorize later edits.
+    if !lifecycle.close_confirmed(&owner.native_label, request_id) {
+        return Err("The document window close is stale; close the window again".into());
+    }
+    if !registry.begin_closing(id) {
+        return Err("Document window is no longer registered".into());
+    }
+    Ok(())
+}
+
+fn retire_destroyed_quit_prompt(
+    flow: &QuitFlow,
+    lifecycle: &window_lifecycle::DocumentLifecycle,
+    label: &str,
+) -> Option<u64> {
+    let mut state = flow.state.lock().unwrap();
+    if !lifecycle.forget_window(label) {
+        return None;
+    }
+    let id = state.prompt.0;
+    retire_quit_prompt(flow, &mut state, id).then_some(id)
+}
+
+fn is_shared_utility(label: &str) -> bool {
+    label.starts_with("toolset-") || label == SPIN3D_DEBUGGER_WINDOW_LABEL
+}
+
+fn preserve_shared_utilities<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    closing: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let survivor = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .all_document_windows()
+        .into_iter()
+        .find(|document| {
+            document.native_label != closing.label()
+                && document.lifecycle == document_windows::DocumentWindowLifecycle::Ready
+        })
+        .and_then(|document| app.get_webview_window(&document.native_label));
+    for (label, utility) in app.webview_windows() {
+        if !is_shared_utility(&label) {
+            continue;
+        }
+        if survivor.is_none() {
+            panel_window::end_for_hide(app, &label);
+            utility.hide().map_err(|error| error.to_string())?;
+        }
+        #[cfg(windows)]
+        {
+            let target = utility.clone();
+            let old_owner = closing.hwnd().map_err(|error| error.to_string())?.0 as isize;
+            let new_owner = survivor
+                .as_ref()
+                .map(|owner| owner.hwnd().map(|handle| handle.0 as isize))
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .unwrap_or(0);
+            run_on_main_thread_blocking(&utility, move || {
+                use windows_sys::Win32::{
+                    Foundation::{GetLastError, SetLastError},
+                    UI::WindowsAndMessaging::{
+                        GetWindow, SetWindowLongPtrW, GWLP_HWNDPARENT, GW_OWNER,
+                    },
+                };
+                let hwnd = target.hwnd().map_err(|error| error.to_string())?.0 as _;
+                // SAFETY: both owners and the utility are live top-level HWNDs, on the main thread.
+                unsafe {
+                    if GetWindow(hwnd, GW_OWNER) as isize == old_owner {
+                        SetLastError(0);
+                        if SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, new_owner) == 0
+                            && GetLastError() != 0
+                        {
+                            return Err(format!(
+                                "Could not preserve shared utility {label}: {}",
+                                GetLastError()
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .and_then(|result| result)?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = utility;
+        }
     }
     Ok(())
 }
 
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+const TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME: &str = "toolbar-layout-state.v2.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "table.insertDialog",
@@ -642,6 +1609,8 @@ struct PluginMenuItemInput {
     id: String,
     #[serde(default)]
     core_routed: bool,
+    #[serde(default)]
+    separator_before: bool,
     label: String,
     #[serde(default = "default_plugin_menu_location")]
     location: String,
@@ -721,8 +1690,15 @@ struct ToolsetWindowState {
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct NativeCommandPayload {
+    command_id: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ToolsetCommandPayload {
     command_id: String,
+    target: palette_routing::PaletteTarget,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -731,11 +1707,13 @@ struct NativeOpenDocumentPayload {
     path: String,
     display_name: String,
     contents: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
 struct PendingOpenDocument {
-    payload: Mutex<Option<NativeOpenDocumentPayload>>,
+    payload: Mutex<VecDeque<NativeOpenDocumentPayload>>,
     // Window existence is not a readiness signal: macOS may close every window after setup.
     setup_completed: AtomicBool,
 }
@@ -753,7 +1731,10 @@ impl PendingOpenDocument {
         payload: NativeOpenDocumentPayload,
         main_window_exists: bool,
     ) -> Result<OpenDocumentDelivery, String> {
-        *self.payload.lock().map_err(|error| error.to_string())? = Some(payload);
+        self.payload
+            .lock()
+            .map_err(|error| error.to_string())?
+            .push_back(payload);
         Ok(if !self.setup_completed.load(Ordering::SeqCst) {
             OpenDocumentDelivery::PendingOnly
         } else if main_window_exists {
@@ -952,6 +1933,11 @@ pub fn run() {
     let builder = builder
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
+        .manage(session_coordinator::SessionCoordinator::default())
+        .manage(window_lifecycle::DocumentLifecycle::default())
+        .manage(document_windows::DocumentWindowRegistry::with_main())
+        .manage(runtime_broker::State::default())
+        .manage(palette_routing::PaletteRouting::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
@@ -991,6 +1977,9 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                runtime_broker::forget_window(webview.app_handle(), webview.label());
+            }
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 if let Some(window) = webview.app_handle().get_webview_window(webview.label()) {
                     let target = window.clone();
@@ -1009,7 +1998,7 @@ pub fn run() {
                 // Reset before the new page can install its focus listener or acquire a lease.
                 panel_window::reset_for_webview(&webview.window());
             }
-            if webview.label() == MAIN_WINDOW_LABEL
+            if is_document_window(webview.app_handle(), webview.label())
                 && matches!(payload.event(), PageLoadEvent::Finished)
             {
                 // WKWebView applies index.html's initial `<title>ChemDraft</title>` after setup,
@@ -1024,18 +2013,8 @@ pub fn run() {
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
             let command_id = event.id().as_ref();
-            #[cfg(target_os = "macos")]
             if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
                 check_for_updates(app);
-                return;
-            }
-            // Windows runs the check in the document webview: it owns the prompt, the download
-            // progress, and the session flush that must precede the installer (appUpdates.ts).
-            #[cfg(windows)]
-            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
-                if let Err(error) = emit_command_to_main(app, command_id) {
-                    eprintln!("Could not route the update check: {error}");
-                }
                 return;
             }
             if command_id == APP_QUIT_COMMAND_ID {
@@ -1057,49 +2036,47 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            if window.label() == MAIN_WINDOW_LABEL {
+            if matches!(event, WindowEvent::Destroyed) {
+                runtime_broker::forget_window(window.app_handle(), window.label());
+            }
+            if is_document_window(window.app_handle(), window.label()) {
                 match event {
-                    // macOS: closing the document window hides it and the app lives on in the
-                    // Dock (RunEvent::Reopen brings it back).
-                    #[cfg(target_os = "macos")]
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        if !prompt_waits_for_user(&QUIT) {
-                            dialog_windows::dismiss_owned(window.app_handle(), "ownerClose");
-                            if let Err(error) = window.hide() {
-                                eprintln!("Could not hide ChemDraft main window: {error}");
-                            }
-                        }
-                    }
-                    // Elsewhere there is no Dock to reopen from, and the hidden tooltip and
-                    // prewarmed popovers would keep a windowless process alive: closing the
-                    // document window quits — after the document flushes its pending autosave.
-                    #[cfg(not(target_os = "macos"))]
-                    WindowEvent::CloseRequested { api, .. } => {
-                        api.prevent_close();
-                        request_quit(window.app_handle());
+                        request_close_window(window.app_handle(), window.label());
                     }
                     WindowEvent::Destroyed => {
-                        // The close button only hides the main window, so its actual destruction
-                        // means the app is dying — including SIGTERM teardowns that never fire
-                        // ExitRequested. Raise the quit flag so palette destruction that follows
-                        // isn't recorded as user closes.
-                        APP_QUITTING.store(true, Ordering::SeqCst);
-                        panel_full_size::restore_all(window.app_handle());
-                        dialog_windows::dismiss_owned(window.app_handle(), "quit");
-                        window.state::<ocsr_engine::OcsrEngineState>().shutdown();
-                        external_tools::shutdown(window.app_handle());
-                        assistant_mcp::shutdown();
-                        window
-                            .state::<naming_engine::NamingEngineState>()
-                            .shutdown();
+                        if let Some(id) = retire_destroyed_quit_prompt(
+                            &QUIT,
+                            &window.state::<window_lifecycle::DocumentLifecycle>(),
+                            window.label(),
+                        ) {
+                            for label in document_labels(window.app_handle()) {
+                                let _ =
+                                    window
+                                        .app_handle()
+                                        .emit_to(&label, QUIT_CANCELLED_EVENT, id);
+                            }
+                        }
+                        // Application services belong to the process. An approved close has already
+                        // removed/flushed its session; process teardown preserves the quit session.
+                        if let Some(owner) = window
+                            .state::<document_windows::DocumentWindowRegistry>()
+                            .owner_of(window.label())
+                        {
+                            window
+                                .state::<document_windows::DocumentWindowRegistry>()
+                                .remove(&owner.window_id);
+                        }
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         // Frames changed by quit teardown are not the user's; skip like palettes do.
                         // An early return rather than clippy's suggested match guard: a guard that
                         // fails falls through to the next arm, which is only equivalent as long as
                         // nothing below also matches Moved/Resized. This says what it means.
-                        if APP_QUITTING.load(Ordering::SeqCst) {
+                        if APP_QUITTING.load(Ordering::SeqCst)
+                            || QUIT.requested.load(Ordering::SeqCst)
+                        {
                             return;
                         }
                         // Windows sends Resized when the owner is restored from the taskbar;
@@ -1110,6 +2087,38 @@ pub fn run() {
                         }
                     }
                     WindowEvent::Focused(true) => {
+                        // A background quit drain can hold the coordinator through disk I/O.
+                        // Never queue a main-thread metadata write ahead of AppKit's reply.
+                        if APP_QUITTING.load(Ordering::SeqCst)
+                            || QUIT.requested.load(Ordering::SeqCst)
+                        {
+                            return;
+                        }
+                        let registry = window.state::<document_windows::DocumentWindowRegistry>();
+                        let previous = registry.active_document_window().map(|w| w.window_id);
+                        registry.mark_activated(window.label());
+                        if let Some(owner) = registry.owner_of(window.label()) {
+                            match window
+                                .state::<session_coordinator::SessionCoordinator>()
+                                .set_active(&owner.window_id)
+                            {
+                                Ok(delay) => {
+                                    session_coordinator::schedule(window.app_handle(), delay)
+                                }
+                                Err(error) => {
+                                    eprintln!("Could not record active session window: {error}")
+                                }
+                            }
+                        }
+                        dialog_windows::reown_preferences(window.app_handle(), None);
+                        if let Some(active) = registry.active_document_window() {
+                            if previous.as_deref() != Some(active.window_id.as_str()) {
+                                let _ = window.app_handle().emit(
+                                    "chemdraft://active-document-window",
+                                    serde_json::json!({ "windowId": active.window_id }),
+                                );
+                            }
+                        }
                         schedule_suspended_utility_restore(window.app_handle());
                     }
                     _ => {}
@@ -1188,11 +2197,18 @@ pub fn run() {
                             window.label()
                         );
                     }
-                    if let Err(error) = window.app_handle().emit_to(
-                        MAIN_WINDOW_LABEL,
-                        PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
-                        window.label(),
-                    ) {
+                    if let Err(error) = owned_document_webview(window.app_handle(), window.label())
+                        .ok_or_else(|| "Panel document owner is not available.".to_string())
+                        .and_then(|owner| {
+                            owner
+                                .emit_to(
+                                    owner.label(),
+                                    PLUGIN_PANEL_WINDOW_CLOSED_EVENT,
+                                    window.label(),
+                                )
+                                .map_err(|error| error.to_string())
+                        })
+                    {
                         eprintln!(
                             "Could not report the closed panel window {}: {error}",
                             window.label()
@@ -1257,6 +2273,12 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            match document_session_path(app) {
+                Ok(path) => app
+                    .state::<session_coordinator::SessionCoordinator>()
+                    .initialize(path, "main", true),
+                Err(error) => eprintln!("Could not start document session coordinator: {error}"),
+            }
             panel_window::observe_document_pointer_release(app);
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
@@ -1284,6 +2306,16 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
                 eprintln!("Could not set ChemDraft activation policy: {error}");
+            }
+
+            // The first config-created window exists before its initial reveal and menu install.
+            app.state::<document_windows::DocumentWindowRegistry>()
+                .set_ready(MAIN_WINDOW_LABEL);
+
+            // A host failure must not prevent opening the drawing window. Plugin startup will
+            // report its specific broker failure; it never constructs a document-side owner.
+            if let Err(error) = runtime_broker::create_runtime_window(app) {
+                eprintln!("Plugin runtime host failed to start: {error}");
             }
 
             #[cfg(not(target_os = "macos"))]
@@ -1329,6 +2361,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            runtime_broker::runtime_broker_connect,
+            runtime_broker::runtime_broker_send,
+            runtime_broker::runtime_broker_disconnect,
             assistant_mcp::assistant_mcp_session_open,
             assistant_mcp::assistant_mcp_session_close,
             assistant_mcp::assistant_mcp_respond,
@@ -1355,6 +2390,8 @@ pub fn run() {
             dialog_windows::dialog_publish,
             dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,
+            structure_search::open_structure_search,
+            structure_search::set_structure_search_enabled,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
             close_toolset_window,
@@ -1364,6 +2401,7 @@ pub fn run() {
             save_toolset_customization_state,
             load_document_session,
             save_document_session,
+            flush_document_session,
             set_toolbars_menu,
             focus_main_document_window,
             focus_main_document_window_if_app_active,
@@ -1398,6 +2436,8 @@ pub fn run() {
             cancel_quit,
             close_toolset_popover,
             route_toolset_command,
+            publish_palette_snapshot,
+            palette_routing_state,
             sync_plugin_menu_items,
             read_clipboard_payload,
             write_clipboard_items,
@@ -1405,6 +2445,7 @@ pub fn run() {
             write_clipboard_image,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
+            dialog_windows::preferences_ready,
             window_logical_position,
             agent_bridge_status,
             palette_focus_diagnostic,
@@ -1447,7 +2488,12 @@ pub fn run() {
         .expect("error while building ChemDraft")
         .run(|app, event| match event {
             RunEvent::ExitRequested { code, api, .. } => {
-                if should_flush_exit_request(
+                if cfg!(target_os = "macos")
+                    && code.is_none()
+                    && !APP_QUITTING.load(Ordering::SeqCst)
+                {
+                    api.prevent_exit();
+                } else if should_flush_exit_request(
                     cfg!(target_os = "macos"),
                     code,
                     APP_QUITTING.load(Ordering::SeqCst),
@@ -1457,6 +2503,7 @@ pub fn run() {
                     api.prevent_exit();
                     request_quit(app);
                 } else {
+                    flush_session_before_exit(app);
                     APP_QUITTING.store(true, Ordering::SeqCst);
                     panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -1466,9 +2513,9 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
-                // only when the preference is enabled. System termination and preference-off
-                // AppKit quit still reach this final, non-blocking cleanup as before.
+                // AppKit's deferred reply already drained or reached its deadline. A fallback
+                // exit may drain once, but must not add another wait after that decision.
+                flush_session_before_exit(app);
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -1498,17 +2545,83 @@ pub fn run() {
         });
 }
 
-#[cfg(target_os = "macos")]
-fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(updater) = app.sparkle_updater() else {
-        // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately does
-        // not start there. Packaged builds always have an updater unless their Info.plist is broken.
-        eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
-        return;
-    };
+// Must match appUpdateChannelNotice in apps/desktop/src/appUpdates.ts.
+const DEVELOPMENT_UPDATES_MESSAGE: &str =
+    "Updates are off in development builds. Install the released ChemDraft to get updates.";
 
-    if let Err(error) = updater.check_for_updates() {
-        eprintln!("Could not check for a ChemDraft update: {error}");
+fn update_channel_available(identifier: &str, feed_url: Option<&str>) -> bool {
+    identifier == "org.chemdraft.desktop" && feed_url.is_some_and(|url| !url.trim().is_empty())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCheckRoute {
+    DevelopmentNotice,
+    RunUpdater,
+}
+
+fn update_check_route(identifier: &str, feed_url: Option<&str>) -> UpdateCheckRoute {
+    if update_channel_available(identifier, feed_url) {
+        UpdateCheckRoute::RunUpdater
+    } else {
+        UpdateCheckRoute::DevelopmentNotice
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn update_feed_url<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<String> {
+    objc2_foundation::NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("SUFeedURL"))?
+        .downcast_ref::<NSString>()
+        .map(|url| url.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn update_feed_url<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")?
+        .get("endpoints")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|url| !url.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let feed_url = update_feed_url(app);
+    if update_check_route(&app.config().identifier, feed_url.as_deref())
+        == UpdateCheckRoute::DevelopmentNotice
+    {
+        let mut message = app
+            .dialog()
+            .message(DEVELOPMENT_UPDATES_MESSAGE)
+            .title("ChemDraft Update");
+        if let Some(window) = active_document_webview(app) {
+            message = message.parent(&window);
+        }
+        message.show(|_| {});
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let Some(updater) = app.sparkle_updater() else {
+            // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately
+            // does not start there.
+            eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
+            return;
+        };
+
+        if let Err(error) = updater.check_for_updates() {
+            eprintln!("Could not check for a ChemDraft update: {error}");
+        }
+    }
+    // Windows keeps the existing webview flow, including saving before the installer takes over.
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = emit_command_to_main(app, CHECK_FOR_UPDATES_COMMAND_ID) {
+        eprintln!("Could not route the update check: {error}");
     }
 }
 
@@ -1530,9 +2643,33 @@ fn main_window_frame_action(visible: bool, has_saved_frame: bool) -> MainWindowF
 }
 
 fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
-        Some(window) => window,
-        None => create_main_window(app)?,
+    if quit_in_progress() {
+        return Err(QUITTING_WINDOW_REFUSAL.into());
+    }
+    let window = if let Some(window) = active_document_webview(app) {
+        window
+    } else {
+        // A7 recreates only the migrated first window; A10 alone enables additional windows.
+        let documents = app.state::<document_windows::DocumentWindowRegistry>();
+        if documents
+            .registered_document_window(MAIN_WINDOW_LABEL)
+            .is_none()
+        {
+            documents.register(MAIN_WINDOW_LABEL, MAIN_WINDOW_LABEL)?;
+        }
+        let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+            Some(window) => window,
+            None => match create_main_window(app) {
+                Ok(window) => window,
+                Err(error) => {
+                    documents.remove(MAIN_WINDOW_LABEL);
+                    return Err(error);
+                }
+            },
+        };
+        app.state::<document_windows::DocumentWindowRegistry>()
+            .set_ready(MAIN_WINDOW_LABEL);
+        window
     };
 
     let target = window.clone();
@@ -1661,8 +2798,7 @@ fn focus_main_document_window_impl<R: Runtime>(
     ) {
         return Ok(false);
     }
-    let window = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let window = active_document_webview(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
 
     window
@@ -1740,6 +2876,7 @@ mod window_title_tests {
 fn create_main_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    // This builder creates only the first migrated/config window; new-window creation is A10.
     let title = main_window_title();
     if let Some(config) = app
         .config()
@@ -1960,7 +3097,7 @@ async fn suspend_toolset_windows(
     suspended: bool,
     focus_export_session_id: Option<String>,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_document_window(&app, window.label()) {
         return Err("Only the document window can suspend floating windows.".into());
     }
     let _creation = match lock_window_creation() {
@@ -1976,6 +3113,7 @@ async fn suspend_toolset_windows(
         }
     };
     let restore_app = app.clone();
+    let owner_label = window.label().to_string();
     run_on_main_thread_blocking(&window, move || {
         if suspended {
             if quit_in_progress() {
@@ -1986,8 +3124,7 @@ async fn suspend_toolset_windows(
                 .into_values()
                 .filter(|window| is_suspended_utility_label(window.label()))
                 .collect();
-            let main = app
-                .get_webview_window(MAIN_WINDOW_LABEL)
+            let main = owned_document_webview(&app, &owner_label)
                 .ok_or_else(|| "ChemDraft utility suspension owner disappeared.".to_string())?;
             let document_minimized = main.is_minimized().unwrap_or(true);
             let mut snapshot: Vec<_> = windows
@@ -2092,7 +3229,7 @@ fn schedule_suspended_utility_restore<R: Runtime>(app: &tauri::AppHandle<R>) {
         let Ok(_creation) = lock_window_creation() else {
             return;
         };
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(&app) else {
             return;
         };
         let restore_app = app.clone();
@@ -2127,10 +3264,7 @@ fn restore_utility_labels<R: Runtime>(
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .is_none_or(|main| main.is_minimized().unwrap_or(true))
-    {
+    if active_document_webview(app).is_none_or(|main| main.is_minimized().unwrap_or(true)) {
         return Ok(());
     }
     // AppKit palettes use the floating level and hide on deactivation. Ordering them in while
@@ -2153,7 +3287,7 @@ fn restore_utility_labels<R: Runtime>(
             result = Err(QUITTING_WINDOW_REFUSAL.to_string());
             break;
         }
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(app) else {
             break;
         };
         if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
@@ -2231,8 +3365,7 @@ fn restore_utility_in_document_group<R: Runtime>(
         return Ok(());
     }
     let app = window.app_handle();
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = owned_document_webview(app, window.label())
         .ok_or_else(|| "ChemDraft utility restore owner disappeared.".to_string())?;
     if main.is_minimized().unwrap_or(true) || !main.is_visible().unwrap_or(false) {
         return Err("ChemDraft utility restore owner is not visible; retrying.".into());
@@ -2577,17 +3710,181 @@ fn load_toolset_customization_state(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, String> {
     let path = toolset_customization_state_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
-        return Ok(None);
-    };
-
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
+    read_toolset_customization_state(&path)
 }
 
-/// JS owns toolbar customization now (visibility, layout, user toolsets). It serializes the whole
-/// `ToolsetLayoutState` and persists it here; Rust just writes the opaque JSON to disk.
+// Frozen v1.1.1 top-level contract. New layout fields belong ONLY in the side file: the released
+// app uses a strict Zod schema and cannot ignore unknown fields in toolbar-layout-state.json.
+const LEGACY_TOOLSET_CUSTOMIZATION_KEYS: &[&str] = &[
+    "version",
+    "toolsetOrder",
+    "toolsetOverrides",
+    "userToolsets",
+];
+
+// Transient load provenance, consumed by the desktop migration before schema validation.
+const TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY: &str =
+    "mainToolbarDefaultsMetadataUnavailable";
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolsetCustomizationExtensions {
+    version: u32,
+    // Bind metadata to its layout. An older app may rewrite the main file without touching this
+    // one, and an interrupted two-file save must not apply a revision to the wrong layout.
+    legacy_state: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+    // Retain the binding for the main file still on disk while publishing the next one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<ToolsetCustomizationBinding>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolsetCustomizationBinding {
+    legacy_state: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+fn valid_toolset_customization_fields(fields: &serde_json::Map<String, serde_json::Value>) -> bool {
+    // Keep this list aligned with the in-memory ToolsetLayoutState schema. Unrecognised
+    // side-file fields are corrupt/unsupported metadata, not layout.
+    fields
+        .keys()
+        .all(|key| key == "mainToolbarDefaultsRevision")
+        && fields
+            .get("mainToolbarDefaultsRevision")
+            .is_none_or(|value| value.as_u64().is_some_and(|revision| revision > 0))
+}
+
+fn split_toolset_customization_state(
+    state: serde_json::Value,
+) -> Result<(serde_json::Value, ToolsetCustomizationExtensions), String> {
+    let serde_json::Value::Object(mut fields) = state else {
+        return Err("Toolbar customization state must be an object".into());
+    };
+    // This is an IPC hint, never a persisted layout field (including in the side file).
+    fields.remove(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY);
+    let (legacy, fields) = fields
+        .into_iter()
+        .partition(|(key, _)| LEGACY_TOOLSET_CUSTOMIZATION_KEYS.contains(&key.as_str()));
+    let legacy = serde_json::Value::Object(legacy);
+    let extensions = ToolsetCustomizationExtensions {
+        version: 1,
+        legacy_state: legacy.clone(),
+        fields,
+        previous: None,
+    };
+    Ok((legacy, extensions))
+}
+
+fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    let Some(contents) = read_optional_file(path)? else {
+        return Ok(None);
+    };
+    let state = serde_json::from_str(&contents)
+        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))?;
+    restore_toolset_customization_extensions(path, state).map(Some)
+}
+
+fn restore_toolset_customization_extensions(
+    path: &Path,
+    state: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (mut legacy, inline) = split_toolset_customization_state(state)?;
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    // The side file is optional metadata. Missing, unreadable or invalid metadata must never
+    // discard the user's otherwise valid layout (main-file errors still propagate above).
+    let side_contents = read_optional_file(&side_path);
+    // No side file is the normal v1.1.1 upgrade path: JS must still migrate its old defaults.
+    // Only a present/unreadable side file can indicate lost metadata from a newer build.
+    let side_missing = matches!(&side_contents, Ok(None));
+    let extensions = side_contents
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<ToolsetCustomizationExtensions>(&text).ok())
+        .filter(|side| side.version == 1)
+        .and_then(|side| {
+            if side.legacy_state == legacy && valid_toolset_customization_fields(&side.fields) {
+                Some(side.fields)
+            } else {
+                side.previous
+                    .filter(|previous| {
+                        previous.legacy_state == legacy
+                            && valid_toolset_customization_fields(&previous.fields)
+                    })
+                    .map(|previous| previous.fields)
+            }
+        });
+    let fields = legacy.as_object_mut().expect("split returns an object");
+    if let Some(extensions) = extensions {
+        fields.extend(extensions);
+    }
+    // Earlier 1.2 builds wrote extensions inline. They take precedence until the next save
+    // moves them to the side file and repairs the legacy file for a downgrade.
+    fields.extend(inline.fields);
+    if !side_missing && !fields.contains_key("mainToolbarDefaultsRevision") {
+        fields.insert(
+            TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY.into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    Ok(legacy)
+}
+
+fn write_toolset_customization_state(path: &Path, state: serde_json::Value) -> Result<(), String> {
+    write_toolset_customization_state_with_main_writer(path, state, write_file_atomic)
+}
+
+fn write_toolset_customization_state_with_main_writer(
+    path: &Path,
+    state: serde_json::Value,
+    write_main: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (legacy, mut extensions) = split_toolset_customization_state(state)?;
+    // An explicit replacement can recover malformed JSON: there is no usable previous binding
+    // to preserve. Genuine read failures still abort before either file is written; LOAD remains
+    // strict so it can never turn corrupt saved data into defaults and overwrite it silently.
+    let contents = match fs::read(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let previous = contents
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .filter(serde_json::Value::is_object)
+        .map(|state| restore_toolset_customization_extensions(path, state))
+        .transpose()?;
+    // Read back whichever binding matches the CURRENT main file, including a previous binding
+    // left by an interrupted save. Repeated failed saves must not evict that binding either.
+    if let Some(previous) = previous {
+        let (previous_legacy, previous_extensions) = split_toolset_customization_state(previous)?;
+        if previous_legacy != legacy {
+            extensions.previous = Some(ToolsetCustomizationBinding {
+                legacy_state: previous_legacy,
+                fields: previous_extensions.fields,
+            });
+        }
+    }
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    let side_contents =
+        serde_json::to_string_pretty(&extensions).map_err(|error| error.to_string())?;
+    let contents = serde_json::to_string_pretty(&legacy).map_err(|error| error.to_string())?;
+    // Publish both bindings before replacing main: a failed rename or interrupted process can
+    // then load the revision for either complete main file without repeating a defaults migration.
+    write_file_atomic(&side_path, &side_contents)?;
+    write_main(path, &contents)?;
+    if extensions.previous.take().is_some() {
+        let collapsed =
+            serde_json::to_string_pretty(&extensions).map_err(|error| error.to_string())?;
+        // Main is committed. Cleanup is optional: both bindings remain safe if this fails or the
+        // process stops here, and the next save retries collapsing to just the committed binding.
+        let _ = write_file_atomic(&side_path, &collapsed);
+    }
+    Ok(())
+}
+
+/// JS owns toolbar customization. Rust separates its extensions from the strict v1.1.1 file.
 #[tauri::command]
 fn save_toolset_customization_state(
     app: tauri::AppHandle,
@@ -2600,25 +3897,422 @@ fn save_toolset_customization_state(
         return Ok(());
     }
     let path = toolset_customization_state_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    write_toolset_customization_state(&path, state)
+}
+
+#[cfg(test)]
+mod toolbar_customization_persistence_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    struct Files(PathBuf);
+
+    impl Files {
+        fn new() -> Self {
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "chemdraft-toolbar-downgrade-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+
+        fn main(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_STATE_FILENAME)
+        }
+
+        fn side(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME)
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> (Value, Value) {
+        // The Vitest downgrade contract parses this exact expected on-disk main file with a
+        // frozen copy of tag v1.1.1's COMPLETE Zod schema, including strict nested objects.
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/__fixtures__/toolbarLayoutDowngrade.json"
+        ))
+        .unwrap();
+        let legacy = fixture["legacyState"].clone();
+        let mut current = legacy.clone();
+        current
+            .as_object_mut()
+            .unwrap()
+            .extend(fixture["extensions"].as_object().unwrap().clone());
+        (legacy, current)
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn without_metadata(mut legacy: Value) -> Value {
+        legacy[TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY] = json!(true);
+        legacy
+    }
+
+    #[test]
+    fn saves_released_file_shape_and_round_trips_extensions() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+        // Saving a state without extensions must clear any previously stored revision.
+        write_toolset_customization_state(&files.main(), legacy.clone()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+    }
+
+    fn assert_explicit_save_recovers_corrupt_main_file(with_side_file: bool) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), "{").unwrap();
+        if with_side_file {
+            let mut stale_legacy = legacy.clone();
+            stale_legacy["toolsetOverrides"][0]["visible"] = json!(false);
+            fs::write(
+                files.side(),
+                json!({
+                    "version": 1,
+                    "legacyState": stale_legacy,
+                    "fields": {"mainToolbarDefaultsRevision": 2}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        // Use the persistence function called by save_toolset_customization_state: an explicit
+        // customization must replace corrupt saved data with the user's chosen valid layout.
+        write_toolset_customization_state(&files.main(), current.clone())
+            .expect("explicit customization must recover a corrupt main file");
+        // This exact fixture has the frozen v1.1.1 shape, with no extension fields inline.
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file() {
+        assert_explicit_save_recovers_corrupt_main_file(false);
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file_with_valid_side_file() {
+        assert_explicit_save_recovers_corrupt_main_file(true);
+    }
+
+    fn assert_explicit_save_recovers_invalid_main_bytes(contents: &[u8]) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), contents).unwrap();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_null_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"null");
+    }
+
+    #[test]
+    fn explicit_save_recovers_array_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"[]");
+    }
+
+    #[test]
+    fn explicit_save_recovers_non_utf8_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(&[0xff, 0xfe]);
+    }
+
+    #[test]
+    fn explicit_save_propagates_main_file_read_errors_without_writing() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        // A directory at the main path causes a genuine I/O failure on macOS and Windows,
+        // independent of whether the test runner can bypass filesystem permission bits.
+        fs::create_dir(files.main()).unwrap();
+        let side = json!({
+            "version": 1,
+            "legacyState": legacy,
+            "fields": {"mainToolbarDefaultsRevision": 2}
+        })
+        .to_string();
+        fs::write(files.side(), &side).unwrap();
+        let read_error = fs::read_to_string(files.main()).unwrap_err().to_string();
+
+        assert_eq!(
+            write_toolset_customization_state(&files.main(), current).unwrap_err(),
+            read_error
+        );
+        assert!(files.main().is_dir());
+        assert_eq!(fs::read_to_string(files.side()).unwrap(), side);
+    }
+
+    #[test]
+    fn migrates_inline_prerelease_revision_and_repairs_on_next_save() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), current.to_string()).unwrap();
+        // Test with no side file and with an older conflicting side-file revision.
+        for side in [
+            None,
+            Some(json!({
+                "version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 2}
+            })),
+        ] {
+            if let Some(side) = side {
+                fs::write(files.side(), side.to_string()).unwrap();
+            }
+            let loaded = read_toolset_customization_state(&files.main())
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, current);
+        }
+        let loaded = read_toolset_customization_state(&files.main())
+            .unwrap()
+            .unwrap();
+        write_toolset_customization_state(&files.main(), loaded).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"],
+            json!({"mainToolbarDefaultsRevision": 1})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn legacy_layout_without_side_file_loads_without_metadata_hint() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy)
+        );
+    }
+
+    #[test]
+    fn present_but_corrupt_or_unreadable_side_file_sets_metadata_hint() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        let valid = json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}});
+        let mut corrupt = vec![
+            "{".to_string(),
+            "null".to_string(),
+            "[]".to_string(),
+            "{}".to_string(),
+        ];
+        for revision in [json!(0), json!(-1), json!(1.5), json!("1"), Value::Null] {
+            let mut side = valid.clone();
+            side["fields"]["mainToolbarDefaultsRevision"] = revision;
+            corrupt.push(side.to_string());
+        }
+        for (key, value) in [
+            ("version", json!(2)),
+            ("legacyState", json!({})),
+            ("fields", json!([])),
+            ("fields", json!({"version": 1})),
+            ("fields", json!({"unknown": true})),
+            ("unknown", json!(true)),
+        ] {
+            let mut side = valid.clone();
+            side[key] = value;
+            corrupt.push(side.to_string());
+        }
+        for side in corrupt {
+            fs::write(files.side(), &side).unwrap();
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(without_metadata(legacy.clone())),
+                "side file: {side}"
+            );
+        }
+        fs::remove_file(files.side()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+    }
+
+    #[test]
+    fn older_app_edits_and_interrupted_saves_do_not_reuse_stale_revision() {
+        let files = Files::new();
+        let (mut legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        legacy["toolsetOverrides"][0]["visible"] = json!(false);
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+        // An orphan side file must never resurrect a layout when the main file is absent.
+        fs::remove_file(files.main()).unwrap();
+        assert!(read_toolset_customization_state(&files.main())
+            .unwrap()
+            .is_none());
+        fs::write(files.main(), "{").unwrap();
+        assert!(read_toolset_customization_state(&files.main()).is_err());
+    }
+
+    #[test]
+    fn future_top_level_fields_cannot_leak_into_released_file() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        current["futureExtension"] = json!({"value": true});
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"]["futureExtension"],
+            json!({"value": true})
+        );
+    }
+
+    #[test]
+    fn side_write_failure_is_reported_and_leaves_existing_layout_intact() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert!(write_toolset_customization_state(&files.main(), current).is_err());
+        assert_eq!(read_json(&files.main()), legacy);
+    }
+
+    #[test]
+    fn failed_main_write_preserves_revision_and_custom_layout_on_next_load() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        // Main has itemOrder AND itemAdditions. Losing this revision used to make startup
+        // add Chain and hide Double/Triple Bond, then persist that destructive fallback.
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        let mut pending = current.clone();
+        pending["toolsetOverrides"][0]["itemOrder"]["core.main.items"] = json!([
+            "tool.select",
+            "tool.doubleBond",
+            "user.main.space.1",
+            "tool.tripleBond"
+        ]);
+        pending["toolsetOverrides"][0]["itemAdditions"][0]["index"] = json!(2);
+        let (pending_legacy, _) = split_toolset_customization_state(pending.clone()).unwrap();
+
+        for _ in 0..2 {
+            let result = write_toolset_customization_state_with_main_writer(
+                &files.main(),
+                pending.clone(),
+                |_, _| Err("injected main rename failure".into()),
+            );
+            assert_eq!(result.unwrap_err(), "injected main rename failure");
+            assert_eq!(read_json(&files.main()), legacy);
+            let side = read_json(&files.side());
+            assert_eq!(side["legacyState"], pending_legacy);
+            assert_eq!(side["previous"]["legacyState"], legacy);
+            assert_eq!(side["previous"]["fields"]["mainToolbarDefaultsRevision"], 1);
+            // A fresh load, including after another failed save, returns the complete old state.
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(current.clone())
+            );
+        }
+
+        // Also simulate a process stopping just AFTER main rename, before optional cleanup.
+        fs::write(files.main(), pending_legacy.to_string()).unwrap();
+        let loaded = read_toolset_customization_state(&files.main())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, pending);
+        write_toolset_customization_state(&files.main(), loaded).unwrap();
+        assert!(read_json(&files.side()).get("previous").is_none());
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(pending)
+        );
+    }
+
+    #[test]
+    fn successful_main_write_collapses_bindings_and_transient_hint_is_never_persisted() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        current["toolsetOverrides"][0]["visible"] = json!(false);
+        current[TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY] = json!(true);
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        let side = read_json(&files.side());
+        assert!(side.get("previous").is_none());
+        assert!(side["fields"]
+            .get(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY)
+            .is_none());
+        assert!(read_json(&files.main())
+            .get(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY)
+            .is_none());
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
 }
 
 #[tauri::command]
-fn load_document_session(
+async fn load_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    fresh_start: Option<bool>,
 ) -> Result<Option<serde_json::Value>, String> {
-    if window.label() != MAIN_WINDOW_LABEL {
+    if !is_document_window(&app, window.label()) {
         return Err("Only the main document window can restore the document session".into());
     }
-    let path = document_session_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
-        return Ok(None);
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is not registered")?;
+    let session = app
+        .state::<session_coordinator::SessionCoordinator>()
+        .restore_window(
+            &owner.window_id,
+            owner.incarnation,
+            fresh_start.unwrap_or(false),
+        )?;
+    let Some(mut session) = session else {
+        return Ok(Some(
+            serde_json::json!({ "incarnation": owner.incarnation, "session": null }),
+        ));
     };
-
-    let mut session = serde_json::from_str(&contents)
-        .map_err(|error| format!("Document session is invalid: {error}"))?;
     document_session::restore_file_scopes(&mut session, |path| {
         use tauri_plugin_fs::FsExt;
         let scope = app
@@ -2633,24 +4327,68 @@ fn load_document_session(
         }
         Ok(())
     });
-    Ok(Some(session))
+    Ok(Some(
+        serde_json::json!({ "incarnation": owner.incarnation, "session": session }),
+    ))
 }
 
 /// The working document's autosave (serialized contents + file association). JS owns the envelope
-/// and writes it on every edit so a relaunch resumes the last edited state; Rust just persists the
-/// opaque JSON, exactly like the toolbar customization state.
+/// snapshot; only the coordinator owns the session file and accepts revisioned window updates.
 #[tauri::command]
-fn save_document_session(
+async fn save_document_session(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     state: serde_json::Value,
+    revision: u64,
+    incarnation: u64,
+    flush: bool,
+    replace_preserved: bool,
 ) -> Result<(), String> {
-    if window.label() != MAIN_WINDOW_LABEL {
-        return Err("Only the main document window can persist the document session".into());
+    if !is_document_window(&app, window.label()) {
+        return Err("Only a registered document window can persist its session".into());
     }
-    let path = document_session_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .owner_of(window.label())
+        .ok_or("Document window is not registered")?;
+    let writer_app = app.clone();
+    session_coordinator::with_timeout(QUIT_FLUSH_GRACE, move || {
+        let delay = writer_app
+            .state::<session_coordinator::SessionCoordinator>()
+            .submit(
+                (&owner.window_id, incarnation),
+                revision,
+                state,
+                replace_preserved,
+                flush,
+                Instant::now(),
+            )?;
+        // A timed-out caller may leave a delayed write behind; it still needs its timer.
+        session_coordinator::schedule(&writer_app, delay);
+        Ok(())
+    })
+}
+
+/// Update installers may exit without a RunEvent. Drain every window's accepted snapshot,
+/// including when the current renderer deliberately preserves the previous startup session.
+#[tauri::command]
+async fn flush_document_session(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Only a registered document window can flush its session".into());
+    }
+    if QUIT.requested.load(Ordering::SeqCst)
+        || APP_QUITTING.load(Ordering::SeqCst)
+        || prompt_waits_for_user(&QUIT)
+    {
+        return Err("ChemDraft is quitting; the update was cancelled".into());
+    }
+    let (id, _) = begin_document_flush(&app, window_lifecycle::FlushPurpose::Update);
+    app.state::<window_lifecycle::DocumentLifecycle>()
+        .wait_for_update(id, QUIT_FLUSH_GRACE)?;
+    flush_session(&app)
 }
 
 /// JS pushes the Toolbars menu model (which toolsets exist, their titles, current visibility) and
@@ -2727,8 +4465,7 @@ fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<boo
     {
         // Check NSApplication and raise on the same AppKit thread, even if this command's caller
         // is later moved to a worker. A missing main-thread marker must never authorize a raise.
-        let window = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
+        let window = active_document_webview(&app)
             .ok_or_else(|| "Main document window is not available.".to_string())?;
         run_on_main_thread_blocking(&window, move || {
             focus_main_document_window_impl(&app, MainWindowFocusMode::OnlyIfAppActive)
@@ -3060,13 +4797,10 @@ fn plugin_panel_action_forward(
     request: PluginPanelActionForwardRequest,
 ) -> Result<(), String> {
     let payload = authenticated_plugin_panel_action(window.label(), request)?;
-    window
-        .app_handle()
-        .emit_to(
-            MAIN_WINDOW_LABEL,
-            "chemdraft://plugin-panel-action",
-            payload,
-        )
+    let owner = owned_document_webview(window.app_handle(), window.label())
+        .ok_or("Panel document owner is not available.")?;
+    owner
+        .emit_to(owner.label(), "chemdraft://plugin-panel-action", payload)
         .map_err(|error| error.to_string())
 }
 
@@ -3128,7 +4862,11 @@ fn validate_plugin_panel_event(
         | "chemdraft://plugin-panel-closed" => {
             let plugin_id = payload["pluginId"].as_str().ok_or("Missing panel owner.")?;
             let panel_id = payload["panelId"].as_str().ok_or("Missing panel id.")?;
-            if plugin_panel_identity_window_label(plugin_id, panel_id) != label {
+            let owner = payload
+                .get("windowId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("main");
+            if plugin_panel_owned_identity_window_label(plugin_id, panel_id, owner) != label {
                 return Err("This event does not belong to its source panel.".into());
             }
             Ok(())
@@ -3172,14 +4910,35 @@ fn plugin_panel_event_forward(
                 )
                 && panel_window::is_active(&target)?
             {
-                return emit_command_to_main(target.app_handle(), &shortcut.document_command_id());
+                let owner = owned_document_webview(target.app_handle(), target.label())
+                    .ok_or("Panel document owner is not available.")?;
+                return dispatch_dom_command_event(
+                    &owner,
+                    &NativeCommandPayload {
+                        command_id: shortcut.document_command_id(),
+                    },
+                );
             }
             Ok(())
         })?;
     }
-    window
-        .app_handle()
-        .emit_to(MAIN_WINDOW_LABEL, &event, payload)
+    let owner = owned_document_webview(window.app_handle(), window.label())
+        .ok_or("Panel document owner is not available.")?;
+    // Panels share the live command catalog with palettes. Their authenticated bootstrap request
+    // predates palette targets; fill it from the registry rather than weakening the target filter.
+    let payload = if event == "chemdraft://toolset-command-specs-request" {
+        let state = window
+            .state::<palette_routing::PaletteRouting>()
+            .state(&window.state::<document_windows::DocumentWindowRegistry>());
+        let Some(target) = state.target else {
+            return Ok(());
+        };
+        serde_json::json!({ "target": target })
+    } else {
+        payload
+    };
+    owner
+        .emit_to(owner.label(), &event, payload)
         .map_err(|error| error.to_string())
 }
 
@@ -3448,6 +5207,38 @@ const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-
 const PLUGIN_PANEL_REPORT_CLEARED_EVENT: &str = "chemdraft://plugin-panel-report-cleared";
 const PLUGIN_PANEL_CLOSED_EVENT: &str = "chemdraft://plugin-panel-closed";
 
+/// Destruction/navigation cleanup is scoped to the source document, independently of activation.
+/// Broker disconnect notifies the sole runtime so each plugin also receives its close callback.
+fn close_owned_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>, source: &str) {
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let owner_id = registry
+        .owner_of(source)
+        .filter(|owner| owner.native_label == source)
+        .map(|owner| owner.window_id)
+        // Broker document ids equal native labels. Destruction can follow registry removal.
+        .or_else(|| runtime_broker::document_label(source).then(|| source.to_owned()));
+    let Some(owner_id) = owner_id else {
+        return;
+    };
+    UTILITY_SUSPENSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .close_panels_for_owner(&owner_id);
+    for (label, panel) in app.webview_windows() {
+        if panel_ownership::owner_id(&label).as_deref() == Some(owner_id.as_str()) {
+            UTILITY_SUSPENSION
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .closed(&label);
+            let webview: &tauri::Webview<R> = panel.as_ref();
+            // Destruction/navigation may bypass the approved document-close path.
+            panel_full_size::will_hide(&webview.window());
+            let _ = persist_plugin_panel_geometry(&webview.window());
+            let _ = panel.destroy();
+        }
+    }
+}
+
 /// Mirror panelBridge.ts's UTF-8 hex identity, including the plugin owner: contributed panel ids
 /// alone are not unique. Extra payload fields (such as the report revision) are intentionally ignored.
 fn cancel_plugin_panel_restore(
@@ -3459,6 +5250,7 @@ fn cancel_plugin_panel_restore(
     struct PanelIdentity {
         plugin_id: String,
         panel_id: String,
+        window_id: Option<String>,
     }
     let Ok(identity) = serde_json::from_str::<PanelIdentity>(payload) else {
         return;
@@ -3466,14 +5258,22 @@ fn cancel_plugin_panel_restore(
     if identity.plugin_id.is_empty() || identity.panel_id.is_empty() {
         return;
     }
-    let label = plugin_panel_identity_window_label(&identity.plugin_id, &identity.panel_id);
+    let label = plugin_panel_owned_identity_window_label(
+        &identity.plugin_id,
+        &identity.panel_id,
+        identity.window_id.as_deref().unwrap_or("main"),
+    );
     suspension
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .closed(&label);
 }
 
-fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String {
+fn plugin_panel_owned_identity_window_label(
+    plugin_id: &str,
+    panel_id: &str,
+    window_id: &str,
+) -> String {
     let hex = |value: &str| {
         value
             .as_bytes()
@@ -3481,7 +5281,16 @@ fn plugin_panel_identity_window_label(plugin_id: &str, panel_id: &str) -> String
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
-    plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
+    if window_id == "main" {
+        plugin_panel_window_label(&format!("v1x{}x{}", hex(plugin_id), hex(panel_id)))
+    } else {
+        plugin_panel_window_label(&format!(
+            "v2x{}x{}x{}",
+            hex(window_id),
+            hex(plugin_id),
+            hex(panel_id)
+        ))
+    }
 }
 
 fn is_plugin_panel_window_label(label: &str) -> bool {
@@ -3677,9 +5486,17 @@ mod plugin_panel_label_tests {
             payload: serde_json::json!({"text": "\"}); alert('untrusted'); //"}),
         };
         for source in ["plugin-panel-other", "preferences", "toolset-core-main"] {
-            assert!(plugin_panel_publication_script(source, &publication, &state).is_err());
+            assert!(plugin_panel_publication_script(
+                &crate::test_documents(),
+                source,
+                &publication,
+                &state
+            )
+            .is_err());
         }
-        let script = plugin_panel_publication_script("main", &publication, &state).unwrap();
+        let script =
+            plugin_panel_publication_script(&crate::test_documents(), "main", &publication, &state)
+                .unwrap();
         assert!(script.starts_with("window.dispatchEvent(new CustomEvent("));
         assert!(script.contains("JSON.parse("));
         assert!(!script.contains("__TAURI_EVENT_PLUGIN_INTERNALS__"));
@@ -3692,13 +5509,31 @@ mod plugin_panel_label_tests {
             "chemdraft://plugin-panel-action-result",
         ] {
             publication.event = event.into();
-            assert!(plugin_panel_publication_script("main", &publication, &state).is_ok());
+            assert!(plugin_panel_publication_script(
+                &crate::test_documents(),
+                "main",
+                &publication,
+                &state
+            )
+            .is_ok());
         }
         publication.event = "chemdraft://analysis-window-action".into();
-        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        assert!(plugin_panel_publication_script(
+            &crate::test_documents(),
+            "main",
+            &publication,
+            &state
+        )
+        .is_err());
         publication.event = "chemdraft://analysis-window-snapshot".into();
         publication.target_label = "main".into();
-        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        assert!(plugin_panel_publication_script(
+            &crate::test_documents(),
+            "main",
+            &publication,
+            &state
+        )
+        .is_err());
     }
 
     #[test]
@@ -3720,7 +5555,8 @@ mod plugin_panel_label_tests {
             event: super::PLUGIN_PANEL_REPORT_CLEARED_EVENT.into(),
             payload: serde_json::json!({"pluginId": "a", "panelId": "b", "revision": 2}),
         };
-        plugin_panel_publication_script("main", &publication, &state).unwrap();
+        plugin_panel_publication_script(&crate::test_documents(), "main", &publication, &state)
+            .unwrap();
         state.lock().unwrap().release(false);
         resume_deferred_plugin_panels(&state, || false, |_| panic!("removed panel restored"))
             .unwrap();
@@ -3964,15 +5800,18 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn close_window_closes_report_windows_through_tauri_and_everything_else_natively() {
+    fn close_window_closes_reports_and_hosted_dialogs_through_tauri() {
         use super::{close_window_route, CloseWindowRoute};
         assert_eq!(
             close_window_route(Some(&plugin_panel_window_label("v1x6f7267x70616e656c"))),
             CloseWindowRoute::TauriClose
         );
+        assert_eq!(
+            close_window_route(Some("preferences")),
+            CloseWindowRoute::TauriClose
+        );
         for other in [
             Some("main"),
-            Some("preferences"),
             Some("spin3d-debugger"),
             Some("toolset-core-main"),
             Some("plugin-panel-"),
@@ -4005,11 +5844,17 @@ struct PluginPanelPublication {
 }
 
 fn plugin_panel_publication_script(
+    registry: &document_windows::DocumentWindowRegistry,
     source: &str,
     publication: &PluginPanelPublication,
     suspension: &Mutex<utility_suspension::UtilitySuspension>,
 ) -> Result<String, String> {
-    if source != MAIN_WINDOW_LABEL || !is_plugin_panel_window_label(&publication.target_label) {
+    if !registry.is_document_window(source)
+        || !is_plugin_panel_window_label(&publication.target_label)
+        || registry
+            .owner_of(&publication.target_label)
+            .is_none_or(|owner| owner.native_label != source)
+    {
         return Err("Only the document window may publish to a panel.".into());
     }
     match publication.event.as_str() {
@@ -4045,11 +5890,32 @@ async fn open_plugin_panel_window(
         if request.is_some() {
             return Err("Cannot open and publish a panel in the same request.".into());
         }
-        let script =
-            plugin_panel_publication_script(window.label(), &publication, &UTILITY_SUSPENSION)?;
+        let script = plugin_panel_publication_script(
+            &window.state::<document_windows::DocumentWindowRegistry>(),
+            window.label(),
+            &publication,
+            &UTILITY_SUSPENSION,
+        )?;
         // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
         // recipient so proposal snapshots and replies never enter that shared event bus.
         if let Some(target) = app.get_webview_window(&publication.target_label) {
+            if publication.event == "chemdraft://plugin-panel-report" {
+                if let (Some(name), Some(title)) = (
+                    publication
+                        .payload
+                        .get("documentName")
+                        .and_then(serde_json::Value::as_str),
+                    publication
+                        .payload
+                        .get("report")
+                        .and_then(|report| report.get("title"))
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    target
+                        .set_title(&format!("ChemDraft {title} — {name}"))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
             target.eval(script).map_err(|error| error.to_string())?;
         }
         return Ok(());
@@ -4059,6 +5925,16 @@ async fn open_plugin_panel_window(
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
 
+    let label = plugin_panel_window_label(&request.panel_id);
+    let registry = window.state::<document_windows::DocumentWindowRegistry>();
+    if !registry.is_document_window(window.label())
+        || registry.owner_of(&label).is_none_or(|owner| {
+            owner.native_label != window.label()
+                || registry.document_window(&owner.window_id).is_none()
+        })
+    {
+        return Err("This panel belongs to another document window.".into());
+    }
     let _creation = lock_window_creation()?;
     dispatch_plugin_panel_open(
         &UTILITY_SUSPENSION,
@@ -4099,15 +5975,12 @@ fn restore_deferred_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>) -> Resu
             .release(true);
         return Ok(());
     }
-    if app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .is_none_or(|main| main.is_minimized().unwrap_or(true))
-    {
+    if active_document_webview(app).is_none_or(|main| main.is_minimized().unwrap_or(true)) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
-        let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(main) = active_document_webview(app) else {
             return Ok(());
         };
         if !run_on_main_thread_blocking(&main, foreground_belongs_to_app)? {
@@ -4185,6 +6058,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
         return Err(QUITTING_WINDOW_REFUSAL.to_string());
     }
     let label = plugin_panel_window_label(&request.panel_id);
+    let documents = app.state::<document_windows::DocumentWindowRegistry>();
+    let owner_binding = documents
+        .owner_of(&label)
+        .and_then(|owner| documents.document_window(&owner.window_id))
+        .ok_or("Panel document owner is closed or closing.")?;
+    let owner = app
+        .get_webview_window(&owner_binding.native_label)
+        .ok_or("Panel document owner is not available.")?;
     let presentation = request.presentation(restoring);
     if let Some(window) = app.get_webview_window(&label) {
         if restoring {
@@ -4248,12 +6129,24 @@ fn build_or_show_plugin_panel<R: Runtime>(
     // AppKit parent attachment orders even a hidden child in. A deferred build stays unparented
     // until the main-thread restore checks activation and attaches it relative to the document.
     if utility_window_has_document_parent(&label) && !(restoring && cfg!(target_os = "macos")) {
-        if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-            builder = builder.parent(&main).map_err(|error| error.to_string())?;
-        }
+        builder = builder.parent(&owner).map_err(|error| error.to_string())?;
     }
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
+    // A close racing native construction must not leave an orphan HWND or AppKit child.
+    if documents
+        .document_window(&owner_binding.window_id)
+        .is_none_or(|current| {
+            current.created_at != owner_binding.created_at
+                || current.native_label != owner_binding.native_label
+        })
+        || app
+            .get_webview_window(&owner_binding.native_label)
+            .is_none()
+    {
+        let _ = window.destroy();
+        return Err("Panel document owner closed during creation.".into());
+    }
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
         #[cfg(target_os = "macos")]
@@ -4311,7 +6204,10 @@ fn plugin_panel_initial_geometry<R: Runtime>(
     let placement = saved
         .as_ref()
         .and_then(|frame| plugin_panel_saved_placement(app, frame))
-        .or_else(|| plugin_panel_default_placement(app, width, height));
+        .or_else(|| {
+            let owner = owned_document_webview(app, &plugin_panel_window_label(&request.panel_id))?;
+            plugin_panel_placement_for_owner(app, &owner, width, height)
+        });
     (width, height, placement)
 }
 
@@ -4329,6 +6225,7 @@ fn plugin_panel_saved_placement<R: Runtime>(
 
 fn plugin_panel_restore_geometry<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    label: &str,
     saved: &panel_window_frame::Frame,
 ) -> Option<(panel_window_frame::Placement, panel_window_frame::Frame)> {
     let monitors = app.available_monitors().unwrap_or_default();
@@ -4343,21 +6240,21 @@ fn plugin_panel_restore_geometry<R: Runtime>(
         return Some((placement, frame));
     }
     let (width, height) = panel_window_frame::default_size(None, None);
-    let placement = plugin_panel_default_placement(app, width, height)?;
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let main = owned_document_webview(app, label)?;
+    let placement = plugin_panel_placement_for_owner(app, &main, width, height)?;
     let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
     let frame =
         panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
     Some((placement, frame))
 }
 
-fn plugin_panel_default_placement<R: Runtime>(
+fn plugin_panel_placement_for_owner<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    main: &tauri::WebviewWindow<R>,
     width: f64,
     height: f64,
 ) -> Option<panel_window_frame::Placement> {
-    let position = analysis_window_initial_position(app, width, height)?;
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let position = analysis_window_initial_position(app, main, width, height)?;
     let monitor = main.current_monitor().ok().flatten()?;
     let scale = monitor.scale_factor();
     let position = position.to_physical::<i32>(scale);
@@ -4371,10 +6268,10 @@ fn plugin_panel_default_placement<R: Runtime>(
 
 fn analysis_window_initial_position<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    main: &tauri::WebviewWindow<R>,
     width: f64,
     height: f64,
 ) -> Option<tauri::LogicalPosition<f64>> {
-    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
     let scale = main.scale_factor().ok()?;
     let main_position = main.outer_position().ok()?.to_logical::<f64>(scale);
     let main_size = main.inner_size().ok()?.to_logical::<f64>(scale);
@@ -4583,7 +6480,7 @@ fn attach_to_main_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, chi
     if !should_attach_as_document_child(label) {
         return;
     }
-    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owned_document_webview(app, label) else {
         return;
     };
     let Ok(main_ptr) = main.ns_window() else {
@@ -4699,13 +6596,11 @@ mod document_key_after_unhide_tests {
 }
 
 #[cfg(target_os = "macos")]
-fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<&'static NSWindow> {
-    let pointer = app
-        .get_webview_window(MAIN_WINDOW_LABEL)?
-        .ns_window()
-        .ok()?;
-    // The main window is never destroyed while the app runs (closing only hides it).
-    unsafe { (pointer as *mut NSWindow).as_ref() }
+fn main_ns_window<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<objc2::rc::Retained<NSWindow>> {
+    let pointer = active_document_webview(app)?.ns_window().ok()?;
+    // Called on AppKit's main thread. Retain only for this operation: the document may close
+    // while the application remains alive, so no borrowed 'static NSWindow may escape.
+    unsafe { objc2::rc::Retained::retain(pointer.cast::<NSWindow>()) }
 }
 
 /// Records whether the document was key at Cmd+H, and restores it after the app is active again.
@@ -4865,12 +6760,15 @@ fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
 /// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
 /// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
 fn toolset_popover_window_config(
+    registry: &document_windows::DocumentWindowRegistry,
     label: &str,
     toolset_id: &str,
     kind: &str,
     prewarm: bool,
     focus_mode: ToolsetPopoverFocusMode,
 ) -> tauri::utils::config::WindowConfig {
+    #[cfg(not(windows))]
+    let _ = registry;
     let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
     tauri::utils::config::WindowConfig {
         label: label.into(),
@@ -4880,7 +6778,9 @@ fn toolset_popover_window_config(
         ),
         title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
         #[cfg(windows)]
-        parent: Some(MAIN_WINDOW_LABEL.into()),
+        parent: registry
+            .active_document_window()
+            .map(|document| document.native_label),
         #[cfg(not(windows))]
         parent: None,
         width: 320.0,
@@ -4911,7 +6811,14 @@ fn build_toolset_popover_window(
     position: (f64, f64),
     focus_mode: ToolsetPopoverFocusMode,
 ) -> Result<(), String> {
-    let config = toolset_popover_window_config(label, toolset_id, kind, prewarm, focus_mode);
+    let config = toolset_popover_window_config(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        label,
+        toolset_id,
+        kind,
+        prewarm,
+        focus_mode,
+    );
     let window = WebviewWindowBuilder::from_config(app, &config)
         .map_err(|error| error.to_string())?
         .position(position.0, position.1)
@@ -5353,10 +7260,40 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn palette_routing_state(app: tauri::AppHandle) -> palette_routing::PaletteRoutingState {
+    app.state::<palette_routing::PaletteRouting>()
+        .state(&app.state::<document_windows::DocumentWindowRegistry>())
+}
+
+#[tauri::command]
+fn publish_palette_snapshot(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    event: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    if !palette_routing::is_snapshot_event(&event) {
+        return Err("Invalid palette snapshot event.".into());
+    }
+    let target: palette_routing::PaletteTarget = serde_json::from_value(payload["target"].clone())
+        .map_err(|_| "Missing palette snapshot target.")?;
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    if !palette_routing::can_publish(&registry, window.label(), &target) {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette snapshot from an inactive or foreign document");
+        return Ok(());
+    }
+    app.state::<palette_routing::PaletteRouting>()
+        .remember(&target);
+    app.emit(&event, payload).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn route_toolset_command(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     command_id: String,
+    target: palette_routing::PaletteTarget,
     preserve_input_focus: Option<bool>,
     commit: Option<bool>,
 ) -> Result<(), String> {
@@ -5367,31 +7304,49 @@ fn route_toolset_command(
     if command_id.is_empty() {
         return Err("Toolset command id cannot be empty.".to_string());
     }
-
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let Some(label) = palette_routing::target_label(&registry, &target) else {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette command for an unregistered document");
+        return Ok(());
+    };
+    let Some(document) = app.get_webview_window(&label) else {
+        #[cfg(debug_assertions)]
+        eprintln!("Ignoring palette command for a closed document");
+        return Ok(());
+    };
+    let payload = ToolsetCommandPayload {
+        command_id: command_id.to_string(),
+        target,
+    };
     if commit.unwrap_or(false) {
-        let main = app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .ok_or_else(|| "Main document window is not available.".to_string())?;
-        // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
-        // delivery while utility windows are suspended (for example by a native prompt).
+        // Shortcut-settle commits retain their no-focus behavior, including during suspension.
         return dispatch_dom_toolset_event(
-            &main,
-            &ToolsetCommandPayload {
-                command_id: command_id.to_string(),
-            },
+            &document,
+            &payload,
             "chemdraft://palette-command-commit",
         );
     }
-    emit_command_to_main(&app, command_id)?;
-    // Select changes and clean-number undo update the document while the control
-    // keeps the keyboard. Button/background clicks release the lease themselves.
+    dispatch_dom_command_event(&document, &payload)?;
     if panel_window::keeps_palette_focus(
         window.label(),
         panel_window::holds_input_focus(&window) || preserve_input_focus.unwrap_or(false),
     ) {
         return Ok(());
     }
-    if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
+    // A command returns focus to its captured document, even if another window became active.
+    let focus_result = (|| {
+        document
+            .set_focusable(true)
+            .map_err(|error| error.to_string())?;
+        document.unminimize().map_err(|error| error.to_string())?;
+        if !document.is_visible().unwrap_or(false) {
+            document.show().map_err(|error| error.to_string())?;
+        }
+        focus_native_document_window(&document)?;
+        document.set_focus().map_err(|error| error.to_string())
+    })();
+    if let Err(error) = focus_result {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
         );
@@ -5509,7 +7464,7 @@ fn clipboard_write_succeeded(result: ClipboardWriteResult) -> Result<(), String>
 /// clipboard ownerless, and every SetClipboardData after it fails.
 #[cfg(windows)]
 fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundation::HWND {
-    app.get_webview_window(MAIN_WINDOW_LABEL)
+    active_document_webview(app)
         .and_then(|window| window.hwnd().ok())
         .map(|hwnd| hwnd.0 as windows_sys::Win32::Foundation::HWND)
         .unwrap_or(std::ptr::null_mut())
@@ -6059,7 +8014,7 @@ async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), Stri
     ensure_spin3d_debugger_window(&app).map(|_| ())
 }
 
-/// Whether a Preferences / 3D Debugger toggle should hide its window (otherwise it is shown and
+/// Whether the 3D Debugger toggle should hide its window (otherwise it is shown and
 /// brought forward).
 ///
 /// macOS and Linux keep the original rule: a visible window is hidden. On Windows a visible window
@@ -6101,7 +8056,7 @@ fn window_is_covered_by_document<R: Runtime>(window: &tauri::WebviewWindow<R>) -
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_HWNDPREV};
 
-    let Some(main) = window.app_handle().get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main) = owned_document_webview(window.app_handle(), window.label()) else {
         return false;
     };
     let (Ok(main_hwnd), Ok(target_hwnd)) = (main.hwnd(), window.hwnd()) else {
@@ -6195,39 +8150,114 @@ fn spin3d_debugger_window_route() -> &'static str {
 #[tauri::command]
 async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        if toggle_should_hide(&window) {
-            return window.hide().map_err(|error| error.to_string());
-        }
-    }
-
     ensure_preferences_window(&app).map(|_| ())
 }
 
 fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    let target = app.clone();
+    with_preferences_owner_restored(
+        || {
+            run_on_main_thread_blocking(app, move || {
+                restore_preferences_owner_if_needed(
+                    quit_in_progress(),
+                    utility_windows_suspended(),
+                    || {
+                        let owner = active_document_webview(&target)
+                            .ok_or("Main document window is not available.")?;
+                        Ok((
+                            owner.is_minimized().map_err(|error| error.to_string())?,
+                            owner.is_visible().map_err(|error| error.to_string())?,
+                        ))
+                    },
+                    || {
+                        focus_main_document_window_impl(&target, MainWindowFocusMode::Force)
+                            .map(|_| ())
+                    },
+                )
+            })
+            .map_err(|error| format!("Could not restore document for Preferences: {error}"))
+            .and_then(|result| result)
+        },
+        || create_or_raise_preferences_window(app),
+    )
+}
+
+/// Placement needs the restored document's monitor/frame, and Windows hides owned windows while
+/// their owner is minimized. Complete restoration before either the create or retained reveal path.
+fn with_preferences_owner_restored<T>(
+    restore_owner: impl FnOnce() -> Result<(), String>,
+    create_or_raise: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    restore_owner()?;
+    create_or_raise()
+}
+
+/// Main-thread-only in production. Leave visible documents in their current stacking order;
+/// suspended reveals continue through the shared dialog path, which defers them until release.
+fn restore_preferences_owner_if_needed(
+    quitting: bool,
+    utilities_suspended: bool,
+    owner_state: impl FnOnce() -> Result<(bool, bool), String>,
+    restore_owner: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if quitting {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    if utilities_suspended {
+        return Ok(());
+    }
+    let restore_error = |error| format!("Could not restore document for Preferences: {error}");
+    let (minimized, visible) = owner_state().map_err(restore_error)?;
+    if minimized || !visible {
+        restore_owner().map_err(restore_error)?;
+    }
+    Ok(())
+}
+
+fn create_or_raise_preferences_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        window.show().map_err(|error| error.to_string())?;
-        window.unminimize().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || dialog_windows::show_preferences(&target))
+            .and_then(|result| result)?;
         return Ok(window);
     }
+    let owner = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window()
+        .and_then(|document| app.get_webview_window(&document.native_label))
+        .ok_or("Unknown dialog owner")?;
 
-    let window = WebviewWindowBuilder::new(
+    app.state::<document_windows::DocumentWindowRegistry>()
+        .set_preferences_owner(owner.label());
+    dialog_windows::prepare_preferences();
+    let builder = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
         WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
     )
     .title("ChemDraft Preferences")
-    .inner_size(460.0, 360.0)
-    .min_inner_size(360.0, 280.0)
+    .inner_size(640.0, 600.0)
+    .min_inner_size(360.0, 180.0)
     .resizable(true)
+    .maximizable(false)
+    .minimizable(false)
+    .focused(false)
+    .skip_taskbar(true)
     .accept_first_mouse(true)
-    .visible(true)
-    .center()
-    .build()
-    .map_err(|error| error.to_string())?;
+    .visible(false);
+    #[cfg(windows)]
+    let builder = builder.parent(&owner).map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    let builder = {
+        let _ = owner;
+        builder
+    };
+    let window = builder.build().map_err(|error| error.to_string())?;
+    dialog_windows::reown_preferences(app, None);
     disable_default_context_menus(&window);
     Ok(window)
 }
@@ -6244,7 +8274,9 @@ fn palette_focus_diagnostic(window: tauri::WebviewWindow, line: String) -> Resul
         return Ok(());
     }
     let label = window.label();
-    if label != "main" && !(label.starts_with("toolset-") && is_input_focus_window_label(label)) {
+    if !is_document_window(window.app_handle(), label)
+        && !(label.starts_with("toolset-") && is_input_focus_window_label(label))
+    {
         return Err("Palette diagnostics require a document or tool palette window.".into());
     }
     let line: String = line
@@ -6426,7 +8458,7 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
 const SIDECAR_PLACEHOLDER_MARKER: &[u8] = b"avogadro3d-sidecar placeholder";
 
 /// A file that can actually be started as the sidecar. The `binaries/` placeholders for targets
-/// without a real build (Intel macOS, Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
+/// without a real build (Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
 /// accepted them, so status said "bundled" and every session failed when the script exited. They
 /// are recognised by their marker on every platform; Windows additionally requires a PE image
 /// (a text placeholder there failed to start with OS error 193).
@@ -6767,10 +8799,15 @@ fn engine3d_target_triple() -> &'static str {
 
 #[tauri::command]
 fn take_pending_open_document(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, PendingOpenDocument>,
 ) -> Result<Option<NativeOpenDocumentPayload>, String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Only a registered document window can drain opened files".into());
+    }
     let mut pending = state.payload.lock().map_err(|error| error.to_string())?;
-    Ok(pending.take())
+    Ok(pending.pop_front())
 }
 
 /// Tauri restart cannot be prevented (ExitRequestApi::prevent_exit ignores RESTART_EXIT_CODE).
@@ -6845,12 +8882,20 @@ fn is_edit_history_command(command_id: &str) -> bool {
 /// predefined items, ⌘Z in a palette's text field undoes that text. The secondary window forwards
 /// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
-fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
+fn menu_command_target_label(
+    registry: &document_windows::DocumentWindowRegistry,
+    command_id: &str,
+    focused_label: Option<&str>,
+) -> Option<String> {
+    // The application service is never a recipient, even if the OS reports anomalous focus.
+    let focused_label = focused_label.filter(|label| *label != "runtime");
     match focused_label {
         Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
-            label
+            Some(label.to_string())
         }
-        _ => MAIN_WINDOW_LABEL,
+        _ => registry
+            .active_document_window()
+            .map(|document| document.native_label),
     }
 }
 
@@ -6863,19 +8908,24 @@ fn emit_menu_command<R: Runtime>(
         .into_iter()
         .find(|(_, window)| window.is_focused().unwrap_or(false))
         .map(|(label, _)| label);
-    let target_label = menu_command_target_label(command_id, focused_label.as_deref());
-    if target_label == MAIN_WINDOW_LABEL {
+    let target_label = menu_command_target_label(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        command_id,
+        focused_label.as_deref(),
+    )
+    .ok_or("Document window is not available.")?;
+    if is_document_window(app, &target_label) {
         if panel_window::palette_blocks_menu(true, command_id) {
             return Ok(());
         }
         return emit_command_to_main(app, command_id);
     }
     let target = app
-        .get_webview_window(target_label)
+        .get_webview_window(&target_label)
         .ok_or_else(|| format!("Window {target_label} is not available."))?;
     dispatch_dom_command_event(
         &target,
-        &ToolsetCommandPayload {
+        &NativeCommandPayload {
             command_id: command_id.to_string(),
         },
     )
@@ -6885,10 +8935,9 @@ fn emit_command_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     command_id: &str,
 ) -> Result<(), String> {
-    let main = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let main = active_document_webview(app)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
-    let payload = ToolsetCommandPayload {
+    let payload = NativeCommandPayload {
         command_id: command_id.to_string(),
     };
 
@@ -6898,16 +8947,16 @@ fn emit_command_to_main<R: Runtime>(
     dispatch_dom_command_event(&main, &payload)
 }
 
-fn dispatch_dom_command_event<R: Runtime>(
+fn dispatch_dom_command_event<R: Runtime, P: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &P,
 ) -> Result<(), String> {
     dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
 }
 
-fn dispatch_dom_toolset_event<R: Runtime>(
+fn dispatch_dom_toolset_event<R: Runtime, P: serde::Serialize>(
     main: &tauri::WebviewWindow<R>,
-    payload: &ToolsetCommandPayload,
+    payload: &P,
     event_name: &str,
 ) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
@@ -6923,37 +8972,45 @@ fn handle_opened_document_urls<R: Runtime>(
     app: &tauri::AppHandle<R>,
     urls: Vec<tauri::Url>,
 ) -> Result<(), String> {
-    let mut opened_payload = None;
-    for url in urls {
-        if let Some(payload) = open_document_payload_from_url(&url)? {
-            opened_payload = Some(payload);
-            break;
-        }
-    }
-    let Some(payload) = opened_payload else {
-        return Ok(());
-    };
-    deliver_opened_document(app, payload)
+    deliver_opened_documents(urls.iter().map(open_document_payload_from_url), |payload| {
+        deliver_opened_document(app, payload)
+    })
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
-/// second launch). Flags are skipped; the first existing `.chemdraft`/`.cdxml` file wins,
-/// mirroring the first-file-URL rule of the macOS path.
+/// second launch). Flags are skipped; every supported document is queued in argument order.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_opened_document_args<R: Runtime>(
     app: &tauri::AppHandle<R>,
     args: impl IntoIterator<Item = String>,
     cwd: &Path,
 ) -> Result<(), String> {
-    let path = args
+    let payloads = args
         .into_iter()
         .filter(|arg| !arg.starts_with('-'))
         .map(|arg| cwd.join(arg))
-        .find(|path| is_openable_document_path(path));
-    let Some(path) = path else {
-        return Ok(());
-    };
-    deliver_opened_document(app, open_document_payload_from_path(&path)?)
+        .filter(|path| is_openable_document_path(path))
+        .map(|path| open_document_payload_from_path(&path).map(Some));
+    deliver_opened_documents(payloads, |payload| deliver_opened_document(app, payload))
+}
+
+/// A failed member must not discard the remaining files in an OS batch on either platform.
+fn deliver_opened_documents(
+    payloads: impl IntoIterator<Item = Result<Option<NativeOpenDocumentPayload>, String>>,
+    mut deliver: impl FnMut(NativeOpenDocumentPayload) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for payload in payloads {
+        let result = payload.and_then(|payload| payload.map(&mut deliver).unwrap_or(Ok(())));
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[cfg_attr(
@@ -6965,13 +9022,23 @@ fn is_openable_document_path(path: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            // `.cdx` cannot be read yet, but it is accepted so the opener can say so; filtering it
-            // out here made "Open with ChemDraft" on a .cdx do nothing at all.
             extension.eq_ignore_ascii_case("chemdraft")
                 || extension.eq_ignore_ascii_case("cdxml")
                 || extension.eq_ignore_ascii_case("cdx")
         });
-    extension_ok && path.is_file()
+    if !path.is_file() {
+        return false;
+    }
+    if extension_ok {
+        return true;
+    }
+    // A renamed binary CDX still opens; inspect only its header here.
+    use std::io::Read;
+    let mut header = [0; 8];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && header == *b"VjCD0100"
 }
 
 /// Queue an opened document for the window to drain on mount (cold start). Only after setup,
@@ -6988,10 +9055,7 @@ fn deliver_opened_document<R: Runtime>(
     allow_opened_document_in_scope(app, Path::new(&payload.path));
 
     let state = app.state::<PendingOpenDocument>();
-    let delivery = state.record(
-        payload.clone(),
-        app.get_webview_window(MAIN_WINDOW_LABEL).is_some(),
-    )?;
+    let delivery = state.record(payload, active_document_webview(app).is_some())?;
     if delivery == OpenDocumentDelivery::PendingOnly {
         // macOS can send Opened before Tauri creates its config windows. Building `main` here
         // would collide with Tauri's window creation and abort inside the AppKit callback.
@@ -7002,7 +9066,7 @@ fn deliver_opened_document<R: Runtime>(
     if let Err(error) = ensure_main_window_visible(app) {
         eprintln!("Could not show ChemDraft main window for opened document: {error}");
     }
-    emit_open_document_to_main(app, &payload)
+    emit_open_document_to_main(app)
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -7018,11 +9082,8 @@ fn open_document_payload_from_url(
     open_document_payload_from_path(&path).map(Some)
 }
 
-/// An opened document's bytes as text, by the same rule as `decodeDocumentBytes` (documentText.ts):
-/// a UTF-8/UTF-16 byte-order mark decides, otherwise lenient UTF-8. `read_to_string` failed on
-/// anything that was not valid UTF-8, and that failure was only logged — so double-clicking a UTF-16
-/// CDXML file (or a .cdx renamed .cdxml) did nothing at all. Now it reaches the opener, which can say
-/// what the file is.
+/// Text documents use the same byte-order-mark rule as documentText.ts. Binary CDX is dispatched
+/// before this decoder and travels as bytes through the existing shell-open event and pending queue.
 fn decode_document_text(bytes: &[u8]) -> String {
     let utf16 = |body: &[u8], little_endian: bool| {
         let units = body
@@ -7045,8 +9106,29 @@ fn decode_document_text(bytes: &[u8]) -> String {
     }
 }
 
+const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
-    let contents = decode_document_text(&fs::read(path).map_err(|error| error.to_string())?);
+    use std::io::Read;
+    let read_error = |error| format!("Could not read document {}: {error}", path.display());
+    let file = fs::File::open(path).map_err(read_error)?;
+    let too_big = || "Document exceeds the 64 MB size limit".to_string();
+    if file.metadata().map_err(read_error)?.len() > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    // Keep the read bounded even if another process grows the file after the metadata check.
+    let mut data = Vec::new();
+    file.take(MAX_OPEN_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(read_error)?;
+    if data.len() as u64 > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    let (contents, bytes) = if data.starts_with(b"VjCD0100") {
+        (String::new(), Some(data))
+    } else {
+        (decode_document_text(&data), None)
+    };
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -7057,6 +9139,7 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
         path: path.to_string_lossy().to_string(),
         display_name,
         contents,
+        bytes,
     })
 }
 
@@ -7080,14 +9163,12 @@ fn allow_opened_document_in_scope<R: Runtime>(app: &tauri::AppHandle<R>, path: &
     }
 }
 
-fn emit_open_document_to_main<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    payload: &NativeOpenDocumentPayload,
-) -> Result<(), String> {
-    // Deliver via the Tauri event for a running window; a cold start (window not yet
-    // listening) is covered by the pending-document state drained on mount. We deliberately
-    // do not `eval` document contents into the webview to avoid a script-injection surface.
-    app.emit_to(MAIN_WINDOW_LABEL, OPEN_DOCUMENT_EVENT, payload.clone())
+fn emit_open_document_to_main<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    // Wake the native FIFO drain. Cold starts remain queued until subscription, and events never
+    // carry a second copy of a file. Never eval document contents into a webview.
+    let document = active_document_webview(app).ok_or("Document window is not available.")?;
+    document
+        .emit_to(document.label(), OPEN_DOCUMENT_EVENT, ())
         .map_err(|error| error.to_string())
 }
 
@@ -7095,11 +9176,12 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ToolsetWindowState,
 ) -> Result<(), String> {
-    if app.get_webview_window(MAIN_WINDOW_LABEL).is_none() {
+    let Some(document) = active_document_webview(app) else {
         return Ok(());
-    }
+    };
 
-    app.emit_to(MAIN_WINDOW_LABEL, TOOLSET_WINDOW_STATE_EVENT, state.clone())
+    document
+        .emit_to(document.label(), TOOLSET_WINDOW_STATE_EVENT, state.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -7228,7 +9310,7 @@ fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tau
     app.set_menu(menu)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        let Some(window) = active_document_webview(app) else {
             return Ok(());
         };
         window.set_menu(menu)?;
@@ -7389,6 +9471,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in structure_plugin_items {
+            if item.separator_before {
+                structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
+            }
             structure_menu.append(&MenuItem::with_id(
                 app,
                 item.id.as_str(),
@@ -7397,6 +9482,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 None::<&str>,
             )?)?;
         }
+    }
+    let tools_menu = Submenu::with_items(app, "Tools", true, &[])?;
+    for item in plugin_menu_items_in(plugin_items, "tools") {
+        tools_menu.append(&MenuItem::with_id(
+            app,
+            item.id.as_str(),
+            item.label.as_str(),
+            item.enabled,
+            None::<&str>,
+        )?)?;
     }
     let analyze_menu = build_analyze_submenu(app, plugin_items)?;
     let plugins_menu = Submenu::with_items(
@@ -7603,6 +9698,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             &insert_menu,
             &view_menu,
             &structure_menu,
+            &tools_menu,
             &analyze_menu,
             &plugins_menu,
             &Submenu::with_items(
@@ -7666,6 +9762,7 @@ fn close_window_menu_item<R: Runtime>(
 #[cfg(target_os = "macos")]
 fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
     menu_closes_document_tab(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
         label,
         current_toolbars_menu_model(app)
             .1
@@ -7674,20 +9771,36 @@ fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> b
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn menu_closes_document_tab(label: &str, has_multiple_document_tabs: bool) -> bool {
-    label == MAIN_WINDOW_LABEL && has_multiple_document_tabs
+fn menu_closes_document_tab(
+    registry: &document_windows::DocumentWindowRegistry,
+    label: &str,
+    has_multiple_document_tabs: bool,
+) -> bool {
+    registry.is_document_window(label) && has_multiple_document_tabs
 }
 
 #[cfg(test)]
 mod document_tab_menu_tests {
-    use super::{menu_closes_document_tab, MAIN_WINDOW_LABEL};
+    use super::menu_closes_document_tab;
 
     #[test]
     fn close_menu_routes_only_a_main_window_with_multiple_tabs() {
-        assert!(menu_closes_document_tab(MAIN_WINDOW_LABEL, true));
-        assert!(!menu_closes_document_tab(MAIN_WINDOW_LABEL, false));
+        assert!(menu_closes_document_tab(
+            &crate::test_documents(),
+            "main",
+            true
+        ));
+        assert!(!menu_closes_document_tab(
+            &crate::test_documents(),
+            "main",
+            false
+        ));
         for label in ["preferences", "toolset-core-main", "plugin-panel-example"] {
-            assert!(!menu_closes_document_tab(label, true));
+            assert!(!menu_closes_document_tab(
+                &crate::test_documents(),
+                label,
+                true
+            ));
         }
     }
 }
@@ -7700,7 +9813,7 @@ enum CloseWindowRoute {
     /// mask, so the panel takes its own hide-and-notify path in `on_window_event`.
     TauriClose,
     /// `performClose:` on the key window: exactly what the predefined item did. Main (which hides
-    /// itself on `CloseRequested`), Preferences, the 3D debugger, and non-Tauri windows such as
+    /// itself on `CloseRequested`), the 3D debugger, and non-Tauri windows such as
     /// the About panel all keep their behaviour.
     PerformClose,
 }
@@ -8350,10 +10463,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
     #[cfg(windows)]
     {
         let builder = builder.focused(false);
-        match app
-            .get_webview_window(MAIN_WINDOW_LABEL)
-            .and_then(|main| main.hwnd().ok())
-        {
+        match active_document_webview(app).and_then(|main| main.hwnd().ok()) {
             Some(owner) => builder.owner_raw(owner),
             None => builder,
         }
@@ -8561,8 +10671,7 @@ fn toolset_frame_is_transient<R: Runtime>(
     window: &tauri::Window<R>,
 ) -> bool {
     let palette_minimized = window.is_minimized().unwrap_or(false);
-    let document_minimized = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let document_minimized = owned_document_webview(app, window.label())
         .is_some_and(|main| main.is_minimized().unwrap_or(false));
     toolset_frame_state_is_transient(palette_minimized, document_minimized)
 }
@@ -8699,9 +10808,26 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     } else {
         None
     };
+    let mut saved = None;
     update_toolset_layout_state(window.app_handle(), |layout_state| {
         update_main_window_geometry(&mut layout_state.main_window, update, normal_frame);
-    })
+        saved = layout_state.main_window;
+    })?;
+    if let (Some(frame), Some(owner)) = (
+        saved,
+        window
+            .state::<document_windows::DocumentWindowRegistry>()
+            .owner_of(window.label()),
+    ) {
+        let delay = window
+            .state::<session_coordinator::SessionCoordinator>()
+            .set_frame(
+                &owner.window_id,
+                serde_json::to_value(frame).map_err(|error| error.to_string())?,
+            )?;
+        session_coordinator::schedule(window.app_handle(), delay);
+    }
+    Ok(())
 }
 
 fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
@@ -8711,9 +10837,7 @@ fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Resul
     // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
     // move an owned panel to its minimized parking position before reporting the owner's resize.
     let native = main_window_placement::snapshot(window)?;
-    let owner_minimized = window
-        .app_handle()
-        .get_webview_window(MAIN_WINDOW_LABEL)
+    let owner_minimized = owned_document_webview(window.app_handle(), window.label())
         .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
     let Some(frame) = panel_full_size::frame_for_save(window) else {
         return Ok(());
@@ -9005,9 +11129,7 @@ fn set_check_menu_item_checked_now<R: Runtime>(
     #[cfg(target_os = "macos")]
     let menu = app.menu();
     #[cfg(not(target_os = "macos"))]
-    let menu = app
-        .get_webview_window(MAIN_WINDOW_LABEL)
-        .and_then(|window| window.menu());
+    let menu = active_document_webview(app).and_then(|window| window.menu());
     let Some(menu) = menu else {
         return Ok(());
     };
@@ -9048,6 +11170,309 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn preferences_restores_hidden_and_iconic_owners_before_create_or_raise() {
+        use std::cell::RefCell;
+
+        #[derive(Clone, Copy)]
+        struct Owner {
+            visible: bool,
+            minimized: bool,
+            monitor: Option<&'static str>,
+            frame: (i32, i32, u32, u32),
+        }
+
+        for (platform, initial) in [
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: true,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: true,
+                    minimized: true,
+                    monitor: Some("nearest"),
+                    frame: (-32_000, -32_000, 0, 0),
+                },
+            ),
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+        ] {
+            for retained in [false, true] {
+                let owner = RefCell::new(initial);
+                let events = RefCell::new(Vec::new());
+                with_preferences_owner_restored(
+                    || {
+                        restore_preferences_owner_if_needed(
+                            false,
+                            false,
+                            || {
+                                let owner = owner.borrow();
+                                Ok((owner.minimized, owner.visible))
+                            },
+                            || {
+                                events.borrow_mut().push("unminimize");
+                                let mut owner = owner.borrow_mut();
+                                owner.minimized = false;
+                                owner.monitor = Some("document");
+                                owner.frame = (100, 100, 1200, 800);
+                                events.borrow_mut().push("show");
+                                owner.visible = true;
+                                Ok(())
+                            },
+                        )
+                    },
+                    || {
+                        let owner = owner.borrow();
+                        assert!(owner.visible && !owner.minimized, "{platform}");
+                        if !retained {
+                            if platform == "windows" {
+                                events.borrow_mut().push("parent");
+                            }
+                            events.borrow_mut().push("create");
+                        }
+                        events.borrow_mut().push("monitor");
+                        assert_eq!(owner.monitor, Some("document"), "{platform}");
+                        events.borrow_mut().push("frame");
+                        assert_eq!(owner.frame, (100, 100, 1200, 800), "{platform}");
+                        events.borrow_mut().push("raise");
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                let mut expected = vec!["unminimize", "show"];
+                if !retained {
+                    if platform == "windows" {
+                        expected.push("parent");
+                    }
+                    expected.push("create");
+                }
+                expected.extend(["monitor", "frame", "raise"]);
+                assert_eq!(
+                    *events.borrow(),
+                    expected,
+                    "{platform}, retained={retained}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_leaves_visible_non_minimized_owner_order_unchanged() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    false,
+                    || Ok((false, true)),
+                    || panic!("Opening Preferences must not raise an already visible document"),
+                )
+            },
+            || {
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_does_not_restore_or_open_during_quit() {
+        for suspended in [false, true] {
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        true,
+                        suspended,
+                        || panic!("Quitting must be checked before querying the owner"),
+                        || panic!("Quitting must not restore the document"),
+                    )
+                },
+                || -> Result<(), String> {
+                    panic!("Quitting must not create or raise Preferences")
+                },
+            );
+            assert_eq!(result, Err(QUITTING_WINDOW_REFUSAL.to_string()));
+        }
+    }
+
+    #[test]
+    fn preferences_skips_owner_restore_during_utility_suspension() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    true,
+                    || panic!("Suspension must be checked before querying the owner"),
+                    || panic!("Suspension must not restore the document"),
+                )
+            },
+            || {
+                // The existing show path enrolls the reveal in utility restoration.
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_owner_restore_failure_prevents_create_and_retained_reveal() {
+        for error in [
+            "unminimize failed",
+            "show failed",
+            "main thread unavailable",
+        ] {
+            let continued = std::cell::Cell::new(false);
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        false,
+                        false,
+                        || Ok((true, false)),
+                        || Err(error.to_string()),
+                    )
+                },
+                || {
+                    continued.set(true);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result,
+                Err(format!(
+                    "Could not restore document for Preferences: {error}"
+                ))
+            );
+            assert!(!continued.get());
+        }
+    }
+
+    fn plist_feed_url(text: &str) -> Option<String> {
+        let mut uncommented = String::new();
+        let mut remaining = text;
+        while let Some((before, comment)) = remaining.split_once("<!--") {
+            uncommented.push_str(before);
+            remaining = comment.split_once("-->")?.1;
+        }
+        uncommented.push_str(remaining);
+        uncommented
+            .split_once("<key>SUFeedURL</key>")
+            .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
+            .and_then(|value| value.split_once("</string>"))
+            .map(|(feed, _)| feed.to_string())
+    }
+
+    #[test]
+    fn released_update_configurations_route_to_updater_and_dev_to_notice() {
+        assert_eq!(
+            plist_feed_url("<!-- <key>SUFeedURL</key><string>commented</string> -->"),
+            None
+        );
+        assert_eq!(
+            plist_feed_url(
+                "<!-- first -->\n<!--\n<key>SUFeedURL</key>\n<string>commented</string>\n-->"
+            ),
+            None
+        );
+        assert_eq!(
+            plist_feed_url("<!-- ignored -->\n<key>SUFeedURL</key>\n  <string>https://chemdraft.ai/appcast.xml</string>"),
+            Some("https://chemdraft.ai/appcast.xml".to_string())
+        );
+        let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.conf.json"))
+                .expect("read tauri.conf.json"),
+        )
+        .expect("parse tauri.conf.json");
+        let identifier = config["identifier"]
+            .as_str()
+            .expect("tauri.conf.json identifier must be a string");
+        assert_eq!(identifier, "org.chemdraft.desktop");
+
+        let assert_routes = |file: &str, feed: &str| {
+            assert_eq!(
+                update_check_route(identifier, Some(feed)),
+                UpdateCheckRoute::RunUpdater,
+                "released app must reach the updater with {file}"
+            );
+            assert_eq!(
+                update_check_route("org.chemdraft.desktop.dev", Some(feed)),
+                UpdateCheckRoute::DevelopmentNotice,
+                "development app must show the notice with {file}"
+            );
+        };
+
+        for file in ["Info.plist", "Info.intel.plist"] {
+            let plist = std::fs::read_to_string(config_dir.join(file))
+                .unwrap_or_else(|error| panic!("read {file}: {error}"));
+            let feed = plist_feed_url(&plist)
+                .unwrap_or_else(|| panic!("{file} must contain an SUFeedURL string"));
+            assert_routes(file, &feed);
+        }
+
+        let windows_config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.windows.conf.json"))
+                .expect("read tauri.windows.conf.json"),
+        )
+        .expect("parse tauri.windows.conf.json");
+        let feed = windows_config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri.windows.conf.json plugins.updater.endpoints must be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .find(|url| !url.trim().is_empty())
+            .expect("tauri.windows.conf.json must contain a non-empty updater endpoint");
+        assert_routes("tauri.windows.conf.json", feed);
+    }
+
+    #[test]
+    fn update_channel_requires_release_identifier_and_feed_on_both_platforms() {
+        for feed in [
+            "https://chemdraft.ai/appcast.xml",
+            "https://chemdraft.ai/latest.json",
+        ] {
+            assert!(update_channel_available(
+                "org.chemdraft.desktop",
+                Some(feed)
+            ));
+            assert!(!update_channel_available(
+                "org.chemdraft.desktop.dev",
+                Some(feed)
+            ));
+            assert!(!update_channel_available("org.chemdraft.desktop.dev", None));
+        }
+        for feed in [None, Some(""), Some("  ")] {
+            assert!(!update_channel_available("org.chemdraft.desktop", feed));
+        }
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -9130,6 +11555,7 @@ mod tests {
             path: "cold-open.chemdraft".into(),
             display_name: "cold-open.chemdraft".into(),
             contents: "<CDXML/>".into(),
+            bytes: None,
         }
     }
 
@@ -9145,11 +11571,11 @@ mod tests {
                 OpenDocumentDelivery::PendingOnly
             );
             state.setup_completed.store(true, Ordering::SeqCst);
-            let payload = state.payload.lock().expect("pending lock").take();
+            let payload = state.payload.lock().expect("pending lock").pop_front();
             let payload = payload.expect("document survives setup for the mount drain");
             assert_eq!(payload.path, "cold-open.chemdraft");
             assert_eq!(payload.contents, "<CDXML/>");
-            assert!(state.payload.lock().expect("pending lock").is_none());
+            assert!(state.payload.lock().expect("pending lock").is_empty());
         }
     }
 
@@ -9169,7 +11595,7 @@ mod tests {
                 .payload
                 .lock()
                 .expect("pending lock")
-                .as_ref()
+                .front()
                 .expect("pending document for the new window")
                 .contents,
             "<CDXML/>"
@@ -9186,7 +11612,42 @@ mod tests {
                 .expect("record document"),
             OpenDocumentDelivery::ShowWindowAndEmit
         );
-        assert!(state.payload.lock().expect("pending lock").is_some());
+        assert!(!state.payload.lock().expect("pending lock").is_empty());
+    }
+
+    #[test]
+    fn three_simultaneous_opened_files_are_queued_in_order_before_and_after_setup() {
+        for setup in [false, true] {
+            let state = PendingOpenDocument::default();
+            state.setup_completed.store(setup, Ordering::SeqCst);
+            for name in ["one.chemdraft", "two.cdxml", "three.cdx"] {
+                let mut payload = opened_document_test_payload();
+                payload.path = name.into();
+                state.record(payload, true).unwrap();
+            }
+            let mut queue = state.payload.lock().unwrap();
+            let paths: Vec<String> = std::iter::from_fn(|| queue.pop_front())
+                .map(|payload| payload.path)
+                .collect();
+            assert_eq!(paths, ["one.chemdraft", "two.cdxml", "three.cdx"]);
+            assert!(queue.is_empty());
+        }
+    }
+
+    #[test]
+    fn opened_file_batch_continues_after_a_failed_member() {
+        let state = PendingOpenDocument::default();
+        let payloads = [
+            Ok(Some(opened_document_test_payload())),
+            Err("unreadable second file".into()),
+            Ok(None),
+            Ok(Some(opened_document_test_payload())),
+        ];
+        let error =
+            deliver_opened_documents(payloads, |payload| state.record(payload, true).map(|_| ()))
+                .unwrap_err();
+        assert_eq!(error, "unreadable second file");
+        assert_eq!(state.payload.lock().unwrap().len(), 2);
     }
 
     #[cfg(windows)]
@@ -9216,17 +11677,14 @@ mod tests {
     #[test]
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        for triple in [
-            "x86_64-apple-darwin",
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-        ] {
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
             assert!(is_sidecar_placeholder(&placeholder), "{triple}");
             assert!(!is_runnable_sidecar(&placeholder), "{triple}");
         }
         for real in [
             "avogadro3d-sidecar-aarch64-apple-darwin",
+            "avogadro3d-sidecar-x86_64-apple-darwin",
             "avogadro3d-sidecar-x86_64-pc-windows-msvc.exe",
         ] {
             assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");
@@ -9496,6 +11954,10 @@ mod tests {
         main_thread: Option<std::sync::Arc<Mutex<()>>>,
         /// The reason the watchdog was given, once it has fired.
         forced_reason: std::sync::Arc<Mutex<Option<QuitReason>>>,
+        drain: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+        prepare_exit: Arc<dyn Fn() + Send + Sync>,
+        flush: Arc<dyn Fn() + Send + Sync>,
+        reply_queue: Option<Arc<Mutex<Vec<AppkitReplyTask>>>>,
     }
 
     impl StuckAppHost {
@@ -9505,6 +11967,10 @@ mod tests {
                 calls: std::sync::Arc::new(Mutex::new(Vec::new())),
                 main_thread: None,
                 forced_reason: std::sync::Arc::new(Mutex::new(None)),
+                drain: Arc::new(|| Ok(())),
+                prepare_exit: Arc::new(|| {}),
+                flush: Arc::new(|| {}),
+                reply_queue: None,
             }
         }
 
@@ -9536,6 +12002,12 @@ mod tests {
     impl QuitHost for StuckAppHost {
         fn ask_document_to_flush(&self) -> bool {
             self.calls.lock().unwrap().push("ask to flush");
+            (self.flush)();
+            self.has_document
+        }
+
+        fn ask_document_to_prompt(&self, _request_id: u64) -> bool {
+            self.calls.lock().unwrap().push("ask to flush");
             self.has_document
         }
 
@@ -9546,9 +12018,43 @@ mod tests {
             }
         }
 
+        fn prepare_exit(&self) {
+            (self.prepare_exit)();
+        }
+
         fn force_exit(&self, _waited: Duration, reason: QuitReason) {
             *self.forced_reason.lock().unwrap() = Some(reason);
             self.calls.lock().unwrap().push("force exit");
+        }
+
+        fn drain_appkit_session(&self) -> Result<(), String> {
+            (self.drain)()
+        }
+
+        fn reply_to_appkit_termination(&self, flow: &'static QuitFlow, terminate: bool) {
+            let calls = self.calls.clone();
+            dispatch_appkit_reply_with(
+                flow,
+                terminate,
+                self.reply_queue.is_none(),
+                |task| {
+                    self.reply_queue
+                        .as_ref()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .push(task);
+                    Ok::<(), ()>(())
+                },
+                |_| unreachable!(),
+                move || {
+                    calls
+                        .lock()
+                        .unwrap()
+                        .push(if terminate { "reply YES" } else { "reply NO" })
+                },
+            )
+            .unwrap();
         }
     }
 
@@ -9563,6 +12069,143 @@ mod tests {
     }
 
     const NEVER: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn fallback_exit_drains_after_destruction_but_never_waits_again_after_appkits_deadline() {
+        let quitting = AtomicBool::new(true); // Destroyed set this before any drain.
+        let drain = ExitSessionDrain::new();
+        let calls = std::cell::Cell::new(0);
+        assert!(quitting.load(Ordering::SeqCst));
+        let deadline = Instant::now() + QUIT_FLUSH_GRACE;
+        // A completed-drain count replaces claim booleans because callers now share completion.
+        drain.run(deadline, |_| calls.set(calls.get() + 1));
+        drain.run(deadline, |_| calls.set(calls.get() + 1));
+        assert_eq!(calls.get(), 1);
+        // AppKit's YES completes the shared gate even if its writer remains blocked.
+        let drain = ExitSessionDrain::new();
+        drain.finish();
+        drain.run(deadline, |_| panic!("AppKit already completed quit"));
+    }
+
+    #[test]
+    fn exit_persistence_uses_only_the_remaining_quit_grace() {
+        let flow = test_quit_flow(QUIT_FLUSH_GRACE, NEVER);
+        let started = Instant::now();
+        assert_eq!(remaining_quit_flush_grace(flow, started), QUIT_FLUSH_GRACE);
+        flow.state.lock().unwrap().flush_deadline = Some(started + QUIT_FLUSH_GRACE);
+        assert_eq!(
+            remaining_quit_flush_grace(flow, started + Duration::from_secs(2)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            remaining_quit_flush_grace(flow, started + QUIT_FLUSH_GRACE),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_quit_flush_grace(flow, started + Duration::from_secs(4)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn windows_exit_watchdog_starts_after_the_bounded_persistence_drain() {
+        let persistence = Arc::new(Mutex::new(()));
+        let held = persistence.lock().unwrap();
+        let writer = persistence.clone();
+        let (started, starting) = mpsc::channel();
+        let host = StuckAppHost {
+            prepare_exit: Arc::new(move || {
+                let _ = started.send(());
+                drop(writer.lock().unwrap());
+            }),
+            ..StuckAppHost::new(true)
+        };
+        let flow = test_quit_flow(NEVER, Duration::from_millis(20));
+        request_quit_with(flow, &host, false);
+        let worker_host = host.clone();
+        let worker =
+            thread::spawn(move || quit_now_with(flow, &worker_host, QuitReason::FlushConfirmed));
+        starting.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        drop(held);
+        worker.join().unwrap();
+        assert_eq!(
+            host.wait_for_calls(3),
+            ["ask to flush", "exit", "force exit"]
+        );
+    }
+
+    #[test]
+    fn two_document_confirmations_join_one_drain_before_exit_or_watchdog() {
+        for stalls_until_deadline in [false, true] {
+            let persistence = Arc::new(Mutex::new(()));
+            let held = persistence.lock().unwrap();
+            let writer = persistence.clone();
+            let drain = Arc::new(ExitSessionDrain::new());
+            let (entered, entering) = mpsc::channel();
+            let (started, starting) = mpsc::channel();
+            let flow = test_quit_flow(Duration::from_secs(1), Duration::from_millis(20));
+            let host = StuckAppHost {
+                prepare_exit: Arc::new(move || {
+                    entered.send(()).unwrap();
+                    let writer = writer.clone();
+                    let started = started.clone();
+                    let now = Instant::now();
+                    drain.run(now + remaining_quit_flush_grace(flow, now), |timeout| {
+                        let result = session_coordinator::with_timeout(timeout, move || {
+                            started.send(()).unwrap();
+                            drop(writer.lock().unwrap());
+                            Ok(())
+                        });
+                        assert_eq!(result.is_err(), stalls_until_deadline);
+                    });
+                }),
+                ..StuckAppHost::new(true)
+            };
+            flow.requested.store(true, Ordering::SeqCst);
+            flow.state.lock().unwrap().flush_deadline = Some(Instant::now() + flow.flush_grace);
+            assert!(host.ask_document_to_flush());
+            let first_host = host.clone();
+            let first = thread::spawn(move || {
+                quit_now_with(flow, &first_host, QuitReason::FlushConfirmed);
+            });
+            entering.recv_timeout(Duration::from_secs(2)).unwrap();
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            let second_host = host.clone();
+            let (returned, returning) = mpsc::channel();
+            let second = thread::spawn(move || {
+                quit_now_with(flow, &second_host, QuitReason::FlushConfirmed);
+                returned.send(()).unwrap();
+            });
+            entering.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(
+                returning.recv_timeout(Duration::from_millis(30)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            assert_eq!(host.calls(), ["ask to flush"]);
+            assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+            if !stalls_until_deadline {
+                drop(held);
+                first.join().unwrap();
+                second.join().unwrap();
+            } else {
+                // Both confirmations and the watchdog finish while disk I/O
+                // remains locked. Joining must reuse the first deadline, never start a new one.
+                returning.recv_timeout(Duration::from_secs(2)).unwrap();
+                first.join().unwrap();
+                second.join().unwrap();
+                host.wait_for_calls(4);
+                assert!(host.calls().contains(&"force exit"));
+                drop(held);
+            }
+            assert!(starting.try_recv().is_err());
+            assert_eq!(
+                host.calls().iter().filter(|call| **call == "exit").count(),
+                2
+            );
+        }
+    }
 
     #[test]
     fn visible_prompt_pauses_grace_without_blocking_save_as_or_utility_suspension() {
@@ -9603,6 +12246,115 @@ mod tests {
     }
 
     #[test]
+    fn approved_close_cannot_destroy_the_owner_of_a_newer_showing_quit_prompt() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let close = lifecycle.begin_close("main").unwrap();
+        assert!(lifecycle.resume_close("main", close));
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        lifecycle.begin_prompts(vec!["main".into()]);
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert!(!flow.requested.load(Ordering::SeqCst));
+        assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
+        assert!(registry.document_window("main").is_some());
+        assert!(!lifecycle.close_confirmed("main", close));
+        assert!(cancel_quit_with(flow, quit));
+        assert!(request_prompted_quit_with(flow, &host).is_some());
+    }
+
+    #[test]
+    fn approved_close_stalled_before_claim_is_rejected_after_quit_is_cancelled() {
+        // macOS permits closing its last document; Windows uses this path only with another open.
+        for is_macos in [true, false] {
+            let registry = document_windows::DocumentWindowRegistry::with_main();
+            registry.set_ready("main");
+            if !is_macos {
+                registry.register("b", "doc-b").unwrap();
+                registry.set_ready("b");
+            }
+            let coordinator = session_coordinator::SessionCoordinator::default();
+            assert!(!coordinator.close_quits(&registry, is_macos));
+            let lifecycle = window_lifecycle::DocumentLifecycle::default();
+            let close = lifecycle.begin_close("main").unwrap();
+            assert!(lifecycle.resume_close("main", close));
+            // confirm_prompted_quit passed its first check, but has not claimed the close yet.
+            assert!(lifecycle.close_confirmed("main", close));
+            let flow = test_quit_flow(NEVER, NEVER);
+            let host = StuckAppHost::new(true);
+            let quit = request_prompted_quit_with(flow, &host).unwrap();
+            lifecycle.begin_prompts(vec!["main".into()]);
+            assert!(acknowledge_quit_prompt(flow, quit, true));
+            assert!(cancel_quit_with(flow, quit));
+            lifecycle.cancel_prompts();
+            assert_eq!(flow.state.lock().unwrap().prompt.1, QuitPromptPhase::Idle);
+            assert!(!flow.requested.load(Ordering::SeqCst));
+            // Editing resumes here. The previously approved close must leave the document alive.
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
+            assert_eq!(
+                registry.document_window("main").unwrap().lifecycle,
+                document_windows::DocumentWindowLifecycle::Ready
+            );
+            let fresh_close = lifecycle.begin_close("main").unwrap();
+            assert_ne!(fresh_close, close);
+            assert!(lifecycle.resume_close("main", fresh_close));
+            // Even a newly approved close must not make the old identity valid again.
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", close).is_err());
+            assert!(claim_window_close(flow, &registry, &lifecycle, "main", fresh_close).is_ok());
+            assert_eq!(coordinator.close_quits(&registry, is_macos), !is_macos);
+        }
+    }
+
+    #[test]
+    fn committed_close_cannot_be_selected_as_a_later_quit_prompt_owner() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.set_ready("main");
+        registry.register("b", "doc-b").unwrap();
+        registry.set_ready("b");
+        let flow = test_quit_flow(NEVER, NEVER);
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let close = lifecycle.begin_close("main").unwrap();
+        assert!(lifecycle.resume_close("main", close));
+        claim_window_close(flow, &registry, &lifecycle, "main", close).unwrap();
+        let host = StuckAppHost::new(true);
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        let labels = registry
+            .all_document_windows()
+            .into_iter()
+            .filter(|window| window.lifecycle != document_windows::DocumentWindowLifecycle::Closing)
+            .map(|window| window.native_label)
+            .collect();
+        assert_eq!(lifecycle.begin_prompts(labels), Some("doc-b".into()));
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert_eq!(retire_destroyed_quit_prompt(flow, &lifecycle, "main"), None);
+        assert!(lifecycle.is_prompt_owner("doc-b"));
+    }
+
+    #[test]
+    fn destroyed_showing_prompt_owner_is_retired_so_later_menu_quit_can_start() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        let lifecycle = window_lifecycle::DocumentLifecycle::default();
+        let quit = request_prompted_quit_with(flow, &host).unwrap();
+        lifecycle.begin_prompts(vec!["main".into(), "doc-b".into()]);
+        let flush = lifecycle.begin_flush(
+            window_lifecycle::FlushPurpose::PromptedQuit,
+            vec!["main".into()],
+        );
+        assert!(acknowledge_quit_prompt(flow, quit, true));
+        assert_eq!(
+            retire_destroyed_quit_prompt(flow, &lifecycle, "main"),
+            Some(quit)
+        );
+        assert!(!lifecycle.is_prompt_owner("main"));
+        assert!(!lifecycle.is_prompt_owner("doc-b"));
+        assert!(lifecycle.wait_for_update(flush, Duration::ZERO).is_err());
+        assert!(request_prompted_quit_with(flow, &host).unwrap() > quit);
+    }
+
+    #[test]
     fn stalled_flush_after_save_or_discard_is_bounded_and_arms_one_watchdog() {
         for _choice in ["Save", "Discard"] {
             let flow = test_quit_flow(Duration::from_millis(400), Duration::from_millis(20));
@@ -9633,18 +12385,18 @@ mod tests {
 
     #[test]
     fn quit_prompt_commands_and_capabilities_are_document_only() {
-        assert!(authorize_quit_window("main").is_ok());
+        assert!(authorize_quit_window(&crate::test_documents(), "main").is_ok());
         for label in [
             "preferences",
             "toolset-bonds",
             "spin3d-debugger",
             "plugin-panel-x",
         ] {
-            assert!(authorize_quit_window(label).is_err());
+            assert!(authorize_quit_window(&crate::test_documents(), label).is_err());
         }
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/quit-prompt.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         let default = include_str!("../capabilities/default.json");
         for permission in [
             "allow-cancel-quit",
@@ -9659,22 +12411,481 @@ mod tests {
     }
 
     #[test]
-    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
-        assert!(should_prompt_appkit_quit(true, false, 0));
-        assert!(should_prompt_appkit_quit(
-            true,
-            false,
-            u32::from_be_bytes(*b"quit")
-        ));
-        assert!(!should_prompt_appkit_quit(false, false, 0));
-        assert!(!should_prompt_appkit_quit(true, true, 0));
+    fn appkit_quit_defers_ordinary_and_system_quits_but_prompts_only_for_ordinary_quits() {
+        for reason in [0, u32::from_be_bytes(*b"quit")] {
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, reason),
+                AppkitQuitDecision::Prompt
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, reason),
+                AppkitQuitDecision::DeferReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, true, reason),
+                AppkitQuitDecision::WaitForReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, true, false, reason),
+                AppkitQuitDecision::TerminateNow
+            );
+        }
+        assert_eq!(
+            appkit_quit_decision(false, true, false, false, 0),
+            AppkitQuitDecision::TerminateNow
+        );
         for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
-            assert!(!should_prompt_appkit_quit(
+            for enabled in [false, true] {
+                assert_eq!(
+                    appkit_quit_decision(true, enabled, false, false, u32::from_be_bytes(reason)),
+                    AppkitQuitDecision::DeferReply
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn appkit_quits_coalesce_and_reply_once_after_the_off_thread_flush() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        for _ in 0..3 {
+            assert!(request_appkit_quit_with(flow, &host, false));
+        }
+        // AppKit now returns before the persistence worker asks for the document flush.
+        assert_eq!(host.wait_for_calls(1), ["ask to flush"]);
+        request_quit_with(flow, &host, true); // A menu repeat must not bypass the handshake.
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.wait_for_calls(2), ["ask to flush", "reply YES"]);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn appkit_deadline_wins_over_a_stuck_flush_and_late_success_cannot_reply_twice() {
+        let mutex = Arc::new(Mutex::new(()));
+        let writer_mutex = mutex.clone();
+        let held = mutex.lock().unwrap();
+        let (started, starting) = mpsc::channel();
+        let host = StuckAppHost {
+            drain: Arc::new(move || {
+                let _ = started.send(());
+                drop(writer_mutex.lock().unwrap());
+                Ok(())
+            }),
+            ..StuckAppHost::new(true)
+        };
+        let flow = test_quit_flow(NEVER, NEVER);
+        assert_eq!(flow.flush_grace, NEVER); // Clock is injected; fire its production callback below.
+        assert_eq!(QUIT_FLUSH_GRACE, Duration::from_secs(3));
+        request_appkit_quit_with(flow, &host, false);
+        assert_eq!(host.wait_for_calls(1), ["ask to flush"]);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        starting.recv_timeout(Duration::from_secs(2)).unwrap();
+        expire_quit_flush_with(flow, &host);
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        drop(held);
+        complete_appkit_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_returns_before_dialog_persistence_and_its_deadline_still_replies() {
+        let persistence = Arc::new(Mutex::new(()));
+        let held = persistence.lock().unwrap();
+        let writer = persistence.clone();
+        let (started, starting) = mpsc::channel();
+        let host = StuckAppHost {
+            flush: Arc::new(move || {
+                let _ = started.send(());
+                drop(writer.lock().unwrap());
+            }),
+            ..StuckAppHost::new(true)
+        };
+        let flow = test_quit_flow(NEVER, NEVER);
+        let (returned, returning) = mpsc::channel();
+        let main_host = host.clone();
+        let main_thread = thread::spawn(move || {
+            returned
+                .send(request_appkit_quit_with(flow, &main_host, false))
+                .unwrap();
+        });
+        let deferred = returning.recv_timeout(Duration::from_secs(2));
+        let writing = starting.recv_timeout(Duration::from_secs(2));
+        // Fire the production three-second timer callback with an injected clock while the
+        // exact ask_document_to_flush operation that used to hold AppKit is still blocked.
+        expire_quit_flush_with(flow, &host);
+        let calls_at_deadline = host.calls();
+        drop(held);
+        main_thread.join().unwrap();
+        assert!(deferred.unwrap());
+        writing.unwrap();
+        assert_eq!(calls_at_deadline, ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        complete_appkit_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_flush_error_waits_for_the_deadline_then_quits_without_cancelling() {
+        let (failed, failure) = mpsc::channel();
+        let host = StuckAppHost {
+            drain: Arc::new(move || {
+                let _ = failed.send(());
+                Err("disk full".into())
+            }),
+            ..StuckAppHost::new(false)
+        };
+        let flow = test_quit_flow(NEVER, NEVER);
+        request_appkit_quit_with(flow, &host, false);
+        assert_eq!(host.wait_for_calls(1), ["ask to flush"]);
+        failure.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(host.calls(), ["ask to flush"]);
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_confirmation_and_deadline_race_for_a_single_reply() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host, false);
+        assert_eq!(host.wait_for_calls(1), ["ask to flush"]);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = [QuitReason::FlushConfirmed, QuitReason::GraceExpired]
+            .into_iter()
+            .map(|reason| {
+                let host = host.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    quit_now_with(flow, &host, reason);
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(host.wait_for_calls(2), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_prompt_defers_the_original_request_and_only_user_cancel_replies_no() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host, true);
+        let id = flow.state.lock().unwrap().prompt.0;
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        request_appkit_quit_with(flow, &host, true);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            id,
+            QuitPromptCancellation::UserCancelled
+        ));
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            id,
+            QuitPromptCancellation::UserCancelled
+        ));
+        assert_eq!(host.calls(), ["ask to flush", "reply NO"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        request_appkit_quit_with(flow, &host, true);
+        let id = flow.state.lock().unwrap().prompt.0;
+        assert!(resume_prompted_quit_with(flow, &host, id));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(
+            host.wait_for_calls(4),
+            ["ask to flush", "reply NO", "ask to flush", "reply YES"]
+        );
+    }
+
+    #[test]
+    fn system_quit_overrides_a_visible_prompt_and_its_late_cancellation() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host, true);
+        let id = flow.state.lock().unwrap().prompt.0;
+        assert!(acknowledge_quit_prompt(flow, id, true));
+        request_appkit_quit_with(flow, &host, false);
+        assert_eq!(host.wait_for_calls(2), ["ask to flush", "ask to flush"]);
+        assert!(!cancel_appkit_prompt_with(
+            flow,
+            &host,
+            id,
+            QuitPromptCancellation::UserCancelled
+        ));
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn system_quit_revokes_an_already_claimed_no_before_or_after_yes_is_queued() {
+        for deliver_obsolete_before_completion in [false, true] {
+            let queue = Arc::new(Mutex::new(Vec::new()));
+            let host = StuckAppHost {
+                reply_queue: Some(queue.clone()),
+                ..StuckAppHost::new(true)
+            };
+            let flow = test_quit_flow(NEVER, NEVER);
+            request_appkit_quit_with(flow, &host, true);
+            let id = flow.state.lock().unwrap().prompt.0;
+            assert!(acknowledge_quit_prompt(flow, id, true));
+            assert!(cancel_appkit_prompt_with(
+                flow,
+                &host,
+                id,
+                QuitPromptCancellation::UserCancelled
+            ));
+            assert_eq!(
+                flow.state.lock().unwrap().appkit_reply,
+                AppkitReplyState::Claimed(false)
+            );
+            let obsolete_no = queue.lock().unwrap().pop().unwrap();
+
+            request_appkit_quit_with(flow, &host, false);
+            assert_eq!(host.wait_for_calls(2), ["ask to flush", "ask to flush"]);
+            if deliver_obsolete_before_completion {
+                obsolete_no();
+            }
+            assert!(!cancel_appkit_prompt_with(
+                flow,
+                &host,
+                id,
+                QuitPromptCancellation::UserCancelled
+            ));
+            expire_quit_flush_with(flow, &host);
+            if !deliver_obsolete_before_completion {
+                obsolete_no();
+            }
+            let yes = queue.lock().unwrap().pop().unwrap();
+            yes();
+            yes();
+            expire_quit_flush_with(flow, &host);
+            assert!(queue.lock().unwrap().is_empty());
+            assert_eq!(host.calls(), ["ask to flush", "ask to flush", "reply YES"]);
+            assert!(flow.quitting.load(Ordering::SeqCst));
+            assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn appkit_prompt_failures_and_internal_deferrals_never_reply_no() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host, true);
+        let first = flow.state.lock().unwrap().prompt.0;
+        assert!(acknowledge_quit_prompt(flow, first, true));
+        assert!(!cancel_appkit_prompt_with(
+            flow,
+            &host,
+            first,
+            QuitPromptCancellation::Failed
+        ));
+        // Failed retires the interaction to restore editing without answering AppKit NO.
+        assert!(!prompt_waits_for_user(flow));
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            first,
+            QuitPromptCancellation::Deferred
+        ));
+        assert_eq!(
+            flow.state.lock().unwrap().appkit_reply,
+            AppkitReplyState::Pending
+        );
+        assert!(request_appkit_quit_with(flow, &host, true));
+        let next = flow.state.lock().unwrap().prompt.0;
+        assert!(next > first);
+        assert_eq!(host.calls(), ["ask to flush", "ask to flush"]);
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            next,
+            QuitPromptCancellation::UserCancelled
+        ));
+        assert_eq!(host.calls(), ["ask to flush", "ask to flush", "reply NO"]);
+    }
+
+    #[test]
+    fn pending_appkit_reply_keeps_one_deadline_after_prompt_setup_or_save_failure() {
+        for acknowledged in [false, true] {
+            for disposition in [
+                QuitPromptCancellation::Failed,
+                QuitPromptCancellation::Deferred,
+            ] {
+                let flow = test_quit_flow(Duration::from_millis(400), NEVER);
+                let host = StuckAppHost::new(true);
+                request_appkit_quit_with(flow, &host, true);
+                let (prompt_id, deadline) = {
+                    let state = flow.state.lock().unwrap();
+                    (state.prompt.0, state.appkit_deadline.unwrap())
+                };
+                if acknowledged {
+                    assert!(acknowledge_quit_prompt(flow, prompt_id, true));
+                }
+                // Without acknowledgment this is utility suspension/setup failing before a
+                // prompt appears; with acknowledgment it is an unsuccessful save/deferral.
+                let failed = matches!(disposition, QuitPromptCancellation::Failed);
+                assert_eq!(
+                    cancel_appkit_prompt_with(flow, &host, prompt_id, disposition),
+                    !failed
+                );
+                {
+                    let state = flow.state.lock().unwrap();
+                    assert_eq!(state.prompt, (prompt_id, QuitPromptPhase::Idle));
+                    assert_eq!(state.appkit_reply, AppkitReplyState::Pending);
+                    assert_eq!(state.appkit_deadline, Some(deadline));
+                }
+                // No new quit or manual timer callback: the originally armed deadline must run.
+                assert_eq!(host.wait_for_calls(2), ["ask to flush", "reply YES"]);
+                expire_appkit_reply_with(flow, &host, deadline);
+                complete_appkit_quit_with(flow, &host);
+                assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+                assert_eq!(flow.state.lock().unwrap().appkit_deadline, None);
+            }
+        }
+    }
+
+    #[test]
+    fn appkit_deadline_survives_prompt_transitions_and_cancelled_deadlines_stay_retired() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host, true);
+        let first_deadline = flow.state.lock().unwrap().appkit_deadline.unwrap();
+        let first_prompt = flow.state.lock().unwrap().prompt.0;
+        assert!(acknowledge_quit_prompt(flow, first_prompt, true));
+        assert_eq!(
+            flow.state.lock().unwrap().appkit_deadline,
+            Some(first_deadline)
+        );
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            first_prompt,
+            QuitPromptCancellation::UserCancelled
+        ));
+        assert_eq!(flow.state.lock().unwrap().appkit_deadline, None);
+        request_appkit_quit_with(flow, &host, true);
+        let deadline = flow.state.lock().unwrap().appkit_deadline.unwrap();
+        assert!(deadline > first_deadline);
+        expire_appkit_reply_with(flow, &host, first_deadline);
+        let prompt = flow.state.lock().unwrap().prompt.0;
+        assert!(acknowledge_quit_prompt(flow, prompt, true));
+        request_appkit_quit_with(flow, &host, true);
+        assert!(resume_prompted_quit_with(flow, &host, prompt));
+        request_appkit_quit_with(flow, &host, false);
+        assert_eq!(flow.state.lock().unwrap().appkit_deadline, Some(deadline));
+        assert_eq!(host.calls(), ["ask to flush", "reply NO", "ask to flush"]);
+        expire_appkit_reply_with(flow, &host, deadline);
+        assert_eq!(
+            host.calls(),
+            ["ask to flush", "reply NO", "ask to flush", "reply YES"]
+        );
+    }
+
+    #[test]
+    fn appkit_deadline_supersedes_a_cancel_that_has_not_reached_the_main_thread() {
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let host = StuckAppHost {
+            reply_queue: Some(queue.clone()),
+            ..StuckAppHost::new(true)
+        };
+        let flow = test_quit_flow(NEVER, NEVER);
+        request_appkit_quit_with(flow, &host, true);
+        let deadline = flow.state.lock().unwrap().appkit_deadline.unwrap();
+        let prompt = flow.state.lock().unwrap().prompt.0;
+        assert!(cancel_appkit_prompt_with(
+            flow,
+            &host,
+            prompt,
+            QuitPromptCancellation::UserCancelled
+        ));
+        let obsolete_no = queue.lock().unwrap().pop().unwrap();
+        expire_appkit_reply_with(flow, &host, deadline);
+        obsolete_no();
+        let yes = queue.lock().unwrap().pop().unwrap();
+        yes();
+        yes();
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert_eq!(flow.state.lock().unwrap().appkit_deadline, None);
+    }
+
+    #[test]
+    fn failed_save_retires_the_prompt_and_allows_a_new_quit_on_both_platforms() {
+        for appkit in [false, true] {
+            let flow = test_quit_flow(NEVER, NEVER);
+            let host = StuckAppHost::new(true);
+            if appkit {
+                request_appkit_quit_with(flow, &host, true);
+            } else {
+                request_prompted_quit_with(flow, &host);
+            }
+            let first = flow.state.lock().unwrap().prompt.0;
+            assert!(acknowledge_quit_prompt(flow, first, true));
+            let cancelled = if appkit {
+                cancel_appkit_prompt_with(flow, &host, first, QuitPromptCancellation::Failed)
+            } else {
+                cancel_prompt_without_appkit(flow, first, QuitPromptCancellation::Failed)
+            };
+            assert!(!cancelled);
+            assert!(!prompt_waits_for_user(flow));
+            assert!(lock_window_creation_with(flow).is_ok());
+            assert_eq!(host.calls(), ["ask to flush"]);
+            if appkit {
+                assert_eq!(
+                    flow.state.lock().unwrap().appkit_reply,
+                    AppkitReplyState::Pending
+                );
+                request_appkit_quit_with(flow, &host, true);
+            } else {
+                request_prompted_quit_with(flow, &host);
+            }
+            let next = flow.state.lock().unwrap().prompt.0;
+            assert!(next > first);
+            assert!(acknowledge_quit_prompt(flow, next, true));
+            assert_eq!(host.calls(), ["ask to flush", "ask to flush"]);
+            assert!(!flow.quitting.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn appkit_failed_dispatch_uses_native_fallback_and_delivers_once() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        flow.state.lock().unwrap().appkit_reply = AppkitReplyState::Claimed(true);
+        let retained = Mutex::new(None);
+        let fallback = Mutex::new(None);
+        let replies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = replies.clone();
+        assert_eq!(
+            dispatch_appkit_reply_with(
+                flow,
                 true,
                 false,
-                u32::from_be_bytes(reason)
-            ));
-        }
+                |task| {
+                    *retained.lock().unwrap() = Some(task);
+                    Err("closed")
+                },
+                |task| *fallback.lock().unwrap() = Some(task),
+                move || {
+                    delivered.fetch_add(1, Ordering::SeqCst);
+                }
+            ),
+            Err("closed")
+        );
+        assert!(flow.state.lock().unwrap().appkit_reply.awaiting_delivery());
+        fallback.into_inner().unwrap().unwrap()();
+        retained.into_inner().unwrap().unwrap()();
+        assert_eq!(replies.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            flow.state.lock().unwrap().appkit_reply,
+            AppkitReplyState::Delivered
+        );
     }
 
     #[test]
@@ -9840,7 +13051,8 @@ mod tests {
         let lines: Vec<&str> = include_str!("lib.rs").lines().map(str::trim).collect();
         let declared_async = lines.windows(2).any(|pair| {
             pair[0] == "#[tauri::command]"
-                && pair[1] == "async fn quit_after_flush(app: tauri::AppHandle) {"
+                // A7 adds caller identity and a barrier ticket; the command must remain async.
+                && pair[1].starts_with("async fn quit_after_flush(")
         });
         assert!(declared_async);
     }
@@ -9900,8 +13112,6 @@ mod tests {
         assert!(is_openable_document_path(&dir.join("a.chemdraft")));
         assert!(is_openable_document_path(&dir.join("b.CDXML")));
         assert!(!is_openable_document_path(&dir.join("c.txt")));
-        // A ChemDraw binary reaches the opener, which says what it is; filtering it out here made
-        // "Open with ChemDraft" on a .cdx do nothing at all.
         assert!(is_openable_document_path(&dir.join("d.Cdx")));
         assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
         assert!(!is_openable_document_path(&dir));
@@ -9909,6 +13119,23 @@ mod tests {
         let payload = open_document_payload_from_path(&dir.join("a.chemdraft")).expect("payload");
         assert_eq!(payload.display_name, "a.chemdraft");
         assert_eq!(payload.contents, "<CDXML/>");
+        assert!(payload.bytes.is_none());
+        assert!(serde_json::to_value(&payload)
+            .unwrap()
+            .get("bytes")
+            .is_none());
+
+        let binary = [b"VjCD0100".as_slice(), &[0xFF, 0x00, 0x80]].concat();
+        for name in ["renamed.data", "binary.cdxml", "binary.cdx"] {
+            let path = dir.join(name);
+            fs::write(&path, &binary).expect("binary fixture");
+            assert!(is_openable_document_path(&path));
+            let payload = open_document_payload_from_path(&path).expect("binary payload");
+            assert!(payload.contents.is_empty());
+            assert_eq!(payload.bytes.as_deref(), Some(binary.as_slice()));
+            let json = serde_json::to_value(&payload).expect("binary event serialization");
+            assert_eq!(json["bytes"], serde_json::json!(binary));
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -10072,9 +13299,9 @@ mod tests {
         let long = "L".repeat(64_000);
 
         let mut handles = Vec::new();
-        for index in 0..8 {
+        for index in 0usize..8 {
             let path = path.clone();
-            let payload = if index % 2 == 0 {
+            let payload = if index.is_multiple_of(2) {
                 short.clone()
             } else {
                 long.clone()
@@ -10108,6 +13335,57 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn document_authorization_uses_membership_even_for_the_migrated_label() {
+        let registry = document_windows::DocumentWindowRegistry::default();
+        assert!(authorize_quit_window(&registry, "main").is_err());
+        assert!(authorize_quit_window(&registry, "doc-other").is_err());
+        registry.register("other", "doc-other").unwrap();
+        assert!(authorize_quit_window(&registry, "doc-other").is_ok());
+        for label in ["toolset-core-main", "dialog-main-export-1", "runtime"] {
+            assert!(authorize_quit_window(&registry, label).is_err());
+        }
+        registry.remove("other");
+        assert!(authorize_quit_window(&registry, "doc-other").is_err());
+    }
+
+    #[test]
+    fn menu_target_comes_from_the_active_registered_document_without_a_main_fallback() {
+        let registry = document_windows::DocumentWindowRegistry::default();
+        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
+        registry.register("other", "doc-other").unwrap();
+        registry.set_ready("other");
+        assert_eq!(
+            menu_command_target_label(&registry, "file.open", Some("preferences")).as_deref(),
+            Some("doc-other")
+        );
+        registry.mark_activated("toolset-core-main");
+        assert_eq!(
+            menu_command_target_label(&registry, "file.open", None).as_deref(),
+            Some("doc-other")
+        );
+        registry.remove("other");
+        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
+    }
+
+    #[test]
+    fn quit_fanout_visits_all_and_only_registered_documents() {
+        let registry = document_windows::DocumentWindowRegistry::with_main();
+        registry.register("other", "doc-other").unwrap();
+        let mut labels = Vec::new();
+        assert!(visit_quit_documents(&registry, |label| {
+            labels.push(label.to_string());
+            true
+        }));
+        labels.sort();
+        assert_eq!(labels, ["doc-other", "main"]);
+        registry.remove("main");
+        registry.remove("other");
+        assert!(!visit_quit_documents(&registry, |_| panic!(
+            "no fallback document"
+        )));
+    }
+
     /// Every custom command registered with `generate_handler!` needs BOTH a generated permission
     /// file and a capability grant, or Tauri's deny-by-default ACL rejects the invoke — and because
     /// the JS side swallows invoke rejections, the feature simply does nothing with no error
@@ -10117,9 +13395,69 @@ mod tests {
     /// so it is deliberately not the thing asserted.)
     #[test]
     fn registered_commands_have_permissions_and_capability_grants() {
+        let capability_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        for entry in std::fs::read_dir(capability_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let grant: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let windows = grant["windows"].as_array().unwrap();
+            if !windows.iter().any(|label| label == "main") {
+                continue;
+            }
+            assert!(
+                windows.iter().any(|label| label == "doc-*"),
+                "{}",
+                path.display()
+            );
+            let document_patterns: Vec<_> = windows
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|label| *label == "main" || label.starts_with("doc-"))
+                .collect();
+            let admitted = |label: &str| {
+                document_patterns.iter().any(|pattern| {
+                    pattern
+                        .strip_suffix('*')
+                        .map_or(*pattern == label, |prefix| label.starts_with(prefix))
+                })
+            };
+            assert!(admitted("main"));
+            assert!(admitted("doc-example"));
+            for utility in [
+                "toolset-core-main",
+                "toolset-popover-core-main",
+                "toolset-tooltip",
+                "dialog-main-export-1",
+                "plugin-panel-example",
+                "preferences",
+                "spin3d-debugger",
+                "runtime",
+            ] {
+                assert!(!admitted(utility), "{}: {utility}", path.display());
+                if windows.len() == document_patterns.len() {
+                    assert!(
+                        !windows
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .any(|pattern| {
+                                pattern
+                                    .strip_suffix('*')
+                                    .map_or(pattern == utility, |prefix| {
+                                        utility.starts_with(prefix)
+                                    })
+                            }),
+                        "{}: {utility}",
+                        path.display()
+                    );
+                }
+            }
+        }
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}",
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
@@ -10128,7 +13466,8 @@ mod tests {
             include_str!("../capabilities/quit-prompt.json"),
             include_str!("../capabilities/download-diagnosis.json"),
             include_str!("../capabilities/external-tools.json"),
-            include_str!("../capabilities/plugin-starter.json")
+            include_str!("../capabilities/plugin-starter.json"),
+            include_str!("../capabilities/runtime-broker.json")
         );
 
         let handler_start = lib_source
@@ -10141,6 +13480,8 @@ mod tests {
             .skip(1)
             .filter_map(|line| {
                 let name = line.trim().trim_end_matches(',').trim();
+                // The private broker's commands have the same app-generated permissions.
+                let name = name.strip_prefix("runtime_broker::").unwrap_or(name);
                 // Module-qualified commands (export::, fonts::) carry their own permissions.
                 if name.is_empty()
                     || name.contains("::")
@@ -10293,6 +13634,7 @@ mod tests {
 
     fn assert_bond_stereo_mouse_creation() {
         let config = toolset_popover_window_config(
+            &crate::ready_document_registry(),
             "toolset-popover-core-bondStereo",
             "core.bondStereo",
             "flyout",
@@ -10301,7 +13643,7 @@ mod tests {
         );
         // These are passed directly to WebviewWindowBuilder::from_config.
         #[cfg(windows)]
-        assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+        assert_eq!(config.parent.as_deref(), Some("main"));
         #[cfg(not(windows))]
         assert_eq!(config.parent, None);
         assert!(!config.focusable);
@@ -10346,6 +13688,7 @@ mod tests {
             ("core.art", "artColor", true),
         ] {
             let config = toolset_popover_window_config(
+                &crate::ready_document_registry(),
                 "popover",
                 toolset,
                 kind,
@@ -10366,7 +13709,7 @@ mod tests {
             assert!(!config.focus);
             assert!(!config.visible);
             #[cfg(windows)]
-            assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+            assert_eq!(config.parent.as_deref(), Some("main"));
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
         }
@@ -10481,6 +13824,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.first".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "First".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: true,
@@ -10488,6 +13832,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.analyze".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Analyze".to_owned(),
                 location: "analyze".to_owned(),
                 enabled: true,
@@ -10495,6 +13840,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.second".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Second".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: false,
@@ -10546,6 +13892,7 @@ mod tests {
         let mut item = PluginMenuItemInput {
             id: "plugins.showUpdates".to_owned(),
             core_routed: false,
+            separator_before: false,
             label: "Plugin Updates Available (1)…".to_owned(),
             location: "plugins".to_owned(),
             enabled: true,
@@ -10630,28 +13977,56 @@ mod tests {
     #[test]
     fn text_edit_commands_follow_the_key_window_and_other_commands_go_to_main() {
         assert_eq!(
-            menu_command_target_label("edit.undo", Some("toolset-core-main")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.undo",
+                Some("toolset-core-main")
+            )
+            .as_deref()
+            .unwrap(),
             "toolset-core-main"
         );
         assert_eq!(
-            menu_command_target_label("edit.redo", Some("preferences")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.redo",
+                Some("preferences")
+            )
+            .as_deref()
+            .unwrap(),
             "preferences"
         );
         assert_eq!(
-            menu_command_target_label("edit.undo", Some(MAIN_WINDOW_LABEL)),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", Some("main"))
+                .as_deref()
+                .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.undo", None),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", None)
+                .as_deref()
+                .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some("toolset-core-main")),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some("toolset-core-main")
+            )
+            .as_deref()
+            .unwrap(),
             "toolset-core-main"
         );
         assert_eq!(
-            menu_command_target_label("clipboard.copyAs.smiles", Some("preferences")),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "clipboard.copyAs.smiles",
+                Some("preferences")
+            )
+            .as_deref()
+            .unwrap(),
+            "main"
         );
     }
 
@@ -10667,16 +14042,30 @@ mod tests {
         let dialog = "dialog-main-pageSize-12";
         assert!(is_routed_menu_command("edit.selectAll"));
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some(dialog)),
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some(dialog)
+            )
+            .as_deref()
+            .unwrap(),
             dialog
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", Some(MAIN_WINDOW_LABEL)),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(
+                &crate::ready_document_registry(),
+                "edit.selectAll",
+                Some("main")
+            )
+            .as_deref()
+            .unwrap(),
+            "main"
         );
         assert_eq!(
-            menu_command_target_label("edit.selectAll", None),
-            MAIN_WINDOW_LABEL
+            menu_command_target_label(&crate::ready_document_registry(), "edit.selectAll", None)
+                .as_deref()
+                .unwrap(),
+            "main"
         );
     }
 
@@ -10694,7 +14083,7 @@ mod tests {
         let dialogs: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/document-dialogs.json"))
                 .expect("document dialogs capability should parse");
-        assert_eq!(dialogs["windows"], serde_json::json!(["main"]));
+        assert_eq!(dialogs["windows"], serde_json::json!(["main", "doc-*"]));
         expect_true(
             dialogs["permissions"]
                 .as_array()
@@ -10720,7 +14109,7 @@ mod tests {
         let capture: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/screen-capture.json"))
                 .expect("screen capture capability should parse");
-        assert_eq!(capture["windows"], serde_json::json!(["main"]));
+        assert_eq!(capture["windows"], serde_json::json!(["main", "doc-*"]));
         let permissions = capture["permissions"]
             .as_array()
             .expect("screen capture permissions");
@@ -10887,11 +14276,8 @@ mod tests {
         be.extend(units.iter().flat_map(|unit| unit.to_be_bytes()));
         assert_eq!(decode_document_text(&be), xml);
 
-        // A binary ChemDraw file must still reach the opener, signature intact, so it can say what
-        // the file is rather than the open silently doing nothing.
-        let mut cdx = b"VjCD0100".to_vec();
-        cdx.extend_from_slice(&[0x04, 0x03, 0x02, 0x01, 0xFF, 0x00, 0x80]);
-        assert!(decode_document_text(&cdx).starts_with("VjCD0100"));
+        let native = "{\"schemaVersion\":1}";
+        assert_eq!(decode_document_text(native.as_bytes()), native);
     }
 
     /// NSIS ignores `rank`, so a Windows `.cdxml` association is never "Alternate": a per-user install
@@ -10932,6 +14318,22 @@ mod tests {
         }));
         expect_true(engine3d_bundled_binary_name().starts_with(ENGINE3D_SIDECAR_BASENAME));
         expect_true(engine3d_bundled_binary_name().contains(engine3d_target_triple()));
+    }
+
+    #[test]
+    fn open_document_rejects_oversized_file() {
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-open-oversized-{}", std::process::id()));
+        let file = fs::File::create(&path).expect("create fixture");
+        file.set_len(MAX_OPEN_DOCUMENT_BYTES + 1)
+            .expect("size fixture");
+        drop(file);
+        let error = match open_document_payload_from_path(&path) {
+            Ok(_) => panic!("oversized document must be refused"),
+            Err(error) => error,
+        };
+        fs::remove_file(path).expect("remove fixture");
+        assert_eq!(error, "Document exceeds the 64 MB size limit");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]

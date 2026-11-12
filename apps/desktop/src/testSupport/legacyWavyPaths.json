@@ -1,0 +1,213 @@
+[
+  {
+    "name": "click",
+    "object": {
+      "id": "legacy-click",
+      "x": 179,
+      "y": 157,
+      "width": 82,
+      "height": 46,
+      "rotation": 0,
+      "style": {
+        "source": "chemdraft-native-art",
+        "strokeColor": "#111111",
+        "fillColor": "none",
+        "strokeWidth": 2,
+        "artToolCommandId": "tool.art.lineWavy"
+      },
+      "compatibility": {
+        "sourceFormat": "chemdraft-native",
+        "warnings": [],
+        "unknown": {}
+      },
+      "type": "graphic",
+      "graphicKind": "path",
+      "data": {
+        "artPathKind": "wavy",
+        "artToolId": "lineWavy"
+      }
+    },
+    "paths": {
+      "local": {
+        "pathD": "M 3 23 C 13.12 11.96, 22.96 34.04, 32.8 23 S 52.48 11.96, 62.32 23 S 75.44 34.04, 79 23"
+      },
+      "page": {
+        "pathD": "M 182 180 C 192.12 168.96, 201.96 191.04, 211.8 180 S 231.48 168.96, 241.32 180 S 254.44 191.04, 258 180"
+      }
+    }
+  },
+  {
+    "name": "explicit",
+    "object": {
+      "id": "legacy-explicit",
+      "x": 179,
+      "y": 157,
+      "width": 24,
+      "height": 12,
+      "rotation": 0,
+      "style": {
+        "source": "chemdraft-native-art",
+        "strokeColor": "#111111",
+        "fillColor": "none",
+        "strokeWidth": 2,
+        "artToolCommandId": "tool.art.lineWavy"
+      },
+      "compatibility": {
+        "sourceFormat": "chemdraft-native",
+        "warnings": [],
+        "unknown": {}
+      },
+      "type": "graphic",
+      "graphicKind": "path",
+      "data": {
+        "artPathKind": "wavy",
+        "lineStart": {
+          "x": 179,
+          "y": 163
+        },
+        "lineEnd": {
+          "x": 203,
+          "y": 163
+        }
+      }
+    },
+    "paths": {
+      "local": {
+        "pathD": "M 0 6 L 3 8.2627 L 6 2.8 L 9 8.2627 L 12 6 L 15 3.7373 L 18 9.2 L 21 3.7373 L 24 6"
+      },
+      "page": {
+        "pathD": "M 179 163 L 182 165.2627 L 185 159.8 L 188 165.2627 L 191 163 L 194 160.7373 L 197 166.2 L 200 160.7373 L 203 163"
+      }
+    }
+  },
+  {
+    "name": "short",
+    "object": {
+      "id": "legacy-short",
+      "x": 179,
+      "y": 157,
+      "width": 2,
+      "height": 12,
+      "rotation": 0,
+      "style": {
+        "source": "chemdraft-native-art",
+        "strokeColor": "#111111",
+        "fillColor": "none",
+        "strokeWidth": 2,
+        "artToolCommandId": "tool.art.lineWavy"
+      },
+      "compatibility": {
+        "sourceFormat": "chemdraft-native",
+        "warnings": [],
+        "unknown": {}
+      },
+      "type": "graphic",
+      "graphicKind": "path",
+      "data": {
+        "artPathKind": "wavy",
+        "lineStart": {
+          "x": 179,
+          "y": 163
+        },
+        "lineEnd": {
+          "x": 181,
+          "y": 163
+        }
+      }
+    },
+    "paths": {
+      "local": {
+        "pathD": "M 0 6 L 0.25 9.2 L 0.5 6 L 0.75 2.8 L 1 6 L 1.25 9.2 L 1.5 6 L 1.75 2.8 L 2 6"
+      },
+      "page": {
+        "pathD": "M 179 163 L 179.25 166.2 L 179.5 163 L 179.75 159.8 L 180 163 L 180.25 166.2 L 180.5 163 L 180.75 159.8 L 181 163"
+      }
+    }
+  },
+  {
+    "name": "diagonal",
+    "object": {
+      "id": "legacy-diagonal",
+      "x": 179,
+      "y": 157,
+      "width": 12,
+      "height": 16,
+      "rotation": 0,
+      "style": {
+        "source": "chemdraft-native-art",
+        "strokeColor": "#111111",
+        "fillColor": "none",
+        "strokeWidth": 2,
+        "artToolCommandId": "tool.art.lineWavy"
+      },
+      "compatibility": {
+        "sourceFormat": "chemdraft-native",
+        "warnings": [],
+        "unknown": {}
+      },
+      "type": "graphic",
+      "graphicKind": "path",
+      "data": {
+        "artPathKind": "wavy",
+        "lineStart": {
+          "x": 179,
+          "y": 157
+        },
+        "lineEnd": {
+          "x": 191,
+          "y": 173
+        }
+      }
+    },
+    "paths": {
+      "local": {
+        "pathD": "M 0 0 L -0.8651 3.7738 L 4.8102 2.6424 L 5.4797 5.2652 L 3.44 9.92 L 8.4797 9.2652 L 10.8102 10.6424 L 8.1349 15.7738 L 12 16"
+      },
+      "page": {
+        "pathD": "M 179 157 L 178.1349 160.7738 L 183.8102 159.6424 L 184.4797 162.2652 L 182.44 166.92 L 187.4797 166.2652 L 189.8102 167.6424 L 187.1349 172.7738 L 191 173"
+      }
+    }
+  },
+  {
+    "name": "marker",
+    "object": {
+      "id": "legacy-marker",
+      "x": 179,
+      "y": 157,
+      "width": 40,
+      "height": 20,
+      "rotation": 0,
+      "style": {
+        "source": "chemdraft-native-art",
+        "strokeColor": "#111111",
+        "fillColor": "none",
+        "strokeWidth": 2,
+        "artToolCommandId": "tool.art.lineWavy"
+      },
+      "compatibility": {
+        "sourceFormat": "chemdraft-native",
+        "warnings": [],
+        "unknown": {}
+      },
+      "type": "graphic",
+      "graphicKind": "path",
+      "data": {
+        "artPathKind": "wavy",
+        "markerEnd": {
+          "kind": "filled-arrow",
+          "sizePx": 8
+        }
+      }
+    },
+    "paths": {
+      "local": {
+        "pathD": "M 3 10 C 6.4 5.2, 11.2 14.8, 16 10 S 25.6 5.2, 30.4 10 S 36.8 14.8, 37 10",
+        "visiblePathD": "M 3 10 L 7.1419 9.0671 L 11.9784 11.2729 L 16.9808 9.086 L 21.5078 6.5988 L 26.0349 6.9581 L 30.6502 10.2487 L 35.4785 13.5989 L 35.6916 13.0948"
+      },
+      "page": {
+        "pathD": "M 182 167 C 185.4 162.2, 190.2 171.8, 195 167 S 204.6 162.2, 209.4 167 S 215.8 171.8, 216 167",
+        "visiblePathD": "M 182 167 L 186.1419 166.0671 L 190.9784 168.2729 L 195.9808 166.086 L 200.5078 163.5988 L 205.0349 163.9581 L 209.6502 167.2487 L 214.4785 170.5989 L 214.6916 170.0948"
+      }
+    }
+  }
+]

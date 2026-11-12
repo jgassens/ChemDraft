@@ -2,7 +2,8 @@ import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawi
 import { describe, expect, it } from "vitest";
 import { DocumentObjectSchema, nativeTextStyleFromObjectStyle, type Anchor } from "@chemdraft/chem-core";
 import { documentDrawingDefaults, estimateNativeTextLineWidth } from "@chemdraft/document-workflow-core";
-import { reactionArrowHeadDepthPx } from "@chemdraft/layout-engine";
+import { moleculeInkBounds, reactionArrowHeadDepthPx, reactionArrowInkBounds,
+  reactionSchemeDrawingMetrics } from "@chemdraft/layout-engine";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
@@ -241,6 +242,33 @@ describe("assistant writes", () => {
 
 
 describe("assistant document drawing defaults", () => {
+  it("passes the host's core aligner through the shared reaction planner", async () => {
+    const { context } = testContext(false);
+    context.confirmPageGrowth = async () => true;
+    let calls = 0;
+    context.chemistry.reactionProductAligner = async () => (references, product) => {
+      expect(references).toHaveLength(2);
+      expect(product).toContain("V2000");
+      calls++;
+      return undefined;
+    };
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(calls).toBe(1);
+    expect(result.structuredContent?.alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_skipped", component: expect.objectContaining({ role: "product", index: 0 }) })
+    ]);
+  });
+  it("passes alignment timeouts into the assistant tool result", async () => {
+    const { context } = testContext(false);
+    context.confirmPageGrowth = async () => true;
+    context.chemistry.reactionProductAligner = async () => () => ({ matchedAtomCount: 0, warnings: ["timeout"] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"] });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent?.alignmentWarnings).toEqual([
+      expect.objectContaining({ code: "reaction.alignment_timeout", component: expect.objectContaining({ role: "product", index: 0 }) })
+    ]);
+  });
   it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
     const { context, replace } = testContext(false);
     const document = insertionDocument(style);
@@ -257,13 +285,19 @@ describe("assistant document drawing defaults", () => {
     expect(molecules).toHaveLength(3);
     molecules.forEach(object => expectDrawingDefaults(object, style));
     const arrow = objects.find(object => object.type === "reaction-arrow")!;
-    const left = objectRect(molecules[1]!);
-    const right = objectRect(molecules[2]!);
-    expect(arrow.start.point!.x - left.x - left.width).toBeCloseTo(defaults.bondLengthPx);
-    expect(right.x - arrow.end.point!.x).toBeCloseTo(defaults.bondLengthPx);
+    const left = moleculeInkBounds(molecules[1]!);
+    const right = moleculeInkBounds(molecules[2]!);
+    const ink = reactionArrowInkBounds(arrow.arrowKind, arrow.end.point!.x - arrow.start.point!.x, Number(arrow.style.strokeWidth));
+    expect(arrow.start.point!.x + ink.x - left.x - left.width).toBeCloseTo(1.25 * defaults.bondLengthPx);
+    expect(right.x - arrow.start.point!.x - ink.x - ink.width).toBeCloseTo(1.25 * defaults.bondLengthPx);
+    molecules.map(moleculeInkBounds).forEach(b => expect(b.y + b.height / 2).toBeCloseTo(arrow.start.point!.y));
     const plus = objects.find(object => object.type === "text" && object.text === "+");
     if (!plus || plus.type !== "text") throw new Error("Expected a plus-sign text object.");
-    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(defaults.textStyle.fontSizePx);
+    const drawing = reactionSchemeDrawingMetrics(molecules[0]!);
+    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(drawing.fontSizePx);
+    expect(plus.width).toBe(drawing.plusSize);
+    expect(plus.style.strokeWidth).toBe(drawing.strokeWidth);
+    expect(plus.y + plus.height / 2).toBeCloseTo(arrow.start.point!.y);
     expect(objects.slice(0, existing.length)).toEqual(existing);
   });
   it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {

@@ -26,6 +26,7 @@ export type RecognitionActivityStage = "checking" | "starting" | "reading" | "va
 
 /** The recognition the progress indicator shows. */
 export interface RecognitionActivity {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -49,6 +50,7 @@ const CANCELLED_CALL_GRACE_MS = 10_000;
 const MAX_ENGINE_CHECK_WAITS = 3;
 
 export interface OpenStructureRecognitionInstall {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -296,7 +298,9 @@ export class StructureRecognitionController {
   async recognize(
     plugin: { id: string; name: string },
     image: PluginProvidedImage,
-    signal: AbortSignal
+    signal: AbortSignal,
+    prepareResult: PrepareRecognitionResult = this.prepareResult,
+    windowId = "main"
   ): Promise<PluginRecognitionResult> {
     if (signal.aborted) return { status: "cancelled" };
     // One at a time: the engine runs one recognition, and the indicator shows one.
@@ -304,6 +308,7 @@ export class StructureRecognitionController {
       return recognitionFailure("busy", "Another image is already being recognized.");
     }
     const active: ActiveRecognition = {
+      ...(windowId === "main" ? {} : { windowId }),
       id: this.nextId++,
       pluginId: plugin.id,
       pluginName: plugin.name,
@@ -317,7 +322,7 @@ export class StructureRecognitionController {
     this.active = active;
     this.publishActivity();
     try {
-      return await this.runRecognition(active, plugin, image);
+      return await this.runRecognition(active, plugin, image, prepareResult);
     } finally {
       signal.removeEventListener("abort", onAbort);
       if (this.active === active) {
@@ -330,7 +335,8 @@ export class StructureRecognitionController {
   private async runRecognition(
     active: ActiveRecognition,
     plugin: { id: string; name: string },
-    image: PluginProvidedImage
+    image: PluginProvidedImage,
+    prepareResult: PrepareRecognitionResult
   ): Promise<PluginRecognitionResult> {
     const stopped = active.stop.signal;
     let status: StructureRecognitionEngineStatus | typeof STOPPED;
@@ -358,7 +364,7 @@ export class StructureRecognitionController {
 
     if (status.state !== "installed") {
       // The install dialog replaces the indicator while it is open (see getActiveRecognition).
-      const outcome = await this.requestInstall(plugin, status, stopped);
+      const outcome = await this.requestInstall(plugin, status, stopped, active.windowId);
       this.publishActivity();
       // A cancel or an abandoned invocation is the user's own act: the plugin stays silent. Only a
       // declined or incomplete install is `engineNotInstalled`, which a plugin may explain.
@@ -396,7 +402,7 @@ export class StructureRecognitionController {
     // The engine's own words, which may be empty or a whole traceback: bounded like every failure.
     if (outcome.status === "failed") return recognitionFailure(outcome.code, outcome.message);
     this.setStage(active, "validating");
-    const result = await untilStopped(this.prepareResult(outcome, image), stopped);
+    const result = await untilStopped(prepareResult(outcome, image), stopped);
     if (result === STOPPED) return { status: "cancelled" };
     return result.status === "failed" ? recognitionFailure(result.code, result.message) : result;
   }
@@ -452,6 +458,7 @@ export class StructureRecognitionController {
   private publishActivity(): void {
     const active = this.active;
     this.activitySnapshot = active && {
+      ...(active.windowId ? { windowId: active.windowId } : {}),
       id: active.id,
       pluginId: active.pluginId,
       pluginName: active.pluginName,
@@ -612,13 +619,15 @@ export class StructureRecognitionController {
   private requestInstall(
     plugin: { id: string; name: string },
     status: StructureRecognitionEngineStatus,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    windowId = "main"
   ): Promise<InstallRequestOutcome> {
     if (signal?.aborted) return Promise.resolve("cancelled");
     // Nobody can answer a dialog (or one is already open): the engine is simply not installed.
     if (this.pending || this.presenters === 0) return Promise.resolve("declined");
     return new Promise<InstallRequestOutcome>((resolve) => {
       const pending: PendingInstall = {
+        ...(windowId === "main" ? {} : { windowId }),
         id: this.nextId++,
         pluginId: plugin.id,
         pluginName: plugin.name,
@@ -695,7 +704,7 @@ function followedRunEnd(
   run: InstallRunState,
   status: StructureRecognitionEngineStatus
 ): StructureRecognitionInstallError {
-  if (run.cancelRequested) return { code: "cancelled", message: "Installation was cancelled." };
+  if (run.cancelRequested) return { code: "cancelled", message: "Installation was canceled." };
   const detail = status.detail?.trim();
   if (status.state === "unsupported") {
     return { code: "unsupported", message: detail || "This computer isn’t supported by the MolScribe recognition engine." };

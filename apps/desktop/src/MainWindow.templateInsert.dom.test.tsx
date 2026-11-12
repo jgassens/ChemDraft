@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -49,7 +50,7 @@ describe("template insertion during an atom-label edit", () => {
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const template = resolveStructureTemplateName("18-crown-6")!;
     await command(`template.insert.${template.id}`);
-    const current = getAssistantHistoryPort().read("initial")!;
+    const current = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const inserted = current.pages[0]!.objects[1] as MoleculeObject;
     expectDrawingDefaults(inserted, style);
     const { source, ...templateStyle } = inserted.style;
@@ -68,7 +69,7 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.atom"
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const port = getAssistantHistoryPort();
-    const current = () => port.read("initial")!;
+    const current = () => port.read(initialDocumentTabId())!;
     const editedMolecule = () => current().pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
     const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
     const status = () => container.querySelector("[role=status]")?.textContent;
@@ -94,10 +95,11 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => { await import("./dialogs/StructureTemplatePicker"); });
     await command("template.insertDialog");
     const template = resolveStructureTemplateName("18-crown-6")!;
+    // Rendering the lazy picker can take longer on a slow Windows CI runner.
     await vi.waitFor(async () => {
       await act(async () => {});
       expect(container.querySelector(`[data-template-id="${template.id}"]`)).not.toBeNull();
-    });
+    }, { timeout: 15_000 });
     expect(editor()?.value).toBe("O");
     const finalize = vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft");
     await act(async () => {
@@ -132,7 +134,7 @@ describe("template insertion during an atom-label edit", () => {
     expect(status()).toBe(`Redid Insert ${template.name}`);
     expect(current().selection.objectIds).toEqual([inserted.id]);
     expect(editor()).toBeNull();
-  });
+  }, 30_000); // Allow React rendering time on a slow Windows CI runner.
 
   it("commits a Text-tool N label before inserting, retaining selection and separate undo labels", async () => {
     const initial = applyNativeChainTool(createEmptyDocument(), { x: 200, y: 200 }, { x: 280, y: 200 });
@@ -142,7 +144,7 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.text"
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const port = getAssistantHistoryPort();
-    const current = () => port.read("initial")!;
+    const current = () => port.read(initialDocumentTabId())!;
     const editedMolecule = () => current().pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
     const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
     const status = () => container.querySelector("[role=status]")?.textContent;
@@ -168,10 +170,11 @@ describe("template insertion during an atom-label edit", () => {
     await act(async () => { await import("./dialogs/StructureTemplatePicker"); });
     await command("template.insertDialog");
     const template = resolveStructureTemplateName("18-crown-6")!;
+    // Rendering the lazy picker can take longer on a slow Windows CI runner.
     await vi.waitFor(async () => {
       await act(async () => {});
       expect(container.querySelector(`[data-template-id="${template.id}"]`)).not.toBeNull();
-    });
+    }, { timeout: 15_000 });
     expect(editor()?.value).toBe("N");
     const finalize = vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft");
     await act(async () => {
@@ -212,14 +215,14 @@ describe("template insertion during an atom-label edit", () => {
     expect(status()).toBe(`Redid Insert ${template.name}`);
     expect(current().selection.objectIds).toEqual([inserted.id]);
     expect(editor()).toBeNull();
-  });
+  }, 30_000); // Allow React rendering time on a slow Windows CI runner.
 
   it.each(["tool.text", "tool.select"])("plain insertion sets selection with %s active; chrome follows the shared tool policy", async tool => {
     await act(async () => root.render(<MainWindow initialDocument={createEmptyDocument()} initialActiveToolCommandId={tool}
       initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     const template = resolveStructureTemplateName("18-crown-6")!;
     await command(`template.insert.${template.id}`);
-    const current = getAssistantHistoryPort().read("initial")!;
+    const current = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const inserted = current.pages[0]!.objects[0]!;
     expect(current.selection.objectIds).toEqual([inserted.id]);
     const frame = container.querySelector("[data-molecule-transform-frame]");

@@ -16,6 +16,7 @@
  */
 
 import type { ViewportState } from "@chemdraft/viewport-engine";
+import { ChemDraftDocumentSchema, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { OpenWarningsReport } from "./openWarnings";
 
 export const DOCUMENT_SESSION_VERSION = 1;
@@ -52,7 +53,11 @@ export interface DocumentSessionEnvelope {
   view?: DocumentSessionView;
   openWarnings?: OpenWarningsReport;
   saveWarnings?: OpenWarningsReport;
+  /** Original file headers: the feature-based Save writer may omit them from contents. */
+  nativeDocumentVersions?: Pick<ChemDraftDocument, "formatVersion" | "minAppVersion">;
 }
+
+const sessionNativeVersionsSchema = ChemDraftDocumentSchema.pick({ formatVersion: true, minAppVersion: true });
 
 export interface DocumentSessionView {
   viewport: ViewportState;
@@ -113,7 +118,18 @@ export function buildDocumentTabsSession(
 ): DocumentSessionEnvelope {
   const active = tabs[activeTabIndex];
   if (!active) throw new Error("The active document tab is missing");
-  return { ...active, tabs, activeTabIndex };
+  // Only the known v1 compatibility fields belong at window scope. Opaque metadata retained
+  // from a restored tab must stay on that tab, even when the startup blank is reused.
+  const envelope: DocumentSessionEnvelope = {
+    version: active.version, contents: active.contents, payloadHash: active.payloadHash,
+    blank: active.blank, displayName: active.displayName, dirty: active.dirty, savedAt: active.savedAt,
+    tabs, activeTabIndex
+  };
+  for (const key of ["path", "restoreSavePathError", "pristine", "view", "openWarnings",
+    "saveWarnings", "nativeDocumentVersions"] as const) {
+    if (key in active) Object.assign(envelope, { [key]: active[key] });
+  }
+  return envelope;
 }
 
 export interface DocumentSessionSource {
@@ -156,6 +172,23 @@ export function rawDocumentSessionTab(tab: DocumentSessionEnvelope): unknown {
   return rawSessionTabs.get(tab) ?? tab;
 }
 
+/** Carry future metadata through document serialization, including nested view/report fields.
+ * Known optional fields can still be cleared by the current document state. */
+export function preserveDocumentSessionTabMetadata(raw: unknown, current: DocumentSessionEnvelope): DocumentSessionEnvelope {
+  const merge = (old: unknown, next: unknown): unknown => {
+    if (!record(old) || Array.isArray(old) || !record(next) || Array.isArray(next)) return next;
+    const result = { ...old };
+    for (const [key, value] of Object.entries(next)) result[key] = merge(old[key], value);
+    return result;
+  };
+  const result = merge(raw, current) as DocumentSessionEnvelope;
+  for (const key of ["path", "restoreSavePathError", "unrestoredTabs", "view", "openWarnings", "saveWarnings",
+    "nativeDocumentVersions", "pristine"] as const) {
+    if (!(key in current)) delete result[key];
+  }
+  return result;
+}
+
 /** Retry carried envelopes through the current parser without normalizing away recovery data. */
 export function documentSessionRestoreCandidates(envelope: ParsedDocumentSession): unknown[] {
   const tabs = envelope.tabs ?? ("contents" in envelope ? [envelope] : []);
@@ -191,10 +224,12 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   const candidate = raw as Record<string, unknown>;
   if (candidate.tabs !== undefined) {
     if (nested || candidate.version !== DOCUMENT_SESSION_VERSION || !Array.isArray(candidate.tabs) ||
-        candidate.tabs.length === 0 || !Number.isInteger(candidate.activeTabIndex) ||
+        !Number.isInteger(candidate.activeTabIndex) ||
         typeof candidate.activeTabIndex !== "number" || candidate.activeTabIndex < 0 ||
-        candidate.activeTabIndex >= candidate.tabs.length ||
+        candidate.activeTabIndex >= Math.max(1, candidate.tabs.length) ||
         (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs))) return undefined;
+    // Native close removes the readable tabs but retains recovery drawings for reopen/next launch.
+    if (candidate.tabs.length === 0 && !(candidate.unrestoredTabs as unknown[] | undefined)?.length) return undefined;
     const tabs: DocumentSessionEnvelope[] = [];
     const unrestoredTabs: unknown[] = [...(candidate.unrestoredTabs as unknown[] ?? [])];
     let activeTabIndex = 0;
@@ -227,6 +262,7 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   const view = candidate.view === undefined ? undefined : parseSessionView(candidate.view);
   const warnings = candidate.openWarnings === undefined ? undefined : parseSessionWarnings(candidate.openWarnings);
   const saveWarnings = parseSessionWarnings(candidate.saveWarnings);
+  const nativeDocumentVersions = sessionNativeVersionsSchema.safeParse(candidate.nativeDocumentVersions);
   if (candidate.pristine !== undefined && typeof candidate.pristine !== "boolean") return undefined;
   if (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs)) return undefined;
   const parsed: DocumentSessionEnvelope = {
@@ -243,7 +279,8 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
     ...(typeof candidate.pristine === "boolean" ? { pristine: candidate.pristine } : {}),
     ...(view ? { view } : {}),
     ...(warnings ? { openWarnings: warnings } : {}),
-    ...(saveWarnings ? { saveWarnings } : {})
+    ...(saveWarnings ? { saveWarnings } : {}),
+    ...(nativeDocumentVersions.success ? { nativeDocumentVersions: nativeDocumentVersions.data } : {})
   };
   rawSessionTabs.set(parsed, raw);
   return parsed;

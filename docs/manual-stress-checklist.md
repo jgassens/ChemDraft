@@ -7,6 +7,45 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Native drawing presets (macOS and Windows): apply each Structure ▸ Drawing style item to selected molecules/text and to an unselected multi-page document; check new-object defaults, retained chemistry, wedge/hash and double-bond spacing, changed-object selection, save/reopen, and exactly one named Undo/Redo entry. Reapplying a matching preset adds no entry.
+
+Invalid structure exports (macOS and Windows): draw/import a carbon with five single bonds;
+copy as MOL V2000, MOL V3000, CDXML and SMILES, and export CDXML, SDF and SMILES. Each writes
+the drawing and reports the same warning naming the carbon and unsupported valence 5. Clear
+Warning and repeat: the (!) badge hides, exports still warn, and analysis still reports the
+problem. Save/reopen and undo/redo suppression; check that atoms, bonds and charges stay unchanged.
+
+Atom problem window (macOS and Windows): change a pincer Ru–N bond to double. The edit lands
+with (!) on neutral N. Click the badge, then reach it with Tab and activate with Enter/Space:
+each opens the same movable, modeless native Atom problem window without editing the drawing.
+It explains the current bonds, valence and charge and offers +1. Apply it: N becomes N+, stays
+selected, and one Undo restores the warning; Redo restores N+. Repeat with an S(III) atom
+(one S=O and one S–C bond): explicitly add H to reach S(IV). For a literal OH2 on one bond,
+remove H to get OH. Each fix is one labeled Undo and leaves connectivity/coordinates intact.
+Five-bond carbon offers no H/charge fix; Ignore hides only its badge, while validation/export
+still warn. Right-click that atom, choose Atom problem…, then Restore: the badge returns in one
+Undo step. Retarget to a second invalid atom: no second window appears and no automatic change
+occurs. Correct or delete the target using drawing tools: the window shows No problem. Move the
+window off the document onto another monitor, close/reopen it, and check its remembered position,
+first-open centering, toolbar usability/stacking, document ownership, and no Windows taskbar entry.
+Repeat at mixed DPI; switch tabs while it is open, apply a fix to its originating drawing, and
+verify selection/Undo there. Closing/replacing that drawing closes its window. Check badge focus,
+clicks with a drawing tool active, Space scrolling prevention, and absence of badges in exports.
+
+Online structure search (macOS and Windows): with nothing selected, both Tools searches are disabled;
+select text only and confirm they stay disabled. Select a molecule, a group containing molecules,
+and an atom/bond fragment in turn. Search PubChem and Search Reaxys opens the system browser with
+only the selected chemistry. Each site first asks Continue/Cancel with the browser-history notice;
+Cancel opens nothing and asks again, while Continue is remembered across app restarts per site.
+Repeat commands rapidly: at most one browser tab opens per second across both sites. Disable
+Preferences > Online structure search: both menu entries disappear immediately and direct command
+invocation refuses, including while a consent box is open. Re-enable, restart, and verify persistence.
+Oversized links show “This structure is too large for a search link. Select a smaller part.”
+Check charged, isotopic and stereochemical queries in both destinations; Reaxys needs the user's
+own access and its browser session may retain an earlier query, so verify the loaded structure.
+
+Sketch preset (macOS and Windows): check uneven single/double/triple/wedge/hash ink at roughness 1.25 and Patrick Hand labels/captions. Export SVG and PDF, open on a machine without the font installed, and compare label spacing and searchable PDF text. Apply ChemDraft Synthetic afterward and verify that the sketch ink and handwriting are removed in the chosen scope.
+
 Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example
@@ -22,6 +61,18 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+
+Selection nudging (macOS and Windows): select a molecule, an atom/bond fragment, text, arrow,
+graphic, and a mixed selection in turn. Arrow keys move by 1 document unit (one CSS pixel);
+Shift+arrow moves by 10, and Down increases document y. Check at several zoom levels and page edges.
+Press Right three times and hold it for auto-repeat: the view stays still and one Undo restores
+the original coordinates; Redo restores the final position. Another key, pointer action,
+selection change or one second idle starts a new Undo burst. Check stereo, labels, anchored charge
+marks and mechanism arrows against a drag move. With nothing selected, arrows add no Undo entry.
+While atom labels, text, table cells, form controls or editable plugin text hold focus, verify
+real arrow caret/navigation behavior and no canvas movement. Cmd/Ctrl/Alt+arrows retain their
+usual behavior.
+Brackets (macOS and Windows): drag square/round pairs in both directions, including over a molecule; verify matching sides, both visibly selected after returning to Select, one labeled Undo/Redo, and Escape cancellation. Right-click either side, mark a repeat unit, then double-click the painted n and type m without switching tools (Enter/blur commits once; Escape cancels). A single Select click only selects, matching text objects. Duplicate, copy/paste, save/reopen and compare canvas/SVG/PDF placement. Select only the molecule: Copy As SMILES and SMILES file export must name the omitted repeat label and atom count. Both MOL text formats must contain an SRU SGroup (including membership/crossing bonds, repeat label and EU connectivity), or warn naming the bracket if it cannot be represented. Recheck CDXML label/connectivity limitations. Open Main with a saved pre-Round-Bracket order: Round Bracket belongs immediately after Square Bracket; explicit custom placement remains where saved.
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.
@@ -59,7 +110,7 @@ the first Escape only dismisses the list, typing 18 and Arrow Down still act on 
 and a further Escape hands the keyboard back to the document.
 Tab out of the palette and a control finishing with no palette destination, on both platforms.
 Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
-palette, or opening a native colour/select chooser must never pull focus back to the document.
+palette, or opening a native color/select chooser must never pull focus back to the document.
 Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
 then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
 a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
@@ -90,7 +141,7 @@ Selects retain native type-ahead; Escape dismisses an open popup, and Escape wit
 closed returns the keyboard to the document, as it does in other controls. Enabled tool/command
 buttons never borrow it; disabled controls use the palette shell as their typing sink.
 Cmd/Ctrl+Z still reaches document history from non-text controls; tool hotkeys still work from
-checkboxes, sliders and colour controls. A focused number follows undo immediately unless it holds typed, uncommitted
+checkboxes, sliders and color controls. A focused number follows undo immediately unless it holds typed, uncommitted
 text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
 inside the box: the document undoes once and the focused box shows 23. Choose Edit > Undo from
 the menu to reach 22.5, then Edit > Redo to return to 23: the box refreshes immediately, and Tab
@@ -106,23 +157,23 @@ the document's value elsewhere to 40: committing the draft must apply 22.5 once 
 Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
 effect color: each opens its native picker on both platforms (the Windows palette may activate
 for it). Leave it open through palette snapshots; clicking the canvas dismisses it without
-changing the drawing. Open the colour popover, type a hex shorthand and press Enter: the colour
+changing the drawing. Open the color popover, type a hex shorthand and press Enter: the color
 commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch
 apps: their leases stay independent and the first palette can acquire focus again.
-Colour transaction regression (macOS and Windows): select a molecule, pick blue in Bond color's
+Color transaction regression (macOS and Windows): select a molecule, pick blue in Bond color's
 native chooser and close it, draw a new bond, then pick green and close the chooser again. The
-bond must remain and the new colour must apply to the current target. Undo green, then the bond,
+bond must remain and the new color must apply to the current target. Undo green, then the bond,
 then blue as separate steps; cancelling the green pick must also preserve the bond and blue.
 Repeat with Label color, Atom label background color, Custom ring fill color, Ring effect color,
-and the colour popover's system picker. A pick commits when the chooser sends change, even without
+and the color popover's system picker. A pick commits when the chooser sends change, even without
 input blur; moving focus afterwards adds no duplicate undo step. If the chooser stays open during
 a canvas edit, that edit must end the earlier preview, so a later commit/cancel cannot erase it.
-Use real mouse/keyboard events for the native chooser and its colour grid, and separately for
-the application's colour-grid popover (synthetic input/change pairs do not cover WebKit's event
+Use real mouse/keyboard events for the native chooser and its color grid, and separately for
+the application's color-grid popover (synthetic input/change pairs do not cover WebKit's event
 order). Select Blueberry in macOS Colors: the drawing and well must agree before and after closing
 the panel. Repeat for an art object's fill/stroke. A grid swatch must apply on its first click.
-One Undo restores the previous colour; the next Undo removes the preceding drawing edit, never
-a second colour entry. Repeat on Windows with its actual native chooser and both grids.
+One Undo restores the previous color; the next Undo removes the preceding drawing edit, never
+a second color entry. Repeat on Windows with its actual native chooser and both grids.
 For a focus trace, directly launch this worktree's binary from a terminal using the existing
 `--chemdraft-agent-bridge` switch (or `CHEMDRAFT_AGENT_BRIDGE=1`). Save stderr's `[palette-focus]`
 lines while opening Text size by pointer, pressing Escape, typing 18, then pressing Escape again.
@@ -151,7 +202,7 @@ reads "E/Z was not specified for N double bond(s) in the pasted structure. Confi
 with N = 1 for the single paste and N = 2 for the list. Repeat with plain text, chemical MIME
 clipboard text, and native Paste. `C/C=C/C` keeps E and shows no notice; `CC=O` and `CC=C(C)C` have no flag.
 Select a double bond in the floating inspector: E/Z unspecified and Use drawn geometry (E)/(Z)
-each make one labelled Undo entry, keep the bond selected, and survive Undo/Redo and save/reopen.
+each make one labeled Undo entry, keep the bond selected, and survive Undo/Redo and save/reopen.
 Verify the drawn geometry label with both E and Z drawings and unequal CIP priorities. Carbonyls,
 symmetric ends and small rings disable E/Z unspecified with a specific reason. Reapply double order
 with the bond tool or hovered-bond shortcut: the (!) disappears and the bond becomes geometry-defined.
@@ -164,9 +215,9 @@ popover stays open without a document/canvas blur. Repeat cold and warm opens. F
 Tab to the badge, and press Enter or Space: this keyboard open focuses the first enabled action.
 A small native popover anchors below it, showing “E/Z not specified”,
 the geometry explanation, both geometry choices (correct E/Z labels), and Keep unspecified.
-Confirm and flip each record exactly one labelled Undo entry, retain bond selection, and Undo/Redo
+Confirm and flip each record exactly one labeled Undo entry, retain bond selection, and Undo/Redo
 restore geometry and the badge. Flip moves only one end's substituents; test unequal CIP priorities,
-nearby stereocentres, conjugated bonds and charged/isotopic substituents. Keep unspecified, Escape
+nearby stereocenters, conjugated bonds and charged/isotopic substituents. Keep unspecified, Escape
 and click-away change no document/history, close, and return focus to the canvas. Repeat click-away
 from a floating toolbar and keyboard Tab/Shift+Tab within the popover.
 Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-stereogenic double bond it
@@ -202,6 +253,27 @@ Check. Close/reopen it, change tools, and open floating palettes and panels: men
 Windows attaches the menu only to the document window and never crashes during the menu change.
 Update must still download for review and require explicit confirmation; checking alone installs nothing.
 
+On macOS and Windows, check an incompatible release with no usable fallback: an older host sees
+**Needs ChemDraft &lt;Min-App&gt; or later** (or **Needs a newer ChemDraft** without Min-App); a host
+newer than the supported API sees **Not yet available for this ChemDraft version**. There is no
+**Review update…**, download or automatic announcement. An installed version equal to or newer
+than the latest release still says **Up to date**. With fallback releases, both fresh installs and
+installed-plugin updates choose the newest marked compatible version (updates must be newer than
+installed), then unknown compatibility only if no usable marked candidate exists. Skip drafts,
+prereleases and candidates with malformed/missing assets; fresh-install review explains the choice.
+No installed plugin changes until installation is confirmed.
+
+Simulate GitHub HTTP 403 with `x-ratelimit-remaining: 0`, HTTP 429, offline/network failure and a
+metadata timeout. An unavailable release list falls back to the latest version with the install
+gate still enforced; unavailable latest metadata preserves existing offers. User-initiated
+**Check for updates** shows **Couldn't reach GitHub to check for plugin updates. Try again later.**
+**Install from the catalog** shows **Couldn't reach GitHub to download the plugin. Try again later.**
+Verify both messages inline, including a successful fallback after a release-list outage. Background automatic checks stay silent. Verify the log names
+`api.github.com` and the error kind, including an allowlist denial. With two installed plugins,
+one successful check must not refresh the timestamp of an offer retained after the other check's outage.
+No error dialog, repeated network diagnosis or retry loop appears. A later manual
+check remains usable, and automatic checks stay bounded to their daily interval.
+
 Restart within the day: no automatic request or repeated status notice. At the next due check,
 the same version stays quiet; a new version gets one status-line notice. Disable **Check for plugin
 updates automatically** in Preferences before the delay expires: no automatic request occurs, while
@@ -221,13 +293,13 @@ Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane
 (25%), solid blue and a vivid alternating palette (90%). Check N+, NH, O and S: each fill reaches
 every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the
 halo must match the fill beneath it. Repeat with linear/radial gradients, shadow/glow/sketch, explicit
-label background colours and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
+label background colors and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
 
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
-centres. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back
+centers. Record a normal frame, maximize, quit while maximized, then relaunch: it must come back
 maximized, and un-maximizing must return to the recorded pre-maximize frame. Repeat with the saved
-normal frame on a disconnected display: relaunch must centre then maximize, without a cascade flash.
+normal frame on a disconnected display: relaunch must center then maximize, without a cascade flash.
 On Windows repeat with top/left taskbars and different display scales. On macOS also repeat fullscreen
 and Dock reopen. Cold-open a file from Finder/Explorer, relaunch after an update, and open another
 file/launch again while running: the main window must appear, preserving its live frame and maximized
@@ -351,7 +423,7 @@ Toolbar and arrow surfaces added since: the curated arrow flyout (bold, dashed, 
 fishhooks, no-reaction) opened cold, warm, and after a long idle — the first press of a session must
 place the popout under its button, not offset from the screen origin; the selection-aware Main style
 widget in all four variants (text, molecule, arrow, shape) including its no-reaction ✗-size select,
-with a gesture cancelled mid-press (the layout must not freeze on the previous selection); Shift-hover
+with a gesture canceled mid-press (the layout must not freeze on the previous selection); Shift-hover
 transform boxes on arrows — the box latches to the first arrow for the whole hold, its rotate, 3D
 rotate, and resize handles all work under the arrow tools, and dismissal leaves no ghost pixels;
 arrowhead resizing on a scaled equilibrium (the head must land at the pointer, and an untouched shaft
@@ -366,7 +438,28 @@ hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), with tool keys
 following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
 while ChemDraft's `e` arms the eraser; charge stacking
-by hotkey and by the charge tool up to ±9 and back down to mark removal; the Clear/Restore
+by hotkey and by the charge tool up to ±9 and back down to mark removal;
+with **Direct electron-mark editing** off (the default), check painted-ink-only picking over
+atoms, bonds and filled rings, repeated radical/lone-pair tool placement on existing ink, and
+absence of mark resize/rotation handles. Enable the preference live, then drag circled/plain
+charges, radical ions, radical dots and lone pairs from blank corners of their rotated frames
+with Select and electron tools; check overlap picking and no duplicates. Resize with corners,
+rotate with handles and typed entry, and check one labeled Undo/Redo per gesture. Adjust Art
+toolbar Size (8–108 px) and Thickness (0.5–5.5 px) in either mode; check preview, cancellation,
+labeled Undo/Redo, save/reopen and custom appearance after disabling the preference. Check all
+eight variants plus multi-charges at 18, 60 and 108 px and thickness extremes: default marks
+with the preference off match the previous rendering, while custom/scaled lone-pair dots and
+radical-ion dot/sign geometry remain separated. Compare canvas, SVG and PDF; CDXML must warn by
+mark ID that annotation position, size, thickness and rotation remain in the native payload only.
+Check charge/radical counts, formula and canonical SMILES before and after appearance-only edits.
+Move marks within the original atom's radius, onto nearby/far atoms and into empty space; charge
+moves retain the previous nearest-atom reassociation, while radical/lone-pair moves keep sticky
+anchors until out of range or unsupported. In a crowded placement, a general charge transform
+can reset its sticky anchor and reassign it even with a stationary center; retain and record this
+existing behavior pending the owner's policy choice. The owner has not yet chosen whether chemistry changes
+from moves should be kept, warned about or forbidden. Repeat native pointer capture, palette focus
+and these checks in macOS and Windows; DOM tests do not establish native interaction results.
+Also exercise the Clear/Restore
 Warnings context menu under whole-molecule and partial selections; element-symbol text converting
 to a naked atom on every edit-ending gesture (Escape, click-away, tool switch), and Delete
 stripping a labeled atom back to skeleton carbon before the second press deletes it; a bond
@@ -394,9 +487,22 @@ updater — an older signed build offered the newer one by the launch check and 
 Updates…, the document saved before the passive installer runs and restored after it relaunches, and
 a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`); an update
 accepted while autosave is off (the last session unreadable) refusing to install over unsaved work; and
-opening from Explorer a `.cdx` (the app says it is a ChemDraw binary, including at a cold start that
+opening from Explorer a `.cdx` (binary import, including at a cold start that
 then restores the last session), a UTF-16 `.cdxml`, and a CDXML file whose molecules sit inside `<group>`
 elements (they open grouped).
+
+Binary CDX file IO, on **macOS and Windows**:
+
+- Open a `.cdx` through File > Open, shell Open With (cold and warm start), and drag/drop. Repeat
+  with CDX renamed `.cdxml` and `.data`: header detection must preserve the binary bytes. Open
+  UTF-16 CDXML and a `.chemdraft` beside it to check the existing text path.
+- Save As `.cdx`, reopen, edit and Save again, then restart with that saved tab and Save. Verify
+  native objects, styles, atom/bond counts, isotopes, charge, stereo and coordinates survive;
+  canceled Save As leaves the document dirty. Check the normal warning list for unsupported data.
+- Export CDX and reopen it: verify the supported visible drawing and chemistry with compatibility
+  warnings. Export must omit native metadata. A truncated CDX gives a specific import failure.
+- On macOS, confirm CDX is an Alternate handler. On Windows, install the CI-built installer and
+  confirm neither `.cdx` nor `.cdxml` is associated; `.chemdraft` is the only registered extension.
 
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a
@@ -426,7 +532,7 @@ flipped redrawing the right way round while its formula and Copy As SMILES stay 
 a chain of three or more atoms ending in OMe, the label reading toward its bond as the overlay draws
 it and turning as the bond swings to its other side (the overlay opens on the conformer's own view,
 not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
-centred on the atom.
+centered on the atom.
 
 ## External tools (macOS and Windows)
 
@@ -488,7 +594,7 @@ Mix groups, molecules and captions; check placement, selection, Undo/Redo, and t
 when the page is full. An isolated `Ac` is an element in the native grammar and must be refused as
 a group rather than changed to acetyl.
 
-On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
+On both platforms, insert an oversized labeled molecule, a tall text block, a reaction, and a set
 that wraps past the bottom: one document-owned native box names the item and new page size;
 Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
 molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
@@ -585,9 +691,9 @@ placing separately with an accurate status message; OMe, CF3, and NO2 typed over
 building the label without activating the Eraser, including with an IME active; a text-box editor
 surviving focus moving to a palette flyout or popover and back; an orbital lobe placed on an atom
 putting its tip on the atom and rotating about that tip; a Text-tool click on an atom opening its
-label editor and Convert Text to Atom Label working on a selected text box; centred double-bond
+label editor and Convert Text to Atom Label working on a selected text box; centered double-bond
 position from the inspector for a whole molecule and Shift-clicked bonds, by dragging the second line
-onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; centred defaults
+onto the bond axis at 50%, 100%, and 200% zoom, and through Spin 3D and flatten; centered defaults
 for acyclic C=X double bonds; status-line modifier hints on interaction start/end, tool changes,
 and modifier presses/releases, including Shift toggled mid-rotation, Alt selection/eyedropper,
 arrowhead sizing, stretching, measurement angles, and wheel zoom, with result messages retained,
@@ -612,13 +718,16 @@ double-click opens a fresh app with that document. On macOS, ⌘Q
 and the application menu's Quit the same way, with a palette open.
 
 Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
-neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
-unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
-and check it refuses with the same reason; benzene and cyclohexane on a benzene or cyclohexane bond
-still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom Label
-tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring is placed
-separately, the OMe and its bond are unchanged, and the status says an atom on that bond has no free
-valence.
+neopentane (a four-bond carbon): the ghost previews the fused ring and flags the invalid attachment;
+the click fuses it onto the existing molecule, the over-valent carbon shows (!), and the status
+reports the fused template. Undo once restores neopentane. Press 6 over the same bond and check
+the ring also fuses with (!) and one Undo step; benzene and cyclohexane on a benzene or cyclohexane
+bond still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom
+Label tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring
+fuses onto that bond, the OMe label stays and shows (!) for its extra attachment, and Undo once
+restores the original molecule. Setting the C–OMe bond to double or triple is still refused: a
+multiple bond to a group label cannot be represented by that label, so the bond stays single and
+no Undo entry is added.
 
 Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
 `invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a
@@ -645,7 +754,7 @@ in a branch build (long stamp with the worktree label) and in a stable build (sh
    Ctrl+Shift+Tab and verify every state follows its tab. Check inspector/style controls, native
    palettes, Copy/Paste, Save/Save As, Export and Print against the active drawing. Close dirty tabs
    by their button and CmdOrCtrl+W: the native Save/Don’t Save/Cancel prompt blocks document actions and stays above floating native palettes.
-   Cancel keeps the drawing, a cancelled or failed Save keeps the tab, and successful Save closes it. Close an
+   Cancel keeps the drawing, a canceled or failed Save keeps the tab, and successful Save closes it. Close an
    inactive tab too; a clean tab's × closes without prompting. Close the only tab by ×, both clean
    and dirty: Cancel keeps a dirty drawing, Save closes only on success, and closing leaves one fresh
    pristine Untitled with no undo history. With one tab, CmdOrCtrl+W and the window close still close
@@ -696,7 +805,7 @@ Native simple prompts — run every item on **macOS and Windows** with the float
 and Art toolbars open, including at 125%/150% display scale:
 
 - For every prompt below, confirm the message box uses the OS appearance, stays above the floating
-  toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
+  toolbars, and belongs to the document window. Every prompt with a choice shows a button labeled
   exactly Cancel, and Escape (on macOS too) and closing the box choose it, except for the known Windows
   issue below; a notice has one OK
   button that Return dismisses. No button appears twice. A destructive single-action confirmation (Delete,
@@ -721,12 +830,31 @@ and Art toolbars open, including at 125%/150% display scale:
   when it was the last one). Save closes only after success. Cancel the save picker, simulate a write
   failure, and edit during a slow save: the tab remains open and the next prompt includes the reason.
   Queue an OS open-with while prompted: it waits, and Save still writes the prompted drawing.
-- Import oversized CDXML or paste oversized content: "Change the page to … to fit the imported
+- Import oversized CDXML: "Change the page to … to fit the imported
   content?" Use the recommended page (e.g. Use A3 Page) / Cancel. Escape keeps the original page and overflow; resize remains one undoable layout operation and
   preserves chemical identity and editable objects.
+- On macOS and Windows, paste an oversized selection, a SMILES list, MOL/RXN, picture, plain text or
+  Office table; insert a template or table; run Name to Structure, Clean Up and a plugin batch.
+  Before insertion, expect exactly one native box: "This doesn't fit on the page. Enlarge the page
+  to fit? Content on the page may shift to make room." with Enlarge / Keep Page Size. Enlarge and all content undo together; Keep Page Size keeps
+  the exact proposed positions without resizing. Fitting content asks nothing. Repeat with an
+  assistant request containing several tool calls and direct patches: only one question per request,
+  one Undo, and Redo never reopens the question. Check template/table dialogs targeting an inactive
+  tab, changes or tab closure while a question is pending, and Stop during an assistant question.
+  Duplicate, structure-editor Save, Spin Flatten/Release and native ring/bracket/symbol/art stamps
+  also use this question when they overflow. Hand gestures must ask nothing: drag/move, rotate
+  (including typed rotation/tilt), resize, drawing/freehand/Bezier/marker/path edits, typing text
+  (including first typing and font changes), atom labels/hotkeys, table cell/row/column edits, and
+  arrange/align/distribute/rotate/flip commands. Check that these retain main's page and history behavior.
+  Repeat with left-only, top-only, left+bottom and all-four-side overflow, including an affected second
+  page. Enlarge must translate every object on only that page right/down without changing chemistry or
+  relative positions, leave only inserted/edited content selected, and undo/redo positions and size
+  together. Keep Page Size must retain the proposal's exact coordinates.
+  The exact Keep Page Size title has no automatic Escape binding in AppKit; click it
+  explicitly on macOS. Windows Escape/close maps to Keep Page Size.
 - Apply a whole-molecule appearance change to a molecule with per-ring attributes:
   Keep Overrides / Clear Overrides / Cancel. Cancel changes nothing; Keep retains ring attributes;
-  Clear removes them for the selected molecule with the existing labelled undo entry. Undo restores
+  Clear removes them for the selected molecule with the existing labeled undo entry. Undo restores
   the attributes. Enter must not choose Clear Overrides.
 - Request the local recognition engine: Install / Cancel (or Install engine again / Cancel).
   Escape declines without installing; Install starts only on that choice. The progress dialog stays
@@ -771,6 +899,8 @@ and Art toolbars open, including at 125%/150% display scale:
 
 ## Compound layout tools (opt-in)
 
+On macOS and Windows, enable Formatted Reaction Conditions under Compound layout tools (both off by default), right-click an ordinary arrow, insert symbols and sub/superscripts in the movable native editor, Save/Undo/Redo, Cancel and blank Save, then double-click its label to reopen. Move/rotate/scale/flip/duplicate/copy-paste/delete the arrow, save/reopen and compare SVG/PDF; disable authoring and confirm existing labels still render and follow the arrow. Save while its original tab is inactive during an assistant request, then verify later assistant writes preserve the user Save as its own undo entry.
+
 On macOS and Windows, verify that a fresh Settings/Preferences has Compound layout tools off and
 no layout button/flyout/context/gallery entry is visible. Enable it with a native palette open;
 Main, Art and Layout should update live. Select unequal-size compounds, optionally grouped captions,
@@ -785,7 +915,7 @@ layout and adjust spacing. Keep the rotated caption inside the page and clear of
 retaining its angle, size, text and offset from the molecule. A caption taller than the page
 after rotation must cause a fit refusal with no document change.
 Open Adjust spacing on macOS and Windows: it must be a movable, resizable native window,
-centred over the document on first open, with the originating drawing in its title, no utility menu,
+centered over the document on first open, with the originating drawing in its title, no utility menu,
 and no Windows taskbar entry. Move it to another monitor, close, and reopen; retain position.
 Reopen while still open: retain slider draft and focus the existing window. Check Escape,
 Cmd/Ctrl+W, title-bar close, Tab, Enter, IME composition, and reload prevention.
@@ -833,7 +963,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   change only on Enter or leaving the field. Choose a file, change format/name, then cancel
   and retry the new location picker; only explicitly chosen paths may be written, and
   failures must show inside the dialog. Check rounded SVG units. With a ring and arrow, PDF
-  must show both in the image labelled “Preview of the PDF page layout”, with no embedded
+  must show both in the image labeled “Preview of the PDF page layout”, with no embedded
   PDF viewer or extra tab stop. Toggle PDF page guides and compare with the exported PDF.
   Repeat previews for BMP, GIF and TIFF. Keep Export open while editing its source drawing,
   including edits that preserve its bounds: the preview must refresh and keep the filename and
@@ -845,13 +975,13 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Structure ▸ Convert Structure to Name inserts the verified name below the structure; Structure ▸ Convert Name to Structure… opens the OPSIN prompt; both items appear only when their plugin is installed (macOS app menu and Windows document-window menu).
 
 - Install the Orthonym plugin from a package. Run Name from Structure with the engine absent: the movable
-  “Naming needs a local engine” dialog opens owned by the document window, centred the first time (no
+  “Naming needs a local engine” dialog opens owned by the document window, centered the first time (no
   Windows taskbar entry), and the floating toolbars stay usable beside it. Move it, close it, reopen
   it: it returns where it was left.
 - Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
   process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
 - Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
-  shown), a sodium salt, TEMPO (a radical). Name an isotope-labelled structure, such as CD4 or CH3OD
+  shown), a sodium salt, TEMPO (a radical). Name an isotope-labeled structure, such as CD4 or CH3OD
   pasted as SMILES `[2H]C([2H])([2H])[2H]` or `CO[2H]`: the name must reflect the isotope or the
   structure is declined; a name for the unlabelled molecule is a FAIL. Exact-match handling is also
   covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
@@ -866,7 +996,20 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Native Custom Page Size (macOS and Windows)
 
-- From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred
+- Preferences frame regression: open Preferences with no saved position; it must center over the
+  document, including when the document is on a secondary monitor. Move Preferences outside the
+  document bounds, invoke the Preferences command again: it must raise the open window. Close with
+  its title bar and reopen: restore its position. Repeat after an app restart and after a drag begun
+  within 500 ms of opening followed by immediate close. That immediate user move must be restored
+  on reopen.
+  Test both directions between 100% and 150%/200% displays on Windows and different display scales
+  on macOS, including negative monitor coordinates and work-area edges. Disconnect the saved
+  monitor and reopen: center over the document with the title bar reachable. Repeat after owner
+  minimize/restore and native-message/file-picker suspension; transient frames must never replace
+  the saved user position. Verify no Windows taskbar entry or utility-window menu appears.
+- With a saved Preferences or Page Size frame fully off-screen on a still-connected monitor, reopen
+  each dialog: clamp to that monitor's work-area edge rather than centering over the document.
+- From this worktree's labeled build, open Custom Page Size. Verify the first opening is centered
   over the document with a movable native title bar, and the title/form name the originating drawing.
   On Windows verify no separate taskbar entry; on macOS verify a floating-level focusable document child,
   not a sheet. Confirm no utility-window menu is attached.
@@ -943,7 +1086,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 - Open Insert > Templates…; confirm Insert follows Edit and precedes View. Add Templates… from
   Customize Main Toolbar, exit customization and open it there. It is absent from the default bar.
-- Confirm the picker is a separate movable, modeless window, centred over the originating drawing
+- Confirm the picker is a separate movable, modeless window, centered over the originating drawing
   on first open. Draw and use floating toolbars alongside it. Invoke Templates… again: the retained
   window comes forward with its search and position intact.
 - Search `β-CD`, `beta`, `BETA cyclodextrin`, `CD`, `cucurbit[7]`, `crown`, and `pillar`; check
@@ -955,7 +1098,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Insert every populated family (crowns/cryptands, cyclodextrins, cucurbiturils, calixarenes/
   pillararenes/resorcinarenes/CTV, cyclophanes, porphyrins). Compare bond size with a newly hand-drawn
   bond, including after changing a selected molecule's style. The template stays at default size,
-  is centred in the visible source view, remains editable and is selected. Undo once removes one
+  is centered in the visible source view, remains editable and is selected. Undo once removes one
   insertion; Redo restores it exactly. Repeat with the source tab inactive; only that tab changes.
 - Close or replace the originating tab while the picker is open or still starting: it disappears
   and late actions cannot edit a replacement drawing. Repeat with two source tabs and two pickers.
@@ -967,7 +1110,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Native Export (macOS and Windows)
 
-- Launch this worktree's labelled build. Choose Export and verify a movable native window centred
+- Launch this worktree's labeled build. Choose Export and verify a movable native window centered
   over the originating drawing on first opening, about 520 × 620 logical pixels. Resize to its
   420 × 360 minimum: all controls and messages remain reachable by scrolling. There is no minimize
   control and no utility-window menu; Windows has no separate taskbar entry. On macOS measure its
@@ -1023,7 +1166,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 ## Orbital overlap and rotation
 
 - On Windows/WebView2 and macOS, select Lobe, Shaded Lobe, p Orbital and s Orbital. Click repeatedly without reselecting the tool; each press/release adds one object and Escape returns to Selection.
-- Connect two lobes at their pointed ends, then place three p orbitals at a common centre. Repeat on molecule atoms, across rotated/overlapping orbitals and near page edges. New clicks choose an unused direction and drags set the exact angle.
+- Connect two lobes at their pointed ends, then place three p orbitals at a common center. Repeat on molecule atoms, across rotated/overlapping orbitals and near page edges. New clicks choose an unused direction and drags set the exact angle.
 - Drag from the node to aim freely; hold Shift for 15-degree steps. Preview and release must match. Cancel a page-started and object-started drag; the pre-gesture document must return. Undo/Redo each placement once.
 - Select an orbital: its rotation handle should be visible without Shift or a double-click on its body. Rotate to an arbitrary angle about its node; Shift snaps and double-clicking the handle permits exact numeric entry. Direct Edit must still expose path nodes.
 - Verify existing orbitals and molecules do not move or change chemistry, and native save/reopen plus SVG/PDF export retain all overlapping shapes. Test zoomed and mixed-DPI configurations.
@@ -1041,9 +1184,11 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Direct multiple-bond tools (Windows and macOS)
 
-- On a fresh profile, confirm the default Main toolbar does not show Double Bond or Triple Bond. Add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
+- In Preferences, switch Default double bond between Offset and Centered; draw by click/drag, extend/connect atoms, press hover key 2 over atoms and bonds, and click a bond to cycle order. Only newly created double bonds follow the choice; ring/structure templates keep their explicit placement. Reopen Preferences and relaunch to confirm persistence and live document-window sync. Existing drawings, undo/redo, opening files, import and paste must retain their display and chemical identity. Repeat on macOS and Windows.
+- On macOS and Windows, confirm default Main has Single/Double/Triple Bond together and Chain in the Bonds & Chains gallery; existing customized layouts retain their prior order and Chain, without newly added Double/Triple Bond. Reset restores the new defaults; activate both bond tools and verify distinct icons and active highlight.
+- In an existing customized layout without Double Bond or Triple Bond, add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
 - Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
-- Refuse growth or order changes that exceed available valence; retain existing atoms, bonds and coordinates. Check save/reopen and SVG/MOL export. Switch back to Single Bond and wedge/hash/dashed/bold tools.
+- Allow growth or order changes that exceed available valence and show (!) on the affected atoms; retain existing atoms and coordinates, with only the requested graph changes. Still refuse unrepresentable multiple bonds to group labels or dashed dative bonds. Check save/reopen and SVG/MOL export, including valence warnings. Switch back to Single Bond and wedge/hash/dashed/bold tools.
 - Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
 
 ## Isotope insertion (macOS and Windows)
@@ -1066,7 +1211,7 @@ caption must use the atom-label size. Existing structures on the page must not c
 
 # Reaction labels
 
-- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
+- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centered on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
 
 ## NMR panel (macOS and Windows)
 
@@ -1090,8 +1235,18 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
 
 ## Toolbar popovers and dropdowns (macOS and Windows)
 
+- Hover Main/Art toolbar button A until its tooltip appears, then slide across B, C and D without
+  pausing. Each neighbor's tooltip must replace the previous one promptly; none may be skipped.
+  Leaving for empty space must hide it, and returning after a pause must use the normal hover delay.
+  Include the Art style row (paint target/type, color swatch, stroke width, dash and effects) and
+  opacity/gradient controls: all must use the same app tooltip appearance and existing text, with
+  no delayed browser tooltip underneath or behind another window.
+- Select a graphic and click the Art Stroke color swatch: the picker opens; clicking the same
+  swatch again closes it. Repeat with Fill, then dismiss by click-away, Escape and app deactivation;
+  the next swatch click must reopen it. A swatch click with a tool flyout open must switch to color.
+  Verify document focus, no taskbar entries, and placement on monitors with different scaling.
 - Hover a palette button until its tooltip appears, then mouse-open a toolbar flyout, the Art
-  colour picker, or the E/Z popover. The tooltip must disappear as the popover appears; hovering
+  color picker, or the E/Z popover. The tooltip must disappear as the popover appears; hovering
   buttons on this or another palette must show no tooltip while any popover is visible. Include a
   rapid hover/open sequence to catch delayed tooltip shows. Dismiss the last popover and hover
   again: normal tooltips must resume. Repeat on a second monitor with different scaling. Mouse
@@ -1105,10 +1260,25 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
   Atom label font family/face, background mode, alignment, and placement. Every option
   must have readable dark text on an opaque light background with the OS in both light and dark
   appearance. Confirm the existing macOS light appearance is unchanged.
-- Escape routing from the document/palette is unchanged by this fix: check its existing tool/edit
-  cancellation behavior with no popover open. Check Escape inside a focused E/Z popover or a leased
-  colour field still dismisses it. Mouse-opened non-key popovers still use click-away dismissal;
-  routing the document/palette Escape to them remains a separate task.
+  Also check the Export, Page Size, and Insert Table dialog lists and the Molecular Inspector,
+  plugin report/composer, linked figure controls (nucleus and axis units), NMR panel controls, and
+  plugin settings lists on both platforms. On Windows use WebView2 with both light and dark OS
+  appearance: open lists must have dark text on an opaque light background; closed styling stays
+  consistent with the surrounding panel. Include an installed plugin rather than only a fixture.
+- With a drawing tool active and objects selected, mouse-open a toolbar flyout, Art color picker,
+  or E/Z popover while focus stays in the document. Escape must dismiss it without changing the
+  tool, selection or drawing; a second Escape performs the existing canvas action. Repeat from a
+  palette and with the inline browser fallback. Check the submenu owner's expanded/controls state
+  and keyboard reopening. Choose a flyout command, then Escape: no stale open state may consume it.
+  Also switch applications with a flyout open, return after the OS hides it, and press Escape:
+  the first Escape must perform the normal canvas action. Close and quickly reopen a flyout:
+  a delayed close for the earlier opening must leave the new one dismissible with Escape.
+- Keep a text or atom-label editor open, mouse-open a flyout, and press Escape in the editor:
+  the editor must retain its cancel behavior. Repeat with a native dialog focused and with a leased
+  color field or E/Z popover focused: their existing Escape behavior must remain local.
+  With delayed native visibility IPC, press Escape from the canvas and open an editor before the
+  response arrives: that same Escape must cancel the editor. Repeat with a newly opened dialog;
+  the delayed Escape must reach the dialog, with no canvas action.
 
 ## Formatting several text boxes
 
@@ -1121,3 +1291,239 @@ one step and preserve selection. Highlight characters inside one box and confirm
 formatted.
 
 - **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.
+
+
+### Content-sized native dialogs (macOS and Windows, 1.2)
+
+- With fresh dialog frames, open Preferences, Insert Table, Export (preview preference off and on),
+  Custom Page Size, Adjust Arrangement Spacing, Engine Installation, Tool Installation and the
+  Vibe Code guide. Each first opens centered over the document at its natural content height, capped
+  inside the current monitor's work area with a visible margin. Check there is no old 60px empty
+  band in Insert Table and no needless Export scrolling when the screen has room. Preferences is
+  wider than the old 460px window; on a short display only its content body scrolls.
+- On each resizable form, resize shorter and taller and change its width. Buttons stay visible,
+  fields/messages scroll as needed, and no form content is squeezed out of reach. Close and reopen,
+  including after restarting the app: both position and user client size return. Move without
+  resizing and verify it does not overwrite a previously chosen size. Custom Page Size remains
+  nonresizable. Templates keeps a browsing viewport and also restores its chosen frame.
+- Repeat with the document on a 100% monitor and the dialog remembered on a 150% or 200% monitor,
+  then swap their monitors. Include a display above/left of primary. The restored client keeps its
+  logical size, decorations stay inside the destination work area, and there is no double scaling.
+  Repeat on macOS between Retina and non-Retina monitors.
+- Save a large dialog near a screen edge, close it, then lower the display resolution, enlarge/move
+  the taskbar or Dock, or remove that display. Reopen it and also reopen a still-live hidden
+  Preferences window: the whole outer frame fits on the available screen, with a reachable title
+  bar and actions. An oversized remembered frame must shrink rather than open off-screen.
+- Minimize the document (and, with an external window tool if necessary, a dialog), restore it,
+  then close/reopen and restart. No minimized coordinates or tiny client size may be saved. Check
+  immediate close after a drag/resize and a burst of resize events still saves the latest frame.
+- In Preferences, check Windows ownership/no taskbar entry, macOS hiding on Cmd-Tab, front ordering
+  above floating toolbars, raising the open window via its menu command, native-prompt suspension/restoration,
+  and dismissal when the document closes. Test keyboard access to every setting after scrolling.
+- Increase OS text scaling or webview zoom and use long drawing names/disclosure/error text. Verify
+  content fits when possible and otherwise scrolls above the actions; install progress, failures,
+  Export format changes and preview results must never move the buttons below the window edge.
+
+## Drawing unsupported valence (macOS and Windows)
+
+- Draw a Ru donor complex with neutral N bonded to Ru and two carbons. Set the solid Ru–N bond
+  to double using hover `2`, order cycling, and the bond tool. Each edit must land with (!) on N;
+  Undo/Redo restores the exact authored graph without adding charge. Dashed Ru–N stays single.
+- Draw neopentane, relabel its center S and endpoints O, then raise two S–O bonds to double one
+  at a time. The intermediate S(V) has (!); the final H2SO4 has no (!). Repeat with literal S/O
+  labels and explicit OH for the acid oxygens. Keep every atom, coordinate and charge as drawn.
+- Grow, connect, merge and chain-drag from full atoms and group labels. An eighth bond must not
+  hide the growth target or arrow, and a full target must still snap. Only actual overlaps or page
+  edges may prevent placement. Hover `8`, `0`, ring hotkeys and fused/spiro ring tools must land
+  with (!) where needed; a chemistry warning must never place the requested ring separately.
+- Hover the central CH of isobutane and press `9`: one bond attaches a new CH bearing two methyls;
+  the source carbon has four bonds. On a secondary carbon it adds two methyls directly. One Undo
+  removes the whole fragment, and Redo restores it without recomputing. On an already four-bond
+  carbon, `9` leaves the graph unchanged so this command never makes pentavalent carbon.
+- Place + on a four-bond C, then a second + on four-bond N+. Both stay on the clicked atom with (!).
+  Place a radical on full carbon and edit surrounding bonds: the mark must not jump to a neighbor
+  or float because its atom becomes invalid. Deliberately dragging a mark away still detaches it.
+- Confirm C–OMe cannot be raised to a multiple bond, a dashed dative bond cannot be raised, and
+  dashed display cannot be applied to a multiple bond. Ignore hides only (!); exports still warn.
+
+### Adjustable wavy lines (macOS and Windows)
+
+- Draw/select a Wavy Line, then open Object Settings (the Art controls). Check Wave smoothness,
+  height and width sliders: angular → rounded, peak-to-trough height, and wavelength respectively.
+- Drag each slider: preview follows the pointer, release saves one Undo step; Undo/Redo restores it.
+  Escape or cancelling a drag restores the previous shape. Check keyboard arrows and Home/End.
+- Check short/long, diagonal and reversed waves with/without arrowheads, mixed wave selections,
+  save/reopen and SVG/PDF export. Non-wave shapes must not change or show these sliders alone.
+- Open an older document and select its wavy art without adjusting a slider: its geometry must stay
+  identical through save/reopen and export. Only explicitly adjusted lines get the new geometry.
+- Select waves together with a molecule, straight line and rectangle; adjust every slider and
+  confirm only selected waves change. Check the molecule's bonds, stereo, charge and labels, and an
+  unselected wave. Repeat Undo/Redo and cancel; mixed wave values should read Mixed until adjusted.
+- Open Customize Main Toolbar and search for Wave; value-specific smoothness, height and width
+  commands should be available and work when added to a toolbar.
+
+## Newer native documents (macOS and Windows)
+
+Open a versioned future native JSON file and a `.chemdraft` envelope with a greater `minAppVersion`,
+an unknown visual field, a future bond style and a future drawing preset ID. Repeat through File
+Open, recent files, OS Open With and file drop. Each newly opened document must show exactly one
+native OK message with that file's full minimum version, owned by the document window. Verify that
+floating utilities hide and restore around the box, focus returns correctly, and Windows gains no
+taskbar entry. Activating an already-open file must not repeat the box. Legacy and same-version
+files remain quiet. Detailed named warnings must reach the log.
+
+Edit unrelated content, Save and Save As, then reopen and inspect the embedded native JSON: unknown
+values and at least the source minimum must survive. Quit and restore several future tabs: each
+restored file gets one message and retains its data. With fresh startup enabled, skipped session
+tabs show no message. For a modified visible CDXML layer, choose the visible subset and confirm
+that unused future embedded content produces no update message. In browser preview repeat file
+upload and drop, acknowledging the shared prompt fallback.
+
+## Custom Color Swatches (macOS and Windows)
+
+- In Customize Main Toolbar, place two different Custom Color Swatch items from Object Style.
+  Each has two independent `?` slots; none are on the factory toolbar. Reorder them and restart:
+  placement and colors must survive.
+- Click empty slots and set colors using Hex, RGB and CMYK. Check prefilled conversions, live
+  preview, inline invalid-input messages, disabled OK for invalid input, and the CMYK approximation
+  note. OK stores the color without changing the drawing. Other open palette windows update.
+- Apply each color to a selected bond, atom, whole molecule, text object, selected text run,
+  reaction arrow, and shape. Compare with a preset; only the intended targets change, chemistry
+  stays unchanged, and Undo/Redo restores the color in one operation (or within the text edit).
+- Right-click both empty and set slots to edit. Tab to a slot and use Shift+F10/the context-menu
+  key, including a set slot with no selection. Change a color, Cancel a draft, and Clear a set
+  slot; only Clear removes its stored color. Restart again to check persistence.
+- Move the modeless dialog outside the document window and to a monitor with different scaling.
+  Toolbars remain usable; reopening remembers its position. On Windows it has no taskbar entry
+  and stays owned by the document window. Check Escape, Cmd/Ctrl+W and title-bar close.
+
+## 1.2 hands-on pass (macOS and Windows)
+
+Run each section on both systems. Use the macOS app menu or the Windows document-window menu;
+Windows utility windows have no menu. Native prompts and file choosers use the operating system's
+controls. For Undo use Cmd+Z on macOS or Ctrl+Z on Windows; for Redo use Cmd+Shift+Z on macOS
+or Ctrl+Shift+Z or Ctrl+Y on Windows.
+
+### Recent 1.2 fixes (macOS and Windows)
+
+- Open `compound.v2.cdxml` and export to each available format. The suggested filename in both
+  the Export dialog and native save box has one format extension and keeps `compound.v2`; changing
+  format replaces the extension. For an unsaved document titled `Reaction 1/2`, check the suggestion
+  is `Reaction-1-2.<ext>`. The format list has no `(planned)` or `(deferred)` rows or developer
+  notes. Export CDX with a warning: the warning says CDX. (Commits 6f976878, 5e8bb2ce, a6a76c1c.)
+- Move and resize Preferences, minimize it (using an external window tool if needed), then close it
+  while minimized. Reopen and restart: its last valid position and size return, not minimized
+  coordinates or a tiny frame. (Commit 2863755b.)
+- Add a Custom Color Swatch to the Main toolbar, set a slot to `#123456`, and hover it in the
+  floating palette: its tooltip shows `#123456`. Right-click an empty slot: one color dialog opens.
+  Apply a stored color to a selection and Undo/Redo: the status names the applied color.
+  (Commit 0be2429a.)
+- Select a Wavy Line and focus each Wave smoothness, height and width slider in turn. Press an
+  arrow key and Undo: the status names `Updated wave smoothness`, `Updated wave height` or
+  `Updated wave width` respectively, and the shape is restored. Redo restores the edit.
+  (Commit 37f2049e.)
+- In a development build, choose Check for Updates: the message says “Updates are off in development
+  builds. Install the released ChemDraft to get updates.” Check the released app too: its usual
+  update path remains available. (Branch review/devbuild-updates, commits 312162bf, 180f09f7.)
+- Draw a single bond, choose the selection tool and click one atom. Shift-click its adjacent atom
+  where the compact selection frame's resize handle overlaps it: both atoms are selected as molecule
+  parts, without resizing or changing the drawing. (Branch fix/shift-click-small-selection, commit 210ad20c.)
+- Minimize the document window, then choose Settings… or press Cmd+, on macOS / Ctrl+, on Windows:
+  the document is restored and shown before Preferences opens or is raised. A visible document is
+  not restored, and no restore occurs during quit. On failure the status says `Preferences unavailable:
+  <reason>`. (Commit 67d5d7b4.)
+- Open a CDXML whole-molecule structural repeat unit (SRU), then drag a Single Bond from another
+  molecule onto a member atom. Copy As MOL V3000 writes no SRU and shows the edit warning. Delete
+  the whole member molecule and Copy As MOL: no SRU is written and the warning appears. Delete one
+  member atom of an atom-level SRU: no SRU is written and the warning appears.
+  (fix pending in Toolbar groups 1.2; verify against its commit)
+
+### Clean Up Structure 2D on a selection
+
+Draw a ring with a distorted side chain, select only
+the chain atoms (then repeat by selecting its bonds), and clean up. The chain should have standard
+bond lengths/angles and join the ring at the document bond length; every unselected atom must stay
+where it was placed. Repeat with one ligand on a metal complex, including a metal with more than
+four bonds, and with selected parts in two molecules. The metal and other ligands stay fixed unless
+explicitly selected. Selection remains highlighted; one Undo labeled “Clean Up Selection” restores
+the exact drawing and one Redo restores the result. A lone selected atom is deliberately a no-op.
+Repeat beside wedges/hashes and E/Z double bonds: stereo must remain identical, or cleanup must
+refuse with a stereochemistry message and leave the drawing unchanged. Compare no-selection and
+whole-molecule cleanup with the existing behavior, and check save/reopen and export.
+
+### Wavy single bond
+
+- Choose Wavy bond from the bond flyout and draw a bond, then click a single bond to convert it.
+  It displays a wave. Undo and Redo restore each edit; export MOL and check the unknown stereo survives.
+- Choose it from the Customize gallery too; click a wavy bond again to reverse its unknown stereo
+  end, then convert back to wedge/plain. Each edit is one Undo/Redo step. Check label clearance and
+  canvas/SVG/PDF/PNG parity, no R/S at the wave's `from` atom, SMILES without `@` there, MOL V2000
+  stereo 4 and V3000 CFG=2.
+
+### Round brackets and repeat units
+
+- Draw round brackets around a molecule. Right-click a bracket and mark a repeat unit; double-click
+  its n and enter m. The label changes. Copy as MOL and check for an SRU SGroup; copy as SMILES
+  with the molecule selected and check the warning about the omitted repeat label.
+
+### Electron-mark editing
+
+- With Direct electron-mark editing off (the default), drag a charge mark onto an atom: it lands
+  beside the atom label. Undo and Redo the drop. Enable Direct electron-mark editing in Preferences,
+  then move, resize and rotate the mark; Undo and Redo restore each edit.
+
+### Reaction conditions
+
+- In Preferences turn off Compound layout tools: Formatted Reaction Conditions is disabled. Turn
+  on both options, right-click an ordinary arrow and choose Reaction conditions…. The native editor
+  opens on the first click. Enter text, Save, and double-click the label: the saved text reopens.
+
+### Custom color swatches
+
+- In Customize Main Toolbar add a Custom Color Swatch from Object Style. Click an empty slot, enter
+  a color and choose OK. Select a bond and click the slot: the color applies. Undo and Redo it;
+  restart and check that the swatch retains its color.
+- Export a drawing with colored objects and formatted, differently colored text runs as CDXML.
+  Reopen it and check that the text, style runs and colors survive.
+
+### Double and triple bond tools
+
+- On the default Main toolbar choose Double Bond and draw, then choose Triple Bond and draw. Each
+  has the selected order. In Preferences change Default double bond between Offset and Centered;
+  new double bonds follow the setting and existing bonds stay unchanged.
+
+### Drawing style presets
+
+- Select a molecule and apply the ACS 1996-style preset from Structure's drawing style items, then apply
+  Drawing style: Sketch. Sketch shows uneven strokes and Patrick Hand labels. Undo and Redo, then
+  save and reopen: the applied style remains without changing the chemistry.
+
+### Page-enlarge question
+
+- Paste a list of SMILES large enough to overflow the page. In the native question choose Enlarge:
+  the page grows to fit. Repeat and choose Keep Page Size: the page keeps its size. Undo each insertion.
+
+### Newer files
+
+- Open a `.chemdraft` file made with a greater minimum app version through File > Open. A native
+  message gives the minimum version. Acknowledge it, edit unrelated content, save and reopen; the
+  future data and minimum version remain in the file.
+
+### Structure search
+
+- Select a molecule and choose Search PubChem (opens browser) from Tools. On first use only, cancel
+  the consent prompt: no browser opens. Run it again and choose Continue: the browser opens with the
+  selected structure. Consent is remembered per site across restarts, and dev builds share app data.
+  With nothing selected the search is disabled.
+
+### Name dictionary
+
+- With the name-to-structure plugin and its local engine installed, choose Structure > Convert Name
+  to Structure… and enter `64-17-5`. The inserted structure is ethanol and the status identifies
+  the Wikidata dictionary match. Try an unrecognised name: it reports failure instead of inserting.
+
+### Binary CDX import
+
+- Use File > Open to open a binary `.cdx` with known structures. Check bonds, labels and any import
+  warnings against the source. Open a truncated CDX: it reports an import failure. On Windows use
+  the file chooser or Open With; the installer does not register `.cdx` as an association.

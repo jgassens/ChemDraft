@@ -127,18 +127,37 @@ mod tests {
     }
 
     #[test]
-    fn diagnosis_permission_is_main_window_only() {
+    fn diagnosis_permission_is_document_and_runtime_only() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/download-diagnosis.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
+        assert!(capability.get("webviews").is_none());
+        assert!(capability.get("remote").is_none());
         assert_eq!(
             capability["permissions"],
             serde_json::json!(["allow-diagnose-download-host"])
         );
+        // Install/update controllers now run in the sole hidden host, not in utilities.
+        let runtime: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/runtime-host-services.json"))
+                .unwrap();
+        assert_eq!(runtime["identifier"], "runtime-host-services");
+        assert_eq!(runtime["windows"], serde_json::json!(["runtime"]));
+        assert!(runtime.get("webviews").is_none());
+        assert!(runtime.get("remote").is_none());
+        let permission_count = runtime["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|permission| *permission == "allow-diagnose-download-host")
+            .count();
+        assert_eq!(permission_count, 1);
         for file in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities")).unwrap()
         {
             let path = file.unwrap().path();
             if path.file_name().unwrap() != "download-diagnosis.json"
+                && path.file_name().unwrap() != "runtime-host-services.json"
                 && path
                     .extension()
                     .is_some_and(|extension| extension == "json")

@@ -2,6 +2,7 @@
 // Moved verbatim from apps/desktop/src/documentWorkflow.ts; see this package's README.
 
 import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "@chemdraft/chem-core";
+import { rGroupNumberFromLabel } from "@chemdraft/chem-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   atomBondOrderUsageMap,
@@ -482,6 +483,9 @@ function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0)
   if (!atom) {
     return "C";
   }
+
+  const rgroup = rGroupNumberFromLabel(atom.element);
+  if (rgroup !== undefined) return `[*${smilesChargeSuffix(atom.formalCharge)}:${rgroup}]`;
 
   if (atom.element === "D" || atom.element === "T") {
     return `[${atom.element === "D" ? 2 : 3}H${smilesChargeSuffix(atom.formalCharge)}]`;

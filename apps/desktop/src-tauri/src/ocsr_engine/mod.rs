@@ -5,6 +5,7 @@ mod process;
 mod progress;
 mod protocol;
 mod receipt;
+mod requirements;
 mod upgrade;
 
 use std::fs;
@@ -83,7 +84,7 @@ impl InstallError {
     fn cancelled() -> Self {
         Self {
             code: InstallErrorCode::Cancelled,
-            message: "MolScribe installation was cancelled.".to_string(),
+            message: "MolScribe installation was canceled.".to_string(),
         }
     }
 
@@ -796,7 +797,7 @@ where
                 eprintln!("[chemdraft ocsr] the installed engine does not match this build: {detail}")
             }
             Err(UpgradeError::Cancelled) => {
-                eprintln!("[chemdraft ocsr] the engine check was cancelled")
+                eprintln!("[chemdraft ocsr] the engine check was canceled")
             }
         }
         // Remembered before `installing` clears, so no status call sees neither.
@@ -815,10 +816,14 @@ fn install_paths<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<InstallPaths, 
     let app_data = app.path().app_data_dir().map_err(|error| {
         InstallError::failed(format!("No app data directory is available: {error}"))
     })?;
-    let requirements =
-        resource_path(app, install::MolScribeSpec::requirements().0).ok_or_else(|| {
-            InstallError::failed("The OCSR requirements file is not present in this build.")
-        })?;
+    let platform = platform::current().map_err(InstallError::unsupported)?;
+    let requirements = resource_path(
+        app,
+        install::MolScribeSpec::requirements_for(platform.as_ref()).0,
+    )
+    .ok_or_else(|| {
+        InstallError::failed("The OCSR requirements file is not present in this build.")
+    })?;
     Ok(InstallPaths {
         app_data,
         requirements,
@@ -1758,7 +1763,7 @@ mod tests {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../../capabilities/ocsr-engine.json"))
                 .expect("OCSR capability JSON");
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         let permissions = capability["permissions"]
             .as_array()
             .expect("permission array");
@@ -1779,11 +1784,27 @@ mod tests {
 
     #[test]
     fn bundled_requirements_are_the_reviewed_hash_lock() {
-        let requirements = include_str!("../../resources/ocsr/requirements.txt");
+        for target in [
+            platform::EngineTarget::MacosAarch64,
+            platform::EngineTarget::MacosX86_64,
+        ] {
+            assert_reviewed_hash_lock(requirements::RequirementsProfile::for_target(target));
+        }
+    }
+
+    fn assert_reviewed_hash_lock(profile: requirements::RequirementsProfile) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(profile.path);
+        let requirements = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "{} is missing: generate the reviewed lock and set its SHA-256 pin: {error}",
+                path.display()
+            )
+        });
         assert_eq!(
             pins::text_sha256(requirements.as_bytes()),
-            pins::REQUIREMENTS_LOCK_SHA256,
-            "requirements.txt changed: re-lock deliberately and update REQUIREMENTS_LOCK_SHA256"
+            profile.sha256,
+            "{} changed: re-lock deliberately and update its REQUIREMENTS_LOCK_SHA256 pin",
+            profile.path
         );
         // Every requirement is an exact `==` pin followed by at least one hash, so uv's
         // --require-hashes has something to check for each package.
@@ -1808,9 +1829,12 @@ mod tests {
             packages.push(name_version.to_string());
         }
         for pin in [
-            format!("numpy=={}", pins::NUMPY_VERSION),
-            format!("torch=={}", pins::TORCH_VERSION),
-            format!("torchvision=={}", pins::TORCHVISION_VERSION),
+            format!("numpy=={}", profile.numpy),
+            format!("torch=={}", profile.torch),
+            format!("torchvision=={}", profile.torchvision),
+            format!("rdkit=={}", profile.rdkit),
+            format!("opencv-python=={}", profile.opencv_python),
+            format!("opencv-python-headless=={}", profile.opencv_python_headless),
         ] {
             assert!(packages.contains(&pin), "missing {pin}");
         }
