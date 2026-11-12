@@ -47,7 +47,10 @@ export function bracketRepeatUnitStatus(document: ChemDraftDocument): string {
   if (!pair.some(object => object.repeatUnit || object.bracketKind === "polymer")) return `Removed repeat unit "${label}"`;
   const page = document.pages.find(page => page.objects.some(object => object.id === close.id))!;
   const membership = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
-  if (membership.reason) return `Marked repeat unit "${label}"; membership is ambiguous: ${membership.reason}`;
+  // Empty membership is known, even though it remains a diagnostic for graph exports.
+  if (membership.reason && membership.reason !== "its atom membership is empty") {
+    return `Marked repeat unit "${label}"; membership is ambiguous: ${membership.reason}`;
+  }
   const count = membership.members.reduce((total, member) => total + member.atomIds.length, 0);
   return `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "${label}"`;
 }
