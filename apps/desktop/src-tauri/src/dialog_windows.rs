@@ -2299,7 +2299,8 @@ fn bring_to_front_on_main<R: Runtime>(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SavedPosition {
-    // Logical client size, independent of monitor DPI; old position-only files load.
+    // Logical client size, independent of monitor DPI. Accept the early 1.2 inline shape
+    // on input; persist_positions removes this field from the downgrade-compatible file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     size: Option<(f64, f64)>,
     monitor: String,
@@ -2726,10 +2727,44 @@ fn saved_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBu
 fn read_positions<R: Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, SavedPosition> {
     saved_path(app)
         .ok()
-        .and_then(|p| std::fs::read(p).ok())
+        .map(|path| read_positions_at(&path))
+        .unwrap_or_default()
+}
+fn read_saved_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    std::fs::read(path)
+        .ok()
         .filter(|bytes| bytes.len() <= MAX_BYTES)
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+}
+fn sizes_path(positions_path: &std::path::Path) -> std::path::PathBuf {
+    positions_path.with_file_name("dialog-sizes.json")
+}
+fn load_positions(path: &std::path::Path) -> (HashMap<String, SavedPosition>, bool) {
+    let mut positions: HashMap<String, SavedPosition> = read_saved_json(path).unwrap_or_default();
+    let inline_sizes = positions.values().any(|saved| saved.size.is_some());
+    // Read independently: missing, corrupt or oversized sizes must never discard positions.
+    let sizes: HashMap<String, (f64, f64)> = read_saved_json(&sizes_path(path)).unwrap_or_default();
+    for (kind, saved) in &mut positions {
+        // An inline size is authoritative when retrying an interrupted early-1.2 migration.
+        if saved.size.is_none() {
+            saved.size = sizes
+                .get(kind)
+                .copied()
+                .filter(|size| valid_client_size(*size));
+        }
+    }
+    (positions, inline_sizes)
+}
+fn read_positions_at(path: &std::path::Path) -> HashMap<String, SavedPosition> {
+    let _io = POSITION_IO.lock().unwrap_or_else(|p| p.into_inner());
+    let (positions, inline_sizes) = load_positions(path);
+    if inline_sizes {
+        // Migrate even if the user only opens a dialog and never moves/resizes it.
+        if let Err(error) = persist_positions(path, &positions) {
+            eprintln!("Could not migrate dialog frames: {error}");
+        }
+    }
+    positions
 }
 fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let (kind, content_fit) = REGISTRY
@@ -3787,20 +3822,50 @@ fn write_positions(path: &std::path::Path, writes: PositionWrites) {
     {
         return;
     }
-    let mut positions: HashMap<String, SavedPosition> = std::fs::read(path)
-        .ok()
-        .filter(|b| b.len() <= MAX_BYTES)
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let (mut positions, _) = load_positions(path);
     merge_positions(&mut positions, writes);
-    if let Ok(bytes) = serde_json::to_vec(&positions) {
-        use std::io::Write;
-        if let Err(error) = std::fs::File::create(path)
-            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
-        {
-            eprintln!("Could not persist dialog frames: {error}");
-        }
+    if let Err(error) = persist_positions(path, &positions) {
+        eprintln!("Could not persist dialog frames: {error}");
     }
+}
+fn persist_positions(
+    path: &std::path::Path,
+    positions: &HashMap<String, SavedPosition>,
+) -> Result<(), String> {
+    let sizes: HashMap<_, _> = positions
+        .iter()
+        .filter_map(|(kind, saved)| {
+            saved
+                .size
+                .filter(|size| valid_client_size(*size))
+                .map(|size| (kind, size))
+        })
+        .collect();
+    let position_only: HashMap<_, _> = positions
+        .iter()
+        .map(|(kind, saved)| {
+            (
+                kind,
+                SavedPosition {
+                    size: None,
+                    ..saved.clone()
+                },
+            )
+        })
+        .collect();
+    // v1.1.1 strictly parses every top-level value as a five-field position record:
+    // no size field, wrapper, version or metadata key can be added to this file.
+    let position_bytes = serde_json::to_vec(&position_only).map_err(|e| e.to_string())?;
+    let size_bytes = serde_json::to_vec(&sizes).map_err(|e| e.to_string())?;
+    let write = |path: &std::path::Path, bytes: &[u8]| -> Result<(), String> {
+        use std::io::Write;
+        std::fs::File::create(path)
+            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    // Save sizes first. If that fails, leave the inline migration source intact for retry.
+    write(&sizes_path(path), &size_bytes)?;
+    write(path, &position_bytes)
 }
 fn flush_position<R: Runtime>(app: &tauri::AppHandle<R>, session: &mut Session) {
     if let Some((_, saved)) = session.pending_move.take() {
@@ -3932,6 +3997,221 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    // Exact record schema from 6be9bb8e (v1.1.1). Its top level is an unversioned
+    // HashMap<String, SavedPosition>; any record error rejects the entire file.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct V111SavedPosition {
+        monitor: String,
+        x: f64,
+        y: f64,
+        offset_x: f64,
+        offset_y: f64,
+    }
+
+    fn parse_v111_positions(
+        bytes: &[u8],
+    ) -> Result<HashMap<String, V111SavedPosition>, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+
+    #[test]
+    fn pre_fix_12_output_is_rejected_by_the_111_parser() {
+        // SavedPosition serialization is the pre-fix 1.2 writer's exact layout.
+        let saved = SavedPosition {
+            size: Some((800.0, 600.0)),
+            monitor: "display".into(),
+            x: 120.0,
+            y: 80.0,
+            offset_x: 0.25,
+            offset_y: 0.5,
+        };
+        let bytes = serde_json::to_vec(&HashMap::from([
+            ("preferences", saved.clone()),
+            (
+                "export",
+                SavedPosition {
+                    size: None,
+                    ..saved
+                },
+            ),
+        ]))
+        .unwrap();
+        let error = parse_v111_positions(&bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `size`"),
+            "{error}"
+        );
+        // v1.1.1 read_positions and write_positions both default the whole failed parse.
+        assert!(parse_v111_positions(&bytes).unwrap_or_default().is_empty());
+    }
+
+    fn persistence_fixture() -> HashMap<String, SavedPosition> {
+        let position = SavedPosition {
+            size: Some((800.0, 600.0)),
+            monitor: "display".into(),
+            x: 120.0,
+            y: 80.0,
+            offset_x: 0.25,
+            offset_y: 0.5,
+        };
+        HashMap::from([
+            ("preferences".into(), position.clone()),
+            (
+                "export".into(),
+                SavedPosition {
+                    size: None,
+                    ..position
+                },
+            ),
+        ])
+    }
+
+    fn assert_position_stores(path: &std::path::Path, expected: &HashMap<String, SavedPosition>) {
+        let bytes = std::fs::read(path).unwrap();
+        let legacy = parse_v111_positions(&bytes).unwrap();
+        let loaded = read_positions_at(path);
+        let sizes: HashMap<String, (f64, f64)> = read_saved_json(&sizes_path(path)).unwrap();
+        assert_eq!(legacy.len(), expected.len());
+        assert_eq!(loaded.len(), expected.len());
+        for (kind, saved) in expected {
+            let record = &legacy[kind];
+            assert_eq!(record.monitor, saved.monitor);
+            assert_eq!((record.x, record.y), (saved.x, saved.y));
+            assert_eq!(
+                (record.offset_x, record.offset_y),
+                (saved.offset_x, saved.offset_y)
+            );
+            assert_eq!(
+                serde_json::to_value(&loaded[kind]).unwrap(),
+                serde_json::to_value(saved).unwrap()
+            );
+            assert_eq!(sizes.get(kind).copied(), saved.size);
+        }
+    }
+
+    #[test]
+    fn written_positions_are_111_compatible_and_separate_sizes_survive_a_downgrade_write() {
+        let path = preferences_test_path("downgrade");
+        let mut expected = persistence_fixture();
+        write_positions(&path, expected.clone().into_iter().collect());
+        assert_position_stores(&path, &expected);
+        // Reproduce the 1.1.1 read/merge/write: it leaves dialog-sizes.json alone.
+        let mut legacy = parse_v111_positions(&std::fs::read(&path).unwrap()).unwrap();
+        legacy.get_mut("preferences").unwrap().x = 200.0;
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        expected.get_mut("preferences").unwrap().x = 200.0;
+        assert_position_stores(&path, &expected);
+        // A subsequent position-only 1.2 write retains that dialog's separate size.
+        let mut moved = expected["preferences"].clone();
+        moved.x = 240.0;
+        expected.insert("preferences".into(), moved.clone());
+        moved.size = None;
+        write_positions(&path, vec![("preferences".into(), moved)]);
+        assert_position_stores(&path, &expected);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn early_12_inline_sizes_migrate_on_read_or_write_preserving_all_positions() {
+        for migrate_on_read in [false, true] {
+            let path = preferences_test_path("inline-migration");
+            let mut expected = persistence_fixture();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, serde_json::to_vec(&expected).unwrap()).unwrap();
+            assert!(parse_v111_positions(&std::fs::read(&path).unwrap()).is_err());
+            // Inline values take precedence over a stale/partially migrated sidecar.
+            std::fs::write(sizes_path(&path), br#"{"preferences":[400,300]}"#).unwrap();
+            if migrate_on_read {
+                assert_eq!(
+                    read_positions_at(&path)["preferences"].size,
+                    Some((800.0, 600.0))
+                );
+            } else {
+                let mut moved = expected["export"].clone();
+                moved.y = 160.0;
+                expected.insert("export".into(), moved.clone());
+                write_positions(&path, vec![("export".into(), moved)]);
+            }
+            assert_position_stores(&path, &expected);
+            let bytes = std::fs::read(&path).unwrap();
+            read_positions_at(&path);
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "migration is idempotent"
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn position_only_111_files_load_without_a_sizes_file() {
+        let path = preferences_test_path("111-input");
+        // Literal five-field records, independent of 1.2's serializer.
+        let bytes = br#"{"export":{"monitor":"display","x":120,"y":80,"offsetX":0.25,"offsetY":0.5},"pageSize":{"monitor":"display","x":20,"y":40,"offsetX":0,"offsetY":0}}"#;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(parse_v111_positions(bytes).unwrap().len(), 2);
+        let loaded = read_positions_at(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded["export"].x, 120.0);
+        assert_eq!(loaded["pageSize"].y, 40.0);
+        assert!(loaded.values().all(|saved| saved.size.is_none()));
+        assert!(!sizes_path(&path).exists());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_missing_sizes_never_discard_positions() {
+        for bytes in [
+            None,
+            Some(b"{".to_vec()),
+            Some(br#"{"preferences":"wrong type"}"#.to_vec()),
+            Some(vec![b' '; MAX_BYTES + 1]),
+            Some(br#"{"preferences":[-1,600]}"#.to_vec()),
+        ] {
+            let path = preferences_test_path("corrupt-sizes");
+            let expected = persistence_fixture();
+            write_positions(&path, expected.into_iter().collect());
+            if let Some(bytes) = bytes {
+                std::fs::write(sizes_path(&path), bytes).unwrap();
+            } else {
+                std::fs::remove_file(sizes_path(&path)).unwrap();
+            }
+            let mut loaded = read_positions_at(&path);
+            assert_eq!(loaded.len(), 2);
+            assert!(loaded.values().all(|saved| saved.size.is_none()));
+            assert_eq!(loaded["preferences"].x, 120.0);
+            assert_eq!(loaded["export"].y, 80.0);
+            let mut moved = loaded["export"].clone();
+            moved.x = 240.0;
+            loaded.insert("export".into(), moved.clone());
+            write_positions(&path, vec![("export".into(), moved)]);
+            assert_position_stores(&path, &loaded);
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn migration_keeps_inline_sizes_if_the_separate_store_cannot_be_written() {
+        let path = preferences_test_path("failed-migration");
+        let expected = persistence_fixture();
+        std::fs::create_dir_all(sizes_path(&path)).unwrap();
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read_positions_at(&path)["preferences"].size,
+            Some((800.0, 600.0))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir(sizes_path(&path)).unwrap();
+        read_positions_at(&path);
+        assert_position_stores(&path, &expected);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
         let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});
@@ -4050,8 +4330,7 @@ mod tests {
                 assert!(registry.lock().unwrap().preferences.is_none());
                 drop(registry);
                 // Read disk after dropping all live state, just as an app relaunch does.
-                let positions: HashMap<String, SavedPosition> =
-                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let positions = read_positions_at(&path);
                 let saved = &positions["preferences"];
                 assert_eq!(saved.size, Some((800.0, 600.0)), "{platform}");
                 assert_eq!((saved.x, saved.y), (-1400.0, 120.0), "{platform}");
@@ -4136,7 +4415,7 @@ mod tests {
                 preferences_native_frame(platform, 1.5, true)
             });
             let bytes = std::fs::read(&path).unwrap();
-            let positions: HashMap<String, SavedPosition> = serde_json::from_slice(&bytes).unwrap();
+            let positions = read_positions_at(&path);
             assert_eq!(positions["preferences"].size, valid.size);
             assert_eq!(positions["preferences"].x, valid.x);
             flush_preferences_to(&registry, &path, PreferencesClose::Destroyed, || {
@@ -4222,8 +4501,7 @@ mod tests {
                     capture(origin, programmed)
                 });
                 let read = || -> SavedPosition {
-                    let positions: HashMap<String, SavedPosition> =
-                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    let positions = read_positions_at(&path);
                     positions["preferences"].clone()
                 };
                 assert_eq!(read().size, original.size);
@@ -6889,8 +7167,7 @@ mod tests {
                 Some(invalid_saved.clone())
             });
             write_positions(&path, vec![("preferences".into(), invalid_saved)]);
-            let positions: HashMap<String, SavedPosition> =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let positions = read_positions_at(&path);
             let saved = &positions["preferences"];
             assert_eq!(
                 (saved.x, saved.y, saved.size),
