@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.12.30-codex";
+const CURRENT_BUILD_STAMP = "11.11.12.50-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -12481,9 +12481,12 @@ export function MainWindow({
           if (signal) pluginPageConsentsRef.current.set(signal, consent);
         }
         const prepared = normalizeCommittedDocument(applied.document);
-        const assertFinalDocument = (document: ChemDraftDocument) =>
-          assertPluginDocumentWriteScope(before, document, patch, writeScopeObjectIds);
-        const pending = commitWithPageFit(before, prepared, document => {
+        const pending = commitWithPageFit(before, prepared, (document, fitBaseline) => {
+          // User-approved page fitting is a host edit. Replay its exact transform on the baseline
+          // so it grants no scope for a plugin's own movement or normalization side effects.
+          const baseline = fitBaseline(before);
+          const assertFinalDocument = (document: ChemDraftDocument) =>
+            assertPluginDocumentWriteScope(baseline, document, patch, writeScopeObjectIds);
           // Both history paths normalize again; check their actual final state, after page fit too.
           if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
           else commitDocumentChange(document, undoLabel, false, assertFinalDocument);

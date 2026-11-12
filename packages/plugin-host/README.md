@@ -50,6 +50,9 @@ the authored patch, and the **final** document after all normalization and page 
 protects every object field (including derived warnings), rejects unrequested derived additions, and
 grants insertion scope only to rebased patch ids absent from the baseline. Run it inside the final
 history preparation callback so a subsequent normalization cannot bypass it; a refusal records no undo.
+When the user approves host-owned page fitting, first apply that exact resize and uniform page
+translation to the baseline as well. The desktop's `commitWithPageFit` supplies this transform to its
+commit callback; it never replans from the baseline or exempts other object position changes.
 Flat `batch` patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without

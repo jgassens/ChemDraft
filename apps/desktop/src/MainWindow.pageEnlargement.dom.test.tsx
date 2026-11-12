@@ -10,6 +10,7 @@ import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { createSelectionClipboardPayload, insertNativeTemplateMolecule, serializeSelectionClipboardPayload, setDocumentCustomPageSize, insertNativeTextObject, insertTableIntoDocument } from "./documentWorkflow";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
+import * as workflow from "./documentWorkflow";
 import * as clipboard from "./clipboard";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -47,7 +48,7 @@ function initial(size: number) {
 const actions = ["template", "bracket stamp", "bracket drag", "text paste", "private paste", "duplicate", "cleanup", "plugin batch", "reviewed proposal"] as const;
 describe.each(["macos", "windows"] as const)("mounted page commits on %s", platform => {
   it.each(["plugin", "assistant patch", "reviewed proposal"].flatMap(path => ["enlarge", "keep"].map(answer => ({ path, answer }))))(
-    "$path / $answer respects plugin scope when page fitting would shift existing content", async ({ path, answer }) => {
+    "$path / $answer shifts all affected-page content with one undo and selects only the insertion", async ({ path, answer }) => {
     const blank = initial(100), page = blank.pages[0]!;
     const molecule = createSmilesMolecule(blank, { x: 50, y: 50 }, depictSmiles2D("CC"), "CC");
     const drawing = { ...blank, pages: [{ ...page, objects: [molecule] }, { ...page, id: "second-page", objects: [] }] };
@@ -73,17 +74,8 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
           await context.documents.applyPatch(patch);
         }
       } } });
-      if (path !== "reviewed proposal" && answer === "enlarge") {
-        await expect(runtime.invokeCommand("plugin.pageShift.insert")).rejects.toThrow(/Plugin write refused: molecule.*not selected/);
-      } else await runtime.invokeCommand("plugin.pageShift.insert");
+      await runtime.invokeCommand("plugin.pageShift.insert");
     });
-    if (path !== "reviewed proposal" && answer === "enlarge") {
-      if (txId) await act(async () => { transactions.endAssistantTransaction(txId, { touchedIds: [] }); });
-      expect(current()).toBe(before);
-      expect(prompt).toHaveBeenCalledOnce();
-      await command("edit.undo"); expect(current()).toBe(before);
-      return;
-    }
     if (path === "reviewed proposal") {
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());
@@ -109,6 +101,59 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
     await command("edit.undo"); expect(current()).toEqual(before);
     await command("edit.redo"); expect(current()).toEqual(after);
     expect(prompt).toHaveBeenCalledOnce();
+  });
+
+  it.each(["plugin", "assistant patch"].flatMap(path => ["fits", "enlarge", "keep"].flatMap(answer =>
+    ["charge mark", "late movement"].map(change => ({ path, answer, change })))))(
+    "$path / $answer refuses an unselected object's $change despite page-fit consent, without changing document or undo", async ({ path, answer, change }) => {
+    const blank = initial(answer === "fits" ? 1000 : 100), page = blank.pages[0]!;
+    const molecule = createSmilesMolecule(blank, { x: 50, y: 50 }, depictSmiles2D("CC"), "CC");
+    const prompt = vi.fn(async () => answer);
+    restorePrompt = setNativePromptProvider(prompt);
+    await act(async () => root.render(<MainWindow initialDocument={{ ...blank, pages: [{ ...page, objects: [molecule] }] }}
+      shortcutPlatform={platform} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    const before = current(), runtime = captured.runtime!, pluginId = "org.chemdraft.pageScope";
+    const transactions = getAssistantTransactions(getAssistantHistoryPort());
+    const txId = path === "assistant patch" ? transactions.beginAssistantTransaction({ pluginId, runId: "page-scope",
+      label: "Insert large content", tabId: "initial", sendSelection: { objectIds: [] } }) : undefined;
+    const object = DocumentObjectSchema.parse({ id: "oversized", type: "plus",
+      x: answer === "fits" ? 400 : -24, y: answer === "fits" ? 400 : -32, width: 176, height: 184 });
+    const atom = molecule.atoms[0]!;
+    const mark = DocumentObjectSchema.parse({ id: "inserted-charge", type: "electron-mark", markKind: "charge", charge: 1,
+      atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
+      x: atom.x + 12, y: atom.y - 12, width: 18, height: 18 });
+    let normalizationCalls = 0;
+    if (change === "late movement") {
+      const normalize = workflow.normalizeCommittedDocument;
+      vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(document => {
+        const normalized = normalize(document);
+        // The first pass is safe. Add a plugin-induced move only at the final history boundary,
+        // after the host's approved translation, to prove positions are still protected.
+        if (++normalizationCalls === 1) return normalized;
+        return { ...normalized, pages: normalized.pages.map(page => ({ ...page, objects: page.objects.map(object =>
+          object.id !== molecule.id || object.type !== "molecule" ? object : { ...object, x: object.x + 7,
+            atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + 7 })) }) })) };
+      });
+    }
+    await act(async () => {
+      runtime.registerPlugin({ id: pluginId, name: "Page scope", version: "0.1.0", apiVersion: "^0.1.20", entry: "test.js",
+        permissions: ["document.write"], contributes: { commands: [{ id: "plugin.pageScope.insert", title: "Insert" }] }
+      }, { commandHandlers: { "plugin.pageScope.insert": context => context.documents.applyPatch!({ reason: "Insert large content", patch: {
+        op: "batch", patches: (change === "charge mark" ? [object, mark] : [object])
+          .map(object => ({ op: "addObject", pageId: page.id, object }))
+      } }) } });
+      await expect(runtime.invokeCommand("plugin.pageScope.insert")).rejects.toThrow(change === "charge mark"
+        ? /Plugin write refused:.*atom.*formal charge/ : /Plugin write refused:.*atom.*x/);
+    });
+    expect(prompt).toHaveBeenCalledTimes(answer === "fits" ? 0 : 1);
+    if (change === "late movement") expect(normalizationCalls).toBe(2);
+    expect(current()).toBe(before);
+    vi.restoreAllMocks();
+    if (txId) await act(async () => {
+      expect(transactions.endAssistantTransaction(txId, { touchedIds: [] }).touchedIds).toEqual([]);
+    });
+    await command("edit.undo"); expect(current()).toBe(before);
+    await command("edit.redo"); expect(current()).toBe(before);
   });
 
   it.each(actions.flatMap(action => (["fits", "enlarge", "keep"] as const).map(answer => ({ action, answer }))))(
