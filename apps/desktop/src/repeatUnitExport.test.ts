@@ -1,10 +1,16 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { type MoleculeObject, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning } from "@chemdraft/export-engine";
-import { applySingleBondToolAtPoint, copyAsMolfile, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
+import { repeatUnits, repeatUnitExportWarnings, repeatUnitMolfileGroups, type ExportWarning } from "@chemdraft/export-engine";
+import { applySingleBondToolAtPoint, copyAsMolfile, copyAsSmiles, createPhase4Document, insertNativeBracket, selectDocumentObjects } from "./documentWorkflow";
 import { toggleBracketRepeatUnit } from "./bracketCommands";
+
+// Exercise the native SMILES export path without loading WASM.
+vi.mock("./moleculeSmiles", async importOriginal => ({
+  ...await importOriginal<typeof import("./moleculeSmiles")>(),
+  loadStructureIdentifiers: async () => undefined
+}));
 
 function fixture() {
   const molecule: MoleculeObject = { id: "chain", type: "molecule", x: 50, y: 140, width: 180, height: 1,
@@ -16,16 +22,50 @@ function fixture() {
   return toggleBracketRepeatUnit(insertNativeBracket(document, { x: 90, y: 100 }, "square", { x: 190, y: 180 }));
 }
 describe("document repeat-unit export mapping", () => {
-  it.each(["v2000", "v3000"] as const)("keeps the one-copy note without a molecule id when an imported SRU is written to %s", flavor => {
+  it.each(["full page", "molecule selected", "molecule selected with neighbor"])(
+    "warns without guessing members when the native rotation frame is unknown: %s", async scope => {
+      let document = structuredClone(fixture());
+      const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+      const close = document.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")!;
+      close.rotation = 37;
+      for (const object of document.pages[0].objects) {
+        if (object.type === "bracket") object.containedObjectIds = [];
+      }
+      if (scope === "molecule selected with neighbor") {
+        document.pages[0].objects.push({ ...molecule, id: "neighbor", x: 500,
+          atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 500 })) });
+      }
+      document = selectDocumentObjects(document, document.pages[0].id, scope === "full page" ? [] : [molecule.id]);
+      const before = structuredClone(document);
+      const molecules = scope === "full page" ? undefined : [molecule];
+      expect(repeatUnits(document, molecules)).toMatchObject([{ objectId: close.id, unresolved: true, members: [],
+        reason: "its brackets do not share a known planar rotation frame" }]);
+      for (const flavor of ["v2000", "v3000"] as const) {
+        const warnings: string[] = [];
+        const molfile = copyAsMolfile(document, flavor, warnings);
+        expect(molfile).toBeDefined();
+        expect(molfile).not.toContain("SRU");
+        expect(warnings).toEqual([
+          `MOL cannot represent repeat unit n (bracket ${close.id}): its brackets do not share a known planar rotation frame; only the bare structure is written.`
+        ]);
+      }
+      const warnings: string[] = [];
+      expect(await copyAsSmiles(document, warnings)).toBe("CCCC");
+      expect(warnings).toEqual([
+        `SMILES cannot hold the repeat unit n (bracket ${close.id}): its atom membership cannot be resolved: its brackets do not share a known planar rotation frame; only the bare structure is written.`
+      ]);
+      expect(document).toEqual(before);
+    });
+
+  it.each(["v2000", "v3000"] as const)("omits the one-copy loss warning when an imported SRU is represented in %s", flavor => {
     const source = readFileSync(new URL("../../../packages/fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8")
       .replace(/<crossingbond[^>]*\/>/, "").replace('SRULabel="x-y"', 'SRULabel="n"');
     const document = openChemDraftPayload(source).document!;
     const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
     const warnings: string[] = [];
     expect(copyAsMolfile(document, flavor, warnings)).toContain("SRU");
-    expect(warnings).toEqual([
-      "A molecule is inside a repeat unit n; polymer formula not computed; values and molecular graph exports are for one drawn copy only."
-    ]);
+    // The real SRU S-group represents the polymer in MOL, so a graph-only loss warning is incorrect.
+    expect(warnings).toEqual([]);
     expect(warnings.join(" ")).not.toContain(molecule.id);
   });
 

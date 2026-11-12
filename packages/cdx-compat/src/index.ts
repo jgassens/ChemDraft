@@ -12,6 +12,7 @@ import {
   nativeTextStyleFromObjectStyle,
   parseDocument,
   prepareNativeDocumentForSerializationWithWarnings,
+  resolveRepeatUnitAtomMembership,
   withBracketChemistryWarnings,
   type Anchor,
   type ArrowObject,
@@ -1529,9 +1530,15 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
     const unchanged = pair.every(object => object.compatibility?.unknown.cdxmlBracketState === bracketSourceState(object));
     const membershipUnchanged = pair.every(object => object.compatibility?.unknown.cdxmlBracketMembership === JSON.stringify(object.containedObjectIds));
     const requestedMembers = [...new Set(pair.flatMap(object => object.containedObjectIds))];
-    const members = requestedMembers.filter(id => objectsById.get(id)?.type === "molecule").map(id => idFor(context.ids, id, allocator));
-    if (members.length !== requestedMembers.length) warnings.push({ code: "cdxml.bracket_membership_payload_only", sourceObjectId: closing.id,
-      message: `Bracket membership for missing or non-molecule objects is preserved only in the ChemDraft payload; visible ${context.format} membership includes whole molecule objects only.` });
+    const membership = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
+    const members = membership.members.flatMap(member => requestedMembers.includes(member.molecule.id)
+      ? [idFor(context.ids, member.molecule.id, allocator)]
+      : member.atomIds.flatMap(atomId => {
+        const id = context.atomIdsByObjectId.get(member.molecule.id)?.get(atomId);
+        return id ? [id] : [];
+      }));
+    if (requestedMembers.some(id => objectsById.get(id)?.type !== "molecule")) warnings.push({ code: "cdxml.bracket_membership_payload_only", sourceObjectId: closing.id,
+      message: `Bracket membership for missing or non-molecule objects is preserved only in the ChemDraft payload; visible ${context.format} membership includes only resolvable molecule and atom references.` });
     const memberRecords = closing.compatibility?.unknown.cdxmlBracketMembers;
     const preservedMembers = splitCdxmlIdList(attrs.BracketedObjectIDs).flatMap(sourceId => {
       const record = Array.isArray(memberRecords) ? memberRecords.find(record => isRecord(record) && record.sourceId === sourceId) : undefined;
@@ -1553,6 +1560,10 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
       return [];
     });
     const exportedMembers = [...new Set([...preservedMembers, ...(membershipUnchanged && attrs.BracketedObjectIDs !== undefined ? [] : members)])];
+    if (bracketUsageAttribute(pair) && membership.unresolved) {
+      warnings.push({ code: "cdxml.bracket_membership_unresolved", sourceObjectId: closing.id,
+        message: `Repeat unit membership for bracket ${closing.id} cannot be resolved: ${membership.reason}; visible ${context.format} writes only known members and retained source references, without guessing enclosure.` });
+    }
     if (exportedMembers.length) attrs.BracketedObjectIDs = exportedMembers.join(" ");
     else delete attrs.BracketedObjectIDs;
     attrs.id = attrs.id ? allocator.sourceId(attrs.id) : allocator.next();
@@ -2550,8 +2561,12 @@ function exportGraphicAsCdxmlCurve(
 ): string {
   const attributes = preservedCurveAttributes(graphic.compatibility?.unknown.cdxmlCurveAttributes);
   const nativeCurve = graphic.compatibility?.unknown.cdxmlElementName !== "curve";
-  if (nativeCurve) {
+  const sourceFill = graphicStyleFromCdxmlCurve({ name: "curve", attributes, children: [] }, { colorByIndex: new Map(), warnings: [] });
+  if (nativeCurve || graphicHasVisibleFill(graphic) !== graphicHasVisibleFill({ ...graphic, style: sourceFill }) ||
+    graphic.style.fillMode !== sourceFill.fillMode) {
     attributes.FillType = graphicHasVisibleFill(graphic) ? "Solid" : "None";
+  }
+  if (nativeCurve) {
     if (approximateArc) {
       warnings.push({ code: "cdxml.arc_curve_approximation", sourceObjectId: graphic.id,
         message: "Circular arrow exported as cubic CDXML curve segments; the arc has a small geometric approximation." });
@@ -2599,7 +2614,7 @@ function exportGraphicAsCdxmlCurve(
     warnings.push({ code: "cdxml.curve_head_size_payload_only",
       message: "Edited native curve head dimensions remain only in the native payload; standard CDXML retains the source head sizing attributes.", sourceObjectId: graphic.id });
   }
-  const useFill = nativeCurve && graphic.data.pathClosed && graphicHasVisibleFill(graphic);
+  const useFill = graphic.data.pathClosed && graphicHasVisibleFill(graphic);
   const color = normalizeHexColor((useFill ? graphic.style.fillColor : graphic.style.strokeColor) ?? defaultCdxmlStrokeColor);
   if (useFill && graphic.style.strokeColor && normalizeHexColor(graphic.style.strokeColor) !== color) {
     warnings.push({ code: "cdxml.graphic_single_color", sourceObjectId: graphic.id,
@@ -4818,7 +4833,7 @@ function importCurveGraphic(
   return {
     id, type: "graphic", ...box, rotation: 0,
     graphicKind: "path",
-    style: graphicStyleFromCdxmlCurve(effectiveElement, context.colorTable),
+    style: graphicStyleFromCdxmlCurve(effectiveElement, context.colorTable, message => note("cdxml.curve_fill_type_approximation", message)),
     data: {
       artPathKind: "bezier", pathNodes: nodes,
       ...(cdxmlCurveIsClosed(element.attributes) ? { pathClosed: true } : {}),
@@ -5080,8 +5095,20 @@ function graphicStyleFromCdxmlShape(
   return style;
 }
 
-function graphicStyleFromCdxmlCurve(element: XmlElementView, colorTable: CdxmlColorTable): GraphicObject["style"] {
+function graphicStyleFromCdxmlCurve(element: XmlElementView, colorTable: CdxmlColorTable, warn?: (message: string) => void): GraphicObject["style"] {
   const style = graphicStyleFromCdxmlShape(element, colorTable);
+  const fillType = normalizedCdxmlToken(element.attributes.FillType);
+  if (["solid", "2", "shaded", "4"].includes(fillType)) {
+    style.fillColor = style.strokeColor;
+    style.fillMode = "solid";
+  } else if (["none", "1"].includes(fillType)) {
+    style.fillColor = "none";
+    delete style.fillMode;
+  }
+  if (fillType && !["unspecified", "0", "none", "1", "solid", "2"].includes(fillType)) {
+    warn?.(`Curve "${element.attributes.id ?? "(unknown)"}" has FillType="${element.attributes.FillType}" with no native equivalent; ` +
+      (["shaded", "4"].includes(fillType) ? "a solid fill is used" : "no fill is used") + "; the source FillType is retained for export.");
+  }
   const width = normalizedCdxmlToken(element.attributes.LineType) === "bold"
     ? parseNumber(element.attributes.BoldWidth) ?? parseNumber(element.attributes.LineWidth)
     : parseNumber(element.attributes.LineWidth);

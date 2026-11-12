@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { type GraphicObject, type GraphicPathNode, type Point } from "@chemdraft/chem-core";
+import { createEmptyDocument, type GraphicObject, type GraphicPathNode, type Point } from "@chemdraft/chem-core";
 import { planNativeArtVisual } from "../../art-engine/src/index";
-import { canonicalVisibleCdxml, exportDocumentToCdxml, openChemDraftPayload } from "./index";
+import { canonicalVisibleCdxml, exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 
 // Entirely synthetic: the first point is beside a lone pair on N, the last is the midpoint of
 // the C–C bond. The curve states positions, so importing it must not invent atom/bond anchors.
@@ -65,6 +65,44 @@ function roundTrip(contents: string) {
 }
 
 describe("CDXML Bezier mechanism curves", () => {
+  it.each(["Solid", "None", "Unspecified", "2", "1", "0"])("maps FillType=%s into native fill", fillType => {
+    const { curve, opened } = importedCurve(fixture(`Closed="yes" FillType="${fillType}"`));
+    expect(curve.style.fillColor).toBe(["Solid", "2"].includes(fillType) ? "#000000" : "none");
+    expect(opened.warnings.filter(warning => warning.code === "cdxml.curve_fill_type_approximation")).toEqual([]);
+  });
+
+  it.each(["Shaded", "4", "UnknownFill"])("warns and retains unsupported FillType=%s", fillType => {
+    const { curve, opened, document } = importedCurve(fixture(`Closed="yes" FillType="${fillType}"`));
+    expect(curve.style.fillColor).toBe(fillType === "UnknownFill" ? "none" : "#000000");
+    expect(opened.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.curve_fill_type_approximation",
+      message: expect.stringContaining(`FillType="${fillType}"`) }));
+    expect(exportDocumentToCdxml(document, { embedNativePayload: false }).contents).toContain(`FillType="${fillType}"`);
+  });
+
+  it("writes edited imported fill instead of restoring stale FillType", () => {
+    const { curve, document } = importedCurve(fixture('Closed="yes" FillType="Solid"'));
+    delete curve.style.fillMode;
+    curve.style.fillColor = "none";
+    const xml = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    expect(xml).toContain('FillType="None"');
+    expect(importedCurve(xml).curve.style.fillColor).toBe("none");
+  });
+
+  it.each(["CDXML", "CDX"])("keeps a native filled closed polyline filled without a payload in %s", format => {
+    const document = createEmptyDocument();
+    const graphic: GraphicObject = { id: "filled", type: "graphic", graphicKind: "path", x: 100, y: 100,
+      width: 40, height: 40, rotation: 0, style: {}, data: { artPathKind: "polyline", pathClosed: true,
+        pathNodes: [{ point: { x: 100, y: 100 } }, { point: { x: 140, y: 100 } }, { point: { x: 140, y: 140 } }] } };
+    graphic.style = { fillMode: "solid", fillColor: "#000000", strokeColor: "#000000", strokeWidth: 1.5 };
+    document.pages[0].objects = [graphic];
+    const xml = exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    expect(xml).toContain('FillType="Solid"');
+    const opened = format === "CDXML" ? openChemDraftPayload(xml)
+      : importCdx(exportDocumentToCdx(document, { embedNativePayload: false }).bytes);
+    expect(opened.document!.pages[0].objects[0]).toMatchObject({ type: "graphic", data: { pathClosed: true },
+      style: { fillMode: "solid", fillColor: "#000000" } });
+  });
+
   it("imports a full head from a lone pair to a bond midpoint with exact cubic controls", () => {
     const { curve, exported } = roundTrip(fixture('ArrowheadHead="Full" ArrowheadType="Solid"'));
     expect(curve.data.artToolId).toBe("curvedArrow90");

@@ -78,6 +78,7 @@ import {
   bracketPairs,
   withoutBracketPairMetadata,
   moleculeBracketWarningMessages,
+  resolveRepeatUnitAtomMembership,
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -19804,7 +19805,7 @@ export function copyAsMergedMolecule(
  * string, silently.
  */
 export function analysisFacingStructure(molecule: MoleculeObject, document?: ChemDraftDocument): { structureFormat: string; structure: string; refusalReason?: string } {
-  const bracketWarnings = moleculeBracketWarningMessages(molecule, document);
+  const bracketWarnings = moleculeBracketWarningMessages(molecule, document, { atomPosition: transformPointForObject });
   if (bracketWarnings.length) return { structureFormat: "molfile-v3000", structure: "",
     refusalReason: bracketWarnings.join(" ") };
   const unknownIds = molecule.bonds.filter((bond) => bond.order === "unknown").map((bond) => bond.id);
@@ -19867,11 +19868,19 @@ export function validationFacingStructure(
  * change to its chemistry (an element, a charge, a bond order, a label) does.
  */
 export function analysisSubjectKey(molecule: MoleculeObject, document?: ChemDraftDocument): string {
+  const membership = document?.pages.flatMap(page => [...bracketPairs(page.objects).values()].flatMap(pair => {
+    if (!pair.some(bracket => bracket.repeatUnit || bracket.bracketKind === "polymer" ||
+      bracket.bracketUsage && bracket.bracketUsage !== "generic")) return [];
+    const resolved = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
+    if (!resolved.referencedObjectIds.has(molecule.id)) return [];
+    return [[pair[0].pairId, resolved.members.find(member => member.molecule.id === molecule.id)?.atomIds, resolved.reason]];
+  }));
   return JSON.stringify([
     molecule.id,
     molecule.atoms.map(({ x: _x, y: _y, z: _z, ...atom }) => atom),
     molecule.bonds,
-    moleculeBracketWarningMessages(molecule, document)
+    moleculeBracketWarningMessages(molecule, document, { atomPosition: transformPointForObject }),
+    membership
   ]);
 }
 
@@ -19923,19 +19932,18 @@ export function copyAsMolfile(
   const writerWarnings: string[] = [];
   const repeatWarnings: ExportWarning[] = [];
   const repeatUnitGroups = repeatUnitMolfileGroups(document, molecules, repeatWarnings, { merged: true, expansions });
-  // SRU encoding preserves the annotation; the graph and cached formula still describe one copy.
-  // Keep SRU context only for annotations actually written, but retain multiple/unknown context.
+  // A real SRU S-group preserves the polymer, so it needs no one-copy loss warning.
+  // Retain multiple/unknown context; declined SRUs already have a specific loss warning.
   // Read it before merging, which can rebuild cached chemistry under a new molecule id, and
   // describe molecules without native ids.
-  const writtenRepeatUnits = new Set(repeatUnitGroups.map(group => group.objectId));
   const nonSruGroups = new Set(repeatUnits(document, molecules).filter(unit => unit.usage !== "sru").map(unit => unit.objectId));
   // The graph-only writer re-emits cached bracket notes with native ids. Live context below
   // replaces those notes, including when an SRU is declined and its old note must be dropped.
   const cachedBracketMessages = new Set(moleculeBracketWarningMessages(merged));
   const repeatMessages = [...repeatWarnings.map(warning => molecules.reduce((message, molecule) =>
     message.replaceAll(`member "${molecule.id}"`, "member molecule"), warning.message)),
-    ...molecules.flatMap(molecule => bracketChemistryWarnings(document, molecule)
-      .filter(warning => writtenRepeatUnits.has(warning.objectId) || nonSruGroups.has(warning.objectId))
+    ...molecules.flatMap(molecule => bracketChemistryWarnings(document, molecule, { atomPosition: transformPointForObject })
+      .filter(warning => nonSruGroups.has(warning.objectId))
       .map(warning => warning.message.replace(`Molecule ${molecule.id} is`, "A molecule is")))];
   warningsOut?.push(...repeatMessages);
   const options = {

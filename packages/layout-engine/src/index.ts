@@ -31,6 +31,7 @@ import {
   isMetalSymbol,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
+  rotatePointAboutCenter as rotatePoint,
   type BondRef,
   type BracketObject,
   type CrossingOverride,
@@ -8733,17 +8734,6 @@ function objectRotationCenter(object: DocumentObject): LayoutPoint {
   return {
     x: object.x + object.width / 2,
     y: object.y + object.height / 2
-  };
-}
-
-function rotatePoint(point: LayoutPoint, center: LayoutPoint, angleRadians: number): LayoutPoint {
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-  const cos = Math.cos(angleRadians);
-  const sin = Math.sin(angleRadians);
-  return {
-    x: center.x + dx * cos - dy * sin,
-    y: center.y + dx * sin + dy * cos
   };
 }
 

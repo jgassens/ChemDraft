@@ -10,6 +10,8 @@ preparation. PDF prepares its own fonts through the same lazy loader.
 
 Format-specific work should go through the correct adapters and compatibility packages.
 
+`repeatUnits` uses chem-core's shared `resolveRepeatUnitAtomMembership`, with atom placement
+from layout-engine, so UI counts, CDXML/CDX, analysis and structure search share atom membership.
 `repeatUnitMolfileGroups` resolves repeat brackets against the exported molecules, including
 atom subsets within a molecule. It carries membership through export-time molecule combination and
 expanded abbreviations for SRU output. Imported whole-molecule members retain snapshots of every
@@ -19,9 +21,13 @@ retains membership. Older native documents without whole-molecule identity snaps
 empty snapshot arrays) also decline: import maps alone cannot rule out deleted and redrawn ids.
 The existing strict snapshot/provenance fields and their native-version rules are reused.
 Incomplete or ambiguous mappings warn with the source bracket id, including a deleted last member
-when exporting the remaining page. An unrelated partial molecule selection stays quiet.
+when exporting the remaining page. A partial selection known to be unrelated stays quiet.
+Native units without a known rotation frame remain unresolved diagnostics with no guessed atoms;
+MOL and SMILES warn even when only a same-page molecule is selected and no member references exist.
 `repeatUnitExportWarnings` reports the repeat label, atom count and source bracket when a graph-only
 format such as SMILES omits SRU semantics, including when only the molecule is selected.
+Desktop MOL export omits the one-copy loss warning when a real SRU S-group represents the unit,
+for both native and imported membership; declined units retain their specific loss warnings.
 
 ## Table clipboard payloads
 

@@ -1,4 +1,5 @@
 import type { BracketObject, ChemDraftDocument, DocumentObject, MoleculeObject } from "./schemas";
+import { resolveRepeatUnitAtomMembership, type RepeatUnitMembershipOptions } from "./repeatUnitMembership";
 
 /** Pair identities are page-local and require exactly one opening and one closing glyph. */
 export function bracketPairs(objects: readonly DocumentObject[]): Map<string, BracketObject[]> {
@@ -42,35 +43,28 @@ export function normalizeBracketPairs(document: ChemDraftDocument): ChemDraftDoc
 }
 
 /** The graph is one drawn copy. Never interpret a bracket multiplier as additional atoms. */
-export function bracketChemistryWarnings(document: ChemDraftDocument, molecule: MoleculeObject): { pairId: string; objectId: string; message: string }[] {
+export function bracketChemistryWarnings(document: ChemDraftDocument, molecule: MoleculeObject, options: RepeatUnitMembershipOptions = {}): { pairId: string; objectId: string; message: string }[] {
   const page = document.pages.find(page => page.objects.some(object => object.id === molecule.id));
   if (!page) return [];
-  return chemistryWarningsForPairs(bracketPairs(page.objects), molecule);
+  return chemistryWarningsForPairs(bracketPairs(page.objects), molecule, page.objects, options);
 }
 
-function chemistryWarningsForPairs(pairs: ReadonlyMap<string, BracketObject[]>, molecule: MoleculeObject) {
+function chemistryWarningsForPairs(pairs: ReadonlyMap<string, BracketObject[]>, molecule: MoleculeObject,
+  objects: readonly DocumentObject[], options: RepeatUnitMembershipOptions = {}) {
   return [...pairs].flatMap(([pairId, pair]) => {
     const usage = pair.find(object => object.bracketUsage && object.bracketUsage !== "generic")?.bracketUsage ??
       (pair.some(object => object.repeatUnit || object.bracketKind === "polymer") ? "sru" : "generic");
     if (usage === "generic") return [];
-    const members = new Set(pair.flatMap(object => object.containedObjectIds));
-    const crossing = pair.some(object => object.crossingBondIds?.some(ref => ref.objectId === molecule.id));
-    const atomMembership = pair.some(object => {
-      const ids = object.compatibility?.unknown.cdxmlBracketMemberObjectIds;
-      return Array.isArray(ids) && ids.includes(molecule.id);
-    });
-    const left = Math.min(...pair.map(object => object.x));
-    const top = Math.min(...pair.map(object => object.y));
-    const right = Math.max(...pair.map(object => object.x + object.width));
-    const bottom = Math.max(...pair.map(object => object.y + object.height));
-    if (!members.has(molecule.id) && !crossing && !atomMembership && !(molecule.x >= left && molecule.y >= top &&
-      molecule.x + molecule.width <= right && molecule.y + molecule.height <= bottom)) return [];
+    const membership = resolveRepeatUnitAtomMembership(pair, objects, options);
+    if (!membership.referencedObjectIds.has(molecule.id)) return [];
     const closing = pair.find(object => object.side === "close")!;
     const count = pair.find(object => object.repeatCount !== undefined)?.repeatCount;
     const label = closing.label === undefined ? "n" : closing.label || "(unassociated label)";
     const description = usage === "multiple" ? `a multiple group x${count ?? "?"}` : usage === "sru" ?
       `a repeat unit ${label}; polymer formula not computed` : "a bracket group with unknown usage";
-    return [{ pairId, objectId: closing.id, message: `Molecule ${molecule.id} is inside ${description}; values and molecular graph exports are for one drawn copy only.` }];
+    return [{ pairId, objectId: closing.id, message: membership.reason
+      ? `Repeat unit membership for bracket ${closing.id} cannot be resolved: ${membership.reason}. Molecule ${molecule.id} cannot be analyzed as a finite graph.`
+      : `Molecule ${molecule.id} is inside ${description}; values and molecular graph exports are for one drawn copy only.` }];
   });
 }
 
@@ -85,7 +79,7 @@ export function withBracketChemistryWarnings(document: ChemDraftDocument): ChemD
       const previous = object.chemistry.warnings;
       if (!pairs.size && !previous.some(warning => warning.code === "chemistry.bracket_multiplier")) return object;
       const warnings = [...previous.filter(warning => warning.code !== "chemistry.bracket_multiplier"),
-        ...chemistryWarningsForPairs(pairs, object).map(warning => ({ code: "chemistry.bracket_multiplier", objectId: object.id, message: warning.message }))];
+        ...chemistryWarningsForPairs(pairs, object, page.objects).map(warning => ({ code: "chemistry.bracket_multiplier", objectId: object.id, message: warning.message }))];
       if (JSON.stringify(previous) === JSON.stringify(warnings)) return object;
       changed = pageChanged = true;
       return { ...object, chemistry: { ...object.chemistry, warnings } };
@@ -96,7 +90,7 @@ export function withBracketChemistryWarnings(document: ChemDraftDocument): ChemD
 }
 
 /** Document-aware callers use live pair context; graph-only callers retain cached context warnings. */
-export function moleculeBracketWarningMessages(molecule: MoleculeObject, document?: ChemDraftDocument): string[] {
-  return document ? bracketChemistryWarnings(document, molecule).map(warning => warning.message) :
+export function moleculeBracketWarningMessages(molecule: MoleculeObject, document?: ChemDraftDocument, options: RepeatUnitMembershipOptions = {}): string[] {
+  return document ? bracketChemistryWarnings(document, molecule, options).map(warning => warning.message) :
     (molecule.chemistry?.warnings.filter(warning => warning.code === "chemistry.bracket_multiplier").map(warning => warning.message) ?? []);
 }

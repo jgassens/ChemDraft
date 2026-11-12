@@ -146,9 +146,7 @@ describe("bracket pair annotations", () => {
         ({ ...molecule.atoms[0], id: `count_atom_${index}`, x: 140 + index * 5, y: 140 })), bonds: [] } : object) }] };
     const closing = selectedBracketPair(repeat).find(object => object.side === "close")!;
     const edited = setBracketRepeatLabel(repeat, closing.id, "m");
-    expect(bracketRepeatUnitStatus(edited)).toBe(count === 0
-      ? 'Marked repeat unit "m"; membership is ambiguous: its atom membership is empty'
-      : `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "m"`);
+    expect(bracketRepeatUnitStatus(edited)).toBe(`Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "m"`);
     expect(bracketRepeatUnitStatus(toggleBracketRepeatUnit(edited))).toBe('Removed repeat unit "m"');
   });
   it("counts enclosed atoms of a partially bracketed molecule without counting outside atoms", () => {
@@ -158,14 +156,22 @@ describe("bracket pair annotations", () => {
         ? { ...object, atoms: object.atoms.map((atom, index) => index ? { ...atom, x: 400 } : atom) } : object) }] };
     expect(bracketRepeatUnitStatus(partial)).toBe('Marked 1 atom as repeat unit "n"');
   });
-  it("reports ambiguous membership for rotated brackets using the export reason", () => {
+  it("reports the same unresolved frame for mismatched bracket rotations in the UI and export", () => {
     const original = repeatAroundMolecule();
     const rotated = { ...original, pages: [{ ...original.pages[0], objects: original.pages[0].objects.map(object =>
       object.type === "bracket" && object.side === "close" ? { ...object, rotation: 35 } : object) }] };
     const warnings: string[] = [];
     copyAsMolfile(rotated, "v3000", warnings);
-    expect(warnings[0]).toContain("rotated or projected brackets have no unambiguous atom membership");
-    expect(bracketRepeatUnitStatus(rotated)).toBe('Marked repeat unit "n"; membership is ambiguous: rotated or projected brackets have no unambiguous atom membership');
+    // Only one glyph rotates, so the pair has no common planar frame; rotation alone is supported.
+    expect(warnings[0]).toContain("its brackets do not share a known planar rotation frame");
+    expect(bracketRepeatUnitStatus(rotated)).toBe('Marked repeat unit "n"; membership is ambiguous: its brackets do not share a known planar rotation frame');
+  });
+  it("keeps unresolved membership ambiguous even when no atoms are found", () => {
+    const original = repeatAroundMolecule();
+    const rotated = { ...original, pages: [{ ...original.pages[0], objects: original.pages[0].objects.map(object =>
+      object.type === "bracket" && object.side === "close" ? { ...object, rotation: 35 }
+        : object.type === "molecule" ? { ...object, atoms: [], bonds: [] } : object) }] };
+    expect(bracketRepeatUnitStatus(rotated)).toBe('Marked repeat unit "n"; membership is ambiguous: its brackets do not share a known planar rotation frame');
   });
   it("hits the shared label bounds after rotating a bracket, and excludes its glyph", () => {
     const closing = selectedBracketPair(repeatAroundMolecule()).find(object => object.side === "close")!;
@@ -227,9 +233,9 @@ describe("bracket pair annotations", () => {
       .map(object => object.containedObjectIds)).toEqual(includeMolecule ? [[molecule.id], [molecule.id]] : [[], []]);
     // Also accept older clipboard payloads that still contain uncopied member IDs.
     const olderPayload = { ...payload, objects: original.pages[0].objects.filter(object => includeMolecule || object.type === "bracket") };
-    for (const result of [duplicateSelectedDocumentObjects(source),
+    for (const [index, result] of [duplicateSelectedDocumentObjects(source),
       pasteSelectionClipboardPayload(target, payload, { x: 300, y: 300 }),
-      pasteSelectionClipboardPayload(target, olderPayload, { x: 300, y: 300 })]) {
+      pasteSelectionClipboardPayload(target, olderPayload, { x: 300, y: 300 })].entries()) {
       const selected = result.pages[0].objects.filter(object => result.selection.objectIds.includes(object.id));
       const copiedMolecule = selected.find(object => object.type === "molecule");
       for (const bracket of selected.filter((object): object is BracketObject => object.type === "bracket")) {
@@ -240,7 +246,9 @@ describe("bracket pair annotations", () => {
       const visible = exported.contents.replace(/<objecttag\b[^>]*\/>/g, "");
       if (!includeMolecule) {
         const groups = [...visible.matchAll(/<bracketedgroup\b([^>]*)>/g)];
-        expect(groups.at(-1)![1]).not.toContain("BracketedObjectIDs");
+        // The duplicated pair still encloses the original atoms; pasted pairs enclose no atoms.
+        const memberIds = groups.at(-1)![1].match(/BracketedObjectIDs="([^"]+)"/)?.[1].split(/\s+/) ?? [];
+        expect(memberIds).toEqual(index === 0 ? [...visible.matchAll(/<n\b[^>]*\bid="([^"]+)"/g)].map(match => match[1]) : []);
       }
       const reopened = openChemDraftPayload(exported.contents).document!;
       expect(bracketObjects(reopened).map(object => object.containedObjectIds)).toEqual(bracketObjects(result).map(object => object.containedObjectIds));
@@ -326,15 +334,15 @@ describe("repeat-unit graph-export warnings", () => {
     expect(repeatedMolecule.bonds).toEqual(molecule.bonds);
   });
 
-  it("keeps live one-copy context and SRU membership when merging molecules for MOL", () => {
+  it("keeps merged SRU membership without a graph-only loss warning in MOL", () => {
     let document = applySingleBondToolAtPoint(createPhase4Document("Two members"), { x: 140, y: 140 });
     document = applySingleBondToolAtPoint(document, { x: 220, y: 140 });
     const repeat = toggleBracketRepeatUnit(insertNativeBracket(document,
       { x: 100, y: 100 }, "round", { x: 300, y: 200 }));
     const warnings: string[] = [];
     expect(copyAsMolfile(repeat, "v3000", warnings)).toContain("SRU 0 ATOMS=(4 1 2 3 4) LABEL=n CONNECT=EU");
-    expect(warnings).toHaveLength(2);
-    expect(warnings.every(message => message.includes("inside a repeat unit n"))).toBe(true);
+    // The merged SRU represents both member molecules, so neither needs a one-copy loss warning.
+    expect(warnings).toEqual([]);
   });
 
   it.each(["square", "round"] as const)("leaves ordinary %s exports unchanged, writes SRU and warns for SMILES", async kind => {
@@ -354,8 +362,8 @@ describe("repeat-unit graph-export warnings", () => {
       const warnings: string[] = [];
       const contents = copyAsMolfile(repeat, flavor, warnings);
       expect(copyAsMolfile(plain, flavor)).toBe(copyAsMolfile(molecule, flavor));
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain("inside a repeat unit n");
+      // Both MOL flavors encode the SRU; only graph-only exports lose its polymer semantics.
+      expect(warnings).toEqual([]);
       expect(contents).toContain(flavor === "v3000" ? "SRU 0 ATOMS=(2 1 2) LABEL=n CONNECT=EU" : "  1 SRU");
       expect(contents).toContain(flavor === "v3000" ? "BEGIN SGROUP" : "M  SMT   1 n");
     }
@@ -407,7 +415,11 @@ describe("repeat-unit graph-export warnings", () => {
     expect(repeatUnitExportWarnings(enclosed, "MOL")).toHaveLength(1);
     const outside = { ...enclosed, pages: [{ ...enclosed.pages[0], objects: enclosed.pages[0].objects.map(object =>
       object.type === "molecule" ? { ...object, x: 400, y: 400, atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + 400, y: atom.y + 400 })) } : object) }] };
-    expect(repeatUnitExportWarnings(outside, "MOL")).toEqual([]);
+    // An empty native unit is unresolved too; full-page exports must retain its diagnostic.
+    expect(repeatUnitExportWarnings(outside, "MOL")).toEqual([expect.objectContaining({
+      objectId: bracketObjects(outside).find(object => object.side === "close")!.id,
+      message: expect.stringContaining("its atom membership cannot be resolved: its atom membership is empty")
+    })]);
   });
 
   it("stays quiet when an included pair contains only molecules excluded from the export", async () => {
