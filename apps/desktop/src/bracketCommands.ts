@@ -1,6 +1,6 @@
-import { applyPatches, bracketPairs, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatches, bracketPairs, resolveRepeatUnitAtomMembership, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { transformPointForObject } from "@chemdraft/layout-engine";
 import type { CommandSpec } from "./commands";
-import { repeatUnits } from "@chemdraft/export-engine";
 
 export function selectedBracketPair(document: ChemDraftDocument): BracketObject[] {
   const page = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
@@ -45,9 +45,10 @@ export function bracketRepeatUnitStatus(document: ChemDraftDocument): string {
   if (!close) return "No bracket pair selected";
   const label = close.label ?? "n";
   if (!pair.some(object => object.repeatUnit || object.bracketKind === "polymer")) return `Removed repeat unit "${label}"`;
-  const unit = repeatUnits(document).find(unit => pair.some(object => object.id === unit.objectId));
-  if (unit?.reason) return `Marked repeat unit "${label}"; membership is ambiguous: ${unit.reason}`;
-  const count = unit?.members.reduce((total, member) => total + member.atomIds.length, 0) ?? 0;
+  const page = document.pages.find(page => page.objects.some(object => object.id === close.id))!;
+  const membership = resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject });
+  if (membership.reason) return `Marked repeat unit "${label}"; membership is ambiguous: ${membership.reason}`;
+  const count = membership.members.reduce((total, member) => total + member.atomIds.length, 0);
   return `Marked ${count} ${count === 1 ? "atom" : "atoms"} as repeat unit "${label}"`;
 }
 

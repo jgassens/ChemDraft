@@ -1,10 +1,141 @@
 import { describe, expect, it } from "vitest";
-import { applyPatch, BracketObjectSchema, createEmptyDocument, deserializeDocument, readDocument, serializeDocument, withoutBracketPairMetadata, type BracketObject, type MoleculeObject } from "./index";
+import { applyPatch, bracketChemistryWarnings, BracketObjectSchema, createEmptyDocument, deserializeDocument, readDocument, resolveRepeatUnitAtomMembership, serializeDocument, withoutBracketPairMetadata, type BracketObject, type MoleculeObject } from "./index";
 
 const legacy: BracketObject = { id: "b1", type: "bracket", bracketKind: "square", x: 10, y: 20,
   width: 16, height: 64, rotation: 0, style: {}, containedObjectIds: [] };
 
 describe("additive v1 bracket fields", () => {
+  function partialUnit() {
+    const document = createEmptyDocument();
+    const molecule: MoleculeObject = { id: "pentane", type: "molecule", x: 0, y: 30, width: 80, height: 1, rotation: 0,
+      style: {}, structureFormat: "smiles", structure: "CCCCC", superatoms: [], rGroups: [],
+      atoms: [0, 20, 40, 60, 80].map((x, i) => ({ id: `a${i}`, element: "C", x, y: 30, formalCharge: 0 })),
+      bonds: [0, 1, 2, 3].map(i => ({ id: `bond${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order: "single" })) };
+    const open: BracketObject = { ...legacy, id: "open", x: 10, width: 2, pairId: "pair", side: "open", repeatUnit: true };
+    const close: BracketObject = { ...open, id: "close", x: 70, side: "close", label: "n" };
+    const pair = [open, close];
+    document.pages[0].objects = [molecule, ...pair];
+    return { document, molecule, pair };
+  }
+
+  it("resolves individual enclosed atoms without changing the graph, and explicit membership includes the whole molecule", () => {
+    const { document, molecule, pair } = partialUnit();
+    const before = structuredClone(document);
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      members: [{ molecule, atomIds: ["a1", "a2", "a3"] }], unresolved: false, reason: undefined
+    });
+    expect(bracketChemistryWarnings(document, molecule)).toHaveLength(1);
+    expect(document).toEqual(before);
+    pair.forEach(bracket => { bracket.containedObjectIds = [molecule.id]; });
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects).members[0].atomIds).toEqual(molecule.atoms.map(atom => atom.id));
+  });
+
+  it("resolves a crossing's inner component when geometry supplies no members", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => { bracket.y = 500; bracket.crossingBondIds = [{ objectId: molecule.id, bondId: "bond0" }]; });
+    pair[0].compatibility = { warnings: [], unknown: { cdxmlBracketCrossings: [{
+      ref: { objectId: molecule.id, bondId: "bond0" }, innerAtomId: "a1"
+    }] } };
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      members: [{ atomIds: ["a1", "a2", "a3", "a4"] }], unresolved: false
+    });
+  });
+
+  it("keeps explicit native multiple-group membership when both sides reference a bond in the whole molecule", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => {
+      bracket.bracketUsage = "multiple";
+      bracket.repeatCount = 3;
+      bracket.containedObjectIds = [molecule.id];
+      bracket.crossingBondIds = [{ objectId: molecule.id, bondId: "bond1" }];
+    });
+    const before = structuredClone(document);
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      members: [{ molecule, atomIds: molecule.atoms.map(atom => atom.id) }], unresolved: false, reason: undefined
+    });
+    expect(bracketChemistryWarnings(document, molecule)[0].message).toBe(
+      "Molecule pentane is inside a multiple group x3; values and molecular graph exports are for one drawn copy only.");
+    expect(document).toEqual(before);
+  });
+
+  it.each([undefined, "multiple"] as const)("marks partial %s crossing-boundary rejection unresolved for export, analysis and the UI", usage => {
+    const { document, molecule, pair } = partialUnit();
+    if (usage) pair.forEach(bracket => { bracket.bracketUsage = usage; });
+    pair[0].crossingBondIds = [{ objectId: molecule.id, bondId: "bond1" }];
+    const membership = resolveRepeatUnitAtomMembership(pair, document.pages[0].objects);
+    expect(membership).toMatchObject({ unresolved: true,
+      reason: expect.stringContaining("crossing-bond references do not match the boundary") });
+    expect(bracketChemistryWarnings(document, molecule)[0].message).toContain(membership.reason);
+  });
+
+  it.each([
+    { objectId: "pentane", bondId: "missing" },
+    { objectId: "missing", bondId: "bond1" }
+  ])("rejects an explicit multiple group's missing crossing reference %j", ref => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => {
+      bracket.bracketUsage = "multiple";
+      bracket.containedObjectIds = [molecule.id];
+      bracket.crossingBondIds = [ref];
+    });
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      unresolved: true, reason: expect.stringContaining("crossing-bond references do not match the boundary")
+    });
+  });
+
+  it("resolves horizontal glyphs in their rotated enclosure rather than their stored bounds", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach((bracket, index) => Object.assign(bracket, { x: 10, y: 10 + index * 64,
+      width: 20, height: 64, rotation: 90 }));
+    molecule.atoms = [{ ...molecule.atoms[0], id: "outside", x: 42, y: 20 },
+      { ...molecule.atoms[0], id: "inside", x: 20, y: 80 }];
+    molecule.bonds = [];
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      members: [{ atomIds: ["inside"] }], unresolved: false, reason: undefined
+    });
+  });
+
+  it("uses injected page-space atom positions for a rotated molecule without duplicating rendering math", () => {
+    const { document, molecule, pair } = partialUnit();
+    molecule.rotation = 90;
+    const atomPosition = (_molecule: MoleculeObject, atom: MoleculeObject["atoms"][number]) =>
+      ({ x: atom.id === "a2" ? 40 : 200, y: 30 });
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects, { atomPosition })).toMatchObject({
+      members: [{ atomIds: ["a2"] }], unresolved: false, reason: undefined
+    });
+    expect(bracketChemistryWarnings(document, molecule, { atomPosition })).toHaveLength(1);
+  });
+
+  it("refuses unresolved imported membership touched by a live crossing instead of guessing from geometry", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => {
+      bracket.crossingBondIds = [{ objectId: molecule.id, bondId: "bond0" }];
+      bracket.compatibility = { warnings: [], unknown: { bracketedGroup: { attributes: { BracketedObjectIDs: "missing" } },
+        cdxmlBracketMembership: "[]", cdxmlBracketMembers: [] } };
+    });
+    const result = resolveRepeatUnitAtomMembership(pair, document.pages[0].objects);
+    expect(result).toMatchObject({ members: [], imported: true, unresolved: true, reason: expect.stringContaining('member "missing"') });
+    expect([...result.crossingAtomIds.get(molecule.id)!]).toEqual(["a0", "a1"]);
+    expect(bracketChemistryWarnings(document, molecule)[0].message).toContain("cannot be resolved");
+  });
+
+  it("leaves empty and orphan brackets unrelated to a molecule", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => { bracket.y = 500; });
+    expect(bracketChemistryWarnings(document, molecule)).toEqual([]);
+    document.pages[0].objects = [molecule, pair[0]];
+    expect(bracketChemistryWarnings(document, molecule)).toEqual([]);
+  });
+
+  it("does not guess preserved CDXML atom membership when the source group is missing", () => {
+    const { document, molecule, pair } = partialUnit();
+    pair.forEach(bracket => { bracket.compatibility = { warnings: [], unknown: { cdxmlBracketMemberObjectIds: [molecule.id] } }; });
+    expect(resolveRepeatUnitAtomMembership(pair, document.pages[0].objects)).toMatchObject({
+      members: [], imported: true, unresolved: true, reason: expect.stringContaining("no source BracketedObjectIDs group")
+    });
+    expect(bracketChemistryWarnings(document, molecule)[0].message).toContain("cannot be resolved");
+  });
+
   it("validates known usage, positive integer counts and molecule-scoped bond references strictly", () => {
     const bracket = { ...legacy, bracketUsage: "multiple", repeatCount: 3, crossingBondIds: [{ objectId: "m", bondId: "b" }] };
     expect(BracketObjectSchema.parse(bracket)).toEqual(bracket);

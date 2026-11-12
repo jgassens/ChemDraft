@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { MoleculeObject } from "@chemdraft/chem-core";
+import { bracketChemistryWarnings, createEmptyDocument, type BracketObject, type MoleculeObject } from "@chemdraft/chem-core";
 import type { AnalysisRun } from "@chemdraft/analysis-core";
 import { analyzeStructure, type AnalysisInputFormat } from "../../../packages/rdkit-adapter/src/analysis";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
@@ -61,6 +61,48 @@ async function formulaOf(target: MoleculeObject): Promise<string | null> {
 }
 
 describe("the structure the property analysis reads", () => {
+  function partialPentane() {
+    const pentane = molecule(["C", "C", "C", "C", "C"], [[0, 1, "single"], [1, 2, "single"], [2, 3, "single"], [3, 4, "single"]]);
+    pentane.atoms = pentane.atoms.map((atom, index) => ({ ...atom, x: 20 * index, y: 20 }));
+    const open: BracketObject = { id: "open", type: "bracket", bracketKind: "square", pairId: "pair", side: "open",
+      repeatUnit: true, x: 10, y: 10, width: 2, height: 20, rotation: 0, style: {}, containedObjectIds: [] };
+    const close: BracketObject = { ...open, id: "close", side: "close", x: 70, label: "n" };
+    const document = createEmptyDocument();
+    document.pages[0].objects = [pentane, open, close];
+    return { pentane, document, open, close };
+  }
+
+  it("refuses analysis of pentane when an SRU encloses only three atoms", () => {
+    const { pentane, document } = partialPentane();
+    expect(bracketChemistryWarnings(document, pentane)).toContainEqual(expect.objectContaining({ message: expect.stringContaining("polymer formula not computed") }));
+    expect(analysisFacingStructure(pentane, document)).toMatchObject({ structure: "", refusalReason: expect.stringContaining("repeat unit n") });
+  });
+
+  it("invalidates the analysis subject when a partial repeat mark is toggled", () => {
+    const { pentane, document, open, close } = partialPentane();
+    const marked = analysisSubjectKey(pentane, document);
+    open.repeatUnit = close.repeatUnit = false;
+    expect(analysisSubjectKey(pentane, document)).not.toBe(marked);
+  });
+
+  it("invalidates the analysis subject when a bracket changes which atoms belong to the repeat unit", () => {
+    const { pentane, document, close } = partialPentane();
+    const marked = analysisSubjectKey(pentane, document);
+    close.x = 50;
+    expect(analysisSubjectKey(pentane, document)).not.toBe(marked);
+  });
+
+  it("refuses a repeat unit with unresolved imported membership and a live crossing", () => {
+    const { pentane, document, open, close } = partialPentane();
+    for (const bracket of [open, close]) {
+      bracket.crossingBondIds = [{ objectId: pentane.id, bondId: pentane.bonds[0].id }];
+      bracket.compatibility = { warnings: [], unknown: { bracketedGroup: { attributes: { BracketedObjectIDs: "missing" } },
+        cdxmlBracketMembership: "[]", cdxmlBracketMembers: [] } };
+    }
+    expect(analysisFacingStructure(pentane, document)).toMatchObject({ structure: "",
+      refusalReason: expect.stringContaining('member "missing" does not resolve') });
+  });
+
   it("analyses an imported molecule, whose own structure string is empty", async () => {
     expect(await formulaOf(molecule(["C", "C", "O"], [[0, 1, "single"], [1, 2, "single"]]))).toBe("C2H6O");
   });

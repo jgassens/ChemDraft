@@ -317,6 +317,14 @@ to cubic. Unheaded curves use the same native path without arrow markers. Source
 `<curve>`, while existing `<arrow>` objects keep their export form. Curves carry explicit line
 widths and custom colors through the visible CDXML, including when the native payload is removed.
 
+Curve `FillType="Solid"` imports as a native solid fill in the curve's color; `None` imports
+with no fill, and absent or `Unspecified` retains the unfilled default. Numeric CDXML spellings
+0/1/2 are accepted too. Shaded (4) uses a solid approximation with
+`cdxml.curve_fill_type_approximation`; other unsupported fill types warn and use no fill. Source
+fill types remain in compatibility data for unchanged export; native fill edits regenerate
+`FillType`. Filled closed native polylines therefore retain their fill through payload-free
+CDXML and binary CDX.
+
 `compatibility.unknown.cdxmlCurveAttributes` retains the source attributes, including the original
 `CurvePoints` text, head sizing, `LineType` and `Z`. Unchanged geometry and head attributes export
 verbatim; edited Bezier nodes export their current controls. Native head dimensions, half-head
@@ -342,6 +350,14 @@ pairs. `bracketedgroup` maps `SRU` to `bracketUsage: "sru"` plus `repeatUnit`, `
 `"multiple"`, absent usage to `"generic"`, and other usages to `"unknown"` with a named warning.
 Graphic-level usage fills in an absent group usage. `SRULabel`, safe positive integer `RepeatCount`,
 whole-fragment membership, and molecule-scoped crossing bonds round-trip through CDXML and CDX.
+Native partial repeat units write atom-level `BracketedObjectIDs` using chem-core's shared
+`resolveRepeatUnitAtomMembership`, so UI member counts and visible export describe the same atoms.
+Rotated pairs use the renderer's planar rotation convention for enclosure. If the pair's frame is
+unknown, export writes no geometry-based members; original native data and source references remain
+available through their existing preservation paths.
+`cdxml.bracket_membership_unresolved` names any repeat unit whose atom membership cannot be
+resolved, including an empty native repeat unit or inconsistent crossing bonds; source references
+are retained where possible.
 Atom-level or unresolved membership and unresolved crossing references remain compatibility data
 with warnings; they do not prevent native pair import. No multiplier expands the molecular graph.
 Invalid counts retain their original text and source group as compatibility data, with native usage

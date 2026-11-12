@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyPatch, createEmptyDocument, serializeDocument, type BracketObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, resolveRepeatUnitAtomMembership, serializeDocument, type BracketObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { transformPointForObject } from "@chemdraft/layout-engine";
 import { ChemDraftDocumentSchema as Released111DocumentSchema } from "../../chem-core/src/__fixtures__/v1.1.1/schemas";
 import { exportDocumentToCdxml, exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx } from "./cdxBinary";
+import { repeatUnits } from "@chemdraft/export-engine";
 
 function fixture(name: string) {
   return readFileSync(new URL(`../../fixtures/cdxml/${name}.cdxml`, import.meta.url), "utf8");
@@ -24,7 +26,113 @@ const geometry = (objects: BracketObject[]) => objects.map(({ bracketKind, side,
 const binary = (source: string) => writeCdx(cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true,
   ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(source)));
 
+function rotatedPartialUnit(rotation: number) {
+  const document = pair("square", "n");
+  const frame = { ...document.pages[0].objects[0], x: 10, y: 10, width: 64, height: 20, rotation };
+  const brackets = document.pages[0].objects as BracketObject[];
+  brackets.forEach(bracket => {
+    const center = transformPointForObject(frame, { x: bracket.side === "open" ? 12 : 72, y: 20 });
+    Object.assign(bracket, { x: center.x - 2, y: center.y - 10, width: 4, height: 20, rotation });
+  });
+  const atoms = [0, 20, 40, 60, 80].map((x, index) => ({ id: `a${index}`, element: "C", formalCharge: 0,
+    ...transformPointForObject(frame, { x, y: 20 }) }));
+  const molecule: MoleculeObject = { id: "pentane", type: "molecule", x: 0, y: 0, width: 100, height: 100,
+    rotation: 0, style: {}, structure: "CCCCC", structureFormat: "smiles", atoms,
+    bonds: atoms.slice(1).map((atom, index) => ({ id: `bond${index}`, fromAtomId: atoms[index].id, toAtomId: atom.id, order: "single" })),
+    superatoms: [], rGroups: [] };
+  document.pages[0].objects = [molecule, ...brackets];
+  return { document, molecule, brackets };
+}
+
 describe("native bracket group interchange", () => {
+  it.each([90, 37])("exports and reimports the enclosed subset in the renderer's %s degree frame", rotation => {
+    const { document, molecule, brackets } = rotatedPartialUnit(rotation);
+    expect(resolveRepeatUnitAtomMembership(brackets, document.pages[0].objects)).toMatchObject({
+      members: [{ atomIds: ["a1", "a2", "a3"] }], unresolved: false, reason: undefined
+    });
+    for (const result of [exportDocumentToCdxml(document, { embedNativePayload: false }),
+      exportDocumentToCdx(document, { embedNativePayload: false })]) {
+      const xml = "contents" in result ? result.contents : cdxElementToCdxml(readCdx(result.bytes));
+      const atomIds = [...xml.matchAll(/<n\b[^>]*\bid="([^"]+)"/g)].map(match => match[1]);
+      expect(xml.match(/BracketedObjectIDs="([^"]+)"/)?.[1].split(/\s+/)).toEqual(atomIds.slice(1, 4));
+      expect(result.warnings.map(warning => warning.code)).not.toContain("cdxml.bracket_membership_unresolved");
+      const reopened = "contents" in result ? openChemDraftPayload(xml) : importCdx(result.bytes);
+      const unit = repeatUnits(reopened.document!)[0];
+      expect(unit.reason).toBeUndefined();
+      expect(unit.members[0].molecule.atoms.filter(atom => unit.members[0].atomIds.includes(atom.id)))
+        .toEqual(molecule.atoms.slice(1, 4).map(atom => expect.objectContaining({
+          x: expect.closeTo(atom.x, 3), y: expect.closeTo(atom.y, 3)
+        })));
+    }
+  });
+
+  it.each(["different rotations", "projected plane"])("exports no guessed atom members for an unknown rotated frame: %s", transform => {
+    const { document, brackets } = rotatedPartialUnit(90);
+    if (transform === "different rotations") brackets[1].rotation = 37;
+    else brackets[1].style = { tiltXDegrees: 45 };
+    const before = structuredClone(document);
+    expect(resolveRepeatUnitAtomMembership(brackets, document.pages[0].objects)).toMatchObject({ members: [], unresolved: true });
+    for (const result of [exportDocumentToCdxml(document, { embedNativePayload: false }),
+      exportDocumentToCdx(document, { embedNativePayload: false })]) {
+      const xml = "contents" in result ? result.contents : cdxElementToCdxml(readCdx(result.bytes));
+      expect(xml).not.toContain("BracketedObjectIDs=");
+      expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_membership_unresolved" }));
+    }
+    expect(document).toEqual(before);
+    for (const reopened of [openChemDraftPayload(exportDocumentToCdxml(document).contents),
+      importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes)]) {
+      // Serialization adds the schema's version fields while retaining the original objects and transforms.
+      expect(serializeDocument(reopened.document!)).toBe(serializeDocument(document));
+    }
+  });
+
+  it.each(["CDXML", "CDX"])("warns on native crossing references inconsistent with the enclosed atoms in %s", format => {
+    const { document, molecule, brackets } = rotatedPartialUnit(0);
+    brackets[0].crossingBondIds = [{ objectId: molecule.id, bondId: "bond1" }];
+    expect(resolveRepeatUnitAtomMembership(brackets, document.pages[0].objects)).toMatchObject({
+      unresolved: true, reason: expect.stringContaining("crossing-bond references do not match the boundary")
+    });
+    const result = format === "CDXML" ? exportDocumentToCdxml(document, { embedNativePayload: false })
+      : exportDocumentToCdx(document, { embedNativePayload: false });
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_membership_unresolved",
+      message: expect.stringContaining("crossing-bond references do not match the boundary") }));
+  });
+
+  it.each(["CDXML", "CDX"])("warns specifically about an exported SRU with unresolved membership in %s", format => {
+    const document = pair("square", "n");
+    const result = format === "CDXML" ? exportDocumentToCdxml(document, { embedNativePayload: false })
+      : exportDocumentToCdx(document, { embedNativePayload: false });
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_membership_unresolved", sourceObjectId: "b2",
+      message: expect.stringContaining("atom membership is empty") }));
+  });
+
+  it.each(["CDXML", "CDX"])("keeps the same three atoms of a native partial pentane SRU without a payload in %s", format => {
+    const document = pair("square", "n");
+    for (const bracket of document.pages[0].objects) if (bracket.type === "bracket") {
+      bracket.x = bracket.side === "open" ? 130 : 190;
+      bracket.y = 90;
+      bracket.width = 4;
+      bracket.height = 30;
+    }
+    const atoms = [120, 140, 160, 180, 200].map((x, index) => ({ id: `a${index}`, element: "C", x, y: 100, formalCharge: 0 }));
+    document.pages[0].objects.unshift({ id: "pentane", type: "molecule", x: 120, y: 100, width: 80, height: 1,
+      rotation: 0, style: {}, structure: "CCCCC", structureFormat: "smiles", atoms,
+      bonds: atoms.slice(1).map((atom, index) => ({ id: `bond${index}`, fromAtomId: atoms[index].id, toAtomId: atom.id, order: "single" })),
+      superatoms: [], rGroups: [] });
+    expect(repeatUnits(document)[0].members[0].atomIds).toEqual(["a1", "a2", "a3"]);
+    const cdx = format === "CDX" ? exportDocumentToCdx(document, { embedNativePayload: false }) : undefined;
+    const xml = cdx ? cdxElementToCdxml(readCdx(cdx.bytes)) : exportDocumentToCdxml(document, { embedNativePayload: false }).contents;
+    const memberIds = xml.match(/BracketedObjectIDs="([^"]+)"/)?.[1].split(/\s+/);
+    const atomIds = [...xml.matchAll(/<n\b[^>]*\bid="([^"]+)"/g)].map(match => match[1]);
+    expect(memberIds, "visible SRU membership must name exactly the three enclosed atoms").toEqual(atomIds.slice(1, 4));
+    const reopened = cdx ? importCdx(cdx.bytes) : openChemDraftPayload(xml);
+    const members = repeatUnits(reopened.document!)[0].members;
+    expect(members).toHaveLength(1);
+    expect(members[0].atomIds).toHaveLength(3);
+    expect(members[0].molecule.atoms.filter(atom => members[0].atomIds.includes(atom.id)).map(atom => atom.x))
+      .toEqual([140, 160, 180]);
+  });
+
   it.each(["CDXML", "CDX"])("snapshots member elements and all incident bonds without crossing attachments in %s", format => {
     const source = fixture("brackets-native-sru").replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="11"')
       .replace(/<crossingbond[^>]*\/>/, "");
@@ -367,7 +475,8 @@ describe("CDXML bracket graphics", () => {
       if (label) {
         expect(exported.contents).toContain('BracketUsage="SRU"');
         expect(exported.contents).toContain('SRULabel="' + label + '"');
-        expect(exported.warnings).toEqual([]);
+        // An empty repeat unit retains its label but must warn that atom membership is unresolved.
+        expect(exported.warnings).toEqual([expect.objectContaining({ code: "cdxml.bracket_membership_unresolved", sourceObjectId: "b2" })]);
         const visible = openChemDraftPayload(visibleOnly(exported.contents)).document!;
         expect(visible.pages[0].objects.find(object => object.type === "bracket" && object.side === "close")).toMatchObject({ label });
 

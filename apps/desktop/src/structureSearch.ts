@@ -1,7 +1,8 @@
 // Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw), Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Modified for ChemDraft: selected-fragment searches through shared commands, per-site consent and native browser opening.
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { bracketPairs, type BracketObject, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { bracketPairs, resolveRepeatUnitAtomMembership, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { transformPointForObject } from "@chemdraft/layout-engine";
 import { repeatUnitExportWarnings, repeatUnits } from "@chemdraft/export-engine";
 import type { CommandSpec } from "./commands";
 import { copyAsScopeMolecules, copyAsSmiles, createSelectionClipboardPayload, type NativeMoleculeFragmentSelection } from "./documentWorkflow";
@@ -37,29 +38,6 @@ export function structureSearchCommands(enabled: boolean, searchable: boolean): 
   }));
 }
 
-function bracketCrossingsTouchMolecule(bracket: BracketObject, molecule: MoleculeObject, original?: MoleculeObject): boolean {
-  const atomIds = new Set(molecule.atoms.map(atom => atom.id));
-  const bondIds = new Set(molecule.bonds.map(bond => bond.id));
-  const touches = (objectId: unknown, bondId: unknown, innerAtomId?: unknown) => {
-    if (objectId !== molecule.id) return false;
-    if (typeof innerAtomId === "string" && atomIds.has(innerAtomId)) return true;
-    if (typeof bondId !== "string") return false;
-    if (bondIds.has(bondId)) return true;
-    // An atom-only selection omits its incident crossing bond from the scoped graph.
-    const bond = original?.bonds.find(bond => bond.id === bondId);
-    return !!bond && (atomIds.has(bond.fromAtomId) || atomIds.has(bond.toAtomId));
-  };
-  if (bracket.crossingBondIds?.some(ref => touches(ref.objectId, ref.bondId))) return true;
-  const crossings = bracket.compatibility?.unknown.cdxmlBracketCrossings;
-  return Array.isArray(crossings) && crossings.some((entry: unknown) => {
-    if (typeof entry !== "object" || entry === null || !("ref" in entry)) return false;
-    const ref = entry.ref;
-    if (typeof ref !== "object" || ref === null || !("objectId" in ref)) return false;
-    return touches(ref.objectId, "bondId" in ref ? ref.bondId : undefined,
-      "innerAtomId" in entry ? entry.innerAtomId : undefined);
-  });
-}
-
 /** No whole-page fallback: extract exactly the selected objects and atom/bond fragments. */
 export function structureSearchDocument(
   document: ChemDraftDocument, fragments: readonly NativeMoleculeFragmentSelection[] = []
@@ -74,21 +52,18 @@ export function structureSearchDocument(
   // Read membership and crossing references before discarding the original graph and brackets.
   // A crossing still carries bracket semantics when imported members cannot resolve.
   const units = repeatUnits(document);
-  const pairsByBracketId = new Map<string, BracketObject[]>();
-  document.pages.forEach(page => bracketPairs(page.objects).forEach(pair =>
-    pair.forEach(bracket => pairsByBracketId.set(bracket.id, pair))));
-  const originalMolecules = new Map(document.pages.flatMap(page => page.objects.flatMap(object =>
-    object.type === "molecule" ? [[object.id, object] as const] : [])));
+  const membershipByBracketId = new Map(document.pages.flatMap(page => [...bracketPairs(page.objects).values()].map(pair =>
+    [pair.find(bracket => bracket.side === "close")!.id,
+      resolveRepeatUnitAtomMembership(pair, page.objects, { atomPosition: transformPointForObject })] as const)));
   const bracketUsages = new Set<string>();
   const repeatWarnings = repeatUnitExportWarnings(document, "SMILES");
   const searchMolecules = molecules.map(molecule => {
     const atomIds = new Set(molecule.atoms.map(atom => atom.id));
-    const selectedUnits = units.filter(unit => unit.members.some(member =>
-      member.molecule.id === molecule.id &&
-      member.atomIds.some(id => atomIds.has(id))
-    ) || pairsByBracketId.get(unit.objectId)?.some(bracket =>
-      bracketCrossingsTouchMolecule(bracket, molecule, originalMolecules.get(molecule.id))
-    ));
+    const selectedUnits = units.filter(unit => {
+      const membership = membershipByBracketId.get(unit.objectId);
+      return membership?.members.some(member => member.molecule.id === molecule.id && member.atomIds.some(id => atomIds.has(id))) ||
+        [...(membership?.crossingAtomIds.get(molecule.id) ?? [])].some(id => atomIds.has(id));
+    });
     selectedUnits.forEach(unit => bracketUsages.add(unit.usage));
     const bracketIds = new Set(selectedUnits.map(unit => unit.objectId));
     const warnings = repeatWarnings.filter(warning => warning.objectId !== undefined && bracketIds.has(warning.objectId))
