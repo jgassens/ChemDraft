@@ -178,6 +178,8 @@ describe("integrated 1.2 native document features", () => {
   it.each([
     ["electron-mark", { ...base, type: "electron-mark", markKind: "charge", charge: 1,
       anchor: { kind: "atom", objectId: "molecule", atomId: "n" }, atomAssociation: "explicit" }],
+    ["floating electron-mark", { ...base, type: "electron-mark", markKind: "charge", charge: 1,
+      anchor: { kind: "point", point: { x: 20, y: 20 } }, atomAssociation: "explicit" }],
     ["conditions label", { ...text, arrowAttachment: attachment }]
   ])("requires 1.2 support for the %s relation without declaring it ignorable", (_name, object) => {
     const document = documentWithObject(object);

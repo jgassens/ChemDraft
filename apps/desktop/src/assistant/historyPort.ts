@@ -21,8 +21,11 @@ export interface AssistantHistoryPort {
   runWrite?<T>(apply: () => T): Promise<T>;
   getViewportRect?(tabId: string): AssistantRect | undefined;
   read(tabId: string): ChemDraftDocument | undefined;
-  push(tabId: string, before: ChemDraftDocument, after: ChemDraftDocument, label: string): void;
-  amend(tabId: string, after: ChemDraftDocument, label: string): void;
+  /** Run the optional guard on the final normalized state, before recording any history. */
+  push(tabId: string, before: ChemDraftDocument, after: ChemDraftDocument, label: string,
+    assertFinalDocument?: (document: ChemDraftDocument) => void): void;
+  amend(tabId: string, after: ChemDraftDocument, label: string,
+    assertFinalDocument?: (document: ChemDraftDocument) => void): void;
   select(tabId: string, objectIds: readonly string[], label: string): void;
   onUserEdit(listener: (tabId: string) => void): () => void;
   undo(tabId: string, expected: ChemDraftDocument): boolean;

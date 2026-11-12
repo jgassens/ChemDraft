@@ -3,13 +3,13 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { atomDisplayLabel, moleculeLayoutLabelBoxes } from "@chemdraft/layout-engine";
-import { nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
+import { atomDisplayLabel, moleculeLayoutLabelBoxes, transformPointForObject } from "@chemdraft/layout-engine";
+import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import * as workflow from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
-import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
+import { dropMark, dropMolecule, electronMarkDropFixture, rotatedElectronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -259,6 +259,56 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     const after = snapshot();
     await command("edit.undo"); expect(snapshot()).toEqual(before);
     await command("edit.redo"); expect(snapshot()).toEqual(after);
+  });
+
+  it.each(["Select All", "selection click"])("keeps a deliberately floating drop neutral after %s", async action => {
+    const fixture = electronMarkDropFixture();
+    await mount(workflow.normalizeCommittedDocument(workflow.moveDocumentObject(fixture.document,
+      dropMark(fixture.document).id, { x: 591, y: 491 })));
+    const drag = await start();
+    const point = { x: fixture.carbonylOxygen.x, y: fixture.carbonylOxygen.y - 20 };
+    await move(drag.target, point);
+    expect(highlighted()).toBeUndefined();
+    await act(async () => pointer(drag.target, "pointerup", point));
+    expect(status()).toBe("Moved electron mark");
+    const after = snapshot(), mark = dropMark(after), molecule = dropMolecule(after);
+    expect(mark.anchor.kind).toBe("point");
+    expect(molecule.atoms[10].formalCharge).toBe(0);
+    if (action === "Select All") {
+      await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "a", bubbles: true, metaKey: platform === "macos", ctrlKey: platform === "windows"
+      })));
+      expect(status()).toBe("Selected 2 canvas objects");
+    } else {
+      await act(async () => pointer(page(), "pointerdown", { x: 650, y: 500 }));
+      await act(async () => pointer(page(), "pointerup", { x: 650, y: 500 }));
+    }
+    expect(snapshot().selection).not.toEqual(after.selection);
+    expect(dropMolecule(snapshot()).atoms[10].formalCharge).toBe(0);
+    expect(dropMolecule(snapshot())).toEqual(molecule);
+    expect(dropMark(snapshot())).toEqual(mark);
+  });
+
+  it.each([0, 180])("previews and commits the rendered O target in a molecule rotated %s degrees", async rotation => {
+    await mount(rotatedElectronMarkDropFixture(rotation));
+    const molecule = dropMolecule(snapshot()), oxygen = molecule.atoms[0], nitrogen = molecule.atoms[3];
+    const point = { x: rotation === 180 ? 200 : 100, y: 110 };
+    const drag = await start(), before = snapshot();
+    await move(drag.target, point);
+    expect(snapshot()).toBe(before);
+    expect(highlighted()).toBe(oxygen.id);
+    await act(async () => pointer(drag.target, "pointerup", point));
+    expect(dropMark(snapshot()).anchor.atomId).toBe(oxygen.id);
+    expect(dropMolecule(snapshot()).atoms.find(atom => atom.id === oxygen.id)?.formalCharge).toBe(1);
+    expect(dropMolecule(snapshot()).atoms.find(atom => atom.id === nitrogen.id)?.formalCharge).toBe(0);
+    const center = workflow.nativeChargeMarkCenter(dropMark(snapshot()));
+    const renderedOxygen = transformPointForObject(molecule, oxygen);
+    const renderedNitrogen = transformPointForObject(molecule, nitrogen);
+    const oxygenDistance = Math.hypot(center.x - renderedOxygen.x, center.y - renderedOxygen.y);
+    // Match the unit regression's bound, based on the unrotated placement distance.
+    expect(oxygenDistance).toBeLessThanOrEqual(documentDrawingDefaults(snapshot()).bondLengthPx * 1.5);
+    expect(Math.hypot(center.x - renderedNitrogen.x, center.y - renderedNitrogen.y)).toBeGreaterThan(oxygenDistance);
+    expect(status()).toBe("Charge attached to O (O now H2O)");
   });
 
   it.each([1, -1] as const)("keeps the radical on its atom after dropping and neutralising a radical ion with charge %s", async charge => {

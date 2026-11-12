@@ -5,7 +5,7 @@ import {
   createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject,
   insertNativeArtGraphicObject, moveCanvasSelection, moveDocumentObjects, moveDocumentObject,
   moveNativeMoleculeParts, selectDocumentObjects, insertNativeReactionArrow, createMechanismArrowBetween,
-  applyChargeToolAtNativeAtom, normalizeCommittedDocument
+  applyChargeToolAtNativeAtom, normalizeCommittedDocument, documentObjectMoveDeltaResolver
 } from "./documentWorkflow";
 
 describe("arrow nudge", () => {
@@ -67,6 +67,71 @@ describe("arrow nudge", () => {
     const fragment = { objectId: molecule.id, atomIds: [molecule.atoms[0].id], bondIds: [] };
     expect(moveCanvasSelection(single, [fragment], { x: -1, y: 0 })).toEqual(
       moveNativeMoleculeParts(single, { ...fragment, kind: "parts" }, { x: -1, y: 0 }));
+  });
+  describe.each([0, 1])("two-page document, page index %s", pageIndex => {
+    function twoPages() {
+      const document = structuredClone(drawing());
+      const page = document.pages[0];
+      page.width = 900; page.height = 700;
+      page.layout = { ...page.layout!, widthPx: 900, heightPx: 700 };
+      const other = { ...page, id: "other-page", width: 250, height: 250,
+        layout: { ...page.layout, widthPx: 250, heightPx: 250 }, objects: [] };
+      document.pages = pageIndex === 0 ? [page, other] : [other, page];
+      return document;
+    }
+    it.each(["text", "molecule", "two objects", "fragment and text"])("nudges %s on its owning page", kind => {
+      const initial = twoPages();
+      const page = initial.pages[pageIndex];
+      const molecule = page.objects.find(object => object.type === "molecule")!;
+      const text = page.objects.find(object => object.type === "text")!;
+      const ids = kind === "text" ? [text.id] : kind === "molecule" ? [molecule.id] : [molecule.id, text.id];
+      const document = selectDocumentObjects(initial, page.id, ids);
+      const fragments = kind === "fragment and text"
+        ? [{ objectId: molecule.id, atomIds: [molecule.atoms[0].id], bondIds: [] }] : [];
+      const moved = moveCanvasSelection(document, fragments, { x: 1, y: 0 });
+      const nextPage = moved.pages[pageIndex];
+      expect(nextPage.objects.find(object => object.id === text.id)?.x).toBe(text.x + (ids.includes(text.id) ? 1 : 0));
+      const nextMolecule = nextPage.objects.find(object => object.type === "molecule")!;
+      expect(nextMolecule.atoms).toEqual(molecule.atoms.map((atom, index) => ({ ...atom,
+        x: atom.x + (ids.includes(molecule.id) && (kind !== "fragment and text" || index === 0) ? 1 : 0) })));
+      expect(nextMolecule.bonds).toEqual(molecule.bonds);
+      expect(moved.pages[1 - pageIndex]).toEqual(document.pages[1 - pageIndex]);
+      expect(moved.selection).toEqual(document.selection);
+    });
+    it.each([false, true])("clamps to the owning page's right edge (multiple objects: %s)", multiple => {
+      let document = twoPages();
+      const page = document.pages[pageIndex];
+      const text = page.objects.find(object => object.type === "text")!;
+      document = moveDocumentObject(document, text.id, { x: page.width - text.width - 1, y: text.y });
+      document = selectDocumentObjects(document, page.id, multiple
+        ? [text.id, page.objects.find(object => object.type === "molecule")!.id] : [text.id]);
+      const edge = moveCanvasSelection(document, [], { x: 10, y: 0 });
+      expect(edge.pages[pageIndex].objects.find(object => object.id === text.id)?.x).toBe(page.width - text.width);
+      expect(moveCanvasSelection(edge, [], { x: 1, y: 0 })).toBe(edge);
+      expect(edge.pages[1 - pageIndex]).toEqual(document.pages[1 - pageIndex]);
+    });
+    it("shares group-drag bounds and movement on the owning page", () => {
+      const initial = twoPages();
+      const page = initial.pages[pageIndex];
+      const ids = page.objects.filter(object => object.type === "molecule" || object.type === "text").map(object => object.id);
+      const document = selectDocumentObjects(initial, page.id, ids);
+      expect(documentObjectMoveDeltaResolver(document, ids[0], ids)(1, 0)).toEqual({ x: 1, y: 0 });
+      const moved = moveDocumentObjects(document, ids, 1, 0);
+      expect(moved.pages[pageIndex].objects.find(object => object.type === "text")!.x).toBe(301);
+      expect(moveCanvasSelection(document, [], { x: 1, y: 0 })).toEqual(moved);
+    });
+    it("uses the owning page's bounds for atom-part nudges", () => {
+      const document = twoPages();
+      const page = document.pages[pageIndex];
+      const molecule = page.objects.find(object => object.type === "molecule")!;
+      const atom = molecule.atoms[0];
+      const fragments = [{ objectId: molecule.id, atomIds: [atom.id], bondIds: [] }];
+      const selected = selectDocumentObjects(document, page.id, []);
+      const edge = moveCanvasSelection(selected, fragments, { x: page.width, y: page.height });
+      expect(edge.pages[pageIndex].objects.find(object => object.type === "molecule")!.atoms).toEqual(
+        molecule.atoms.map(candidate => candidate.id === atom.id ? { ...candidate, x: page.width, y: page.height } : candidate));
+      expect(moveCanvasSelection(edge, fragments, { x: 1, y: 1 })).toBe(edge);
+    });
   });
   it("returns the original document for no selection", () => {
     const document = createPhase4Document();

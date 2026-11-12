@@ -452,6 +452,13 @@ with the preference off match the previous rendering, while custom/scaled lone-p
 radical-ion dot/sign geometry remain separated. Compare canvas, SVG and PDF; CDXML must warn by
 mark ID that annotation position, size, thickness and rotation remain in the native payload only.
 Check charge/radical counts, formula and canonical SMILES before and after appearance-only edits.
+With each direct-editing preference setting on macOS and Windows, drag a floating + to 20 px above
+Boc-glycine's carbonyl O: no target highlight, "Moved electron mark", O neutral and mark floating.
+Select All, click blank canvas, insert text, change mark appearance, and save/reopen the native file:
+the binding, atom charges, formula and SMILES must stay unchanged. Repeat at 8 px: highlight O,
+attach with a status naming its charge change, and retain that binding through the same operations.
+For O–C–C–N in frame (100,100,100,20), rotation 180°, drop + at (200,110): both highlight and
+commit target O, leaving N neutral. Repeat unrotated at (100,110), and check exact Undo/Redo.
 Move marks within the original atom's radius, onto nearby/far atoms and into empty space; charge
 moves retain the previous nearest-atom reassociation, while radical/lone-pair moves keep sticky
 anchors until out of range or unsupported. In a crowded placement, a general charge transform

@@ -21,6 +21,7 @@ const native = vi.hoisted(() => ({
   quit: vi.fn()
 }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+vi.mock("@scena/react-ruler", () => ({ default: () => createElement("canvas") }));
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(),
   isDesktopRuntime: () => true,
@@ -218,6 +219,86 @@ describe.each(["macos", "windows"] as const)("repeat label editing (%s)", platfo
     expect(snapshot().file.dirty).toBe(false);
     native.writeFile.mockClear();
     await command("bracket.label.edit");
+  }
+  it.each([
+    ["F5", {}], ["r", { ctrlKey: true }],
+    ["R", { ctrlKey: true, shiftKey: true }], ["F5", { ctrlKey: true }]
+  ] as const)("protects the focused label from reload %s %j without a command", async (name, modifiers) => {
+    await openSavedLabel();
+    const before = snapshot();
+    const event = await key(name, modifiers);
+    expect(event.defaultPrevented).toBe(platform === "windows");
+    expect(snapshot()).toEqual(before);
+    expect(container.querySelector(".document-rulers-overlay")).toBeNull();
+    expect(editor()).toBe(document.activeElement);
+    expect(native.writeFile).not.toHaveBeenCalled();
+  });
+  it("marks an accepted IME draft dirty after Save even when compositionend leaves the input unchanged", async () => {
+    await openSavedLabel();
+    await act(async () => { editor()!.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })); });
+    await type("候補");
+    await command("document.save");
+    expect(savedLabel()).toMatchObject({ label: "n" });
+    expect(snapshot().file.dirty).toBe(false);
+    native.saveSession.mockClear();
+    await act(async () => { editor()!.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "候補" })); });
+    expect(editor()!.value).toBe("候補");
+    expect(snapshot().file.dirty).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(DOCUMENT_SESSION_SAVE_DEBOUNCE_MS + 1); });
+    expect(native.saveSession).toHaveBeenCalled();
+    expect(savedLabel(native.saveSession.mock.calls.at(-1)![0].contents)).toMatchObject({ label: "候補" });
+  });
+  it.each(["Enter", "Escape"])("keeps composing %s inside the label editor", async name => {
+    await openSavedLabel();
+    const field = editor()!;
+    await act(async () => { field.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })); });
+    await type("候補");
+    expect((await key(name, { isComposing: true })).defaultPrevented).toBe(false);
+    expect(editor()).toBe(field);
+    expect(label().textContent).toBe("n");
+    await act(async () => { field.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "候補" })); });
+    await key("Enter");
+    expect(editor()).toBeNull();
+    expect(label().textContent).toBe("候補");
+  });
+  if (platform === "macos") it("keeps Cmd+R owned by the editor and by Show Rulers on the canvas", async () => {
+    await openSavedLabel();
+    const before = snapshot();
+    expect((await key("r", { metaKey: true })).defaultPrevented).toBe(false);
+    expect(snapshot()).toEqual(before);
+    expect(container.querySelector(".document-rulers-overlay")).toBeNull();
+    await key("Escape");
+    const event = new KeyboardEvent("keydown", { key: "r", metaKey: true, bubbles: true, cancelable: true });
+    await act(async () => { document.body.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(container.querySelector(".document-rulers-overlay")).not.toBeNull();
+  });
+  if (platform === "windows") {
+    it.each([
+      ["r", false, ".document-rulers-overlay"],
+      ["R", true, ".crosshair-overlay"]
+    ] as const)("routes canvas Ctrl+%s to its toggle while preventing reload", async (name, shiftKey, selector) => {
+      await mount(false);
+      const canvas = container.querySelector(".page")!;
+      expect(container.querySelector(selector)).toBeNull();
+      for (const visible of [true, false]) {
+        const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, shiftKey, bubbles: true, cancelable: true });
+        await act(async () => { canvas.dispatchEvent(event); });
+        expect(event.defaultPrevented).toBe(true);
+        expect(container.querySelector(selector) !== null).toBe(visible);
+      }
+    });
+    it.each([
+      { key: "F5" }, { key: "F5", ctrlKey: true }, { key: "BrowserRefresh" }
+    ])("prevents canvas $key without a command", async chord => {
+      await mount(false);
+      const before = snapshot();
+      const event = new KeyboardEvent("keydown", { ...chord, bubbles: true, cancelable: true });
+      await act(async () => { container.querySelector(".page")!.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(true);
+      expect(snapshot()).toEqual(before);
+      expect(container.querySelector(".document-rulers-overlay, .crosshair-overlay")).toBeNull();
+    });
   }
   it("native Save captures the uncommitted repeat label before Escape cancels the editor", async () => {
     await openSavedLabel();

@@ -537,7 +537,8 @@ export const ElectronMarkObjectSchema = BaseObjectSchema.extend({
   type: z.literal("electron-mark"),
   markKind: z.enum(["lone-pair", "radical-dot", "charge", "unknown"]),
   anchor: AnchorSchema,
-  /** An atom chosen by a direct drop stays attached even when the symbol is placed farther away. */
+  /** A direct drop's decision is durable: an atom anchor stays bound; a point anchor stays floating.
+   * Omission preserves legacy distance-based association (no migration/backfill). */
   atomAssociation: z.literal("explicit").optional(),
   charge: z.number().int().optional(),
   /** Charge marks draw circled (⊕/⊖) by default; "plain" renders the bare +/− glyph. */
