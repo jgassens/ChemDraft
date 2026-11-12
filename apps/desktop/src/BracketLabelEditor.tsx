@@ -45,7 +45,15 @@ export const BracketLabelEditor = forwardRef<BracketLabelEditorHandle, {
       onDraftChange();
     }}
     onCompositionStart={() => { composing.current = true; beforeComposition.current = valueRef.current; }}
-    onCompositionEnd={() => { composing.current = false; beforeComposition.current = undefined; }}
+    onCompositionEnd={event => {
+      composing.current = false;
+      beforeComposition.current = undefined;
+      valueRef.current = event.currentTarget.value;
+      setValue(valueRef.current);
+      // Save may have flushed the pre-composition text and marked it clean. Accepting the
+      // candidate makes a new flushable draft even when no further input/change event fires.
+      onDraftChange();
+    }}
     onBlur={() => { if (!composing.current) finish(value); }}
     onKeyDown={event => {
       event.stopPropagation();
