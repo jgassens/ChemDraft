@@ -142,20 +142,20 @@ export const normalizeNameDashes = name => name.replace(/[\u002d\u2010-\u2015\u2
 
 /** Shared syntax for the builder and audit, with one record per descriptor.
  * Bare letter words are not stereo. E/Z needs brackets, a following dash, or
- * a numeric locant; cis/trans needs brackets or a following dash.
+ * a numeric locant; cis/trans needs brackets or a following dash or whitespace.
  */
 export function geometricStereoDescriptors(name) {
   const normalized = normalizeNameDashes(name), descriptors = new Map();
   const add = (index, code) => descriptors.set(index, code.toUpperCase());
   for (const bracket of normalized.matchAll(/\(([^()]*)\)|\[([^\[\]]*)\]/g)) {
     const body = bracket[1] ?? bracket[2];
-    for (const token of body.matchAll(/(?:^|,)\s*(?:\d+)?(E|Z|cis|trans)\s*(?=,|$)/gi)) {
+    for (const token of body.matchAll(/(?:^|,)\s*(?:all-|\d+)?(E|Z|cis|trans)\s*(?=,|$)/gi)) {
       const codeIndex = token[0].search(/(?:E|Z|cis|trans)\s*$/i);
       add(bracket.index + 1 + token.index + codeIndex, token[1]);
     }
   }
   // A preceding dash also admits all-E/all-Z/all-cis/all-trans.
-  for (const token of normalized.matchAll(/(?:^|[\s([,\-])(E|Z|cis|trans)(?=-)/gi)) {
+  for (const token of normalized.matchAll(/(?:^|[\s([,\-])(E(?=-)|Z(?=-)|(?:cis|trans)(?=[\s-]))/gi)) {
     add(token.index + token[0].length - token[1].length, token[1]);
   }
   for (const token of normalized.matchAll(/\d+([EZ])(?=$|[\s)\],-])/gi)) {

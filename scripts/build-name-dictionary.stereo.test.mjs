@@ -3,7 +3,17 @@ import { test } from "node:test";
 import { buildRows, hasStereoDescriptor, loadRDKit, nameAccuracy } from "./build-name-dictionary.mjs";
 import { auditRows, compareOpsin, compareSimpleAlkene, describeStructure } from "./audit-name-dictionary-stereo.mjs";
 
+const bracketedAllNames = [
+  "(all-E)-hexa-2,4-diene", "(all-Z)-hexa-2,4-diene",
+  "[all-E]-hexa-2,4-diene", "[all-Z]-hexa-2,4-diene",
+  "(all-trans)-hexa-2,4-diene", "(all-cis)-hexa-2,4-diene",
+  "[all-trans]-hexa-2,4-diene", "[all-cis]-hexa-2,4-diene"
+];
+// A following space delimits a whole-word cis/trans descriptor, as a dash does.
+const spaceSeparatedNames = ["trans but-2-ene", "cis but-2-ene", "Trans 2-butene", "synthetic cis compound"];
+
 for (const name of [
+  ...bracketedAllNames, ...spaceSeparatedNames,
   "(E)", "(Z)", "E-but-2-ene", "Z-but-2-ene", "E-", "Z-",
   "(E)-but-2-ene", "(Z)-but-2-ene", "[E]-but-2-ene", "[2Z]-but-2-ene",
   "(2E,4Z)-hexa-2,4-diene", "[2E,4Z]-hexa-2,4-diene",
@@ -21,11 +31,12 @@ for (const name of [
 });
 
 for (const name of [
-  "benzene", "zinc", "transferrin", "ethene", "123-45-6", "cistern", "transition",
+  "benzene", "zinc", "transferrin", "ethene", "123-45-6", "cistern", "transition", "transport",
   "Ethanol", "Zeatin", "(ethyl)benzene", "(zinc) complex",
-  "E", "Z", "vitamin E", "Vitamin E acetate", "Factor Z", "synthetic E compound",
-  "cis", "trans", "trans but-2-ene", "synthetic cis compound", "synthetic, E compound",
+  "E", "Z", "vitamin E", "Vitamin E acetate", "Factor Z", "E coli", "synthetic E compound",
+  "cis", "trans", "synthetic, E compound",
   "synthetic-Eword", "synthetic-Zword", "all-Eword", "all-cisword",
+  "(all-Eword)-synthetic", "[all-transword]-synthetic",
   // Cisplatin names a particular coordination isomer, but its lexicalized trivial
   // name contains no whole-word cis prefix. This detector recognizes descriptor
   // syntax, not the chemical meaning of every trivial name (nor Pt geometry).
@@ -62,7 +73,7 @@ const dashNames = dashes.flatMap(dash => [
 ]);
 
 for (const name of ["(E)-but-2-ene", "(Z)-but-2-ene", "all-E-retinol", "all-Z-retinol",
-  "all-trans-retinol", "all-cis-synthetic", ...dashNames])
+  "all-trans-retinol", "all-cis-synthetic", ...dashNames, ...bracketedAllNames, ...spaceSeparatedNames])
   test(`own label needs independent evidence: ${name}`, async () => {
     assert.equal(await nameAccuracy(name, { key: E }, services, true), "unverifiable");
     assert.equal(await nameAccuracy(name, { key: E }, {
@@ -76,7 +87,7 @@ for (const name of ["(E)-but-2-ene", "(Z)-but-2-ene", "all-E-retinol", "all-Z-re
     }, true), "contradicted");
   });
 
-for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z"])
+for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z", "E coli"])
   test(`ordinary letter word keeps own-label evidence: ${name}`, async () => {
     assert.equal(await nameAccuracy(name, { key: E }, services, true), "label");
     assert.equal(await nameAccuracy(name, { key: E }, services, false), "unverifiable");
@@ -147,18 +158,20 @@ test("audit partitions rows, examines both columns, and does not claim unchecked
 
 test("audit shares descriptor syntax and counts every supported dash spelling", async () => {
   const rdkit = await engine;
-  for (const name of dashNames) {
+  for (const name of [...dashNames, ...bracketedAllNames, ...spaceSeparatedNames]) {
     for (const field of ["names", "suggest"]) {
       const counts = auditRows([{ smiles: "CC=CC", names: [], suggest: [], [field]: [name] }], rdkit);
       assert.equal(counts.rowsWithGeometricNames, 1);
       assert.equal(counts.noStereo, 1);
     }
   }
-  for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z"]) {
+  for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z", "E coli",
+    "transferrin", "cisplatin", "transition", "transport", "cistern"]) {
     assert.equal(auditRows([{ smiles: eSmiles, names: [name], suggest: [] }], rdkit).rowsWithGeometricNames, 0);
   }
   // All-E and pasted dashes must also contribute to the E/Z completeness gate.
-  for (const name of ["all-E-synthetic", "E\ufe63synthetic", "all\uff0dZ\uff0dsynthetic"]) {
+  for (const name of ["all-E-synthetic", "E\ufe63synthetic", "all\uff0dZ\uff0dsynthetic",
+    "(all-E)-hexa-2,4-diene", "[all-Z]-hexa-2,4-diene"]) {
     const chiralOnly = "CC=C[C@H](O)C";
     const counts = auditRows([{ smiles: chiralOnly, names: [name], suggest: [] }], rdkit,
       new Map([[name, chiralOnly]]));
