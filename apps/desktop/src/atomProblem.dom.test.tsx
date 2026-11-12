@@ -42,13 +42,29 @@ afterEach(() => {
   vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__CHEMDRAFT_AGENT__;
   window.history.replaceState(null, "", "/");
 });
-async function mount(document: ChemDraftDocument) {
+async function mount(document: ChemDraftDocument, shortcutPlatform?: "macos" | "windows") {
   await act(async () => root.render(createElement(MainWindow, { initialDocument: document, initialActiveToolCommandId: "tool.select",
-    initialCrosshairsVisible: false, initialRulersVisible: false, initialPaletteMode: "hidden", nativePalette: true })));
+    initialCrosshairsVisible: false, initialRulersVisible: false, initialPaletteMode: "hidden", nativePalette: true, shortcutPlatform })));
 }
 const current = () => window.__CHEMDRAFT_AGENT__!.snapshot();
 const molecule = () => current().document.pages[0]!.objects.find(o => o.id === target.objectId) as MoleculeObject;
 const badge = () => container.querySelector<SVGGElement>(`[data-invalid-atom-id="${target.atomId}"]`)!;
+describe.each(["macos", "windows"] as const)("reload on a focused problem marker (%s)", platform => {
+  it.each([
+    ["F5", {}], ["r", { ctrlKey: true }],
+    ["R", { ctrlKey: true, shiftKey: true }], ["F5", { ctrlKey: true }]
+  ] as const)("consumes %s %j without invoking a command", async (key, modifiers) => {
+    await mount(problemDocument(), platform);
+    const before = current();
+    const event = new KeyboardEvent("keydown", { key, ...modifiers, bubbles: true, cancelable: true });
+    await act(async () => { badge().focus(); badge().dispatchEvent(event); });
+    expect(document.activeElement).toBe(badge());
+    expect(event.defaultPrevented).toBe(platform === "windows");
+    expect(current()).toEqual(before);
+    expect(container.querySelector(".document-rulers-overlay")).toBeNull();
+    expect(native.open).not.toHaveBeenCalled();
+  });
+});
 async function command(id: string) { await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); }); }
 async function deliver(type: "ready" | "action", data: object) {
   await act(async () => { native.receive!({ senderWindowId: "dialog-main-atomProblem-1", windowLabel: "dialog-main-atomProblem-1",

@@ -891,9 +891,9 @@ import {
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
   detectDesktopShortcutPlatform,
-  enableWindowsLastDocumentCloseAction,
-  isBrowserReloadChord
+  enableWindowsLastDocumentCloseAction
 } from "./keyboardShortcuts";
+import { installBrowserReloadGuard, wasBrowserReloadPrevented } from "./browserReloadGuard";
 import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
 import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
 import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.12.20-codex";
+const CURRENT_BUILD_STAMP = "11.11.12.07-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2074,6 +2074,7 @@ export function MainWindow({
   shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useEffect(() => installBrowserReloadGuard(shortcutPlatform), [shortcutPlatform]);
   useEffect(() => installNativeFlyoutKeyboard(), []);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
@@ -14258,14 +14259,6 @@ export function MainWindow({
         void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
         return;
       }
-      // Before the text-field early return, so typing in an editor can't reload the page either.
-      // `resolve` is undefined there (and for any chord no command claims), which is exactly when
-      // the webview's own reload would otherwise run. Also before the modal return: a dialog owns
-      // the keyboard, but F5 inside one must still not discard the document.
-      if (isBrowserReloadChord(event) && !event.defaultPrevented && !shortcutRegistry.resolve(event)) {
-        event.preventDefault();
-      }
-
       if (tableCellEditRef.current) return;
       if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey &&
         !event.shiftKey && !event.defaultPrevented && !shouldIgnoreShortcutTarget(event.target, event.key) &&
@@ -14298,7 +14291,9 @@ export function MainWindow({
         void invoke(tabCommand);
         return;
       }
-      if (shouldIgnoreShortcutTarget(event.target, event.key) || event.defaultPrevented) {
+      // The reload guard cancels only the browser default; registered canvas shortcuts still run.
+      if (shouldIgnoreShortcutTarget(event.target, event.key) ||
+          (event.defaultPrevented && !wasBrowserReloadPrevented(event))) {
         hoverLabelAssignmentRef.current = undefined;
         return;
       }
@@ -14546,7 +14541,10 @@ export function MainWindow({
         }
       }
 
-      const commandId = shortcutRegistry.resolve(event);
+      const commandId = shortcutRegistry.resolve(wasBrowserReloadPrevented(event) ? {
+        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        altKey: event.altKey, shiftKey: event.shiftKey, target: event.target
+      } : event);
       if (!commandId) {
         return;
       }
