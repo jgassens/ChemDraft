@@ -4,12 +4,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
-import { appcastConfiguration, emptyAppcast, NOTES_PREFIX, parseAppcast, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
+import { appcastConfiguration, emptyAppcast, loadSparklePublicKey, NOTES_PREFIX, parseAppcast, targetForFeed, verifyAppcast } from "./macos-appcast.mjs";
 import { generateMacosAppcast, mergeAppcast } from "./generate-macos-appcast.mjs";
 import { verifyDmg, verifyFeedArtifacts } from "./verify-macos-feed.mjs";
 import { feedForTarget, verifyApp } from "./verify-macos-app.mjs";
 import { machOSlices } from "./macos-mach-o.mjs";
-import { thinMachO } from "./macos-test-fixtures.mjs";
+import { dmgBytes, signedDmg, sparklePublicKey, sparkleSignature, thinMachO } from "./macos-test-fixtures.mjs";
 import { requiredLicenseFiles } from "./required-license-files.mjs";
 import { fakeReleaseRunner } from "./release-test-fixtures.mjs";
 
@@ -17,9 +17,10 @@ const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const names = { arm64: "ChemDraft_1.1.1_aarch64.dmg", x86_64: "ChemDraft_1.1.1_x86_64.dmg" };
 
 for (const architecture of ["arm64", "x86_64"]) {
-  test(`feed verification refuses an unsigned ${architecture} DMG`, () => {
+  test(`feed verification refuses an unsigned ${architecture} DMG`, (t) => {
     const run = fakeReleaseRunner({ unsigned: true });
-    assert.throws(() => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [names[architecture]] }, {
+    assert.throws(() => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [signedDmg(t, names[architecture])] }, {
+      sparklePublicKey,
       checkDmg: (dmg, target) => verifyDmg(dmg, target, { run })
     }), /ChemDraftUnsignedBuild: UNSIGNED local build must NEVER be published/);
   });
@@ -27,7 +28,7 @@ for (const architecture of ["arm64", "x86_64"]) {
   test(`appcast generation refuses an unsigned ${architecture} DMG before running Sparkle`, (t) => {
     const staging = mkdtempSync(join(tmpdir(), "chemdraft-unsigned-appcast-"));
     t.after(() => rmSync(staging, { recursive: true, force: true }));
-    writeFileSync(join(staging, names[architecture]), "fixture DMG");
+    writeFileSync(join(staging, names[architecture]), dmgBytes);
     const run = fakeReleaseRunner({ unsigned: true });
     assert.throws(() => generateMacosAppcast({ target: architecture, version: "1.1.1", staging }, {
       checkDmg: (dmg, target) => verifyDmg(dmg, target, { run }),
@@ -42,9 +43,52 @@ function feed(architecture, { version = "1.1.1", notesDirectory = appcastConfigu
             <sparkle:version>${version}</sparkle:version>
             <sparkle:hardwareRequirements>${architecture}</sparkle:hardwareRequirements>
             <sparkle:releaseNotesLink>${NOTES_PREFIX}${notesDirectory}/${names[architecture].replace(".dmg", ".md")}</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v${version}/${names[architecture]}" length="1234" type="application/octet-stream" sparkle:edSignature="test-signature"/>
+            <enclosure url="https://github.com/jgassens/ChemDraft/releases/download/v${version}/${names[architecture]}" length="${dmgBytes.length}" type="application/octet-stream" sparkle:edSignature="${sparkleSignature}"/>
         </item>`;
   return emptyAppcast(architecture).replace("</channel>", `${item}\n    </channel>`);
+}
+
+test("Sparkle verifier loads SUPublicEDKey from the checked-in plist and refuses the throwaway test key by default", (t) => {
+  const plist = readFileSync(new URL("../../apps/desktop/src-tauri/Info.plist", import.meta.url), "utf8");
+  assert.equal(loadSparklePublicKey(), plist.match(/<key>SUPublicEDKey<\/key>\s*<string>([^<]+)<\/string>/)[1]);
+  const dmg = signedDmg(t, names.arm64);
+  assert.throws(() => verifyFeedArtifacts({ xml: feed("arm64"), target: "arm64", dmgs: [dmg] }, {
+    checkDmg: () => assert.fail("wrong key must fail before mounting")
+  }), /edSignature: expected .*valid Ed25519.*found/);
+});
+
+for (const architecture of ["arm64", "x86_64"]) {
+  test(`offline ${architecture} appcast accepts matching length and Ed25519 signature`, (t) => {
+    const dmg = signedDmg(t, names[architecture]);
+    const checked = [];
+    assert.equal(verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [dmg] }, {
+      sparklePublicKey, checkDmg: (file) => checked.push(file)
+    }), 1);
+    assert.deepEqual(checked, [dmg]);
+  });
+
+  for (const [field, value, expected] of [
+    ["length", "1", new RegExp(`1\\.1\\.1.*${names[architecture]}.*length: expected ${dmgBytes.length}, found 1`)],
+    ["sparkle:edSignature", "definitely-wrong", /1\.1\.1.*edSignature: expected .*valid Ed25519.*found definitely-wrong/],
+    ["sparkle:edSignature", Buffer.alloc(64).toString("base64"), /1\.1\.1.*edSignature: expected .*valid Ed25519.*found/]
+  ]) {
+    test(`offline ${architecture} appcast rejects ${field}=${value}`, (t) => {
+      const dmg = signedDmg(t, names[architecture]);
+      const xml = feed(architecture).replace(new RegExp(`${field}="[^"]*"`), `${field}="${value}"`);
+      assert.throws(() => verifyFeedArtifacts({ xml, target: architecture, dmgs: [dmg] }, {
+        sparklePublicKey, checkDmg: () => assert.fail("invalid metadata must fail before mounting")
+      }), expected);
+    });
+  }
+
+  test(`offline ${architecture} appcast rejects replaced DMG bytes with stale signature`, (t) => {
+    const dmg = signedDmg(t, names[architecture]);
+    // Keep the size unchanged so the signature check must catch this replacement.
+    writeFileSync(dmg, Buffer.alloc(dmgBytes.length, 1));
+    assert.throws(() => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [dmg] }, {
+      sparklePublicKey, checkDmg: () => assert.fail("invalid signature must fail before mounting")
+    }), /edSignature: expected .*valid Ed25519.*found/);
+  });
 }
 
 test("arm64 feed retains every published signed item byte-for-byte and lists only arm64 DMGs", () => {
@@ -112,7 +156,7 @@ test("local generation stages notes from the correct repository folder and rejec
       const config = appcastConfiguration(architecture);
       const staging = join(root, architecture);
       const noteName = names[architecture].replace(".dmg", ".md");
-      write(join(staging, names[architecture]), "fixture DMG: never mounted by tests");
+      write(join(staging, names[architecture]), dmgBytes);
       write(join(root, ...config.notesDirectory.split("/"), noteName), `${architecture} release notes`);
       const events = [];
       const options = {
@@ -161,9 +205,10 @@ test("feed verifier rejects app contents of the wrong architecture and architect
   }
 });
 
-test("DMG verifier mounts read-only, checks actual app contents against feed, and detaches on failure", () => {
+test("DMG verifier mounts read-only, checks actual app contents against feed, and detaches on failure", (t) => {
   for (const architecture of ["arm64", "x86_64"]) for (const bad of ["none", "architecture", "feed"]) {
     const other = architecture === "arm64" ? "x86_64" : "arm64";
+    const dmg = signedDmg(t, names[architecture]);
     const events = [];
     const options = {
       makeTemp: () => "virtual-mount", entries: () => ["ChemDraft.app", "Applications"],
@@ -171,12 +216,13 @@ test("DMG verifier mounts read-only, checks actual app contents against feed, an
       run: (command, args) => {
         assert.equal(command, "/usr/bin/hdiutil");
         events.push(args[0]);
-        if (args[0] === "attach") assert.deepEqual(args, ["attach", "-readonly", "-nobrowse", "-mountpoint", "virtual-mount", names[architecture]]);
+        if (args[0] === "attach") assert.deepEqual(args, ["attach", "-readonly", "-nobrowse", "-mountpoint", "virtual-mount", dmg]);
         return { status: 0 };
       },
       checkApp: appChecker(bad === "architecture" ? other : architecture, bad === "feed" ? other : architecture)
     };
-    const check = () => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [names[architecture]] }, {
+    const check = () => verifyFeedArtifacts({ xml: feed(architecture), target: architecture, dmgs: [dmg] }, {
+      sparklePublicKey,
       checkDmg: (dmg, target) => verifyDmg(dmg, target, options)
     });
     if (bad === "none") assert.doesNotThrow(check);

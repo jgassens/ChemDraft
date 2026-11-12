@@ -78,7 +78,12 @@ record can substitute for an expected commit. Complete the production signature 
    an app staple. The final asset command downloads all assets again to a temporary directory and cleans it up.
    It requires exactly the three expected builds and their records, refuses extra builds or records,
    including unexpected `.sig`, `.msi`, `.zip`, `.pkg` and `.tar.gz` files (only the expected Windows
-   `.exe.sig` and `latest.json` are allowed updater assets). It recomputes hashes and sizes, mounts
+   `.exe.sig` and `latest.json` are allowed updater assets). It requires both Windows updater files,
+   checks the manifest version, exact `windows-x86_64-nsis` platform key and release download URL,
+   and requires the manifest signature to match the `.exe.sig`. It verifies that signature against
+   the final installer bytes, including the Minisign key ID and authenticated comment, using
+   `plugins.updater.pubkey` from the checked-in `apps/desktop/src-tauri/tauri.windows.conf.json`.
+   These updater checks run offline on both platforms. It recomputes hashes and sizes, mounts
    every DMG to compare its embedded commit with its record and the expected commit, and checks common
    source identity against the freshly fetched origin tag. It needs macOS, `hdiutil` and `plutil`, but
    no npm dependencies. For an already-downloaded complete folder, add `--assets path/to/downloaded`; without
@@ -90,7 +95,9 @@ record can substitute for an expected commit. Complete the production signature 
 The Windows workflow runs this checker **inside the upload job after uploading**, with its existing
 `contents: write` token so draft assets are visible. Other jobs retain read access. Its
 `--allow-incomplete` mode permits wholly missing artifact/record pairs and lists the missing filenames,
-while fully checking every supplied build. Partial pairs, invalid records, hashes, sizes, extra builds
+while fully checking every supplied build. A supplied Windows installer still requires its verified
+`.exe.sig` and matching `latest.json`; only a wholly absent Windows build and updater files may be deferred.
+Partial pairs, invalid records, hashes, sizes, extra builds
 and tag mismatches fail even in incomplete mode. INCOMPLETE is **not permission to un-draft**.
 
 On Linux and Windows, the checker prints that embedded DMG provenance was skipped and requires

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,22 @@ export const arm = `ChemDraft_${version}_aarch64.dmg`;
 export const intel = `ChemDraft_${version}_x86_64.dmg`;
 export const installer = `ChemDraft_${version}_x64-setup.exe`;
 
+// Private keys exist only in memory for this test process.
+const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+const keyId = randomBytes(8);
+const keyPacket = Buffer.concat([Buffer.from("Ed"), keyId, publicKey.export({ format: "der", type: "spki" }).subarray(-32)]);
+export const updaterPublicKey = Buffer.from(`untrusted comment: ephemeral test key\n${keyPacket.toString("base64")}\n`).toString("base64");
+export const windowsPlatformKey = "windows-x86_64-nsis";
+export const installerUrl = `https://github.com/jgassens/ChemDraft/releases/download/v${version}/${installer}`;
+
+export function updaterSignature(bytes) {
+  const signature = sign(null, createHash("blake2b512").update(bytes).digest(), privateKey);
+  const comment = `timestamp:1792540800\tfile:${installer}`;
+  const packet = Buffer.concat([Buffer.from("ED"), keyId, signature]);
+  const global = sign(null, Buffer.concat([signature, Buffer.from(comment)]), privateKey);
+  return Buffer.from(`untrusted comment: ephemeral test signature\n${packet.toString("base64")}\ntrusted comment: ${comment}\n${global.toString("base64")}\n`).toString("base64");
+}
+
 export function releaseFixture(t) {
   const rootDir = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".release-test-"));
   t.after(() => rmSync(rootDir, { recursive: true, force: true }));
@@ -20,6 +37,11 @@ export function releaseFixture(t) {
     writeFileSync(file, `synthetic ${target}`);
     writeFileSync(`${file}.build.json`, JSON.stringify({ commit, version, target, clean: true, ...artifactDigest(file) }));
   }
+  const signature = updaterSignature(readFileSync(join(assets, installer)));
+  writeFileSync(join(assets, `${installer}.sig`), `${signature}\n`);
+  writeFileSync(join(assets, "latest.json"), JSON.stringify({
+    version, platforms: { [windowsPlatformKey]: { url: installerUrl, signature } }
+  }));
   return { rootDir, assets, version };
 }
 

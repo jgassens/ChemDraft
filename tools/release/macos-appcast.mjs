@@ -1,5 +1,7 @@
 // Parse feeds as XML, retaining raw item text so published signatures/entries never get rewritten.
 import { JSDOM } from "jsdom";
+import { createPublicKey, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { targetArchitecture } from "./macos-mach-o.mjs";
 
 const SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle";
@@ -47,11 +49,51 @@ export function parseAppcast(xml) {
     if (raw.length !== elements.length) throw new Error("Unsupported appcast item layout");
     return elements.map((element, index) => {
       const sparkle = (name) => element.getElementsByTagNameNS(SPARKLE, name)[0]?.textContent.trim();
-      const enclosures = [...element.getElementsByTagName("enclosure")].map((entry) => entry.getAttribute("url"));
+      const enclosures = [...element.getElementsByTagName("enclosure")];
       if (!sparkle("version") || enclosures.length !== 1) throw new Error("Each appcast item needs a version and exactly one DMG enclosure (no deltas)");
-      return { raw: raw[index], version: sparkle("version"), url: enclosures[0], notes: sparkle("releaseNotesLink"), hardware: sparkle("hardwareRequirements") };
+      const enclosure = enclosures[0];
+      return {
+        raw: raw[index], version: sparkle("version"), url: enclosure.getAttribute("url"),
+        length: enclosure.getAttribute("length"), edSignature: enclosure.getAttributeNS(SPARKLE, "edSignature"),
+        notes: sparkle("releaseNotesLink"), hardware: sparkle("hardwareRequirements")
+      };
     });
   } finally { dom.window.close(); }
+}
+
+export function loadSparklePublicKey(plist = new URL("../../apps/desktop/src-tauri/Info.plist", import.meta.url)) {
+  // JSDOM does not load external resources; the plist's standard DOCTYPE stays offline.
+  const dom = new JSDOM(readFileSync(plist, "utf8"), { contentType: "application/xml" });
+  try {
+    const entries = [...dom.window.document.querySelectorAll("plist > dict > key")]
+      .filter((key) => key.textContent.trim() === "SUPublicEDKey");
+    const value = entries[0]?.nextElementSibling;
+    if (entries.length !== 1 || value?.tagName !== "string" || !value.textContent.trim()) {
+      throw new Error("Info.plist: SUPublicEDKey: expected exactly one nonempty public key string");
+    }
+    return value.textContent.trim();
+  } finally { dom.window.close(); }
+}
+
+export function verifyDmgEnclosure(item, bytes, encodedPublicKey = loadSparklePublicKey()) {
+  const label = `Appcast item ${item.version} (${item.url})`;
+  if (!/^\d+$/.test(item.length ?? "") || BigInt(item.length) !== BigInt(bytes.length)) {
+    throw new Error(`${label}: length: expected ${bytes.length}, found ${item.length ?? "missing"}`);
+  }
+  const key = Buffer.from(encodedPublicKey, "base64");
+  if (key.length !== 32 || key.toString("base64") !== encodedPublicKey) {
+    throw new Error("Info.plist: SUPublicEDKey: expected a base64 raw 32-byte Ed25519 public key");
+  }
+  // RFC 8410 SubjectPublicKeyInfo wrapper around Sparkle's raw Ed25519 key.
+  const publicKey = createPublicKey({
+    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), key]),
+    format: "der", type: "spki"
+  });
+  const signature = Buffer.from(item.edSignature ?? "", "base64");
+  if (signature.length !== 64 || signature.toString("base64") !== item.edSignature ||
+      !verify(null, bytes, publicKey, signature)) {
+    throw new Error(`${label}: sparkle:edSignature: expected a valid Ed25519 signature over the DMG bytes using SUPublicEDKey, found ${item.edSignature ?? "missing"}`);
+  }
 }
 
 export function dmgArchitecture(url) {

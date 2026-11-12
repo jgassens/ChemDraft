@@ -382,7 +382,10 @@ node tools/release/verify-macos-feed.mjs /absolute/path/release-arm64/appcast.xm
 node tools/release/verify-macos-feed.mjs /absolute/path/release-intel/appcast-intel.xml --dmg /absolute/path/release-intel/ChemDraft_X.Y.Z_x86_64.dmg
 ```
 
-The feed verifier mounts each DMG read-only and runs the same app gate on every app inside.
+The feed verifier first checks each supplied local DMG's enclosure `length` against its byte size
+and verifies `sparkle:edSignature` as Ed25519 over the final DMG bytes, using `SUPublicEDKey`
+from the checked-in `apps/desktop/src-tauri/Info.plist`. These checks are offline; enclosure URLs
+are never fetched. It then mounts each DMG read-only and runs the same app gate on every app inside.
 Inspect each generated feed's enclosure, version, minimum OS and hardware
 requirements. Both feeds must name their own exact final DMG. Publish both DMGs
 in the same GitHub release and version as Windows. Only once both assets are reachable, copy the generated feeds
