@@ -9,6 +9,8 @@ mod export;
 mod external_tools;
 mod fonts;
 mod installed_plugins;
+#[cfg(target_os = "linux")]
+mod linux_clipboard;
 mod local_engine;
 #[cfg(target_os = "macos")]
 mod macos_quit;
@@ -5345,10 +5347,26 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
             }
         })?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     window
         .set_ignore_cursor_events(true)
         .map_err(|error| error.to_string())?;
+    // tao's set_ignore_cursor_events unwraps the GdkWindow, which a never-shown window does not
+    // have yet: the panic aborted the app (it fires inside a GLib callback, which cannot unwind).
+    // GTK keeps an input shape set on an unrealized widget and applies it when the window is
+    // realized, so set the same 1×1 shape tao would, directly on the GtkWindow.
+    #[cfg(target_os = "linux")]
+    {
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            use gtk::prelude::WidgetExt;
+            let gtk_window = target.gtk_window().map_err(|error| error.to_string())?;
+            let region =
+                gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, 1, 1));
+            gtk_window.input_shape_combine_region(Some(&region));
+            Ok::<(), String>(())
+        })??;
+    }
     Ok(())
 }
 
@@ -5750,7 +5768,10 @@ fn write_native_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Resu
 /// that any WebKit view — Safari included — leaves behind on copy; "decoding" it produced the
 /// CJK-mojibake text objects users saw when pasting between two ChemDraft instances.
 // Platform-neutral decoding, shared by the macOS pasteboard reader and the Windows clipboard reader.
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 const OPAQUE_CLIPBOARD_TYPES: [&str; 4] = [
     "com.apple.WebKit.custom-pasteboard-data",
     "org.webkit.custom-pasteboard-data",
@@ -5760,7 +5781,10 @@ const OPAQUE_CLIPBOARD_TYPES: [&str; 4] = [
     "Chromium internal source RFH token",
 ];
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
     OPAQUE_CLIPBOARD_TYPES.contains(&pasteboard_type)
 }
@@ -5872,7 +5896,10 @@ fn clipboard_text_for_type(
     Some(text)
 }
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() {
         return None;
@@ -5896,7 +5923,10 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
     decode_utf16_bytes(bytes)
 }
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
         return true;
@@ -5910,7 +5940,10 @@ fn looks_like_utf16_bytes(bytes: &[u8]) -> bool {
     null_count * 4 >= bytes.len()
 }
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
     if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
         return decode_utf16_units(content, true);
@@ -5969,7 +6002,10 @@ fn decode_utf16_bytes(bytes: &[u8]) -> Option<String> {
 /// contains private-use or noncharacter code points, while binary bytes and byte-swapped UTF-16
 /// frequently decode into exactly those ranges. (BOM'd and null-parity-detected payloads skip
 /// this — their encoding evidence is strong enough that PUA glyphs, e.g. icon fonts, pass.)
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     text.chars().all(|character| {
         let code_point = character as u32;
@@ -5982,7 +6018,10 @@ fn utf16_sparse_text_is_convincing(text: &str) -> bool {
     })
 }
 
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
     if content.len() < 2 || !content.len().is_multiple_of(2) {
         return None;
@@ -6004,7 +6043,10 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
 /// Rejects strings that only a mis-decode produces: control characters (beyond whitespace)
 /// and replacement characters never occur in text a user meant to paste, while every
 /// legitimate UTF-16 clipboard payload (molfiles, CDXML, SMILES, prose) is clean of them.
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", windows, target_os = "linux")),
+    allow(dead_code)
+)]
 fn text_is_plausible_clipboard_text(text: &str) -> bool {
     text.chars().all(|character| {
         character == '\t'
@@ -6028,7 +6070,20 @@ fn write_clipboard_items_impl(
     windows_clipboard::native::write_items(clipboard_owner_window(app), items)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    linux_clipboard::read_payload()
+}
+
+#[cfg(target_os = "linux")]
+fn write_clipboard_items_impl(
+    _app: &tauri::AppHandle,
+    items: &[ValidatedClipboardItem],
+) -> Result<ClipboardWriteResult, String> {
+    Ok(linux_clipboard::write_items(items))
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
@@ -6039,12 +6094,12 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     })
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn write_clipboard_items_impl(
     _app: &tauri::AppHandle,
     _items: &[ValidatedClipboardItem],
 ) -> Result<ClipboardWriteResult, String> {
-    Err("Native clipboard writes are only implemented for macOS and Windows.".to_string())
+    Err("Native clipboard writes are only implemented for macOS, Windows and Linux.".to_string())
 }
 
 #[tauri::command]
@@ -6821,6 +6876,51 @@ const EDIT_HISTORY_MENU_ITEMS: [EditHistoryMenuItem; 2] = [
     },
 ];
 
+/// Edit ▸ Cut / Copy / Paste, in menu order, as (command id, label).
+const CLIPBOARD_EDIT_MENU_ITEMS: [(&str, &str); 3] = [
+    ("clipboard.cut", "Cut"),
+    ("clipboard.copy", "Copy"),
+    ("clipboard.paste", "Paste"),
+];
+
+/// On macOS and Windows the predefined items make the system send cut/copy/paste to the focused
+/// webview, which raises the DOM clipboard events the editor (and any focused text field) handles.
+#[cfg(not(target_os = "linux"))]
+fn clipboard_edit_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+) -> tauri::Result<Box<dyn tauri::menu::IsMenuItem<R>>> {
+    Ok(match command_id {
+        "clipboard.cut" => Box::new(PredefinedMenuItem::cut(app, None)?),
+        "clipboard.copy" => Box::new(PredefinedMenuItem::copy(app, None)?),
+        _ => Box::new(PredefinedMenuItem::paste(app, None)?),
+    })
+}
+
+/// muda's Linux predefined Cut/Copy/Paste only fake a Ctrl+X/C/V key press through libxdo: nothing
+/// on Wayland, and on X11 the press can land before the menu releases its grab, so the click did
+/// nothing. Route them to the editor's own commands instead. No accelerator: a GTK menu
+/// accelerator wins over the focused widget, so Ctrl+C in a text field would copy the drawing.
+/// The keys keep reaching the webview, which handles them as on the other platforms.
+#[cfg(target_os = "linux")]
+fn clipboard_edit_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    command_id: &str,
+) -> tauri::Result<Box<dyn tauri::menu::IsMenuItem<R>>> {
+    let (id, label) = CLIPBOARD_EDIT_MENU_ITEMS
+        .iter()
+        .find(|(id, _)| *id == command_id)
+        .copied()
+        .unwrap_or(CLIPBOARD_EDIT_MENU_ITEMS[2]);
+    Ok(Box::new(MenuItem::with_id(
+        app,
+        id,
+        label,
+        true,
+        None::<&str>,
+    )?))
+}
+
 fn edit_history_menu_item<R: Runtime>(
     app: &tauri::AppHandle<R>,
     item: &EditHistoryMenuItem,
@@ -7516,8 +7616,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
                     &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::cut(app, None)?,
-                    &PredefinedMenuItem::copy(app, None)?,
+                    &*clipboard_edit_menu_item(app, "clipboard.cut")?,
+                    &*clipboard_edit_menu_item(app, "clipboard.copy")?,
                     &Submenu::with_items(
                         app,
                         "Copy As",
@@ -7581,7 +7681,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                             )?,
                         ],
                     )?,
-                    &PredefinedMenuItem::paste(app, None)?,
+                    &*clipboard_edit_menu_item(app, "clipboard.paste")?,
                     &MenuItem::with_id(
                         app,
                         "edit.selectAll",
@@ -8425,6 +8525,10 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 
 fn is_routed_menu_command(command_id: &str) -> bool {
     MENU_COMMAND_IDS.contains(&command_id)
+        || (cfg!(target_os = "linux")
+            && CLIPBOARD_EDIT_MENU_ITEMS
+                .iter()
+                .any(|(id, _)| *id == command_id))
         || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
         || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
 }
@@ -10656,10 +10760,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "linux"))]
     fn clipboard_edit_menu_commands_are_system_owned() {
         expect_false(is_routed_menu_command("clipboard.cut"));
         expect_false(is_routed_menu_command("clipboard.copy"));
         expect_false(is_routed_menu_command("clipboard.paste"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn clipboard_edit_menu_commands_are_routed_on_linux() {
+        for command in ["clipboard.cut", "clipboard.copy", "clipboard.paste"] {
+            assert!(is_routed_menu_command(command), "{command}");
+            assert_eq!(menu_command_target_label(command, None), MAIN_WINDOW_LABEL);
+        }
     }
 
     #[test]
