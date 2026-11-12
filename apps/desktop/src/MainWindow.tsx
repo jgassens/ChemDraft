@@ -177,7 +177,7 @@ import {
   type ViewportState
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
-import { assertPluginPatchWriteScope, CommandRegistry } from "@chemdraft/plugin-host";
+import { assertPluginDocumentWriteScope, assertPluginPatchWriteScope, CommandRegistry } from "@chemdraft/plugin-host";
 import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.11.11.20-codex";
+const CURRENT_BUILD_STAMP = "11.11.12.30-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3807,8 +3807,9 @@ export function MainWindow({
         documentTabSnapshotsRef.current.set(tabId, { ...snapshot, history, parts: [], file: { ...snapshot.file, dirty: true } });
       }
     };
-    const labelled = (document: ChemDraftDocument, label: string) => {
+    const labelled = (document: ChemDraftDocument, label: string, assertFinalDocument?: (document: ChemDraftDocument) => void) => {
       const present = prepareDocumentCommit(document, label);
+      assertFinalDocument?.(present);
       assistantRecordedAfterRef.current.set(present, present);
       return present;
     };
@@ -3841,9 +3842,9 @@ export function MainWindow({
         return { x: (left - pageRect.left) / scale, y: (top - pageRect.top) / scale,
           width: (right - left) / scale, height: (bottom - top) / scale };
       },
-      push: (tabId, before, after, label) => {
+      push: (tabId, before, after, label, assertFinalDocument) => {
         install(tabId, (history) => {
-          const present = labelled(after, label);
+          const present = labelled(after, label, assertFinalDocument);
           const beforeLabel = documentUndoLabelsRef.current.get(history.present);
           if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
           const recorded = assistantRecordedAfterRef.current.get(history.present);
@@ -3851,8 +3852,8 @@ export function MainWindow({
           return { past: boundedHistoryPast([...history.past, before], present), present, future: [] };
         });
       },
-      amend: (tabId, after, label) => {
-        install(tabId, history => ({ ...history, present: labelled(after, label) }));
+      amend: (tabId, after, label, assertFinalDocument) => {
+        install(tabId, history => ({ ...history, present: labelled(after, label, assertFinalDocument) }));
       },
       select: (tabId, objectIds, label) => {
         install(tabId, (history) => {
@@ -12480,9 +12481,12 @@ export function MainWindow({
           if (signal) pluginPageConsentsRef.current.set(signal, consent);
         }
         const prepared = normalizeCommittedDocument(applied.document);
+        const assertFinalDocument = (document: ChemDraftDocument) =>
+          assertPluginDocumentWriteScope(before, document, patch, writeScopeObjectIds);
         const pending = commitWithPageFit(before, prepared, document => {
-          if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared);
-          else commitDocumentChange(document, undoLabel);
+          // Both history paths normalize again; check their actual final state, after page fit too.
+          if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
+          else commitDocumentChange(document, undoLabel, false, assertFinalDocument);
         }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
             : consent, signal,
           isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&

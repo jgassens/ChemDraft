@@ -47,7 +47,7 @@ function initial(size: number) {
 const actions = ["template", "bracket stamp", "bracket drag", "text paste", "private paste", "duplicate", "cleanup", "plugin batch", "reviewed proposal"] as const;
 describe.each(["macos", "windows"] as const)("mounted page commits on %s", platform => {
   it.each(["plugin", "assistant patch", "reviewed proposal"].flatMap(path => ["enlarge", "keep"].map(answer => ({ path, answer }))))(
-    "$path / $answer shifts all affected-page content with one undo and selects only the insertion", async ({ path, answer }) => {
+    "$path / $answer respects plugin scope when page fitting would shift existing content", async ({ path, answer }) => {
     const blank = initial(100), page = blank.pages[0]!;
     const molecule = createSmilesMolecule(blank, { x: 50, y: 50 }, depictSmiles2D("CC"), "CC");
     const drawing = { ...blank, pages: [{ ...page, objects: [molecule] }, { ...page, id: "second-page", objects: [] }] };
@@ -73,8 +73,17 @@ describe.each(["macos", "windows"] as const)("mounted page commits on %s", platf
           await context.documents.applyPatch(patch);
         }
       } } });
-      await runtime.invokeCommand("plugin.pageShift.insert");
+      if (path !== "reviewed proposal" && answer === "enlarge") {
+        await expect(runtime.invokeCommand("plugin.pageShift.insert")).rejects.toThrow(/Plugin write refused: molecule.*not selected/);
+      } else await runtime.invokeCommand("plugin.pageShift.insert");
     });
+    if (path !== "reviewed proposal" && answer === "enlarge") {
+      if (txId) await act(async () => { transactions.endAssistantTransaction(txId, { touchedIds: [] }); });
+      expect(current()).toBe(before);
+      expect(prompt).toHaveBeenCalledOnce();
+      await command("edit.undo"); expect(current()).toBe(before);
+      return;
+    }
     if (path === "reviewed proposal") {
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-badge")!.click());
       await act(async () => container.querySelector<HTMLButtonElement>(".patch-review-actions button")!.click());

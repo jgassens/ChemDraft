@@ -2605,8 +2605,8 @@ describe("ChemDraft desktop shell", () => {
       mainWindowSource.indexOf("const assistantTransactions =")
     );
     expect(assistantHistorySource).toContain("const present = prepareDocumentCommit(document, label);");
-    expect(assistantHistorySource).toContain("const present = labelled(after, label);");
-    expect(assistantHistorySource).toContain("present: labelled(after, label)");
+    expect(assistantHistorySource).toContain("const present = labelled(after, label, assertFinalDocument);");
+    expect(assistantHistorySource).toContain("present: labelled(after, label, assertFinalDocument)");
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,

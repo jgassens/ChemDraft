@@ -120,6 +120,82 @@ export function assertPluginPatchWriteScope(
   }
 }
 
+/** Last check at the history boundary, AFTER all normalization and placement. Only rebased patch
+ * insertions whose ids did not exist in `before` extend scope; neither receipts nor derived additions
+ * grant access to existing objects. Unlike preflight, every final object field is compared. */
+export function assertPluginDocumentWriteScope(
+  before: ChemDraftDocument,
+  after: ChemDraftDocument,
+  proposed: NormalizedProposedDocumentPatch,
+  objectIds: readonly string[]
+): void {
+  const originals = before.pages.flatMap(page => page.objects.map(object => ({ pageId: page.id, object })));
+  const survivors = after.pages.flatMap(page => page.objects.map(object => ({ pageId: page.id, object })));
+  const existingIds = new Set(originals.map(entry => entry.object.id));
+  const inserted = new Set(writePatchOps(rebasePluginPatch(before, proposed).patch).flatMap(op =>
+    op.op === "addObject" ? [op.object.id] : op.op === "addAnnotation" ? [op.annotation.id] : []
+  ).filter(id => !existingIds.has(id)));
+  const scope = new Set(objectIds);
+  type Entry = typeof survivors[number];
+  // Reserve reference-identical occurrences before matching cloned occurrences by id, so a duplicate
+  // id cannot hide an edit or removal of its earlier occurrence (including on another page).
+  const byReference = new Map<DocumentObject, Entry[]>();
+  for (const entry of survivors) {
+    const entries = byReference.get(entry.object) ?? [];
+    entries.push(entry);
+    byReference.set(entry.object, entries);
+  }
+  const matches = new Map<typeof originals[number], Entry>();
+  const matched = new Set<Entry>();
+  for (const original of originals) {
+    const entries = byReference.get(original.object);
+    if (!entries?.length) continue;
+    const samePage = entries.findIndex(entry => entry.pageId === original.pageId);
+    const [entry] = entries.splice(samePage < 0 ? 0 : samePage, 1);
+    matches.set(original, entry!);
+    matched.add(entry!);
+  }
+  const byId = new Map<string, Entry[]>();
+  for (const entry of survivors) {
+    if (matched.has(entry)) continue;
+    const entries = byId.get(entry.object.id) ?? [];
+    entries.push(entry);
+    byId.set(entry.object.id, entries);
+  }
+  for (const original of originals) {
+    const survivor = matches.get(original) ?? byId.get(original.object.id)?.shift();
+    if (survivor) matched.add(survivor);
+    if (scope.has(original.object.id)) continue;
+    if (survivor?.pageId === original.pageId && sameDocumentValue(original.object, survivor.object)) continue;
+    const detail = !survivor ? "removed" : survivor.pageId !== original.pageId ? "moved to another page"
+      : pluginObjectChangeDescription(original.object, survivor.object);
+    throw new PluginHostError(`Plugin write refused: ${original.object.type} "${original.object.id}" was ${detail}, but was not selected when the command started.`);
+  }
+  for (const entry of survivors) {
+    if (!matched.has(entry) && !inserted.has(entry.object.id)) {
+      throw new PluginHostError(`Plugin write refused: ${entry.object.type} "${entry.object.id}" was added outside this command's insertions.`);
+    }
+  }
+}
+
+function pluginObjectChangeDescription(before: DocumentObject, after: DocumentObject): string {
+  if (before.type === "molecule" && after.type === "molecule") {
+    for (const atom of before.atoms) {
+      const next = after.atoms.find(candidate => candidate.id === atom.id);
+      if (!next) return `changed by removing atom "${atom.id}"`;
+      if (sameDocumentValue(atom, next)) continue;
+      const fields = Object.keys({ ...atom, ...next }).filter(key =>
+        !sameDocumentValue(atom[key as keyof typeof atom], next[key as keyof typeof next]));
+      const names: Record<string, string> = { formalCharge: "formal charge", markCharge: "mark charge",
+        markRadicals: "mark radicals", labelBondSide: "label bond side" };
+      return `changed at atom "${atom.id}" (${fields.map(key => names[key] ?? key).join(", ")})`;
+    }
+  }
+  const fields = Object.keys({ ...before, ...after }).filter(key =>
+    !sameDocumentValue((before as Record<string, unknown>)[key], (after as Record<string, unknown>)[key]));
+  return `changed (${fields.join(", ")})`;
+}
+
 export function chemistryPropertiesInputError(
   request: unknown,
   error: Extract<ReturnType<typeof PluginChemistryPropertiesRequestSchema.safeParse>, { success: false }>['error']
