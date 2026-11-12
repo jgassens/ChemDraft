@@ -2532,6 +2532,9 @@ export function MainWindow({
     objectId: string; document: ChemDraftDocument; documentIdentity: number;
   } | undefined>(undefined);
   const checkpointTextEditBeforeCommitRef = useRef<(beforePreview?: ChemDraftDocument) => (() => void) | undefined>(() => undefined);
+  const prepareTextEditCheckpointRef = useRef<(history: DocumentHistory) => {
+    history: DocumentHistory; complete: () => void; resume: () => void;
+  } | undefined>(() => undefined);
   const textEditHistoryWritingRef = useRef(false);
   // Keeps an open numeric rotate/stretch preview as its own entry; assigned where those handlers live.
   const keepNumericInputPreviewsRef = useRef<() => void>(() => undefined);
@@ -3678,25 +3681,34 @@ export function MainWindow({
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Validate the actual final state before checkpointing typing or settling other history.
-    // Reuse this prepared document below: another normalization after the guard could change it.
+    // Reuse this prepared document only while its baseline is still current.
+    let guardedCurrent: ChemDraftDocument | undefined;
     let guardedPresent: ChemDraftDocument | undefined;
     if (assertFinalDocument) {
       const current = documentRef.current;
       const next = typeof nextDocumentOrUpdate === "function" ? nextDocumentOrUpdate(current) : nextDocumentOrUpdate;
       if (next === current) return false;
       guardedPresent = prepareDocumentCommit(next, undoLabel, assertFinalDocument);
+      guardedCurrent = current;
     }
     // Record typing before the command, retaining main's editor lifetime in its callers.
-    const resumeTextEdit = textCheckpointed ? undefined : checkpointTextEditBeforeCommitRef.current();
+    // Guarded writes stage that checkpoint inside the updater: a second refusal must not
+    // install a typing entry, notify assistant transactions, or disarm the text snapshot.
+    let resumeTextEdit = textCheckpointed || assertFinalDocument ? undefined : checkpointTextEditBeforeCommitRef.current();
     let changed = false;
     try {
-      installDocumentHistory((currentHistory) => {
-        const nextDocument = guardedPresent ?? (typeof nextDocumentOrUpdate === "function"
+      installDocumentHistory((history) => {
+        const checkpoint = assertFinalDocument && !textCheckpointed ? prepareTextEditCheckpointRef.current(history) : undefined;
+        const currentHistory = checkpoint?.history ?? history;
+        const reusablePresent = currentHistory.present === guardedCurrent ? guardedPresent : undefined;
+        const nextDocument = reusablePresent ?? (typeof nextDocumentOrUpdate === "function"
           ? nextDocumentOrUpdate(currentHistory.present)
           : nextDocumentOrUpdate);
-        if (nextDocument === currentHistory.present) return currentHistory;
+        if (nextDocument === currentHistory.present) return history;
 
-        const present = guardedPresent ?? prepareDocumentCommit(nextDocument, undoLabel);
+        const present = reusablePresent ?? prepareDocumentCommit(nextDocument, undoLabel, assertFinalDocument);
+        checkpoint?.complete();
+        resumeTextEdit = checkpoint?.resume ?? resumeTextEdit;
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -7900,6 +7912,37 @@ export function MainWindow({
     // Neither history baseline tells us what a mid-edit Save actually wrote.
     reconcileSavedDocumentDirtyState();
   }, [convertCommittedText, finalizeTextEditHistory, reconcileSavedDocumentDirtyState]);
+
+  // The guarded commit path needs the same typing entry as finalizeTextEditHistory /
+  // commitDocumentHistoryFrom, but must validate against its normalized present before
+  // installing either entry. Keep all session changes behind complete(), after the guard.
+  prepareTextEditCheckpointRef.current = (history) => {
+    if (textEditHistoryWritingRef.current) return;
+    const snapshot = textEditHistorySnapshotRef.current;
+    const objectId = activeTextEditObjectIdRef.current ?? snapshot?.objectId;
+    if (!objectId || (textAutoConversionInProgressRef.current && !snapshot)) return;
+    const documentIdentity = documentIdentityRef.current;
+    let checkpointHistory = history;
+    if (snapshot?.objectId === objectId && snapshot.documentIdentity === documentIdentity &&
+      !assistantDocumentContentUnchanged(snapshot.document, history.present)) {
+      const present = prepareDocumentCommit(history.present, "Edit Text");
+      checkpointHistory = {
+        past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(snapshot.document)], present),
+        present, future: []
+      };
+    }
+    return {
+      history: checkpointHistory,
+      complete: () => { textEditHistorySnapshotRef.current = undefined; },
+      resume: () => {
+        const current = documentRef.current;
+        if (!snapshot && documentHistoryRef.current === checkpointHistory) return;
+        if (documentIdentity !== documentIdentityRef.current || activeTextEditObjectIdRef.current !== objectId ||
+          findDocumentObject(current, objectId)?.type !== "text") return;
+        textEditHistorySnapshotRef.current = { objectId, document: atomLabelHistorySnapshot(current), documentIdentity };
+      }
+    };
+  };
 
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
     if (textEditHistoryWritingRef.current) return;

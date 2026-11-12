@@ -310,7 +310,7 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       x: atom.x + 12, y: atom.y - 12, width: 18, height: 18, rotation: 0, style: {} };
   }
 
-  describe.each(["macos", "windows"] as const)("refusal during an open text edit on %s", platform => {
+  describe.each(["macos", "windows"] as const)("plugin writes during an open text edit on %s", platform => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -331,6 +331,115 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT,
         { detail: { commandId: forceDocumentHistoryCommandId(commandId) } })); });
     }
+    async function openTextEdit(textId: string) {
+      const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612,
+        width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+      for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+        element.getBoundingClientRect = () => rect;
+      }
+      await act(async () => {
+        container.querySelector(`[data-page-svg-object-visual="${textId}"] text`)!
+          .dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(editor()).not.toBeNull();
+    }
+
+    it.each([false, true])("keeps checkpointed typing and an allowed insertion, with separate undo steps (changed checkpoint present: %s)", async changePresent => {
+      const fixture = testContext(false);
+      const port = await mount(fixture.context.getDocument()!, platform);
+      await openTextEdit(fixture.text.id);
+      await type("First edit");
+      const before = port.read("initial")!;
+      const normalize = workflow.normalizeCommittedDocument;
+      let calls = 0;
+      let checkpointPresent: ChemDraftDocument | undefined;
+      const seen: ChemDraftDocument[] = [];
+      vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(document => {
+        seen.push(document);
+        const normalized = normalize(document);
+        // Plugin preflight, initial final guard, then typing's checkpoint. Normalization
+        // is normally idempotent; force a new present to exercise the stale-baseline path.
+        if (++calls === 3 && changePresent) return checkpointPresent = { ...normalized };
+        return normalized;
+      });
+      const insertion = { id: "allowed_text", type: "text" as const, text: "Plugin insertion", spans: [],
+        x: 450, y: 500, width: 100, height: 20, rotation: 0, style: {} };
+      const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert text", patch: {
+        op: "addObject", pageId: before.pages[0]!.id, object: insertion
+      } }));
+      await act(async () => { await expect(invoke()).resolves.toMatchObject({ applied: true }); });
+      expect(calls).toBe(changePresent ? 4 : 3);
+      expect(seen[2]).toBe(before);
+      if (changePresent) expect(checkpointPresent).not.toBe(before);
+      vi.restoreAllMocks();
+      const committed = port.read("initial")!;
+      expect(committed.pages[0]!.objects.find(object => object.id === fixture.text.id)).toMatchObject({ text: "First edit" });
+      expect(committed.pages[0]!.objects.find(object => object.id === insertion.id)).toEqual(insertion);
+      expect(editor()).not.toBeNull();
+      await type("Second edit");
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      expect(editor()).toBeNull();
+      const final = port.read("initial")!;
+      await history("edit.undo");
+      expect(port.read("initial")!.pages).toEqual(committed.pages);
+      await history("edit.undo");
+      expect(port.read("initial")!.pages).toEqual(before.pages);
+      await history("edit.undo");
+      expect(port.read("initial")!.pages[0]!.objects.find(object => object.id === fixture.text.id)).toEqual(fixture.text);
+      const undone = port.read("initial");
+      await history("edit.undo");
+      expect(port.read("initial")).toBe(undone);
+      for (let i = 0; i < 3; i++) await history("edit.redo");
+      expect(port.read("initial")!.pages).toEqual(final.pages);
+    });
+
+    it("rechecks a changed checkpoint present and refuses atomically while typing remains resumable", async () => {
+      const fixture = testContext(false);
+      const port = await mount(fixture.context.getDocument()!, platform);
+      await openTextEdit(fixture.text.id);
+      await type("First edit");
+      const before = port.read("initial")!;
+      const userEdit = vi.fn();
+      const unsubscribe = port.onUserEdit(userEdit);
+      const normalize = workflow.normalizeCommittedDocument;
+      let calls = 0;
+      let checkpointPresent: ChemDraftDocument | undefined;
+      vi.spyOn(workflow, "normalizeCommittedDocument").mockImplementation(document => {
+        const normalized = normalize(document);
+        ++calls;
+        if (calls === 3) return checkpointPresent = { ...normalized };
+        if (calls !== 4) return normalized;
+        // Only the recheck's normalization has a forbidden side effect. Reusing the
+        // initial guarded document unconditionally would miss it and report success.
+        return { ...normalized, pages: normalized.pages.map(page => ({ ...page, objects: page.objects.map(object =>
+          object.type !== "molecule" ? object : { ...object, atoms: object.atoms.map((atom, i) => i ? atom : {
+            ...atom, labelBondSide: { side: "left" as const, atomId: object.atoms[1]!.id }
+          }) }) })) };
+      });
+      const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert text", patch: {
+        op: "addObject", pageId: before.pages[0]!.id, object: { id: "refused_text", type: "text", text: "Refused", spans: [],
+          x: 450, y: 500, width: 70, height: 20, rotation: 0, style: {} }
+      } }));
+      await act(async () => { await expect(invoke()).rejects.toThrow(/Plugin write refused:.*atom.*label bond side/); });
+      expect(calls).toBe(4);
+      expect(checkpointPresent).not.toBe(before);
+      expect(port.read("initial")).toBe(before);
+      expect(userEdit).not.toHaveBeenCalled();
+      unsubscribe();
+      vi.restoreAllMocks();
+      expect(editor()).not.toBeNull();
+      await type("Second edit");
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      const final = port.read("initial")!;
+      await history("edit.undo");
+      expect(port.read("initial")!.pages[0]!.objects.find(object => object.id === fixture.text.id)).toEqual(fixture.text);
+      const undone = port.read("initial");
+      await history("edit.undo");
+      expect(port.read("initial")).toBe(undone);
+      await history("edit.redo");
+      expect(port.read("initial")!.pages).toEqual(final.pages);
+    });
 
     describe.each(["ordinary", "assistant push", "assistant amend"] as const)("%s", mode => {
       it.each([false, true])("keeps one typing undo entry and transaction state (refused write: %s)", async refuse => {

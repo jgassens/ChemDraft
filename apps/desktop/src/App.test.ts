@@ -2599,14 +2599,21 @@ describe("ChemDraft desktop shell", () => {
     // The conditions editor also commits to its original tab while it is inactive.
     expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(14);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
-    expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
+    const commitDocumentChangeSource = mainWindowSource.slice(
+      mainWindowSource.indexOf("const commitDocumentChange ="),
+      mainWindowSource.indexOf("const commitDocumentChangeWithPageFit =")
+    );
+    expect(commitDocumentChangeSource).toContain("prepareDocumentCommit(nextDocument, undoLabel, assertFinalDocument)");
+    const finalGuardIndex = commitDocumentChangeSource.indexOf("prepareDocumentCommit(next, undoLabel, assertFinalDocument)");
+    expect(finalGuardIndex).toBeGreaterThan(-1);
+    expect(finalGuardIndex).toBeLessThan(commitDocumentChangeSource.indexOf("checkpointTextEditBeforeCommitRef.current()"));
     const assistantHistorySource = mainWindowSource.slice(
       mainWindowSource.indexOf("const assistantHistoryPort ="),
       mainWindowSource.indexOf("const assistantTransactions =")
     );
-    expect(assistantHistorySource).toContain("const present = prepareDocumentCommit(document, label);");
+    expect(assistantHistorySource).toContain("const present = prepareDocumentCommit(document, label, assertFinalDocument);");
     expect(assistantHistorySource).toContain("const present = labelled(after, label, assertFinalDocument);");
-    expect(assistantHistorySource).toContain("present: labelled(after, label, assertFinalDocument)");
+    expect(assistantHistorySource.match(/const present = labelled\(after, label, assertFinalDocument\);/g)).toHaveLength(2);
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,
