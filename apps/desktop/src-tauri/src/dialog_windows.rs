@@ -1614,8 +1614,20 @@ pub(crate) async fn dialog_open(
         return Err("Unknown dialog owner".into());
     }
     let _creation = super::lock_window_creation()?;
-    if !window.is_visible().unwrap_or(false) {
+    let owner_decision = dialog_owner_reveal_decision(&window);
+    if owner_decision == OwnerRevealDecision::RejectHidden {
         return Err("The document window is hidden; no dialog can open".into());
+    }
+    if owner_decision == OwnerRevealDecision::RestoreThenProceed {
+        // Restore before construction/placement reads the owner's monitor and geometry.
+        // Do not release utility suspension: active prompts still defer the dialog and
+        // pending palette restoration keeps its own snapshot and event-driven retry.
+        let owner = window.clone();
+        super::run_on_main_thread_blocking(&window, move || {
+            prepare_owner_for_dialog(dialog_owner_reveal_decision(&owner), || {
+                owner.unminimize().map_err(|e| e.to_string())
+            })
+        })??;
     }
     let (registration, build) = register(
         &mut REGISTRY.lock().unwrap_or_else(|p| p.into_inner()),
@@ -2053,7 +2065,7 @@ pub(crate) fn focus_export_after_picker<R: Runtime>(
         if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true) {
             // Tauri makes the window key on macOS and activates its HWND on Windows.
             window.set_focus().map_err(|e| e.to_string())?;
-            bring_to_front_on_main(&window)?;
+            bring_to_front_on_main(&window, false)?;
         }
     }
     Ok(())
@@ -2090,6 +2102,26 @@ fn owner_reveal_decision(macos: bool, minimized: bool, visible: bool) -> OwnerRe
     }
 }
 
+fn dialog_owner_reveal_decision<R: Runtime>(
+    owner: &tauri::WebviewWindow<R>,
+) -> OwnerRevealDecision {
+    // Windows retains WS_VISIBLE while iconic; preserve its admission and restore behavior.
+    let minimized = cfg!(target_os = "macos") && owner.is_minimized().unwrap_or(false);
+    owner_reveal_decision(
+        cfg!(target_os = "macos"),
+        minimized,
+        owner.is_visible().unwrap_or(false),
+    )
+}
+
+fn dialog_reveal_suspended(explicit: bool) -> bool {
+    super::quit_in_progress()
+        || super::UTILITY_SUSPENSION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .blocks_dialog_reveal(cfg!(target_os = "macos"), explicit)
+}
+
 fn prepare_owner_for_dialog(
     decision: OwnerRevealDecision,
     restore: impl FnOnce() -> Result<(), String>,
@@ -2106,7 +2138,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     if super::quit_in_progress() {
         return Err(super::QUITTING_WINDOW_REFUSAL.into());
     }
-    if super::utility_windows_suspended() {
+    if dialog_reveal_suspended(true) {
         super::UTILITY_SUSPENSION
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2117,16 +2149,9 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         .app_handle()
         .get_webview_window(super::MAIN_WINDOW_LABEL)
         .ok_or("Dialog owner is hidden")?;
-    // Do not add a minimized-state read or change restore behavior on Windows.
-    let minimized = cfg!(target_os = "macos") && owner.is_minimized().unwrap_or(false);
-    prepare_owner_for_dialog(
-        owner_reveal_decision(
-            cfg!(target_os = "macos"),
-            minimized,
-            owner.is_visible().unwrap_or(false),
-        ),
-        || owner.unminimize().map_err(|e| e.to_string()),
-    )?;
+    prepare_owner_for_dialog(dialog_owner_reveal_decision(&owner), || {
+        owner.unminimize().map_err(|e| e.to_string())
+    })?;
     let preferences = window.label() == super::PREFERENCES_WINDOW_LABEL;
     if preferences {
         if let Some(state) = REGISTRY
@@ -2158,7 +2183,7 @@ fn show_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     }
     configure_on_main(window)?;
     window.set_focus().map_err(|e| e.to_string())?;
-    bring_to_front_on_main(window)
+    bring_to_front_on_main(window, true)
 }
 /// Called by reveal and by the existing relative-order utility restore (already on main).
 pub(crate) fn configure_on_main<R: Runtime>(
@@ -2195,8 +2220,11 @@ fn dialog_window_level() -> objc2_app_kit::NSWindowLevel {
 
 /// Reveal/reopen and becoming key raise within the utility level. Restoration only configures
 /// traits: raising there would discard the captured dialog/toolbar sibling order.
-fn bring_to_front_on_main<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
-    if super::utility_windows_suspended() || !window.is_visible().unwrap_or(false) {
+fn bring_to_front_on_main<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    explicit: bool,
+) -> Result<(), String> {
+    if dialog_reveal_suspended(explicit) || !window.is_visible().unwrap_or(false) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
@@ -3848,7 +3876,7 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
                     if target.label() == super::PREFERENCES_WINDOW_LABEL {
                         recover_preferences_frame(&target)?;
                     }
-                    bring_to_front_on_main(&target)
+                    bring_to_front_on_main(&target, false)
                 })
                 .and_then(|result| result)
                 {
@@ -5865,6 +5893,150 @@ mod tests {
             position.1 + f64::from(frame.outer.1) <= (work.y + work.height) * work.scale,
             "bottom: {position:?}, {frame:?}"
         );
+    }
+
+    #[test]
+    fn dialog_open_admission_accepts_minimized_macos_and_visible_owners_only() {
+        for (macos, minimized, visible, admitted) in [
+            (true, true, false, true),
+            (true, true, true, true),
+            (true, false, false, false),
+            (true, false, true, true),
+            (false, false, false, false),
+            (false, false, true, true),
+            (false, true, true, true),
+            (false, true, false, false),
+        ] {
+            // dialog_open and show_on_main both use this policy via
+            // dialog_owner_reveal_decision, including AppKit's invisible minimized state.
+            let decision = owner_reveal_decision(macos, minimized, visible);
+            assert_eq!(decision != OwnerRevealDecision::RejectHidden, admitted);
+        }
+    }
+
+    #[test]
+    fn admitted_minimized_dialog_restores_then_reveals_with_palettes_still_suspended() {
+        use std::cell::Cell;
+        for message in [snapshot(), export_snapshot()] {
+            for pending_restore in [false, true] {
+                let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
+                if pending_restore {
+                    suspension.begin([("toolset-core-main".into(), true, false, false)], None);
+                    suspension.release(false).unwrap();
+                }
+                let pending_palettes = suspension.pending_restore();
+                let owner_minimized = Cell::new(true);
+                let decision = owner_reveal_decision(true, owner_minimized.get(), false);
+                // Admission must reach registration instead of failing AppKit's is_visible check.
+                assert_ne!(decision, OwnerRevealDecision::RejectHidden);
+                assert_eq!(decision, OwnerRevealDecision::RestoreThenProceed);
+                prepare_owner_for_dialog(decision, || {
+                    owner_minimized.set(false);
+                    Ok(())
+                })
+                .unwrap();
+                assert!(!owner_minimized.get(), "restore must precede construction");
+                let mut registry = Registry::default();
+                let (registration, build) =
+                    register(&mut registry, message.clone(), false).unwrap();
+                assert!(build);
+                assert!(registry.sessions.contains_key(&registration.host_id));
+                // show_on_main must pass the suspension gate before preparing the owner.
+                assert!(!suspension.blocks_dialog_reveal(true, true));
+                prepare_owner_for_dialog(
+                    owner_reveal_decision(true, owner_minimized.get(), true),
+                    || panic!("the admitted owner was already restored before construction"),
+                )
+                .unwrap();
+                assert!(!owner_minimized.get(), "restore must precede dialog reveal");
+                // The final raise uses the same explicit-reveal gate after show, even if
+                // the owner's restore events have not yet resumed the pending palettes.
+                assert!(!suspension.blocks_dialog_reveal(true, true));
+                assert_eq!(suspension.active(), pending_restore);
+                assert_eq!(suspension.pending_restore(), pending_palettes);
+            }
+        }
+    }
+
+    #[test]
+    fn native_prompt_rehides_revealed_dialog_and_preserves_pending_palette_restoration() {
+        use super::super::utility_suspension::UtilitySuspension;
+        use std::cell::Cell;
+
+        // Model suspend_toolset_windows: begin's result controls whether native windows hide.
+        fn acquire(state: &mut UtilitySuspension, windows: &mut [(String, bool, bool, bool)]) {
+            if state.begin(windows.iter().cloned(), None) {
+                for (_, visible, minimized, _) in windows {
+                    if *visible && !*minimized {
+                        *visible = false;
+                    }
+                }
+            }
+        }
+
+        let palette = "toolset-core-main";
+        let sibling = "plugin-panel-report";
+        let dialog = "dialog-main-export-1";
+        let mut windows = [
+            (palette.into(), true, false, false),
+            (sibling.into(), true, false, true),
+            (dialog.into(), false, false, false),
+        ];
+        let mut state = UtilitySuspension::default();
+        acquire(&mut state, &mut windows);
+        let owner_minimized = Cell::new(true);
+        assert_eq!(state.release(false).unwrap(), vec![palette, sibling]);
+        state.finish_restore(); // The minimized owner prevents restoration.
+
+        prepare_owner_for_dialog(
+            owner_reveal_decision(true, owner_minimized.get(), false),
+            || {
+                owner_minimized.set(false);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!owner_minimized.get());
+        state.start_restore();
+        windows[1].1 = true;
+        state.restored(sibling);
+        state.finish_restore(); // The palette still awaits an event-driven retry.
+        assert_eq!(state.pending_restore().unwrap(), vec![palette]);
+        assert!(!state.blocks_dialog_reveal(true, true));
+        windows[2].1 = true; // Explicit Export reveal bypasses pending restoration.
+        windows[1].3 = false; // Hiding detached the sibling; retain its original parent.
+
+        acquire(&mut state, &mut windows); // Export's native save picker begins.
+        assert!(
+            !windows[2].1,
+            "the Export dialog must hide for its save picker"
+        );
+        assert!(
+            !windows[1].1,
+            "already-restored utilities must hide again too"
+        );
+        assert!(state.needs_restore(palette));
+        assert!(state.visible(palette, false));
+        assert!(state.visible(dialog, false));
+        assert!(state.restore_as_document_child(sibling));
+        assert!(state.blocks_dialog_reveal(true, true));
+        // Overlapping prompts still share this acquisition and cannot release it early.
+        assert!(!state.begin([], None));
+        assert!(state.release(false).is_none());
+        let pending = state.release(false).unwrap(); // Save picker ends.
+        assert_eq!(pending, vec![palette, sibling, dialog]);
+        state.start_restore();
+        for label in pending {
+            windows
+                .iter_mut()
+                .find(|window| window.0 == label)
+                .unwrap()
+                .1 = true;
+            state.restored(&label);
+        }
+        state.finish_restore();
+        assert!(windows.iter().all(|window| window.1));
+        assert!(!state.active());
     }
 
     #[test]

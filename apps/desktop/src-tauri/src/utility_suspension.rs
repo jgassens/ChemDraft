@@ -30,6 +30,14 @@ impl UtilitySuspension {
         self.depth != 0 || self.restoring
     }
 
+    /// A macOS dialog explicitly opened while its owner is minimized must be able to
+    /// restore that owner, even if a completed prompt still has utilities awaiting restore.
+    /// Do not release the suspension: palettes retain their own restoration obligations.
+    /// Active prompts, relative-order restoration and Windows keep the ordinary gate.
+    pub(crate) fn blocks_dialog_reveal(&self, macos: bool, explicit: bool) -> bool {
+        self.active() && !(macos && explicit && self.depth == 0 && !self.restoring_windows)
+    }
+
     pub(crate) fn visible(&self, label: &str, actual: bool) -> bool {
         self.visibility.get(label).copied().unwrap_or(actual)
     }
@@ -39,21 +47,30 @@ impl UtilitySuspension {
         windows: impl IntoIterator<Item = (String, bool, bool, bool)>,
         top_to_bottom: Option<Vec<String>>,
     ) -> bool {
-        let already_active = self.active();
+        let prompt_active = self.depth != 0;
         self.depth += 1;
-        if already_active {
+        if prompt_active {
             return false;
         }
+        // A completed prompt may still have pending restores when an explicit macOS dialog
+        // reveals itself. Re-acquire the hide transaction, merging that dialog and any restored
+        // siblings without losing the pending set, original parents, or relative restore order.
         for (label, visible, minimized, was_document_child) in windows {
             self.document_children
-                .insert(label.clone(), was_document_child);
-            self.visibility.insert(label.clone(), visible);
+                .entry(label.clone())
+                .or_insert(was_document_child);
+            self.visibility
+                .entry(label.clone())
+                .and_modify(|previous| *previous |= visible)
+                .or_insert(visible);
             if visible && !minimized {
                 self.restore.insert(label.clone());
-                self.restore_order.push(label);
+                if !self.restore_order.contains(&label) {
+                    self.restore_order.push(label);
+                }
             }
         }
-        if let Some(order) = top_to_bottom {
+        if let Some(order) = top_to_bottom.filter(|_| !self.restoring) {
             let fallback = std::mem::take(&mut self.restore_order);
             let mut seen = HashSet::new();
             self.restore_order = order
@@ -218,6 +235,48 @@ impl UtilitySuspension {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_macos_dialog_bypasses_pending_restore_without_releasing_palettes_or_prompts() {
+        let mut state = UtilitySuspension::default();
+        for macos in [false, true] {
+            for explicit in [false, true] {
+                assert!(!state.blocks_dialog_reveal(macos, explicit));
+            }
+        }
+        state.begin([("toolset-core-main".into(), true, false, false)], None);
+        // Even an explicit macOS request must wait for every active native prompt.
+        state.begin([], None);
+        for _ in 0..2 {
+            for macos in [false, true] {
+                for explicit in [false, true] {
+                    assert!(state.blocks_dialog_reveal(macos, explicit));
+                }
+            }
+            let _ = state.release(false);
+        }
+        let pending = state.pending_restore();
+        assert_eq!(pending, Some(vec!["toolset-core-main".into()]));
+        for macos in [false, true] {
+            for explicit in [false, true] {
+                assert_eq!(
+                    state.blocks_dialog_reveal(macos, explicit),
+                    !(macos && explicit)
+                );
+                assert!(state.active());
+                assert_eq!(state.pending_restore(), pending);
+                assert!(state.needs_restore("toolset-core-main"));
+            }
+        }
+        // Relative-order restoration is an atomic transaction, never an explicit reveal.
+        state.start_restore();
+        assert!(state.blocks_dialog_reveal(true, true));
+        state.finish_restore();
+        assert!(!state.blocks_dialog_reveal(true, true));
+        state.restored("toolset-core-main");
+        state.finish_restore();
+        assert!(!state.active());
+    }
 
     #[test]
     fn dialogs_never_attach_or_restore_as_document_children() {
@@ -704,7 +763,7 @@ mod tests {
         assert!(state.visible("toolbar", false));
         assert_eq!(state.pending_restore().unwrap().len(), labels.len());
         state.defer_show("plugin-panel-late".into());
-        assert!(!state.begin([("toolbar".into(), false, false, false)], None));
+        assert!(state.begin([("toolbar".into(), false, false, false)], None));
         assert!(state.pending_restore().is_none());
         let labels = state.release(false).unwrap();
         assert_eq!(labels.len(), 3);
