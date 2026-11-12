@@ -175,7 +175,8 @@ describe.each(["macos", "windows"] as const)("page enlargement paths on %s", pla
       expect(planDocumentPageFit(before, proposed).growth).toEqual([]);
       const commit = vi.fn();
       expect(commitWithPageFit(before, proposed, commit, { consent: new PageEnlargementConsent(platform) })).toBeUndefined();
-      expect(commit).toHaveBeenCalledExactlyOnceWith(proposed);
+      expect(commit).toHaveBeenCalledExactlyOnceWith(proposed, expect.any(Function));
+      expect(commit.mock.calls[0]![1](before)).toBe(before);
       expect(dialog.message).not.toHaveBeenCalled();
     });
     it.each(["Enlarge", "Keep Page Size"])("%s asks once and records page + content in one undo step", async answer => {
