@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AssistantCapabilityPermissions, PluginPanelReportSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, PluginPanelReportSchema, ProposedDocumentPatchSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
 import { applyPatch, createEmptyDocument, DocumentStylePreset, nativeDrawingStyleFromObjectStyle, type BracketObject, type ChemDraftDocument, type DocumentObject, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { applyMoleculeTargetBondLength, createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile, resolveStructureTemplateName, setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
@@ -22,6 +22,8 @@ import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
+import { assertPluginDocumentWriteScope } from "@chemdraft/plugin-host";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
@@ -289,9 +291,9 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     vi.restoreAllMocks(); vi.unstubAllGlobals();
   });
 
-  async function mount(drawing: ChemDraftDocument) {
+  async function mount(drawing: ChemDraftDocument, platform?: "macos" | "windows") {
     await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden"
-      initialRulersVisible={false} nativePalette={false} />));
+      initialRulersVisible={false} nativePalette={false} shortcutPlatform={platform} />));
     return getAssistantHistoryPort();
   }
   function registerWrite(handler: (context: PluginCommandContext) => Promise<unknown>) {
@@ -307,6 +309,101 @@ describe("plugin direct writes through mounted desktop normalization", () => {
       atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
       x: atom.x + 12, y: atom.y - 12, width: 18, height: 18, rotation: 0, style: {} };
   }
+
+  describe.each(["macos", "windows"] as const)("refusal during an open text edit on %s", platform => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      HTMLElement.prototype.setPointerCapture ??= () => {};
+      HTMLElement.prototype.releasePointerCapture ??= () => {};
+      HTMLElement.prototype.hasPointerCapture ??= () => false;
+    });
+    afterEach(() => vi.useRealTimers());
+
+    const editor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor");
+    async function type(value: string) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
+        editor()!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    async function history(commandId: "edit.undo" | "edit.redo") {
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT,
+        { detail: { commandId: forceDocumentHistoryCommandId(commandId) } })); });
+    }
+
+    describe.each(["ordinary", "assistant push", "assistant amend"] as const)("%s", mode => {
+      it.each([false, true])("keeps one typing undo entry and transaction state (refused write: %s)", async refuse => {
+        const fixture = testContext(false);
+        const drawing = fixture.context.getDocument()!;
+        const port = await mount(drawing, platform);
+        const textId = fixture.text.id;
+        const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612,
+          width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+        for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+          element.getBoundingClientRect = () => rect;
+        }
+        await act(async () => {
+          container.querySelector(`[data-page-svg-object-visual="${textId}"] text`)!
+            .dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+          await vi.advanceTimersByTimeAsync(100);
+        });
+        expect(editor()).not.toBeNull();
+        await type("First edit");
+        const transactions = getAssistantTransactions(port);
+        const txId = mode === "ordinary" ? undefined : transactions.beginAssistantTransaction({
+          pluginId: "org.chemdraft.writeScopeTest", runId: "typing-refusal", label: "Insert charge",
+          tabId: "initial", sendSelection: { objectIds: [] }
+        });
+        // Observe all transaction fields, including snapshot identity, without changing its state.
+        const transaction = () => (transactions as unknown as { transactions: Map<string, Record<string, unknown>> })
+          .transactions.get(txId!)!;
+        const txBefore = txId ? { ...transaction() } : undefined;
+        const userEdit = vi.fn();
+        const unsubscribe = port.onUserEdit(userEdit);
+        const before = port.read("initial")!;
+        if (refuse) {
+          const patch = { reason: "Insert charge", patch: { op: "addObject" as const,
+            pageId: before.pages[0]!.id, object: chargeMark(fixture.molecule) } };
+          if (mode === "assistant amend") {
+            // Exercise the amend boundary directly: actual typing interrupts an open assistant
+            // entry, so command routing would otherwise choose push before reaching this guard.
+            await act(async () => {
+              expect(() => port.amend("initial", applyPatch(before, patch.patch), "Insert charge",
+                final => assertPluginDocumentWriteScope(before, final, ProposedDocumentPatchSchema.parse(patch), [])))
+                .toThrow(/Plugin write refused:.*formal charge/);
+            });
+          } else {
+            const invoke = registerWrite(context => context.documents.applyPatch!(patch));
+            await act(async () => { await expect(invoke()).rejects.toThrow(/Plugin write refused:.*formal charge/); });
+          }
+        }
+        expect(port.read("initial")).toBe(before);
+        expect.soft(userEdit).not.toHaveBeenCalled();
+        if (txId) {
+          expect.soft(transaction()).toEqual(txBefore);
+          expect.soft(transaction().snapshot).toBe(txBefore!.snapshot);
+          await act(async () => { transactions.endAssistantTransaction(txId, { touchedIds: [] }); });
+        }
+        unsubscribe();
+        expect(editor()).not.toBeNull();
+        await type("Second edit");
+        await canvasPointer(container.querySelector(".page")!, "pointerdown");
+        expect(editor()).toBeNull();
+        const final = port.read("initial")!;
+        expect(final.pages[0]!.objects.find(object => object.id === textId)).toMatchObject({ text: "Second edit" });
+        await history("edit.undo");
+        expect(port.read("initial")!.pages[0]!.objects.find(object => object.id === textId)).toEqual(fixture.text);
+        const undone = port.read("initial")!;
+        await history("edit.undo");
+        expect(port.read("initial")).toBe(undone);
+        await history("edit.redo");
+        expect(port.read("initial")!.pages).toEqual(final.pages);
+        await history("edit.redo");
+        expect(port.read("initial")!.pages).toEqual(final.pages);
+      });
+    });
+  });
 
   it.each([1, -1])("refuses an inserted explicit %s charge mark on an unselected carbon, without a receipt, document change or undo entry", async charge => {
     const fixture = testContext(false);

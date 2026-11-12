@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.12.07.20-codex";
+const CURRENT_BUILD_STAMP = "11.12.08.00-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -3660,8 +3660,10 @@ export function MainWindow({
     return clean;
   }, []);
   // Ordinary edits and assistant history pushes/amendments share commit preparation.
-  const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, undoLabel?: string) => {
+  const prepareDocumentCommit = useCallback((nextDocument: ChemDraftDocument, undoLabel?: string,
+    assertFinalDocument?: (document: ChemDraftDocument) => void) => {
     const present = normalizeCommittedDocument(nextDocument);
+    assertFinalDocument?.(present);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     return present;
@@ -3675,18 +3677,26 @@ export function MainWindow({
     assertFinalDocument?: (document: ChemDraftDocument) => void
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    // Validate the actual final state before checkpointing typing or settling other history.
+    // Reuse this prepared document below: another normalization after the guard could change it.
+    let guardedPresent: ChemDraftDocument | undefined;
+    if (assertFinalDocument) {
+      const current = documentRef.current;
+      const next = typeof nextDocumentOrUpdate === "function" ? nextDocumentOrUpdate(current) : nextDocumentOrUpdate;
+      if (next === current) return false;
+      guardedPresent = prepareDocumentCommit(next, undoLabel, assertFinalDocument);
+    }
     // Record typing before the command, retaining main's editor lifetime in its callers.
     const resumeTextEdit = textCheckpointed ? undefined : checkpointTextEditBeforeCommitRef.current();
     let changed = false;
     try {
       installDocumentHistory((currentHistory) => {
-        const nextDocument = typeof nextDocumentOrUpdate === "function"
+        const nextDocument = guardedPresent ?? (typeof nextDocumentOrUpdate === "function"
           ? nextDocumentOrUpdate(currentHistory.present)
-          : nextDocumentOrUpdate;
+          : nextDocumentOrUpdate);
         if (nextDocument === currentHistory.present) return currentHistory;
 
-        const present = prepareDocumentCommit(nextDocument, undoLabel);
-        assertFinalDocument?.(present);
+        const present = guardedPresent ?? prepareDocumentCommit(nextDocument, undoLabel);
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -3808,8 +3818,7 @@ export function MainWindow({
       }
     };
     const labelled = (document: ChemDraftDocument, label: string, assertFinalDocument?: (document: ChemDraftDocument) => void) => {
-      const present = prepareDocumentCommit(document, label);
-      assertFinalDocument?.(present);
+      const present = prepareDocumentCommit(document, label, assertFinalDocument);
       assistantRecordedAfterRef.current.set(present, present);
       return present;
     };
@@ -3843,8 +3852,9 @@ export function MainWindow({
           width: (right - left) / scale, height: (bottom - top) / scale };
       },
       push: (tabId, before, after, label, assertFinalDocument) => {
+        // A refused write must not checkpoint typing and notify the transaction of a user edit.
+        const present = labelled(after, label, assertFinalDocument);
         install(tabId, (history) => {
-          const present = labelled(after, label, assertFinalDocument);
           const beforeLabel = documentUndoLabelsRef.current.get(history.present);
           if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
           const recorded = assistantRecordedAfterRef.current.get(history.present);
@@ -3853,7 +3863,8 @@ export function MainWindow({
         });
       },
       amend: (tabId, after, label, assertFinalDocument) => {
-        install(tabId, history => ({ ...history, present: labelled(after, label, assertFinalDocument) }));
+        const present = labelled(after, label, assertFinalDocument);
+        install(tabId, history => ({ ...history, present }));
       },
       select: (tabId, objectIds, label) => {
         install(tabId, (history) => {
@@ -12490,8 +12501,8 @@ export function MainWindow({
           // Both history paths normalize again; check their actual final state, after page fit too.
           if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared, assertFinalDocument);
           else commitDocumentChange(document, undoLabel, false, assertFinalDocument);
-        }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
-            : consent, signal,
+        }, { // Allocate request consent only if page fitting actually needs a question.
+          get consent() { return assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform) : consent; }, signal,
           isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
           assistantDocumentContentUnchanged(before, documentRef.current) });
         if (pending) {
