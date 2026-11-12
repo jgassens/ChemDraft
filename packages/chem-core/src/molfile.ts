@@ -20,6 +20,7 @@
  * proven against RDKit in the Phase 1C/2 tests.
  *
  * Isotopes write as V2000 `M  ISO` / V3000 `MASS=`; D/T retain their element symbols.
+ * Numbered R-group labels write dummy atoms mapped with their drawn number (R1 → [*:1]).
  * Known limitations:
  *   - `unknown` bond order is written as type 8 (any) in both formats, with a warning. Readers
  *     treat it as a query bond with no chemical order; chemistry and 3D engine callers must use
@@ -43,13 +44,19 @@
 
 import { bridgeBondIndices } from "./bondGraph";
 import { elementSymbols, isMetalSymbol } from "./elements";
-import type { MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
+import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject } from "./schemas";
+import { moleculeBracketWarningMessages } from "./brackets";
+import { rGroupNumberFromLabel } from "./rGroups";
 
 export interface MolfileWriteOptions {
+  /** Live bracket context when available; cached chemistry warnings are used otherwise. */
+  document?: ChemDraftDocument;
   /** Preserve unknown orders as query type 8 (default), or refuse before writing engine input. */
   unknownBondOrders?: "any" | "refuse";
   /** Negate y on write (ChemDraft document y-down → molfile y-up). Default false. */
   fromDocFrame?: boolean;
+  /** Uniform 2D multiplier before formatting. Default 1 preserves drawing units. */
+  coordinateScale?: number;
   /** Optional legacy collector. Warnings are also ALWAYS returned in MolfileWriteResult. */
   warnings?: string[];
   /** User-facing output format when this writer is an internal conversion step. */
@@ -62,8 +69,9 @@ export interface MolfileWriteOptions {
    *   wrong for anything that ranks substituents: a center bearing "Ph" and a methyl reads as
    *   two identical carbons and stops being a stereocenter.
    * - `"rgroup"`: an R-group pseudo-atom — `R#` with an `M  RGP` entry (V2000) or `RGROUPS=`
-   *   (V3000) — numbered per distinct label in first-seen order, so equal labels rank equal and
-   *   different labels rank apart from each other and from every element. Still a standard
+   *   (V3000) — drawn R1–R99 keep their numbers; other labels get unused numbers in first-seen
+   *   order, so equal labels rank equal and different labels rank apart from each other and
+   *   from every element. Still a standard
    *   molfile. OpenChemLib tells R1–R16 apart (a seventeenth label reads as "?", still no
    *   element) and honours only the V2000 form, so perception must use V2000.
    *
@@ -97,6 +105,13 @@ export interface MolfileWriteOptions {
    * the molecule are ignored, and a group left with no atoms is not written.
    */
   superatomGroups?: readonly { label: string; atomIds: readonly string[] }[];
+  /** SRU membership resolved by the document exporter; crossing bonds are derived from it. */
+  repeatUnitGroups?: readonly {
+    objectId: string;
+    label: string;
+    atomIds: readonly string[];
+    connectivity?: "eu" | "ht" | "hh";
+  }[];
   /**
    * Atoms to write as placeholders even though their label is a valid symbol, each with the reason
    * the warning gives — a bonded "Ar" is how chemists write aryl, not argon. They take the same
@@ -363,6 +378,10 @@ function molfileAtomSymbols(
   spelledHydrogens: Map<string, number>;
 } {
   const rgroupByLabel = new Map<string, number>();
+  const usedRgroups = new Set(atoms.flatMap((atom) => {
+    const number = rGroupNumberFromLabel(atom.element);
+    return number === undefined ? [] : [number];
+  }));
   const rgroups: { atomNumber: number; rgroup: number }[] = [];
   const spelledHydrogens = new Map<string, number>();
   // Bond-order sums and unresolved bond contact, computed only when a label might be spelled: a
@@ -395,6 +414,10 @@ function molfileAtomSymbols(
     return bondValence.get(atomId) ?? { sum: 0, unresolvedAromatic: false, unknownOrder: false };
   };
   const symbols = atoms.map((atom, index) => {
+    const drawnRgroup = rGroupNumberFromLabel(atom.element);
+    // A numbered R-group is a dummy atom with its drawn number as the atom map. Never send a
+    // display label to an engine's atom-symbol parser, where it may acquire an internal number.
+    if (drawnRgroup !== undefined && options.abbreviations !== "rgroup") return "*";
     const placeholderReason = options.placeholderAtoms?.get(atom.id);
     // A literal "*" label (a pasted dummy atom) is a valid molfile symbol, but in rgroup mode it
     // must not pass through: OpenChemLib reads "*" as a carbon, which is exactly the misranking
@@ -438,9 +461,11 @@ function molfileAtomSymbols(
       ? `Atom label "${atom.element}" is not an element symbol${reason}`
       : `Atom label "${atom.element}" stands for a group here (${placeholderReason})`;
     if (options.abbreviations === "rgroup") {
-      let rgroup = rgroupByLabel.get(atom.element);
+      let rgroup = drawnRgroup ?? rgroupByLabel.get(atom.element);
       if (rgroup === undefined) {
-        rgroup = rgroupByLabel.size + 1;
+        rgroup = 1;
+        while (usedRgroups.has(rgroup)) rgroup += 1;
+        usedRgroups.add(rgroup);
         rgroupByLabel.set(atom.element, rgroup);
       }
       rgroups.push({ atomNumber: index + 1, rgroup });
@@ -455,6 +480,19 @@ function molfileAtomSymbols(
     return "*";
   });
   return { symbols, rgroups, spelledHydrogens };
+}
+
+/** Scaled interchange must be finite and representable; raw internal mode retains its contract. */
+function scaledCoordinate(value: number, scale: number, options: MolfileWriteOptions, atomId: string, v2000 = false): number {
+  const result = value * scale;
+  if (options.coordinateScale !== undefined) {
+    if (!Number.isFinite(result)) throw new Error(`MOL export failed: atom ${atomId} has non-finite coordinates.`);
+    const formatted = result.toFixed(4);
+    if (v2000 && (formatted.length > 10 || /e/i.test(formatted))) {
+      throw new Error(`MOL V2000 export failed: atom ${atomId} coordinate exceeds the fixed-width range.`);
+    }
+  }
+  return result;
 }
 
 function f10_4(value: number): string {
@@ -486,9 +524,11 @@ function i4(value: number): string {
 
 function bondStereoFlag(bond: MoleculeBond): number {
   if (bond.order === "double" && bond.stereo === "either") return 3;
+  if (bond.order !== "single") return 0;
   const style = bond.display?.bondStyle;
   if (style === "wedge") return 1; // up (narrow end at fromAtomId)
   if (style === "hashed") return 6; // down
+  if (style === "wavy") return 4; // unknown at fromAtomId
   return 0;
 }
 
@@ -514,11 +554,16 @@ function mdlRadicalCode(markRadicals: number | undefined, atomId: string, option
  * (`fromAtomId`); nonzero formal charges become `M  CHG` lines.
  */
 export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const bracketWarnings = moleculeBracketWarningMessages(mol, options.document);
   const warningsOut = options.warnings;
-  const warnings: string[] = [];
+  const warnings: string[] = [...bracketWarnings];
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
+  const coordinateScale = options.coordinateScale ?? 1;
+  if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) {
+    throw new Error("MOL coordinate scale must be finite and positive.");
+  }
   const atoms = mol.atoms;
   const bonds = mol.bonds;
 
@@ -560,13 +605,14 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     atoms, writableBonds, "V2000", options.warnings, options.kekuleBondOrders, spelledHydrogens, options.placeholderAtoms, options.messageFormat
   );
   atoms.forEach((atom, index) => {
-    const x = f10_4(atom.x);
-    const y = f10_4(ySign * atom.y);
+    const x = f10_4(scaledCoordinate(atom.x, coordinateScale, options, atom.id, true));
+    const y = f10_4(scaledCoordinate(ySign * atom.y, coordinateScale, options, atom.id, true));
     const z = f10_4(0);
     const valence = literalValences.get(atom.id);
     const valenceCode = valence === undefined ? 0 : valence === 0 ? 15 : valence;
     // vvv occupies columns 49–51, after mass, charge, parity, H count and stereo-care.
-    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0${i3(valenceCode)}  0  0  0  0  0  0`);
+    const atomMap = rGroupNumberFromLabel(atom.element) ?? 0;
+    lines.push(`${x}${y}${z} ${symbols[index]!.padEnd(3)} 0  0  0  0  0${i3(valenceCode)}  0  0  0${i3(atomMap)}  0  0`);
   });
 
   for (const bond of writableBonds) {
@@ -613,10 +659,10 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
 
   // Superatom S-groups: type (STY, up to 8 per line), atoms (SAL) and crossing bonds (SBL, up to
   // 15 per line each), and the label (SMT).
-  const sgroups = superatomSgroups(atoms, writableBonds, options);
+  const sgroups = molfileSgroups(atoms, writableBonds, options, "V2000");
   for (let i = 0; i < sgroups.length; i += 8) {
     const chunk = sgroups.slice(i, i + 8);
-    lines.push(`M  STY${i3(chunk.length)}${chunk.map((_, offset) => ` ${i3(i + offset + 1)} SUP`).join("")}`);
+    lines.push(`M  STY${i3(chunk.length)}${chunk.map((group, offset) => ` ${i3(i + offset + 1)} ${group.type}`).join("")}`);
   }
   sgroups.forEach((sgroup, index) => {
     const number = index + 1;
@@ -629,6 +675,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
       lines.push(`M  SBL ${i3(number)}${i3(chunk.length)}${chunk.map((bond) => ` ${i3(bond)}`).join("")}`);
     }
     lines.push(`M  SMT ${i3(number)} ${sgroup.label}`);
+    if (sgroup.type === "SRU") lines.push(`M  SCN  1 ${i3(number)} ${sgroup.connectivity!.toUpperCase()}`);
   });
 
   lines.push("M  END");
@@ -641,11 +688,16 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
  * "MOL Text" flavor Copy As offers alongside the classic V2000 form.
  */
 export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWriteOptions): MolfileWriteResult {
+  const bracketWarnings = moleculeBracketWarningMessages(mol, options.document);
   const warningsOut = options.warnings;
-  const warnings: string[] = [];
+  const warnings: string[] = [...bracketWarnings];
   options = { ...options, warnings };
   handleUnknownBondOrders(mol, options);
   const ySign = options.fromDocFrame ? -1 : 1;
+  const coordinateScale = options.coordinateScale ?? 1;
+  if (!Number.isFinite(coordinateScale) || coordinateScale <= 0) {
+    throw new Error("MOL coordinate scale must be finite and positive.");
+  }
   const atoms = mol.atoms;
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index + 1] as const)); // 1-based
   const atomById = new Map(atoms.map((atom) => [atom.id, atom]));
@@ -655,7 +707,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const hasStereo = writableBonds.some((bond) => [1, 6].includes(bondStereoFlag(bond)));
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
-  const sgroups = superatomSgroups(atoms, writableBonds, options);
+  const sgroups = molfileSgroups(atoms, writableBonds, options, "V3000");
 
   const lines: string[] = [
     "",
@@ -682,7 +734,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const valence = literalValences.get(atom.id);
     const valence30 = valence !== undefined ? ` VAL=${valence === 0 ? -1 : valence}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0` +
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(scaledCoordinate(atom.x, coordinateScale, options, atom.id))} ${round4(ySign * scaledCoordinate(atom.y, coordinateScale, options, atom.id))} 0 ${rGroupNumberFromLabel(atom.element) ?? 0}` +
       `${charge}${isotope}${radical}${rgroups30}${valence30}`
     );
   });
@@ -691,7 +743,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   writableBonds.forEach((bond, index) => {
     const [from, to] = v3000BondAtomIds(bond, atomById);
     const stereo = bondStereoFlag(bond);
-    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : stereo === 3 ? " CFG=2" : "";
+    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : (stereo === 3 || stereo === 4) ? " CFG=2" : "";
     lines.push(
       `M  V30 ${index + 1} ${isDativeBond(bond) ? 9 : resolvedMolfileBondCode(bond, options)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );
@@ -704,7 +756,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
         ? ` XBONDS=(${sgroup.bondNumbers.length} ${sgroup.bondNumbers.join(" ")})`
         : "";
       lines.push(...v3000ContinuedLines(
-        `${index + 1} SUP 0 ATOMS=(${sgroup.atomNumbers.length} ${sgroup.atomNumbers.join(" ")})${crossing} LABEL=${v3000Value(sgroup.label)}`
+        `${index + 1} ${sgroup.type} 0 ATOMS=(${sgroup.atomNumbers.length} ${sgroup.atomNumbers.join(" ")})${crossing} LABEL=${v3000Value(sgroup.label)}`
+        + (sgroup.type === "SRU" ? ` CONNECT=${sgroup.connectivity!.toUpperCase()}` : "")
       ));
     });
     lines.push("M  V30 END SGROUP");
@@ -716,6 +769,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
 
 /** One `superatomGroups` entry resolved to 1-based atom and crossing-bond numbers. */
 interface SuperatomSgroup {
+  type: "SUP" | "SRU";
+  connectivity?: "eu" | "ht" | "hh";
   label: string;
   atomNumbers: number[];
   bondNumbers: number[];
@@ -736,8 +791,34 @@ function superatomSgroups(
       .map((bond, index) => ({ bond, number: index + 1 }))
       .filter(({ bond }) => members.has(bond.fromAtomId) !== members.has(bond.toAtomId))
       .map(({ number }) => number);
-    return [{ label: group.label, atomNumbers, bondNumbers }];
+    return [{ type: "SUP", label: group.label, atomNumbers, bondNumbers }];
   });
+}
+
+function molfileSgroups(
+  atoms: readonly MoleculeAtom[], writableBonds: readonly MoleculeBond[],
+  options: MolfileWriteOptions, format: "V2000" | "V3000"
+): SuperatomSgroup[] {
+  const groups = superatomSgroups(atoms, writableBonds, options);
+  const atomNumbers = new Map(atoms.map((atom, index) => [atom.id, index + 1]));
+  for (const group of options.repeatUnitGroups ?? []) {
+    const members = new Set(group.atomIds);
+    const reason = members.size === 0 || [...members].some(id => !atomNumbers.has(id))
+      ? "its atom membership is incomplete"
+      : !group.label || /[\r\n\x00-\x1f]/.test(group.label) ||
+        (format === "V2000" && (group.label.length > 69 || /[^\x20-\x7e]/.test(group.label)))
+        ? "its repeat label cannot be represented in this format"
+        : format === "V2000" && groups.length >= 999 ? "the SGroup count exceeds 999" : undefined;
+    if (reason) {
+      options.warnings?.push(`${format} cannot represent repeat unit ${group.label} (bracket ${group.objectId}): ${reason}; only the bare structure is written.`);
+      continue;
+    }
+    groups.push({ type: "SRU", label: group.label, connectivity: group.connectivity ?? "eu",
+      atomNumbers: [...members].map(id => atomNumbers.get(id)!).sort((a, b) => a - b),
+      bondNumbers: writableBonds.flatMap((bond, index) =>
+        members.has(bond.fromAtomId) !== members.has(bond.toAtomId) ? [index + 1] : []) });
+  }
+  return groups;
 }
 
 /** A V3000 property value, quoted when it holds a space, a quote or nothing (CTfile rule). */

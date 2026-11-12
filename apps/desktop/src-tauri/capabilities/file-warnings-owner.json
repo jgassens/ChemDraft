@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "file-warnings-owner",
+  "description": "Only the document publishes warning text and receives row Show actions.",
+  "windows": ["main"],
+  "permissions": ["allow-file-warnings-open", "allow-file-warnings-publish", "allow-file-warnings-close"]
+}

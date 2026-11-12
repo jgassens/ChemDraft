@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { detectDialogPlatform, validInsertTableOptions, type DialogPlatform, type InsertTableOptions } from "./dialogProtocol";
 
 export function InsertTableForm({ title, initial, onSubmit, onCancel, onReady, busy = false, error,
@@ -20,8 +20,12 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, onReady, b
   const [headerRows, setHeaderRows] = useState(String(initial.headerRows));
   const [preset, setPreset] = useState(initial.preset);
   const composing = useRef(false);
+  const errorId = useId();
   const options = { rows: Number(rows), columns: Number(columns), headerRows: Number(headerRows), preset };
   const valid = [rows, columns, headerRows].every(value => value.trim() !== "") && validInsertTableOptions(options);
+  const rowsInvalid = !rows.trim() || !validInsertTableOptions({ ...options, columns: 1, headerRows: 0 });
+  const columnsInvalid = !columns.trim() || !validInsertTableOptions({ ...options, rows: 1, headerRows: 0 });
+  const headerInvalid = !headerRows.trim() || !validInsertTableOptions({ ...options, rows: rowsInvalid ? 500 : options.rows, columns: 1 });
   return <form ref={form} className="cd-page-size-form cd-insert-table-form cd-dialog-fit" aria-label="Insert Table" aria-busy={busy}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
     onKeyDown={event => {
@@ -34,14 +38,14 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, onReady, b
     }} onSubmit={event => { event.preventDefault(); if (valid && !busy && !composing.current) onSubmit(options); }}>
     <div className="cd-dialog-fit-body"><h2>Insert Table</h2><p className="cd-insert-table-drawing">Drawing: <strong title={title}>{title}</strong></p>
     <div className="cd-page-size-fields">
-      <label>Rows<input autoFocus type="number" min={1} max={500} step={1} value={rows} onChange={e => setRows(e.target.value)} /></label>
-      <label>Columns<input type="number" min={1} max={64} step={1} value={columns} onChange={e => setColumns(e.target.value)} /></label>
-      <label>Header rows<input type="number" min={0} max={options.rows} step={1} value={headerRows} onChange={e => setHeaderRows(e.target.value)} /></label>
-      <label>Style<select value={preset} onChange={e => setPreset(e.target.value as InsertTableOptions["preset"])}>
+      <label>Rows<input autoFocus type="number" min={1} max={500} step={1} value={rows} onChange={e => setRows(e.target.value)} aria-invalid={rowsInvalid || undefined} aria-describedby={rowsInvalid ? errorId : undefined} /></label>
+      <label>Columns<input type="number" min={1} max={64} step={1} value={columns} onChange={e => setColumns(e.target.value)} aria-invalid={columnsInvalid || undefined} aria-describedby={columnsInvalid ? errorId : undefined} /></label>
+      <label>Header rows<input type="number" min={0} max={options.rows} step={1} value={headerRows} onChange={e => setHeaderRows(e.target.value)} aria-invalid={headerInvalid || undefined} aria-describedby={headerInvalid ? errorId : undefined} /></label>
+      <label>Style<select className="native-dialog-panel-select" value={preset} onChange={e => setPreset(e.target.value as InsertTableOptions["preset"])}>
         <option value="three-line">Three-line</option><option value="grid">Grid</option>
       </select></label>
     </div>
-    <p role="status">{error ?? (!valid ? "Enter 1–500 rows, 1–64 columns, and a header count between 0 and the row count." : "")}</p></div>
+    <p id={errorId} role="status">{error ?? (!valid ? "Enter 1–500 rows, 1–64 columns, and a header count between 0 and the row count." : "")}</p></div>
     <div className="cd-page-size-buttons cd-dialog-fit-footer"><button type="button" onClick={onCancel}>Cancel</button>
       <button type="submit" disabled={!valid || busy}>Insert</button></div>
   </form>;

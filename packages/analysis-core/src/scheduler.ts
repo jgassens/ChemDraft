@@ -201,7 +201,7 @@ export class AnalysisScheduler {
 
   /** Abandon whatever `slot` is doing. Its pending promise resolves as `cancelled`. */
   cancel(slot: string): void {
-    this.#supersede(slot, "the analysis was cancelled");
+    this.#supersede(slot, "the analysis was canceled");
   }
 
   cancelAll(): void {

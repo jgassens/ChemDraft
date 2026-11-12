@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic graph-only external CDXML: no stored structure string or native payload. -->
+<CDXML CreationProgram="ChemDraft synthetic fixture">
+  <page id="1" BoundingBox="0 0 612 792">
+    <fragment id="2">
+      <n id="10" Element="6" p="20 30"/>
+      <n id="11" Element="8" p="40 30"/>
+      <b id="20" B="10" E="11" Order="1"/>
+    </fragment>
+    <fragment id="3">
+      <n id="30" Element="6" p="100 30"/>
+      <n id="31" Element="6" p="120 30"/>
+      <n id="32" Element="6" p="130 47.32"/>
+      <n id="33" Element="6" p="120 64.64"/>
+      <n id="34" Element="6" p="100 64.64"/>
+      <n id="35" Element="6" p="90 47.32"/>
+      <b id="40" B="30" E="31" Order="1.5"/>
+      <b id="41" B="31" E="32" Order="1.5"/>
+      <b id="42" B="32" E="33" Order="1.5"/>
+      <b id="43" B="33" E="34" Order="1.5"/>
+      <b id="44" B="34" E="35" Order="1.5"/>
+      <b id="45" B="35" E="30" Order="1.5"/>
+    </fragment>
+  </page>
+</CDXML>

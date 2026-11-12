@@ -49,7 +49,7 @@ export interface TableInspectorModel {
 
 const ALIGNMENTS = [
   { align: "left", label: "Left" },
-  { align: "center", label: "Centre" },
+  { align: "center", label: "Center" },
   { align: "right", label: "Right" },
   { align: "decimal", label: "Decimal" }
 ] as const;

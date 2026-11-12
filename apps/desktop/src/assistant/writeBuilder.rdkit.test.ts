@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { applyPatch, createEmptyDocument } from "@chemdraft/chem-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
+import { createReactionProductAligner } from "@chemdraft/rdkit-adapter/depiction";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../../packages/rdkit-adapter/src/conformer";
 import {
-  createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile
+  chemicalIdentityMolfile, createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile
 } from "@chemdraft/document-workflow-core";
 import { callAssistantTool } from "./assistantTools";
 import { isotopeInsertSmiles, isotopeReactions, expectIsotopeGraph } from
@@ -41,6 +42,51 @@ function realContext(selected = true): AssistantToolContext {
   return context;
 }
 describe("RDKit assistant write identity", () => {
+  it("inserts a reaction with aligned shared rings and unchanged canonical identities", async () => {
+    const context = realContext(false);
+    context.getDocument()!.pages[0]!.objects = [];
+    context.confirmPageGrowth = async () => true;
+    context.chemistry.reactionProductAligner = createReactionProductAligner;
+    const reactant = "OC(=O)c1ccccc1O", product = "CC(=O)Oc1ccccc1C(=O)O";
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: [reactant], products: [product] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const molecules = context.getDocument()!.pages[0]!.objects.filter(o => o.type === "molecule");
+    expect(molecules).toHaveLength(2);
+    const rdkit = await ensureRdkit();
+    const query = rdkit.get_mol(reactant)!;
+    const points: { x: number; y: number }[][] = [];
+    for (const [i, molecule] of molecules.entries()) {
+      const drawn = rdkit.get_mol(chemicalIdentityMolfile(molecule))!;
+      const source = rdkit.get_mol([reactant, product][i]!)!;
+      try {
+        expect(drawn.get_smiles!()).toBe(source.get_smiles!());
+        const matcher = drawn as typeof drawn & { get_substruct_match(query: unknown): string };
+        const indices = (JSON.parse(matcher.get_substruct_match(query)) as { atoms: number[] }).atoms.slice(3, 9);
+        expect(indices).toHaveLength(6);
+        points.push(indices.map(index => molecule.atoms[index]!));
+      } finally { drawn.delete(); source.delete(); }
+    }
+    query.delete();
+    const deltas = points[0]!.map((p, i) => ({ x: points[1]![i]!.x - p.x, y: points[1]![i]!.y - p.y }));
+    const dx = deltas.reduce((sum, p) => sum + p.x, 0) / 6, dy = deltas.reduce((sum, p) => sum + p.y, 0) / 6;
+    expect(Math.sqrt(deltas.reduce((sum, p) => sum + (p.x - dx) ** 2 + (p.y - dy) ** 2, 0) / 6)).toBeLessThan(0.15);
+  });
+
+  it.each(["[Na+].[OH-]", "C[Mg]Br", "O"])("keeps condensed scheme identity through normalized writes: %s", async smiles => {
+    const context = realContext(false);
+    context.getDocument()!.pages[0]!.objects = [];
+    context.confirmPageGrowth = async () => true;
+    const write = context.write;
+    context.write = async (patch, signal, check, expected) => {
+      const before = context.getDocument()!;
+      const patched = applyPatch(before, patch);
+      await verifyNormalizedAssistantWrite(context, before, patched,
+        new Set(patched.pages.flatMap(page => page.objects.map(object => object.id))), expected);
+      return write(patch, signal, check, expected);
+    };
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: [smiles], products: [smiles] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  });
   it.each([
     ["F[C@](Cl)=C=C(Br)I", "allene (axial)"],
     ["F[C@@](Cl)=C=C(Br)I", "allene (axial)"],

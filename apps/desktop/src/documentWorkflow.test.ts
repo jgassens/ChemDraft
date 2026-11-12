@@ -1222,7 +1222,7 @@ describe("SMILES molecule grid", () => {
     expect(result.document.pages[0].layout).toMatchObject({ presetId: "custom", sourceUnit: "inch" });
     expect(result.document.selection.objectIds).toEqual(result.objectIds);
     expectContainedAndSeparated(result.document);
-    expect(insertSmilesMoleculeGridStatus(result, 1)).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
+    expect(insertSmilesMoleculeGridStatus(result, 1, [], { document: result.document, decision: "enlarge", overflowObjectIds: [] })).toMatch(/^Pasted 30 SMILES structures in a 3 × 10 grid \(page grown to Custom 8\.5 × [\d.]+ in\); 1 token skipped$/);
   });
 
   it("uses origin when the whole grid fits there, including for single-atom depictions", () => {
@@ -1297,7 +1297,9 @@ describe("Phase 4 document workflow", () => {
     expect(payload.warnings).toEqual([]);
     expect(reopened.source).toBe("native-payload");
     expect(reopened.warnings).toEqual([]);
-    expect(reopened.document).toEqual(document);
+    // JSON omits the unanalyzed fallback's chemistry: undefined; compare all serialized content.
+    // Molecule preset IDs are preserved by 1.1.1 and require no compatibility header.
+    expect(reopened.document).toEqual(JSON.parse(JSON.stringify(document)));
   });
 
   it("hashes the embedded native document, not the whole envelope", () => {
@@ -1999,7 +2001,7 @@ describe("Phase 4 document workflow", () => {
     expect(finished.structure).toBe("C".repeat(finished.atoms.length));
   });
 
-  it("resolves an aromatic anchor's bond orders once per drag frame, not once per added carbon", () => {
+  it("does not resolve aromatic valence merely to admit a chain drag", () => {
     // The anchored drag re-checked valence against the whole grown molecule for every carbon it
     // added, re-kekulizing each aromatic ring per vertex: O(chain × molecule) per pointermove.
     // A fresh copy of the ring for every measurement: the bond-order resolution is cached per bonds
@@ -2038,10 +2040,9 @@ describe("Phase 4 document workflow", () => {
     const long = frame(420);
     expect(short.added).toBeGreaterThan(0);
     expect(long.added).toBeGreaterThan(short.added * 4);
-    // One resolution of the source molecule per frame, however long the chain: the frame used to
-    // re-resolve once per added carbon (3 carbons cost 15 here, 22 carbons 110).
-    expect(short.work).toBe(oneResolution);
-    expect(long.work).toBe(oneResolution);
+    // Preview admission is geometric; it no longer resolves valence at all.
+    expect(short.work).toBe(0);
+    expect(long.work).toBe(0);
   });
 
   it("applies formula formatting to selected text objects only", () => {
@@ -2061,9 +2062,10 @@ describe("Phase 4 document workflow", () => {
     expect(applyFormulaTextFormatting(formatted)).toBe(formatted);
   });
 
-  it("maps bracket tool commands and inserts a selected default bracket", () => {
+  it("maps bracket tool commands and inserts a selected default pair", () => {
     expect(bracketKindForToolCommand("tool.bracket")).toBe("curly");
     expect(bracketKindForToolCommand("tool.squareBracket")).toBe("square");
+    expect(bracketKindForToolCommand("tool.roundBracket")).toBe("round");
     expect(bracketKindForToolCommand("tool.text")).toBeUndefined();
 
     const blank = createPhase4Document("Bracket Fixture");
@@ -2077,12 +2079,13 @@ describe("Phase 4 document workflow", () => {
       height: nativeBracketDefaultSize.height
     });
     if (object.type === "bracket") {
-      // Centered on the click point.
-      expect(object.x).toBe(200 - nativeBracketDefaultSize.width / 2);
+      // The default pair is centered on the click point.
+      expect(object.x).toBe(160);
       expect(object.y).toBe(220 - nativeBracketDefaultSize.height / 2);
       expect(object.containedObjectIds).toEqual([]);
     }
-    expect(placed.selection.objectIds).toEqual([object.id]);
+    expect(placed.pages[0].objects).toHaveLength(2);
+    expect(placed.selection.objectIds).toEqual(placed.pages[0].objects.map(item => item.id));
   });
 
   it("registers orbital tools as closed art shapes with chemistry command ids", () => {
@@ -3679,10 +3682,11 @@ describe("Phase 4 document workflow", () => {
       bond.fromAtomId === "atom_002" || bond.toAtomId === "atom_002"
     )).toHaveLength(3);
 
-    // Methylidene refuses when the carbon lacks two free valences (here: after the gem-dimethyl
-    // the source carbon has three bonds).
+    // A methylidene also lands on the three-bond carbon, with a warning.
     const gemDocument = applyNativeAtomSproutTarget(seed, atomTarget, "gemDimethyl");
-    expect(applyNativeAtomSproutTarget(gemDocument, atomTarget, "methylidene")).toBe(gemDocument);
+    const overfilled = selectedMolecule(applyNativeAtomSproutTarget(gemDocument, atomTarget, "methylidene"));
+    expect(overfilled.bonds.at(-1)?.order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(overfilled).map(state => state.atomId)).toContain(atomTarget.atomId);
   });
 
   it("builds and closes a hexagon from repeated cyclic-bond (0) presses", () => {
@@ -3760,7 +3764,7 @@ describe("Phase 4 document workflow", () => {
     expect(closed.chemistry).toMatchObject({ formula: "C4H8", atomCount: 4, bondCount: 4 });
   });
 
-  it("refuses the gem-dimethyl sprout entirely when the atom lacks two free growth slots", () => {
+  it("leaves an already overfilled carbon unchanged for the branched alkyl command", () => {
     // A central carbon with seven bonds has ONE free growth slot (the growth limit is 8): the
     // first methyl would fit and the second cannot, so the pair must refuse together — the old
     // code committed the single methyl silently, and the caller's refusal signal (reference
@@ -5297,7 +5301,7 @@ describe("Phase 4 document workflow", () => {
     expect(findNativeMoleculeAtomHit(molecule, terminalAtom ?? { x: 0, y: 0 })).toMatchObject({
       atomId: "atom_002",
       degree: 1,
-      availableBonds: 7
+      availableBonds: Number.POSITIVE_INFINITY
     });
     expect(findNativeMoleculeAtomHit(molecule, {
       x: terminalAtom?.x ?? 0,
@@ -5321,8 +5325,8 @@ describe("Phase 4 document workflow", () => {
     const upwardAtom = selectedMolecule(upwardDocument).atoms.at(-1);
     const downwardAtom = selectedMolecule(downwardDocument).atoms.at(-1);
 
-    expect(upwardPreview).toMatchObject({ atomId: "atom_002", availableBonds: 7 });
-    expect(downwardPreview).toMatchObject({ atomId: "atom_002", availableBonds: 7 });
+    expect(upwardPreview).toMatchObject({ atomId: "atom_002", availableBonds: Number.POSITIVE_INFINITY });
+    expect(downwardPreview).toMatchObject({ atomId: "atom_002", availableBonds: Number.POSITIVE_INFINITY });
     expect(upwardPreview?.candidateDirections).toHaveLength(2);
     expect(downwardPreview?.candidateDirections).toHaveLength(2);
     expect(upwardPreview?.candidateDirections.some((direction) => direction.y < 0)).toBe(true);
@@ -5380,7 +5384,7 @@ describe("Phase 4 document workflow", () => {
 
     expect(preview).toMatchObject({
       atomId: "atom_002",
-      availableBonds: 7,
+      availableBonds: Number.POSITIVE_INFINITY,
       customLength: false,
       lengthAngstrom: 1.56
     });
@@ -5556,16 +5560,13 @@ describe("Phase 4 document workflow", () => {
     expect(solidBondedZn).toMatchObject({ formalCharge: 2 });
   });
 
-  it("refuses a stack the atom's valence cannot carry, instead of writing one the reconcile strips", () => {
+  it("keeps unsupported stacked charges on their intended atoms with warnings", () => {
     const chargeMarks = (document: ChemDraftDocument) =>
       document.pages[0].objects.filter((object): object is ElectronMarkObject =>
         object.type === "electron-mark" && object.markKind === "charge"
       );
 
-    // A bare carbon carries +1 through +4 (C4+ is an expressible octet state) and must stop
-    // there. Before this check, the fifth press wrote +5 to the mark, the reconcile refused to
-    // associate it, detached it, and reset the atom from +4 to NEUTRAL — while the status bar
-    // reported "Placed positive charge 5+".
+    // Unsupported charges land; reconciliation must retain the same atom and mark.
     const ethane = insertNativeSingleBondMolecule(createPhase4Document("Stack Refusal"), { x: 300, y: 300 });
     const methane = applyNativeMoleculeDeleteTarget(ethane, {
       objectId: selectedMolecule(ethane).id, kind: "bond", bondId: "bond_001",
@@ -5578,14 +5579,15 @@ describe("Phase 4 document workflow", () => {
       document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, carbon));
     }
     expect(moleculeById(document, carbon.objectId).atoms[0]).toMatchObject({ formalCharge: 4, markCharge: 4 });
-    expect(nativeChargeStackRefusal(document, 1, carbon)).toBe("valence");
-    expect(applyChargeToolAtNativeAtom(document, 1, carbon)).toBe(document);
-    // Nothing moved: the atom keeps its +4, the mark keeps its anchor, and − still steps down.
+    expect(nativeChargeStackRefusal(document, 1, carbon)).toBeUndefined();
+    document = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(document, 1, carbon));
+    expect(moleculeById(document, carbon.objectId).atoms[0]).toMatchObject({ formalCharge: 5, markCharge: 5 });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(document, carbon.objectId))).toHaveLength(1);
+    // The mark keeps its anchor, and minus still steps down.
     expect(chargeMarks(document)[0].anchor.kind).toBe("atom");
     expect(nativeChargeStackRefusal(document, -1, carbon)).toBeUndefined();
 
-    // Ammonium: a four-bond nitrogen carries exactly +1. The second press used to strip that +1
-    // (leaving a neutral hypervalent N with an invalid badge) and float a "2+" beside it.
+    // Ammonium becomes N2+ on the second press, retaining all four bonds and its anchor.
     const quaternary = [-120, 120, 180].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
       insertNativeSingleBondMolecule(createPhase4Document("Ammonium Refusal"), { x: 300, y: 300 })
@@ -5595,9 +5597,13 @@ describe("Phase 4 document workflow", () => {
     const ammonium = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(nitrogenDocument, 1, nitrogen));
     expect(moleculeById(ammonium, nitrogen.objectId).atoms.find((atom) => atom.id === "atom_001")).toMatchObject({ formalCharge: 1 });
     expect(nativeMoleculeInvalidAtomStates(moleculeById(ammonium, nitrogen.objectId))).toEqual([]);
-    expect(nativeChargeStackRefusal(ammonium, 1, nitrogen)).toBe("valence");
-    expect(applyChargeToolAtNativeAtom(ammonium, 1, nitrogen)).toBe(ammonium);
-    expect(chargeMarks(ammonium)).toHaveLength(1);
+    expect(nativeChargeStackRefusal(ammonium, 1, nitrogen)).toBeUndefined();
+    const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(ammonium, 1, nitrogen));
+    expect(moleculeById(twice, nitrogen.objectId).atoms.find((atom) => atom.id === nitrogen.atomId))
+      .toMatchObject({ formalCharge: 2, markCharge: 2 });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(twice, nitrogen.objectId)).map(state => state.atomId)).toContain(nitrogen.atomId);
+    expect(chargeMarks(twice)).toHaveLength(1);
+    expect(chargeMarks(twice)[0].anchor).toMatchObject({ kind: "atom", atomId: nitrogen.atomId });
   });
 
   it("never bumps a mark that belongs to a neighbouring atom", () => {
@@ -5722,7 +5728,9 @@ describe("Phase 4 document workflow", () => {
     const target = { objectId: selectedMolecule(fluorine).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(fluorine)).map((state) => state.atomId)).toEqual(["atom_001"]);
     const dismissed = applyNativeAtomWarningSuppression(fluorine, target, true);
-    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([
+      expect.objectContaining({ atomId: "atom_001", valid: false, warningSuppressed: true })
+    ]);
 
     // Relabelled to a (still invalid) three-bond oxygen: a different atom, its own badge. The
     // dismissal used to ride along and silence an error the user never saw, for good.
@@ -5830,7 +5838,7 @@ describe("Phase 4 document workflow", () => {
     expect(dativeRaised).toBe(complex);
   });
 
-  it("refuses a bond-order change that breaks a valid endpoint — a dismissed badge does not license it", () => {
+  it("lands a bond-order change that invalidates an endpoint, including a suppressed warning", () => {
     // A neutral N with three covalent bonds: raising any of them to double needs an N⁺.
     const threeBonds = [-120, 120].reduce(
       (current, angle) => growFromAtom(current, "atom_001", angle),
@@ -5843,12 +5851,16 @@ describe("Phase 4 document workflow", () => {
       objectId: molecule.id, kind: "bond" as const, bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
       terminalAtomId: bond.toAtomId, distanceToPointer: 0
     };
-    expect(applyNativeMoleculeBondOrderValueTarget(nitrogen, target, "double")).toBe(nitrogen);
+    const doubled = selectedMolecule(applyNativeMoleculeBondOrderValueTarget(nitrogen, target, "double"));
+    expect(moleculeBond(doubled, bond.id).order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(doubled).map(state => state.atomId)).toEqual(["atom_001"]);
 
-    // Dismissing the N's badge must not open the door: the check judges the bare arithmetic.
+    // Suppression hides only the badge; the requested order and raw warning still land.
     const dismissed = applyNativeAtomWarningSuppression(nitrogen, { objectId: molecule.id, kind: "atom", atomId: "atom_001", distanceToPointer: 0 }, true);
     expect(selectedMolecule(dismissed).atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
-    expect(applyNativeMoleculeBondOrderValueTarget(dismissed, target, "double")).toBe(dismissed);
+    const hidden = selectedMolecule(applyNativeMoleculeBondOrderValueTarget(dismissed, target, "double"));
+    expect(moleculeBond(hidden, bond.id).order).toBe("double");
+    expect(hidden.chemistry?.warnings.some(warning => warning.code === "chemistry.invalid_valence")).toBe(true);
 
     // An endpoint that is ALREADY flagged stays editable: a typed lone "N" with one bond is
     // hypovalent before and after, so the change breaks nothing and goes through.
@@ -6120,12 +6132,14 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
     expect(molecule.chemistry?.warnings).toHaveLength(1);
 
-    // ...Clear Warning silences the badge and the stored warning...
+    // ...Clear Warning hides only the badge; raw validation and stored warnings remain...
     const cleared = applyNativeAtomWarningSuppression(document, target, true);
     const clearedMolecule = selectedMolecule(cleared);
     expect(clearedMolecule.atoms[0]).toMatchObject({ warningSuppressed: true });
-    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([]);
-    expect(clearedMolecule.chemistry?.warnings).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([
+      expect.objectContaining({ valid: false, warningSuppressed: true })
+    ]);
+    expect(clearedMolecule.chemistry?.warnings).toEqual(molecule.chemistry?.warnings);
 
     // ...and Restore Warning brings it back.
     const restored = applyNativeAtomWarningSuppression(cleared, target, false);
@@ -6151,11 +6165,14 @@ describe("Phase 4 document workflow", () => {
     const partialMolecule = selectedMolecule(partial);
     expect(partialMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
     expect(partialMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
-    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([{ atomId: "atom_002" }]);
+    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([
+      { atomId: "atom_001", valid: false, warningSuppressed: true }, { atomId: "atom_002", valid: false }
+    ]);
 
-    // Whole-molecule scope: every current warning goes; restoring the same scope brings both back.
+    // Whole-molecule scope: every badge hides, while both raw diagnostics remain.
     const whole = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id }], true);
-    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toHaveLength(2);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole)).every(state => state.warningSuppressed)).toBe(true);
     const restored = applyNativeWarningSuppressionToScope(whole, [{ objectId: molecule.id }], false);
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(restored))).toHaveLength(2);
 
@@ -6235,7 +6252,7 @@ describe("Phase 4 document workflow", () => {
     expect(nativeSingleBondGraphSmiles(chargedMolecule.atoms, chargedMolecule.bonds)).toBe("C[*+]");
   });
 
-  it("still refuses a third positive charge on a two-bond carbon", () => {
+  it("retains a third positive charge on a two-bond carbon with a warning", () => {
     const propane = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Carbon Charge Refusal"), { x: 300, y: 300 }),
       "atom_002",
@@ -6250,19 +6267,18 @@ describe("Phase 4 document workflow", () => {
     };
     const once = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(propane, 1, target));
     const twice = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(once, 1, target));
-    // The refusal happens at the tool, not at the reconcile: the third press is a no-op, so the
-    // carbon KEEPS its +2 and its anchored mark. (It used to write +3, which the reconcile then
-    // detached — leaving a neutral carbon beside a floating "3+".)
+    // The third charge stays on the same carbon, even though it is unsupported.
     const thirdAttempt = applyChargeToolAtNativeAtom(twice, 1, target);
-    expect(thirdAttempt).toBe(twice);
-    expect(nativeChargeStackRefusal(twice, 1, target)).toBe("valence");
+    expect(thirdAttempt).not.toBe(twice);
+    expect(nativeChargeStackRefusal(twice, 1, target)).toBeUndefined();
     const carbon = moleculeById(reconcileNativeChargeMarks(thirdAttempt), molecule.id).atoms.find((atom) => atom.id === "atom_002");
     const mark = thirdAttempt.pages[0].objects.find((object): object is ElectronMarkObject =>
       object.type === "electron-mark" && object.markKind === "charge"
     );
 
     expect(moleculeById(twice, molecule.id).atoms.find((atom) => atom.id === "atom_002")).toMatchObject({ formalCharge: 2 });
-    expect(carbon).toMatchObject({ element: "C", formalCharge: 2, markCharge: 2 });
+    expect(carbon).toMatchObject({ element: "C", formalCharge: 3, markCharge: 3 });
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(reconcileNativeChargeMarks(thirdAttempt), molecule.id)).map(state => state.atomId)).toContain(target.atomId);
     expect(mark?.anchor).toMatchObject({ kind: "atom", atomId: "atom_002" });
   });
 
@@ -6731,9 +6747,9 @@ describe("Phase 4 document workflow", () => {
     expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds, undefined, molecule.atoms)).toBe("C");
     expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
 
-    // Lower-case and two-letter symbols canonicalize ("fe" → Fe); Fe has no valence table entry,
+    // Exact-capitalization two-letter symbols convert; Fe has no valence table entry,
     // so it converts without a flag.
-    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "fe");
+    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "Fe");
     const ironObject = ironText.pages[0].objects.find((object) => object.type === "text");
     const iron = selectedMolecule(convertNativeTextObjectToAtom(ironText, ironObject?.id ?? ""));
     expect(iron.atoms[0]).toMatchObject({ element: "Fe" });
@@ -6916,7 +6932,7 @@ describe("Phase 4 document workflow", () => {
       { atomId: "atom_001", element: "O", valenceUsed: 4, valid: false }
     ]);
     expect(findNativeMoleculeAtomHit(changedMolecule, molecule.atoms.find((atom) => atom.id === "atom_001") ?? { x: 0, y: 0 }))
-      .toMatchObject({ atomId: "atom_001", availableBonds: 4 });
+      .toMatchObject({ atomId: "atom_001", availableBonds: Number.POSITIVE_INFINITY });
   });
 
   it.each(["O", "N", "S"])("creates automatic C=%s through order cycling and the 2-key path", (element) => {
@@ -7261,7 +7277,7 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("builds a ketone by cycling a carbon-oxygen bond without over-valencing oxygen", () => {
+  it("builds a ketone and lets further order cycling overfill oxygen with a warning", () => {
     const propane = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Ketone"), { x: 240, y: 260 }),
       "atom_002",
@@ -7292,7 +7308,8 @@ describe("Phase 4 document workflow", () => {
     expect(selectedMolecule(ketone).bonds.find((bond) => bond.id === "bond_003")).toMatchObject({ order: "double" });
     expect(selectedMolecule(ketone).structure).toContain("=O");
     expect(selectedMolecule(ketone).chemistry).toMatchObject({ formula: "C3H6O", atomCount: 4, bondCount: 3 });
-    expect(capped).toEqual(ketone);
+    expect(selectedMolecule(capped).bonds.find(bond => bond.id === "bond_003")?.order).toBe("triple");
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(capped)).map(state => state.atomId)).toContain(oxygenAtomId);
   });
 
   it("adds a carbonyl from a hovered carbon with K without over-valencing carbon", () => {
@@ -7377,7 +7394,8 @@ describe("Phase 4 document workflow", () => {
     expect(molecule.bonds.find((bond) => bond.id === "bond_004")).toMatchObject({ order: "double" });
     expect(molecule.chemistry).toMatchObject({ formula: "C4H4O", atomCount: 5, bondCount: 5 });
     expect(molecule.structure).toContain("=");
-    expect(oxygenDoubleAttempt).toEqual(furan);
+    expect(selectedMolecule(oxygenDoubleAttempt).bonds.find(bond => bond.id === "bond_002")?.order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(oxygenDoubleAttempt)).map(state => state.atomId)).toContain("atom_003");
   });
 
   it("maps only common single-letter atom keys", () => {
@@ -7584,7 +7602,7 @@ describe("Phase 4 document workflow", () => {
     expect(colored.selection.objectIds).toEqual([molecule.id, textObject.id]);
   });
 
-  it("keeps native art graphics editable, persistent, undoable, and warning-backed", () => {
+  it("keeps native art graphics editable, persistent, undoable, and warning-backed", async () => {
     const document = createPhase4Document("Native Graphic Workflow");
     const inserted = insertNativeArtGraphicObject(document, { x: 220, y: 180 }, "tool.art.roundedRectGloss");
     const objectId = inserted.selection.objectIds[0];
@@ -7682,7 +7700,7 @@ describe("Phase 4 document workflow", () => {
     expect(reopened.source).toBe("native-payload");
     expect(graphicById(reopened.document ?? document, objectId)).toEqual(tiltedGraphic);
 
-    const svg = exportPhase4Svg(tilted, { includeWarnings: true });
+    const svg = (await exportPhase4Svg(tilted, { includeWarnings: true }));
     expect(svg.contents).toContain('data-object-id="' + objectId + '"');
     expect(svg.contents).toContain('id="graphic-gloss-' + objectId + '"');
     expect(svg.contents).toContain('gradientUnits="userSpaceOnUse"');
@@ -7693,10 +7711,16 @@ describe("Phase 4 document workflow", () => {
     const cdxml = exportPhase4Cdxml(tilted);
     const graphicCdxmlWarnings = cdxml.warnings.filter((warning) => warning.code.startsWith("cdxml.graphic_"));
     expect(cdxml.contents).toContain('GraphicType="Rectangle"');
-    expect(cdxml.contents).toContain('RectangleType="RoundEdge"');
+    expect(cdxml.contents).toContain('RectangleType="RoundEdge Filled"');
     expect(cdxml.contents).toContain('CornerRadius="525"');
+    const colorTable = cdxml.contents.match(/<colortable>([\s\S]*?)<\/colortable>/)?.[1] ?? "";
+    const colors = [...colorTable.matchAll(/<color\b[^>]*>/g)].map(([entry]) =>
+      "#" + ["r", "g", "b"].map((channel) =>
+        Math.round(Number(entry.match(new RegExp(`${channel}="([^"]+)"`))?.[1]) * 255).toString(16).padStart(2, "0")).join(""));
+    const colorIndex = colors.indexOf("#1d7f68");
+    expect(colorIndex).toBeGreaterThanOrEqual(0);
+    expect(cdxml.contents).toMatch(new RegExp(`<graphic\\b[^>]*color="${colorIndex + 2}"`));
     expect(graphicCdxmlWarnings.map((warning) => warning.code)).toEqual([
-      "cdxml.graphic_color_approximation",
       "cdxml.graphic_gloss_payload_only",
       "cdxml.graphic_tilt_payload_only"
     ]);
@@ -8502,7 +8526,7 @@ describe("Phase 4 document workflow", () => {
     expect(moleculeById(mainToolbarColored, molecule.id).style.fillColor).not.toBe("#1648FF");
   });
 
-  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", () => {
+  it("applies native gradient paint types to selected graphics and exports matching SVG paint defs", async () => {
     const withGraphic = insertNativeArtGraphicObject(
       createPhase4Document("Graphic Gradient Paint Selection"),
       { x: 220, y: 180 },
@@ -8653,7 +8677,7 @@ describe("Phase 4 document workflow", () => {
 
     const transparentFill = applyGraphicObjectOpacityToSelection(linearFilled, "fillOpacity", 0.35);
     const transparentGraphic = graphicById(transparentFill, objectId);
-    const linearSvg = exportPhase4Svg(transparentFill, { includeWarnings: true });
+    const linearSvg = (await exportPhase4Svg(transparentFill, { includeWarnings: true }));
     expect(linearSvg.contents).toContain(`<linearGradient id="graphic-fill-${objectId}"`);
     expect(linearSvg.contents).toContain(`x1="${transparentGraphic.x}"`);
     expect(linearSvg.contents).toContain(`y1="${transparentGraphic.y}"`);
@@ -8749,7 +8773,7 @@ describe("Phase 4 document workflow", () => {
     });
     expect(resizedRadialPaint?.kind === "radial-gradient" ? resizedRadialPaint.r : undefined).toBeCloseTo(0.4, 6);
 
-    const radialSvg = exportPhase4Svg(radialStroked, { includeWarnings: true });
+    const radialSvg = (await exportPhase4Svg(radialStroked, { includeWarnings: true }));
     const radialGraphic = graphicById(radialStroked, objectId);
     expect(radialSvg.contents).toContain(`<radialGradient id="graphic-stroke-${objectId}"`);
     expect(radialSvg.contents).toContain(`cx="${radialGraphic.x + radialGraphic.width * 0.5}"`);
@@ -9165,7 +9189,7 @@ describe("Phase 4 document workflow", () => {
     expect(lineOnly.selection.objectIds).toEqual([lineId]);
   });
 
-  it("applies native art boolean union and exports the result as SVG", () => {
+  it("applies native art boolean union and exports the result as SVG", async () => {
     const withFirst = insertNativeArtGraphicObject(
       createPhase4Document("Boolean Art Union"),
       { x: 220, y: 180 },
@@ -9190,7 +9214,7 @@ describe("Phase 4 document workflow", () => {
       throw new Error("Expected boolean union result.");
     }
     const graphic = graphicById(result.document, resultId);
-    const svg = exportPhase4Svg(result.document, { includeWarnings: true });
+    const svg = (await exportPhase4Svg(result.document, { includeWarnings: true }));
     const exportedTag = exportedObjectTag(svg.contents, resultId);
     const exportedPathD = exportedAttribute(exportedTag, "d");
     const exportedPoints = svgPathCoordinatePairs(exportedPathD);
@@ -9221,7 +9245,7 @@ describe("Phase 4 document workflow", () => {
     expect(svg.warnings).toEqual([]);
 
     const rotated = rotateDocumentObject(result.document, resultId, 12);
-    const rotatedSvg = exportPhase4Svg(rotated, { includeWarnings: true });
+    const rotatedSvg = (await exportPhase4Svg(rotated, { includeWarnings: true }));
     const rotatedTag = exportedObjectTag(rotatedSvg.contents, resultId);
     expect(exportedAttribute(rotatedTag, "transform")).toContain("rotate(12");
   });
@@ -12302,7 +12326,8 @@ describe("Phase 4 document workflow", () => {
     const rotatedCenter = rotatedMark ? nativeChargeMarkCenter(rotatedMark) : undefined;
     expect(rotatedCenter?.x).toBeCloseTo(pivot.x - (markStart.y - pivot.y), 5);
     expect(rotatedCenter?.y).toBeCloseTo(pivot.y + (markStart.x - pivot.x), 5);
-    expect(rotatedMark?.rotation).toBe(90);
+    // New lone pairs start tangent to their atom, so group rotation adds to that authored angle.
+    expect(rotatedMark?.rotation).toBe(Number(((mark.rotation + 90) % 360).toFixed(3)));
     expect(rotatedMark?.anchor).toEqual(mark.anchor);
 
     const flipped = flipDocumentObjectsAroundPoint(withLonePair, [molecule.id, mark.id], pivot, "vertical");
@@ -12312,8 +12337,8 @@ describe("Phase 4 document workflow", () => {
     const flippedCenter = flippedMark ? nativeChargeMarkCenter(flippedMark) : undefined;
     expect(flippedCenter?.x).toBeCloseTo(markStart.x, 5);
     expect(flippedCenter?.y).toBeCloseTo(2 * pivot.y - markStart.y, 5);
-    // Vertical-axis mirror of a glyph at 0° stays 0° (−θ rule) — and must not pick up a stray turn.
-    expect(flippedMark?.rotation).toBe(0);
+    // New lone pairs start tangent to their atom, so a vertical flip negates that authored angle.
+    expect(flippedMark?.rotation).toBe(Number(((360 - mark.rotation) % 360).toFixed(3)));
   });
 
   it("still group-transforms a selected mark whose atom anchor is stale instead of freezing it", () => {
@@ -12875,7 +12900,7 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", () => {
+  it("carries anchored charge marks and push arrows along with a selected molecule in Copy As", async () => {
     // Methanolate with its ⊖ mark, plus an electron-push arrow from the mark to the carbon.
     const methanolate = reconcileNativeChargeMarks(applyChargeToolAtNativeAtom(
       setNativeAtomElement(
@@ -12904,7 +12929,7 @@ describe("Phase 4 document workflow", () => {
     expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
 
     const scoped = copyAsScopedDocument(moleculeSelected);
-    const svg = exportPhase4Svg(scoped, { includeWarnings: false }).contents;
+    const svg = (await exportPhase4Svg(scoped, { includeWarnings: false })).contents;
     expect(svg).toContain('data-mark-kind="charge"');
     expect(svg).toContain('data-mechanism-arrow-kind="full-headed"');
 
@@ -13060,7 +13085,7 @@ describe("Phase 4 document workflow", () => {
     expect(scopeTypes).toEqual(["electron-mark", "mechanism-arrow", "molecule"]);
   });
 
-  it("fits the Copy As scoped document page to the selection", () => {
+  it("fits the Copy As scoped document page to the selection", async () => {
     const twoMolecules = insertNativeSingleBondMolecule(
       insertNativeSingleBondMolecule(createPhase4Document("Copy As Fit"), { x: 300, y: 300 }),
       { x: 620, y: 500 }
@@ -13075,7 +13100,7 @@ describe("Phase 4 document workflow", () => {
     expect(scoped.pages[0].width).toBeCloseTo(only.width + 32, 3);
     expect(scoped.pages[0].height).toBeCloseTo(only.height + 32, 3);
     // The SVG of the scoped document renders without warnings machinery blowing up.
-    expect(exportPhase4Svg(scoped, { includeWarnings: false }).contents).toContain("<svg");
+    expect((await exportPhase4Svg(scoped, { includeWarnings: false })).contents).toContain("<svg");
   });
 
   it("keeps intrinsic drawn or imported charges out of the mark reconciliation", () => {
@@ -13613,7 +13638,7 @@ describe("Phase 4 document workflow", () => {
     expect(plan?.fallbackReason).toBeUndefined();
   });
 
-  it("counts radical marks before allowing a spiro ring", () => {
+  it("diagnoses radical valence after allowing a spiro ring", () => {
     const seed = insertNativeTemplateMolecule(createPhase4Document("Radical spiro"), { x: 360, y: 320 }, "cyclohexane");
     const original = selectedMolecule(seed);
     const atom = original.atoms[0]!;
@@ -13630,7 +13655,8 @@ describe("Phase 4 document workflow", () => {
       "cyclohexane"
     );
 
-    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
+    expect(plan).toMatchObject({ kind: "attach-atom" });
+    expect(nativeMoleculeInvalidAtomStates(plan!.molecule).map(state => state.atomId)).toContain(atom.id);
   });
 
   it("returns no plan when an empty-canvas standalone tool path produces nothing new", () => {
@@ -13645,7 +13671,7 @@ describe("Phase 4 document workflow", () => {
     );
   });
 
-  it("places a separate ring rather than making an over-valent aromatic spiro", () => {
+  it("makes an aromatic spiro with warnings instead of placing a separate ring", () => {
     const benzeneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Benzene"), { x: 360, y: 320 }, "benzene");
     const benzene = selectedMolecule(benzeneDocument);
     const benzeneSpiro = planNativeTemplatePlacement(
@@ -13653,10 +13679,9 @@ describe("Phase 4 document workflow", () => {
       { point: moleculeAtom(benzene, "atom_001"), target: moleculeAtomTarget(benzene, "atom_001") },
       "benzene"
     );
-    expect(benzeneSpiro).toMatchObject({ kind: "standalone", fallbackReason: "atom-no-free-valence" });
-    // The original aromatic ring stays chemically intact; only the separate proposed ring is new.
-    expect(benzeneSpiro!.molecule.atoms).toHaveLength(6);
-    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule)).toEqual([]);
+    expect(benzeneSpiro).toMatchObject({ kind: "attach-atom" });
+    expect(benzeneSpiro!.molecule.atoms).toHaveLength(11);
+    expect(nativeMoleculeInvalidAtomStates(benzeneSpiro!.molecule).map(state => state.atomId)).toContain("atom_001");
 
     const cyclohexaneDocument = insertNativeTemplateMolecule(createPhase4Document("Spiro Cyclohexane"), { x: 360, y: 320 }, "cyclohexane");
     const cyclohexane = selectedMolecule(cyclohexaneDocument);
@@ -14054,9 +14079,9 @@ describe("Phase 4 document workflow", () => {
     });
   });
 
-  it("exports the Phase 4 subset as SVG", () => {
+  it("exports the Phase 4 subset as SVG", async () => {
     const document = insertAdapterFallbackMolecule(createPhase4Document("SVG Fixture"));
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.format).toBe("svg");
     expect(result.contents).toContain('aria-label="SVG Fixture"');
@@ -14077,9 +14102,9 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).toContain('Name="org.chemdraft/native-document"');
   });
 
-  it("exports native single-bond molecules as bond geometry", () => {
+  it("exports native single-bond molecules as bond geometry", async () => {
     const document = insertNativeSingleBondMolecule(createPhase4Document("Bond SVG"), { x: 200, y: 220 });
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.contents).toContain('data-chem-primitive="single-bond"');
     expect(result.contents).toContain('data-structure="CC"');
@@ -14087,13 +14112,13 @@ describe("Phase 4 document workflow", () => {
     expect(result.contents).not.toContain(">CC</text>");
   });
 
-  it("exports connected native molecule graphs as connected bond geometry", () => {
+  it("exports connected native molecule graphs as connected bond geometry", async () => {
     const document = growFromAtom(
       insertNativeSingleBondMolecule(createPhase4Document("Chain SVG"), { x: 200, y: 220 }),
       "atom_002",
       0
     );
-    const result = exportPhase4Svg(document);
+    const result = (await exportPhase4Svg(document));
 
     expect(result.contents).toContain('data-chem-primitive="connected-carbon-chain"');
     expect(result.contents).toContain('data-structure="CCC"');
@@ -16467,14 +16492,15 @@ describe("nativeSingleBondGraphSmiles general graph writer", () => {
 });
 
 describe("ring hotkeys on nickname atoms", () => {
-  it("refuses to attach a ring at a nickname (superatom) label, as the shipped doc says", () => {
+  it("attaches a ring at a nickname label and warns", () => {
     const base = insertNativeSingleBondMolecule(createPhase4Document("Nickname ring"), { x: 200, y: 200 });
     const molecule = selectedMolecule(base);
     const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[1]!.id, distanceToPointer: 0 };
     const labeled = applyNativeAtomElementTarget(base, target, "Ph");
-    expect(applyNativeRingAttachAtAtomTarget(labeled, target, "benzene")).toBe(labeled);
-    // An element label at the same atom still grows the ring. (A neutral N could not: an aromatic
-    // spiro ring would give it four bonds, which the ring-placement valence guard refuses.)
+    const attached = selectedMolecule(applyNativeRingAttachAtAtomTarget(labeled, target, "benzene"));
+    expect(attached.atoms).toHaveLength(molecule.atoms.length + 5);
+    expect(nativeMoleculeInvalidAtomStates(attached).map(state => state.atomId)).toContain(target.atomId);
+    // An element label at the same atom still grows the ring.
     const carbon = applyNativeAtomElementTarget(labeled, target, "C");
     expect(applyNativeRingAttachAtAtomTarget(carbon, target, "benzene")).not.toBe(carbon);
   });
@@ -16890,12 +16916,15 @@ describe("aromatic bond orders: one count for the formula, the label and the val
     expect(nativeMoleculeInvalidAtomStates(result)).toEqual([]);
   });
 
-  it("refuses the methylidene hotkey on an aromatic ring carbon", () => {
+  it("lands methylidene on an aromatic ring carbon and warns", () => {
     const benzene = aromaticFixtures.find((fixture) => fixture.name === "benzene")!;
     const document = pasted(benzene, benzene.aromatic);
     const molecule = selectedMolecule(document);
     const target = { objectId: molecule.id, kind: "atom" as const, atomId: molecule.atoms[0]!.id, distanceToPointer: 0 };
-    expect(applyNativeAtomSproutTarget(document, target, "methylidene")).toBe(document);
+    const grown = selectedMolecule(applyNativeAtomSproutTarget(document, target, "methylidene"));
+    expect(grown.atoms).toHaveLength(molecule.atoms.length + 1);
+    expect(grown.bonds.at(-1)?.order).toBe("double");
+    expect(nativeMoleculeInvalidAtomStates(grown).map(state => state.atomId)).toContain(target.atomId);
   });
 
   it("badges every atom of an aromatic ring with no Kekulé pattern, and says why", () => {
@@ -17160,7 +17189,7 @@ describe("aromatic bond orders: one count for the formula, the label and the val
   });
 });
 
-describe("ring placement valence guard", () => {
+describe("ring placement chemistry warnings", () => {
   const L = nativeBondLengthPx;
   type GuardAtom = readonly [id: string, element: string, x: number, y: number, formalCharge?: number];
   type GuardBond = readonly [from: string, to: string, order?: "single" | "double"];
@@ -17210,38 +17239,45 @@ describe("ring placement valence guard", () => {
     return planNativeTemplatePlacement(document, { point, target: moleculeBondTarget(molecule, bondId) }, templateId);
   }
 
-  function expectRefusedSeparately(
+  function expectAttachedWithWarning(
     document: ChemDraftDocument,
     molecule: MoleculeObject,
     plan: ReturnType<typeof planNativeTemplatePlacement>,
-    reason: string
+    formerRefusal: string
   ) {
-    expect(plan).toMatchObject({ kind: "standalone", fallbackReason: reason });
+    expect(plan, formerRefusal).toBeDefined();
+    expect(plan!.kind, formerRefusal).not.toBe("standalone");
+    expect(plan!.fallbackReason).toBeUndefined();
     const placed = applyNativeTemplatePlacementPlan(document, plan!);
-    // Nothing in the existing molecule changes; the requested ring is a separate, valid object.
-    expect(moleculeById(placed, molecule.id)).toEqual(molecule);
-    expect(placed.pages[0].objects.filter((object) => object.type === "molecule")).toHaveLength(2);
-    expect(nativeMoleculeInvalidAtomStates(plan!.molecule)).toEqual([]);
-    plan!.molecule.atoms.forEach((atom) => molecule.atoms.forEach((existing) =>
-      expect(Math.hypot(atom.x - existing.x, atom.y - existing.y)).toBeGreaterThanOrEqual(L)
-    ));
+    expect(placed.pages[0].objects.filter(object => object.type === "molecule")).toHaveLength(1);
+    expect(nativeMoleculeInvalidAtomStates(moleculeById(placed, molecule.id)).length, formerRefusal).toBeGreaterThan(0);
+    for (const atom of molecule.atoms) {
+      const { labelBondSide: _oldSide, ...authored } = atom;
+      expect(plan!.molecule.atoms.find(candidate => candidate.id === atom.id)).toMatchObject(authored);
+    }
   }
 
-  it("places a ring separately when one bond endpoint is a saturated carbon", () => {
+  function expectHotkeyWarning(result: { document: ChemDraftDocument; refusal?: string }, before: ChemDraftDocument) {
+    expect(result.refusal).toBeUndefined();
+    expect(result.document).not.toBe(before);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(result.document)).length).toBeGreaterThan(0);
+  }
+
+  it("fuses each ring at a saturated carbon endpoint with a warning", () => {
     const { document, molecule } = neopentane();
     for (const templateId of ["cyclohexane", "benzene", "cyclopentane", "cyclopropane", "chairCyclohexaneA"] as const) {
-      expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", templateId), "bond-atom-no-free-valence");
+      expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb1", templateId), "bond-atom-no-free-valence");
     }
   });
 
-  it("places a ring separately when both bond endpoints are saturated", () => {
+  it("fuses a ring when both endpoints are saturated and warns", () => {
     // 2,2,3,3-tetramethylbutane, fused on the central C-C bond.
     const { document, molecule } = guardDocument([
       ["a", "C", 300, 300], ["b", "C", 300 + L, 300],
       ["a1", "C", 300, 300 - L], ["a2", "C", 300 - L, 300], ["a3", "C", 300, 300 + L],
       ["b1", "C", 300 + L, 300 - L], ["b2", "C", 300 + 2 * L, 300], ["b3", "C", 300 + L, 300 + L]
     ], [["a", "b"], ["a", "a1"], ["a", "a2"], ["a", "a3"], ["b", "b1"], ["b", "b2"], ["b", "b3"]]);
-    expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+    expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
   });
 
   it("judges a charged endpoint at its own charge", () => {
@@ -17255,10 +17291,10 @@ describe("ring placement valence guard", () => {
       expect.objectContaining({ id: "q", formalCharge: 1 })
     ]);
 
-    // A neutral three-bond carbon also takes a fourth; a carbanion (valence 3) cannot.
+    // Neutral three-bond carbon takes a fourth without warning; carbanion warns.
     expect(bondPlan(threeBondCenter("C", 0).document, threeBondCenter("C", 0).molecule, "gb1", "cyclohexane")?.kind).toBe("fuse-bond");
     const carbanion = threeBondCenter("C", -1);
-    expectRefusedSeparately(
+    expectAttachedWithWarning(
       carbanion.document,
       carbanion.molecule,
       bondPlan(carbanion.document, carbanion.molecule, "gb1", "cyclohexane"),
@@ -17266,7 +17302,7 @@ describe("ring placement valence guard", () => {
     );
     // A four-bond ammonium has no room either.
     const tetramethylammonium = neopentane("N", 1);
-    expectRefusedSeparately(
+    expectAttachedWithWarning(
       tetramethylammonium.document,
       tetramethylammonium.molecule,
       bondPlan(tetramethylammonium.document, tetramethylammonium.molecule, "gb1", "cyclohexane"),
@@ -17274,7 +17310,7 @@ describe("ring placement valence guard", () => {
     );
   });
 
-  it("refuses benzene when its aromatic Kekule structure would raise the shared bond past an endpoint's valence", () => {
+  it("fuses benzene with warnings when Kekule orders overfill an endpoint", () => {
     // s-cis buta-1,3-diene, both terminal CH2 above the central bond; the ring goes below it.
     const butadiene = () => guardDocument([
       ["c1", "C", 300 - L / 2, 300 - L * Math.sqrt(3) / 2], ["a", "C", 300, 300],
@@ -17285,7 +17321,7 @@ describe("ring placement valence guard", () => {
     // Each endpoint has room for the one ring bond it gains (2 + 1 + 1 = 4); only the template's
     // re-Kekulization, which doubles the shared a-b bond, would push them to five.
     const benzenePlan = bondPlan(document, molecule, "gb2", "benzene", below);
-    expectRefusedSeparately(document, molecule, benzenePlan, "bond-atom-no-free-valence");
+    expectAttachedWithWarning(document, molecule, benzenePlan, "bond-atom-no-free-valence");
 
     // The same bond takes a saturated ring: no order changes, both endpoints end at four.
     const cyclohexanePlan = bondPlan(document, molecule, "gb2", "cyclohexane", below);
@@ -17294,7 +17330,7 @@ describe("ring placement valence guard", () => {
     expect(cyclohexanePlan!.molecule.chemistry?.formula).toBe("C8H12");
   });
 
-  it("refuses a fused closure that would over-fill a reused neighbouring-ring atom", () => {
+  it("closes a fused ring onto an overfilled neighbouring atom with a warning", () => {
     let document = insertNativeTemplateMolecule(createPhase4Document("Closure valence"), { x: 400, y: 360 }, "cyclohexane");
     const central = selectedMolecule(document);
     document = applyNativeTemplateToolAtTarget(
@@ -17312,24 +17348,24 @@ describe("ring placement valence guard", () => {
     );
     expect(reused).toHaveLength(1);
 
-    // Make the reused rim atom a ring oxygen (two bonds, full): the closure must refuse.
+    // Make the reused rim atom a full oxygen: closure lands and diagnoses it.
     const oxa: MoleculeObject = {
       ...decalin,
       atoms: decalin.atoms.map((atom) => atom.id === reused[0]!.id ? { ...atom, element: "O" } : atom)
     };
     const oxaDocument = applyPatches(document, [{ op: "updateObject", objectId: decalin.id, changes: oxa }]);
     const oxaMolecule = moleculeById(oxaDocument, decalin.id);
-    expectRefusedSeparately(oxaDocument, oxaMolecule, bondPlan(oxaDocument, oxaMolecule, "bond_002", "cyclohexane"), "closure-atom-no-free-valence");
+    expectAttachedWithWarning(oxaDocument, oxaMolecule, bondPlan(oxaDocument, oxaMolecule, "bond_002", "cyclohexane"), "closure-atom-no-free-valence");
   });
 
-  it("skips endpoints whose label has no free valence, and judges a group label by its group", () => {
+  it("allows generic and group endpoints, diagnosing group overfill", () => {
     const generic = neopentane("R");
     const plan = bondPlan(generic.document, generic.molecule, "gb1", "cyclohexane");
     expect(plan?.kind).toBe("fuse-bond");
     expect(plan?.fallbackReason).toBeUndefined();
     // "Ph" means phenyl (#83), which takes one bond: a fused ring would over-fill it further.
     const phenyl = neopentane("Ph");
-    expectRefusedSeparately(phenyl.document, phenyl.molecule, bondPlan(phenyl.document, phenyl.molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+    expectAttachedWithWarning(phenyl.document, phenyl.molecule, bondPlan(phenyl.document, phenyl.molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
   });
 
   it("still fuses benzene into naphthalene, cyclohexane into decalin, and a spiro ring on a two-bond carbon", () => {
@@ -17358,7 +17394,7 @@ describe("ring placement valence guard", () => {
     .filter((bond) => bond.fromAtomId === atomId || bond.toAtomId === atomId)
     .reduce((sum, bond) => sum + (bond.order === "double" ? 2 : bond.order === "triple" ? 3 : 1), 0);
 
-  it("lets the result decide spiro rings: S(IV) and P(V) benzene spiros attach, full atoms still refuse", () => {
+  it("attaches spiro rings at S(IV), P(V) and overfilled atoms with diagnostics", () => {
     // A neutral S with one bond: the aromatic spiro ring adds a single and a double bond, S(IV).
     const thio = guardDocument([["s", "S", 300, 300], ["m1", "C", 300 + L, 300]], [["s", "m1"]]);
     const thioTarget = moleculeAtomTarget(thio.molecule, "s");
@@ -17385,24 +17421,22 @@ describe("ring placement valence guard", () => {
     expect(nativeMoleculeInvalidAtomStates(phosphaPlan!.molecule)).toEqual([]);
     expect(nativeRingHotkeyAttachAtAtomTarget(phospha.document, phosphaTarget, "benzene").refusal).toBeUndefined();
 
-    // A ring carbon and a neutral two-bond N still refuse a benzene spiro, for the same reason.
+    // Ring carbon and two-bond N also accept the spiro, with their own diagnostics.
     const ringDocument = insertNativeTemplateMolecule(createPhase4Document("Ring spiro"), { x: 360, y: 320 }, "cyclohexane");
     const ring = selectedMolecule(ringDocument);
-    expectRefusedSeparately(ringDocument, ring, planNativeTemplatePlacement(
+    expectAttachedWithWarning(ringDocument, ring, planNativeTemplatePlacement(
       ringDocument, { point: moleculeAtom(ring, "atom_001"), target: moleculeAtomTarget(ring, "atom_001") }, "benzene"
     ), "atom-no-free-valence");
     const amine = guardDocument([
       ["n", "N", 300, 300], ["m1", "C", 300 + L, 300], ["m2", "C", 300 - L / 2, 300 + L * Math.sqrt(3) / 2]
     ], [["n", "m1"], ["n", "m2"]]);
-    expectRefusedSeparately(amine.document, amine.molecule, planNativeTemplatePlacement(
+    expectAttachedWithWarning(amine.document, amine.molecule, planNativeTemplatePlacement(
       amine.document, { point: { x: 300 - L / 2, y: 300 - L * Math.sqrt(3) / 2 }, target: moleculeAtomTarget(amine.molecule, "n") }, "benzene"
     ), "atom-no-free-valence");
-    expect(nativeRingHotkeyAttachAtAtomTarget(amine.document, moleculeAtomTarget(amine.molecule, "n"), "benzene")).toEqual({
-      document: amine.document, refusal: "atom-no-free-valence"
-    });
+    expectHotkeyWarning(nativeRingHotkeyAttachAtAtomTarget(amine.document, moleculeAtomTarget(amine.molecule, "n"), "benzene"), amine.document);
   });
 
-  it("names a double-bond re-pairing overfill apart from a closure atom", () => {
+  it("diagnoses aromatic re-pairing overfill after the ring lands", () => {
     // cyclohexa-2,4-dien-1-one (r1 carries the C=O) with a two-carbon arm on r6. Fusing benzene on
     // the arm's far bond re-pairs every six-carbon ring with two double bonds: the dienone ring
     // gets a third double bond, and every pairing gives one to r1, which gains no new bond and
@@ -17420,16 +17454,14 @@ describe("ring placement valence guard", () => {
       ["r1", "o", "double"], ["r6", "c1"], ["c1", "c2"]
     ]);
     const away = { x: 300 - L * Math.sqrt(3) - L, y: 300 - 1.5 * L };
-    expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb9", "benzene", away), "double-bond-overfill");
-    expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb9"), "benzene")).toEqual({
-      document, refusal: "double-bond-overfill"
-    });
+    expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb9", "benzene", away), "double-bond-overfill");
+    expectHotkeyWarning(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb9"), "benzene"), document);
     // A saturated ring changes no bond order and fuses.
     expect(bondPlan(document, molecule, "gb9", "cyclohexane", away)?.kind).toBe("fuse-bond");
     // The closure onto a full rim atom (the oxa-decalin test above) keeps the closure reason.
   });
 
-  it("refuses a cyclic-bond closure that would over-fill the closure atom and leaves the document unchanged", () => {
+  it("closes a cyclic bond onto saturated carbon and warns", () => {
     let document = insertNativeSingleBondMolecule(createPhase4Document("Cyclic closure guard"), { x: 300, y: 300 });
     const objectId = selectedMolecule(document).id;
     const tipTarget = () => {
@@ -17465,19 +17497,16 @@ describe("ring placement valence guard", () => {
         id: `meb${index}`, fromAtomId: first.id, toAtomId: methyl.id, order: "single" as const
       }))]
     } }]);
-    expect(nativeAtomSproutHotkeyTarget(saturated, target, "cyclic")).toEqual({
-      document: saturated, refusal: "closure-atom-no-free-valence"
-    });
-    expect(applyNativeAtomSproutTarget(saturated, target, "cyclic")).toBe(saturated);
+    const closed = nativeAtomSproutHotkeyTarget(saturated, target, "cyclic");
+    expectHotkeyWarning(closed, saturated);
+    expect(atomDegree(selectedMolecule(closed.document), first.id)).toBe(5);
   });
 
-  it("names every non-valence ring hotkey refusal", () => {
+  it("keeps malformed-target refusals and allows labels and high-degree closure", () => {
     // An abbreviation label has no element to judge.
     const chain = guardDocument([["a", "C", 300, 300], ["b", "C", 300 + L, 300]], [["a", "b"]]);
     const labeled = applyNativeAtomElementTarget(chain.document, moleculeAtomTarget(chain.molecule, "b"), "Ph");
-    expect(nativeRingHotkeyAttachAtAtomTarget(labeled, moleculeAtomTarget(chain.molecule, "b"), "benzene")).toEqual({
-      document: labeled, refusal: "atom-label-not-element"
-    });
+    expectHotkeyWarning(nativeRingHotkeyAttachAtAtomTarget(labeled, moleculeAtomTarget(chain.molecule, "b"), "benzene"), labeled);
 
     // A molecule the native editor cannot edit (an atom with a blank label).
     const blank = guardDocument([["a", "C", 300, 300], ["b", "C", 300 + L, 300], ["c", " ", 300, 300 + 3 * L]], [["a", "b"]]);
@@ -17498,7 +17527,7 @@ describe("ring placement valence guard", () => {
       document: chain.document, refusal: "target-unavailable"
     });
 
-    // No room for the ring: each side's far corner lands on a three-bond carbon a closure may not reuse.
+    // A reused three-bond corner is allowed; the old degree-3 cap was a chemistry veto.
     const corner = (id: string, x: number, y: number, side: 1 | -1): GuardAtom[] => [
       [id, "C", x, y], [`${id}1`, "C", x - L * 0.87, y + side * L / 2], [`${id}2`, "C", x, y + side * L], [`${id}3`, "C", x - L * 0.87, y - side * L / 2]
     ];
@@ -17506,25 +17535,21 @@ describe("ring placement valence guard", () => {
       [["a", "C", 300, 300], ["b", "C", 300 + L, 300], ...corner("u", 300, 300 - L, -1), ...corner("d", 300, 300 + L, 1)],
       [["a", "b"], ["u", "u1"], ["u", "u2"], ["u", "u3"], ["d", "d1"], ["d", "d2"], ["d", "d3"]]
     );
-    expect(nativeRingHotkeyFuseAtBondTarget(crowded.document, moleculeBondTarget(crowded.molecule, "gb1"), "cyclobutane")).toEqual({
-      document: crowded.document, refusal: "ring-geometry-unavailable"
-    });
+    const reused = nativeRingHotkeyFuseAtBondTarget(crowded.document, moleculeBondTarget(crowded.molecule, "gb1"), "cyclobutane");
+    expect(reused.refusal).toBeUndefined();
+    expect(reused.document).not.toBe(crowded.document);
   });
 
-  it("guards the ring hotkeys with the same check and names the refusal", () => {
+  it("lands ring hotkeys with the same warnings as template placement", () => {
     const { document, molecule } = neopentane();
     const bondTarget = moleculeBondTarget(molecule, "gb1");
-    expect(applyNativeRingFuseAtBondTarget(document, bondTarget, "cyclohexane")).toBe(document);
-    expect(nativeRingHotkeyFuseAtBondTarget(document, bondTarget, "benzene")).toEqual({
-      document, refusal: "bond-atom-no-free-valence"
-    });
+    expect(applyNativeRingFuseAtBondTarget(document, bondTarget, "cyclohexane")).not.toBe(document);
+    expectHotkeyWarning(nativeRingHotkeyFuseAtBondTarget(document, bondTarget, "benzene"), document);
 
-    // Hotkey spiro onto an aromatic carbon (three used) would make it five: refused.
+    // Hotkey spiro onto an aromatic carbon makes it five and warns.
     const benzeneDocument = insertNativeTemplateMolecule(createPhase4Document("Hotkey spiro"), { x: 360, y: 320 }, "benzene");
     const benzene = selectedMolecule(benzeneDocument);
-    expect(nativeRingHotkeyAttachAtAtomTarget(benzeneDocument, moleculeAtomTarget(benzene, "atom_001"), "cyclohexane")).toEqual({
-      document: benzeneDocument, refusal: "atom-no-free-valence"
-    });
+    expectHotkeyWarning(nativeRingHotkeyAttachAtAtomTarget(benzeneDocument, moleculeAtomTarget(benzene, "atom_001"), "cyclohexane"), benzeneDocument);
 
     // A legal hotkey fusion still commits.
     const legal = threeBondCenter("C", 0);
@@ -17543,20 +17568,18 @@ describe("ring placement valence guard", () => {
   }
   const spiroPoint = { x: 300 - L / 2, y: 300 - L * Math.sqrt(3) / 2 };
 
-  it("judges a one-bond OMe atom full by its group's free valence", () => {
+  it("attaches and fuses rings at OMe with warnings", () => {
     const { document, molecule } = labelledChain("OMe");
-    expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
-    expectRefusedSeparately(document, molecule, planNativeTemplatePlacement(
+    expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+    expectAttachedWithWarning(document, molecule, planNativeTemplatePlacement(
       document, { point: spiroPoint, target: moleculeAtomTarget(molecule, "g") }, "cyclohexane"
     ), "atom-no-free-valence");
-    expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane")).toEqual({
-      document, refusal: "bond-atom-no-free-valence"
-    });
+    expectHotkeyWarning(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane"), document);
   });
 
-  it("lets a one-bond NMe atom take one more bond, not two", () => {
+  it("lets NMe take one bond without warning and two with a warning", () => {
     const { document, molecule } = labelledChain("NMe");
-    expectRefusedSeparately(document, molecule, planNativeTemplatePlacement(
+    expectAttachedWithWarning(document, molecule, planNativeTemplatePlacement(
       document, { point: spiroPoint, target: moleculeAtomTarget(molecule, "g") }, "cyclohexane"
     ), "atom-no-free-valence");
     const fused = bondPlan(document, molecule, "gb1", "cyclohexane");
@@ -17582,30 +17605,27 @@ describe("ring placement valence guard", () => {
   const scnLeft = () => [mirroredLabelledChain("SCN"), withRecordedSide(labelledChain("SCN"), "left")];
   const scnRight = () => [labelledChain("SCN"), withRecordedSide(mirroredLabelledChain("SCN"), "right")];
 
-  it("judges a thiocyanate SCN with its bond on the left full", () => {
+  it("fuses at left-bond thiocyanate SCN with a warning", () => {
     for (const { document, molecule } of scnLeft()) {
       expect(nativeAtomLabelContextInMolecule(molecule.atoms.find((atom) => atom.id === "g")!, molecule, true).bondSide).toBe("left");
-      expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
-      expect(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane")).toEqual({
-        document, refusal: "bond-atom-no-free-valence"
-      });
+      expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+      expectHotkeyWarning(nativeRingHotkeyFuseAtBondTarget(document, moleculeBondTarget(molecule, "gb1"), "cyclohexane"), document);
     }
   });
 
-  it("reads an SCN with its bond on the right as a bare formula, but refuses a fusion that gives it two bonds", () => {
+  it("preserves right-bond SCN reading and diagnoses the fused result", () => {
     for (const { document, molecule } of scnRight()) {
       const atom = molecule.atoms.find((candidate) => candidate.id === "g")!;
       const context = nativeAtomLabelContextInMolecule(atom, molecule, true);
       expect(context.bondSide).toBe("right");
       expect(workflowCore.nativeAtomLabelReading("SCN", context).kind).not.toBe("group");
       expect(workflowCore.nativeAtomLabelFreeValence("SCN", 0, context)).toBeUndefined();
-      // The guard judges the result: with two bonds the label has no side, reads as thiocyanate
-      // and is badged over-full, so the fusion is still refused (not for the one-bond reading).
-      expectRefusedSeparately(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
+      // With two bonds the label has no side, reads as thiocyanate, and is badged over-full.
+      expectAttachedWithWarning(document, molecule, bondPlan(document, molecule, "gb1", "cyclohexane"), "bond-atom-no-free-valence");
     }
   });
 
-  it("reads OMe, NMe, Ph, R and both SCN sides the same in the drawing tools and the ring guard", () => {
+  it("keeps label readings independent of growth and ring admission", () => {
     const cases = [
       ...["OMe", "NMe", "Ph", "R"].map((label) => ({ label, chain: labelledChain(label) })),
       ...scnLeft().map((chain) => ({ label: "SCN left", chain })),
@@ -17617,22 +17637,16 @@ describe("ring placement valence guard", () => {
         atom.element, atom.formalCharge, nativeAtomLabelContextInMolecule(atom, molecule, true)
       );
       const availableBonds = findNativeMoleculeAtomHit(molecule, atom)?.availableBonds ?? 0;
-      const refused = bondPlan(document, molecule, "gb1", "cyclohexane")?.fallbackReason === "bond-atom-no-free-valence";
-      // A label with a free valence: the tools fill exactly what is left, and the guard refuses
-      // exactly when nothing is. Without one, the tools add no bonds; the guard skips R, and refuses
-      // a right-bond SCN only because the fused result reads it, with two bonds, as thiocyanate.
-      if (freeValence !== undefined) {
-        expect(availableBonds, label).toBe(freeValence - 1);
-        expect(refused, label).toBe(availableBonds === 0);
-      } else {
-        expect(availableBonds, label).toBe(0);
-      }
-      return [label, freeValence, availableBonds, refused];
+      const plan = bondPlan(document, molecule, "gb1", "cyclohexane");
+      expect(availableBonds, label).toBe(Number.POSITIVE_INFINITY);
+      expect(plan?.kind, label).toBe("fuse-bond");
+      expect(plan?.fallbackReason, label).toBeUndefined();
+      return [label, freeValence];
     });
     expect(verdicts).toEqual([
-      ["OMe", 1, 0, true], ["NMe", 2, 1, false], ["Ph", 1, 0, true], ["R", undefined, 0, false],
-      ["SCN left", 1, 0, true], ["SCN left", 1, 0, true],
-      ["SCN right", undefined, 0, true], ["SCN right", undefined, 0, true]
+      ["OMe", 1], ["NMe", 2], ["Ph", 1], ["R", undefined],
+      ["SCN left", 1], ["SCN left", 1],
+      ["SCN right", undefined], ["SCN right", undefined]
     ]);
   });
 
@@ -18795,14 +18809,14 @@ describe("terminal geometry by hotkey and tool click", () => {
     expect(source.x - grown.x).toBeCloseTo(seededBondLength, 6);
   });
 
-  it("a bond-tool press on an atom with no free valence is not a drag source", () => {
+  it("a bond-tool press on a full group label remains a drag source", () => {
     const document = cornerEthyne();
     const molecule = terminalMolecule(document);
     const saturated: MoleculeObject = { ...molecule, atoms: molecule.atoms.map((atom) =>
       atom.id === "atom_002" ? { ...atom, element: "OMe" } : atom
     ) };
-    // A one-bond group label already on a bond takes no more; a press there never starts a bond drag.
-    expect(nativeBondDragSourceAtomId(saturated, terminalAtom(saturated, "atom_002"))).toBeUndefined();
+    // Growth eligibility is independent of the group label's valence.
+    expect(nativeBondDragSourceAtomId(saturated, terminalAtom(saturated, "atom_002"))).toBe("atom_002");
   });
 
   it("an Alt/Option drag off an ethyne end at the page edge never swaps the aim for another angle", () => {

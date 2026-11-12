@@ -5,13 +5,13 @@
 ## Register with Claude Code
 
 ```bash
-claude mcp add chemdraft -- pnpm -s --dir <path-to-chemdraw-checkout> chemdraft-mcp
+claude mcp add chemdraft -- pnpm -s --dir <path-to-your-ChemDraft-checkout> chemdraft-mcp
 ```
 
 For Claude Desktop, add this stanza to `claude_desktop_config.json`:
 
 ```json
-{"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<path-to-chemdraw-checkout>","chemdraft-mcp"]}}}
+{"mcpServers":{"chemdraft":{"command":"pnpm","args":["-s","--dir","<path-to-your-ChemDraft-checkout>","chemdraft-mcp"]}}}
 ```
 
 ## Document style
@@ -63,6 +63,10 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
 
+Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,
+MOL pasted (including RXN MOL blocks) or recognized from an image is scaled by its median bond
+to the document's bond length. SMILES depictions, name-to-structure and templates retain mean-based sizing.
+
 Reaction labels allow at most 6 `above` and 6 `below` entries, a non-empty `caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `conditions`.
 
 Radicals are refused rather than silently changed. Isotope labels and their positions are preserved.
@@ -98,3 +102,23 @@ SMILES drawing tools inherit exact canonical isomeric template matching from the
 and report `layout: "template:<id>"` (per cell/component for grids/reactions).
 Stereo and charge must match; template drawings use the default document bond length.
 `render_document` preserves the coordinates in its native JSON input.
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.
+
+Invalid native drawings still render and save with the CLI's shared atom warnings, including
+suppressed badges (`export.invalid_structure`, e.g. `C1 has unsupported valence 5.`).
+An unparseable molecule returns `chemistryStatus: "unverified"`, with `canonicalSmiles` and
+all stereo counts set to `null`. Treat this as an unverified drawing, never as verified
+chemistry. `export_structure` retains its SMILES-input identity checks.
+
+`render_document` uses the app's tolerant native reader for both `documentJson` and `documentPath`.
+The first JSON text block includes `minAppVersion` (effective minimum; `1.1.1` for legacy files)
+and structured `documentWarnings` with `code`, `message`, and native-warning `path`/`originalValue`.
+These fields remain available on rendering failures after a successful read. Existing `warnings`
+and `exportWarnings` also include the open warnings. Newer visual content may use a preview fallback;
+`format: "chemdraft"` preserves its unknown data and source minimum on save. Unsupported chemistry
+still fails. Compatibility notices are machine-readable results, with no interactive prompt.

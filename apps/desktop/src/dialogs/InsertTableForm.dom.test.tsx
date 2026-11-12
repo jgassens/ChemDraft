@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { InsertTableForm } from "./InsertTableForm";
+import { PageSizeForm } from "./PageSizeForm";
 import { readFileSync } from "node:fs";
 import type { DialogMessage } from "./dialogProtocol";
 import { parseDialogMessage } from "./dialogProtocol";
@@ -26,7 +27,7 @@ function layOut(form: HTMLElement, natural: number, window: number, overflow = n
     get: () => form.style.getPropertyValue("min-height") === "0px" ? overflow : Math.max(overflow, window) });
 }
 
-it.each(["macos", "windows"] as const)("reserves status space and stable row metrics on %s", platform => {
+it.each(["macos", "windows"] as const)("fits natural rows without reserving empty status space on %s", platform => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const styles = document.createElement("style");
   styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
@@ -43,27 +44,32 @@ it.each(["macos", "windows"] as const)("reserves status space and stable row met
     const form = container.querySelector("form")!;
     expect(form.classList.contains("cd-insert-table-form")).toBe(true);
     expect(getComputedStyle(form).display).toBe("flex");
-    // The form fills the window exactly; 240 is only the native floor, never a CSS overflow.
+    // The form fills the fitted native viewport without imposing an initial height.
     expect(getComputedStyle(form).height).toBe("100vh");
     expect(getComputedStyle(form).minHeight).toBe("0px");
-    // Native minimum width leaves 444px after padding: three 90px inputs, three
-    // 10px gaps and ample room for the native Style select on either platform.
+    // A shorter minimum allows resizing below natural content; fields wrap at narrow widths.
     const spec = nativeSpec();
-    expect(spec).toContain("min_size: (480.0, 240.0)");
-    // The window height comes from the measured content; 240 is only the floor.
+    expect(spec).toContain("min_size: (360.0, 120.0)");
+    // The window height comes from content, including when shorter than the old 240px floor.
     expect(spec).toContain("fit_content: true");
-    const status = container.querySelector('[role="status"]')!;
+    const status = container.querySelector<HTMLElement>('[role="status"]')!;
     expect(status.textContent).toBe("");
-    expect(getComputedStyle(status).minHeight).toBe("32px");
-    expect(getComputedStyle(status).lineHeight).toBe("16px");
-    expect(getComputedStyle(form.querySelector("h2")!).lineHeight).toBe("19px");
+    expect(getComputedStyle(status).display).toBe("none");
+    expect(getComputedStyle(status).minHeight).not.toBe("32px");
     for (const control of form.querySelectorAll("input, select, button")) {
-      expect(getComputedStyle(control).height).toBe("30px");
-      expect(getComputedStyle(control).boxSizing).toBe("border-box");
+      expect(["", "auto"]).toContain(getComputedStyle(control).height);
     }
+    // jsdom has no layout: model the ordinary field row plus a status row only when visible.
+    // CSS assertions above ensure there are no fixed controls or reserved status floor.
+    form.getBoundingClientRect = () => ({ top: 0, width: 480,
+      height: form.style.height === "auto" ? 180 + (getComputedStyle(status).display === "none" ? 0 : 40) : 400 } as DOMRect);
+    expect(measureDialogContent(form)?.contentHeight).toBe(180);
     render("Table insertion failed. Try again.");
     expect(status.textContent).toBe("Table insertion failed. Try again.");
-    expect(getComputedStyle(status).minHeight).toBe("32px");
+    expect(getComputedStyle(status).display).not.toBe("none");
+    expect(measureDialogContent(form)?.contentHeight).toBe(220);
+    render();
+    expect(measureDialogContent(form)?.contentHeight).toBe(180);
   } finally {
     act(() => root.unmount());
     container.remove();
@@ -106,7 +112,7 @@ it.each([
     // A taller window must not be measured as content (the Windows empty band) ...
     layOut(form, natural, 400, overflow);
     vi.stubGlobal("devicePixelRatio", 1.25);
-    expect(measureDialogContent(form)).toEqual({ contentHeight: Math.max(natural, overflow), pixelRatio: 1.25 });
+    expect(measureDialogContent(form)).toEqual({ contentHeight: Math.max(natural, overflow), contentWidth: 480, pixelRatio: 1.25 });
     // ... and a shorter one must not hide the buttons (the macOS cut-off).
     layOut(form, natural, 240, overflow);
     const fit = measureDialogContent(form)!;
@@ -155,10 +161,10 @@ it("waits for fonts before measuring, but never longer than the bound", async ()
     layOut(form, 262, 240); // the web font arrives and the text grows
     loaded();
     await vi.advanceTimersByTimeAsync(0);
-    expect(fit).toEqual({ contentHeight: 262, pixelRatio: 1 });
+    expect(fit).toEqual({ contentHeight: 262, contentWidth: 480, pixelRatio: 1 });
     const stuck = measureDialogContentWhenFontsReady(form, { ready: new Promise(() => {}) }, 1000);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(await stuck).toEqual({ contentHeight: 262, pixelRatio: 1 });
+    expect(await stuck).toEqual({ contentHeight: 262, contentWidth: 480, pixelRatio: 1 });
   } finally {
     form.remove();
     vi.useRealTimers();
@@ -214,7 +220,7 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
   try {
     act(() => root.render(createElement(InsertTableForm, {
       title: "Drawing", initial: { rows: 2, columns: 2, headerRows: 1, preset: "three-line" },
-      platform, error: "A validation message long enough to wrap past the two lines the status reserves. ".repeat(4),
+      platform, error: "A validation message long enough to wrap across several lines in the scrolling body. ".repeat(4),
       onSubmit: vi.fn(), onCancel: vi.fn(),
     })));
     const form = container.querySelector("form")!;
@@ -232,9 +238,9 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
     expect([getComputedStyle(footer).flexGrow, getComputedStyle(footer).flexShrink]).toEqual(["0", "0"]);
     expect(Array.from(footer.querySelectorAll("button"), button => button.textContent)).toEqual(["Cancel", "Insert"]);
     expect(body.querySelector("button")).toBeNull();
-    // The status grows with its message; it never shrinks below it and overlaps the buttons.
+    // Status text keeps its natural height without consuming unused space above the footer.
     const status = getComputedStyle(body.querySelector('[role="status"]')!);
-    expect([status.flexGrow, status.flexShrink]).toEqual(["1", "0"]);
+    expect([status.flexGrow, status.flexShrink]).toEqual(["0", "0"]);
   } finally {
     act(() => root.unmount());
     container.remove();
@@ -243,16 +249,16 @@ it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a w
   }
 });
 
-it("keeps the scrolling layout in the shared dialog CSS without changing other dialogs", () => {
+it("shares the scrolling-body layout with all fixed-form dialogs", () => {
   const css = readFileSync("apps/desktop/src/App.css", "utf8");
   // Shared selectors, not Insert-Table-only ones.
   expect(css).toMatch(/^\.cd-dialog-fit \{[^}]*height: 100vh;[^}]*\}/m);
   expect(css).toMatch(/^\.cd-dialog-fit-body \{[^}]*overflow: auto;[^}]*\}/m);
   expect(css).toMatch(/^\.cd-dialog-fit-footer \{[^}]*flex: none;[^}]*\}/m);
-  // Only content-fit kinds opt in; the other forms keep their look.
-  for (const file of ["PageSizeForm.tsx", "ArrangementSpacingForm.tsx", "ExportForm.tsx", "EngineInstallForm.tsx", "ToolInstallForm.tsx", "StructureTemplatePicker.tsx"]) {
-    expect(readFileSync(`apps/desktop/src/dialogs/${file}`, "utf8")).not.toContain("cd-dialog-fit");
+  for (const file of ["PageSizeForm.tsx", "ArrangementSpacingForm.tsx", "ExportForm.tsx", "EngineInstallForm.tsx", "ToolInstallForm.tsx"]) {
+    expect(readFileSync(`apps/desktop/src/dialogs/${file}`, "utf8")).toContain("cd-dialog-fit-body");
   }
+  expect(readFileSync("apps/desktop/src/dialogs/StructureTemplatePicker.tsx", "utf8")).not.toContain("cd-dialog-fit");
   expect(readFileSync("apps/desktop/src/dialogs/InsertTableForm.tsx", "utf8")).toContain("cd-dialog-fit-body");
 });
 
@@ -274,12 +280,41 @@ it("measures a scrolling body at its natural height, then restores the layout", 
   };
   Object.defineProperty(form, "scrollHeight", { configurable: true, get: () => unclipped() ? 318 : 240 });
   try {
-    expect(measureDialogContent(form)).toEqual({ contentHeight: 318, pixelRatio: 1 });
+    expect(measureDialogContent(form)).toEqual({ contentHeight: 318, contentWidth: 480, pixelRatio: 1 });
     expect(form.style.getPropertyValue("height")).toBe("123px");
     expect(form.style.getPropertyValue("min-height")).toBe("");
     expect(body.getAttribute("style") ?? "").toBe("");
   } finally {
     form.remove();
+  }
+});
+
+it.each(["macos", "windows"] as const)("includes Page Size's wrapped labels, closed popup, actions and padding on %s", platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(createElement(PageSizeForm, { title: "Drawing", platform,
+      state: { width: "8.5", height: "11", unit: "inch" }, onChange: vi.fn(), onCancel: vi.fn(), onApply: vi.fn() })));
+    const form = container.querySelector<HTMLElement>("section")!;
+    const body = form.querySelector<HTMLElement>(".cd-dialog-fit-body")!;
+    expect(form.querySelectorAll("input")).toHaveLength(2);
+    expect(form.querySelector("select")!.value).toBe("inch");
+    // jsdom has no layout. Model WebKit's constrained flex measurement versus intrinsic rows.
+    // Content: heading/prose 142 + labelled fields 50 + wrapped closed popup 50 + status 26;
+    // actions 30 and outer padding 36 are additional, rather than overlapping the body.
+    const content = 142 + 50 + 50 + 26 + 30 + 36;
+    form.getBoundingClientRect = () => {
+      const intrinsic = form.style.display === "grid" && form.style.gridAutoRows === "max-content" && body.style.height === "max-content";
+      const height = intrinsic ? content : 249;
+      return { top: 0, height } as DOMRect;
+    };
+    const saved = [form.getAttribute("style"), body.getAttribute("style")];
+    expect(measureDialogContent(form)?.contentHeight).toBeGreaterThanOrEqual(content);
+    expect([form.getAttribute("style"), body.getAttribute("style")]).toEqual(saved);
+  } finally {
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();
   }
 });
 
@@ -304,7 +339,7 @@ it.each(["macos", "windows"] as const)("sends ready once on %s with the form's m
     await act(async () => { await document.fonts?.ready; await new Promise(resolve => setTimeout(resolve, 0)); });
     const readies = host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready");
     expect(readies).toHaveLength(1);
-    expect(readies[0].data).toEqual({ contentHeight: 263, pixelRatio: platform === "macos" ? 2 : 1.5 });
+    expect(readies[0].data).toEqual({ contentHeight: 263, contentWidth: 480, pixelRatio: platform === "macos" ? 2 : 1.5 });
     expect(parseDialogMessage(readies[0])).toBeDefined();
     // A replayed snapshot at the same revision does not re-measure or resend ready.
     await act(async () => host.receive!(snapshot));
@@ -338,4 +373,19 @@ it("reports ready once with its own form element", () => {
     container.remove();
     vi.unstubAllGlobals();
   }
+});
+it("describes invalid table fields and leaves valid fields unmarked", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container);
+  const root = createRoot(container);
+  try {
+  act(() => root.render(createElement(InsertTableForm, { title: "Drawing", initial: { rows: 0, columns: 2, headerRows: 0, preset: "grid" }, onSubmit: vi.fn(), onCancel: vi.fn() })));
+  const [rows, columns] = container.querySelectorAll("input");
+  const status = container.querySelector('[role="status"]')!;
+  expect(rows.getAttribute("aria-invalid")).toBe("true");
+  expect(rows.getAttribute("aria-describedby")).toBe(status.id);
+  expect(status.id).not.toBe("");
+  expect(columns.hasAttribute("aria-invalid")).toBe(false);
+  expect(columns.hasAttribute("aria-describedby")).toBe(false);
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
 });

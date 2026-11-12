@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 const modules = vi.hoisted(() => ({ main: vi.fn(), dialog: vi.fn(), forward: vi.fn() }));
 vi.mock("../MainWindow", () => { modules.main(); return { MainWindow: () => null }; });
 vi.mock("./DialogWindow", () => ({ DialogWindow: ({ hostId }: { hostId: string }) => { modules.dialog(hostId); return createElement("input", { autoFocus: true }); } }));
-vi.mock("../window-manager", () => ({ routeToolsetCommand: modules.forward, PREFERENCES_WINDOW_KIND: "preferences", TOOLSET_POPOVER_WINDOW_KIND: "toolsetPopover", TOOLSET_TOOLTIP_WINDOW_KIND: "toolsetTooltip", DOM_COMMAND_EVENT: "chemdraft:native-command" }));
+vi.mock("../window-manager", () => ({ isDesktopRuntime: () => false, routeToolsetCommand: modules.forward, PREFERENCES_WINDOW_KIND: "preferences", TOOLSET_POPOVER_WINDOW_KIND: "toolsetPopover", TOOLSET_TOOLTIP_WINDOW_KIND: "toolsetTooltip", DOM_COMMAND_EVENT: "chemdraft:native-command" }));
 import { App } from "../App";
 afterEach(() => { window.history.replaceState(null, "", "/"); vi.unstubAllGlobals(); });
 it("renders the dialog route without loading MainWindow and keeps edit history local", async () => {

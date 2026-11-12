@@ -33,9 +33,9 @@ import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
-import { createBundledPluginDescriptors } from "./registerBundledPlugins";
+import { createBundledPluginDescriptors, createWorkerRoutedOptions } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
-import { createEmptyDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, MoleculeObjectSchema } from "@chemdraft/chem-core";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
 
 type MessageListener = (event: { data: unknown }) => void;
@@ -244,7 +244,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
       const embed = await chemistry.embed3d!({ components: [{ smiles: "C" }], seed: 42 });
       const minimize = await chemistry.minimize3d!({ model: embed.model, interfragment: false });
       await expect(chemistry.minimize3d!({ model: embed.model, interfragment: "false" } as never))
-        .rejects.toThrow("minimize3d interfragment must be a boolean (true or false).");
+        .rejects.toThrow("The interfragment is invalid.");
       const flatten = await chemistry.flatten3d!({ model: minimize.model, view: "auto" });
       return { embed, minimize, flatten };
     } } });
@@ -857,12 +857,13 @@ describe("documents.applyPatch survives the worker boundary", () => {
             patch: {
               op: "addObject",
               pageId: "page_001",
-              object: { id: "mol_worker" }
-            } as never
+              object: MoleculeObjectSchema.parse({ id: "mol_worker", type: "molecule",
+                x: 0, y: 0, width: 10, height: 10, structureFormat: "smiles", structure: "C" })
+            }
           })
       }
     };
-    const host = new PluginHost({ applyDocumentPatch });
+    const host = new PluginHost({ applyDocumentPatch, getActiveDocument: () => createEmptyDocument() });
     const bridge = startWorkerRoutedPlugin(registration);
     host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
 
@@ -1211,5 +1212,100 @@ describe("tools survive the worker boundary", () => {
     host.registerPlugin(denied, delegatingOptions(denied, deniedBridge));
     await expect(host.invokeCommand("plugin.noToolsWorker.run")).resolves.toBe("undefined");
     deniedBridge.terminate();
+  });
+});
+
+
+describe("API 0.1.21 worker capabilities and plugin assistant handlers", () => {
+  const properties = { available: true as const, formula: "CH4", averageMass: 16.043, monoisotopicMass: 16.0313,
+    formalCharge: 0, isotopeLabelled: false, method: { engine: "RDKit" as const, version: "test", conventions: ["g/mol; Da"] } };
+
+  it.each([undefined, false, true])("exposes a worker-routed handler only when the handshake reports it (%s)", async hasAssistantToolHandler => {
+    const manifest = parsePluginManifest({ id: "org.test.handshake", name: "Handshake", version: "0",
+      apiVersion: "^0.1.21", entry: "worker.js", permissions: [...AssistantCapabilityPermissions] });
+    const { mainSide, workerSide } = linkedEndpoints();
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, createWorker: () => asHandle(mainSide) });
+    const options = createWorkerRoutedOptions(manifest, bridge);
+    const host = new PluginHost();
+    host.registerPlugin(manifest, options);
+    try {
+      expect(options.onAssistantToolCall).toBeUndefined();
+      expect(host.hasAssistantToolHandler(manifest.id)).toBe(false);
+      const ready = bridge.whenReady();
+      workerSide.postMessage({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION,
+        apiVersion: manifest.apiVersion, ...(hasAssistantToolHandler === undefined ? {} : { hasAssistantToolHandler }) });
+      await ready;
+      expect(typeof options.onAssistantToolCall === "function").toBe(hasAssistantToolHandler === true);
+      expect(host.hasAssistantToolHandler(manifest.id)).toBe(hasAssistantToolHandler === true);
+      bridge.terminate();
+      expect(host.hasAssistantToolHandler(manifest.id)).toBe(false);
+    } finally { host.unregisterPlugin(manifest.id); bridge.terminate(); }
+  });
+
+  it("round-trips chemistry.properties and refuses it without chemistry.compute", async () => {
+    const manifest = parsePluginManifest({ id: "org.test.workerProperties", name: "Worker Properties", version: "0",
+      apiVersion: "^0.1.21", entry: "worker.js", permissions: ["chemistry.compute"],
+      contributes: { commands: [{ id: "plugin.workerProperties.run", title: "Properties" }] } });
+    const computeProperties = vi.fn(async () => properties);
+    const host = new PluginHost({ computeProperties });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      "plugin.workerProperties.run": context => context.chemistry!.properties!({ format: "smiles", structure: "C" })
+    } });
+    host.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand("plugin.workerProperties.run")).resolves.toEqual(properties);
+      expect(computeProperties).toHaveBeenCalledWith({ format: "smiles", structure: "C" });
+    } finally { host.unregisterPlugin(manifest.id); bridge.terminate(); }
+    const denied = parsePluginManifest({ ...manifest, permissions: [] });
+    const deniedBridge = startWorkerRoutedPlugin({ manifest: denied, commandHandlers: {
+      "plugin.workerProperties.run": context => ({ hasChemistry: !!context.chemistry })
+    } });
+    host.registerPlugin(denied, createWorkerRoutedOptions(denied, deniedBridge));
+    try { await expect(host.invokeCommand("plugin.workerProperties.run")).resolves.toEqual({ hasChemistry: false }); }
+    finally { host.unregisterPlugin(denied.id); deniedBridge.terminate(); }
+  });
+
+  it("routes to each owning worker, enables its declared capability calls, and cancels across the boundary", async () => {
+    const host = new PluginHost({ computeProperties: async () => properties });
+    const bridges: PluginWorkerBridge[] = [];
+    let workerAborted = false;
+    for (const suffix of ["first", "second"]) {
+      const manifest = parsePluginManifest({ id: `org.test.${suffix}`, name: suffix, version: "0",
+        apiVersion: "^0.1.21", entry: "worker.js", permissions: [...AssistantCapabilityPermissions] });
+      const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {}, onAssistantToolCall: async (context, call, signal) => {
+        expect(context.storage).toBeUndefined();
+        if (call.name === "wait") {
+          await new Promise<void>(resolve => signal.addEventListener("abort", () => { workerAborted = true; resolve(); }, { once: true }));
+          return { content: [] };
+        }
+        if (call.name === "fail") throw new Error(`worker ${suffix} failed`);
+        const result = await context.chemistry!.properties!({ format: "smiles", structure: "C" });
+        return { content: [{ type: "text", text: context.plugin.id }], structuredContent: { call, result } };
+      } });
+      bridges.push(bridge);
+      host.registerPlugin(manifest, createWorkerRoutedOptions(manifest, bridge));
+      await bridge.whenReady();
+    }
+    try {
+      for (const suffix of ["first", "second"]) {
+        const call = { sessionId: `session_${suffix}`, name: "lookup", input: { key: suffix } };
+        const result = await host.invokeAssistantTool(`org.test.${suffix}`, call, new AbortController().signal, []);
+        expect(result).toEqual({ content: [{ type: "text", text: `org.test.${suffix}` }], structuredContent: { call, result: properties } });
+      }
+      await expect(host.invokeAssistantTool("org.test.first", { sessionId: "session_first", name: "fail", input: {} }, new AbortController().signal, [])).rejects.toThrow("worker first failed");
+      const abort = new AbortController();
+      const pending = host.invokeAssistantTool("org.test.first", { sessionId: "session_first", name: "wait", input: {} }, abort.signal, []);
+      const settled = expect(pending).rejects.toThrow();
+      await flush();
+      abort.abort();
+      await settled;
+      await flush();
+      expect(workerAborted).toBe(true);
+      host.unregisterPlugin("org.test.first");
+      await expect(host.invokeAssistantTool("org.test.first", { sessionId: "session_first", name: "lookup", input: {} }, new AbortController().signal, [])).rejects.toThrow("not registered");
+    } finally {
+      for (const id of ["org.test.first", "org.test.second"]) if (host.getPlugin(id)) host.unregisterPlugin(id);
+      bridges.forEach(bridge => bridge.terminate());
+    }
   });
 });

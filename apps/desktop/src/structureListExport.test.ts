@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
+import { moleculeToInteropMolfile } from "@chemdraft/document-workflow-core";
+import { molfileCoordinateScale } from "@chemdraft/layout-engine";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import {
   createPhase4Document,
@@ -102,7 +104,7 @@ describe.each(["engine", "fallback"])("radical list export with real RDKit: %s",
   });
 });
 
-it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses its SMILES without calling the engine", async () => {
+it("imports the unsupported-order fixture, guards type 8 in SDF, and refuses its SMILES before requesting atom states", async () => {
   const input = readFileSync(new URL("../../../packages/fixtures/molfile/unsupported-bond-order.mol", import.meta.url), "utf8");
   const document = insertNativeMolfileMolecule(createPhase4Document("Unknown bond fixture"), { x: 50, y: 50 }, input, "molfile-v2000");
   const molecule = document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
@@ -115,7 +117,9 @@ it("imports the unsupported-order fixture, exports type 8 in SDF, and refuses it
     expect.objectContaining({ code: "export.smiles_write_failed", message: `Cannot write SMILES: bond ${id} has an unknown bond order.` })
   ]);
   expect(result.contents).not.toContain("> <SMILES>");
-  expect(computeStructureIdentifiers).not.toHaveBeenCalled();
+  // The real export guard attempts both identifiers, then verifies the CTAB graph instead.
+  expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(computeStructureIdentifiers).mock.calls.every(call => call[1] === undefined)).toBe(true);
 });
 
 function moleculeAt(id: string, x: number, y: number, width = 100, height = 100): MoleculeObject {
@@ -222,24 +226,32 @@ function mockEthaneIdentifiers(smiles: string) {
 }
 
 describe("structure list export", () => {
-  it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ exportList }) => {
+  it.each(exportListCases)("uses RDKit SMILES from the current wedged graph ($format)", async ({ format, exportList }) => {
     const molecule = moleculeAt("stereo", 20, 30);
     molecule.bonds[0].display = { bondStyle: "wedge" };
     const other = moleculeAt("other", 220, 30);
     const document = documentWith([other, molecule]);
     const before = structuredClone(document);
-    vi.mocked(computeStructureIdentifiers)
-      .mockResolvedValueOnce(mockEthaneIdentifiers("C[C@H](F)Cl"))
-      .mockResolvedValueOnce(mockEthaneIdentifiers("F/C=C/F"));
+    const smiles = ["C[C@H](F)Cl", "F/C=C/F"];
+    vi.mocked(computeStructureIdentifiers).mockImplementation(async (_contents, options) => {
+      // Sentinel SMILES test property wiring only; let the real guard compare the CTABs.
+      return options?.includeAtomStates ? mockEthaneIdentifiers(smiles.shift()!) : undefined;
+    });
 
     const result = await exportList(document);
     expect(result.contents).toContain("C[C@H](F)Cl");
     expect(result.contents).toContain("F/C=C/F");
     expect(result.warnings).toEqual([]);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
-    expect(computeStructureIdentifiers).toHaveBeenCalledTimes(2);
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(1, moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
-    expect(computeStructureIdentifiers).toHaveBeenNthCalledWith(2, moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true }).contents, { includeAtomStates: true });
+    expect(computeStructureIdentifiers).toHaveBeenCalledTimes(format === "SDF" ? 6 : 2);
+    const propertyCalls = vi.mocked(computeStructureIdentifiers).mock.calls.filter(call => call[1]?.includeAtomStates);
+    expect(propertyCalls).toHaveLength(2);
+    expect(propertyCalls[0]).toEqual([(format === "SDF"
+      ? moleculeToInteropMolfile(molecule, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
+      : moleculeToMolfileV2000(molecule, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true }]);
+    expect(propertyCalls[1]).toEqual([(format === "SDF"
+      ? moleculeToInteropMolfile(other, "v2000", 22, { kekuleBondOrders: new Map(), fromDocFrame: true })
+      : moleculeToMolfileV2000(other, { kekuleBondOrders: new Map(), fromDocFrame: true })).contents, { includeAtomStates: true }]);
     expect(document).toEqual(before);
   });
 
@@ -359,7 +371,7 @@ describe("structure list export", () => {
     expect(records[1]).not.toContain("> <Name>");
   });
 
-  it("preserves the V2000 writer's document-frame coordinates, charges and wedge flags", async () => {
+  it("normalizes V2000 document-frame coordinates while preserving charges and wedge flags", async () => {
     const molecule = moleculeAt("stereo", 20, 30);
     molecule.atoms[1].element = "N";
     molecule.atoms[1].formalCharge = 1;
@@ -367,7 +379,7 @@ describe("structure list export", () => {
     const sdf = (await exportStructureListSdf(documentWith([molecule]))).contents;
     const graph = parseMolfileGraph(sdf.slice(0, sdf.indexOf("> <SMILES>")));
     expect(graph.atoms.map((atom) => ({ x: atom.x, y: atom.y, charge: atom.formalCharge }))).toEqual([
-      { x: 20, y: -30, charge: 0 }, { x: 120, y: -130, charge: 1 }
+      { x: 0.2121, y: -0.3182, charge: 0 }, { x: 1.2728, y: -1.3789, charge: 1 }
     ]);
     expect(graph.bonds[0].bondStyle).toBe("wedge");
   });
@@ -383,12 +395,13 @@ describe("structure list export", () => {
     const result = await exportStructureListSdf(document);
     for (const message of writerWarnings) {
       expect(result.warnings).toContainEqual({
-        code: "export.sdf_v2000_loss", message, severity: "warning", objectId: molecule.id
+        code: message.startsWith('Atom label "Ph"') ? "export.smiles_atom_label" : "export.sdf_v2000_loss",
+        message, severity: "warning", objectId: molecule.id
       });
     }
     const smi = await exportStructureListSmi(document);
     expect(smi.contents).toBe("C[*]\t1\n");
-    expect(smi.warnings.map((warning) => warning.code)).toEqual(["export.smiles_dative_bond", "export.smiles_atom_label"]);
+    expect(smi.warnings.map((warning) => warning.code)).toEqual(["export.invalid_structure", "export.smiles_dative_bond", "export.smiles_atom_label"]);
     expect(smi.warnings.every((warning) => warning.objectId === molecule.id)).toBe(true);
   });
 
@@ -442,8 +455,8 @@ M  END
     molecule.bonds = graph.bonds;
     const document = documentWith([molecule]);
     const native = await exportStructureListSmi(document);
-    expect(native.warnings.map((warning) => warning.code)).toEqual(["export.smiles_bond_order"]);
-    expect(native.warnings[0].message).toContain("5 aromatic bonds could not be resolved");
+    expect(native.warnings.map((warning) => warning.code)).toEqual([...Array(5).fill("export.invalid_structure"), "export.smiles_bond_order"]);
+    expect(native.warnings[5].message).toContain("5 aromatic bonds could not be resolved");
     // Type 4 now stays truthful; unresolved interpretation still has to be disclosed.
     vi.mocked(computeStructureIdentifiers).mockResolvedValueOnce({ smiles: "c1cccc1",
       smilesAtomOrder: [0, 1, 2, 3, 4],
@@ -452,7 +465,10 @@ M  END
       }))
     });
     const engine = await exportStructureListSmi(document);
-    expect(engine.warnings).toEqual([expect.objectContaining({
+    expect(engine.warnings).toEqual([
+      ...Array.from({ length: 5 }, (_, index) => expect.objectContaining({
+        code: "export.invalid_structure", message: `C${index + 1}: its aromatic bonds don't resolve into single and double bonds.`
+      })), expect.objectContaining({
       code: "export.smiles_v2000_loss", objectId: molecule.id,
       message: expect.stringContaining("no resolved Kekulé order; the structure engine interpreted them for SMILES")
     })]);
@@ -585,4 +601,17 @@ describe("SMILES export review regressions", () => {
       resetRdkitForTesting();
     }
   });
+});
+
+
+it("normalizes differently sized SDF records independently without mutating the document", async () => {
+  const document = documentWith([moleculeAt("small", 0, 0, 22, 0), moleculeAt("large", 200, 0, 56, 0)]);
+  const before = structuredClone(document);
+  const records = (await exportStructureListSdf(document)).contents.split("$$$$").filter(record => record.trim());
+  expect(records).toHaveLength(2);
+  for (const record of records) {
+    const graph = parseMolfileGraph(record.trimStart());
+    expect(molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 22).medianBondLength).toBeCloseTo(1.5, 4);
+  }
+  expect(document).toEqual(before);
 });

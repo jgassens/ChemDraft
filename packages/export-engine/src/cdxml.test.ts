@@ -50,7 +50,7 @@ describe("exportDocumentToCdxml", () => {
     expect(result.warnings).toEqual([
       {
         code: "cdxml.mechanism_payload_only",
-        message: "Editable mechanism annotations remain in the ChemDraft payload until CDXML mapping is implemented.",
+        message: "Editable mechanism-arrow object mechanism_cdxml_001 remains in the embedded ChemDraft payload until CDXML mapping is implemented.",
         severity: "warning",
         objectId: "mechanism_cdxml_001"
       }

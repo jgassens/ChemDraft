@@ -32,6 +32,22 @@
     "returnType": "McpStatus"
   },
   {
+    "file": "canvas_context_menu.rs",
+    "name": "popup_canvas_context_menu",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>, window: WebviewWindow<R>, items: Vec<NativeItem>, position: PopupPosition,",
+    "returnType": "Result<Option<String>, String>"
+  },
+  {
+    "file": "canvas_occlusion.rs",
+    "name": "document_canvas_occlusion",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, app: tauri::AppHandle,",
+    "returnType": "Result<CanvasOcclusion, String>"
+  },
+  {
     "file": "dialog_windows.rs",
     "name": "dialog_open",
     "async": true,
@@ -69,6 +85,14 @@
     "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, host_id: String, reason: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "preferences_ready",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, data: Value,",
     "returnType": "Result<(), String>"
   },
   {
@@ -190,6 +214,62 @@
     "generics": "<R: Runtime>",
     "parameters": "app: tauri::AppHandle<R>, tool: ToolId, plugin_id: String, conversation_id: String,",
     "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_open",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, snapshot: Snapshot, anchor: Anchor, focus: bool, on_action: Channel<Action>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_request",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, on_snapshot: Channel<Chunk>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_publish",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, snapshot: Snapshot,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_ready",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, session_id: String, revision: u32,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_action",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, action: Action,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_close",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, session_id: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "file_warnings_window.rs",
+    "name": "file_warnings_dismiss",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "()"
   },
   {
     "file": "fonts.rs",
@@ -322,7 +402,7 @@
   {
     "file": "lib.rs",
     "name": "save_document_session",
-    "async": false,
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value,",
     "returnType": "Result<(), String>"
@@ -661,7 +741,7 @@
     "async": false,
     "generics": "",
     "parameters": "state: tauri::State<'_, PendingOpenDocument>,",
-    "returnType": "Result<Option<NativeOpenDocumentPayload>, String>"
+    "returnType": "Result<Vec<NativeOpenDocumentPayload>, String>"
   },
   {
     "file": "lib.rs",
@@ -901,6 +981,22 @@
     "async": false,
     "generics": "",
     "parameters": "app: AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "set_structure_search_enabled",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "structure_search.rs",
+    "name": "open_structure_search",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, site: String, smiles: String,",
     "returnType": "Result<(), String>"
   }
 ]

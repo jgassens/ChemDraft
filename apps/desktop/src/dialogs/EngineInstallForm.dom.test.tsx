@@ -54,11 +54,11 @@ it("presents a user-cancelled install as neutral status text", async () => {
   const root = createRoot(container);
   try {
     await act(async () => root.render(createElement(EngineInstallForm, {
-      snapshot: { ...engineInstallFixture(), state: { status: "failed", message: "Installation was cancelled." }, buttons: ["close"] },
+      snapshot: { ...engineInstallFixture(), state: { status: "failed", message: "Installation was canceled." }, buttons: ["close"] },
       onAction: vi.fn(),
       platform: "windows"
     })));
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was cancelled.");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was canceled.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
   } finally {
     act(() => root.unmount()); container.remove(); vi.unstubAllGlobals();

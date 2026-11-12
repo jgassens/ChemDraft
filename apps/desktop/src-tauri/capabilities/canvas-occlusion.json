@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "canvas-occlusion",
+  "description": "Only the document window may read the frames of ChemDraft dialogs and panels for insert placement.",
+  "windows": ["main"],
+  "permissions": ["allow-document-canvas-occlusion"]
+}

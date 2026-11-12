@@ -75,6 +75,32 @@ describe.each(["MacIntel", "Win32"])("quit flush on %s", (platform) => {
     stop();
   });
 
+  it("keeps the final quit snapshot behind an older autosave, even when the older write fails", async () => {
+    let failAutosave: (error: Error) => void = () => undefined;
+    const autosaving = new Promise<void>((_resolve, reject) => { failAutosave = reject; });
+    let finishFinalWrite: () => void = () => undefined;
+    const finalWrite = new Promise<void>((resolve) => { finishFinalWrite = resolve; });
+    native.invoke.mockImplementationOnce(() => autosaving).mockImplementationOnce(() => finalWrite);
+    const older = { lastEdit: "older autosave" };
+    const latest = { lastEdit: "final quit snapshot" };
+    const autosave = saveDocumentSession(older);
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledTimes(1));
+    const quitting = saveDocumentSession(latest, { strict: true }).then(confirmQuitAfterFlush);
+    await Promise.resolve();
+    expect(native.invoke).toHaveBeenCalledTimes(1);
+    failAutosave(new Error("disk unavailable"));
+    await autosave;
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("save_document_session", { state: latest }));
+    expect(native.invoke).toHaveBeenCalledTimes(2);
+    finishFinalWrite();
+    await quitting;
+    expect(native.invoke.mock.calls).toEqual([
+      ["save_document_session", { state: older }],
+      ["save_document_session", { state: latest }],
+      ["quit_after_flush"]
+    ]);
+  });
+
   it("contains a failed quit confirmation IPC", async () => {
     native.invoke.mockRejectedValue(new Error("native exit unavailable"));
     await expect(confirmQuitAfterFlush()).resolves.toBeUndefined();

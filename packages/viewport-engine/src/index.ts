@@ -107,6 +107,35 @@ export function screenToPage(point: Point, viewport: ViewportState): Point {
   };
 }
 
+export interface ViewportRect extends Point {
+  width: number;
+  height: number;
+}
+
+/** Convert a native desktop frame into page space. All native coordinates must use ONE
+ * desktop unit (physical pixels on Windows, desktop points on macOS). Never divide each
+ * Windows window's global position by its own DPI. The document scale converts the delta
+ * to CSS pixels; the viewport then accounts for page offset, zoom, pan and scroll. */
+export function nativeScreenRectToPage(rect: ViewportRect, options: {
+  documentOrigin: Point;
+  webviewOffset: Point;
+  screenUnitsPerCssPixel: number;
+  viewport: ViewportState;
+}): ViewportRect | undefined {
+  const { documentOrigin, webviewOffset, screenUnitsPerCssPixel, viewport } = options;
+  if (![rect.x, rect.y, rect.width, rect.height, documentOrigin.x, documentOrigin.y,
+    webviewOffset.x, webviewOffset.y, screenUnitsPerCssPixel, viewport.scale,
+    viewport.pageOriginX, viewport.pageOriginY, viewport.translateX, viewport.translateY,
+    viewport.scrollOriginX, viewport.scrollOriginY].every(Number.isFinite) ||
+    rect.width <= 0 || rect.height <= 0 || screenUnitsPerCssPixel <= 0 || viewport.scale <= 0) return undefined;
+  const point = screenToPage({
+    x: (rect.x - documentOrigin.x - webviewOffset.x) / screenUnitsPerCssPixel,
+    y: (rect.y - documentOrigin.y - webviewOffset.y) / screenUnitsPerCssPixel
+  }, viewport);
+  return { ...point, width: rect.width / screenUnitsPerCssPixel / viewport.scale,
+    height: rect.height / screenUnitsPerCssPixel / viewport.scale };
+}
+
 export function pageToScreen(point: Point, viewport: ViewportState): Point {
   return {
     x: point.x * viewport.scale + viewport.pageOriginX + viewport.translateX - viewport.scrollOriginX,

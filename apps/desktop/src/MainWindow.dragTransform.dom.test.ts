@@ -305,6 +305,20 @@ describe("object move retained SVG preview", () => {
     expectGeometry(snapshot());
   });
 
+  it.each(["MacIntel", "Win32"])("labels a whole group move as one undo (%s)", async platform => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    await mount(scenario("grouped"));
+    const drag = await start();
+    const end = { x: drag.point.x + 40, y: drag.point.y + 30 };
+    await move(drag.target, end);
+    await act(async () => pointer(drag.target, "pointerup", end));
+    expect(snapshot()).toEqual(oldMove(drag.before, drag.molecule, 40, 30));
+    await command("edit.undo");
+    expect(snapshot()).toEqual(drag.before);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Move group");
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
   it.each(["single", "molecules", "mixed", "rotated tilted", "grouped", "mixed grouped rotated tilted"])(
     "retains SVG and commits the old path's exact document and paint: %s", async kind => {
       await mount(scenario(kind));

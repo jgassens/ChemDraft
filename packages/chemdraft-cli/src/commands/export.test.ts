@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToCdxml } from "@chemdraft/export-engine";
-import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
+import { molfileCoordinateScale, nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 
@@ -445,4 +446,60 @@ describe("chemdraft export", () => {
     expect(exitCode).toBe(0);
     expect(io.stdoutLines[0]).toContain("ChemDraft headless document exporter");
   });
+});
+
+
+it.each(["mol", "sdf"] as const)("writes MDL units and verifies final scaled %s bytes", async format => {
+  const built = await buildSmilesDocument(L_ALANINE);
+  const raw = built.identityMolfile;
+  const buildSpy = vi.spyOn(documentWorkflow, "buildSmilesDocument").mockResolvedValue(built);
+  const guard = vi.spyOn(documentWorkflow, "assertCanonicalIdentity");
+  try {
+    const out = join(outputDirectory, `units.${format}`);
+    expect(await runCli(["--smiles", L_ALANINE, "--format", format, "--out", out], collectIo())).toBe(0);
+    const contents = await readFile(out, "utf8");
+    const ctab = contents.split("> <SMILES>")[0]!;
+    const graph = parseMolfileGraph(ctab);
+    expect(molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 28).medianBondLength).toBeCloseTo(1.5, 3);
+    const finalCtab = format === "mol" ? ctab : ctab.slice(ctab.indexOf("\n"));
+    expect(guard.mock.calls.some(([, bytes]) => bytes.slice(bytes.indexOf("\n")) === finalCtab.slice(finalCtab.indexOf("\n")))).toBe(true);
+    expect(built.identityMolfile).toBe(raw);
+    expect(await documentWorkflow.canonicalSmiles(ctab, "output")).toBe(built.sourceCanonicalSmiles);
+  } finally { guard.mockRestore(); buildSpy.mockRestore(); }
+});
+
+it.each(["mol", "sdf"] as const)("refuses %s when final scaled identity verification fails", async format => {
+  const built = await buildSmilesDocument(L_ALANINE);
+  const buildSpy = vi.spyOn(documentWorkflow, "buildSmilesDocument").mockResolvedValue(built);
+  const originalGuard = documentWorkflow.assertCanonicalIdentity;
+  const guard = vi.spyOn(documentWorkflow, "assertCanonicalIdentity").mockImplementation(async (source, bytes) => {
+    if (bytes.includes("V2000") || bytes.includes("V3000")) {
+      const graph = parseMolfileGraph(bytes);
+      const median = molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 28).medianBondLength;
+      if (median !== undefined && Math.abs(median - 1.5) < 0.001) throw new Error("stereo changed after rounding");
+    }
+    return originalGuard(source, bytes);
+  });
+  try {
+    const io = collectIo();
+    expect(await runCli(["--smiles", L_ALANINE, "--format", format, "--out", join(outputDirectory, `refused.${format}`)], io)).toBe(1);
+    expect(io.stdoutLines.join("")).toContain("Final scaled MOL/SDF chemical identity verification failed");
+  } finally { guard.mockRestore(); buildSpy.mockRestore(); }
+});
+
+it("normalizes each CLI SDF batch record from its own drawing scale", async () => {
+  const small = await buildSmilesDocument(ETHANOL, { bondLength: 22 });
+  const large = await buildSmilesDocument(L_ALANINE, { bondLength: 56 });
+  const spy = vi.spyOn(documentWorkflow, "buildSmilesDocument").mockResolvedValueOnce(small).mockResolvedValueOnce(large);
+  try {
+    const jobs = join(outputDirectory, "units-jobs.json"), out = join(outputDirectory, "units-batch.sdf");
+    await writeFile(jobs, JSON.stringify([{ name: "small", smiles: ETHANOL }, { name: "large", smiles: L_ALANINE }]));
+    expect(await runCli(["--batch", jobs, "--out", out, "--format", "sdf"], collectIo())).toBe(0);
+    const records = (await readFile(out, "utf8")).split("$$$$").filter(record => record.trim());
+    expect(records).toHaveLength(2);
+    for (const record of records) {
+      const graph = parseMolfileGraph(record.trimStart());
+      expect(molfileCoordinateScale(graph.atoms, graph.bonds, 1.5, 28).medianBondLength).toBeCloseTo(1.5, 3);
+    }
+  } finally { spy.mockRestore(); }
 });

@@ -7,7 +7,7 @@ import {
   moleculeToMolfileV3000,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
+import { exportDocumentToCdxml, repeatUnitExportWarnings, type ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { moleculeSmiles } from "@chemdraft/document-workflow-core";
@@ -17,6 +17,7 @@ import {
   assertCanonicalIdentity,
   buildSmilesDocument,
   currentMoleculeIdentityMolfile,
+  externalIdentityMolfile,
   type BuiltSmilesDocument
 } from "../document";
 import { installNodeEngines } from "../engine";
@@ -260,15 +261,21 @@ interface PerJobExportResult {
   warnings: string[];
 }
 
-async function verifiedSourceCanonicalSmiles(built: BuiltSmilesDocument, warnings: string[] = []): Promise<string> {
+async function verifiedSourceCanonicalSmiles(
+  built: BuiltSmilesDocument,
+  warnings: string[] = [],
+  writerWarnings: string[] = []
+): Promise<string> {
+  // Check the drawn graph first: identifier computation deliberately declines query bonds,
+  // but that refusal must retain the specific bond-order diagnosis rather than a generic
+  // canonicalization failure. Never accept a source made from an already lossy molfile.
+  const notes: ExportWarning[] = [];
+  await currentMoleculeIdentityMolfile(built.molecule, writerWarnings, notes);
   if (!built.identityVerifiedByRdkit || built.sourceCanonicalSmiles === undefined) {
     throw new Error(
       "Unable to export safely: RDKit could not canonicalize the input, so chemical identity cannot be verified."
     );
   }
-  // Do not accept a supposedly verified canonical source made from an already lossy molfile.
-  const notes: ExportWarning[] = [];
-  await currentMoleculeIdentityMolfile(built.molecule, [], notes);
   warnings.push(...notes.map((note) => note.message));
   return built.sourceCanonicalSmiles;
 }
@@ -297,17 +304,32 @@ async function assertCdxmlRoundTripIdentity(
   return warnings;
 }
 
+/** Rounding at MDL units must never silently change the exported chemistry. */
+async function assertFinalMolfileIdentity(sourceCanonicalSmiles: string, molfile: string): Promise<void> {
+  try {
+    await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+  } catch (error) {
+    throw new Error(`Final scaled MOL/SDF chemical identity verification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
+  // Identity verification already supplies problem-accounted invalid-structure warnings.
   const identityWarnings: string[] = [];
-  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings);
+  const writerWarnings: string[] = [];
+  const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings, writerWarnings);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
     const warnings = await assertCdxmlRoundTripIdentity(result.contents, built, sourceCanonicalSmiles);
     return { contents: result.contents, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message), ...warnings] };
   }
+  // Validation suppresses unrecognized-label warnings in favor of serialization diagnostics.
+  // Unlike CDXML's round-trip writer above, MOL/PDF have no later writer to report them.
+  // Keep missing notices in writer order; the builder normally already supplies these.
+  identityWarnings.push(...writerWarnings.filter((warning) => !built.warnings.includes(warning)));
   if (format === "pdf") {
     // Keep the jsPDF/svg2pdf implementation and its Node JSDOM shim out of non-PDF exports.
     const { exportDocumentToPdf } = await import("@chemdraft/export-engine/pdf");
@@ -316,8 +338,10 @@ export async function exportPerJobFormat(
     );
     return { contents: result.bytes, warnings: [...identityWarnings, ...result.warnings.map((warning) => warning.message)] };
   }
-  await assertCanonicalIdentity(sourceCanonicalSmiles, built.identityMolfile);
-  return { contents: built.identityMolfile, warnings: identityWarnings };
+  const molfile = externalIdentityMolfile(built);
+  await assertFinalMolfileIdentity(sourceCanonicalSmiles, molfile);
+  return { contents: molfile, warnings: [...identityWarnings,
+    ...repeatUnitExportWarnings(built.document, "MOL").map(warning => warning.message)] };
 }
 
 async function runPerJobExport(
@@ -371,10 +395,11 @@ async function combinedRecord(
   index: number
 ): Promise<CombinedRecord> {
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
-  const warnings = [...built.warnings];
-  const molfile = built.identityMolfile;
+  const warnings = [...built.warnings, ...repeatUnitExportWarnings(built.document, format === "sdf" ? "SDF" : "SMILES").map(warning => warning.message)];
+  const molfile = format === "sdf" ? externalIdentityMolfile(built) : built.identityMolfile;
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built);
-  await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
+  if (format === "sdf") await assertFinalMolfileIdentity(sourceCanonicalSmiles, molfile);
+  else await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
 
   const smilesWarnings: ExportWarning[] = [];
   const smiles = await moleculeSmiles(
@@ -386,6 +411,7 @@ async function combinedRecord(
     { requireEngineAtomStates: true }
   );
   const loss = smilesWarnings.find((warning) => warning.severity !== "info" &&
+    warning.code !== "export.invalid_structure" &&
     !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"));
   if (loss) throw new Error(`Cannot export without changing chemical identity: ${loss.message}`);
   await assertCanonicalIdentity(sourceCanonicalSmiles, smiles);

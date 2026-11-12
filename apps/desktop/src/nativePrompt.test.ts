@@ -164,6 +164,53 @@ describe("nativePrompt", () => {
     expect(await response).toBe("cancel");
   });
 
+  it.each(["macos", "windows"] as const)("queues page-fit boxes until the actual native answer on %s, even after abort", async platform => {
+    const answers: ((label: string) => void)[] = [];
+    plugin.message.mockImplementation(() => new Promise<string>(resolve => { answers.push(resolve); }));
+    const prompt = (file: string) => ({ ...growth, title: "Imported Content Exceeds Page",
+      message: `${file} extends beyond the page.`, serializationKey: "imported-page-fit" });
+    const stop = new AbortController();
+    const first = nativePrompt(prompt("A.cdxml"), undefined, stop.signal, undefined, platform);
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    stop.abort();
+    expect(await first).toBe("decline");
+    const second = nativePrompt(prompt("B.cdxml"), undefined, undefined, undefined, platform);
+    const third = nativePrompt(prompt("C.cdxml"), undefined, undefined, undefined, platform);
+    // Let native suspension and invocation finish if a second box incorrectly starts.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(plugin.message).toHaveBeenCalledTimes(1);
+    answers[0]!("Enlarge Page");
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    expect(plugin.message.mock.calls[1]![0]).toContain("B.cdxml");
+    answers[1]!("Cancel");
+    expect(await second).toBe("decline");
+    await vi.waitFor(() => expect(answers).toHaveLength(3));
+    expect(plugin.message.mock.calls[2]![0]).toContain("C.cdxml");
+    answers[2]!("Enlarge Page");
+    expect(await third).toBe("enlarge");
+  });
+
+  it("skips a page-fit request aborted while queued without losing the next file", async () => {
+    const answers: ((label: string) => void)[] = [];
+    plugin.message.mockImplementation(() => new Promise<string>(resolve => { answers.push(resolve); }));
+    const queued = { ...growth, serializationKey: "imported-page-fit" };
+    const first = nativePrompt({ ...queued, message: "A.cdxml" });
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    const stop = new AbortController();
+    const showingB = vi.fn();
+    const second = nativePrompt({ ...queued, message: "B.cdxml" }, undefined, stop.signal, showingB);
+    const third = nativePrompt({ ...queued, message: "C.cdxml" });
+    stop.abort();
+    expect(await second).toBe("decline");
+    answers[0]!("Cancel");
+    expect(await first).toBe("decline");
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    expect(plugin.message.mock.calls.map(call => call[0])).toEqual(["A.cdxml", "C.cdxml"]);
+    expect(showingB).not.toHaveBeenCalled();
+    answers[1]!("Enlarge Page");
+    expect(await third).toBe("enlarge");
+  });
+
   it.each(["saved", "discard", "cancel", "panel cancelled then cancel", "panel throws then cancel"])(
     "keeps utilities hidden across the complete close chain and releases on ending: %s", async (ending) => {
       let depth = 0;

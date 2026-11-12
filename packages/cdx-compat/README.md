@@ -3,3 +3,373 @@
 Owns CDXML/CDX import, export, intermediate models, unknown-object preservation, and compatibility warnings.
 
 This package must not become the native document model and must not depend on GPL or AGPL code without an explicit project decision.
+
+Native payloads share chem-core's feature-versioned writer and tolerant reader. `openChemDraftPayload`
+forwards named native warnings (including `path` and `originalValue`) and exposes
+`nativeDocumentVersions` when the payload has an explicit version envelope. The CDXML writer calls
+`prepareNativeDocumentForSerializationWithWarnings` after validation, keeping its embedded JSON compact while
+restoring future fields and avoiding a second schema pass. Export warnings include
+`NATIVE_EXTENSION_DATA_DROPPED` when edits invalidate preservation of identity-free arrays. See
+[the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
+
+Legacy unknown chemistry enum strings survive exactly in the embedded native payload; the visible
+CDXML layer reports `cdxml.native_enum_payload_only` when it cannot represent them. Unknown-order
+bonds write `Order="any"` with `cdxml.unknown_bond_order`, never a single-bond guess. Binary CDX uses the same native compatibility contract.
+
+`importCdx(bytes)` decodes binary CDX into CDXML and calls `openChemDraftPayload`, returning the same
+document, warnings, source and optional native-payload conflict. Pass a `Uint8Array`, including for
+clipboard data; decoding binary CDX as text first corrupts it. Malformed files return a
+`cdx.invalid_binary` warning with the property/object and reason when available.
+
+`exportDocumentToCdx(document, { embedNativePayload: false })` returns `{ bytes, warnings }`, using
+`exportDocumentToCdxml` for the visible document. Unsupported CDXML attributes, elements or values
+produce compatibility warnings. Export defaults to omitting native metadata.
+CDXML embeds native metadata by default; `{ embedNativePayload: false }` omits it, including the
+root hash-version attribute `attrib4345`. Warnings about
+unsupported data say explicitly when that data is not written because no payload is embedded.
+
+Native multi-atom labels are encoded as standard `GenericNickname` nodes with label text on the
+existing atom; its bond endpoints stay unchanged. Import also accepts unexpanded nickname, formula,
+fragment and monomer text nodes, including a `GenericNickname` property without a text object.
+R-group text takes precedence over `GenericNickname="R"`: `R1` and `R2` keep those numbers,
+including when the number is in a separate subscript run. Imports record the label and atom anchor
+in native `rGroups`; visible CDXML and CDX exports write the full label on a `GenericNickname`
+node. Bare `R`, `R'`, and `R''` keep their text without acquiring a numeric index.
+`cdx.atom_label_unexpanded` names each label exported without an expanded atom graph: the text and
+drawn attachments are preserved, but the file does not supply an explicit chemical expansion to
+other readers. A nameless unexpanded node imports as an unknown atom with a warning, never carbon.
+Text-only `Unspecified` nodes also retain their literal label, charge and source annotations on
+visible export, without creating superatom records. Nested `AnonymousAlternativeGroup` and
+`NamedAlternativeGroup` nodes cannot be ordinary superatoms: `cdxml.abbreviation_not_expanded`
+names the source node and unsupported alternative-group semantics. Their label and original
+expansion remain compatibility data and are written back through CDXML and CDX.
+Synthetic coverage includes chain formulas, a ring NMe, a repeated-formula linker, a metal fragment,
+peptide labels, and nested fragment connection points; it is not a claim of general peptide or
+multi-attachment fragment expansion.
+
+Labelled `Nickname` and `Fragment` nodes with a supported nested expansion import as native
+`MoleculeObject.superatoms`: the label, expanded atom membership, attachment anchor and a V3000
+expansion snapshot are retained. Their real atoms and bonds stay in the molecule's live graph,
+so formula, mass, SMILES, MOL, analysis and CLI identity consumers count the expansion once.
+Visible CDXML/CDX export groups those live atoms back into a labelled node with an inner fragment
+and external connection point. Source `Nickname` versus `Fragment` is retained; a newly authored
+native group writes `Nickname`. Native serialization and both Save As payloads retain all metadata.
+Source nesting depth and each superatom's source-record association preserve nested labels and node
+kinds even when multiple groups contain exactly the same atoms; synthetic coverage includes two and
+three nesting levels with equal and differing memberships.
+Edits to expansion atoms export their current chemistry, rather than restoring the source snapshot.
+
+`compatibility.unknown.cdxmlAbbreviations` retains source nodes, including unsupported
+expansions. Fragment captions and local display objects lifted into native objects are removed
+from these snapshots, so restoring an unsupported expansion cannot duplicate them on export.
+Lifted captions and ordinary page-level text retain their source `<t>` element in
+`compatibility.unknown.cdxmlTextElement`, including every text attribute and styled `<s>` run.
+`cdxmlTextNativeState` detects edits; `cdxmlTextFontTable` and `cdxmlTextColorTable` retain the
+referenced font and color definitions. Unedited text exports that source element once through
+both CDXML and binary CDX; moving it translates the source coordinates while keeping its runs.
+Raw text before, between and after styled runs retains its order in labels and captions. Binary
+CDX encodes each raw segment as a default-style run in its original position.
+Edited content, spans, style, size or rotation export the current native text instead, with
+`cdxml.text_source_formatting_not_kept` naming the native object and original source id. Conflicting
+source font or color indices from combined documents produce named warnings. CDX retains its
+ordinary numeric precision and supported attribute limits; CDXML-only attributes still produce
+the binary codec's omission warnings.
+Multiple external connection points, ambiguous attachment bonds, wrapper charge and
+other unrepresentable states emit `cdxml.abbreviation_not_expanded`; they retain the literal atom
+label and original source expansion instead of silently flattening it. Original `BeginAttach` and
+`EndAttach` values survive unchanged bond endpoints. A stale or overlapping native group that
+cannot be collapsed safely exports its live graph with `cdxml.superatom_not_collapsed`.
+Synthetic coverage includes biphenyl/Ph, Boc-NH, OTBS, OMe and three independent Me groups.
+
+### Merging source atom snapshots
+
+Visible CDXML and CDX export starts from the imported atom node. An unchanged snapshot keeps its
+attributes and children verbatim (object ids may be remapped); an edited atom overwrites only its
+changed charge, isotope, radical, hydrogen constraint, element or label text. Unchanged `AS`,
+`NodeType`, annotations, styled label runs and unexpanded fragments stay intact. Supported R/S edits
+update `AS` too. Each snapshot records the imported native values in `cdxmlAbbreviations.nativeState`,
+so comparisons use the same native interpretation on import and export. Every snapshotted atom
+retains an explicit source `NumHydrogens` constraint, including nonliteral atoms and D/T labels;
+absent counts stay absent, leaving ordinary implicit hydrogens engine-derived. Older snapshots
+can also retain a source-only count without mistaking the absent native constraint for an edit.
+Rebuilt superatoms use live body atoms with the same merge and retain unchanged wrapper labels and
+annotations. Older snapshots use the original import policy as their comparison baseline. Warnings
+name the source node and actual loss, such as run formatting that cannot follow edited label text;
+changing charge alone no longer discards the source node or warns about retained stereo.
+
+Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` contains a namespaced
+`org.chemdraft/cdx-envelope.v1` envelope with the existing CDXML payload tags. Its visible hash covers
+the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope
+property itself, including both legacy and UTF-8 text copies. Unchanged files restore the exact native
+document; external edits to either copy use the existing conflict path. Both the binary hash and the
+stored visible XML hash must match. Every new payload-embedded CDXML envelope has root attribute
+`attrib4345="|x|32"`: the opaque binary-property notation for user-defined CDX property `0x4345`,
+whose UTF-8 value is the hash-semantics version `"2"`. Save As CDX preserves that property beside
+`0x4344` and also records `visibleHashVersion: "2"` in the envelope JSON; both copies must agree.
+An absent version selects only the frozen released canonicalization, which left numeric references
+literal and used the old whitespace escaping. Version `"2"` selects only current canonicalization;
+unknown versions require conflict review. No file is checked against both semantics.
+
+Known, accepted legacy limitation: the frozen canonicalization aliases a line break encoded as
+`&#10;` with the literal text `&#10;` encoded as `&amp;#10;` (and similarly for other numeric
+references). This cosmetic substitution never changes chemistry. Unversioned files whose legacy
+hash matches restore silently, including unchanged text with line breaks; no new prompt or conflict
+is introduced. CDX still requires its binary integrity hash to match, so this substitution alone
+does not bypass that check. Saving a legacy document again writes version `"2"`, whose current
+canonicalization distinguishes the two forms and rejects cross-semantics substitutions.
+
+The root version attribute is included in the visible XML hash, and binary property `0x4345` is
+included in the raw binary hash. Removing, adding or changing it therefore changes the hash, even
+when text edits collide across the two canonicalizations. Recomputing the binary hash cannot bypass
+the independently stored XML hash. The envelope JSON alone is outside the binary hash, so its version
+must agree with the hashed property. Interchange CDX Export omits both native properties.
+Older readers preserve unknown root attributes and raw binary properties in their visible hashes
+and ignore unknown envelope JSON fields. The existing tag names, envelope format, native document
+and its hash remain unchanged, so old readers retain their existing hash behavior (including their
+existing numeric-reference limitations); no new native tag trips their CDX tag whitelist.
+Native-payload, schema and codec checks still apply. Older envelopes
+without the binary hash also require conflict review. This property is ChemDraft-specific; other readers
+can consume the standard visible objects without interpreting it.
+
+Page fitting retains the source root `PrintMargins` and all source page attributes, including the
+original `BoundingBox` text, `WidthPages`, `HeightPages`, headers, footers, trim marks, orientation
+and opaque attributes. When native paper settings are unchanged and the visible content still fits,
+export writes that setup back verbatim (object ids may be reassigned). Binary CDX retains the same
+settings within its ordinary numeric precision and supported attribute set. `PrintMargins` is
+top/left/bottom/right in both CDXML text and binary CDX, including asymmetric margins.
+
+On import, a counted page box plus margins determines the physical paper size: divide the box by
+the page counts and add the margins. Recognised paper sizes map to native presets and orientation;
+other unambiguous sizes map to custom paper. Uncounted boxes without margins describe paper.
+With margins but no counts, native size is inferred only when a recognised paper size distinguishes
+the paper-box and printable-box conventions. Ambiguous settings remain in compatibility data.
+Page counts stay in compatibility data; native `pages` are separate logical pages.
+
+For new drawings, changed paper settings, or content that outgrows a source setup, export derives
+the printable width and height from the actual native paper dimensions minus its margins. Each
+page writes `WidthPages = ceil(contentRight / printableWidth)` and
+`HeightPages = ceil(contentBottom / printableHeight)`, with a minimum of one, after origin fitting.
+Its `BoundingBox` is `0 0 WidthPages*printableWidth HeightPages*printableHeight`; root `PrintMargins`
+comes from the native margins. No conflicting fixed `Width`/`Height` attributes are generated.
+This applies to landscape, A4, custom paper and documents with multiple native pages. Different
+margins across native pages produce `cdxml.page_margins_conflict`, naming the affected pages: the
+shared root and every printable-area grid use the first page's margins. Margins are compared
+numerically within 0.00005 points, so equivalent source spellings do not warn. If any page uses a
+printable-area grid, its margins are written at the root even when the first page retains an
+uncounted source box. Source root margins are retained only when numerically equal to the effective
+margins. The plain `<page BoundingBox="0 0 612 792">` form, without page counts or print
+margins, is retained for a new single-page Letter portrait drawing with default native margins
+whose content fits that paper.
+
+If visible coordinates are negative, every visible coordinate on that page receives the same
+offset, placing its minimum 18 points inside the fitted area, including nested molecule labels,
+graphics, curve controls, arrow axes and bracket geometry. Positive coordinates stay stationary.
+If the fitted offset, extent, or shifted coordinates would overflow, `cdxml.page_fit_unrepresentable`
+warns and the entire page keeps its original coordinates. The page remains finite and at least letter
+size, retaining representable unshifted extents where possible; some content may lie outside it.
+
+Page compatibility feature table (under `DocumentPage.compatibility.unknown`):
+
+| Key | Preserved data / purpose |
+| --- | --- |
+| `cdxmlPageAttributes` | All source page attributes and their original text, including page counts and the existing `attrib4346` origin offset. |
+| `cdxmlRootPageAttributes` | Root print setup: `PrintMargins`, `MacPrintInfo`, `WinPrintInfo`, `Orientation`, `PageOrientation`, `Width`, `Height`, `WidthPages`, `HeightPages`, `DrawingSpace`, `PageOverlap`, `Header`, `HeaderPosition`, `Footer`, `FooterPosition`, `PrintTrimMarks`. |
+| `cdxmlPageNativeSetup` | Stable field-value snapshot of imported native size, margins and layout, used to detect subsequent paper-setting edits. |
+
+The only native schema addition is optional `DocumentPage.compatibility`, using the existing
+compatibility metadata schema. Existing documents need no migration or backfill; native dimensions,
+margins and layout fields keep their existing meanings. Synthetic coverage exercises source setup
+preservation and growth, Letter portrait/landscape, A4, asymmetric margins, native multi-page
+documents, exact printable boundaries, finite overflow fallback and origin restoration in both
+CDXML and CDX. No independent-reader or interactive platform verification is claimed here.
+
+Page attribute `attrib4346` (user-defined binary CDX property `0x4346`) records the offset as
+hex-encoded UTF-8 JSON `[dx,dy]` in CDXML points, independently of the native payload. ChemDraft
+subtracts it before importing visible objects and their source compatibility attributes, so repeated
+CDXML/CDX interchange cycles restore the original origin and relative layout within the formats'
+ordinary coordinate precision. Embedded saves still restore the exact native document. Other readers
+can ignore the attribute and display the shifted drawing on its fitted page. If another reader
+removes that property, the original absolute origin cannot be recovered; relative layout remains
+intact. Invalid origin metadata warns and leaves visible positions unchanged.
+
+Unsupported source `<graphic>` types, including Orbital and Symbol, retain **every** source attribute
+in `compatibility.unknown.cdxmlGraphicAttributes`, alongside the existing compatibility keys. Unedited
+graphics export with the same element, type and attributes, including opaque attributes and raw CDX
+properties. Moves and resizes update only the coordinate attributes; subtype, color, Z, line width
+and other source data stay intact. Source color-table indices are preserved; combining incompatible
+source palettes produces a named warning. Binary attributes retain CDX's normal enum spelling and
+fixed-point precision (for example, the binary orbital enum names `dz2Plus`/`dz2Minus`). Arbitrary
+CDXML-only attributes that CDX cannot encode still produce the codec's named omission warnings.
+
+Export never invents `GraphicType="Unknown"`. Native Bezier chains, open/closed polylines, polygons
+and quadratic bends write real `<curve>` elements, with full/open/half arrowheads at their respective
+ends. Supported object-local SVG path commands are `M`, `L`, `H`, `V`, `C`, `S`, `Q`, `T`, `Z` and their relative
+forms for one subpath. Quadratics elevate exactly to cubics. Native circular arrows use cubic curve
+segments with a named approximation warning; imported standalone `<arrow>` objects retain that form.
+Paths without a faithful supported representation, including uncached variable-width freehand
+outlines and unsupported SVG syntax, are omitted from the visible layer with `cdxml.graphic_not_written`,
+naming the object and explicitly saying it is **NOT written**. The embedded native payload retains
+all native geometry exactly; no native schema fields were added.
+Curves receive the same styling limitation warnings as other native graphics, including non-oval
+gloss and reflection; those effects survive exactly only in embedded saves.
+
+CDXML text and attributes decode decimal and hexadecimal numeric character references and the five
+XML entities once. Named HTML entities remain literal. Text CR and attribute CR/TAB/LF export as
+numeric references so XML whitespace normalization cannot change them on reopen.
+
+The binary codec accepts either byte order, fixed-point coordinates and legacy/UTF-8 text copies.
+Limits are 64 MB, 64 nested child-object levels, one million objects and one million properties.
+Diagnostics retain at most 1000 warnings plus one summary counting omitted warnings. A malformed typed
+property is skipped with a warning; unsupported binary properties retain their raw bytes where possible.
+Point3D bytes are x/y/z, matching independent CDX/CDXML twins and the Octet Draw codec. This applies
+to atom `xyz` and every object's `Head3D`, `Tail3D`, `Center3D`, `MajorAxisEnd3D` and `MinorAxisEnd3D`.
+Point2D and rectangle bytes retain their separate y/x convention. Page fitting and origin restoration
+translate only the x/y components of 3D attributes, preserving z. `extent3D` and `CurvePoints3D`
+remain opaque binary properties; this codec does not decode their components.
+
+Older ChemDraft development builds wrote Point3D in z/y/x order. Only root property `0x4347` with
+the exact UTF-8 value `xyz` (`attrib4347="|x|78797A"`) selects corrected x/y/z order by marker.
+An unexpected value produces `cdx.point3d_order_marker_unrecognized`, naming the value, and is
+ignored for order selection. Files with an absent or unrecognized marker are read with
+legacy order only when `CreationProgram` is exactly `ChemDraft` or their native envelope has
+format `org.chemdraft/cdx-envelope.v1`. Detection happens after the entire tree is read, including
+metadata following child objects. New binary output with producer metadata or an envelope carries
+`attrib4347="|x|78797A"` (UTF-8 `xyz`); it participates in both visible integrity hashes. Resaving a
+legacy file writes corrected x/y/z bytes. Old interchange files with a custom `CreationProgram`
+and no native envelope cannot be distinguished reliably and use x/y/z; their 3D geometry may open
+with x/z swapped. No released ChemDraft build ever wrote binary CDX; the writer was first added for
+1.2, so this custom-`CreationProgram` ambiguity affects only development builds.
+Removing provenance or the order marker in an external editor can likewise lose
+this distinction. Native document data and CDXML coordinate meanings are unchanged.
+
+Legacy text uses the declared font charset;
+zero-style strings use ISO Latin-1. Unrepresentable characters produce specific encoding warnings.
+Compatibility remains fixture-driven, with the same visible-subset limits as CDXML. Doublet and
+triplet atom radicals round-trip; electron states the native model cannot express are refused with
+a warning rather than converted to a different radical.
+
+Synthetic-fixture-covered `<scheme>/<step>` import uses native `reaction` objects, one per step in
+source order. `components` holds reactant/product/agent roles; `conditionsTextObjectIds` links text
+above or below the arrow; optional `arrowObjectIds` and `plusObjectIds` link shared drawables.
+Scheme-less steps, including direct page children, use the same native import and link resolver.
+A step without a resolved arrow or native reactant/product participant stays an unknown compatibility
+object with `cdxml.reaction_step_preserved`, naming the step; conditions or plus signs alone never
+create an empty native reaction.
+Visible export places them in standard scheme containers without inventing participants or links.
+Groups resolve to their members, and an intermediate used by two steps remains one molecule.
+Explicit reactant/product text labels remain participants; decorative group members do not acquire
+chemical roles and produce a named warning while retaining their source references. Multiline
+conditions retain their exact text through visible CDXML and CDX export; XML indentation is added
+only before serialized objects, never inside their text.
+Unresolved participant ids produce `cdxml.reaction_reference_unresolved` and are ignored.
+Step arrow references follow legacy graphics' `SupersededBy` chains to imported arrows. Cycles and
+missing targets produce `cdxml.reaction_reference_unresolved`; the original list text remains in
+`compatibility.unknown.cdxmlStepAttributes`. Newly imported native reactions now populate
+`arrowObjectIds` for these references, where older imports left the list empty; no schema change or
+migration of previously saved native documents is performed.
+Headed `Line` graphics become native editable arrows independently of `LineType`, including
+`Solid`, absent and unknown values. Mapped dash, bold and wave styles remain native; explicit
+solid and unmapped line-type text survive visible export in `cdxmlLineType` compatibility data.
+Line graphics may state their heads with `ArrowType` or separate `ArrowheadHead`/`ArrowheadTail`
+properties. Separate heads use the standalone-arrow importer, retaining the headed ends and full
+versus half heads. Unheaded `NoHead` lines (including no-head aliases) stay plain graphics and retain
+their source `ArrowType` on visible export. Both headed-line import paths warn about unmapped line
+styles. Synthetic tests construct binary property records directly and exercise three
+visible CDX round trips, including `FullHead` and separate heads with solid, absent and dashed lines.
+Unknown binary line-type bits retain their complete numeric value. Unmapped styles produce
+`cdxml.arrow_line_type_approximation` while keeping the arrowhead and reaction link.
+Unresolved-link warnings name the source step id, attribute, target id and link role (arrow,
+reactants, products or conditions), including links on scheme-less steps.
+Legacy `<graphic>` arrow twins carrying `SupersededBy` are intentionally not imported or written
+back. The modern `<arrow>` they point to is kept, and reaction steps reference that arrow.
+
+Visible export writes schemes for native reaction objects. Compatibility metadata retains source
+scheme membership, step order, above/below placement and source attributes; unchanged valid source
+object ids and step lists round-trip, including group references. Edited native roles regenerate
+the affected lists. New reactions use their native links and place agents/conditions above or below
+according to their positions relative to the arrow. This does not infer a reaction from loose
+drawings: the CLI's current visual layout builder still produces loose drawing objects.
+Superseded arrow references export the imported arrow's id. Empty reaction-step id lists, including
+arrow, above/below, participant, plus and opaque atom-map lists, are omitted instead of written empty.
+Atom maps and other unmapped `ReactionStep*` attributes are retained opaquely with a named warning;
+they do not become native atom mapping. The embedded native payload round-trips the full document.
+This fixture coverage does not claim general CDXML reaction compatibility or exact arrowhead sizing.
+
+CDXML double bonds with `Order="2" Display="Wavy"` import as native `stereo: "either"` and export
+with the same attributes, preserving unknown E/Z even when the coordinates suggest an isomer.
+`DoublePosition` controls line placement and does not assign stereo. Ordinary double bonds retain
+their coordinate-derived E/Z. Unmapped double-bond `Display2` and `BS` attributes produce warnings
+naming the attribute and value. If an either bond also has a native bond style, visible export uses
+`Wavy` and warns that the additional style remains only in the native payload.
+
+CDXML `Order="1.5"` stays native `aromatic` and exports as `1.5`, including on open chains and
+exocyclic bonds. This preserves the stated delocalised order without inferring ring aromaticity or
+choosing a Kekulé structure. Unsupported order values stay native `unknown`; their original strings
+are kept per bond in `compatibility.unknown.cdxmlUnknownBondOrdersByBondId` and restored on CDXML
+export while the bond remains unknown. A native unknown bond without a preserved source value
+exports as `Order="any"`. Both cases warn; neither is exported as a single bond.
+
+CDXML `<curve>` arrows import as editable native art-arrow graphics (`graphicKind: "path"`,
+`data.artPathKind: "bezier"`, `data.pathNodes`, `markerStart` and `markerEnd`). Full, angle and
+half heads retain their endpoint; a half head remains a fishhook. Cubic chains and incoming/knot/
+outgoing spline triples retain every segment and control point; a quadratic is elevated exactly
+to cubic. Unheaded curves use the same native path without arrow markers. Source curves return as
+`<curve>`, while existing `<arrow>` objects keep their export form. Curves carry explicit line
+widths and custom colors through the visible CDXML, including when the native payload is removed.
+
+`compatibility.unknown.cdxmlCurveAttributes` retains the source attributes, including the original
+`CurvePoints` text, head sizing, `LineType` and `Z`. Unchanged geometry and head attributes export
+verbatim; edited Bezier nodes export their current controls. Native head dimensions, half-head
+handedness and hollow-head appearance can differ from the source: named import warnings describe
+these approximations, and export restores the original source attributes. Unsupported line types
+also warn and remain in the source attributes. Invalid or unsupported point layouts stay as unknown
+compatibility objects with `cdxml.curve_points_preserved` and export their source curve. Rotation,
+tilt, or edited head dimensions that standard export cannot express warn and remain in the native
+payload. Binary CDX uses the shared CDXML mapping.
+
+Edited closed Beziers export incoming/knot/outgoing triples, including the first incoming and last
+outgoing controls that define the closing segment. CDXML's per-end heads specify `Full`, `HalfLeft`
+or `HalfRight`; `Solid`, `Hollow` and `Angle` belong to the shared `ArrowheadType` (see the
+[CDXML enum mappings](https://github.com/epam/Indigo/blob/master/core/indigo-core/molecule/CDXCommons.h#L109-L114)).
+An edited curve with mixed filled/open ends therefore exports using the end head's type and emits
+`cdxml.arrow_marker_payload_only`, naming the start (tail) style that is approximated. The native
+payload retains both original marker styles. Curve-specific `Half`/`Angle` aliases do not affect
+standalone `<arrow>` import: its legacy full-head fallback and resulting `Full`/`Solid` export for
+`ArrowheadHead="Half"`, `ArrowheadType="Half"` or `ArrowheadHead="Angle"` remain unchanged.
+
+Untilted, unrotated square and round brackets write real `graphic` elements and native editable
+pairs. `bracketedgroup` maps `SRU` to `bracketUsage: "sru"` plus `repeatUnit`, `MultipleGroup` to
+`"multiple"`, absent usage to `"generic"`, and other usages to `"unknown"` with a named warning.
+Graphic-level usage fills in an absent group usage. `SRULabel`, safe positive integer `RepeatCount`,
+whole-fragment membership, and molecule-scoped crossing bonds round-trip through CDXML and CDX.
+Atom-level or unresolved membership and unresolved crossing references remain compatibility data
+with warnings; they do not prevent native pair import. No multiplier expands the molecular graph.
+Invalid counts retain their original text and source group as compatibility data, with native usage
+`unknown` and a warning. CDXML writes that text verbatim; CDX export refuses an invalid count rather
+than writing a rounded binary value. Unsupported glyph transforms or shapes use an axis-aligned
+bracket approximation with a geometry warning; valid pairs still write their group semantics.
+
+Graphic attributes including `LipSize`, `Z`, `IgnoreWarnings`, `Warning`, line width and colour stay
+in compatibility data and are written back. Native appearance may approximate unmapped styling,
+which warns on import. Side assignment compares centre X, centre Y (top opens), then bounding box,
+independently of attachment order. Indistinguishable glyphs retain their imported sides and the
+group remains compatibility data with a warning. Unedited `BoundingBox` text is written verbatim;
+edited geometry is regenerated.
+`InnerAtomID` survives unchanged crossing bonds; retopologised bonds drop that opaque association.
+Independent text beside a group without `SRULabel` remains independent and still warns.
+Membership edits retain surviving source object and atom references; dropped references are named
+in warnings. Unresolved crossings survive unrelated label or membership edits. Source references
+resolve through the recorded native object and atom, so duplicate source ids cannot retarget them.
+Copying a complete pair and every referenced object carries and remaps its compatibility records;
+incomplete copies drop those records with user-visible warnings.
+
+These are synthetic-fixture-covered paths, not a general Tier B polymer claim. Groups with missing
+or non-pair attachments still use unknown-object preservation. `cdxml.bracket_group_preserved`
+names each source group whose usage, repeat count, members and crossing bonds have no native group
+representation; its glyphs remain independent and its group is omitted from visible export.
+Unsupported source glyph kinds, including `Curly`, use `cdxml.bracket_type_preserved`, naming the
+source graphic and the omitted native glyph/visible export. Nested bracket groups remain raw source
+children of an exportable outer pair, with `cdxml.bracket_nested_group_preserved` naming every group
+whose native semantics are not imported. These warnings also apply to binary CDX.
+No independent-reader or interactive
+platform verification is claimed. See [the bracket handoff](../../docs/architecture/brackets-repeat-units.md).

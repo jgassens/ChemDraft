@@ -17,7 +17,8 @@ import { parseDialogMessage } from "./dialogProtocol";
 import { PerfProbe } from "../perf/probe";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), channels: [] as { onmessage(value: unknown): void }[] }));
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(),
   invoke: ipc.invoke,
   Channel: class { onmessage = (_value: unknown) => {}; constructor() { ipc.channels.push(this); } }
 }));
@@ -86,7 +87,7 @@ it.each(["macos", "windows"] as const)("renders the PDF page layout as an SVG im
   expect(result.kind).toBe("image");
   expect(result.url).toMatch(/^data:image\/svg\+xml;base64,/);
   const svg = atob(result.url.split(",")[1]!);
-  expect(svg).toBe(exportPhase4Svg(drawing, { outputWidth: 800, outputHeight: 400, background: "#ffffff", includeWarnings: true, includePageGuides: true }).contents);
+  expect(svg).toBe((await exportPhase4Svg(drawing, { outputWidth: 800, outputHeight: 400, background: "#ffffff", includeWarnings: true, includePageGuides: true })).contents);
   expect(svg).toContain("<line");
   expect(parseDialogMessage({ ...exportSnapshot, type: "result", data: { status: "preview", preview: result } })).toBeDefined();
   await act(async () => root.render(createElement(ExportForm, {

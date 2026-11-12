@@ -55,6 +55,15 @@ the saved native coordinates and inventory retain native units.
 
 ## Common contract
 
+`render-document` reads newer native JSON and ChemDraft envelopes with the same tolerant reader
+as the app. Its JSON result includes `minAppVersion` (the file's effective minimum, `1.1.1` for
+legacy files) and `documentWarnings`: objects with `code`, `message`, and, for native forward
+reading, `path` and `originalValue`. These fields are also retained if rendering fails after a
+successful read. Existing `warnings` strings and `exportWarnings` include the open warnings too.
+Unknown visual content is preserved when saving with `--format chemdraft`, together with at least
+its source minimum app version; a preview can use a fallback. Unsupported chemistry still fails.
+All compatibility information stays inside the JSON result; the CLI shows no update prompt.
+
 Commands write machine-readable JSON lines to stdout and human-readable progress to stderr. A
 successful line has ok: true, a name, command inputs, command outputs, and warnings: []; a failed
 line has ok: false, its identifying inputs, and an error string. Commands exit 0 when all jobs
@@ -62,7 +71,7 @@ succeed, 1 when any attempted job fails, and 2 when arguments or batch input are
 
 Batch files are JSON arrays of named jobs. Names are trimmed and must match
 ^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$; names must be unique without regard to case. A batch may contain
-at most 500 jobs. Windows device names (`CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`,
+at most 500 jobs and 32 MB. Windows device names (`CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`,
 `COM1`–`COM9` and `COM¹`–`COM³`, `LPT1`–`LPT9` and `LPT¹`–`LPT³`) are rejected on every platform. Empty input is rejected; chemical input is limited to 5000 characters and 500
 heavy atoms. Fit-style PNG output is limited to a width of 16–4000 pixels;
 document-style PNG size follows the physical extent and DPI.
@@ -130,9 +139,17 @@ and no H objects. This command does not force hydrogens into the depiction.
 
 ## render-document
 
+Invalid native drawings can still be rendered or saved as `.chemdraft`. The result's
+`warnings` and `exportWarnings` include one `export.invalid_structure` warning per problem
+atom (for example, `C1 has unsupported valence 5.`), even when its canvas badge is suppressed.
+If the structure cannot be parsed, that molecule reports `chemistryStatus: "unverified"` and
+`null` for `canonicalSmiles`, `stereoCenters`, `unspecifiedStereoCenters` and
+`unspecifiedDoubleBonds`; those nulls are not zero counts or verified chemical identity.
+SMILES-input export commands retain their identity-preserving refusals.
+
 Render a styled native JSON document or a desktop `.chemdraft` envelope through the same native
 loader and SVG exporter as the app. It supports ring interiors, ring letters supplied as text
-objects, bold/hashed/wedge bond displays, per-bond/per-atom style maps, sketch visual effects,
+objects, bold/hashed/wedge/wavy bond displays, per-bond/per-atom style maps, sketch visual effects,
 text, and art objects to the extent supported by the existing exporter.
 
 ~~~bash
@@ -208,6 +225,13 @@ arguments.
 
 Render a reaction scheme as PNG or SVG.
 
+JSON results include `alignmentWarnings`: `reaction.alignment_skipped` for a product without a
+qualifying shared core (a complete ring or six heavy atoms) or a refused alignment, and
+`reaction.alignment_timeout` for a canceled search or exhausted scheme budget. The component is
+identified by `role: "product"` and zero-based input `index`. Small/unrelated products also report
+skipped alignment; no warning is emitted when there are no reactants. An earlier completed match
+may still be used after a later search times out. Messages also appear in `warnings`.
+
 Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
 
 Reaction labels allow at most 6 `--above` and 6 `--below` entries, a non-empty `--caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `--conditions`; batch jobs use the same caps.
@@ -226,7 +250,7 @@ composition formulas, falling back to SMILES only when composition fails; --cond
 there. Agent formulas carry net ionic charge as a superscript; hydroxide is written OH⁻. Carbon-free
 formulas use conventional written order rather than strict Hill order (H2SO4, HCl, NH3); each
 exact Hill formula is kept in agentTexts[].hillFormula. Species, plus signs, and the arrow use
-24 px gutters.
+equal gaps of 1.25 bond lengths, measured between drawn ink bounds.
 
 Batch jobs contain either rxn or reactants/agents/products arrays. Array entries preserve . as one
 molecule object. Each job may supply out; otherwise --out-dir is required and files are named from
@@ -361,9 +385,9 @@ The checkout must export `NMR_PLUGIN_CAPABILITIES` with `constitutional-equivale
 the checkout (`git pull`) or set `$CHEMDRAFT_NMR_PLUGIN_DIR` to a current one.
 
 What the numbers are:
-  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2 experimental
-    assignments. They are predictions, not measurements. source "hose-fragment" is a database
-    match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
+  - Shifts come from HOSE-fragment lookup over statistics derived from NMRShiftDB2
+    assignments (the database does not mark which are experimental). They are predictions, not
+    measurements. source "hose-fragment" is a database match; source "rule-estimated" is a disclosed additive-rule estimate, emitted only where the
     rule applies and always flagged by an NMR_RULE_ESTIMATED warning.
   - 1H multiplicity and J are first-order estimates from bond topology. They are labelled
     estimated ("estimated": true) and are never measured values.
@@ -390,6 +414,10 @@ and 2 for bad arguments.
 
 Export one SMILES string or a JSON batch to CDXML, PDF, SDF, MOL, or SMILES.
 
+Exported MOL/SDF use a 1.5 Angstrom median bond length per CTAB/record. In the desktop,
+MOL pasted (including RXN MOL blocks) or recognized from an image is scaled by its median bond
+to the document's bond length. SMILES depictions, name-to-structure and templates retain mean-based sizing.
+
 ~~~bash
 pnpm -s chemdraft export --smiles 'CC(=O)Oc1ccccc1C(=O)O' --out aspirin.cdxml
 pnpm -s chemdraft export --batch jobs.json --out-dir mols --format mol
@@ -412,7 +440,7 @@ masses are stored per atom. Radical inputs remain refused by drawing and export 
 
 Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
 `18-crown-6` rather than writing SMILES for these hosts. The `name` result reports
-`source: "template" | "opsin"`; template results also carry `templateId` and
+`source: "template" | "opsin" | "dictionary"`; template results also carry `templateId` and
 `templateName`. Existing SMILES fields retain their meaning. `name --render` draws
 the template layout at the default document style.
 
@@ -424,3 +452,9 @@ Templates use the default document bond length; ordinary SMILES sizing is unchan
 Stereo-free or different stereoisomers do not substitute. Native documents supplied to
 `render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
 native document built from SMILES inherits the layout chosen by `document`.
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.

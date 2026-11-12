@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "file-warnings-dismiss",
+  "description": "Other trusted app windows may dismiss warnings on an outside click, without receiving warning data or document actions.",
+  "windows": ["toolset-*", "plugin-panel-*", "preferences", "spin3d-debugger", "dialog-main-*"],
+  "permissions": ["allow-file-warnings-dismiss"]
+}

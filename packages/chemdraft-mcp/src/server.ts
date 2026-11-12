@@ -41,6 +41,8 @@ interface CommandSuccess {
 
 interface CommandFailure {
   error: string;
+  /** Native reads can succeed before rendering fails; retain their compatibility metadata. */
+  jsonLine?: string;
 }
 
 export interface ChemDraftMcpDependencies {
@@ -223,7 +225,7 @@ function commandFailure(stderr: readonly string[], exitCode: CliExitCode): Comma
 }
 
 /** Call CLI command modules directly so RDKit stays warm for this MCP server's lifetime. */
-async function runCommand(command: CliCommand, argv: readonly string[]): Promise<CommandSuccess | CommandFailure> {
+async function runCommand(command: CliCommand, argv: readonly string[], preserveFailureJson = false): Promise<CommandSuccess | CommandFailure> {
   const stdout: string[] = [];
   const stderr: string[] = [];
   try {
@@ -241,7 +243,7 @@ async function runCommand(command: CliCommand, argv: readonly string[]): Promise
     });
     if (!jsonLine) return commandFailure(stderr, exitCode);
     const result = JSON.parse(jsonLine) as JsonLineResult;
-    if (!result.ok) return { error: result.error };
+    if (!result.ok) return { error: result.error, ...(preserveFailureJson ? { jsonLine } : {}) };
     return { result, jsonLine };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -268,7 +270,11 @@ async function response(
   files: readonly OutputFile[] = [],
   additionalText: string | undefined = undefined
 ) {
-  if ("error" in outcome) return errorResult(outcome.error);
+  if ("error" in outcome) {
+    if (!outcome.jsonLine) return errorResult(outcome.error);
+    if (Buffer.byteLength(outcome.jsonLine) > MAX_RETURNED_PAYLOAD_BYTES) return payloadTooLarge("command result");
+    return { isError: true as const, content: [{ type: "text" as const, text: outcome.jsonLine }] };
+  }
   if (Buffer.byteLength(outcome.jsonLine) > MAX_RETURNED_PAYLOAD_BYTES) {
     return payloadTooLarge("command result");
   }
@@ -381,7 +387,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("render_document", {
-    description: "Render styled native JSON or a ChemDraft envelope from documentPath or inline documentJson. Reports current graph canonical SMILES, stereo counts and export warnings. SVG/PNG/PDF render the first page; ChemDraft retains all pages.",
+    description: "Render styled native JSON or a ChemDraft envelope from documentPath or inline documentJson. Reports current graph canonical SMILES, stereo counts, minAppVersion, named documentWarnings and export warnings. SVG/PNG/PDF render the first page; ChemDraft retains all pages.",
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
@@ -410,7 +416,7 @@ export function createChemDraftMcpServer(
     if (padding !== undefined) argv.push("--padding", String(padding));
     if (style !== undefined) argv.push("--style", style);
     if (dpi !== undefined) argv.push("--dpi", String(dpi));
-    const outcome = await runCommand(runtime.dependencies.commands.renderDocument, argv);
+    const outcome = await runCommand(runtime.dependencies.commands.renderDocument, argv, true);
     const files = !succeeded(outcome) ? [] : format === "pdf" || format === "chemdraft"
       ? exportFiles(outcome.result, format) : visualFiles(outcome.result);
     return response(runtime, outcome, files);
@@ -596,7 +602,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("check_stereo", {
-    description: `Inspect specified and unspecified tetrahedral stereocentres and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
+    description: `Inspect specified and unspecified tetrahedral stereocenters and E/Z double bonds. Atom and bond indices are 0-based. ${chemistryHonesty}`,
     inputSchema: { smiles: z.string().min(1) }
   }, async ({ smiles }) => runTool(async () => {
     await outputDirectory(runtime, undefined);

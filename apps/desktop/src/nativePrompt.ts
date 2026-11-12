@@ -8,8 +8,9 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
- * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
+ * title, without key equivalents), so prompts normally label their cancel choice "Cancel".
+ * Page enlargement uses the owner-required "Keep Page Size" instead; on macOS that choice is
+ * clicked explicitly (AppKit cannot bind Escape by that title). A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -17,7 +18,7 @@ export type NativePromptChoice =
   | { id: string; label: string; cancel?: false; destructive?: boolean }
   | {
       id: string;
-      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL;
+      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL | "Keep Page Size";
       cancel: true;
       destructive?: false;
     };
@@ -28,10 +29,13 @@ export interface NativePromptOptions {
   choices: readonly NativePromptChoice[];
   /** Tauri parents message boxes to the invoking window on both desktop platforms. */
   owner?: "document";
+  /** Prompts in the same queue wait for the actual box to close, even if its caller aborts. */
+  serializationKey?: string;
 }
 export type NativePromptFallback = (prompt: NativePromptOptions) => Promise<string>;
 export type NativePromptProvider = (prompt: NativePromptOptions, fallback: NativePromptFallback) => Promise<string>;
 let provider: NativePromptProvider | undefined;
+const promptQueues = new Map<string, Promise<void>>();
 
 /** Test injection is scoped by the returned restore function; it never enables native access. */
 export function setNativePromptProvider(next: NativePromptProvider): () => void {
@@ -49,14 +53,14 @@ export function nativePromptButtons(prompt: NativePromptOptions,
       choices.filter((choice) => choice.destructive).length > 1 ||
       new Set(choices.map((choice) => choice.id)).size !== choices.length ||
       new Set(choices.map((choice) => choice.label)).size !== choices.length) {
-    throw new Error("A prompt needs one safe cancel choice and one to three distinct labelled choices.");
+    throw new Error("A prompt needs one safe cancel choice and one to three distinct labeled choices.");
   }
   const actions = choices.filter((choice) => !choice.cancel);
   if (!actions.length) {
-    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
+    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labeled OK.");
     return { ok: cancel.label };
   }
-  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
+  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL && cancel.label !== "Keep Page Size") {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
   // The first button (ok/yes) is the Return default. AppKit finds Escape's button by its literal
@@ -82,7 +86,17 @@ export async function nativePrompt(
   const buttons = nativePromptButtons(prompt, platform);
   const cancel = prompt.choices.find((choice) => choice.cancel)!;
   if (signal?.aborted) return cancel.id;
-  const response = showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);
+  const show = () => signal?.aborted ? Promise.resolve(cancel.id)
+    : showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);
+  let response: Promise<string>;
+  if (prompt.serializationKey !== undefined) {
+    const key = prompt.serializationKey;
+    response = (promptQueues.get(key) ?? Promise.resolve()).then(show);
+    // Use the real response, not the abort race below: an OS box cannot be dismissed by aborting.
+    const settled = response.then(() => undefined, () => undefined);
+    promptQueues.set(key, settled);
+    void settled.then(() => { if (promptQueues.get(key) === settled) promptQueues.delete(key); });
+  } else response = show();
   if (!signal) return response;
   // The native API cannot dismiss an open OS box. Release the caller immediately and ignore any
   // later answer; the suspension remains until the actual box closes.

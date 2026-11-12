@@ -1,12 +1,15 @@
 export * from "./layoutQuality";
+export { rotatedGraphicLocalBounds } from "./graphicBounds";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
 export * from "./layoutRepair";
+export { routeAtomAnnotationLeaders, type AnnotationLeader } from "./annotationLeaders";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
 } from "./table";
-export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
+export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, isPatrickHandFont } from "./textMetrics";
+export { planTextObjectPlacement, planTextObjectEditorPlacement, cssTextFirstBaseline, type NativeTextCssMetrics } from "./textPlacement";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
@@ -18,8 +21,11 @@ export {
 } from "./textMetrics";
 
 import {
+  ChemDraftSyntheticStylePreset,
   DefaultNativeDrawingStyle,
   DocumentStylePreset,
+  Acs1996StylePreset,
+  RscJournalStylePreset,
   drawnLabelBondSide,
   isDativeBond,
   isMetalSymbol,
@@ -42,7 +48,11 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+export * from "./arrowAttachments";
+export * from "./reactionConditionsLayout";
+import { resolveArrowAttachments } from "./arrowAttachments";
 import {
+  svgPathSamplePoints,
   planNativeArtVisual as planNativeArtVisualFromArtEngine,
   visualEffectPlansForStyle,
   visualEffectsForStyle
@@ -85,7 +95,8 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { planTableObjectSvg } from "./table";
-import { textAdvanceEm } from "./textMetrics";
+import { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, nativeTextMetrics, isPatrickHandFont, patrickHandTextAdvanceEm, patrickHandTextInkBoundsEm } from "./textMetrics";
+import { planTextObjectPlacement } from "./textPlacement";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -114,6 +125,8 @@ export {
 export {
   type AtomLabelAnchor,
   nativeAtomLabelReading,
+  nativeHoverAtomLabelCanContinue,
+  nativeHoverAtomLabelCompletion,
   type NativeAtomLabelContext,
   type NativeAtomLabelReading,
   nativeAtomMaxValence,
@@ -185,6 +198,7 @@ export interface BondExtensionPlanningInput {
   pageBounds: LayoutBounds;
   objectBounds?: LayoutBounds;
   preferredAtomId?: string;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
   targetBondAngleDegrees?: number;
   collisionRadius?: number;
@@ -200,6 +214,7 @@ export interface FreeformBondExtensionPlanningInput {
   endPoint: LayoutPoint;
   bondLength: number;
   pageBounds: LayoutBounds;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
   minimumBondLength?: number;
   customLengthBreakawayDistance?: number;
@@ -245,12 +260,14 @@ export interface AtomHitPlanningInput {
   bonds: readonly MoleculeLayoutBond[];
   point: LayoutPoint;
   hitRadius: number;
+  /** @deprecated Drawing accepts any degree; retained for source compatibility and ignored. */
   maxBondsPerAtom?: number;
 }
 
 export interface AtomHit {
   atomId: string;
   degree: number;
+  /** Unbounded for drawing; chemistry warnings never remove a hit. */
   availableBonds: number;
   distance: number;
 }
@@ -329,8 +346,7 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const source = preferredOrNearestEligibleAtom(input, maxBondsPerAtom);
+  const source = preferredOrNearestEligibleAtom(input);
   if (!source) {
     return undefined;
   }
@@ -354,7 +370,6 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     bonds: input.bonds,
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
-    maxBondsPerAtom,
     targetBondAngleDegrees,
     collisionRadius: input.collisionRadius ?? input.bondLength * 0.45
   };
@@ -382,7 +397,6 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
       plannedPoint: plannedNewAtomPoint,
       bondLength: input.bondLength,
       hitRadius: Math.min(input.hitRadius, input.bondLength * 0.3),
-      maxBondsPerAtom,
       targetBondAngleDegrees: candidate.angleDegrees
     });
     const newAtomPoint = targetAtom ? clampPointToBounds(targetAtom, input.pageBounds) : plannedNewAtomPoint;
@@ -614,10 +628,8 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const degrees = atomDegrees(input.atoms, input.bonds);
   const source = input.atoms.find((atom) => atom.id === input.sourceAtomId);
-  if (!source || (degrees.get(source.id) ?? 0) >= maxBondsPerAtom) {
+  if (!source) {
     return undefined;
   }
 
@@ -632,11 +644,9 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     ? nearestFreeformSnapTarget({
         atoms: input.atoms,
         bonds: input.bonds,
-        degrees,
         sourceAtom: source,
         endPoint: input.endPoint,
         snapHitRadius: input.snapHitRadius ?? 18,
-        maxBondsPerAtom
       })
     : undefined;
   if (snapTarget) {
@@ -686,7 +696,7 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     angularDistance(degreesToRadians(linearAim), degreesToRadians(input.directionDegrees!)) < 1e-6 &&
     (!newAtomPoint || !usableGrowthEndpoint(input.atoms, source, newAtomPoint, Math.min(plannedLength, input.bondLength), false))
   ) {
-    newAtomPoint = angledFreeformFallbackPoint(input, source, maxBondsPerAtom);
+    newAtomPoint = angledFreeformFallbackPoint(input, source);
   }
   if (!newAtomPoint) {
     return undefined;
@@ -712,8 +722,7 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
 /** The best chain-angle endpoint off `source` steered by the pointer that `usableGrowthEndpoint` accepts. */
 function angledFreeformFallbackPoint(
   input: FreeformBondExtensionPlanningInput,
-  source: MoleculeLayoutAtom,
-  maxBondsPerAtom: number
+  source: MoleculeLayoutAtom
 ): LayoutPoint | undefined {
   const directions = extensionDirections({
     sourceAtom: source,
@@ -723,7 +732,6 @@ function angledFreeformFallbackPoint(
     bonds: input.bonds,
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
-    maxBondsPerAtom,
     targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees,
     collisionRadius: input.bondLength * 0.45
   });
@@ -742,11 +750,9 @@ function angledFreeformFallbackPoint(
 function nearestFreeformSnapTarget(input: {
   atoms: readonly MoleculeLayoutAtom[];
   bonds: readonly MoleculeLayoutBond[];
-  degrees: ReadonlyMap<string, number>;
   sourceAtom: MoleculeLayoutAtom;
   endPoint: LayoutPoint;
   snapHitRadius: number;
-  maxBondsPerAtom: number;
 }): MoleculeLayoutAtom | undefined {
   if (input.snapHitRadius < 0) {
     return undefined;
@@ -767,7 +773,6 @@ function nearestFreeformSnapTarget(input: {
   return input.atoms
     .filter((atom) => atom.id !== input.sourceAtom.id)
     .filter((atom) => !sourceNeighborIds.has(atom.id))
-    .filter((atom) => (input.degrees.get(atom.id) ?? 0) < input.maxBondsPerAtom)
     .map((atom) => ({ atom, distance: distance(atom, input.endPoint) }))
     .filter((hit) => hit.distance <= input.snapHitRadius)
     .sort((left, right) => left.distance - right.distance || left.atom.id.localeCompare(right.atom.id))[0]?.atom;
@@ -781,14 +786,12 @@ function guidedBondTargetAtom(input: {
   plannedPoint: LayoutPoint;
   bondLength: number;
   hitRadius: number;
-  maxBondsPerAtom: number;
   targetBondAngleDegrees: number;
 }): MoleculeLayoutAtom | undefined {
   if (input.neighbors.length === 0 || input.hitRadius < 0) {
     return undefined;
   }
 
-  const degrees = atomDegrees(input.atoms, input.bonds);
   const sourceNeighborIds = new Set(input.neighbors.map((neighbor) => neighbor.id));
   const targetAngle = degreesToRadians(input.targetBondAngleDegrees);
   const angleTolerance = degreesToRadians(defaultTargetBondAngleToleranceDegrees);
@@ -797,7 +800,6 @@ function guidedBondTargetAtom(input: {
   return input.atoms
     .filter((atom) => atom.id !== input.sourceAtom.id)
     .filter((atom) => !sourceNeighborIds.has(atom.id))
-    .filter((atom) => (degrees.get(atom.id) ?? 0) < input.maxBondsPerAtom)
     .filter((atom) => !input.bonds.some((bond) =>
       (bond.fromAtomId === input.sourceAtom.id && bond.toAtomId === atom.id) ||
       (bond.fromAtomId === atom.id && bond.toAtomId === input.sourceAtom.id)
@@ -833,20 +835,19 @@ function nearestTargetAngleError(
 }
 
 export function findNearestAtomHit(input: AtomHitPlanningInput): AtomHit | undefined {
+  const degrees = atomDegrees(input.atoms, input.bonds);
   if (input.hitRadius < 0) {
     return undefined;
   }
 
-  const maxBondsPerAtom = input.maxBondsPerAtom ?? 4;
-  const degrees = atomDegrees(input.atoms, input.bonds);
   return input.atoms
     .map((atom) => ({
       atomId: atom.id,
       degree: degrees.get(atom.id) ?? 0,
-      availableBonds: maxBondsPerAtom - (degrees.get(atom.id) ?? 0),
+      availableBonds: Number.POSITIVE_INFINITY,
       distance: distance(atom, input.point)
     }))
-    .filter((hit) => hit.availableBonds > 0 && hit.distance <= input.hitRadius)
+    .filter((hit) => hit.distance <= input.hitRadius)
     .sort((left, right) => left.distance - right.distance || left.atomId.localeCompare(right.atomId))[0];
 }
 
@@ -873,8 +874,8 @@ export function findNearestBondHit(input: BondHitPlanningInput): BondHit | undef
     return undefined;
   }
 
-  const atomById = new Map(input.atoms.map((atom) => [atom.id, atom]));
   const degrees = atomDegrees(input.atoms, input.bonds);
+  const atomById = new Map(input.atoms.map((atom) => [atom.id, atom]));
 
   return input.bonds
     .map((bond): BondHit | undefined => {
@@ -931,20 +932,17 @@ export function atomDegrees(
 }
 
 function preferredOrNearestEligibleAtom(
-  input: BondExtensionPlanningInput,
-  maxBondsPerAtom: number
+  input: BondExtensionPlanningInput
 ): { atom: MoleculeLayoutAtom; distance: number } | undefined {
-  const degrees = atomDegrees(input.atoms, input.bonds);
   if (input.preferredAtomId) {
     const preferred = input.atoms.find((atom) => atom.id === input.preferredAtomId);
-    if (!preferred || (degrees.get(preferred.id) ?? 0) >= maxBondsPerAtom) {
+    if (!preferred) {
       return undefined;
     }
     return { atom: preferred, distance: distance(preferred, input.clickPoint) };
   }
 
   return input.atoms
-    .filter((atom) => (degrees.get(atom.id) ?? 0) < maxBondsPerAtom)
     .map((atom) => ({ atom, distance: distance(atom, input.clickPoint) }))
     .sort((left, right) => left.distance - right.distance || left.atom.id.localeCompare(right.atom.id))[0];
 }
@@ -976,7 +974,6 @@ interface ExtensionDirectionInput {
   bonds: readonly MoleculeLayoutBond[];
   bondLength: number;
   pageBounds: LayoutBounds;
-  maxBondsPerAtom: number;
   targetBondAngleDegrees: number;
   collisionRadius: number;
 }
@@ -1061,7 +1058,6 @@ function scoreDirectionCandidate(
     plannedPoint,
     bondLength: input.bondLength,
     hitRadius: Math.min(input.collisionRadius, input.bondLength * 0.3),
-    maxBondsPerAtom: input.maxBondsPerAtom,
     targetBondAngleDegrees: input.targetBondAngleDegrees
   });
   const duplicatePenalty =
@@ -1598,7 +1594,8 @@ function crossingClearancePx(
   }
 
   const frontFootprint = nativeBondFootprintPx(front.bond, front.drawingStyle);
-  const backStroke = nativeBondStrokeWidth(back.bond, back.drawingStyle);
+  const backStroke = nativeBondDisplayStyle(back.bond) === "wavy"
+    ? nativeBondFootprintPx(back.bond, back.drawingStyle) : nativeBondStrokeWidth(back.bond, back.drawingStyle);
   const angleFactor = Math.max(minimumCrossingAngleSin, Math.abs(angleSin));
   return clamp(
     (frontFootprint + backStroke + back.drawingStyle.bondOverlapClearancePx * 0.75) / angleFactor,
@@ -1611,6 +1608,9 @@ function nativeBondFootprintPx(bond: CoreMoleculeBond, drawingStyle: NativeDrawi
   const bondStyle = nativeBondDisplayStyle(bond);
   if (bondStyle === "wedge" || bondStyle === "hashed") {
     return nativeWedgeWidth(drawingStyle);
+  }
+  if (bondStyle === "wavy") {
+    return nativeWavyBondAmplitude(drawingStyle, drawingStyle.bondLengthPx) * 2 + nativeBondStrokeWidth(bond, drawingStyle);
   }
   const gap = nativeMultipleBondGapPx(drawingStyle);
   if (bond.order === "triple") {
@@ -1707,8 +1707,11 @@ export function planPageSvgRender(
      * atom must look the atom up in the unfiltered page.
      */
     anchorResolutionPage?: DocumentPage;
+    /** Opt-in rendering for default-sized electron marks; stored custom styling always renders. */
+    directElectronMarkEditing?: boolean;
   } = {}
 ): PageSvgRenderPlan {
+  if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {
@@ -1726,7 +1729,7 @@ export function planPageSvgRender(
       if (object.type === "molecule") {
         return plannedMoleculeFragments(object, layerIndex, gapsByBondKey, objectIdsWithGaps);
       }
-      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page);
+      const fragment = planDocumentObjectSvg(object, layerIndex, warnings, gapsByBondKey, options.anchorResolutionPage ?? page, options.directElectronMarkEditing);
       return fragment ? flattenDocumentObjectSvg(fragment) : [];
     }).concat(crossingHitTargets),
     crossings,
@@ -1840,7 +1843,8 @@ function planDocumentObjectSvg(
   layerIndex: number,
   warnings: PageSvgRenderWarning[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
-  page?: DocumentPage
+  page?: DocumentPage,
+  directElectronMarkEditing = false
 ): PageSvgElementFragment | undefined {
   switch (object.type) {
     case "molecule":
@@ -1857,10 +1861,10 @@ function planDocumentObjectSvg(
         : fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "electron-mark":
       if (object.markKind === "charge") {
-        return chargeMarkFragment(object, layerIndex);
+        return chargeMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       if (object.markKind === "lone-pair" || object.markKind === "radical-dot") {
-        return electronDotMarkFragment(object, layerIndex);
+        return electronDotMarkFragment(object, layerIndex, electronMarkUsesScaledGeometry(object, directElectronMarkEditing));
       }
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
     case "reaction-arrow":
@@ -1870,6 +1874,8 @@ function planDocumentObjectSvg(
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     case "group":
+    case "reaction":
+      // Containers reference the page's drawables; painting them adds geometry absent from the source.
       return undefined;
     default:
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);
@@ -1992,6 +1998,13 @@ function planNativeMoleculeGraphSvg(
     sketchLineOverrides: sketchGeometry?.lineOverrides,
     sketchStrokeWidthPx: drawingStyle.bondStrokeWidthPx
   });
+  // Rough ink honours explicit bond colours before the Sketch effect's colour.
+  // Repaint after generation to preserve roughjs's seeded geometry across colour edits.
+  for (const effect of effects) {
+    if (effect.kind === "sketch" && sketchGeometry) {
+      effect.paths = sketchGeometry.paintPaths(effect.paths);
+    }
+  }
   const effectFilterId = `molecule-effects-${object.id}`;
   const bondLayerFragments = bondSegmentGroups.map(({ bond, drawingStyle: bondDrawingStyle, segments }) =>
     elementFragment("g", `bond-layer-${object.id}-${bond.id}`, {
@@ -2016,7 +2029,7 @@ function planNativeMoleculeGraphSvg(
       ),
       ...segments.flatMap((segment) =>
         // Only ink is replaced. Hit targets and hover/selection decorators above are unchanged.
-        sketchGeometry && (nativeBondDisplayStyle(bond) === "dashed" ||
+        sketchGeometry && bond.order !== "unknown" && (nativeBondDisplayStyle(bond) === "dashed" ||
           (nativeBondDisplayStyle(bond) === "hashed" && segment.segment === "primary"))
           ? [] :
         nativeBondSegmentFragments(
@@ -2912,7 +2925,15 @@ function moleculeBondEffectSourceFragments(
   resolution: NativeBondOrderResolution
 ): PageSvgElementFragment[] {
   const bondStyle = nativeBondDisplayStyle(segment.bond);
-  if (bondStyle === "wedge" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
+      elementFragment("path", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
+        d, fill: "none", stroke: "#000000", "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+        "stroke-linecap": drawingStyle.bondLineCap
+      })
+    );
+  }
+  if (segment.bond.order !== "unknown" && bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `molecule-effect-source-bond-${object.id}-${segment.key}-${index}`, {
@@ -2923,7 +2944,7 @@ function moleculeBondEffectSourceFragments(
     );
   }
 
-  if (bondStyle === "hashed" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "hashed" && segment.segment === "primary") {
     const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     const hashes = hashedWedge.hashes.flatMap((hash, index) =>
       splitSegmentByCrossingGaps(hash, crossingGaps).map((visibleHash, visibleIndex) =>
@@ -2958,8 +2979,7 @@ function moleculeBondEffectSourceFragments(
       y2: visibleSegment.y2,
       stroke: "#000000",
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
-      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
-      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+      ...nativeBondStrokePattern(segment.bond, drawingStyle)
     })
   );
 }
@@ -2976,7 +2996,14 @@ function moleculeEffectSketchBasePathD(
   bondSegmentGroups: readonly PageMoleculeBondSegmentGroup[],
   gapsByBondKey: ReadonlyMap<string, readonly BondCrossingGap[]>,
   resolution: NativeBondOrderResolution
-): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides } | undefined {
+): { basePathD: string; lineOverrides: NativeArtSketchLineOverrides;
+  paintPaths: (paths: NativeArtSketchPathPlan[]) => NativeArtSketchPathPlan[] } | undefined {
+  const effectColor = visualEffectsForStyle(object.style).find(effect => effect.kind === "sketch")?.color;
+  const sketchColor = typeof effectColor === "string" && effectColor.trim() ? effectColor.trim() : undefined;
+  // Presets store black bonds, but their default Sketch ink has always been #111111.
+  // Keep that appearance while honouring custom molecule, effect and per-bond colours.
+  const sketchBondColor = (color: string) => color === ChemDraftSyntheticStylePreset.drawing.bondColor ? "#111111" : color;
+  const fallbackColor = sketchColor ?? sketchBondColor(nativeDrawingStyleFromObjectStyle(object.style).bondColor);
   const bondPathParts = bondSegmentGroups.flatMap(({ bond, drawingStyle, segments }) =>
     segments.flatMap((segment) =>
       moleculeBondSketchPathParts(
@@ -2985,13 +3012,31 @@ function moleculeEffectSketchBasePathD(
         drawingStyle,
         gapsByBondKey.get(bondRefKey({ objectId: object.id, bondId: bond.id })) ?? [],
         resolution
-      )
+      ).map(part => ({ ...part, color: depthCuedBondColor(
+        styleColorMapValue(object.style.bondColors, bond.id) ?? sketchColor ?? sketchBondColor(drawingStyle.bondColor),
+        bond.display?.depthWeight
+      ) }))
     )
   );
   const basePathD = bondPathParts.map((part) => part.d).join(" ");
   if (!basePathD) return undefined;
   return {
     basePathD,
+    paintPaths: (paths) => {
+      // The first path contains the ordinary rough edges (two M/Bezier strokes per edge).
+      // Tick overrides follow it, already coloured below. Keep uniform paths intact.
+      const colors = bondPathParts.filter(part => !part.tick)
+        .flatMap(part => Array<string>(part.d.match(/[LZ]/g)?.length ?? 0).fill(part.color));
+      if (!colors.length || !paths.length) return paths;
+      const [path, ...ticks] = paths;
+      if (colors.every(color => color === colors[0])) return [{ ...path!, stroke: colors[0]! }, ...ticks];
+      const strokes = path!.d.match(/M[^M]*/g) ?? [];
+      if (strokes.length !== colors.length * 2) {
+        return [{ ...path!, stroke: fallbackColor }, ...ticks];
+      }
+      return [...colors.map((color, index) => ({ ...path!,
+        d: strokes.slice(index * 2, index * 2 + 2).join("").trim(), stroke: color })), ...ticks];
+    },
     lineOverrides: (parameters) => {
       const overrides = new Map<number, NativeArtSketchPathPlan | null>();
       let lineIndex = 0;
@@ -2999,8 +3044,8 @@ function moleculeEffectSketchBasePathD(
         const edges = part.d.match(/[LZ]/g)?.length ?? 0;
         if (part.tick) {
           overrides.set(lineIndex, parameters.roughness === 0
-            ? { d: part.d, stroke: parameters.color, strokeWidth: parameters.strokeWidth }
-            : moleculeSketchTickPath(part.tick, parameters));
+            ? { d: part.d, stroke: part.color, strokeWidth: parameters.strokeWidth }
+            : moleculeSketchTickPath(part.tick, { ...parameters, color: part.color }));
           // A joined terminal hash was a polygon outline; replace it with ONE ink mark too.
           for (let edge = 1; edge < edges; edge++) overrides.set(lineIndex + edge, null);
         }
@@ -3023,7 +3068,12 @@ function moleculeBondSketchPathParts(
   crossingGaps: readonly BondCrossingGap[],
   resolution: NativeBondOrderResolution
 ): MoleculeSketchPathPart[] {
+  // Keep the unknown-order dots explicit: a sketch centreline would hide their meaning.
+  if (segment.bond.order === "unknown") return [];
   const bondStyle = nativeBondDisplayStyle(segment.bond);
+  if (bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d) => ({ d }));
+  }
   if (bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment) =>
@@ -3227,7 +3277,18 @@ function nativeBondSegmentFragments(
   };
   const stroke = nativeMoleculeBondColor(object, segment.bond, drawingStyle);
 
-  if (bondStyle === "wedge" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "wavy") {
+    return nativeWavyBondPaths(segment, drawingStyle, crossingGaps).map((d, index) =>
+      elementFragment("path", `bond-${object.id}-${segment.key}-${index}`, {
+        ...commonAttrs, d, fill: "none", stroke,
+        "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
+        "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
+        "stroke-linecap": drawingStyle.bondLineCap
+      })
+    );
+  }
+
+  if (segment.bond.order !== "unknown" && bondStyle === "wedge" && segment.segment === "primary") {
     const segmentLength = Math.hypot(segment.x2 - segment.x1, segment.y2 - segment.y1);
     return splitSegmentByCrossingGaps(segment, crossingGaps).map((visibleSegment, index) =>
       elementFragment("polygon", `bond-${object.id}-${segment.key}-${index}`, {
@@ -3240,7 +3301,7 @@ function nativeBondSegmentFragments(
     );
   }
 
-  if (bondStyle === "hashed" && segment.segment === "primary") {
+  if (segment.bond.order !== "unknown" && bondStyle === "hashed" && segment.segment === "primary") {
     const hashedWedge = nativeHashedWedgePlan(segment, drawingStyle, object, segment.bond, crossingGaps, resolution);
     return [
       elementFragment("g", `bond-${object.id}-${segment.key}`, commonAttrs, [
@@ -3286,8 +3347,7 @@ function nativeBondSegmentFragments(
       stroke,
       "stroke-opacity": moleculeStrokeOpacity === 1 ? undefined : moleculeStrokeOpacity,
       "stroke-width": nativeBondStrokeWidth(segment.bond, drawingStyle),
-      "stroke-linecap": bondStyle === "dashed" ? "butt" : drawingStyle.bondLineCap,
-      "stroke-dasharray": bondStyle === "dashed" ? nativeDashedBondDashArray(drawingStyle) : undefined
+      ...nativeBondStrokePattern(segment.bond, drawingStyle)
     })
   );
 }
@@ -3834,17 +3894,112 @@ function projectionDistanceAlongSegment(
   };
 }
 
-function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+function planConditionsTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  if (object.text === "+" && object.style.reactionPlus === true) {
+    const strokeWidth = metadataNumber(object.style.strokeWidth) ?? defaultReactionArrowStrokeWidth;
+    const cx = object.x + object.width / 2, cy = object.y + object.height / 2;
+    return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
+      transform: rotationTransform(object), "aria-label": "+"
+    }), [
+      elementFragment("line", `${object.id}-horizontal`, {
+        x1: object.x + strokeWidth / 2, y1: cy, x2: object.x + object.width - strokeWidth / 2, y2: cy,
+        stroke: metadataString(object.style.color) ?? "#172026", "stroke-width": strokeWidth, "stroke-linecap": "round"
+      }),
+      elementFragment("line", `${object.id}-vertical`, {
+        x1: cx, y1: object.y + strokeWidth / 2, x2: cx, y2: object.y + object.height - strokeWidth / 2,
+        stroke: metadataString(object.style.color) ?? "#172026", "stroke-width": strokeWidth, "stroke-linecap": "round"
+      })
+    ]);
+  }
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
-  const lines = textObjectSpanLines(object);
+  const layout = nativeTextObjectLineMetrics(object);
+  const scripted=layout.lines.some(line=>line.spans.some(span=>span.script!=='normal' ||
+    nativeTextSpanMetrics(span,object.style).fontSize!==textStyle.fontSizePx));
   const textAnchor = textStyle.textAlign === "center"
     ? "middle"
     : textStyle.textAlign === "right" ? "end" : "start";
   const x = textStyle.textAlign === "center"
     ? object.x + object.width / 2
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
-  const y = object.y + textStyle.fontSizePx;
-  const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
+  const y = object.y + (scripted?layout.lines[0].baseline:textStyle.fontSizePx);
+  const lineFragments = layout.lines.length > 0
+    ? layout.lines.flatMap((line, lineIndex) => conditionsTextSpanLineFragments(line.spans, lineIndex, x, object.y+line.baseline, object.style,scripted))
+    : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
+
+  return elementFragment("text", `object-${object.id}`, objectAttributes(object, layerIndex, {
+    x,
+    y,
+    "font-family": textStyle.fontFamily,
+    "font-size": textStyle.fontSizePx,
+    "font-weight": textStyle.fontWeight,
+    "font-style": textStyle.fontStyle,
+    "text-decoration": textStyle.textDecoration,
+    "letter-spacing": textStyle.letterSpacingPx,
+    "text-anchor": textAnchor,
+    fill: textStyle.color,
+    transform: rotationTransform(object)
+  }), lineFragments);
+}
+
+function conditionsTextSpanLineFragments(
+  line: TextSpan[],
+  lineIndex: number,
+  x: number,
+  baseline: number,
+  objectStyle: TextObject['style'],
+  scripted: boolean
+): PageSvgElementFragment[] {
+  const style=nativeTextStyleFromObjectStyle(objectStyle);
+  const lineAdvance=style.fontSizePx*style.lineHeight+style.paragraphSpacingPx;
+  if(scripted) {
+    let previousOffset=0;
+    const runs=line.map((span,index)=>{
+      const metrics=nativeTextSpanMetrics(span,objectStyle),dy=metrics.offset-previousOffset;
+      previousOffset=metrics.offset;
+      return elementFragment('tspan',`text-run-${lineIndex}-${index}`,{
+        dy:dy||undefined,'font-size':metrics.fontSize,fill:metadataString(span.style.color),
+        'font-family':metadataString(span.style.fontFamily),'font-weight':metadataNumber(span.style.fontWeight),
+        'font-style':metadataFontStyle(span.style.fontStyle),'text-decoration':metadataString(span.style.textDecoration),
+        'letter-spacing':metadataNumber(span.style.letterSpacingPx)
+      },[textFragment(`text-run-content-${lineIndex}-${index}`,span.text)]);
+    });
+    // One absolute anchor per line keeps natural horizontal advance and centered alignment.
+    // Run offsets are explicit deltas; the next line resets y independently of its last run.
+    return [elementFragment('tspan',`text-line-${lineIndex}`,{x,y:baseline},runs)];
+  }
+  if (line.length === 0) {
+    return [
+      elementFragment("tspan", `text-line-empty-${lineIndex}`, {
+        x,
+        y: scripted?baseline:undefined,
+        dy: !scripted && lineIndex>0?lineAdvance:undefined
+      })
+    ];
+  }
+
+  return line.map((span, spanIndex) =>
+    elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
+      x: spanIndex === 0 ? x : undefined,
+      y: scripted?baseline + nativeTextSpanMetrics(span,objectStyle).offset:undefined,
+      dy: !scripted && spanIndex===0 && lineIndex>0?lineAdvance:undefined,
+      "font-size": scripted?nativeTextSpanMetrics(span,objectStyle).fontSize:metadataNumber(span.style.fontSizePx),
+      fill: metadataString(span.style.color),
+      "font-family": metadataString(span.style.fontFamily),
+      "font-weight": metadataNumber(span.style.fontWeight),
+      "font-style": metadataFontStyle(span.style.fontStyle),
+      "text-decoration": metadataString(span.style.textDecoration),
+      "letter-spacing": metadataNumber(span.style.letterSpacingPx)
+    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)])
+  );
+}
+
+/** @internal Shared by canvas, export and the live text-edit preview. */
+export function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+  if (object.arrowAttachment?.kind === "conditions" || (object.text === "+" && object.style.reactionPlus === true)) {
+    return planConditionsTextObjectSvg(object, layerIndex);
+  }
+  const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
+  const lines = textObjectSpanLines(object);
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
   const hasScripts = lines.some(line => line.some(span => span.script !== "normal"));
@@ -3914,6 +4069,31 @@ export function textSpanLineFragments(
   });
 }
 
+/** Explicit baselines prevent a script run from shifting the following run or line.
+ * Reserve each line's actual script ascent/descent before laying out its neighbor. */
+export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject['style']): {fontSize:number;offset:number;ascent:number;descent:number} {
+  const size=nativeTextStyleFromObjectStyle({...objectStyle,...span.style}).fontSizePx;
+  const fontSize=Number((size*(span.script==='normal'?1:.72)).toFixed(6));
+  const offset=Number((span.script==='subscript'?size*.22:span.script==='superscript'?-size*.4:0).toFixed(6));
+  return {fontSize,offset,ascent:fontSize*.8-offset,descent:fontSize*.2+offset};
+}
+export function nativeTextObjectLineMetrics(object: Pick<TextObject,'text'|'spans'|'style'>): {
+  lines:{spans:TextSpan[];baseline:number;ascent:number;descent:number}[];height:number
+} {
+  const style=nativeTextStyleFromObjectStyle(object.style),lines=textObjectSpanLines(object);
+  let previousBaseline=0,previousDescent=0;
+  const measured=lines.map((spans,index)=>{
+    const metrics=spans.map(span=>nativeTextSpanMetrics(span,object.style));
+    const ascent=Math.max(style.fontSizePx*.8,...metrics.map(m=>m.ascent));
+    const descent=Math.max(style.fontSizePx*.2,...metrics.map(m=>m.descent));
+    const baseline=index===0?Math.max(style.fontSizePx,ascent+2):previousBaseline+
+      Math.max(style.fontSizePx*style.lineHeight,previousDescent+ascent+style.fontSizePx*.18)+style.paragraphSpacingPx;
+    previousBaseline=baseline;previousDescent=descent;
+    return {spans,baseline,ascent,descent};
+  });
+  return {lines:measured,height:previousBaseline+previousDescent+2};
+}
+
 export function textObjectSpanLines(object: Pick<TextObject, "text" | "spans">): TextSpan[][] {
   const spans = textObjectSpansForRendering(object);
   return spans.reduce<TextSpan[][]>((lines, span) => {
@@ -3939,13 +4119,226 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   return [{ text: object.text, script: "normal", style: {} }];
 }
 
+/** Clear the whole rotated mark frame from label ink along its radial direction. */
+function electronMarkLabelClearer(
+  molecule: MoleculeObject,
+  atom: MoleculeAtom,
+  pageWidth: number,
+  pageHeight: number,
+  mark: Pick<ElectronMarkObject, "width" | "height" | "rotation">,
+  avoidLabelOverlap: boolean,
+  clampToPage = true
+): (point: LayoutPoint) => LayoutPoint | undefined {
+  const radians = degreesToRadians(mark.rotation);
+  const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
+  const halfHeight = (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2;
+  const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atom.id) : undefined;
+  const glyph = plan && atomLabelGlyphBounds(plan);
+  const clearance = 2;
+  const exclusion = plan && glyph ? {
+    left: plan.anchor.x + glyph.x - halfWidth - clearance,
+    right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
+    top: plan.anchor.y + glyph.y - halfHeight - clearance,
+    bottom: plan.anchor.y + glyph.y + glyph.height + halfHeight + clearance
+  } : undefined;
+  const insideLabel = (point: LayoutPoint) => exclusion && point.x > exclusion.left && point.x < exclusion.right &&
+    point.y > exclusion.top && point.y < exclusion.bottom;
+  return (point: LayoutPoint): LayoutPoint | undefined => {
+    if (exclusion && insideLabel(point)) {
+      const length = distance(atom, point);
+      const dx = length > 0.0001 ? (point.x - atom.x) / length : Math.SQRT1_2;
+      const dy = length > 0.0001 ? (point.y - atom.y) / length : -Math.SQRT1_2;
+      const exitX = Math.abs(dx) < 0.0001 ? Infinity : ((dx > 0 ? exclusion.right : exclusion.left) - atom.x) / dx;
+      const exitY = Math.abs(dy) < 0.0001 ? Infinity : ((dy > 0 ? exclusion.bottom : exclusion.top) - atom.y) / dy;
+      const radius = Math.min(exitX, exitY) + 0.001;
+      point = { x: atom.x + dx * radius, y: atom.y + dy * radius };
+    }
+    const bounded = {
+      x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+      y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+    };
+    // A lone pair must retain its chosen ray and tangent; refuse if it cannot fit on-page.
+    if (!clampToPage && (bounded.x !== point.x || bounded.y !== point.y)) return undefined;
+    return insideLabel(bounded) ? undefined : bounded;
+  };
+}
+
+export interface LonePairPlacementPlan {
+  center: LayoutPoint;
+  /** Tangent orientation in degrees, normalized to [0, 360). */
+  rotation: number;
+}
+
+/** Page-coordinate direction from the atom, snapped to 15° unless freeAngle (Alt) is held.
+ * A pointer at the atom center or non-finite coordinates have no direction. */
+export function lonePairDragDirection(
+  atom: LayoutPoint,
+  pointer: LayoutPoint,
+  freeAngle = false
+): number | undefined {
+  const dx = pointer.x - atom.x, dy = pointer.y - atom.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.hypot(dx, dy) < 1e-10) return undefined;
+  const angle = Math.atan2(dy, dx);
+  const step = Math.PI / 12;
+  return freeAngle ? angle : Math.round(angle / step) * step;
+}
+
+/**
+ * Lone pairs try gaps between bonds and marks anchored to this exact atom, largest first,
+ * using the first bisector that clears the label inside the page.
+ * No occupied directions defaults to page-up (-π/2); one direction uses its opposite.
+ * Equal gaps (within 1e-10 radians) choose the smallest bisector in [0, 2π).
+ * An explicit direction is in page-coordinate radians and is refused rather than redirected if it cannot fit.
+ */
+export function lonePairPlacementPlanForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  directionRadians?: number
+): LonePairPlacementPlan | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom || (directionRadians !== undefined && !Number.isFinite(directionRadians))) return undefined;
+  const angles = molecule.bonds
+    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map(bond => molecule.atoms.find(candidate => candidate.id ===
+      (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
+    .filter((neighbor): neighbor is MoleculeAtom => neighbor !== undefined)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  for (const object of objects) {
+    if (object.type !== "electron-mark" || object.anchor.kind !== "atom" ||
+      object.anchor.objectId !== molecule.id || object.anchor.atomId !== atomId) continue;
+    const dx = object.x + object.width / 2 - atom.x;
+    const dy = object.y + object.height / 2 - atom.y;
+    if (Math.hypot(dx, dy) > 1e-10) angles.push(Math.atan2(dy, dx));
+  }
+  const normalized = angles.map(normalizeAngle).sort((left, right) => left - right);
+  const gaps = normalized.map((angle, index) => {
+    const next = normalized[(index + 1) % normalized.length];
+    const gap = (index === normalized.length - 1 ? next + Math.PI * 2 : next) - angle;
+    return { gap, bisector: normalizeAngle(angle + gap / 2) };
+  });
+  const directions: number[] = [];
+  if (directionRadians !== undefined) directions.push(directionRadians);
+  else if (gaps.length === 0) directions.push(-Math.PI / 2);
+  else while (gaps.length > 0) {
+    const largestGap = Math.max(...gaps.map(candidate => candidate.gap));
+    const candidate = gaps.filter(candidate => largestGap - candidate.gap < 1e-10)
+      .sort((left, right) => left.bisector - right.bisector)[0];
+    directions.push(candidate.bisector);
+    gaps.splice(gaps.indexOf(candidate), 1);
+  }
+  const radius = Math.max(18 * 1.35, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 0.55);
+  for (const angle of directions) {
+    const direction = normalizeAngle(angle);
+    const rotation = normalizeAngle(direction + Math.PI / 2) * 180 / Math.PI;
+    const center = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight,
+      { width: 18, height: 18, rotation }, true, false)({
+      x: atom.x + Math.cos(direction) * radius,
+      y: atom.y + Math.sin(direction) * radius
+    });
+    if (center) return { center, rotation };
+  }
+  return undefined;
+}
+
+/**
+ * Shared charge-tool/drop placement. The caller supplies its chain-growth slot, if any;
+ * Drops clear the mark's whole rotated frame from the current atom-label ink; the charge tool
+ * keeps its original placement and association radius by disabling label clearance.
+ * Call after chemistry reconciliation when transferring a mark: charge changes implicit H.
+ */
+export function electronMarkPlacementPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  options: {
+    growthPoint?: LayoutPoint;
+    mark?: Pick<ElectronMarkObject, "width" | "height" | "rotation">;
+    avoidLabelOverlap?: boolean;
+  } = {}
+): LayoutPoint | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
+  const avoidLabelOverlap = options.avoidLabelOverlap !== false;
+  // Charge/radical tool placements retain the legacy growth slot, even at a page edge.
+  if (!avoidLabelOverlap && options.growthPoint) return options.growthPoint;
+  const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
+  const clearPoint = electronMarkLabelClearer(molecule, atom, pageWidth, pageHeight, mark, avoidLabelOverlap);
+  // The natural home is the same open slot the bond tool would use.
+  if (options.growthPoint) {
+    const point = clearPoint(options.growthPoint);
+    if (point) return point;
+  }
+  const bondLength = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+  const placementRadius = Math.max(18 * 1.35, bondLength * 0.55);
+  const neighborAngles = molecule.bonds
+    .filter(bond => bond.fromAtomId === atomId || bond.toAtomId === atomId)
+    .map(bond => molecule.atoms.find(candidate => candidate.id === (bond.fromAtomId === atomId ? bond.toAtomId : bond.fromAtomId)))
+    .filter((candidate): candidate is MoleculeAtom => candidate !== undefined)
+    .map(neighbor => Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x));
+  // Preserve the tool's exact angle arithmetic and tie-breaking. The growth planner's
+  // largestGapBisectors treats nearly equal gaps as tied and uses different rounding.
+  const normalizePlacementAngle = (angle: number) => {
+    let normalized = angle % (Math.PI * 2);
+    if (normalized < 0) normalized += Math.PI * 2;
+    return normalized;
+  };
+  const placementAngularDistance = (left: number, right: number) => {
+    const delta = Math.abs(normalizePlacementAngle(left) - normalizePlacementAngle(right));
+    return Math.min(delta, Math.PI * 2 - delta);
+  };
+  const normalizedAngles = neighborAngles.map(normalizePlacementAngle).sort((left, right) => left - right);
+  const preferredOpenAngle = normalizedAngles.map((angle, index) => {
+    const nextAngle = normalizedAngles[(index + 1) % normalizedAngles.length] ?? angle;
+    const wrappedNext = index === normalizedAngles.length - 1 ? nextAngle + Math.PI * 2 : nextAngle;
+    const gap = wrappedNext - angle;
+    return { gap, midpoint: normalizePlacementAngle(angle + gap / 2) };
+  }).sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint)[0]?.midpoint ?? -Math.PI / 4;
+  const otherAtoms = molecule.atoms.filter(candidate => candidate.id !== atomId);
+  const chargeCenters = objects
+    .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
+    .map(mark => ({ x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
+  const candidates = Array.from({ length: 16 }, (_, index) => {
+    const angle = -Math.PI + index * Math.PI / 8;
+    const point = { x: atom.x + Math.cos(angle) * placementRadius, y: atom.y + Math.sin(angle) * placementRadius };
+    const placed = clearPoint(point);
+    if (!placed) return [];
+    const boundaryPenalty = distance(point, placed);
+    const bondSeparation = neighborAngles.length === 0 ? Math.PI
+      : Math.min(...neighborAngles.map(neighborAngle => placementAngularDistance(angle, neighborAngle)));
+    const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) => sum + Math.min(1, distance(placed, otherAtom) / (bondLength * 1.5)), 0);
+    const chargeDistanceScore = chargeCenters.reduce((sum, center) => sum + Math.min(1, distance(placed, center) / (bondLength * 1.5)), 0);
+    const preferredScore = 1 - placementAngularDistance(angle, preferredOpenAngle) / Math.PI;
+    return [{ point: placed,
+      score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10 }];
+  }).flat();
+  return candidates.sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]?.point;
+}
+
+/** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */
+export function electronMarkHitCatcherAttributes(object: ElectronMarkObject) {
+  return {
+    x: object.x, y: object.y, width: object.width, height: object.height,
+    transform: rotationTransform(object)
+  };
+}
+
+function electronMarkUsesScaledGeometry(object: ElectronMarkObject, directEditing = false): boolean {
+  return directEditing || object.width !== 18 || object.height !== 18 ||
+    (typeof object.style.strokeWidth === "number" && Number.isFinite(object.style.strokeWidth) && object.style.strokeWidth !== 1.5);
+}
+
 /**
  * Single charge and electron symbols use vector strokes so their circled forms stay crisp at any
  * zoom, while multi-magnitude marks use a text glyph such as "2+" or "3−". The default single
  * charge glyph is the circled form (⊕/⊖) — the plain +/− is an explicit variant — and a `radical`
  * charge carries the unpaired-electron dot beside the sign (•+ / •−).
  */
-function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const rawCharge = typeof object.charge === "number" && Number.isInteger(object.charge) && object.charge !== 0
     ? object.charge
     : 1;
@@ -3955,9 +4348,12 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
   const centerY = object.y + object.height / 2;
   const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
-  const strokeWidth = 1.5;
+  const strokeWidth = scaled ? electronMarkStrokeWidth(object) : 1.5;
+  const sizeScale = Math.min(object.width, object.height) / 18;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
   const children: PageSvgElementFragment[] = [];
+  let radicalDotRadius = scaled ? (1.35 + strokeWidth * 0.5) * sizeScale : 2.1;
+  let radicalDotX = centerX - radius * 0.75;
 
   if (circled) {
     children.push(elementFragment("circle", `charge-circle-${object.id}`, {
@@ -3972,6 +4368,10 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
 
   if (magnitude > 1) {
     // Multi-magnitude marks read as text ("2+", "3−") — vector bars can't carry the numeral.
+    // Below the legacy thickness use the regular face, then add a small positive outline.
+    // Numeric weights between regular/bold can resolve to the same face on non-variable fonts.
+    const thin = scaled && strokeWidth < 1.5;
+    const textStrokeWidth = thin ? Math.max(0, strokeWidth - 0.5) * 0.4 : Math.max(0, strokeWidth - 1.5) * 0.4;
     children.push(elementFragment("text", `charge-count-${object.id}`, {
       x: centerX,
       y: centerY,
@@ -3979,12 +4379,23 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
       "dominant-baseline": "central",
       "font-family": "Arial, Helvetica, sans-serif",
       "font-size": radius * 1.35,
-      "font-weight": 700,
-      fill: "#111111"
+      "font-weight": thin ? 400 : 700,
+      fill: "#111111",
+      ...(scaled ? { stroke: "#111111", "stroke-width": textStrokeWidth } : {})
     }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
   } else {
-    const signHalf = circled ? barHalf : radius * 0.85;
-    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    let signHalf = circled ? barHalf : radius * 0.85;
+    let signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    if (object.radical === true && scaled) {
+      // Keep the dot separate from the sign's round cap, even at maximum thickness.
+      const gap = 0.5 * sizeScale;
+      const fit = Math.max(0, Math.min(1, (object.width - strokeWidth - gap) / (2 * radicalDotRadius + 2 * signHalf)));
+      radicalDotRadius *= fit;
+      signHalf *= fit;
+      const totalWidth = 2 * radicalDotRadius + 2 * signHalf + strokeWidth + gap;
+      radicalDotX = centerX - totalWidth / 2 + radicalDotRadius;
+      signX = centerX + totalWidth / 2 - signHalf - strokeWidth / 2;
+    }
     children.push(elementFragment("line", `charge-bar-${object.id}`, {
       x1: signX - signHalf,
       y1: centerY,
@@ -4007,15 +4418,15 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }
   }
   if (object.radical === true) {
-    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
-    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
-    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
-    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
-    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
+    if (magnitude > 1) {
+      radicalDotX = scaled
+        ? centerX - radius * 1.35 * 0.6 - radicalDotRadius - sizeScale
+        : centerX - (radius * 1.35 * 0.6 + 3.1);
+    }
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radicalDotOffset,
+      cx: radicalDotX,
       cy: centerY,
-      r: 2.1,
+      r: radicalDotRadius,
       fill: "#111111"
     }));
   }
@@ -4183,12 +4594,19 @@ function mechanismArrowFragment(
 }
 
 /** A lone pair (two dots) or a single unpaired-electron dot. */
-function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
+function electronMarkStrokeWidth(object: ElectronMarkObject): number {
+  const width = object.style.strokeWidth;
+  return typeof width === "number" && Number.isFinite(width) ? Math.max(0.5, Math.min(5.5, width)) : 1.5;
+}
+
+function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number, scaled: boolean): PageSvgElementFragment {
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const dotRadius = 2.1;
+  const sizeScale = Math.min(object.width, object.height) / 18;
+  const dotRadius = scaled ? (1.35 + electronMarkStrokeWidth(object) * 0.5) * sizeScale : 2.1;
+  const spacing = scaled ? Math.max(2.1 * 1.6 * sizeScale, dotRadius * 1.1) : dotRadius * 1.6;
   const dots = object.markKind === "lone-pair"
-    ? [centerX - dotRadius * 1.6, centerX + dotRadius * 1.6]
+    ? [centerX - spacing, centerX + spacing]
     : [centerX];
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
@@ -5082,11 +5500,13 @@ export function bracketGlyphPathD(
   kind: BracketObject["bracketKind"],
   width: number,
   height: number,
-  project?: (point: LayoutPoint) => LayoutPoint
+  project?: (point: LayoutPoint) => LayoutPoint,
+  side: BracketObject["side"] = "open"
 ): string {
   // Project endpoints and Bezier controls, preserving a constant stroke in SVG/PDF.
   // Keep raw number serialization for the original, untilted glyph.
   const point = (x: number, y: number) => {
+    if (side === "close") x = Math.max(width - 1, 0) - x;
     if (!project) return `${x} ${y}`;
     const projected = project({ x, y });
     return `${formatNumber(projected.x)} ${formatNumber(projected.y)}`;
@@ -5106,12 +5526,50 @@ export function bracketGlyphPathD(
   return `M ${point(right, 0)} L ${point(0, 0)} L ${point(0, bottom)} L ${point(right, bottom)}`;
 }
 
+/** Object-local label metrics, shared with the inline editor, canvas and vector exports. */
+export function bracketLabelPlan(object: BracketObject) {
+  if (!object.repeatUnit || object.side !== "close") return undefined;
+  const style = nativeTextStyleFromObjectStyle(object.style);
+  const fontSize = style.fontSizePx * nativeTextScriptFontScale;
+  const text = object.label ?? "n";
+  const x = Math.max(object.width, 1) + 2;
+  const y = Math.max(object.height - 1, 0) + style.fontSizePx * nativeTextSubscriptOffsetEm;
+  return { text, x, y, fontSize, fontFamily: style.fontFamily,
+    bounds: { x, y: y - fontSize, width: measureTextRun(text, { ...style, fontSizePx: fontSize }),
+      height: fontSize * (1 + nativeTextMetrics.descentEm) } };
+}
+
+/** Hit the painted repeat label in page coordinates, independent of pointer-capture targets. */
+export function bracketLabelContainsPoint(object: BracketObject, point: LayoutPoint): boolean {
+  const label = bracketLabelPlan(object);
+  if (!label) return false;
+  const { x, y, width, height } = label.bounds;
+  const projection = projectedPlaneMatrixForObject(object);
+  const corners = [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }]
+    .map(local => {
+      const page = { x: object.x + local.x, y: object.y + local.y };
+      return projection ? projectPointInObjectPlane(object, page, projection) : transformPointForObject(object, page);
+    });
+  return pointInPolygon(point, corners);
+}
+
+export function bracketVisualBounds(object: BracketObject): LayoutBounds {
+  const label = bracketLabelPlan(object);
+  const right = label ? Math.max(object.width, label.bounds.x + label.bounds.width) : object.width;
+  const bottom = label ? Math.max(object.height, label.bounds.y + label.bounds.height) : object.height;
+  const points = [{ x: 0, y: 0 }, { x: right, y: 0 }, { x: right, y: bottom }, { x: 0, y: bottom }]
+    .map(point => transformPointForObject(object, { x: object.x + point.x, y: object.y + point.y }));
+  const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
+  return { x, y, width: Math.max(...points.map(point => point.x)) - x, height: Math.max(...points.map(point => point.y)) - y };
+}
+
 function bracketObjectFragment(object: BracketObject, layerIndex: number): PageSvgElementFragment {
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   const projection = projectedPlaneMatrixForObject(object);
   const project = projection ? (point: LayoutPoint) => projectPointInObjectPlane(object,
     { x: object.x + point.x, y: object.y + point.y }, projection) : undefined;
+  const label = bracketLabelPlan(object);
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {
     transform: projection ? undefined : rotationTransform(object)
   }), [
@@ -5119,13 +5577,19 @@ function bracketObjectFragment(object: BracketObject, layerIndex: number): PageS
       class: "bracket-glyph-path",
       "data-bracket-kind": object.bracketKind,
       transform: projection ? undefined : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
-      d: bracketGlyphPathD(object.bracketKind, width, height, project),
+      d: bracketGlyphPathD(object.bracketKind, width, height, project, object.side),
       fill: "none",
       stroke: "#172026",
       "stroke-width": 1.5,
       "stroke-linecap": "round",
       "stroke-linejoin": "round"
-    })
+    }),
+    ...(label ? [elementFragment("text", `bracket-label-${object.id}`, {
+      class: "bracket-repeat-label", x: label.x, y: label.y,
+      transform: projection ? `${projectedPlaneSvgTransformForObject(object)} translate(${formatNumber(object.x)} ${formatNumber(object.y)})`
+        : `translate(${formatNumber(object.x)} ${formatNumber(object.y)})`,
+      "font-size": label.fontSize, "font-family": label.fontFamily, fill: "#172026", stroke: "none"
+    }, [textFragment(`bracket-label-text-${object.id}`, label.text)])] : [])
   ]);
 }
 
@@ -5158,11 +5622,12 @@ export function reactionArrowHeadDepthPx(arrowKind: ArrowObject["arrowKind"]): n
 export function reactionArrowVerticalExtent(
   arrowKind: ArrowObject["arrowKind"],
   length: number,
-  part: "all" | "shafts" = "all"
+  part: "all" | "shafts" = "all",
+  strokeWidth = defaultReactionArrowStrokeWidth
 ): { top: number; bottom: number } {
   const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
   // Keep the default shared with reactionArrowFragment's round-capped shafts.
-  const strokeRadius = defaultReactionArrowStrokeWidth / 2;
+  const strokeRadius = strokeWidth / 2;
   const ranges = [
     ...geometry.lines.filter(({ start, end }) => part === "all" || start.y === end.y).map(({ start, end }) => ({
       top: Math.min(start.y, end.y) - strokeRadius,
@@ -5174,6 +5639,25 @@ export function reactionArrowVerticalExtent(
     }))
   ];
   return { top: Math.min(...ranges.map((range) => range.top)), bottom: Math.max(...ranges.map((range) => range.bottom)) };
+}
+
+/** Horizontal and vertical painted extents, including round shaft caps. */
+export function reactionArrowInkBounds(
+  arrowKind: ArrowObject["arrowKind"], length: number, strokeWidth = defaultReactionArrowStrokeWidth
+): LayoutBounds {
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  const points = [
+    ...geometry.lines.flatMap(line => [line.start, line.end].flatMap(point => [
+      { x: point.x - strokeWidth / 2, y: point.y - strokeWidth / 2 },
+      { x: point.x + strokeWidth / 2, y: point.y + strokeWidth / 2 }
+    ])),
+    ...geometry.heads.flatMap(head => head.points.flatMap(point => {
+      const r = head.filled ? 0 : strokeWidth / 2;
+      return [{ x: point.x - r, y: point.y - r }, { x: point.x + r, y: point.y + r }];
+    }))
+  ];
+  const x = Math.min(...points.map(p => p.x)), y = Math.min(...points.map(p => p.y));
+  return { x, y, width: Math.max(...points.map(p => p.x)) - x, height: Math.max(...points.map(p => p.y)) - y };
 }
 
 /** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
@@ -5198,6 +5682,7 @@ export function planReactionArrowGeometry(
     x: point.x + unit.x * along + normal.x * aside,
     y: point.y + unit.y * along + normal.y * aside
   });
+  const shaftInset = Math.min(reactionArrowHeadLengthPx / 2, length / 3);
   const filledHead = (tip: LayoutPoint, direction: 1 | -1): ReactionArrowGeometry["heads"][number] => {
     const base = offsetPoint(tip, -direction * reactionArrowHeadLengthPx, 0);
     return {
@@ -5215,7 +5700,8 @@ export function planReactionArrowGeometry(
   }
 
   if (arrowKind === "resonance") {
-    return { lines: [{ start, end }], heads: [filledHead(end, 1), filledHead(start, -1)] };
+    return { lines: [{ start: offsetPoint(start, shaftInset, 0),
+      end: offsetPoint(end, -shaftInset, 0) }], heads: [filledHead(end, 1), filledHead(start, -1)] };
   }
 
   if (arrowKind === "equilibrium") {
@@ -5252,7 +5738,8 @@ export function planReactionArrowGeometry(
     };
   }
 
-  return { lines: [{ start, end }], heads: [filledHead(end, 1)] };
+  // End inside the filled head: a round shaft cap at the tip protrudes past the triangle.
+  return { lines: [{ start, end: offsetPoint(end, -shaftInset, 0) }], heads: [filledHead(end, 1)] };
 }
 
 function fallbackObjectFragmentWithWarning(
@@ -5288,7 +5775,7 @@ function fallbackObjectFragment(object: DocumentObject, layerIndex: number): Pag
       "font-family": "Arial, sans-serif",
       "font-size": 11,
       fill: "#52616b"
-    }, [textFragment(`fallback-label-text-${object.id}`, object.type)])
+    }, [textFragment(`fallback-label-text-${object.id}`, "Unsupported object")])
   ]);
 }
 
@@ -5496,7 +5983,7 @@ function joinCenteredDoubleBondSegments(
       const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
       if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
         const style = nativeBondDisplayStyle(bond);
-        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed";
+        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed" || style === "wavy";
       })) {
         continue;
       }
@@ -5803,6 +6290,7 @@ function atomLabelCharacterExtent(character: string): { ascent: number; descent:
  * family, or a label with a character this module has no metrics for, gets the padded renderer
  * bounds, whose extents are unknown to this module. */
 export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
+  if (isPatrickHandFont(plan.fontFamily)) return handwritingLabelGlyphBounds(plan.layout.runs, plan.drawingStyle);
   const fontClass = atomLabelFontClass(plan.fontFamily);
   if (fontClass === "unknown") return { ...plan.layout.bounds };
   if (plan.layout.runs.some(run => [...run.text].some(character => !atomLabelCharacterIsCovered(character)))) {
@@ -5847,8 +6335,33 @@ export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox
   });
 }
 
+/** Selection frames are unrotated page coordinates, like the atoms. Handwriting labels
+ * can overhang the stored atom frame; reserve their measured boxes before drawing chrome.
+ * Other fonts retain their established selection geometry. */
+export function moleculeSelectionBounds(
+  object: MoleculeObject,
+  frame: LayoutBounds = object,
+  atomIds?: ReadonlySet<string>
+): LayoutBounds {
+  const labels = planMoleculeAtomLabels(object).filter(plan => isPatrickHandFont(plan.fontFamily) &&
+    (!atomIds || atomIds.has(plan.atom.id)));
+  if (!labels.length) return frame;
+  const bounds = [frame, ...labels.map(plan => ({
+    x: plan.anchor.x + plan.layout.bounds.x, y: plan.anchor.y + plan.layout.bounds.y,
+    width: plan.layout.bounds.width, height: plan.layout.bounds.height
+  }))];
+  const x = Math.min(...bounds.map(box => box.x)), y = Math.min(...bounds.map(box => box.y));
+  return { x, y, width: Math.max(...bounds.map(box => box.x + box.width)) - x,
+    height: Math.max(...bounds.map(box => box.y + box.height)) - y };
+}
+
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */
 export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds {
+  return objectFrameBoundsForPageFit(object);
+}
+
+/** Exact rotated frame, without a circumscribed-circle overestimate near page edges. */
+export function objectFrameBoundsForPageFit(object: DocumentObject): LayoutBounds {
   const corners = [
     { x: object.x, y: object.y },
     { x: object.x + object.width, y: object.y },
@@ -5860,6 +6373,41 @@ export function textVisualBoundsForArrangement(object: TextObject): LayoutBounds
   return { x, y,
     width: Math.max(...corners.map(point => point.x)) - x,
     height: Math.max(...corners.map(point => point.y)) - y };
+}
+
+/** Page-fit bounds include text that SVG paints beyond a constrained stored box. SVG text uses
+ * explicit lines, anchors and the stored frame's rotation pivot; it does not clip to that frame.
+ * Keep arrangement's frame contract above unchanged. Use the same deterministic font advances
+ * and script metrics as sizing/rendering, rather than measuring host fonts or changing the text.
+ */
+export function textVisualBoundsForPageFit(object: TextObject): LayoutBounds {
+  const style = nativeTextStyleFromObjectStyle(object.style);
+  const lines = textObjectSpanLines(object);
+  const anchor = style.textAlign === "center" ? object.x + object.width / 2
+    : style.textAlign === "right" ? object.x + object.width : object.x;
+  let left = object.x, right = object.x + object.width;
+  let top = object.y, bottom = object.y + object.height;
+  const advance = style.fontSizePx * style.lineHeight + style.paragraphSpacingPx;
+  lines.forEach((line, index) => {
+    const width = measureNativeTextSpanLineWidth(line, style);
+    const x = style.textAlign === "center" ? anchor - width / 2
+      : style.textAlign === "right" ? anchor - width : anchor;
+    left = Math.min(left, x); right = Math.max(right, x + width);
+    for (const span of line) {
+      if (!span.text) continue;
+      const size = span.script === "normal"
+        ? metadataNumber(span.style.fontSizePx) ?? style.fontSizePx : style.fontSizePx * nativeTextScriptFontScale;
+      const shift = span.script === "subscript" ? style.fontSizePx * nativeTextSubscriptOffsetEm
+        : span.script === "superscript" ? -style.fontSizePx * nativeTextSuperscriptOffsetEm : 0;
+      const baseline = object.y + style.fontSizePx + index * advance + shift;
+      top = Math.min(top, baseline - size);
+      bottom = Math.max(bottom, baseline + size * nativeTextMetrics.descentEm);
+    }
+  });
+  const corners = [{ x: left, y: top }, { x: right, y: top }, { x: left, y: bottom }, { x: right, y: bottom }]
+    .map(point => transformPointForObject(object, point));
+  const x = Math.min(...corners.map(point => point.x)), y = Math.min(...corners.map(point => point.y));
+  return { x, y, width: Math.max(...corners.map(point => point.x)) - x, height: Math.max(...corners.map(point => point.y)) - y };
 }
 
 /** Centre the visible ring system rather than a tall substituent or a long atom label.
@@ -5890,6 +6438,58 @@ export function moleculeVisualBoundsForArrangement(object: MoleculeObject): Layo
     width: Math.max(...points.map(p=>p.x)) - x,
     height: Math.max(...points.map(p=>p.y)) - y
   };
+}
+
+/** Reaction spacing measures painted bonds and atom labels, never the padded storage frame. */
+export function moleculeInkBounds(object: MoleculeObject): LayoutBounds {
+  const points = moleculeOutlineForArrangement(object);
+  const x = Math.min(...points.map(point => point.x)), y = Math.min(...points.map(point => point.y));
+  return { x, y, width: Math.max(...points.map(point => point.x)) - x,
+    height: Math.max(...points.map(point => point.y)) - y };
+}
+
+/** Plus glyphs use the same resolved label size and stroke as the structures beside them. */
+export function reactionSchemeDrawingMetrics(object: MoleculeObject) {
+  const style = nativeDrawingStyleFromObjectStyle(object.style);
+  return { fontSizePx: style.atomLabelFontSizePx, strokeWidth: style.bondStrokeWidthPx,
+    plusSize: Math.max(style.atomLabelFontSizePx * 0.9, style.bondStrokeWidthPx * 5) };
+}
+
+const arrangementMoleculeOutlines = new WeakMap<MoleculeObject, LayoutPoint[]>();
+/** Tight outer ink envelope. Uses the renderer's bond, wedge/hash and label plans, never the
+ * molecule's padded storage box. A hull keeps arrows out of ring interiors and empty cavities. */
+export function moleculeOutlineForArrangement(object: MoleculeObject): LayoutPoint[] {
+  const cached=arrangementMoleculeOutlines.get(object);if(cached) return cached;
+  const resolution=nativeBondOrderResolution(object.atoms,object.bonds);
+  const labels=planMoleculeAtomLabels(object,resolution), byLabel=new Map(labels.map(p=>[p.atom.id,p]));
+  const atoms=new Map(object.atoms.map(a=>[a.id,a])), style=nativeDrawingStyleFromObjectStyle(object.style);
+  const points: LayoutPoint[]=[];
+  const add=(p:LayoutPoint,r=0)=>{for(const dx of [-r,r]) for(const dy of [-r,r]) points.push({x:p.x+dx,y:p.y+dy});};
+  labels.forEach(p=>{const b=p.layout.bounds;add({x:p.anchor.x+b.x,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y+b.height});
+    add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x,y:p.anchor.y+b.y+b.height});});
+  const collect=(fragment:PageSvgElementFragment)=>{
+    const a=fragment.attrs,r=a.stroke==='none' ? 0 : Number(a['stroke-width']??style.bondStrokeWidthPx)/2;
+    if(fragment.tag==='line') {add({x:Number(a.x1),y:Number(a.y1)},r);add({x:Number(a.x2),y:Number(a.y2)},r);}
+    else if(fragment.tag==='polygon' && typeof a.points==='string') a.points.trim().split(/\s+/).forEach(pair=>{const [x,y]=pair.split(',').map(Number);add({x,y},r);});
+    else if(fragment.tag==='path' && typeof a.d==='string') svgPathSamplePoints(a.d).forEach(p=>add(p,r));
+    fragment.children.forEach(c=>{if(c.kind==='element') collect(c);});
+  };
+  const sides=ringInteriorDoubleBondSides(object);
+  for(const bond of object.bonds) {
+    const from=atoms.get(bond.fromAtomId),to=atoms.get(bond.toAtomId);if(!from||!to)continue;
+    const f=byLabel.get(from.id),t=byLabel.get(to.id),drawing=nativeMoleculeBondDrawingStyle(object,bond.id,style);
+    bondLineSegments(from,to,object,bond,drawing,f?.label,t?.label,f?.drawingStyle,t?.drawingStyle,sides.get(bond.id),f?.layout,t?.layout)
+      .forEach((segment,i)=>nativeBondSegmentFragments(object,{...segment,bond,key:`${bond.id}-${i}`},drawing,1,[],resolution).forEach(collect));
+  }
+  if(!points.length) object.atoms.forEach(p=>add(p,style.bondStrokeWidthPx/2));
+  if(!points.length) [object,{x:object.x+object.width,y:object.y},
+    {x:object.x+object.width,y:object.y+object.height},{x:object.x,y:object.y+object.height}].forEach(p=>add(p));
+  const sorted=points.filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)).map(p=>transformPointForObject(object,p)).sort((a,b)=>a.x-b.x||a.y-b.y);
+  const cross=(a:LayoutPoint,b:LayoutPoint,c:LayoutPoint)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const half=(list:LayoutPoint[])=>{const out:LayoutPoint[]=[];for(const p of list){while(out.length>1&&cross(out[out.length-2],out[out.length-1],p)<=0)out.pop();out.push(p);}return out;};
+  const lower=half(sorted),upper=half([...sorted].reverse());
+  const outline=sorted.length<3 ? sorted : [...lower.slice(0,-1),...upper.slice(0,-1)];
+  arrangementMoleculeOutlines.set(object,outline);return outline;
 }
 
 export function planAtomLabel(
@@ -5939,6 +6539,39 @@ export function planAtomLabel(
  * of "MeO2C". Without one, the first normal-script run is centred, as labels always have been.
  */
 export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle, anchor?: AtomLabelAnchor): AtomLabelLayout {
+  const layout = atomLabelLayoutForRuns(label, drawingStyle, anchor);
+  if (!isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return layout;
+  // Selection, hit testing, bond clipping and halo clipping all consume these bounds.
+  // Keep placement intact, but enclose real handwriting ink as well as the old padding.
+  const ink = handwritingLabelGlyphBounds(layout.runs, drawingStyle);
+  const padding = drawingStyle.atomLabelPaddingPx;
+  const x = Math.min(layout.bounds.x, ink.x - padding);
+  const y = Math.min(layout.bounds.y, ink.y - padding);
+  return { ...layout, bounds: { x, y,
+    width: Math.max(layout.bounds.x + layout.bounds.width, ink.x + ink.width + padding) - x,
+    height: Math.max(layout.bounds.y + layout.bounds.height, ink.y + ink.height + padding) - y } };
+}
+
+function handwritingLabelGlyphBounds(runs: readonly AtomLabelLayoutRun[], drawingStyle: NativeDrawingStyle): LayoutBounds {
+  const boxes = runs.map(run => {
+    const size = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+    const ink = patrickHandTextInkBoundsEm(run.text);
+    const advance = atomLabelRunAdvance(run, drawingStyle);
+    const origin = run.x - (run.textAnchor === "middle" ? advance / 2 : run.textAnchor === "end" ? advance : 0);
+    // The face is regular; reserve for browser-synthesized bold and italic when requested.
+    const bold = drawingStyle.atomLabelFontWeight >= 600 ? 0.04 : 0;
+    const lean = drawingStyle.atomLabelFontStyle === "italic" ? italicShear : 0;
+    const left = ink.x - bold - Math.max(0, ink.y + ink.height) * lean;
+    const right = ink.x + ink.width + bold + Math.max(0, -ink.y) * lean;
+    return { x: origin + left * size, y: run.y + (0.35 + ink.y - bold) * size,
+      width: (right - left) * size, height: (ink.height + bold * 2) * size };
+  });
+  const x = Math.min(...boxes.map(box => box.x)), y = Math.min(...boxes.map(box => box.y));
+  return { x, y, width: Math.max(...boxes.map(box => box.x + box.width)) - x,
+    height: Math.max(...boxes.map(box => box.y + box.height)) - y };
+}
+
+function atomLabelLayoutForRuns(label: string, drawingStyle: NativeDrawingStyle, anchor?: AtomLabelAnchor): AtomLabelLayout {
   const { bodyRuns, chargeRun } = atomLabelParts(label);
   const anchored = anchor ? anchoredAtomLabelLayout(bodyRuns, chargeRun, anchor, drawingStyle) : undefined;
   if (anchored) {
@@ -6265,6 +6898,7 @@ function splitAtomLabelCharge(label: string): { body: string; charge?: string } 
 }
 
 function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return atomLabelRunAdvance(run, drawingStyle);
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
   const widthFactor = run.script === "normal" ? 0.62 : 0.5;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
@@ -6287,6 +6921,7 @@ export const sansSerifAdvanceEm: Readonly<Record<string, number>> = Object.fromE
 /** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
 export function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return patrickHandTextAdvanceEm(run.text) * fontSize;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
   const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
   const em = [...run.text].reduce((sum, character) => sum + (sansSerifAdvanceEm[character] ?? 0.62), 0);
@@ -6656,11 +7291,76 @@ function nativeBondDisplayStyle(bond: CoreMoleculeBond): BondDisplayStyle | unde
   return bond.display?.bondStyle;
 }
 
+function nativeWavyBondAmplitude(drawingStyle: NativeDrawingStyle, length: number): number {
+  return Math.min(drawingStyle.bondStrokeWidthPx * 1.6, drawingStyle.bondLengthPx * 0.075, length * 0.12);
+}
+
+/** Smooth quarter-wave Hermite cubics on the label-trimmed bond axis. Crossing gaps keep the
+ * original phase and taper, so all normal/effect/sketch consumers trace exactly the same ink.
+ * The smaller amplitude starts at fromAtomId, the explicitly unknown stereo end. */
+function nativeWavyBondPaths(
+  segment: PageBondLineSegment,
+  drawingStyle: NativeDrawingStyle,
+  crossingGaps: readonly BondCrossingGap[]
+): string[] {
+  const geometry = nativeSegmentVectorGeometry(segment);
+  if (!geometry) return [];
+  const { length, unit, normal } = geometry;
+  const amplitude = nativeWavyBondAmplitude(drawingStyle, length);
+  const cycles = clamp(Math.round(length / Math.max(drawingStyle.bondLengthPx / 4, drawingStyle.bondStrokeWidthPx * 5)), 1, 128);
+  const frequency = 2 * Math.PI * cycles;
+  const point = (t: number): LayoutPoint => {
+    const offset = amplitude * (0.4 + 0.6 * t) * Math.sin(frequency * t);
+    return { x: segment.x1 + unit.x * length * t + normal.x * offset,
+      y: segment.y1 + unit.y * length * t + normal.y * offset };
+  };
+  const tangent = (t: number): LayoutPoint => {
+    const slope = amplitude * (0.6 * Math.sin(frequency * t) + (0.4 + 0.6 * t) * frequency * Math.cos(frequency * t));
+    return { x: unit.x * length + normal.x * slope, y: unit.y * length + normal.y * slope };
+  };
+  const xy = (p: LayoutPoint) => `${p.x} ${p.y}`;
+  return splitSegmentByCrossingGaps(segment, crossingGaps).map((visible) => {
+    const parameter = (x: number, y: number) => clamp(((x - segment.x1) * unit.x + (y - segment.y1) * unit.y) / length, 0, 1);
+    const start = parameter(visible.x1, visible.y1);
+    const end = parameter(visible.x2, visible.y2);
+    let d = `M ${xy(point(start))}`;
+    let t = start;
+    while (t < end - 1e-10) {
+      const next = Math.min(end, (Math.floor(t * cycles * 4 + 1e-8) + 1) / (cycles * 4));
+      const dt = (next - t) / 3;
+      const a = point(t), b = point(next), da = tangent(t), db = tangent(next);
+      d += ` C ${xy({ x: a.x + da.x * dt, y: a.y + da.y * dt })} ${xy({ x: b.x - db.x * dt, y: b.y - db.y * dt })} ${xy(b)}`;
+      t = next;
+    }
+    return d;
+  });
+}
+
 function nativeBondStrokeWidth(bond: CoreMoleculeBond, drawingStyle: NativeDrawingStyle): number {
   const base = nativeBondDisplayStyle(bond) === "bold"
     ? drawingStyle.bondBoldWidthPx
     : drawingStyle.bondStrokeWidthPx;
   return depthCuedBondStrokeWidth(base, bond.display?.depthWeight);
+}
+
+/** Unknown chemical order always uses separated round dots, even with a retained display style.
+ * Unlike dashed coordination bonds or hashed wedges, it cannot be mistaken for a known order.
+ * Zero-length round-capped dashes are shared SVG/PDF geometry, independent of optional indicators. */
+function nativeBondStrokePattern(
+  bond: CoreMoleculeBond,
+  drawingStyle: NativeDrawingStyle
+): Record<string, PageSvgAttributeValue> {
+  if (bond.order === "unknown") {
+    return {
+      "stroke-linecap": "round",
+      "stroke-dasharray": `0 ${formatNumber(Math.max(3, nativeBondStrokeWidth(bond, drawingStyle) * 2.5))}`
+    };
+  }
+  const dashed = nativeBondDisplayStyle(bond) === "dashed";
+  return {
+    "stroke-linecap": dashed ? "butt" : drawingStyle.bondLineCap,
+    "stroke-dasharray": dashed ? nativeDashedBondDashArray(drawingStyle) : undefined
+  };
 }
 
 /**
@@ -6714,7 +7414,8 @@ function nativeDashedBondDashes(
 
 function nativeWedgeWidth(drawingStyle: NativeDrawingStyle, visibleLength?: number): number {
   // The physical preset specifies its broad wedge end explicitly, like its bold bonds.
-  if (drawingStyle.stylePresetId === DocumentStylePreset.id) return drawingStyle.bondBoldWidthPx;
+  if ([DocumentStylePreset.id, Acs1996StylePreset.id, RscJournalStylePreset.id]
+    .some(id => drawingStyle.stylePresetId === id)) return drawingStyle.bondBoldWidthPx;
   // Keep the wide end proportional to the document's bond length. This matters for pasted SMILES,
   // which use a 28 px bond instead of the 22 px drawing default: a fixed 5.04 px base shrank from
   // 23% to 18% of a bond. The 24% profile matches the ruler-normalized reference while remaining
@@ -8159,3 +8860,5 @@ function formatChemistrySummary(chemistry: NonNullable<MoleculeObject["chemistry
 
   return parts.join(" | ");
 }
+
+export * from "./molfileCoordinateScale";

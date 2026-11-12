@@ -1,4 +1,19 @@
+import { CanvasContextMenu, NATIVE_CANVAS_MENU_CLOSED_EVENT } from "./CanvasContextMenu";
+import { buildObjectCanvasMenu, pageCanvasMenu, SET_DEFAULT_ARROW_STYLE_COMMAND_ID } from "./canvasContextMenuModel";
+import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
+import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
+import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
+import { bracketLabelPlan, bracketLabelContainsPoint, lonePairDragDirection } from "@chemdraft/layout-engine";
+import { useCanvasHandwritingFont } from "./canvasHandwritingFont";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
+import { AtomProblemMarker } from "./AtomProblemMarker";
+import { atomProblemCommandId, atomProblemCommands, atomProblemSnapshot, type AtomProblemTarget } from "./atomProblemCommands";
+import { atomProblem, type AtomProblemAction } from "@chemdraft/document-workflow-core";
+import { applyNativeAtomProblemFix } from "./documentWorkflow";
+import { dropElectronMark, electronMarkDropTarget } from "./electronMarkDrop";
+import { electronMarkUndoLabel } from "./electronMarkUndoLabel";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -7,14 +22,20 @@ import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
+import { clearCustomSwatchSlot, customSwatchCommandId, loadCustomSwatches, parseCustomSwatchCommandId, setCustomSwatchSlot, type CustomSwatchNumber, type CustomSwatchSlot } from "./customColorSwatches";
+import { persistCustomSwatches, useCustomSwatches } from "./toolbars/customSwatchSettings";
+import { createCustomSwatchActions, textCustomColorCommandId } from "./commands";
 import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
-import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
+import { installNativeFlyoutKeyboard } from "./nativeFlyoutKeyboard";
+import { cleanUpMoleculeSelections2d, cleanupSelectionAtomIds, nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
-import { structureTemplates } from "@chemdraft/template-library";
+import { pageOcclusionRects, readCanvasOcclusion } from "./window-manager/canvasOcclusion";
+import { commitWithPageFit, PageEnlargementConsent, planDocumentPageFit } from "./pageEnlargement";
+import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
@@ -26,13 +47,20 @@ import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
 import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
+import { notifyNativeDocumentCompatibility } from "./nativeDocumentNotice";
+import { formatDocumentOpenBatchStatus, formatDocumentOpenFailure, listenAndDrainNativeOpenQueue, type DocumentOpenResult } from "./nativeOpenQueue";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
 import { snapRotationDegrees } from "./rotationSnap";
 import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
+import { reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
+import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { useNativeFileWarnings } from "./useNativeFileWarnings";
+import { lastExportDirectory } from "./exportDirectory";
+import { ImportedPageFitGate } from "./importedPageFitGate";
 import {
   projectGraphicVisualPagePoint,
   rotatePointAroundCenter,
@@ -110,6 +138,7 @@ import {
   type ArrowObject,
   type BracketObject,
   type ChemDraftDocument,
+  type CompatibilityWarning,
   type DocumentHistory,
   type DocumentObject,
   type DocumentPage,
@@ -130,7 +159,7 @@ import {
 } from "@chemdraft/chem-core";
 import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows,
   setTableCaption, setTableFootnotes } from "@chemdraft/document-workflow-core";
-import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
+import { createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
 import {
@@ -153,7 +182,7 @@ import {
   type ViewportState
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
-import { CommandRegistry } from "@chemdraft/plugin-host";
+import { assertPluginPatchWriteScope, CommandRegistry } from "@chemdraft/plugin-host";
 import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
@@ -166,7 +195,7 @@ import { ToolbarCustomizeController } from "./toolbars/CustomizeMainToolbar/Tool
 import { CustomizeBar } from "./toolbars/CustomizeMainToolbar/CustomizeBar";
 import { GalleryTray } from "./toolbars/CustomizeMainToolbar/GalleryTray";
 import { reconcileNativePaletteWindows } from "./toolbars/reconcileNativePalettes";
-import { mergeVisibilityIntoLayoutState } from "./toolbars/toolbarLayoutState";
+import { mergeVisibilityIntoLayoutState, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import {
   DOCUMENT_SESSION_SAVE_DEBOUNCE_MS,
   buildDocumentSessionEnvelope,
@@ -186,6 +215,7 @@ import { createPersistentPluginStorage } from "./plugins/pluginStorage";
 import {
   applyAcceptedPluginProposal,
   applyPluginDocumentPatch,
+  placeInsertedObjectsInFreeSpace,
   createPluginWriteGate,
   describePatchFailure,
   type PluginWriteGate
@@ -234,6 +264,8 @@ import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
   atomLabelAnchorOffset,
+  nativeHoverAtomLabelCompletion,
+  nativeHoverAtomLabelCanContinue,
   atomLabelHaloWidthPx,
   atomLabelLayout,
   atomLabelRunFontSize,
@@ -241,17 +273,23 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  nativeAtomLabelReading,
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
   nativeTextScriptFontScale,
   measureNativeTextSpanLineWidth,
+  planTextObjectPlacement,
+  planTextObjectEditorPlacement,
+  type NativeTextCssMetrics,
   textObjectSpanLines,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
+  moleculeSelectionBounds,
   recordedLabelBondSide,
   planPageSvgRender,
+  electronMarkHitCatcherAttributes,
   planTableLayout,
   planNativeArtVisual,
   placementAimDegrees,
@@ -270,6 +308,7 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
+import { measureTextEditorMetrics, measureTextEditorViewport } from "./textEditorMetrics";
 // `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
 // 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
 // 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
@@ -285,11 +324,12 @@ import {
 } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
-  getExportFormatDescriptor,
   type ExportFormatId,
   type ExportResult
 } from "@chemdraft/export-engine";
 import {
+  createSelectionNudgeActions,
+  isSelectionNudgeCommand,
   atomElementActions,
   atomNicknameLabelActions,
   atomElementCommandId,
@@ -323,7 +363,9 @@ import {
   objectPaintTypeForCommand,
   objectStyleActions,
   objectMarkerKindForCommand,
+  objectWaveForCommand,
   objectMarkerSizeForCommand,
+  electronMarkStyleCommands,
   objectShaftMarkSizeAutoCommandId,
   objectShaftMarkSizeForCommand,
   objectStrokeDashCommands,
@@ -350,6 +392,8 @@ import {
   toggleRingInspectorCommandId,
   drawnStructureSettingsTemplateExportCommandId,
   drawnStructureSettingsTemplateImportCommandId,
+  nativeStylePresetActions,
+  nativeStylePresetIdForCommand,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -398,7 +442,6 @@ import {
   textScriptForCommand,
   textStylePatchForCommand,
   copyAsActions,
-  copyAsMenuItems,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -462,7 +505,8 @@ import {
   applyChargeToolAtPoint,
   applyChargeToolAtNativeAtom,
   applyMechanismArrowControlPoint,
-  copyAsMolfile,
+  copyAsMolfile as serializeCopyAsMolfile,
+  copyAsMolfileForExport as copyAsMolfile,
   copyAsScopedDocument,
   copyAsSmiles,
   createMechanismArrowBetween,
@@ -482,6 +526,7 @@ import {
   nativeBondStereoFlipDisabledReason,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
+  nativeBondCanBeMadePlain,
   applyNativeMoleculeDeleteTarget,
   nativeAtomHasExplicitLabel,
   applyNativeMoleculePartDeleteTarget,
@@ -518,7 +563,9 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
+  applyGraphicWaveSettingToSelection,
   applyGraphicObjectMarkerSizeToSelection,
+  applyElectronMarkStyleToSelection,
   applyGraphicShaftMarkSizeToSelection,
   graphicObjectHasShaftMark,
   applyGraphicObjectStrokeStyleToSelection,
@@ -634,6 +681,8 @@ import {
   groupSelectedDocumentObjects,
   moveDocumentObject,
   moveDocumentObjects,
+  moveCanvasSelection,
+  translateInsertedDocumentObjects,
   documentObjectMoveDeltaResolver,
   promoteDocumentObjectIdsToSelectableGroups,
   resolveGroupedDocumentObjectIds,
@@ -682,6 +731,7 @@ import {
   updateNativeTextObjectStyle,
   updateNativeTextObjectStyleRange,
   convertNativeTextObjectToAtom,
+  canAutoConvertNativeTextObjectToAtom,
   convertNativeTextObjectToAtomLabel,
   selectedTextToAtomLabelDisabledReason,
   selectedTextToAtomLabelResult,
@@ -760,6 +810,7 @@ import {
   isDesktopRuntime,
   listToolsetWindowStates,
   listenForPaletteCommandCancels,
+  sendPaletteCommandCancel,
   listenForPaletteInspectorActions,
   listenForPaletteCommandCommits,
   listenForPaletteCommandPreviews,
@@ -811,13 +862,13 @@ import {
   getToolsetPaletteGroups,
   getToolsetToggleActions,
   isDisabledPlaceholderCommand,
-  migrateLegacyMainToolbarLayoutState,
+  migrateMainToolbarDefaultsLayoutState,
   type DesktopToolsetDefinition,
   type DesktopToolsetRegistry,
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -839,15 +890,21 @@ import { isTauriHost } from "./plugins/pluginStagingFs";
 import { PluginPanelSurface } from "./plugins/PluginPanelSurface";
 import { PLUGIN_DIAGNOSTICS_COMMAND_ID } from "./plugins/pluginMenuModel";
 import { buildPluginSelectionSnapshot, computeObjectFingerprint } from "./plugins/selectionSnapshot";
-import { syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
+import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import {
+  arrowNudgeOffset,
+  arrowNudgeContinuesBurst,
+  isArrowNudgeEditorTarget,
   createDesktopShortcutRegistry,
   createMainWindowShortcutCommands,
   detectDesktopShortcutPlatform,
   enableWindowsLastDocumentCloseAction,
   isBrowserReloadChord
 } from "./keyboardShortcuts";
-import { decodeDocumentBytes } from "./documentText";
+import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
+import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
+import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
@@ -874,6 +931,7 @@ import {
 import {
   APP_CHECK_FOR_UPDATES_COMMAND_ID,
   AUTO_CHECK_DELAY_MS,
+  appUpdateChannelNotice,
   appUpdateChecksAllowed,
   appUpdatesSupported,
   autoCheckDue,
@@ -885,12 +943,17 @@ import {
   writeLastAutoCheck
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
-import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
-import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
+import { isCompoundLayoutCommandHidden, compoundLayoutCommandDisabledReason, isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useStructureSearchEnabled } from "./structureSearchSettings";
+import { createStructureSearchController, structureSearchCommands, structureSearchDocument, structureSearchErrorStatus, structureSearchSite } from "./structureSearch";
+import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
+import { useDirectElectronMarkEditing } from "./useDirectElectronMarkEditing";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
 import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
+import { saveDrawingSettings } from "./drawingSettings";
+import { listenForDrawingSettings } from "./window-manager";
 import { rasterizeSvgNative } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
@@ -1033,7 +1096,7 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital" | "bracket" | "lone-pair";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
@@ -1043,6 +1106,7 @@ type NativePlacementDragState = {
   bondOrder?: NativeBondOrderValue;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
+  bracketKind?: BracketObject["bracketKind"];
   chainAnchor?: NativeChainAnchor;
   /** Flexible chain variant: the zig-zag follows the accumulated pointer path. */
   chainFlexible?: boolean;
@@ -1050,6 +1114,7 @@ type NativePlacementDragState = {
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
   orbitalCommandId?: string;
+  lonePairTarget?: NativeMoleculeDeleteTarget;
   shiftKey?: boolean;
   dragging: boolean;
   altKey: boolean;
@@ -1093,6 +1158,7 @@ type ObjectDragState = {
   moveDeltaResolver?: (dx: number, dy: number) => ClientPoint;
   movePreviewObjectIds?: readonly string[];
   movePreviewArrowIds?: readonly string[];
+  dropStatus?: string;
   dragging: boolean;
 };
 type GraphicPathEditDragState = {
@@ -1426,13 +1492,9 @@ type AtomLabelEditState = AtomLabelDraftState & {
   /** Hover typing selects the atom only for the editor, not for later canvas hotkeys. */
   startedFromHover: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
-  /** Captured immediately after the hotkey, before any external edit can be mistaken for ours. */
-  hotkeyAfterDocument?: ChemDraftDocument;
-  /** Shared between keys; never adopt an intervening write as part of our cancellable draft. */
-  cancellation: { document: ChemDraftDocument; intervened: boolean; superseded?: boolean };
+  /** Shared between keys so a superseding external label also owns the close selection. */
+  cancellation: { superseded?: boolean };
   saveRevision: number;
-  /** Pre-first-letter history and dirty state; Escape discards the hotkey without adding Redo. */
-  hotkeyUndoState?: { history: DocumentHistory; file: NativeFileState };
   /** Render-only attachment target; keyboard ownership remains on atomId. */
   previewAtomId?: string;
   objectId: string;
@@ -1475,9 +1537,7 @@ type AtomLabelEditOptions = {
   hotkeyChanged?: boolean;
   startedFromHover?: boolean;
   hotkeyUndoDocument?: ChemDraftDocument;
-  hotkeyAfterDocument?: ChemDraftDocument;
   saveRevision?: number;
-  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
@@ -1501,6 +1561,10 @@ function atomLabelEditKeepsStartingText(state: AtomLabelEditState): boolean {
 function finishedAtomLabelDraft(current: ChemDraftDocument, state: AtomLabelEditState) {
   const target = { objectId: state.objectId, kind: "atom" as const, atomId: state.atomId, distanceToPointer: 0 };
   const baseline = restoreAtomLabelDraft(current, state);
+  if (state.startedFromHover && state.draft.trim() && nativeHoverAtomLabelCompletion(state.draft) === undefined) {
+    return { baseline, document: baseline, target, refusal: true,
+      message: `Incomplete or unrecognized atom label "${state.draft}"; finish a known label or press Escape` };
+  }
   // The recorded/side-dependent starting label wins before considering an attachment.
   if (atomLabelEditKeepsStartingText(state)) {
     return { baseline, document: finishNativeAtomLabelEdit(baseline, target, atomLabelEditStart(state)), target };
@@ -1537,7 +1601,7 @@ type ObjectContextMenuState = {
   targetKind: "object" | NativeMoleculeSelectionPart["kind"];
   bondDepthContext?: BondDepthContext;
   /** Present when the right-clicked scope carries (or has dismissed) valence warnings. */
-  atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number };
+  atomWarning?: { scope: readonly NativeWarningSuppressionScope[]; suppressed: boolean; count: number; problemCommandId?: string };
   x: number;
   y: number;
 };
@@ -1554,12 +1618,10 @@ export interface LayerCommandSelectionResult {
   bondDepthCommandId?: BondDepthCommandId;
   bondDepthContext?: BondDepthContext;
 }
-type LayerContextMenuItem = {
-  commandId: string;
-  label: string;
-};
 type ImportedPageFitPromptState = ImportedPageFitRecommendation & {
   displayName: string;
+  /** Identifies this open operation even when consecutive files have the same basename. */
+  requestId: string;
 };
 type SelectionClipboardSourceAction = "copy" | "cut" | "external";
 
@@ -1569,6 +1631,10 @@ export interface SelectionClipboardPasteState {
   sourceAction: SelectionClipboardSourceAction;
   /** Page point the last paste was aimed at, when it was aimed at the pointer. */
   anchor?: ClientPoint;
+  /** First clamped centre in this run, shared by native and imported clipboard content. */
+  origin?: ClientPoint;
+  /** Any intervening document edit, selection change or history navigation ends the run. */
+  document?: ChemDraftDocument;
 }
 // Width/height are kept as strings so the inputs stay editable (mid-typing "1." etc.);
 // they are parsed + validated on Apply.
@@ -1714,7 +1780,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.11.12.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -1914,25 +1980,22 @@ function isTransformHandleDoublePress(
 }
 /** Persisted per-tool "draw new arrows like this" defaults (documentWorkflow's session registry). */
 const ARROW_STYLE_DEFAULTS_STORAGE_KEY = "chemdraft.arrowStyleDefaults.v1";
-/** Handled by applyArrowStyleDefaultCommand inside `invoke` (and the object context menu, which
- *  passes the right-clicked object), not via the command registry. */
-const SET_DEFAULT_ARROW_STYLE_COMMAND_ID = "arrow.setDefaultStyle";
-
-const layerContextMenuItems: readonly LayerContextMenuItem[] = [
-  { commandId: "layout.bringForward", label: "Move Object Forward" },
-  { commandId: "layout.bringToFront", label: "Move Object to Front" },
-  { commandId: "layout.sendBackward", label: "Move Object Backward" },
-  { commandId: "layout.sendToBack", label: "Move Object to Back" }
-];
 const nativeOpenDocumentEvent = "chemdraft://open-document";
-// Window for coalescing the multi-channel delivery (Tauri event + pending-document poll)
-// of a single OS file-open, while still allowing a deliberate later re-open.
+// Coalesce repeated same-path + same-content OS requests arriving close together,
+// while still allowing a deliberate later re-open.
 const NATIVE_OPEN_DEDUPE_WINDOW_MS = 1500;
 
 interface NativeOpenDocumentPayload {
   path: string;
   displayName: string;
   contents: string;
+  bytes?: number[];
+}
+
+interface DocumentOpenRequest {
+  contents: DocumentContents | (() => Promise<DocumentContents>);
+  displayName: string;
+  path?: string;
 }
 
 interface ChemDraftAgentArtDebugSnapshot {
@@ -2015,6 +2078,7 @@ export function MainWindow({
   shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useEffect(() => installNativeFlyoutKeyboard(), []);
   useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
@@ -2157,6 +2221,7 @@ export function MainWindow({
     window.addEventListener("pointercancel", up, true);
     window.addEventListener("lostpointercapture", up, true);
     window.addEventListener("blur", clear);
+    window.addEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     return () => {
       releaseFocus();
       globalThis.document.removeEventListener("focusin", restoreOverlayFocus, true);
@@ -2169,6 +2234,7 @@ export function MainWindow({
       window.removeEventListener("pointercancel", up, true);
       window.removeEventListener("lostpointercapture", up, true);
       window.removeEventListener("blur", clear);
+      window.removeEventListener(NATIVE_CANVAS_MENU_CLOSED_EVENT, clear);
     };
   }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
@@ -2293,6 +2359,7 @@ export function MainWindow({
   const groupTransformMachineRef = useRef<InteractionState>(initialInteractionState());
   const gestureStartScaleRef = useRef(1);
   const lastCanvasPointerClientPointRef = useRef<ClientPoint | undefined>(undefined);
+  const pointerInsideCanvasRef = useRef(false);
   const chemistryAdapter = useMemo(() => createRdkitAdapter(), []);
   /**
    * Run the property suite for the selected structure through the analysis worker and show the report.
@@ -2318,8 +2385,8 @@ export function MainWindow({
       // The live atom/bond graph, not the object's `structure` string: that string is empty for an
       // imported molecule ("The structure input is empty.") and a lossy SMILES for a drawn fused ring
       // system, which analysed a different molecule than the one on the page.
-      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule);
-      const subjectKey = analysisSubjectKey(molecule);
+      const { structureFormat: format, structure, refusalReason } = analysisFacingStructure(molecule, documentRef.current);
+      const subjectKey = analysisSubjectKey(molecule, documentRef.current);
       const unspellableLabels = nativeMoleculeUnspellableLabels(molecule);
       const client = analysisClient();
       if (!client) {
@@ -2413,6 +2480,14 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const atomProblemTargetRef = useRef<{ tabId: string; target: AtomProblemTarget; source: ChemDraftDocument; version: number } | undefined>(undefined);
+  const atomProblemVersionRef = useRef(0);
+  const fixAtomProblemRef = useRef<(tabId: string, action: AtomProblemAction, version: number) => void>(() => {});
+  const refreshAtomProblemRef = useRef<(afterIgnore?: boolean) => void>(() => {});
+  const openReactionConditionsRef = useRef<(arrowId: string) => void>(() => {});
+  const arrowCommandTargetRef = useRef<string | undefined>(undefined);
+  const conditionsSourcesRef = useRef(new Map<string, { arrowId: string; source: ChemDraftDocument }>());
+  const applyConditionsRef = useRef<(tabId: string, arrowId: string, draft: ReactionConditionsDraft) => void>(() => {});
   const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
   const vibeGuideActionRef = useRef<(action: "saveStarter" | "openPluginManager") => Promise<void>>(async () => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
@@ -2424,10 +2499,7 @@ export function MainWindow({
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
-  const pendingDocumentOpensRef = useRef<Array<{
-    contents: string; displayName: string; path?: string;
-    options?: { dirty?: boolean; statusOverride?: string };
-  }>>([]);
+  const pendingDocumentOpensRef = useRef<Array<() => void>>([]);
   const documentTabSnapshotsRef = useRef(new Map<string, {
     history: DocumentHistory;
     file: NativeFileState;
@@ -2526,6 +2598,12 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  useEffect(() => {
+    // Persisted insertion defaults follow preset application, file reopen and undo/redo.
+    setTextStyleDefaults({ ...DefaultNativeTextStyle,
+      ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+        ? documentDrawingDefaults(document).textStyle : {}) });
+  }, [document.styles.drawing, document.styles.text]);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
   const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
   const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
@@ -2551,16 +2629,30 @@ export function MainWindow({
   useEffect(() => { setTableCellEdit(undefined); }, [activeDocumentTabId]);
   const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const [bracketLabelEdit, setBracketLabelEdit] = useState<{ objectId: string; tabId: string }>();
+  const bracketLabelEditRef = useRef(bracketLabelEdit); bracketLabelEditRef.current = bracketLabelEdit;
+  const bracketLabelEditorRef = useRef<BracketLabelEditorHandle>(null);
+  useEffect(() => { setBracketLabelEdit(undefined); }, [activeDocumentTabId]);
+  const bracketActions = useMemo(() => createBracketCommands(document), [document]);
   const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   const insertTableFromDialogRef = useRef<(tabId: string, options: InsertTableOptions) => Promise<void>>(async () => {});
   const insertTableCommandRef = useRef<(dimensions: TableInsertDimensions, tabId?: string, preset?: "three-line" | "grid") => void>(() => {});
 
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
-  const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const compoundLayoutSettings = useCompoundLayoutSettings();
+  const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
+  const structureSearchEnabled = useStructureSearchEnabled();
+  const structureSearchEnabledRef = useRef(structureSearchEnabled);
+  structureSearchEnabledRef.current = structureSearchEnabled;
+  const structureSearchController = useRef<ReturnType<typeof createStructureSearchController> | undefined>(undefined);
+  if (!structureSearchController.current) {
+    structureSearchController.current = createStructureSearchController({ enabled: () => structureSearchEnabledRef.current });
+  }
+  const directElectronMarkEditing = useDirectElectronMarkEditing();
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
-  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
-    [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, isDesktopRuntime()),
+    [unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]);
 
   // The toolbar catalog is the single data brain: it composes the core manifest with live
   // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
@@ -2591,6 +2683,31 @@ export function MainWindow({
   const effectiveNativePalette = nativePalette && !webPaletteFallback;
   const [nativeToolsetLayoutReady, setNativeToolsetLayoutReady] = useState(false);
   const [nativeToolsetStartupReady, setNativeToolsetStartupReady] = useState(false);
+  const nativeToolsetStartup = useMemo(() => {
+    let ready!: () => void;
+    const promise = new Promise<void>(resolve => { ready = resolve; });
+    return { promise, ready };
+  }, []);
+  useEffect(() => {
+    if (!effectiveNativePalette || !isDesktopRuntime() || nativeToolsetStartupReady) nativeToolsetStartup.ready();
+  }, [effectiveNativePalette, nativeToolsetStartupReady, nativeToolsetStartup]);
+  const [nativeDocumentNoticeOpen, setNativeDocumentNoticeOpen] = useState(false);
+  const nativeDocumentNoticeOpenRef = useRef(false);
+  // Open and restore share both the version predicate and this startup ordering on both platforms.
+  const notifyInstalledDocumentCompatibility = useCallback((
+    opened: ReturnType<typeof openNativeDocument>, installed: ChemDraftDocument
+  ) => notifyNativeDocumentCompatibility(opened, installed, shortcutPlatform, async notice => {
+    await nativeToolsetStartup.promise;
+    if (!mountedRef.current) return;
+    nativeDocumentNoticeOpenRef.current = true;
+    setNativeDocumentNoticeOpen(true);
+    try {
+      await nativePrompt(notice, undefined, undefined, undefined, shortcutPlatform);
+    } finally {
+      nativeDocumentNoticeOpenRef.current = false;
+      if (mountedRef.current) setNativeDocumentNoticeOpen(false);
+    }
+  }), [nativeToolsetStartup, shortcutPlatform]);
   const [keptDrawingsStartupWaitExpired, setKeptDrawingsStartupWaitExpired] = useState(false);
   const nativeToolsetsSuspendedForLaunchPrompt =
     (nativeToolsetStartupReady || keptDrawingsStartupWaitExpired) && keptDrawingsPrompt !== undefined;
@@ -2628,6 +2745,22 @@ export function MainWindow({
   // across *different* molecules. `selectedNativeMoleculePart` (the primary) still drives every
   // single-molecule operation — drag, spin, delete, the inspector, dependency arrays — unchanged.
   const [selectedNativeMoleculeParts, setSelectedNativeMoleculeParts] = useState<NativeMoleculeSelectionPart[]>([]);
+  const arrowNudgeBurstRef = useRef<{ history: DocumentHistory; lastPress: number } | undefined>(undefined);
+  useLayoutEffect(() => { arrowNudgeBurstRef.current = undefined; }, [selectedNativeMoleculeParts]);
+  useEffect(() => {
+    const endBurst = () => { arrowNudgeBurstRef.current = undefined; };
+    const onKey = (event: KeyboardEvent) => {
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) return;
+      if (!arrowNudgeOffset(event.key) || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) endBurst();
+    };
+    window.addEventListener("keydown", onKey, true);
+    const events = ["pointerdown", "pointermove", "pointerup", "pointercancel", "wheel", "blur", "focusin"] as const;
+    for (const type of events) window.addEventListener(type, endBurst, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      for (const type of events) window.removeEventListener(type, endBurst, true);
+    };
+  }, []);
   const selectedNativeMoleculePart = selectedNativeMoleculeParts.length > 0
     ? selectedNativeMoleculeParts[selectedNativeMoleculeParts.length - 1]
     : undefined;
@@ -2698,7 +2831,7 @@ export function MainWindow({
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
-  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const warningReports = useMemo(() => fileWarningReports(openWarningsReport, saveWarningsReport), [openWarningsReport, saveWarningsReport]);
   const openWarnings: OpenWarningsReport | undefined = warningReports[0];
   const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
@@ -2707,6 +2840,7 @@ export function MainWindow({
   const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
+  const importedPageFitGateRef = useRef(new ImportedPageFitGate());
   const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
@@ -2767,7 +2901,7 @@ export function MainWindow({
   const unrestoredTabFlowRunningRef = useRef(false);
   const sessionPayloadCacheRef = useRef(new WeakMap<ChemDraftDocument, ReturnType<typeof createNativeSavePayload>>());
   const statusRef = useRef(status);
-  const lastExportDirectoryRef = useRef<string | undefined>(undefined);
+  const lastExportDirectoryRef = lastExportDirectory;
   const rotationInputRef = useRef<RotationInputState | undefined>(undefined);
   const objectResizeInputRef = useRef<ObjectResizeInputState | undefined>(undefined);
   const interactive3dWorkspaceRef = useRef<Interactive3dWorkspaceState | undefined>(undefined);
@@ -2820,8 +2954,8 @@ export function MainWindow({
   // neighbour, or empty canvas). Once that label is no longer in progress, the hover goes back to
   // whatever is under the pointer, so the next Delete or digit acts on what the user is pointing at.
   const hoverRetargetedForLabelRef = useRef(false);
-  // Latest binding of the pointermove hover derivation, re-invoked by the charge hotkey after a
-  // commit. The hotkey is declared far above `updateNativeCanvasHover`, so a direct reference
+  // Latest binding of the pointermove hover derivation, re-invoked by hover keys after a
+  // commit. The hotkeys are declared far above `updateNativeCanvasHover`, so a direct reference
   // would be a use-before-initialization in the deps array (same reason `invokeCommandRef`
   // exists); the render-body assignment keeps the binding current without a stale closure.
   const rederiveNativeCanvasHoverRef = useRef<(sourceDocument: ChemDraftDocument) => void>(() => undefined);
@@ -2906,7 +3040,7 @@ export function MainWindow({
   const analysisReportIsStale =
     analysisReport !== undefined &&
     analysisSubject !== undefined &&
-    (selectedMolecule ? analysisSubjectKey(selectedMolecule) : undefined) !== analysisSubject;
+    (selectedMolecule ? analysisSubjectKey(selectedMolecule, document) : undefined) !== analysisSubject;
   const selectedTextObject = getSelectedTextObject(document);
   const selectedTextRange = selectedTextObject &&
     activeTextEditObjectId === selectedTextObject.id &&
@@ -3157,13 +3291,13 @@ export function MainWindow({
   }, [activePage, atomLabelPreview, tableResizePreview]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
-  const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
-    [labelDisplayPage, nativeDoubleBondSidePreview]);
+  const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
+    [labelDisplayPage, nativeDoubleBondSidePreview]));
   // One full-page plan supplies both the native overlays and the ordered SVG runs.
   // Move previews retain this plan and translate the paint/hits; crossing gaps stay at
   // their start geometry until the real document is rendered once on release.
   const pageSvgRenderPlan = useMemo(() =>
-    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage)), [plannedDisplayPage]);
+    markFrame("planPageSvgRender", () => planPageSvgRender(plannedDisplayPage, { directElectronMarkEditing })), [plannedDisplayPage, directElectronMarkEditing]);
   const previousOverlayFragmentsRef = useRef<ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>(undefined);
   const baseObjectOverlayFragments = useMemo(() => {
     const next = reuseUnchangedFragments(
@@ -3193,10 +3327,25 @@ export function MainWindow({
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
+  const compoundLayoutSettingsRef = useRef(compoundLayoutSettings);
+  compoundLayoutSettingsRef.current = compoundLayoutSettings;
   const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
   const openArrangementSpacingRef = useRef<() => void>(() => {});
-  const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
+  const layerActions = useMemo(() => {
+    // Conditions authoring requires the shared native dialog host (§12).
+    const actions = createLayerActions(document, compoundLayoutsEnabled, compoundLayoutSettings)
+      .filter(action => action.id !== "arrow.conditions" || isDesktopRuntime());
+    const object = objectContextMenu && activePage.objects.find(object => object.id === objectContextMenu.objectId);
+    return object && arrowAttachmentFrame(activePage, object) && !compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)
+      ? actions.map(action => action.id === "arrow.conditions" ? { ...action, enabled: true, disabledReason: undefined } : action) : actions;
+  }, [document, compoundLayoutsEnabled, compoundLayoutSettings, objectContextMenu, activePage]);
+  useEffect(() => {
+    if (compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)) {
+      conditionsSourcesRef.current.clear();
+      void dialogCoordinatorRef.current?.closeReactionConditions();
+    }
+  }, [compoundLayoutSettings]);
   const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
   useEffect(() => {
     if (!compoundLayoutsEnabled) {
@@ -3239,6 +3388,16 @@ export function MainWindow({
     }
   }, [activeTool]);
   const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    // Drawing reads the validated preference at creation time, so changing it never
+    // rewrites the document or enters its undo history.
+    void listenForDrawingSettings(saveDrawingSettings).then(listener => {
+      if (disposed) listener(); else unlisten = listener;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   const keybindingSchemeRef = useRef(keybindingScheme);
   useEffect(() => {
     keybindingSchemeRef.current = keybindingScheme;
@@ -3267,17 +3426,30 @@ export function MainWindow({
     ),
     [keybindingScheme, toolsetRegistry]
   );
+  const hasSearchableStructure = useMemo(() => structureSearchDocument(
+    document, nativeMoleculeFragmentSelections(selectedNativeMoleculeParts)
+  ) !== undefined, [document, selectedNativeMoleculeParts]);
+  const customSwatches = useCustomSwatches();
+  const customSwatchActions = useMemo(() => createCustomSwatchActions(customSwatches,
+    document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0 || activeTextEditObjectId !== undefined),
+    [customSwatches, document.selection.objectIds, selectedNativeMoleculeParts, activeTextEditObjectId]);
+  const customColorSaveRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot, hex: string) => void>(() => {});
+  const customColorClearRef = useRef<(swatch: CustomSwatchNumber, slot: CustomSwatchSlot) => Promise<void>>(async () => {});
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       [...allShellCommands(document, selectedMolecule, {
+        customSwatches,
         activeTableCell,
-        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
+        availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined,
+          hasMoleculeFragmentSelection: selectedNativeMoleculeParts.length > 0 },
         registry: toolsetRegistry,
-        compoundLayoutsEnabled
-      }), vibeCodeStarterCommand],
+        compoundLayoutsEnabled, compoundLayoutSettings,
+        structureSearchEnabled,
+        hasSearchableStructure
+      }).map(command => customSwatchActions.find(action => action.id === command.id) ?? command), vibeCodeStarterCommand].filter(command => command.id !== "arrow.conditions" || isDesktopRuntime()),
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [customSwatches, customSwatchActions, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, selectedNativeMoleculeParts, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings, structureSearchEnabled, hasSearchableStructure]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -3308,6 +3480,8 @@ export function MainWindow({
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
   // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
+  // Leaving keeps the instant assignment on cancellation. A committed continuation still
+  // coalesces with that assignment's undo entry.
   // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
@@ -3386,7 +3560,8 @@ export function MainWindow({
   const installDocumentHistory = useCallback((
     update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
     switchingTabs = false,
-    palettePreview = false
+    palettePreview = false,
+    objectDragPreview = false
   ) => {
     // A chooser may never blur. Close its snapshot transaction before *any* other
     // document write, including live drawing/selection replacements and navigation.
@@ -3399,6 +3574,9 @@ export function MainWindow({
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
     if (history === previous) return;
+    if (selectionClipboardPasteStateRef.current?.document && history.present !== previous.present) {
+      selectionClipboardPasteStateRef.current = undefined;
+    }
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
       const recorded = assistantRecordedAfterRef.current.get(previous.present);
@@ -3413,12 +3591,13 @@ export function MainWindow({
     // Retained moves never install preview documents. Any install while one is active
     // replaces its source geometry, so disarm it before React updates the paint/chrome.
     const drag = objectDragRef.current;
-    if (drag && !graphicObjectIdsForCssDragPreview(drag)) {
+    if (drag && !objectDragPreview && !graphicObjectIdsForCssDragPreview(drag)) {
       objectDragRef.current = null;
       objectDragMachineRef.current = initialInteractionState();
       clearObjectTransformPreview(drag.pointerId);
       releaseGesturePointer(drag.pointerId);
       setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
       setShiftHoveredArrowId(undefined);
       shiftHoveredArrowIdRef.current = undefined;
       hoveredArrowIdRef.current = undefined;
@@ -3457,7 +3636,8 @@ export function MainWindow({
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    palettePreview = false
+    palettePreview = false,
+    objectDragPreview = false
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     let changed = false;
@@ -3472,7 +3652,7 @@ export function MainWindow({
       if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
       changed = true;
       return { ...currentHistory, present };
-    }, false, palettePreview);
+    }, false, palettePreview, objectDragPreview);
     return changed;
   }, [installDocumentHistory]);
   // Strip the live draft before normalization, then carry the name across both object changes.
@@ -3481,7 +3661,9 @@ export function MainWindow({
     const stripped = edit && edit.documentIdentity === documentIdentityRef.current &&
       edit.historyNavigation === historyNavigationCountRef.current && documentHasAtomLabelDraft(current, edit)
       ? restoreAtomLabelDraft(current, edit) : current;
-    const clean = normalizeCommittedDocument(stripped);
+    // An unchanged snapshot already passed commit normalization. Record it exactly, including
+    // a floating electron mark deliberately left outside a direct drop's capture radius.
+    const clean = stripped === current ? current : normalizeCommittedDocument(stripped);
     const label = documentUndoLabelsRef.current.get(current);
     if (label) documentUndoLabelsRef.current.set(clean, label);
     return clean;
@@ -3493,13 +3675,17 @@ export function MainWindow({
     if (label) documentUndoLabelsRef.current.set(present, label);
     return present;
   }, []);
+  const pageFitPendingRef = useRef(0);
+  const pluginPageConsentsRef = useRef(new WeakMap<AbortSignal, PageEnlargementConsent>());
   const commitDocumentChange = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    undoLabel?: string
+    undoLabel?: string,
+    textCheckpointed = false,
+    assertFinalDocument?: (document: ChemDraftDocument) => void
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Record typing before the command, retaining main's editor lifetime in its callers.
-    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
+    const resumeTextEdit = textCheckpointed ? undefined : checkpointTextEditBeforeCommitRef.current();
     let changed = false;
     try {
       installDocumentHistory((currentHistory) => {
@@ -3509,6 +3695,7 @@ export function MainWindow({
         if (nextDocument === currentHistory.present) return currentHistory;
 
         const present = prepareDocumentCommit(nextDocument, undoLabel);
+        assertFinalDocument?.(present);
         changed = true;
         return {
           past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
@@ -3525,6 +3712,35 @@ export function MainWindow({
     });
     return true;
   }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
+  // Only insertion and automatic re-layout callers opt into the pre-commit page question.
+  // Hand gestures, typing, styling and arrange commands use the synchronous commit above.
+  const commitDocumentChangeWithPageFit = useCallback((
+    update: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument), label?: string,
+    onCommit?: NonNullable<Parameters<typeof commitWithPageFit>[3]>["onCommit"],
+    assertFinalDocument?: (document: ChemDraftDocument) => void
+  ): boolean => {
+    if (pageFitPendingRef.current) { setStatus("Finish the page size question before editing."); return false; }
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
+    try {
+      if (pageFitPendingRef.current) return false;
+      const before = documentRef.current;
+      const next = typeof update === "function" ? update(before) : update;
+      if (next === before) return false;
+      const proposed = prepareDocumentCommit(next, label);
+      const tabId = activeDocumentTabIdRef.current;
+      const pending = commitWithPageFit(before, proposed, document => commitDocumentChange(document, label, true, assertFinalDocument), {
+        onCommit,
+        consent: new PageEnlargementConsent(shortcutPlatform),
+        isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
+          assistantDocumentContentUnchanged(before, documentRef.current)
+      });
+      if (pending) {
+        pageFitPendingRef.current += 1;
+        void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+      }
+      return true;
+    } finally { resumeTextEdit?.(); }
+  }, [commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
   settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
@@ -3685,12 +3901,14 @@ export function MainWindow({
   const commitDocumentHistoryFrom = useCallback((
     startDocument: ChemDraftDocument,
     nextDocument: ChemDraftDocument,
-    undoLabel?: string
+    undoLabel?: string,
+    options: { normalized?: boolean } = {}
   ) => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
-    const present = normalizeCommittedDocument(nextDocument);
+    // Direct electron-mark drops already normalized with their narrower capture policy.
+    const present = options.normalized ? nextDocument : normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
     try {
@@ -3706,6 +3924,22 @@ export function MainWindow({
       return nextFileState;
     });
   }, [atomLabelHistorySnapshot, installDocumentHistory]);
+  // Inserted builders may use a drag preview. Keep its pre-placement undo snapshot while
+  // leaving every transform/drawing commit on commitDocumentHistoryFrom.
+  const commitInsertionHistoryWithPageFit = useCallback((start: ChemDraftDocument, proposed: ChemDraftDocument, undoLabel?: string) => {
+    proposed = prepareDocumentCommit(proposed);
+    const tabId = activeDocumentTabIdRef.current;
+    if (planDocumentPageFit(start, proposed).growth.length) replacePresentDocument(start);
+    const pending = commitWithPageFit(start, proposed, document => commitDocumentHistoryFrom(start, document, undoLabel), {
+      consent: new PageEnlargementConsent(shortcutPlatform),
+      isCurrent: () => mountedRef.current && !quitMutationFrozenRef.current && activeDocumentTabIdRef.current === tabId &&
+        assistantDocumentContentUnchanged(start, documentRef.current)
+    });
+    if (pending) {
+      pageFitPendingRef.current += 1;
+      void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+    }
+  }, [commitDocumentHistoryFrom, prepareDocumentCommit, replacePresentDocument, shortcutPlatform]);
   const applyArtTransformQaScene = useCallback(() => {
     const changed = commitDocumentChange((current) => artTransformQaSceneDocument(current, artTransformQaDraft));
     if (changed) {
@@ -3766,8 +4000,9 @@ export function MainWindow({
     fileStateRef.current = file;
     setFileState(file);
   }, []);
-  const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
+  const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument, undoLabel?: string): boolean => {
     const previewDocument = documentRef.current;
+    if (undoLabel) documentUndoLabelsRef.current.set(previewDocument, undoLabel);
     const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     let changed = false;
     try {
@@ -3805,9 +4040,9 @@ export function MainWindow({
         }
 
         if (layoutState !== undefined) {
-          // Fold pre-flatten (7-group) Main-toolbar state onto the single-group manifest before anything
-          // consumes it; the next save persists the migrated shape.
-          const migrated = migrateLegacyMainToolbarLayoutState(layoutState);
+          // Preserve historical Main defaults and fold pre-flatten layouts before anything consumes
+          // them; the visibility save below persists the migrated state and its defaults revision.
+          const migrated = migrateMainToolbarDefaultsLayoutState(layoutState);
           toolbarCatalog.setLayoutState(migrated);
           const nextRegistry = toolbarCatalog.registry();
           setWebPalettePositions(createDefaultToolsetPositions(nextRegistry));
@@ -4458,6 +4693,8 @@ export function MainWindow({
 
   const cycleNativeBondOrder = useCallback((target: NativeBondOrderTarget) => {
     const currentDocument = documentRef.current;
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = object?.type === "molecule" && nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderTarget(selectedDocument, target);
     if (nextDocument === selectedDocument) {
@@ -4465,14 +4702,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Changed bond order");
+    setStatus(madePlain ? "Made bond plain" : "Changed bond order");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const setHoveredNativeBondOrder = useCallback((order: NativeBondOrderValue) => {
@@ -4484,6 +4721,9 @@ export function MainWindow({
       return;
     }
 
+    const object = findDocumentObject(currentDocument, target.objectId);
+    const madePlain = order === "single" && object?.type === "molecule" &&
+      nativeBondCanBeMadePlain(object.bonds.find(bond => bond.id === target.bondId));
     const selectedDocument = selectDocumentObject(currentDocument, target.objectId);
     const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, order);
     if (nextDocument === selectedDocument) {
@@ -4491,14 +4731,14 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, madePlain ? "Made bond plain" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered bond to ${order}`);
+    setStatus(madePlain ? "Made bond plain" : `Set hovered bond to ${order}`);
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeBondDisplayStyle = useCallback((bondStyle: NativeBondDisplayStyle) => {
@@ -4526,7 +4766,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : undefined);
+    commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4549,18 +4789,20 @@ export function MainWindow({
     }
 
     const currentDocument = documentRef.current;
-    const nextDocument = applyNativeAtomElementTarget(currentDocument, target, element);
+    const result = commitNativeAtomLabelTarget(currentDocument, target, element);
+    const nextDocument = result.document;
     if (nextDocument === currentDocument) {
       setStatus(`Cannot set hovered atom to ${element}`);
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
+    commitDocumentChange(nextDocument, split ? `Add ${element} substituent` : undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setFreeformNativeBond(undefined);
-    setStatus(`Set hovered atom to ${element}`);
+    setStatus(result.message ?? `Set hovered atom to ${element}`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const setHoveredNativeAtomLabel = useCallback((label: string) => {
@@ -4601,7 +4843,8 @@ export function MainWindow({
   const applyHoveredNativeTargetEdit = useCallback((
     expectedKind: "atom" | "bond",
     statusNoun: string,
-    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult
+    edit: (document: ChemDraftDocument, target: NativeMoleculeDeleteTarget) => ChemDraftDocument | NativeAtomSproutHotkeyResult,
+    undoLabel?: string
   ) => {
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
@@ -4620,7 +4863,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, undoLabel);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4635,7 +4878,8 @@ export function MainWindow({
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
       kind === "gemDimethyl"
         ? nativeBranchedHotkeyTarget(document, target, hoveredGrowthArrowPlan(target))
-        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target)),
+      kind === "gemDimethyl" ? "Add branched alkyl" : undefined
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
 
@@ -4658,7 +4902,8 @@ export function MainWindow({
 
   const fuseRingAtHoveredNativeBond = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("bond", statusNoun, (document, target) =>
-      nativeRingHotkeyFuseAtBondTarget(document, target, templateId)
+      nativeRingHotkeyFuseAtBondTarget(document, target, templateId),
+      templateId === "chairCyclohexaneA" ? "Fuse chair cyclohexane ring" : undefined
     );
   }, [applyHoveredNativeTargetEdit]);
 
@@ -4740,18 +4985,18 @@ export function MainWindow({
     const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
       // A refused INCREMENT is not a refused mark: the mark is already on the atom, so name
-      // what stopped the press — the ±9 cap, or a valence that cannot carry one more — instead
+      // what stopped the press — the ±9 representation cap — instead
       // of claiming the charge could not be placed.
       const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
       setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : refusal === "valence"
-          ? `Hovered atom cannot carry ${noun} at its current valence`
+        : markSpec.kind === "lone-pair"
+          ? "Cannot place a lone pair on this atom: there is no room inside the page."
           : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChange(nextDocument, electronMarkUndoLabel(currentDocument, nextDocument, markSpec));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -4762,21 +5007,26 @@ export function MainWindow({
     rederiveNativeCanvasHoverRef.current(nextDocument);
     // Both placement paths select the mark they placed/bumped, so the committed document names
     // the stacked magnitude ("Placed positive charge 2+ on hovered atom").
-    const placedMarkId = nextDocument.selection.objectIds[0];
-    const placedMark = placedMarkId ? findDocumentObject(nextDocument, placedMarkId) : undefined;
-    const placedNoun = placedMark?.type === "electron-mark" && placedMark.markKind === "charge" &&
-        typeof placedMark.charge === "number"
-      ? electronMarkSpecStatusNoun(markSpec, placedMark.charge)
+    const committedDocument = documentRef.current;
+    const placedMarkId = committedDocument.selection.objectIds[0];
+    const placedMark = placedMarkId ? findDocumentObject(committedDocument, placedMarkId) : undefined;
+    const placedNoun = placedMark?.type === "electron-mark" && placedMark.markKind === "radical-dot"
+      ? electronMarkSpecStatusNoun({ kind: "radical-dot" })
+      : placedMark?.type === "electron-mark" && placedMark.markKind === "charge" && typeof placedMark.charge === "number"
+      ? electronMarkSpecStatusNoun({ kind: "charge", charge: placedMark.charge > 0 ? 1 : -1,
+          radical: placedMark.radical, chargeStyle: placedMark.chargeStyle }, placedMark.charge)
       : noun;
     setStatus(`Placed ${placedNoun} on hovered atom`);
   }, [commitDocumentChange, selectedNativeMoleculePart]);
 
   const cleanUpSelectedStructure = useCallback(() => {
     const currentDocument = documentRef.current;
+    const selectedParts = selectedNativeMoleculePartsRef.current;
+    const fragments = nativeMoleculeFragmentSelections(selectedParts);
     const targetObjectIds = [
       ...new Set([
         ...currentDocument.selection.objectIds,
-        ...(selectedNativeMoleculePart ? [selectedNativeMoleculePart.objectId] : [])
+        ...fragments.map(fragment => fragment.objectId)
       ])
     ];
     if (targetObjectIds.length === 0) {
@@ -4789,15 +5039,33 @@ export function MainWindow({
       setActiveTextEditObjectId(undefined);
       setActiveAtomLabelEdit(undefined);
       setHoveredNativeAtom(undefined);
-      setSelectedNativeMoleculePart(undefined);
       assignHoveredNativeDeleteTarget(undefined);
       setFreeformNativeBond(undefined);
       setNativeDoubleBondSidePreview(undefined);
       setObjectContextMenu(undefined);
     };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
+    const onlyDisconnectedAtoms = fragments.length > 0 && targetObjectIds.every(id =>
+      fragments.some(fragment => fragment.objectId === id)) && fragments.every(fragment => {
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && !target.bonds.some(bond =>
+        selected.has(bond.fromAtomId) && selected.has(bond.toAtomId));
+    });
     const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
-      cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+      !changed && onlyDisconnectedAtoms
+        ? "Nothing to clean up: the selected atoms aren't connected to each other. Select a bond or neighboring atoms."
+        : cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
+    const partialSelections = fragments.filter(fragment => {
+      // The legacy store may include a part's host in objectIds. The part defines its scope;
+      // a true whole-molecule pick clears that molecule's part in the selection policy.
+      const target = findDocumentObject(currentDocument, fragment.objectId);
+      if (target?.type !== "molecule" || !isNativeMoleculeGraph(target)) return false;
+      const selected = cleanupSelectionAtomIds(target, fragment);
+      return selected.size > 0 && selected.size < target.atoms.length;
+    });
+    const partialIds = new Set(partialSelections.map(selection => selection.objectId));
 
     // The polygon+tree pass idealises single-ring components in place. Anything with more than
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
@@ -4808,12 +5076,13 @@ export function MainWindow({
     // halves land in ONE history
     // entry, and the engine's lazy load only happens when such a target exists.
     const engineTargetIds = targetObjectIds.filter((targetId) => {
+      if (partialIds.has(targetId)) return false;
       const target = findDocumentObject(currentDocument, targetId);
       return target?.type === "molecule" && isNativeMoleculeGraph(target) && moleculeHasFusedRingSystem(target);
     });
-    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId));
-    if (engineTargetIds.length === 0) {
-      const changed = commitDocumentChange((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
+    const nativeTargetIds = targetObjectIds.filter((targetId) => !engineTargetIds.includes(targetId) && !partialIds.has(targetId));
+    if (engineTargetIds.length === 0 && partialSelections.length === 0) {
+      const changed = commitDocumentChangeWithPageFit((current) => cleanUpNativeMolecules2d(current, nativeTargetIds));
       resetCleanupChrome();
       setStatus(cleanedStatus(changed));
       return;
@@ -4823,7 +5092,7 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile, assertConstrainedLayoutIdentity } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         let alternatePromise: Promise<readonly NativeMoleculeRelayoutEngine[]> | undefined;
         const loadAlternates = () => alternatePromise ??= (async () => {
@@ -4833,6 +5102,9 @@ export function MainWindow({
           return createRdkit2DRelayouts();
         })();
         let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds);
+        prepared = cleanUpMoleculeSelections2d(prepared, partialSelections, {
+          relayout: relayoutMolfile2D, assertIdentity: assertConstrainedLayoutIdentity
+        });
         for (const objectId of engineTargetIds) {
           // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
           // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
@@ -4850,17 +5122,40 @@ export function MainWindow({
         }
         // Loading an alternate can yield to editing. Never replace edits made since preparation
         // started; all accepted candidates otherwise land together in exactly one history entry.
-        if (documentRef.current !== currentDocument) {
-          setStatus("Clean up cancelled because the document changed");
+        if (documentRef.current !== currentDocument || selectedNativeMoleculePartsRef.current !== selectedParts) {
+          setStatus("Clean up canceled because the document changed");
           return;
         }
-        const changed = commitDocumentChange(() => prepared);
+        const changed = commitDocumentChangeWithPageFit(() => prepared, partialSelections.length ? "Clean Up Selection" : undefined, undefined,
+          partialSelections.length ? (finalDocument) => {
+            // Normalization can reassociate electron marks, including to a structure outside
+            // the selection. Validate every native molecule in the exact document that will
+            // enter history, after all normalization and before any document/history write.
+            const finalObjects = new Map(finalDocument.pages.flatMap(page => page.objects).map(object => [object.id, object]));
+            for (const before of currentDocument.pages.flatMap(page => page.objects)) {
+              if (before.type !== "molecule" || !isNativeMoleculeGraph(before)) continue;
+              const after = finalObjects.get(before.id);
+              if (after === before) continue;
+              try {
+                if (after?.type !== "molecule" || before.atoms.some((atom, i) => {
+                  const next = after.atoms[i];
+                  return !next || atom.id !== next.id || atom.element !== next.element ||
+                    atom.isotope !== next.isotope || atom.formalCharge !== next.formalCharge ||
+                    (atom.markRadicals ?? 0) !== (next.markRadicals ?? 0);
+                })) throw new Error("Native atom identity changed.");
+                assertConstrainedLayoutIdentity(stereoPerceptionMolfile(before), stereoPerceptionMolfile(after));
+              } catch {
+                throw new Error(`Clean Up Selection refused: final commit normalization would change chemistry in structure ${before.id}. The drawing was kept unchanged.`);
+              }
+            }
+          } : undefined);
         setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
-        setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(message.startsWith("Clean Up Selection:") ? message : `Clean up failed: ${message}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit]);
 
   // ── 3D spin (Phase 4) ──────────────────────────────────────────────────────
   const applySpin = useCallback((next: Spin3dState | undefined) => {
@@ -5028,7 +5323,7 @@ export function MainWindow({
         engine: state.engine
       });
     }
-    commitDocumentChange(committedDocument);
+    commitDocumentChangeWithPageFit(committedDocument);
     applySpin(undefined);
     const meaningful = outcome.warnings.filter((warning) => warning.code !== "perspective-cleanup");
     // A dense polycyclic structure can emit the SAME benign warning (e.g. degenerate-drawn-parity)
@@ -5049,7 +5344,7 @@ export function MainWindow({
       ? ` — note: ${unrepresentableStereoKinds.join(" & ")} stereochemistry isn't captured by the flat drawing (kept in the 3D model; lost on export or a structural edit)`
       : "";
     setStatus(baseStatus + stereoNote);
-  }, [applySpin, commitDocumentChange]);
+  }, [applySpin, commitDocumentChangeWithPageFit]);
 
   // Preload the OCL stereo perceiver once so the synchronous rotate-commit paths can run the
   // read-back guard. Perception depends only on the molecule graph, so a single load serves every
@@ -5374,7 +5669,7 @@ export function MainWindow({
       // Spin may only begin if the molecule is still selected and unchanged.
       if (documentRef.current.pages[0]?.objects.find((object) => object.id === objectId) !== molecule) {
         traceInfo("spin.cancelled", { message: "selection changed" });
-        setStatus("Selection changed; spin cancelled");
+        setStatus("Selection changed; spin canceled");
         return;
       }
       const embeddedCoords = conformer.mapping.coords3dByOriginalAtom;
@@ -5822,7 +6117,7 @@ export function MainWindow({
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
-        const changed = commitDocumentChange((current) =>
+        const changed = commitDocumentChangeWithPageFit((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
             warnings,
             perceiveStereo: perceiveStereoCentersFromMolfile
@@ -5833,7 +6128,7 @@ export function MainWindow({
         setStatus(`3D cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     })();
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, selectedNativeMoleculePart]);
 
   const cancelInteractive3dDragScheduler = useCallback((): Interactive3dDragSchedulerState | undefined => {
     const scheduler = interactive3dDragSchedulerRef.current;
@@ -6423,6 +6718,9 @@ export function MainWindow({
     setStatus(`Selected ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
   }, [assignHoveredNativeDeleteTarget, replacePresentDocument, setSelectedNativeMoleculePart]);
 
+  const useHtmlFileWarnings = useNativeFileWarnings(openWarningsListShown, activeDocumentTabId, warningReports, document,
+    showOpenWarningTarget, () => setOpenWarningsListOpen(false), setStatus);
+
   const startAtomLabelEdit = useCallback((target: NativeMoleculeDeleteTarget, options: AtomLabelEditOptions = {}): boolean => {
     if (target.kind !== "atom") {
       return false;
@@ -6465,15 +6763,9 @@ export function MainWindow({
       continuesHotkey: continuing?.continuesHotkey ?? options.hotkeyChanged === true,
       startedFromHover: continuing?.startedFromHover ?? options.startedFromHover === true,
       hotkeyUndoDocument: continuing?.hotkeyUndoDocument ?? options.hotkeyUndoDocument,
-      hotkeyAfterDocument: continuing?.hotkeyAfterDocument ?? options.hotkeyAfterDocument,
-      cancellation: continuing?.cancellation ?? {
-        document: documentRef.current,
-        intervened: !!options.hotkeyAfterDocument &&
-          !atomLabelDraftDocumentUnchanged(currentDocument, options.hotkeyAfterDocument, target)
-      },
+      cancellation: continuing?.cancellation ?? {},
       saveRevision: continuing?.saveRevision ?? options.saveRevision ??
         documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0,
-      hotkeyUndoState: continuing?.hotkeyUndoState ?? options.hotkeyUndoState,
       initialElement: continuing?.initialElement ?? atom.element,
       initialLiteral: continuing ? continuing.initialLiteral : atom.labelLiteral === true,
       ...(continuing
@@ -6496,6 +6788,7 @@ export function MainWindow({
   }, [replacePresentDocument]);
 
   const updateAtomLabelDraft = useCallback((state: AtomLabelEditState, draft: string) => {
+    if (state.startedFromHover) draft = nativeHoverAtomLabelCompletion(draft) ?? draft;
     setActiveAtomLabelEdit((current) =>
       current && current.objectId === state.objectId && current.atomId === state.atomId
         ? { ...current, draft }
@@ -6507,7 +6800,6 @@ export function MainWindow({
     }
 
     replacePresentDocument((current) => {
-      state.cancellation.intervened ||= !atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
       // Text-typed labels are literal: they draw exactly as typed, contribute no implicit
       // hydrogens, and are valence-checked without them. A side-dependent label typed back to its
       // starting text is written as it started (applyNativeAtomLabelDraft).
@@ -6524,7 +6816,6 @@ export function MainWindow({
       }
       return next;
     });
-    state.cancellation.document = documentRef.current;
   }, [replacePresentDocument]);
 
   const cancelAtomLabelEdit = useCallback((state: AtomLabelEditState) => {
@@ -6535,50 +6826,18 @@ export function MainWindow({
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
       return;
     }
-    const ownsHotkeyHistory = state.continuesHotkey && state.hotkeyUndoState &&
-      documentHistoryRef.current.past.at(-1) === state.hotkeyUndoDocument;
-    const hotkeyCancellation = { cancelled: false };
-    // Cancel both stages only if nothing else edited the post-hotkey document. Otherwise keep the
-    // first letter and its history: an external change must never become part of our rollback.
+    // The first hover key is committed. Escape restores only the current editor's baseline.
     const changed = replacePresentDocument((current) => {
       if (!documentOwnsAtomLabelDraft(current, state)) {
         state.cancellation.superseded = true;
         return current;
       }
-      const unchanged = !state.cancellation.intervened &&
-        atomLabelDraftDocumentUnchanged(current, state.cancellation.document, state);
-      const restored = restoreAtomLabelDraft(current, state);
-      const afterHotkey = state.hotkeyAfterDocument;
-      if (!state.startedFromHover || !afterHotkey ||
-        (state.continuesHotkey && !ownsHotkeyHistory) || !unchanged) return restored;
-      const hotkeyMolecule = findDocumentObject(afterHotkey, state.objectId);
-      if (hotkeyMolecule?.type !== "molecule") return restored;
-      const hotkeyRollback: AtomLabelDraftState = {
-        objectId: state.objectId, atomId: state.atomId,
-        draftBeforeAtom: state.beforeAtom, draftBeforeMolecule: state.beforeMolecule,
-        draftRollback: createAtomLabelDraftRollback(state.beforeMolecule)
-      };
-      recordAtomLabelDraftRollback(hotkeyRollback, state.beforeMolecule, hotkeyMolecule);
-      hotkeyCancellation.cancelled = true;
-      return restoreAtomLabelDraft(restored, hotkeyRollback);
+      return restoreAtomLabelDraft(current, state);
     });
-    // Remove our own first-letter entry rather than undoing it into Redo. A subsequent external
-    // commit owns its history; only the unchanged hotkey history line can be restored wholesale.
-    const history = documentHistoryRef.current;
-    const discardedHotkeyHistory = hotkeyCancellation.cancelled && ownsHotkeyHistory && state.hotkeyUndoState;
-    if (discardedHotkeyHistory) {
-      const present = history.present;
-      documentUndoLabelsRef.current.delete(present);
-      const previousLabel = documentUndoLabelsRef.current.get(discardedHotkeyHistory.history.present);
-      if (previousLabel) documentUndoLabelsRef.current.set(present, previousLabel);
-      installDocumentHistory({ ...discardedHotkeyHistory.history, present });
-    }
     const savedDuringEdit = (documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0) !== state.saveRevision;
-    if (discardedHotkeyHistory || (changed && savedDuringEdit)) {
-      // A save may have changed the path as well as the saved chemistry. Preserve today's file
-      // association; only an edit with no intervening save can recover its pre-letter clean state.
-      const file = { ...fileStateRef.current,
-        dirty: savedDuringEdit ? true : discardedHotkeyHistory ? discardedHotkeyHistory.file.dirty : true };
+    if (changed && savedDuringEdit) {
+      // A save wrote the draft; the restored baseline must be saved again.
+      const file = { ...fileStateRef.current, dirty: true };
       fileStateRef.current = file;
       setFileState(file);
     }
@@ -6586,7 +6845,7 @@ export function MainWindow({
     cancelledAtomLabelEditRef.current = state;
     setActiveAtomLabelEdit(undefined);
     setStatus("Atom label unchanged");
-  }, [installDocumentHistory, replacePresentDocument]);
+  }, [replacePresentDocument]);
 
   const finishAtomLabelEdit = useCallback((state: AtomLabelEditState, reason: AtomLabelFinishReason) => {
     // Keystrokes only write a draft; the close applies the decision once. A late blur (the input
@@ -6594,6 +6853,11 @@ export function MainWindow({
     // that no longer belongs to this edit.
     const active = activeAtomLabelEditRef.current;
     if (!active || active.objectId !== state.objectId || active.atomId !== state.atomId) {
+      return;
+    }
+    if (reason === "commit" && state.startedFromHover && state.draft.trim() &&
+      nativeHoverAtomLabelCompletion(state.draft) === undefined) {
+      setStatus(`Incomplete or unrecognized atom label "${state.draft}"; finish a known label or press Escape`);
       return;
     }
     if (reason === "commit") {
@@ -6619,6 +6883,14 @@ export function MainWindow({
       documentUndoLabelsRef.current.set(documentRef.current, atomLabelUndoLabel(result.baseline, result.target, state.draft));
     } else if (changed) {
       commitDocumentHistoryFrom(result.baseline, result.document, atomLabelUndoLabel(result.baseline, result.target, state.draft));
+      // snapshotDocumentTab finishes drafts before close/quit checks this ref. The history
+      // commit queues its dirty-state update; reconcile it now, as the table finisher does.
+      // A Save while the editor was open may already have written this exact draft.
+      const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
+      const file = { ...fileStateRef.current,
+        dirty: !saved || !assistantDocumentContentUnchanged(saved, documentRef.current) };
+      fileStateRef.current = file;
+      setFileState(file);
     } else {
       replacePresentDocument(result.document);
     }
@@ -6719,9 +6991,12 @@ export function MainWindow({
     } : point;
   }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
 
-  const pastePointForViewport = useCallback((): ClientPoint =>
-    pastePointerPagePoint() ?? viewportCentrePagePoint(),
-  [pastePointerPagePoint, viewportCentrePagePoint]);
+  // Capture before any clipboard read or depiction awaits. The optional pointer also
+  // identifies the repeat-paste sequence; resolving it again at commit can reset that sequence.
+  const captureClipboardPasteAnchor = useCallback(() => {
+    const pointer = pastePointerPagePoint();
+    return { pointer, point: pointer ?? viewportCentrePagePoint(), imagePoint: viewportCentrePagePoint(false) };
+  }, [pastePointerPagePoint, viewportCentrePagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -6889,19 +7164,23 @@ export function MainWindow({
   // editor, unlike tool.text.
   const applySymbolGlyphAtPoint = useCallback((point: ClientPoint, glyph: string) => {
     const currentDocument = documentRef.current;
-    commitDocumentChange(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
+    commitDocumentChangeWithPageFit(insertNativeSymbolGlyph(currentDocument, point, glyph, textStyleDefaults));
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
     setStatus(`Stamped ${glyph}`);
-  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange, textStyleDefaults]);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChangeWithPageFit, textStyleDefaults]);
 
   const applyBracketAtPoint = useCallback((point: ClientPoint, bracketKind: BracketObject["bracketKind"]) => {
     const currentDocument = documentRef.current;
-    commitDocumentChange(insertNativeBracket(currentDocument, point, bracketKind));
+    commitDocumentChangeWithPageFit(insertNativeBracket(currentDocument, point, bracketKind), `Draw ${bracketKind} bracket pair`);
     clearStampInteractionState();
     assignHoveredNativeDeleteTarget(undefined);
-    setStatus(`Inserted ${bracketKind} bracket`);
-  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChange]);
+    const selectToolState = createActiveToolState("tool.select");
+    activeToolCommandIdRef.current = selectToolState.activeCommandId;
+    setActiveToolState(selectToolState);
+    void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    setStatus(`Inserted ${bracketKind} bracket pair`);
+  }, [assignHoveredNativeDeleteTarget, clearStampInteractionState, commitDocumentChangeWithPageFit]);
 
   const applyNativeArtDocumentAtPoint = useCallback((point: ClientPoint, commandId: string) => {
     const currentDocument = documentRef.current;
@@ -6911,7 +7190,7 @@ export function MainWindow({
       return;
     }
 
-    commitDocumentChange(nextDocument);
+    commitDocumentChangeWithPageFit(nextDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -6930,7 +7209,7 @@ export function MainWindow({
     }
     switchToSelectTool();
     setStatus(selectToolStatusLabel());
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit, switchToSelectTool]);
 
   const resetPasteUiState = useCallback(() => {
     setActiveEditorObjectId(undefined);
@@ -6942,16 +7221,44 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
   }, [assignHoveredNativeDeleteTarget]);
 
-  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+  // All clipboard insertions share the native repeat-paste placement and one undo entry.
+  // Record the committed snapshot only after insertion; async SMILES preparation must not
+  // clear the preceding paste's placement while loading/verifying its depiction.
+  const commitClipboardPaste = useCallback((nextDocument: ChemDraftDocument, anchor: ReturnType<typeof captureClipboardPasteAnchor>, label?: string,
+    nativePayload?: ChemDraftSelectionClipboardPayload): boolean => {
+    const before = documentRef.current;
+    if (nextDocument === before) return false;
+    const payload = nativePayload ?? createSelectionClipboardPayload(nextDocument);
+    if (!payload) return false;
+    const page = before.pages[0]!;
+    if (payload.bounds.width > page.width || payload.bounds.height > page.height) {
+      // Oversized content retains its prepared placement and the existing explicit page-size
+      // choice. Repeat offsets and clamping apply only when the payload fits the current page.
+      return commitDocumentChangeWithPageFit(nextDocument, label);
+    }
+    const placement = nextSelectionClipboardPastePlacement(payload, selectionClipboardPasteStateRef.current,
+      page, anchor.pointer, nativePayload ? 1 : 0);
+    const existingIds = new Set(page.objects.map(object => object.id));
+    const insertedIds = nextDocument.pages[0]!.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+    const placed = translateInsertedDocumentObjects(nextDocument, insertedIds,
+      placement.point.x - payload.bounds.centerX, placement.point.y - payload.bounds.centerY);
+    if (!commitDocumentChange(placed, label)) return false;
+    selectionClipboardPasteStateRef.current = { ...placement.state, document: documentRef.current };
+    return true;
+  }, [commitDocumentChange, commitDocumentChangeWithPageFit]);
+
+  const applySyncClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      detectedPayload.kind === "image" ? viewportCentrePagePoint(false) : pastePointForViewport(),
+      detectedPayload.kind === "image" ? anchor.imagePoint : anchor.point,
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChange(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+      if (detectedPayload.kind === "image") {
+        if (!commitDocumentChangeWithPageFit(result.document, "Paste Picture")) return;
+      } else if (!commitClipboardPaste(result.document, anchor)) return;
     } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
       setStatus(result.status);
       return;
@@ -6961,16 +7268,16 @@ export function MainWindow({
     // of the document entry we just recorded. Double-click still opens the editor.
     resetPasteUiState();
     setStatus(result.status);
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
+  }, [commitClipboardPaste, commitDocumentChangeWithPageFit, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, pictureFallback = false): Promise<{
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false): Promise<{
     outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
   }> => {
     const terminalResult = () => {
       if (quitInteractionRef.current) {
-        setStatus("Paste cancelled while quitting");
+        setStatus("Paste canceled while quitting");
         return { outcome: "terminal" as const };
       }
       if (signal.aborted) return { outcome: "terminal" as const };
@@ -6981,7 +7288,7 @@ export function MainWindow({
       let terminal = pictureFallback ? terminalResult() : undefined;
       if (terminal) return terminal;
       const layoutDocument = documentRef.current;
-      const point = pastePointForViewport();
+      const point = anchor.point;
       const parsed = await depictSmilesForPaste(smilesText, { signal }, {
         document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
@@ -7031,17 +7338,10 @@ export function MainWindow({
       terminal = terminalResult();
       if (terminal) return terminal;
       if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-      commitDocumentChange(nextDocument, "Paste SMILES");
+      if (!commitClipboardPaste(nextDocument, anchor, "Paste SMILES")) return { outcome: "terminal" };
       resetPasteUiState();
-      // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
-      // the same page-resize prompt the external-CDXML import path uses, when the pasted
-      // content overflows and a larger preset (up to A0) would fit it.
-      const fit = recommendImportedPageFit(nextDocument);
-      setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
-      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
-      const pasteStatus = fit
-        ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
-        : baseStatus;
+      setPageFitPrompt(undefined);
+      const pasteStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
       setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
       return { outcome: "success" };
     } catch (error) {
@@ -7057,31 +7357,31 @@ export function MainWindow({
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
+  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     if (!parsed.ok) { setStatus(parsed.reason); return; }
     try {
-      const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
+      const result = pasteTableIntoDocument(documentRef.current, parsed, anchor.point, textStyleDefaults,
         prefix => `${prefix}-${crypto.randomUUID()}`);
-      commitDocumentChange(result.document, "Paste table");
+      if (!commitClipboardPaste(result.document, anchor, "Paste table")) return;
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
       setStatus(tableValidationMessage(error));
     }
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitClipboardPaste, resetPasteUiState, textStyleDefaults]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
-  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, pictureFallback = false):
+  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, anchor: ReturnType<typeof captureClipboardPasteAnchor>, pictureFallback = false):
     Promise<{ outcome: "success" | "no-structure" | "terminal"; pasteAsText: boolean; status?: string }> | undefined => {
     const pasteDocument = documentRef.current;
     const terminalResult = (checkDocument = false) => {
       if (quitInteractionRef.current) {
-        setStatus("Paste cancelled while quitting");
+        setStatus("Paste canceled while quitting");
         return { outcome: "terminal" as const, pasteAsText: false };
       }
       if (signal.aborted) return { outcome: "terminal" as const, pasteAsText: false };
@@ -7094,7 +7394,7 @@ export function MainWindow({
       setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
     }, {
       signal, inspectInput: verifySmilesPasteInput,
-      templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+      templatePlacement: { document: pasteDocument, centre: anchor.point }
     });
     if (!pendingList) return undefined;
     return pendingList.then(async (parsed) => {
@@ -7106,7 +7406,7 @@ export function MainWindow({
       terminal = terminalResult(true);
       if (terminal) return terminal;
       const result = insertSmilesMoleculeGrid(
-        pasteDocument, pastePointForViewport(), entries);
+        pasteDocument, anchor.point, entries);
       parsed.failures.push(...verified.failures);
       const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
         failure.error.includes("the RDKit engine did not load:"));
@@ -7123,19 +7423,18 @@ export function MainWindow({
         })
         : parsed.failures;
       const failures = smilesListFailureStatus(displayedFailures);
-      const placementStatus = result.objectIds.length
-        ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
-      const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
       const failureCount = displayedFailures.length;
-      const status = failures
-        ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
-          (engineUnavailable ? "; pasted as text" : "")
-        : baseStatus;
+      const makeStatus = (placementStatus: string) => {
+        const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+        return failures ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
+          (engineUnavailable ? "; pasted as text" : "") : baseStatus;
+      };
+      const status = makeStatus("No SMILES structures were pasted");
       if (result.objectIds.length > 0) {
-        commitDocumentChange(result.document, "Paste SMILES list");
+        if (!commitClipboardPaste(result.document, anchor, "Paste SMILES list")) return { outcome: "terminal" as const, pasteAsText: false };
+        setStatus(makeStatus(insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems)));
         resetPasteUiState();
         setPageFitPrompt(undefined);
-        setStatus(status);
       }
       return { outcome: result.objectIds.length > 0 ? "success" as const : "no-structure" as const, pasteAsText: engineUnavailable, status };
     }).catch((error: unknown) => {
@@ -7150,9 +7449,9 @@ export function MainWindow({
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
     });
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+  }, [commitClipboardPaste, resetPasteUiState]);
 
-  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
+  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, anchor: ReturnType<typeof captureClipboardPasteAnchor>, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
     if (detectedPayload.kind === "size-refused") {
       setStatus(detectedPayload.message);
@@ -7166,7 +7465,7 @@ export function MainWindow({
       return;
     }
     if (detectedPayload.kind === "inchi") {
-      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
+      applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }, anchor);
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
       return;
     }
@@ -7178,21 +7477,21 @@ export function MainWindow({
           ? readTableClipboardPaste(stripClipboardPictures(rawPayload), html => new DOMParser().parseFromString(html, "text/html"))
           : undefined;
         if (!table || (detectedPayload.fallbackImage && !tableClipboardResultOutranksPicture(table))) return false;
-        applyTableClipboardResult(table);
+        applyTableClipboardResult(table, anchor);
         return true;
       };
       const pasteFallbackImage = () => {
         if (!detectedPayload.fallbackImage) return false;
         if (pasteAsTable()) return true;
         const image = detectedPayload.fallbackImage;
-        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
+        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }), anchor);
         return true;
       };
       const pasteAsText = () => {
         if (pasteAsTable()) return true;
         applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
           ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
-          : { ...detectedPayload, kind: "plain-text" });
+          : { ...detectedPayload, kind: "plain-text" }, anchor);
         return false;
       };
       const finishSingleFallback = ({ reason, failed }: Awaited<ReturnType<typeof renderPastedSmiles>>) => {
@@ -7216,19 +7515,19 @@ export function MainWindow({
         void (async () => {
           let firstFallback: (() => void) | undefined;
           for (const candidate of chemistryCandidates) {
-            if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+            if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
             if (listAbort.signal.aborted) return;
             if (candidate.kind === "smiles") {
-              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, anchor, true);
               if (result.outcome !== "no-structure") return;
               firstFallback ??= () => finishSingleFallback(result);
             } else {
-              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, true);
+              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, anchor, true);
               if (result && result.outcome !== "no-structure") return;
               firstFallback ??= () => finishListFallback(result);
             }
           }
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+          if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (listAbort.signal.aborted) return;
           if (!pasteFallbackImage()) firstFallback?.();
         })();
@@ -7238,8 +7537,8 @@ export function MainWindow({
       if ((detectedPayload.kind === "smiles" || looksLikeSmiles(trimmedText)) && !/\s/.test(trimmedText)) {
         // Keep ordinary single SMILES pastes independent of later pastes, as before.
         // Only lists and picture candidate loops register their cancellation controller.
-        void renderPastedSmiles(trimmedText, new AbortController().signal).then(result => {
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        void renderPastedSmiles(trimmedText, new AbortController().signal, anchor).then(result => {
+          if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
           if (result.outcome !== "no-structure") return;
           if (!pasteFallbackImage()) finishSingleFallback(result);
         });
@@ -7247,42 +7546,37 @@ export function MainWindow({
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
-      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal);
+      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal, anchor);
       if (!pendingList) {
         if (!pasteFallbackImage()) pasteAsText();
         return;
       }
       void pendingList.then(result => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         if (result.outcome !== "no-structure" || listAbort.signal.aborted) return;
         if (!pasteFallbackImage()) finishListFallback(result);
       });
       return;
     }
-    applySyncClipboardPayload(detectedPayload);
+    applySyncClipboardPayload(detectedPayload, anchor);
   }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
-  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+  const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>, anchor: ReturnType<typeof captureClipboardPasteAnchor>) => {
     smilesListPasteAbortRef.current?.abort();
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-    const placement = nextSelectionClipboardPastePlacement(
-      payload,
-      selectionClipboardPasteStateRef.current,
-      activePage,
-      pastePointerPagePoint()
-    );
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
+    const warnings: string[] = [];
     const nextDocument = pasteSelectionClipboardPayload(
       documentRef.current,
       payload,
-      placement.point
+      { x: payload.bounds.centerX, y: payload.bounds.centerY },
+      warnings
     );
     if (nextDocument === documentRef.current) {
       setStatus("Clipboard selection unchanged");
       return;
     }
 
-    selectionClipboardPasteStateRef.current = placement.state;
-    commitDocumentChange(nextDocument);
+    if (!commitClipboardPaste(nextDocument, anchor, undefined, payload)) return;
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7290,14 +7584,14 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Pasted ChemDraft selection");
-  }, [activePage, assignHoveredNativeDeleteTarget, commitDocumentChange, pastePointerPagePoint]);
+    setStatus(["Pasted ChemDraft selection", ...warnings].join("; "));
+  }, [assignHoveredNativeDeleteTarget, commitClipboardPaste]);
 
   const deleteSelectionAfterClipboardCut = useCallback((
     payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>,
     wholeObjectIds: readonly string[]
   ) => {
-    if (quitInteractionRef.current) { setStatus("Cut cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Cut canceled while quitting"); return; }
     const currentDocument = documentRef.current;
     // Use the selection that produced the successful clipboard write. It may include both
     // whole objects and fragments, and the user may have changed selection while it was writing.
@@ -7347,7 +7641,7 @@ export function MainWindow({
 
     selectionClipboardPayloadRef.current = payload;
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
-    const notices = [...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
+    const notices = [...(payload.warnings ?? []), ...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
@@ -7385,9 +7679,14 @@ export function MainWindow({
   // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
   // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
   // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
-  // refs only, including the table draft snapshot shared with Copy As.
+  // refs only, including private table and repeat-label drafts.
   const documentForFlush = useCallback((): ChemDraftDocument => {
-    const current = documentWithTableDraft();
+    let current = documentWithTableDraft();
+    const bracket = bracketLabelEditRef.current;
+    const label = bracketLabelEditorRef.current?.draft();
+    if (bracket?.tabId === activeDocumentTabIdRef.current && label !== undefined) {
+      current = setBracketRepeatLabel(current, bracket.objectId, label);
+    }
     const edit = activeAtomLabelEditRef.current;
     if (
       !edit ||
@@ -7427,19 +7726,33 @@ export function MainWindow({
       }
       case "clipboard.copyAs.mol": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        try {
+          await writeText(await copyAsMolfile(current, "v3000", warnings), "MOL text", warnings);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL refused:") ? message : `Copy as MOL failed: ${message}`}${warningSuffix}`);
+        }
         return;
       }
       case "clipboard.copyAs.molV2000": {
         const warnings: string[] = [];
-        await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        try {
+          await writeText(await copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const warningSuffix = warnings.length > 0 ? ` — ${warnings.join(" ")}` : "";
+          setStatus(`${message.startsWith("Copy as MOL V2000 refused:") ? message : `Copy as MOL V2000 failed: ${message}`}${warningSuffix}`);
+        }
         return;
       }
-      case "clipboard.copyAs.cdxml":
-        await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
+      case "clipboard.copyAs.cdxml": {
+        const result = exportPhase4Cdxml(copyAsScopedDocument(current));
+        await writeText(result.contents, "CDXML text", result.warnings.map(warning => warning.message));
         return;
+      }
       case "clipboard.copyAs.svg": {
-        const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
+        const svgContents = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false, title: stripExportFileExtension(documentTabsRef.current.find(tab => tab.id === activeDocumentTabIdRef.current)?.title ?? "Untitled") })).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
         // picture from public.svg-image, while text editors still get the source via text/plain.
         // A bare text/plain write pasted into Illustrator as literal markup.
@@ -7455,13 +7768,13 @@ export function MainWindow({
       case "clipboard.copyAs.inchiKey": {
         const label = commandId === "clipboard.copyAs.inchi" ? "InChI" : "InChI Key";
         const warnings: string[] = [];
-        const molfile = copyAsMolfile(current, "v2000", warnings);
-        if (!molfile) {
-          setStatus(`Nothing to copy as ${label}`);
-          return;
-        }
-        setStatus(`Computing ${label}…`);
         try {
+          const molfile = serializeCopyAsMolfile(current, "v2000", warnings, { coordinateUnits: "raw" });
+          if (!molfile) {
+            setStatus(`Nothing to copy as ${label}`);
+            return;
+          }
+          setStatus(`Computing ${label}…`);
           // Same lazy-engine path the analyze command uses: neither the Emscripten glue nor the
           // 7.5 MB wasm belongs in the startup graph for users who never touch InChI.
           const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
@@ -7482,7 +7795,7 @@ export function MainWindow({
       case "clipboard.copyAs.png": {
         setStatus("Rendering PNG…");
         try {
-          const svgResult = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false });
+          const svgResult = (await exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }));
           // Oversample 4x for sharpness; the exported SVG's units are CSS px (96/inch, not the
           // 72/inch PDF-point convention), so declaring the true density needs CSS_PX_PER_INCH,
           // not a hardcoded "288". Both raster paths derive the stamped density from the scale
@@ -7507,7 +7820,7 @@ export function MainWindow({
     }
   }, [documentWithTableDraft]);
 
-  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>, anchor = captureClipboardPasteAnchor()) => {
     smilesListPasteAbortRef.current?.abort();
     let rawPayload: ClipboardReadPayload | undefined;
     let readFailure: string | undefined;
@@ -7521,28 +7834,28 @@ export function MainWindow({
     } catch (error) {
       readFailure = error instanceof Error ? error.message : String(error);
     }
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
     for (const candidate of [rawPayload, fallbackPayload]) {
       const unguardedPayload = await candidate;
-      if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+      if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
       if (!unguardedPayload) continue;
       const guarded = guardedClipboardPasteDecision(unguardedPayload);
       if (guarded.kind === "refused") { setStatus(guarded.message); return; }
       const { payload, decision } = guarded;
       if (decision.kind === "selection") {
-        applySelectionClipboardPayload(decision.payload);
+        applySelectionClipboardPayload(decision.payload, anchor);
         return;
       }
       if (decision.kind === "table") {
-        applyTableClipboardResult(decision.result);
+        applyTableClipboardResult(decision.result, anchor);
         return;
       }
 
       const detectedPayload = decision.payload;
       if (detectedPayload.kind !== "empty") {
-        applyDetectedClipboardPayload(detectedPayload, payload);
+        applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         return;
       }
     }
@@ -7550,13 +7863,13 @@ export function MainWindow({
     // Only reuse the last in-app ChemDraft selection when the clipboard has nothing usable;
     // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
     if (selectionClipboardPayloadRef.current) {
-      applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+      applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
       return;
     }
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text))) {
@@ -7573,6 +7886,7 @@ export function MainWindow({
     textAutoConversionInProgressRef.current = true;
     try {
       const currentDocument = documentRef.current;
+      if (!canAutoConvertNativeTextObjectToAtom(currentDocument, objectId)) return;
       const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
       if (labelResult.target) {
         if (labelResult.document !== currentDocument) {
@@ -7616,19 +7930,29 @@ export function MainWindow({
     }
   }, [commitDocumentHistoryFrom]);
 
-  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string, reason: "commit" | "escape" = "commit") => {
     // Canvas capture can close the editor before its blur arrives; use the owner's id.
     const objectId = finishedObjectId ?? activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
     if (!objectId) return;
+    // Escape keeps the literal text. Disarm conversion before closing so late blur/effects
+    // can safely run the same finish path without converting this box.
+    if (reason === "escape") textObjectIdsAwaitingAutoConversionRef.current.delete(objectId);
     settlePalettePreviewRef.current("finish text edit");
     if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
     finalizeTextEditHistory(objectId);
+    // Every close path shares this finisher, including blur and state-only tool switches.
+    // Preserve a newer command's status or another editor's message; conversion below
+    // may replace the cleared editing message with its own result.
+    if (!activeTextEditObjectIdRef.current) {
+      setStatus((current) => current === "Editing text" || current === "Inserted text - type to replace placeholder" ? "" : current);
+    }
     convertCommittedText(objectId);
     // New boxes share placement's undo entry; existing boxes have a snapshot from before typing.
     // Neither history baseline tells us what a mid-edit Save actually wrote.
     reconcileSavedDocumentDirtyState();
   }, [convertCommittedText, finalizeTextEditHistory, reconcileSavedDocumentDirtyState]);
+
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
     if (textEditHistoryWritingRef.current) return;
     // Settle a visible chooser first so its style never leaks into the typing entry.
@@ -7678,6 +8002,11 @@ export function MainWindow({
       return;
     }
 
+    if (object.arrowAttachment?.kind === "conditions") {
+      arrowCommandTargetRef.current = object.arrowAttachment.parentObjectId;
+      void invokeCommandRef.current("arrow.conditions"); return;
+    }
+
     // Opened/restored clean files may not have an explicit save in this session yet.
     const tabId = activeDocumentTabIdRef.current;
     if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
@@ -7712,6 +8041,12 @@ export function MainWindow({
     // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
+    const object = findDocumentObject(documentRef.current, objectId);
+    const attachment = object?.type === "text" ? object.arrowAttachment : undefined;
+    if (attachment?.kind === "conditions") {
+      arrowCommandTargetRef.current = attachment.parentObjectId;
+      void invokeCommandRef.current("arrow.conditions"); return;
+    }
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
@@ -7738,6 +8073,18 @@ export function MainWindow({
     commitDocumentChange(current => applyTableObjectEdit(current, table), label);
     setStatus(label);
   }, [commitDocumentChange]);
+
+  const finishBracketLabelEdit = useCallback((value?: string) => {
+    const edit = bracketLabelEditRef.current;
+    if (!edit || edit.tabId !== activeDocumentTabIdRef.current) return;
+    if (value !== undefined) {
+      commitDocumentChange(current => setBracketRepeatLabel(current, edit.objectId, value), "Edit repeat-unit label");
+    }
+    reconcileSavedDocumentDirtyState();
+    bracketLabelEditRef.current = undefined;
+    setBracketLabelEdit(undefined);
+    canvasRegionRef.current?.focus({ preventScroll: true });
+  }, [commitDocumentChange, reconcileSavedDocumentDirtyState]);
 
   const finishTableCellEdit = useCallback((value: TableRichText, action: TableEditingAction) => {
     const cell = tableCellEditRef.current;
@@ -7787,19 +8134,34 @@ export function MainWindow({
     else canvasRegionRef.current?.focus({ preventScroll: true });
   }, [clearScheduledTextEditorFocus, commitTableObject, reconcileSavedDocumentDirtyState]);
 
-  const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
+  const handlePageDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || isEditableTarget(event.target) ||
+        (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text")) return;
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const point = pagePointFromRenderedPageRect(rect, viewportRef.current.scale, { x: event.clientX, y: event.clientY });
+    // Select captures the pointer on the object's group when starting a drag. A real
+    // dblclick can therefore target that group (or the canvas), rather than its text.
+    // Resolve the label from the same page-space metrics used to paint it, before
+    // object/group double-click handlers, and use the context menu's registered command.
+    const bracket = [...documentRef.current.pages[0].objects].reverse().find(object =>
+      object.type === "bracket" && bracketLabelContainsPoint(object, point));
+    if (bracket) {
+      event.preventDefault(); event.stopPropagation();
+      flushSync(() => replacePresentDocument(current => selectDocumentObject(current, bracket.id)));
+      void invokeCommandRef.current("bracket.label.edit");
+      return;
+    }
+    if (activeToolState.activeCommandId !== "tool.select") return;
     const owner = (event.target as Element).closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual");
     const table = documentRef.current.pages[0].objects.find(object => object.id === owner);
-    const rect = pageRef.current?.getBoundingClientRect();
-    if (table?.type !== "table" || !rect) return;
-    const cell = tableTextAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
-      y: (event.clientY - rect.top) / viewportRef.current.scale });
+    if (table?.type !== "table") return;
+    const cell = tableTextAtPoint(table, point);
     if (!cell) return;
     event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
-  }, [activeToolState.activeCommandId, startTableCellEdit]);
+  }, [activeToolState.activeCommandId, replacePresentDocument, startTableCellEdit]);
 
-  const applyTextStyleCommand = useCallback((commandId: string): boolean => {
+  const applyTextStyleCommand = useCallback((commandId: string, undoLabel?: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
     // Formatting belongs to the open session, like typing. Outside an editor it is its own entry.
@@ -7914,14 +8276,14 @@ export function MainWindow({
       const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
       if (colorResult.targetedSelection) {
-        const changed = changeText(colorResult.document);
+        const changed = activeTextEditObjectIdRef.current ? replacePresentDocument(colorResult.document) : commitDocumentChange(colorResult.document, undoLabel);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
-        setStatus(changed ? "Updated selected color" : "Selected color unchanged");
+        setStatus(undoLabel && changed ? `Applied ${selectedColor.toUpperCase()} to selection` : changed ? "Updated selected color" : "Selected color unchanged");
         return true;
       }
 
-      setStatus("Updated text defaults");
+      setStatus(undoLabel ? `Text default color set to ${selectedColor.toUpperCase()}` : "Updated text defaults");
       return true;
     }
 
@@ -8198,6 +8560,31 @@ export function MainWindow({
       };
     }
 
+    const wave = objectWaveForCommand(commandId);
+    if (wave) {
+      const ids = graphicObjectIds.filter((id) => {
+        const object = findDocumentObject(currentDocument, id);
+        return object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy";
+      });
+      return {
+        document: applyGraphicWaveSettingToSelection(currentDocument, wave.setting, wave.value, ids),
+        handled: true,
+        targeted: ids.length > 0,
+        message: `Updated wave ${wave.setting}`
+      };
+    }
+
+    const electronStyle = electronMarkStyleCommands.find(command => command.id === commandId);
+    if (electronStyle) {
+      return {
+        document: applyElectronMarkStyleToSelection(currentDocument, electronStyle.property, electronStyle.value),
+        handled: true,
+        targeted: currentDocument.pages.some(page => page.objects.some(object =>
+          object.type === "electron-mark" && currentDocument.selection.objectIds.includes(object.id))),
+        message: `Change electron mark ${electronStyle.property}`
+      };
+    }
+
     const markerSize = objectMarkerSizeForCommand(commandId);
     if (markerSize) {
       const markerObjectIds = graphicObjectIds.filter((objectId) =>
@@ -8348,9 +8735,11 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document);
+    const changed = commitDocumentChange(result.document,
+      objectWaveForCommand(commandId) || electronMarkStyleCommands.some(command => command.id === commandId)
+        ? result.message : undefined);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
     return true;
   }, [applyObjectStyleCommandToDocument, commitDocumentChange, currentArtStyle, effectiveArtPaintTarget]);
 
@@ -8433,7 +8822,7 @@ export function MainWindow({
     if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
     else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
-    setStatus(changed ? result.message : "Selected object style unchanged");
+    setStatus(changed ? objectStyleResultStatus(commandId, result.message) : "Selected object style unchanged");
   }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelObjectStylePreview = useCallback(() => {
@@ -8446,6 +8835,16 @@ export function MainWindow({
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
+
+  // Both native palettes and the web fallback commit wave edits through their registered command.
+  // The registered handler retains the preview's start document for one Undo entry per gesture.
+  const commitArtStyleCommand = useCallback((commandId: string) => {
+    if (objectWaveForCommand(commandId)) {
+      void invokeCommandRef.current(commandId);
+    } else {
+      commitObjectStylePreview(commandId);
+    }
+  }, [commitObjectStylePreview]);
 
   const applyPendingMoleculeStyleOverrideChoice = useCallback((choice: "keep" | "clear" | "cancel") => {
     const prompt = moleculeStyleOverridePrompt;
@@ -9078,7 +9477,7 @@ export function MainWindow({
         previewMoleculeInspectorCommand(commandId);
       }),
       commit: (commandId) => diagnose("commit", commandId, () => {
-        commitObjectStylePreview(commandId);
+        commitArtStyleCommand(commandId);
         commitMoleculeInspectorPreview(commandId);
       }),
       cancel: () => diagnose("cancel", undefined, () => {
@@ -9090,13 +9489,13 @@ export function MainWindow({
     cancelMoleculeInspectorPreview,
     cancelObjectStylePreview,
     commitMoleculeInspectorPreview,
-    commitObjectStylePreview,
+    commitArtStyleCommand,
     previewMoleculeInspectorCommand,
     previewObjectStyleCommand
   ]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
-    if (cancelSpin3dSession("Spin cancelled")) {
+    if (cancelSpin3dSession("Spin canceled")) {
       return;
     }
 
@@ -9137,6 +9536,8 @@ export function MainWindow({
     const tableWasEditing = Boolean(tableCellEditRef.current);
     setTableCellEdit(undefined);
     tableCellEditRef.current = undefined;
+    setBracketLabelEdit(undefined);
+    bracketLabelEditRef.current = undefined;
     setTableResizePreview(undefined);
     if (tableWasEditing) canvasRegionRef.current?.focus({ preventScroll: true });
     setActiveEditorObjectId(undefined);
@@ -9148,7 +9549,11 @@ export function MainWindow({
     assignHoveredNativeDeleteTarget(undefined);
     // Undo/redo from the menu never passes the keydown clearing; redo could bring the label back.
     hoverLabelAssignmentRef.current = undefined;
+    hoverRetargetedForLabelRef.current = false;
     setFreeformNativeBond(undefined);
+    // History restores chemistry, not a label key's temporary target. Resolve the current pointer
+    // against the restored graph through the same path as pointermove, before another hover key.
+    rederiveNativeCanvasHoverRef.current(nextHistory.present);
     setLastAnalysis(null);
     setStatus(
       undoLabel
@@ -9238,6 +9643,8 @@ export function MainWindow({
     cancelSpin3dSession(undefined, { clearModelCache: options.clearSpin3dModelCache });
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setBracketLabelEdit(undefined);
+    bracketLabelEditRef.current = undefined;
     setActiveTextSelection(undefined);
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
@@ -9266,6 +9673,7 @@ export function MainWindow({
         return false;
       }
       if (commit === false) return false;
+      bracketLabelEditorRef.current?.commit({ finishComposition: true });
     }
     const labelEdit = activeAtomLabelEditRef.current;
     if (finishDrafts && labelEdit) {
@@ -9381,6 +9789,7 @@ export function MainWindow({
       if (!snapshotDocumentTab()) return;
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
+    importedPageFitGateRef.current.dismiss(id);
     documentTabSnapshotsRef.current.delete(id);
     savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
@@ -9423,19 +9832,24 @@ export function MainWindow({
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
   const openDocumentContentsNow = useCallback(async (
-    contents: string,
+    contents: DocumentContents,
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions,
-    reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
+    reportOutcome?: (outcome: "queued" | "resumed" | "already-open" | "installed") => void
   ) => {
-    if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
-      // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
-    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
+    assertDocumentSize(contents.length);
+    const waitUntilReady = async () => {
+      while (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
+        // Keep this open's original queue slot while a prompt or startup restore blocks it.
+        // Releasing the slot and re-enqueuing would put later batch members ahead of it.
+        perfHook(() => reportOutcome?.("queued"));
+        await new Promise<void>(resolve => pendingDocumentOpensRef.current.push(resolve));
+        perfHook(() => reportOutcome?.("resumed"));
+      }
+    };
+    await waitUntilReady();
+    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
     const existing = documentTabsRef.current.find((tab) =>
       path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
         documentTabSnapshotsRef.current.get(tab.id)?.file.path) !== undefined &&
@@ -9449,11 +9863,7 @@ export function MainWindow({
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
-    if (quitInteractionRef.current) {
-      pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
-      perfHook(() => reportOutcome?.("queued"));
-      return;
-    }
+    await waitUntilReady();
     if (!resolvedOpen) {
       throw new Error(formatOpenFailure(opened.warnings));
     }
@@ -9477,9 +9887,12 @@ export function MainWindow({
     if (browserKey) browserFileKeysRef.current.set(id, browserKey);
     resetDocumentHistory(resolvedOpen.document, { path, dirty });
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
-    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
+    tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName, requestId: crypto.randomUUID() } : undefined;
+    const pageFitSettled = fitRecommendation ? importedPageFitGateRef.current.wait(id) : undefined;
     setPageFitPrompt(tabPageFitRef.current);
-    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+    const sourceLabel = typeof contents === "string"
+      ? openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel)
+      : openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel).replaceAll("CDXML", "CDX");
     const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
     tabWarningsRef.current = warningsReport;
     setOpenWarningsReport(warningsReport);
@@ -9489,7 +9902,9 @@ export function MainWindow({
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
     perfHook(() => reportOutcome?.("installed"));
-  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
+    await pageFitSettled;
+    await notifyInstalledDocumentCompatibility(opened, resolvedOpen.document);
+  }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, notifyInstalledDocumentCompatibility, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
   const documentOpenQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -9497,15 +9912,21 @@ export function MainWindow({
   // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
   // file must wait and then find the tab the first one made, not add a second tab for one path.
   const openDocumentContents = useCallback((
-    contents: string,
+    contents: DocumentContents | (() => Promise<DocumentContents>),
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions
   ): Promise<void> => {
-    const timing = perfHook(() => perfProbe?.documentOpenStarted());
-    const run = documentOpenQueueRef.current.then(() =>
-      openDocumentContentsNowRef.current(contents, displayName, path, options, outcome => {
+    let timing = perfHook(() => perfProbe?.documentOpenStarted());
+    // A deferred read reserves its place immediately, so every file in a drop can be enqueued
+    // before reading the first file or waiting for its page-size prompt.
+    const run = documentOpenQueueRef.current.then(async () =>
+      openDocumentContentsNowRef.current(typeof contents === "function" ? await contents() : contents, displayName, path, options, outcome => {
         perfHook(() => {
+          if (outcome === "resumed") {
+            timing = perfProbe?.documentOpenStarted();
+            return;
+          }
           if (!timing) return;
           if (outcome === "installed") return perfProbe?.documentOpenCommitted(timing);
           return perfProbe?.documentOpenSkipped(timing, outcome);
@@ -9518,21 +9939,28 @@ export function MainWindow({
     return run;
   }, []);
 
-  const openDocumentContentsRef = useRef(openDocumentContents);
-  openDocumentContentsRef.current = openDocumentContents;
+  const openDocumentBatch = useCallback((requests: readonly DocumentOpenRequest[]): Promise<void> => {
+    const results = requests.map(({ contents, displayName, path }) =>
+      openDocumentContents(contents, displayName, path).then(
+        (): DocumentOpenResult => ({ displayName }),
+        (error: unknown): DocumentOpenResult => ({ displayName, error })
+      ));
+    // Reserve the summary's place before any later batch. Each open includes its page-fit and
+    // compatibility prompts, so keeping an imported page finishes successfully before we count it.
+    const finished = documentOpenQueueRef.current.then(async () => {
+      const summary = formatDocumentOpenBatchStatus(await Promise.all(results));
+      if (summary) {
+        setStatus(summary);
+        if (!documentSessionHydratedRef.current) shellOpenFailureRef.current = summary;
+      }
+    });
+    documentOpenQueueRef.current = finished.catch(() => undefined);
+    return finished;
+  }, [openDocumentContents]);
 
   useEffect(() => {
     if (closeTabPrompt || quitInteractionRef.current || keptDrawingsPrompt || !documentSessionHydratedRef.current) return;
-    const opens = pendingDocumentOpensRef.current.splice(0);
-    void (async () => {
-      for (const request of opens) {
-        try {
-          await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-        } catch (error) {
-          setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    })();
+    for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
   }, [closeTabPrompt, keptDrawingsPrompt, quitPromptOpen]);
 
   const acceptPageFitRecommendation = useCallback(() => {
@@ -9541,7 +9969,11 @@ export function MainWindow({
     }
 
     const changed = commitDocumentChange((current) => applyImportedPageFitRecommendation(current, pageFitPrompt));
+    // The next queued open snapshots this tab before React runs the dirty-state updater.
+    if (changed) fileStateRef.current = { ...fileStateRef.current, dirty: true };
+    tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(changed
       ? `Page changed to ${pageFitRecommendedLabel(pageFitPrompt)}`
       : "Page already fits imported content");
@@ -9552,7 +9984,9 @@ export function MainWindow({
       return;
     }
 
+    tabPageFitRef.current = undefined;
     setPageFitPrompt(undefined);
+    importedPageFitGateRef.current.dismiss(activeDocumentTabIdRef.current);
     setStatus(`Kept ${pageFitPromptLayoutLabel(pageFitPrompt.currentPageTitle, pageFitPrompt.currentOrientation)}; imported content may extend beyond the page`);
   }, [pageFitPrompt]);
 
@@ -9586,7 +10020,37 @@ export function MainWindow({
     }
   }, []);
 
-  const insertTemplateToTab = useCallback((tabId: string, id: string) => {
+  const commitInsertionToTabWithPageFit = useCallback((tabId: string, source: ChemDraftDocument,
+    proposed: ChemDraftDocument, label: string, status = label) => {
+    proposed = prepareDocumentCommit(proposed, label);
+    const pending = commitWithPageFit(source, proposed, document => {
+      if (tabId === activeDocumentTabIdRef.current) {
+        commitDocumentChange(document, label);
+        setSelectedNativeMoleculePart(undefined);
+        setStatus(status);
+      } else {
+        const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+        const present = prepareDocumentCommit(document, label);
+        for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+        documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+          history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+          parts: [], file: { ...snapshot.file, dirty: true }, status });
+        nonPristineTabsRef.current.add(tabId);
+        setDocumentTabs([...documentTabsRef.current]);
+      }
+    }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () => {
+      const latest = assistantHistoryPort.read(tabId);
+      return !quitMutationFrozenRef.current && !!latest && assistantDocumentContentUnchanged(source, latest);
+    } });
+    if (pending) {
+      pageFitPendingRef.current += 1;
+      void pending.catch(error => setStatus(String(error))).finally(() => { pageFitPendingRef.current -= 1; });
+    }
+  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit, shortcutPlatform]);
+
+  const insertTemplateToTab = useCallback(async (tabId: string, id: string) => {
+    const geometry = await readCanvasOcclusion();
+    // Re-read the tab and edit state after native sampling; it must never commit an old snapshot.
     if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
     if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
     if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
@@ -9614,21 +10078,14 @@ export function MainWindow({
     const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
       : { x: page.width / 2, y: page.height / 2 };
     const result = insertStructureTemplate(source, id, centre);
-    if (active) {
-      commitDocumentChange(result.document, result.label);
-      setSelectedNativeMoleculePart(undefined);
-      setStatus(result.label);
-    } else if (snapshot) {
-      const present = prepareDocumentCommit(result.document, result.label);
-      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
-      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
-        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
-        parts: [], file: { ...snapshot.file, dirty: true }, status: result.label });
-      nonPristineTabsRef.current.add(tabId);
-      setDocumentTabs([...documentTabsRef.current]);
-    }
+    const pageRect = active ? pageRef.current?.getBoundingClientRect() : undefined;
+    const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
+    const placed = covered.length && visible
+      ? placeInsertedObjectsInFreeSpace(result.document, page.id, result.document.selection.objectIds, { viewport: visible, covered })
+      : result.document;
+    commitInsertionToTabWithPageFit(tabId, source, placed, result.label);
   // isSnapshotSessionActive is declared later and reads only stable refs.
-  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit]);
+  }, [assistantHistoryPort, commitInsertionToTabWithPageFit]);
 
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
@@ -9667,7 +10124,7 @@ export function MainWindow({
     if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
     return source;
   };
-  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
+  const previewSpacingRef = useRef<(tabId: string, percent: number) => Promise<string>>(async () => "");
   previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
   const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
   applySpacingRef.current = (tabId, percent) => {
@@ -9701,34 +10158,120 @@ export function MainWindow({
     void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
+  refreshAtomProblemRef.current = (afterIgnore = false) => {
+    const target = atomProblemTargetRef.current;
+    if (!target) return;
+    const source = target.tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present
+      : documentTabSnapshotsRef.current.get(target.tabId)?.history.present;
+    if (!source || source === target.source) return;
+    target.source = source;
+    target.version = ++atomProblemVersionRef.current;
+    const data = atomProblemSnapshot(source, target.target, target.version);
+    // Suppressed warnings can still offer chemical fixes alongside Restore. After Ignore,
+    // none is outstanding; reopening the warning still exposes all of its actions.
+    const refreshed = afterIgnore && data.fixes.some(fix => fix.action === "restore") ? { ...data, fixes: [] } : data;
+    void dialogCoordinatorRef.current?.updateAtomProblem(target.tabId, refreshed)
+      .catch(error => setStatus(`Atom problem could not update: ${String(error)}`));
+  };
+  fixAtomProblemRef.current = (tabId, action, version) => {
+    const target = atomProblemTargetRef.current;
+    if (!target || target.tabId !== tabId || target.version !== version) throw new Error("This atom problem changed. Use the current window actions.");
+    const active = tabId === activeDocumentTabIdRef.current;
+    const snapshot = active ? undefined : documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source || source !== target.source) throw new Error("The drawing changed. Use the current window actions.");
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
+    const result = applyNativeAtomProblemFix(source, target.target.objectId, target.target.atomId, action);
+    if (!result) throw new Error("This fix no longer applies to the atom.");
+    if (active) {
+      commitDocumentChange(result.document, result.label);
+      setSelectedNativeMoleculePart({ kind: "atom", ...target.target });
+      setStatus(result.status);
+    } else if (snapshot) {
+      const present = normalizeCommittedDocument(result.document);
+      documentUndoLabelsRef.current.set(present, result.label);
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        parts: [{ kind: "atom", ...target.target }],
+        file: { ...snapshot.file, dirty: true }, status: result.status });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+    refreshAtomProblemRef.current(action === "ignore");
+  };
+  useEffect(() => { refreshAtomProblemRef.current(); }, [document, documentTabs, activeDocumentTabId]);
+  applyConditionsRef.current = (tabId, arrowId, draft) => {
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) throw new Error(reason);
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    const current = tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    const source = conditionsSourcesRef.current.get(tabId);
+    if (!current || source?.arrowId !== arrowId || source.source.id !== current.id ||
+        source.source.pages.length !== current.pages.length || source.source.pages.some((page, index) => page !== current.pages[index]))
+      throw new Error("Drawing changed. Close and reopen Reaction conditions before saving.");
+    if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the drawing gesture before saving conditions.");
+    const next = setReactionArrowConditions(current, arrowId, draft);
+    if (tabId === activeDocumentTabIdRef.current) {
+      commitDocumentChange(next, "Edit reaction conditions"); setStatus("Reaction conditions saved"); return;
+    }
+    if (next === current) return;
+    const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+    const present = normalizeCommittedDocument(next);
+    documentUndoLabelsRef.current.set(present, "Edit reaction conditions");
+    for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+    documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+      history: { past: boundedHistoryPast([...snapshot.history.past, current], present), present, future: [] },
+      file: { ...snapshot.file, dirty: true }, status: "Reaction conditions saved" });
+    nonPristineTabsRef.current.add(tabId); setDocumentTabs([...documentTabsRef.current]);
+  };
+  openReactionConditionsRef.current = arrowId => {
+    if (!isDesktopRuntime()) return;
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) { setStatus(reason); return; }
+    const tabId = activeDocumentTabIdRef.current, source = documentHistoryRef.current.present;
+    const page = source.pages.find(page => page.objects.some(object => object.id === arrowId));
+    const arrow = page?.objects.find(object => object.id === arrowId);
+    if (!page || !arrow || !arrowAttachmentFrame(page, arrow)) { setStatus("Select one arrow"); return; }
+    const title = Array.from(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 80).join("");
+    const draft = reactionConditionsDraft(source, arrowId);
+    const coordinator = dialogCoordinatorRef.current;
+    if (!coordinator) { setStatus("Reaction conditions could not open: the dialog host is unavailable."); return; }
+    if (!coordinator.reactionConditionsArrowId(tabId)) conditionsSourcesRef.current.set(tabId, { arrowId, source });
+    void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
+  };
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      fixAtomProblem: (tabId, action, version) => fixAtomProblemRef.current(tabId, action, version),
       vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
+      applyReactionConditions: (tabId, arrowId, draft) => applyConditionsRef.current(tabId, arrowId, draft),
+      onConditionsSettled: tabId => { conditionsSourcesRef.current.delete(tabId); },
+      saveCustomColor: (snapshot, hex) => customColorSaveRef.current(snapshot.swatch, snapshot.slot, hex),
+      clearCustomColor: snapshot => customColorClearRef.current(snapshot.swatch, snapshot.slot),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
-      onSettled: (tabId, _reason, kind) => { if (kind === "export") exportGrantsRef.current.delete(tabId); }
+      onSettled: (tabId, _reason, kind) => {
+        if (kind === "export") exportGrantsRef.current.delete(tabId);
+        if (kind === "atomProblem" && atomProblemTargetRef.current?.tabId === tabId) atomProblemTargetRef.current = undefined;
+      }
     });
     dialogCoordinatorRef.current = coordinator;
     return () => { dialogCoordinatorRef.current = undefined; void coordinator.dispose(); };
   }, []);
 
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
-    for (const path of paths) {
-      try {
-        await openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
-      } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }, [openDocumentContents]);
+    await openDocumentBatch(paths.map(path => ({
+      contents: () => readNativeDocumentFile(path), displayName: nativePathBasename(path), path
+    })));
+  }, [openDocumentBatch]);
 
   useEffect(() => {
     if (!isDesktopRuntime()) return undefined;
@@ -9749,19 +10292,14 @@ export function MainWindow({
       return;
     }
 
-    const path = await pickNativeOpenPath();
-    if (!path) {
+    const paths = await pickNativeOpenPaths();
+    if (!paths.length) {
       setStatus("Open canceled");
       return;
     }
 
-    try {
-      const contents = await readNativeTextFile(path);
-      await openDocumentContents(contents, nativePathBasename(path), path);
-    } catch (error) {
-      setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }, [openDocumentContents]);
+    await openDroppedDocumentPaths(paths);
+  }, [openDroppedDocumentPaths]);
 
   useEffect(() => {
     if (!shouldEnableAgentBridge()) {
@@ -9778,7 +10316,7 @@ export function MainWindow({
         await openDocumentContents(payload.contents, payload.displayName, payload.path);
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
       } catch (error) {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
+        setStatus(formatDocumentOpenFailure(payload.displayName, error));
       }
     };
 
@@ -9792,62 +10330,32 @@ export function MainWindow({
       return undefined;
     }
 
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
-      const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
-      const now = Date.now();
-      const last = lastNativeOpenPayloadKeyRef.current;
-      // A single OS open is delivered via both the Tauri event and the pending-document
-      // poll, so coalesce identical payloads that arrive close together. Use a time window
-      // rather than a permanent key so a later request still activates its already-open tab.
-      if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
-        return;
-      }
-      lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
-      try {
-        await openDocumentContents(payload.contents, payload.displayName, payload.path);
-      } catch (error) {
-        const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
-        setStatus(failure);
-        // At a cold start the session restore lands next and replaces the status line, which made a
-        // double-clicked .cdx look like it did nothing. The restore still runs (skipping it would let
-        // autosave overwrite the previous session with a blank page) and repeats this message.
-        if (!documentSessionHydratedRef.current) {
-          shellOpenFailureRef.current = failure;
+    const openNativePayloads = (payloads: readonly NativeOpenDocumentPayload[]) => {
+      const requests = payloads.flatMap<DocumentOpenRequest>(payload => {
+        try {
+          const contents = decodeNativeDocumentContents(payload);
+          const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
+          const now = Date.now();
+          const last = lastNativeOpenPayloadKeyRef.current;
+          // Coalesce repeated OS requests while reserving every other file's queue slot at once.
+          if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) return [];
+          lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
+          return [{ contents, displayName: payload.displayName, path: payload.path }];
+        } catch (error) {
+          // Decode failures also occupy their original batch position and name their source file.
+          return [{ contents: async () => { throw error; }, displayName: payload.displayName, path: payload.path }];
         }
-      }
+      });
+      void openDocumentBatch(requests);
     };
 
-    void listenForNativeOpenDocuments((payload) => {
-      if (!disposed) {
-        openNativePayload(payload);
-      }
-    })
-      .then((cleanup) => {
-        // The dynamic import may resolve after the effect was torn down; unsubscribe
-        // immediately in that case instead of leaking the listener.
-        if (disposed) {
-          cleanup();
-        } else {
-          unlisten = cleanup;
-        }
-      })
-      .catch(() => undefined);
-    void takePendingNativeOpenDocument()
-      .then((payload) => {
-        if (!disposed && payload) {
-          openNativePayload(payload);
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [openDocumentContents]);
+    return listenAndDrainNativeOpenQueue({
+      subscribe: listenForNativeOpenDocuments,
+      drain: takePendingNativeOpenDocuments,
+      consumeBatch: openNativePayloads,
+      onError: error => setStatus(`Could not check pending open files: ${error instanceof Error ? error.message : String(error)}`)
+    });
+  }, [openDocumentBatch]);
 
   // Restore every tab before processing startup file opens (see documentSession.ts). If a user
   // already started editing while the read was pending, keep that work active and append the restored
@@ -9895,6 +10403,12 @@ export function MainWindow({
               const opened = openNativeDocument(session.contents);
               const resolved = await resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
+              // Autosave uses the ordinary feature-based writer, which can legitimately drop a
+              // format-only header. Restore the source headers so its notice matches File > Open,
+              // including on later relaunches, without changing that writer's compatibility rules.
+              if (session.nativeDocumentVersions && resolved.source !== "external-cdxml") {
+                resolved.document = { ...resolved.document, ...session.nativeDocumentVersions };
+              }
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
               const reports = restoreSessionWarningReports(session);
               restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
@@ -9950,6 +10464,10 @@ export function MainWindow({
             const selected = restored.find(({ candidateIndex }) => candidateIndex === (envelope.activeTabIndex ?? 0)) ?? restored[0]!;
             installDocumentTab(selected.id);
           } else if (restoreNotice) setStatus((current) => current + restoreNotice);
+          for (const { opened, resolved } of restored) {
+            if (!active) break;
+            await notifyInstalledDocumentCompatibility(opened, resolved.document);
+          }
         };
         await restore();
         if (!active) return;
@@ -9971,21 +10489,14 @@ export function MainWindow({
             setKeptDrawingsPrompt("notice");
             return;
           }
-          const opens = pendingDocumentOpensRef.current.splice(0);
-          for (const request of opens) {
-            try {
-              await openDocumentContentsRef.current(request.contents, request.displayName, request.path, request.options);
-            } catch (error) {
-              setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          }
+          for (const resume of pendingDocumentOpensRef.current.splice(0)) resume();
         }
       });
 
     return () => {
       active = false;
     };
-  }, [installDocumentTab, snapshotDocumentTab, startWithFreshDocument]);
+  }, [installDocumentTab, notifyInstalledDocumentCompatibility, snapshotDocumentTab, startWithFreshDocument]);
 
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
@@ -10037,7 +10548,10 @@ export function MainWindow({
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
           openWarnings: snapshot.warnings,
-          saveWarnings: snapshot.saveWarnings
+          saveWarnings: snapshot.saveWarnings,
+          nativeDocumentVersions: tabDocument.formatVersion || tabDocument.minAppVersion ? {
+            formatVersion: tabDocument.formatVersion, minAppVersion: tabDocument.minAppVersion
+          } : undefined
         };
       });
       const envelope = buildDocumentTabsSession(tabs,
@@ -10162,8 +10676,9 @@ export function MainWindow({
     try {
       const info = await currentUpdateBuildInfo(isDesktopRuntime(), detectDesktopShortcutPlatform());
       if (!appUpdateChecksAllowed(info)) {
-        if (mode === "manual") {
-          setStatus("Updates go to the released ChemDraft only; this is a development build");
+        const notice = appUpdateChannelNotice(info);
+        if (mode === "manual" && notice) {
+          setStatus(notice);
         }
         return;
       }
@@ -10388,7 +10903,7 @@ export function MainWindow({
     if (!savingDocument || !savingFileState) return false;
     const savedDocument = active ? documentForFlush() : savingDocument;
     // The baseline and payload describe the same single draft snapshot.
-    const payload = createNativeSavePayload(savedDocument);
+    let payload = createDocumentFileSave(savedDocument);
     const finishSave = (path?: string) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
@@ -10400,7 +10915,7 @@ export function MainWindow({
       const nextFileState = { path: path ?? savingFileState.path, dirty };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
-        operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
+        operation: "save", displayName, sourceLabel: payload.kind === "binary" ? "ChemDraft CDX envelope" : "ChemDraft CDXML envelope", warnings: payload.warnings
       } : undefined;
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
@@ -10424,7 +10939,7 @@ export function MainWindow({
     };
     try {
       if (!isDesktopRuntime()) {
-        downloadText(payload.filename, payload.contents, payload.mimeType);
+        downloadExportResult(payload.filename, payload);
         finishSave();
         return true;
       }
@@ -10440,7 +10955,8 @@ export function MainWindow({
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);
-      await writeNativeTextFile(finalPath, payload.contents);
+      payload = createDocumentFileSave(savedDocument, finalPath);
+      await writeNativeExportResult(finalPath, payload);
       finishSave(finalPath);
       return true;
     } catch (error) {
@@ -10528,7 +11044,7 @@ export function MainWindow({
         }
         if (documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
           ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty)) {
-          setStatus("A document changed while saving. Quit cancelled; save again before quitting.");
+          setStatus("A document changed while saving. Quit canceled; save again before quitting.");
           await cancelQuitPrompt(requestId);
           return;
         }
@@ -10626,7 +11142,7 @@ export function MainWindow({
   }, []);
   const openExportDialog = useCallback(() => {
     const tabId = activeDocumentTabIdRef.current;
-    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current);
+    const state = createDefaultExportDialogState(documentRef.current, lastExportDirectoryRef.current, fileStateRef.current.path);
     if (isDesktopRuntime()) {
       const coordinator = dialogCoordinatorRef.current;
       if (!coordinator) { setStatus("Export could not open: the dialog host is unavailable."); return; }
@@ -10674,7 +11190,6 @@ export function MainWindow({
       if (path.length > 1024 || nativePathBasename(path).length > 256 || new TextEncoder().encode(JSON.stringify([path, nativePathBasename(path)])).length > 2400) throw new Error("The chosen export path is too long for the dialog. Choose a shorter path.");
       const filename = nativePathBasename(path);
       exportGrantsRef.current.set(tabId, { path, filename, format: options.format });
-      lastExportDirectoryRef.current = nativePathDirname(path) ?? lastExportDirectoryRef.current;
       setExportTabStatus(tabId, `Export location: ${filename}`);
       return { status: "picked", destinationPath: path, filename };
     } catch (error) {
@@ -10697,9 +11212,10 @@ export function MainWindow({
       // The dialog may not have received the preference change yet. The owner decides
       // whether sizing is enabled at export time, including after the progress await.
       if (!exportPreviewEnabledRef.current) options = { ...options, presentation: undefined };
-      const result = await createDialogExportResult(source, { ...options, busy: false });
+      const title = stripExportFileExtension(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled");
+      const result = await createDialogExportResult(source, { ...options, busy: false }, false, title);
       if (!live()) throw new Error("The originating drawing was closed or replaced.");
-      const filename = ensureExportFileExtension(options.filename, descriptor.extensions);
+      const filename = exportDefaultPath(options.filename, descriptor.extensions);
       if (!isDesktopRuntime()) downloadExportResult(filename, result);
       else {
         const grant = exportGrantsRef.current.get(tabId);
@@ -10837,23 +11353,46 @@ export function MainWindow({
       : { x: page.width / 2, y: page.height / 2 };
     const next = insertTableIntoDocument(source, { ...dimensions, preset, center, textStyle: textStyleDefaults,
       newId: prefix => `${prefix}-${crypto.randomUUID()}` });
-    if (active) {
-      commitDocumentChange(next, "Insert table");
-      setStatus("Inserted table");
-    } else if (snapshot) {
-      const present = normalizeCommittedDocument(next);
-      documentUndoLabelsRef.current.set(present, "Insert table");
-      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
-      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
-        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
-        file: { ...snapshot.file, dirty: true }, status: "Inserted table" });
-      nonPristineTabsRef.current.add(tabId);
-      setDocumentTabs([...documentTabsRef.current]);
-    }
+    commitInsertionToTabWithPageFit(tabId, source, next, "Insert table", "Inserted table");
   };
 
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
+  );
+
+  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
+  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
+  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
+  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
+  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
+  const isSnapshotSessionActive = useCallback(
+    (): boolean =>
+      nativeBondDragRef.current !== null ||
+      pageFitPendingRef.current > 0 ||
+      nativePlacementDragRef.current !== null ||
+      nativeBondEditDragRef.current !== null ||
+      nativePartDragRef.current !== null ||
+      objectDragRef.current !== null ||
+      graphicCornerRadiusDragRef.current !== null ||
+      graphicPathEditDragRef.current !== null ||
+      graphicMarkerDragRef.current !== null ||
+      graphicGradientDragRef.current !== null ||
+      freehandArtDragRef.current !== null ||
+      mechanismArrowDragRef.current !== null ||
+      mechanismHandleDragRef.current !== null ||
+      pathArtDrawRef.current !== null ||
+      bezierArtNodeDragRef.current !== null ||
+      objectRotateDragRef.current !== null ||
+      projectedPlaneTiltDragRef.current !== null ||
+      objectResizeDragRef.current !== null ||
+      groupTransformDragRef.current !== null ||
+      textResizeRef.current !== null ||
+      artStylePreviewRef.current !== null ||
+      moleculeInspectorPreviewRef.current !== null ||
+      rotationInputRef.current !== undefined ||
+      objectResizeInputRef.current !== undefined ||
+      moleculeStyleOverridePromptRef.current !== undefined,
+    []
   );
 
   // Core command handlers are rebuilt every render (they close over live state), but they
@@ -10866,10 +11405,86 @@ export function MainWindow({
       bindings.set(definition.id, {
         spec: definition,
         run: async () => {
+          if (!isSelectionNudgeCommand(definition.id)) arrowNudgeBurstRef.current = undefined;
           await handler?.();
         }
       });
     };
+
+    const nudgeActions = createSelectionNudgeActions(document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0);
+    nudgeActions.forEach(action => register(action, () => {
+      if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current ||
+        isArrowNudgeEditorTarget(globalThis.document.activeElement) || isBlockedByModalDialog(globalThis.document.activeElement) ||
+        isSnapshotSessionActive()) return;
+      const fragments = nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current);
+      const current = documentRef.current;
+      if (!current.selection.objectIds.length && !fragments.length) return;
+      const keys = action.shortcut!.split("+");
+      const delta = arrowNudgeOffset(keys.at(-1)!, keys.length > 1)!;
+      const burst = arrowNudgeBurstRef.current;
+      const now = Date.now();
+      const continuesBurst = burst?.history === documentHistoryRef.current && arrowNudgeContinuesBurst(burst.lastPress, now);
+      const moved = moveCanvasSelection(current, fragments, delta);
+      if (moved === current) {
+        // Repeats against a page edge are still presses, so they renew an existing burst.
+        arrowNudgeBurstRef.current = continuesBurst ? { history: documentHistoryRef.current, lastPress: now } : undefined;
+        setStatus("Selection is already at the page edge");
+        return;
+      }
+      // Like assistant-history amendments, retain the first before-snapshot and replace only
+      // the current snapshot. History identity also ends a burst after any intervening edit,
+      // selection change, tab switch or Undo/Redo, even when it arrived outside keyboard routing.
+      if (continuesBurst) {
+        replacePresentDocument(prepareDocumentCommit(moved, "Move"));
+      } else commitDocumentChange(moved, "Move");
+      arrowNudgeBurstRef.current = { history: documentHistoryRef.current, lastPress: now };
+      const nextObjects = new Map(moved.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
+      let dx = 0, dy = 0, finite = true;
+      const measure = (before: { x: number; y: number }, after: { x: number; y: number }) => {
+        const x = after.x - before.x, y = after.y - before.y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) { finite = false; return; }
+        if (Math.abs(x) > Math.abs(dx)) dx = x;
+        if (Math.abs(y) > Math.abs(dy)) dy = y;
+      };
+      current.pages.forEach(page => page.objects.forEach(object => {
+        const next = nextObjects.get(object.id);
+        if (!next) return;
+        if (object.type === "molecule" && next.type === "molecule") {
+          const nextAtoms = new Map(next.atoms.map(atom => [atom.id, atom] as const));
+          object.atoms.forEach(atom => {
+            const after = nextAtoms.get(atom.id);
+            if (after) measure(atom, after);
+          });
+        } else {
+          measure(object, next);
+        }
+      }));
+      const distance = (value: number) => Number(Math.abs(value).toFixed(3));
+      const horizontal = dx ? `${distance(dx)} px ${dx < 0 ? "left" : "right"}` : "";
+      const vertical = dy ? `${distance(dy)} px ${dy < 0 ? "up" : "down"}` : "";
+      if (!finite) setStatus("Moved selection");
+      else if (!dx && !dy) setStatus("Selection is already at the page edge");
+      else if (dx && dy) setStatus(`Moved selection by ${horizontal} and ${vertical}`);
+      else setStatus(`Moved selection ${dx ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down")} by ${distance(dx || dy)} px`);
+    }));
+
+    atomProblemCommands(document).forEach(({ spec, target, action }) => register(spec, async () => {
+      const tabId = activeDocumentTabIdRef.current;
+      if (action === "open") {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Atom problem could not open: the native dialog host is unavailable."); return; }
+        atomProblemTargetRef.current = { tabId, target, source: documentHistoryRef.current.present, version: ++atomProblemVersionRef.current };
+        const data = atomProblemSnapshot(atomProblemTargetRef.current.source, target, atomProblemTargetRef.current.version);
+        await coordinator.openAtomProblem(tabId, data);
+      } else {
+        const result = applyNativeAtomProblemFix(documentHistoryRef.current.present, target.objectId, target.atomId, action);
+        if (!result) return;
+        if (isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture before fixing the atom.");
+        commitDocumentChange(result.document, result.label);
+        setSelectedNativeMoleculePart({ kind: "atom", ...target });
+        setStatus(result.status);
+      }
+    }));
 
     tableActions.forEach(action => register(action, async () => {
       if (action.id === "table.insertDialog") {
@@ -10900,10 +11515,54 @@ export function MainWindow({
       }
     }));
 
+    nativeStylePresetActions.forEach(action => register(action, () => {
+      const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const warnings: CompatibilityWarning[] = [];
+      let appliedStructures = 0;
+      const changed = commitDocumentChange(current => {
+        const patch = nativeStylePresetPatchForSelection(current, presetId,
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId), warnings);
+        const moleculeIds = new Set(current.pages.flatMap(page => page.objects.filter(object => object.type === "molecule").map(object => object.id)));
+        appliedStructures = patch.patches.filter(leaf => leaf.op === "updateObject" && moleculeIds.has(leaf.objectId)).length;
+        // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
+        // while a native document-wide edit may contain more objects. Both paths are atomic.
+        return applyPatches(current, patch.patches);
+      }, action.title);
+      if (changed) setSelectedNativeMoleculeParts([]);
+      setActiveEditorObjectId(undefined);
+      const kinds = [...new Set(warnings.map(warning => warning.message.includes("radical") ? "radical" : "charge"))];
+      const reason = kinds.join(" or ");
+      setStatus(warnings.length ? `${changed ? `Applied ${action.title}${appliedStructures ? ` to ${appliedStructures} structure${appliedStructures === 1 ? "" : "s"}` : ""}; skipped` : "Skipped"} ${warnings.length} structure${warnings.length === 1 ? "" : "s"} because ${warnings.length === 1 ? "it" : "they"} would change a ${reason}.`
+        : changed ? `Applied ${action.title}` : `${action.title} already matches`);
+    }));
+
+    bracketActions.forEach(action => register(action, () => {
+      if (action.id === "bracket.repeatUnit.toggle") {
+        const nextDocument = toggleBracketRepeatUnit(documentRef.current);
+        if (commitDocumentChange(nextDocument, action.title)) {
+          setStatus(bracketRepeatUnitStatus(nextDocument));
+        }
+      } else {
+        const closing = selectedBracketPair(documentRef.current).find(object => object.side === "close");
+        if (closing) {
+          clearScheduledTextEditorFocus();
+          setActiveTextEditObjectId(undefined);
+          setActiveAtomLabelEdit(undefined);
+          const tabId = activeDocumentTabIdRef.current;
+          if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
+            savedDocumentsRef.current.set(tabId, documentRef.current);
+          }
+          const edit = { objectId: closing.id, tabId };
+          bracketLabelEditRef.current = edit;
+          setBracketLabelEdit(edit);
+        }
+      }
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
-      insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
+      return insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
     }));
 
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
@@ -11071,7 +11730,7 @@ export function MainWindow({
           }
           const molecule = getSelectedMolecule(document);
           if (!molecule) {
-            setStatus("Molecular Inspector opened — select a structure to analyse it");
+            setStatus("Molecular Inspector opened — select a structure to analyze it");
             return;
           }
           await runMolecularProperties(molecule, analysisInterpretation);
@@ -11102,6 +11761,8 @@ export function MainWindow({
           // The live graph, expanded the way the Molecular Inspector reads it — never the stored
           // structure, which after a 3D flatten spells every label as a dummy "*" and would put the
           // placeholder graph's formula over the drawing's (validationFacingStructure).
+          const bracketRefusal = analysisFacingStructure(molecule, document).refusalReason;
+          if (bracketRefusal) { setStatus(bracketRefusal); return; }
           const analysis = await chemistryAdapter.analyzeStructure(validationFacingStructure(molecule));
           setLastAnalysis(analysis);
           publishAnalysisWindow(
@@ -11229,6 +11890,16 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "arrow.conditions") {
+          const reason = compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettingsRef.current);
+          if (reason) { setStatus(reason); return; }
+          const current = documentRef.current;
+          const arrowId = arrowCommandTargetRef.current ?? (current.selection.objectIds.length === 1 ? current.selection.objectIds[0] : undefined);
+          arrowCommandTargetRef.current = undefined;
+          if (!arrowId) { setStatus("Select one arrow"); return; }
+          const object = findDocumentObject(current, arrowId);
+          openReactionConditionsRef.current(object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? object.arrowAttachment.parentObjectId : arrowId); return;
+        }
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
           if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
@@ -11292,8 +11963,9 @@ export function MainWindow({
         }
 
         if (action.id === "layout.duplicate") {
-          const changed = commitDocumentChange((current) => duplicateSelectedDocumentObjects(current));
-          setStatus(changed ? action.title : "No selected object");
+          const warnings: string[] = [];
+          const changed = commitDocumentChangeWithPageFit((current) => duplicateSelectedDocumentObjects(current, undefined, warnings));
+          setStatus([changed ? action.title : "No selected object", ...warnings].join("; "));
           return;
         }
 
@@ -11476,6 +12148,26 @@ export function MainWindow({
       });
     });
 
+    customSwatchActions.forEach(action => register(action, async () => {
+      const parsed = parseCustomSwatchCommandId(action.id)!;
+      const state = loadCustomSwatches();
+      const color = state[parsed.swatch][`slot${parsed.slot}`];
+      if (parsed.action === "clear") {
+        if (color) {
+          persistCustomSwatches(clearCustomSwatchSlot(state, parsed.swatch, parsed.slot));
+          setStatus(`Cleared Custom Color ${parsed.swatch}, Slot ${parsed.slot} (${color.toUpperCase()})`);
+        }
+      } else if (parsed.action === "apply") {
+        if (color) applyTextStyleCommand(textCustomColorCommandId(color), `Apply Color ${color.toUpperCase()}`);
+      } else {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Custom Color could not open: the native dialog host is unavailable."); return; }
+        await coordinator.openCustomColor(activeDocumentTabIdRef.current, {
+          title: `Custom Color ${parsed.swatch}, Slot ${parsed.slot}`, swatch: parsed.swatch, slot: parsed.slot, color: color ?? null
+        });
+      }
+    }));
+
     textToolbarActions.forEach((action) => {
       register(action, () => {
         if (!applyTextStyleCommand(action.id)) {
@@ -11490,8 +12182,27 @@ export function MainWindow({
       });
     });
 
+    structureSearchCommands(structureSearchEnabled, hasSearchableStructure).forEach(action => {
+      register(action, async () => {
+        const site = structureSearchSite(action.id);
+        if (!site) return;
+        try {
+          const opened = await structureSearchController.current!(site, structureSearchDocument(
+            documentRef.current, nativeMoleculeFragmentSelections(selectedNativeMoleculePartsRef.current)
+          ));
+          if (opened) setStatus(`Opened ${site === "pubchem" ? "PubChem" : "Reaxys"} search`);
+        } catch (error) {
+          setStatus(structureSearchErrorStatus(error));
+        }
+      });
+    });
+
     objectStyleActions.forEach((action) => {
       register(action, () => {
+        if (objectWaveForCommand(action.id)) {
+          commitObjectStylePreview(action.id);
+          return;
+        }
         if (!applyObjectStyleCommand(action.id)) {
           setStatus(`${action.title} unavailable`);
         }
@@ -11527,9 +12238,9 @@ export function MainWindow({
             const { invoke } = await import("@tauri-apps/api/core");
             await invoke("toggle_preferences_window");
             perfHook(() => perfToggleResolved("preferences", open, input));
-          })().catch(() => {
+          })().catch((error: unknown) => {
             if (input) perfHook(() => perfProbe?.complete(input, "failed"));
-            setStatus("Preferences unavailable");
+            setStatus(`Preferences unavailable: ${error instanceof Error ? error.message : String(error)}`);
           });
           return;
         }
@@ -11612,7 +12323,8 @@ export function MainWindow({
 
     return bindings;
   }, [
-    tableActions, activeTableCell,
+    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -11630,10 +12342,13 @@ export function MainWindow({
     fuseDieneAtHoveredNativeBond,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
+    commitObjectStylePreview,
     applyMoleculeInspectorCommand,
     applyTextStyleCommand,
     currentMoleculeInspector,
     performCopyAs,
+    structureSearchEnabled,
+    hasSearchableStructure,
     assignHoveredNativeDeleteTarget,
     chemistryAdapter,
     clearDocumentInteractionState,
@@ -11641,6 +12356,7 @@ export function MainWindow({
     cleanUpSelectedStructure,
     startSpin3d,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     copySelectionToClipboard,
     currentArtStyle,
     currentEyedropperStatus,
@@ -11680,6 +12396,11 @@ export function MainWindow({
 
   coreCommandBindingsRef.current = coreCommandBindings;
 
+  customColorSaveRef.current = (swatch, slot, hex) => {
+    persistCustomSwatches(setCustomSwatchSlot(loadCustomSwatches(), swatch, slot, hex));
+    setStatus(`Custom Color ${swatch}, Slot ${slot} set to ${hex.toUpperCase()}`);
+  };
+
   // The registry and its core-command registrar are created exactly once. Handlers delegate
   // to the live bindings ref, so plugin commands registered into the same stable instance in
   // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
@@ -11692,6 +12413,7 @@ export function MainWindow({
   }, []);
 
   vibeGuideActionRef.current = async action => { await registry.invoke(action === "saveStarter" ? VIBE_CODE_SAVE_COMMAND_ID : PLUGIN_MANAGER_COMMAND_ID); };
+  customColorClearRef.current = async (swatch, slot) => { await registry.invoke(customSwatchCommandId(swatch, slot, "clear")); };
 
   insertTableFromDialogRef.current = async (tabId, options) => {
     const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
@@ -11739,39 +12461,6 @@ export function MainWindow({
     setAnalyzerNotice((current) => (current?.pluginId === pluginId ? undefined : current));
   }, []);
 
-  // Every canvas session that previews from a snapshot of the document taken when it began, then commits
-  // `snapshot → result` as one undo entry (or restores the snapshot on cancel): pointer drags, the
-  // multi-click path tool, hover previews of a style, typed rotate/resize entries, and the ring-override
-  // prompt. A document write committed in the middle of one is overwritten by the next preview frame and
-  // dropped from history by the commit. Listed generously: waiting a moment longer is harmless.
-  const isSnapshotSessionActive = useCallback(
-    (): boolean =>
-      nativeBondDragRef.current !== null ||
-      nativePlacementDragRef.current !== null ||
-      nativeBondEditDragRef.current !== null ||
-      nativePartDragRef.current !== null ||
-      objectDragRef.current !== null ||
-      graphicCornerRadiusDragRef.current !== null ||
-      graphicPathEditDragRef.current !== null ||
-      graphicMarkerDragRef.current !== null ||
-      graphicGradientDragRef.current !== null ||
-      freehandArtDragRef.current !== null ||
-      mechanismArrowDragRef.current !== null ||
-      mechanismHandleDragRef.current !== null ||
-      pathArtDrawRef.current !== null ||
-      bezierArtNodeDragRef.current !== null ||
-      objectRotateDragRef.current !== null ||
-      projectedPlaneTiltDragRef.current !== null ||
-      objectResizeDragRef.current !== null ||
-      groupTransformDragRef.current !== null ||
-      textResizeRef.current !== null ||
-      artStylePreviewRef.current !== null ||
-      moleculeInspectorPreviewRef.current !== null ||
-      rotationInputRef.current !== undefined ||
-      objectResizeInputRef.current !== undefined ||
-      moleculeStyleOverridePromptRef.current !== undefined,
-    []
-  );
   // A plugin's direct write that lands during such a session waits for it to commit or cancel, then
   // commits as its own undo entry on top — and the plugin's receipt is sent only once it has. Applying it
   // to the session's snapshot as well was the alternative, but every session keeps its snapshot in a
@@ -11796,8 +12485,13 @@ export function MainWindow({
   // main's stable registry: plugin commands register into the SAME CommandRegistry core commands use,
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
+  const nameResolutionStatusRef = useRef<string | undefined>(undefined);
   const pluginRuntime = usePluginRuntime({
     onPluginUpdateStatus: setStatus,
+    onNameResolutionStatus: text => {
+      nameResolutionStatusRef.current = text;
+      if (text) setStatus(text);
+    },
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
@@ -11809,7 +12503,7 @@ export function MainWindow({
     commandRegistry: registry,
     createStorage: createPersistentPluginStorage,
     onProposedPatchesChanged: () => setPatchQueueVersion((version) => version + 1),
-    applyDocumentPatch: ({ plugin, command, patch, undoLabel }) => {
+    applyDocumentPatch: async ({ plugin, command, patch, undoLabel, signal, writeScopeObjectIds }) => {
       if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
       const gate = pluginWriteGateRef.current;
       if (!gate) throw new Error("The document window is closing; nothing was inserted.");
@@ -11819,22 +12513,41 @@ export function MainWindow({
       if (isSnapshotSessionActive()) {
         setStatus(`${plugin.name}: finish the current edit to insert the result`);
       }
-      return gate.run(() => {
+      return gate.run(async () => {
+        signal?.throwIfAborted();
         if (quitInteractionRef.current) throw new Error("Quit is waiting for a choice; nothing was inserted.");
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
-        const previousIds = new Set(documentRef.current.pages.flatMap(page => page.objects.map(object => object.id)));
-        const applied = applyPluginDocumentPatch(documentRef.current, patch, {
+        const before = documentRef.current;
+        assertPluginPatchWriteScope(before, patch, writeScopeObjectIds);
+        const previousIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+        const applied = applyPluginDocumentPatch(before, patch, {
+          avoidInsertionOverlap: plugin.id === "org.chemdraft.opsin.nameToStructure",
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
         });
         const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, activeDocumentTabIdRef.current);
-        if (assistantTxId) {
-          assistantTransactions.writeAssistantTransaction(assistantTxId, applied.document, applied.receipt.objectIds);
-        } else if (assistantTransactions.activeTransactionForPlugin(plugin.id)) {
+        if (!assistantTxId && assistantTransactions.activeTransactionForPlugin(plugin.id)) {
           throw new Error("The assistant request belongs to another document tab; write refused.");
-        } else commitDocumentChange(applied.document, undoLabel);
+        }
+        let consent = signal && pluginPageConsentsRef.current.get(signal);
+        if (!consent) {
+          consent = new PageEnlargementConsent(shortcutPlatform);
+          if (signal) pluginPageConsentsRef.current.set(signal, consent);
+        }
+        const prepared = normalizeCommittedDocument(applied.document);
+        const pending = commitWithPageFit(before, prepared, document => {
+          if (assistantTxId) assistantTransactions.writeAssistantTransaction(assistantTxId, document, applied.receipt.objectIds, prepared);
+          else commitDocumentChange(document, undoLabel);
+        }, { consent: assistantTxId ? assistantTransactions.pageEnlargementConsent(assistantTxId, shortcutPlatform)
+            : consent, signal,
+          isCurrent: () => mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current) });
+        if (pending) {
+          pageFitPendingRef.current += 1;
+          try { await pending; } finally { pageFitPendingRef.current -= 1; }
+        }
         setSelectedNativeMoleculePart(undefined);
         const insertedObject = patch.patch.op === "addObject" ? patch.patch.object : undefined;
         const insertedDescription = insertedObject?.type === "molecule"
@@ -11845,11 +12558,14 @@ export function MainWindow({
         const templateMessages = applied.document.pages.flatMap(page => page.objects.flatMap(object =>
           object.type === "molecule" && !previousIds.has(object.id) && applied.receipt.objectIds.includes(object.id)
             ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
-        setStatus(templateMessages.length ? templateMessages.join("; ") :
+        const sourceStatus = plugin.id === "org.chemdraft.opsin.nameToStructure" && insertedDescription === "structure"
+          ? nameResolutionStatusRef.current : undefined;
+        if (sourceStatus) nameResolutionStatusRef.current = undefined;
+        const insertionStatus = templateMessages.length ? templateMessages.join("; ") :
           applied.receipt.objectIds.length > 0 && insertedDescription
             ? `${plugin.name}: inserted ${insertedDescription}`
-            : `${plugin.name}: applied ${command.title}`
-        );
+            : `${plugin.name}: applied ${command.title}`;
+        setStatus(sourceStatus ? `${insertionStatus} (${sourceStatus})` : insertionStatus);
         return applied.receipt;
       });
     }
@@ -11859,12 +12575,17 @@ export function MainWindow({
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
+  const bracketMenuItems = useMemo(() => bracketActions.filter(action => action.id === "bracket.repeatUnit.toggle").map(action => ({
+    location: "structure", command: { kind: "command" as const, id: action.id, commandId: action.id,
+      label: action.title, enabled: action.enabled !== false, coreRouted: true }
+  })), [bracketActions]);
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
-  const nativePluginMenuItems = useMemo(() => [
-    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
+  const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
+    ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
+    ...bracketMenuItems,
     ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  ], availablePluginUpdateCount), [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems, structureSearchEnabled, hasSearchableStructure]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -12088,7 +12809,7 @@ export function MainWindow({
   // selected in the same history entry, and every outcome — success included — is reported: the
   // status line here, and the review window through the returned outcome.
   const acceptPluginProposal = useCallback(
-    (proposal: QueuedProposedPatch): ProposalDecisionOutcome => {
+    async (proposal: QueuedProposedPatch): Promise<ProposalDecisionOutcome> => {
       const host = pluginRuntime.runtime.host;
       const pluginName = host.getPlugin(proposal.pluginId)?.manifest.name ?? proposal.pluginId;
       const recognized = proposal.proposal.recognition !== undefined;
@@ -12119,14 +12840,39 @@ export function MainWindow({
       // accepting keeps nothing more; the capture stays there until the user deletes it.
       const screenCapture = host.recognitionScreenCaptureOf(proposal.id);
       try {
-        // The proposal's own tab is now installed, including its independent undo history.
-        const updated = host.acceptProposedPatch(proposal.id, documentRef.current, {
-          apply: (current, proposed, options) => applyAcceptedPluginProposal(current, proposed, options).document
+        const identityBeforeSampling = documentIdentityRef.current;
+        const geometry = recognized ? await readCanvasOcclusion() : undefined;
+        if (activeDocumentTabIdRef.current !== tab.id || documentIdentityRef.current !== identityBeforeSampling ||
+          quitInteractionRef.current || isSnapshotSessionActive()) {
+          throw new Error("The drawing changed or is busy; accept the proposal again.");
+        }
+        const before = documentRef.current;
+        const documentIdentity = documentIdentityRef.current;
+        let prepared = applyAcceptedPluginProposal(before, proposal.proposal).document;
+        if (recognized) {
+          const visible = assistantHistoryPort.getViewportRect?.(tab.id);
+          const pageRect = pageRef.current?.getBoundingClientRect();
+          const covered = pageRect ? pageOcclusionRects(geometry, { x: pageRect.left, y: pageRect.top }, viewportRef.current.scale) : [];
+          const existingIds = new Set(before.pages.flatMap(page => page.objects.map(object => object.id)));
+          for (const page of prepared.pages) {
+            const insertedIds = page.objects.filter(object => !existingIds.has(object.id)).map(object => object.id);
+            prepared = placeInsertedObjectsInFreeSpace(prepared, page.id, insertedIds,
+              page.id === prepared.pages[0]?.id ? { viewport: visible, covered: visible ? covered : [] } : {});
+          }
+        }
+        prepared = normalizeCommittedDocument(prepared);
+        // Keep the proposal pending until the page question and stale-document check succeed.
+        const pending = commitWithPageFit(before, prepared, document => {
+          const updated = host.acceptProposedPatch(proposal.id, documentRef.current, { apply: () => document });
+          commitDocumentChange(updated, `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`);
+        }, { consent: new PageEnlargementConsent(shortcutPlatform), isCurrent: () =>
+          mountedRef.current && !quitInteractionRef.current && documentIdentityRef.current === documentIdentity &&
+          assistantDocumentContentUnchanged(before, documentRef.current)
         });
-        commitDocumentChange(
-          updated,
-          `${pluginName}: ${recognized ? "Insert Recognized Structure" : "Apply Proposal"}`
-        );
+        if (pending) {
+          pageFitPendingRef.current += 1;
+          try { await pending; } finally { pageFitPendingRef.current -= 1; }
+        }
         setSelectedNativeMoleculePart(undefined);
         const inserted = recognized ? `${pluginName}: inserted recognized structure` : `${pluginName}: applied proposal`;
         const message = screenCapture
@@ -12140,7 +12886,7 @@ export function MainWindow({
         return { ok: false, message };
       }
     },
-    [activateDocumentTab, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime]
+    [activateDocumentTab, assistantHistoryPort, commitDocumentChange, isSnapshotSessionActive, pluginRuntime.runtime, shortcutPlatform]
   );
 
   const rejectPluginProposal = useCallback(
@@ -12191,15 +12937,15 @@ export function MainWindow({
     return documentTabs.length < 2 ? undefined : tab.title;
   }, [documentTabs, pluginRuntime.runtime]);
   const publishProposalReview = useCallback(
-    (open: boolean, focus: boolean): Promise<boolean> => {
+    async (open: boolean, focus: boolean): Promise<boolean> => {
       const pending = pluginRuntime.runtime.host.listProposedPatches("pending");
       return publishAnalysisWindow(
         PATCH_REVIEW_WINDOW_ID,
         "Plugin Proposals",
         {
           kind: "patchReview",
-          proposals: pending.map((proposal) =>
-            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal)))
+          proposals: await Promise.all(pending.map((proposal) =>
+            proposalReviewItem(pluginRuntime.runtime.host, proposal, proposalDocumentName(proposal))))
         },
         { open, focus, width: 420, height: 420 }
       );
@@ -12264,7 +13010,7 @@ export function MainWindow({
   }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
   useEffect(
     () =>
-      listenForAnalysisWindowActions((action: AnalysisWindowAction, sourceLabel?: string) => {
+      listenForAnalysisWindowActions(async (action: AnalysisWindowAction, sourceLabel?: string) => {
         const handlers = analysisWindowActionHandlersRef.current;
         if (sourceLabel !== undefined || isDesktopRuntime()) {
           const identity = sourceLabel ? parsePluginPanelWindowLabel(sourceLabel) : undefined;
@@ -12313,7 +13059,7 @@ export function MainWindow({
               outcome = { ok: false, message: "That proposal was already resolved, so nothing changed." };
               setStatus(outcome.message);
             } else if (action.kind === "acceptPluginProposal") {
-              outcome = handlers.acceptPluginProposal(proposal);
+              outcome = await handlers.acceptPluginProposal(proposal);
             } else {
               outcome = handlers.rejectPluginProposal(proposal);
             }
@@ -12343,9 +13089,10 @@ export function MainWindow({
   );
 
   const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
-    if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
-      setStatus("Enable Compound layout tools in Settings"); return;
-    }
+    if (!isSelectionNudgeCommand(commandId)) arrowNudgeBurstRef.current = undefined;
+    if (commandId === "arrow.conditions" && !isDesktopRuntime()) { arrowCommandTargetRef.current = undefined; return; }
+    const featureDisabled = compoundLayoutCommandDisabledReason(commandId, compoundLayoutSettingsRef.current);
+    if (featureDisabled) { arrowCommandTargetRef.current = undefined; setStatus(featureDisabled); return; }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     const tableDimensions = parseTableInsertCommandId(commandId);
@@ -12385,7 +13132,7 @@ export function MainWindow({
       return;
     }
 
-    if (applyObjectStyleCommand(commandId)) {
+    if (!objectWaveForCommand(commandId) && applyObjectStyleCommand(commandId)) {
       return;
     }
 
@@ -12655,6 +13402,7 @@ export function MainWindow({
   // persist. `closeDialog` distinguishes the Customize dialog's live edits (each visibility toggle
   // applies immediately — no draft that can drift out of sync) from a final close.
   const commitToolbarLayout = useCallback((next: ToolsetLayoutState, closeDialog: boolean) => {
+    next = withCurrentMainToolbarDefaults(next);
     toolbarCatalog.setLayoutState(next);
     const nextRegistry = toolbarCatalog.registry();
     const nextVisible = createDefaultVisibleToolsetIds(nextRegistry);
@@ -12709,13 +13457,14 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
-      if (!compoundLayoutsEnabled && isCompoundLayoutCommand(command.id)) continue;
+      if (parseCustomSwatchCommandId(command.id)) continue;
+      if (isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
       }
     }
     return [...byId].map(([id, title]) => ({ id, title }));
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Full live specs (including current enabled state) for the in-place customize gallery — minus
   // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
@@ -12728,11 +13477,11 @@ export function MainWindow({
     // ships is a fixed fact; what the user has arranged is not.
     const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return shellCommandSpecs.filter((command) =>
-      (compoundLayoutsEnabled || !isCompoundLayoutCommand(command.id)) &&
+      !isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings) &&
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -12999,12 +13748,13 @@ export function MainWindow({
         return;
       }
 
+      const anchor = captureClipboardPasteAnchor();
       if (!event.clipboardData) {
         // Some desktop WebView paste events arrive without populated clipboardData; read natively
         // so keyboard paste of CDXML/SMILES/ChemDraft payloads still works.
         if (isDesktopRuntime()) {
           event.preventDefault();
-          void pasteClipboard();
+          void pasteClipboard(undefined, anchor);
         }
         return;
       }
@@ -13018,27 +13768,27 @@ export function MainWindow({
       // through DataTransfer. Read natively before a text/plain fallback can lose formatting;
       // pasteClipboard makes the same table decision on the native payload, then on this snapshot.
       if (isDesktopRuntime()) {
-        void pasteClipboard(domPayload);
+        void pasteClipboard(domPayload, anchor);
         return;
       }
       void domPayload.then((unguardedPayload) => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (quitInteractionRef.current) { setStatus("Paste canceled while quitting"); return; }
         const guarded = guardedClipboardPasteDecision(unguardedPayload);
         if (guarded.kind === "refused") { setStatus(guarded.message); return; }
         const { payload, decision } = guarded;
         if (decision.kind === "selection") {
-          applySelectionClipboardPayload(decision.payload);
+          applySelectionClipboardPayload(decision.payload, anchor);
           return;
         }
         if (decision.kind === "table") {
-          applyTableClipboardResult(decision.result);
+          applyTableClipboardResult(decision.result, anchor);
           return;
         }
         const detectedPayload = decision.payload;
         if (detectedPayload.kind !== "empty") {
-          applyDetectedClipboardPayload(detectedPayload, payload);
+          applyDetectedClipboardPayload(detectedPayload, anchor, payload);
         } else if (selectionClipboardPayloadRef.current) {
-          applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+          applySelectionClipboardPayload(selectionClipboardPayloadRef.current, anchor);
         }
       }).catch((error: unknown) => {
         setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
@@ -13053,7 +13803,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, captureClipboardPasteAnchor, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -13367,6 +14117,7 @@ export function MainWindow({
       return;
     }
     nativePlacementDragRef.current = null;
+    placementMachineRef.current = initialInteractionState();
     releaseGesturePointer(drag.pointerId);
     replacePresentDocument(drag.startDocument);
   }, [releaseGesturePointer, replacePresentDocument]);
@@ -13465,27 +14216,36 @@ export function MainWindow({
       const edit = activeAtomLabelEditRef.current;
       const target = hoveredNativeDeleteTargetRef.current;
       const canvas = canvasRegionRef.current;
-      if (!edit?.startedFromHover || !canvas || target?.kind !== "atom" ||
-          (target.objectId === edit.objectId && target.atomId === edit.atomId) ||
+      if (!edit?.startedFromHover || !canvas ||
           !(event.target instanceof HTMLInputElement) || !event.target.matches('[data-atom-label-editor="true"]') ||
           event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
-          event.metaKey || event.ctrlKey || event.altKey ||
-          (nativeElementFromKeyboardKey(event.key) === undefined && !/^[0-9]$/.test(event.key)) ||
+          event.metaKey || event.ctrlKey || event.altKey || !/^[a-z0-9]$/i.test(event.key) ||
           isBlockedByModalDialog(event.target)) {
         return;
       }
+      const exhausted = !nativeHoverAtomLabelCanContinue(edit.draft);
+      const differentAtom = target?.kind === "atom" &&
+        (target.objectId !== edit.objectId || target.atomId !== edit.atomId);
+      const actsOnDifferentAtom = differentAtom &&
+        (nativeElementFromKeyboardKey(event.key) !== undefined || /^[0-9]$/.test(event.key));
+      if (!exhausted && !actsOnDifferentAtom) return;
       // Only element keys (either case) and digits act on a different hovered atom, matching
       // hoverLabelContinuesForKey. Other letters keep typing here ("M" and "e" in OMe).
-      // Capture before the input stops propagation. Finish exactly as Enter does, including its
+      // Exhausted text cancels to the committed first key before replaying a fresh hover key.
+      // Capture before the input stops propagation. Finish valid text exactly as Enter does, including its
       // history/selection layout effect, before the new action gets its own undo entry. Prevent the
       // input's text default and deliver this key once through the ordinary canvas shortcut path.
       event.preventDefault();
       event.stopPropagation();
       const handoff: { result?: ReturnType<typeof finishedAtomLabelDraft> } = {};
       hoverLabelHandoffRef.current = handoff;
-      flushSync(() => finishAtomLabelEdit(edit, "commit"));
+      flushSync(() => {
+        if (exhausted) cancelAtomLabelEdit(edit);
+        else finishAtomLabelEdit(edit, "commit");
+      });
       hoverLabelHandoffRef.current = undefined;
       const result = handoff.result;
+      if (activeAtomLabelEditRef.current) return;
       if (result && "refusal" in result && result.refusal) return;
       const warning = result && "message" in result && result.message && result.document !== result.baseline &&
         result.target.kind === "atom" && result.target.atomId === edit.atomId ? result.message : undefined;
@@ -13505,20 +14265,36 @@ export function MainWindow({
     };
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
-  }, [finishAtomLabelEdit]);
+  }, [cancelAtomLabelEdit, finishAtomLabelEdit]);
+
+  useEffect(() => installPopoverEscapeRouting(() => Boolean(
+    activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current
+  )), []);
 
   useEffect(() => {
-    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must
-    // reach the registered command before that happens. Resolve without the editable-target
+    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save and
+    // text formatting must reach their registered commands first. Resolve without the editable-target
     // filter, using the same platform-aware registry as the canvas, and keep the #273 flush path.
-    const saveFromInlineEditor = (event: KeyboardEvent) => {
+    const commandFromInlineEditor = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
           isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
-          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor]")) return;
+          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor], [data-bracket-label-editor]")) return;
       const commandId = shortcutRegistry.resolve({
         key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
         altKey: event.altKey, shiftKey: event.shiftKey
       });
+      // The text textarea stops bubbling keys, just like the table editor. Route its
+      // formatting chords through the same registered commands as the toolbar buttons.
+      const commandKey = (shortcutPlatform ?? detectDesktopShortcutPlatform()) === "macos" ? event.metaKey : event.ctrlKey;
+      const textFormatCommand = event.target.matches(".text-object-editor") && commandKey && !event.altKey && !event.shiftKey
+        ? ({ b: "text.bold", i: "text.italic", u: "text.underline" } as Record<string, string>)[event.key.toLowerCase()]
+        : undefined;
+      if (textFormatCommand) {
+        event.preventDefault();
+        event.stopPropagation();
+        void invokeCommandRef.current(textFormatCommand);
+        return;
+      }
       if (commandId !== "document.save" && commandId !== "document.saveAs") return;
       // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
       // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
@@ -13526,15 +14302,41 @@ export function MainWindow({
       event.preventDefault();
       void invokeCommandRef.current(commandId);
     };
-    window.addEventListener("keydown", saveFromInlineEditor, true);
-    return () => window.removeEventListener("keydown", saveFromInlineEditor, true);
-  }, [shortcutRegistry]);
+    window.addEventListener("keydown", commandFromInlineEditor, true);
+    return () => window.removeEventListener("keydown", commandFromInlineEditor, true);
+  }, [shortcutRegistry, shortcutPlatform]);
 
   useEffect(() => {
+    const invokeCanvasKeyCommand = (commandId: string, rehitAfterEdit: boolean) => {
+      const before = documentRef.current;
+      // Check before dispatch too: a command may itself end an editor or cancel a gesture.
+      const canRehit = () => !activeAtomLabelEditRef.current && !activeTextEditObjectIdRef.current &&
+        !isSnapshotSessionActive() && !selectionMarqueeRef.current && !selectionLassoRef.current &&
+        !tapeMeasureDragRef.current && !spin3dTugDragRef.current;
+      const rehit = rehitAfterEdit && canRehit();
+      invokeCommandRef.current(commandId);
+      // Native hover edits and document undo/redo commit synchronously. Re-hit after their
+      // cleanup has cleared hover, using the updated document and pointermove's derivation.
+      if (rehit && documentRef.current !== before && canRehit() && pointerInsideCanvasRef.current) {
+        rederiveNativeCanvasHoverRef.current(documentRef.current);
+      }
+    };
     const handleKeyDown = (event: KeyboardEvent) => {
       // WebKit reports the typed character during IME composition; WebView2 uses Process/229.
       // Neither is a canvas shortcut or hover-label continuation until composition commits.
       if (event.isComposing || event.key === "Process" || event.keyCode === 229) {
+        return;
+      }
+      // The detached palette can leave keyboard focus in this document window during a drag.
+      // Modal dialogs and expanded menus keep ownership of Escape, including when their
+      // handler has already closed the surface and marked this event handled.
+      if (event.key === "Escape" && artStylePreviewRef.current &&
+          objectWaveForCommand(artStylePreviewRef.current.commandId) &&
+          !event.defaultPrevented && !isBlockedByModalDialog(event.target) &&
+          !window.document.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) {
+        event.preventDefault();
+        cancelObjectStylePreview();
+        void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
         return;
       }
       // Before the text-field early return, so typing in an editor can't reload the page either.
@@ -13777,8 +14579,10 @@ export function MainWindow({
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
             hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
-            hotkeyUndoState: assignment.hotkeyUndoState,
-            hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
+            // The original atom still informs the typed-label chemistry decision (for example,
+            // attaching OMe to a ring carbon). Keep its history entry for commit coalescing,
+            // while Escape cancels only the later text draft, including after pointer drift.
+            saveRevision: assignment.saveRevision
           })) {
             event.preventDefault();
             updateAtomLabelDraft(activeAtomLabelEditRef.current!, draft);
@@ -13798,9 +14602,10 @@ export function MainWindow({
           const beforeAtom = beforeObject?.type === "molecule" && hoveredTarget?.kind === "atom"
             ? beforeObject.atoms.find(a => a.id === hoveredTarget.atomId) : undefined;
           const beforeHotkeyDocument = documentRef.current;
-          const hotkeyUndoState = { history: documentHistoryRef.current, file: fileStateRef.current };
           const saveRevision = documentSaveRevisionsRef.current.get(activeDocumentTabIdRef.current) ?? 0;
-          invokeCommandRef.current(hoveredTargetCommandId);
+          // A label key deliberately pins hover to its atom until continuation ends. Keep that
+          // existing handoff; all other hover edits re-hit as soon as their command returns.
+          invokeCanvasKeyCommand(hoveredTargetCommandId, !hoverRetargetedForLabelRef.current);
           // Only a label assignment made by a hover key starts continuation. Other keys and
           // selected-atom assignments retain their existing shortcut behavior.
           const assignedElement = nativeElementFromKeyboardKey(event.key);
@@ -13814,9 +14619,8 @@ export function MainWindow({
               const hotkeyChanged = documentRef.current !== beforeHotkeyDocument;
               hoverLabelAssignmentRef.current = { objectId: hoveredTarget.objectId, atomId: atom.id, label: atom.element,
                 beforeAtom, beforeMolecule: beforeObject, hotkeyChanged,
-                hotkeyAfterDocument: documentRef.current, saveRevision,
-                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined,
-                hotkeyUndoState: hotkeyChanged ? hotkeyUndoState : undefined };
+                saveRevision,
+                hotkeyUndoDocument: hotkeyChanged ? documentHistoryRef.current.past.at(-1) : undefined };
             }
           }
           return;
@@ -13825,6 +14629,13 @@ export function MainWindow({
 
       const commandId = shortcutRegistry.resolve(event);
       if (!commandId) {
+        return;
+      }
+      if (isSelectionNudgeCommand(commandId) &&
+        ((!documentRef.current.selection.objectIds.length && !selectedNativeMoleculePartsRef.current.length) ||
+          isArrowNudgeEditorTarget(event.target) || isArrowNudgeEditorTarget(globalThis.document.activeElement) ||
+          activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || isSnapshotSessionActive())) {
+        arrowNudgeBurstRef.current = undefined;
         return;
       }
       // Copy/cut/paste fall through to the native clipboard events (handleCopy/handleCut/handlePaste),
@@ -13838,7 +14649,11 @@ export function MainWindow({
       // This key already passed the event-target text-field guard. A delayed inline-editor
       // focus retry can make activeElement disagree with that target; preserve the canvas
       // routing decision rather than reclassifying Undo/Redo as text history in invoke.
-      invokeCommandRef.current(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId);
+      const historyDirection = editHistoryDirection(commandId);
+      invokeCanvasKeyCommand(
+        historyDirection ? forceDocumentHistoryCommandId(commandId) : commandId,
+        Boolean(historyDirection) || hoveredNativeDeleteTargetRef.current !== undefined
+      );
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -13846,6 +14661,7 @@ export function MainWindow({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [
+    cancelObjectStylePreview,
     cancelSelectionPointerGesture,
     cancelMechanismArrowDrag,
     cancelNativePlacementDrag,
@@ -13854,11 +14670,13 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     clearTapeMeasureDrag,
     finishNativePathArtDraw,
+    isSnapshotSessionActive,
     replacePresentDocument,
     restoreToolAfterEyedropper,
     selectedNativeMoleculePart,
     assignHoveredNativeDeleteTarget,
     shortcutRegistry,
+    isSnapshotSessionActive,
     activeTableCellState,
     startTableCellEdit,
     startAtomLabelEdit,
@@ -14051,14 +14869,14 @@ export function MainWindow({
     if (spin3dStateRef.current) {
       event.preventDefault();
       event.stopPropagation();
-      cancelSpin3dSession("Spin cancelled");
+      cancelSpin3dSession("Spin canceled");
       return;
     }
     const pendingSpin = spin3dPendingRef.current;
     if (pendingSpin) {
       event.preventDefault();
       event.stopPropagation();
-      cancelSpin3dSession("3D generation cancelled");
+      cancelSpin3dSession("3D generation canceled");
     }
   };
   window.addEventListener("keydown", handleSpinEscape, { capture: true });
@@ -14093,13 +14911,13 @@ export function MainWindow({
     // A plugin or a timed-out layout/IPC can finish while the box is open. Its hidden windows are
     // healthy; cancel/defer reconciliation until the launch sequence releases them instead of
     // counting suspension's refusal to create/reveal windows as genuine failures.
-    if (nativeToolsetsSuspendedForLaunchPrompt) {
+    if (nativeToolsetsSuspendedForLaunchPrompt || nativeDocumentNoticeOpen) {
       return;
     }
 
     let cancelled = false;
     const useFallback = () => {
-      if (cancelled) return;
+      if (cancelled || nativeDocumentNoticeOpenRef.current) return;
       setWebPaletteFallback(true);
       setVisibleToolsetIds(createDefaultVisibleToolsetIds(toolsetRegistry));
       setStatus("Native toolset windows unavailable; using in-window toolbars");
@@ -14110,7 +14928,7 @@ export function MainWindow({
       closeToolsetWindow,
       isKnownToolset: (toolsetId) => Boolean(toolsetRegistry.get(toolsetId)),
       desiredVisibleToolsetIds: () => [...visibleToolsetIdsRef.current],
-      isCancelled: () => cancelled
+      isCancelled: () => cancelled || nativeDocumentNoticeOpenRef.current
     }).then((result) => {
       if (cancelled || result.outcome === "cancelled") {
         return;
@@ -14137,7 +14955,7 @@ export function MainWindow({
     return () => {
       cancelled = true;
     };
-  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, toolsetRegistry, toolsetWindowGeometry]);
+  }, [effectiveNativePalette, nativeToolsetLayoutReady, nativeToolsetsSuspendedForLaunchPrompt, nativeDocumentNoticeOpen, toolsetRegistry, toolsetWindowGeometry]);
 
   // A pointer-down anywhere in the document window dismisses any open palette popover (the colour
   // picker floats in its own window; "click elsewhere closes it"). Native palettes only — in the
@@ -14347,7 +15165,7 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current);
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current, compoundLayoutSettingsRef.current);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -14502,14 +15320,7 @@ export function MainWindow({
       return;
     }
 
-    void file
-      .text()
-      .then((contents) => {
-        return openDocumentContents(contents, file.name);
-      })
-      .catch((error: unknown) => {
-        setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
+    void openDocumentBatch([{ contents: () => readBrowserDocumentFile(file), displayName: file.name }]);
   };
 
   const handleMoleculeTemplateFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -14632,7 +15443,7 @@ export function MainWindow({
       : currentDocument;
     const changed = nextDocument !== currentDocument;
     if (changed) {
-      commitDocumentChange(
+      commitDocumentChangeWithPageFit(
         nextDocument,
         plan?.fallbackReason ? `Placed ${nativeTemplateStatusLabel(templateId)} separately` : undefined
       );
@@ -14650,7 +15461,7 @@ export function MainWindow({
     setStatus(refusal
       ? `Cannot add ${nativeTemplateStatusLabel(templateId)} here: ${nativeTemplateFallbackReasonText(refusal)}`
       : nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
-  }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
+  }, [assignHoveredNativeDeleteTarget, commitDocumentChangeWithPageFit]);
 
   const startNativePlacementDrag = useCallback((
     event: ObjectPointerEvent,
@@ -14659,12 +15470,18 @@ export function MainWindow({
       | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle; bondOrder?: NativeBondOrderValue }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
+      | { kind: "bracket"; bracketKind: BracketObject["bracketKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
       | { kind: "orbital"; commandId: string }
+      | { kind: "lone-pair"; target: NativeMoleculeDeleteTarget }
   ): boolean => {
     const startDocument = documentRef.current;
-    const placementDocument = placement.kind === "template"
+    const placementDocument = placement.kind === "lone-pair"
+      ? applyChargeToolAtNativeAtom(startDocument, { kind: "lone-pair" }, placement.target)
+      : placement.kind === "bracket"
+      ? insertNativeBracket(startDocument, point, placement.bracketKind)
+      : placement.kind === "template"
       ? applyNativeTemplateToolAtPoint(startDocument, point, placement.templateId)
       : placement.kind === "arrow"
         ? applyReactionArrowToolAtPoint(startDocument, point, placement.arrowKind)
@@ -14675,10 +15492,12 @@ export function MainWindow({
             : placement.kind === "orbital"
               ? insertNativeArtGraphicObject(startDocument, point, placement.commandId)
               : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle, bondOrder: placement.bondOrder });
-    const objectId = placementDocument.selection.objectIds[0];
+    const objectId = placement.kind === "lone-pair" ? placement.target.objectId : placementDocument.selection.objectIds[0];
+    // Lone pairs can start even when the automatic gap has no room: a dragged direction may fit.
+    // Their objectId names the target molecule; other placements name the newly placed object.
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
-    if (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId))) {
+    if (placement.kind !== "lone-pair" && (placementDocument === startDocument || !objectId || (!growsExistingObject && findDocumentObject(startDocument, objectId)))) {
       return false;
     }
 
@@ -14694,21 +15513,23 @@ export function MainWindow({
       bondOrder: placement.kind === "single-bond" ? placement.bondOrder : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
+      bracketKind: placement.kind === "bracket" ? placement.bracketKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
       orbitalCommandId: placement.kind === "orbital" ? placement.commandId : undefined,
+      lonePairTarget: placement.kind === "lone-pair" ? placement.target : undefined,
       shiftKey: event.shiftKey,
       altKey: event.altKey,
       dragging: false
     };
     placementMachineRef.current = interactionReducer(initialInteractionState(), { type: "pointerDown", pointerId: event.pointerId, world: point, target: { kind: "empty" }, dragKind: "placement" });
-    // Arrows of every family — art lines and the legacy reaction arrows alike — paint nothing on the
-    // initial press: the arrow appears once the pointer moves (custom length/angle) or the press is
-    // released (default-length arrow). Bonds, templates, and chains keep their press-time preview,
+    // Arrows and atom-anchored lone pairs paint nothing on the initial press: a preview appears
+    // once the pointer moves, or the press is released for automatic placement.
+    // Bonds, templates, and chains keep their press-time preview,
     // where seeing the placement under the cursor is the point.
-    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow";
+    const paintsOnPress = placement.kind !== "art-line" && placement.kind !== "arrow" && placement.kind !== "lone-pair";
     replacePresentDocument(paintsOnPress ? placementDocument : startDocument);
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -14744,12 +15565,12 @@ export function MainWindow({
     }
     const nextDocument = applyNativeArtLineToolDefaultAtPoint(documentRef.current, point, commandId);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChangeWithPageFit(nextDocument);
       setStatus(`Inserted ${title.toLowerCase()}`);
     }
-  }, [commitDocumentChange, startNativePlacementDrag]);
+  }, [commitDocumentChangeWithPageFit, startNativePlacementDrag]);
 
-  const applyNativeBondDisplayStyleDocumentTarget = useCallback((
+  const applyNativeBondDisplayStyleDocumentTarget = useCallback(async (
     target: NativeBondOrderTarget,
     bondStyle: NativeBondDisplayStyle
   ) => {
@@ -14764,10 +15585,27 @@ export function MainWindow({
       setStatus("Dashed (dative) display needs a single bond");
       return;
     }
+    if (bondStyle === "wavy" && targetBond && targetBond.order !== "single") {
+      setStatus("Wavy bond requires a single bond");
+      return;
+    }
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
-    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle);
+    if (bondStyle === "wavy" && !reverses && !cachedOclAdapter) {
+      try {
+        cachedOclAdapter = await import("@chemdraft/ocl-adapter");
+      } catch {
+        setStatus("Cannot set wavy bond: stereocenter perception is unavailable");
+        return;
+      }
+      if (documentRef.current !== currentDocument) {
+        setStatus("Wavy bond unchanged: document changed while loading; try again");
+        return;
+      }
+    }
+    const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle,
+      cachedOclAdapter?.perceiveStereoCentersFromMolfile);
     if (nextDocument !== currentDocument) {
-      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : undefined);
+      commitDocumentChange(nextDocument, reverses ? `Reverse ${nativeBondToolStatusLabel(bondStyle)}` : bondStyle === "wavy" ? "Make bond wavy" : bondStyle === "wedge" ? "Make bond wedge" : undefined);
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -14787,7 +15625,7 @@ export function MainWindow({
   const applyChargeDocumentAtPoint = useCallback((spec: NativeElectronMarkSpec, point: ClientPoint) => {
     const nextDocument = applyChargeToolAtPoint(documentRef.current, spec, point);
     if (nextDocument !== documentRef.current) {
-      commitDocumentChange(nextDocument);
+      commitDocumentChange(nextDocument, electronMarkUndoLabel(documentRef.current, nextDocument, spec));
     }
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
@@ -14972,11 +15810,21 @@ export function MainWindow({
     updateBondGrowthPreview
   ]);
 
-  // Charge-mark hotkeys stack on repeated presses while the pointer stays put, so a charge commit
-  // re-derives the hover from the last canvas pointer position through the SAME path pointermove
-  // uses — never a duplicate derivation, and a press over empty canvas still clears the hover.
+  // Hover-key edits, keyboard history navigation and label continuation all reuse pointermove's
+  // hover derivation at the last canvas pointer position, against the updated document.
   const rederiveNativeCanvasHoverFromLastPointer = useCallback((sourceDocument: ChemDraftDocument) => {
-    const clientPoint = lastCanvasPointerClientPointRef.current;
+    // Menu history navigation shares the keyboard path's editor and gesture guards.
+    if (activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current ||
+        isSnapshotSessionActive() || selectionMarqueeRef.current || selectionLassoRef.current ||
+        tapeMeasureDragRef.current || spin3dTugDragRef.current) return;
+    let clientPoint = pointerInsideCanvasRef.current ? lastCanvasPointerClientPointRef.current : undefined;
+    const canvas = canvasRegionRef.current;
+    // Layout can move the canvas without a pointer event. History and charge keys must never
+    // resurrect a hover from a saved client point that is now outside the workspace.
+    if (clientPoint && (!canvas || !clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()))) {
+      lastCanvasPointerClientPointRef.current = undefined;
+      clientPoint = undefined;
+    }
     // The DOM hint (the atom label glyph under the pointer) is part of the hover derivation, so
     // resolve the element at the pointer the way a real pointer event's target would report it.
     // (Guarded like agentBridge.ts: hosts without layout, such as jsdom, have no elementFromPoint.)
@@ -14984,25 +15832,50 @@ export function MainWindow({
       ? window.document.elementFromPoint(clientPoint.x, clientPoint.y)
       : undefined;
     updateNativeCanvasHover(sourceDocument, clientPoint ? pagePointFromClientPoint(clientPoint) : undefined, eventTarget);
-  }, [pagePointFromClientPoint, updateNativeCanvasHover]);
+  }, [isSnapshotSessionActive, pagePointFromClientPoint, updateNativeCanvasHover]);
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
+    const clearCanvasHover = () => {
+      pointerInsideCanvasRef.current = false;
+      updateNativeCanvasHover(documentRef.current, undefined);
+    };
+    const handleVisibilityChange = () => {
+      if (window.document.hidden) clearCanvasHover();
+    };
+    const canvas = canvasRegionRef.current;
+    const clearLastCanvasPointer = () => {
+      lastCanvasPointerClientPointRef.current = undefined;
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
-      if (canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect())) {
+      pointerInsideCanvasRef.current = Boolean(canvas && clientPointIsInsideRect(clientPoint, canvas.getBoundingClientRect()));
+      if (pointerInsideCanvasRef.current) {
         lastCanvasPointerClientPointRef.current = clientPoint;
+      } else {
+        clearLastCanvasPointer();
       }
     };
 
+    // Leaving for a menu or another window may deliver no further move to this webview.
+    canvas?.addEventListener("pointerleave", clearLastCanvasPointer);
+    window.addEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+    window.addEventListener("blur", clearLastCanvasPointer);
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
+    window.addEventListener("blur", clearCanvasHover);
+    window.document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      canvas?.removeEventListener("pointerleave", clearLastCanvasPointer);
+      window.removeEventListener("pointercancel", clearLastCanvasPointer, { capture: true });
+      window.removeEventListener("blur", clearLastCanvasPointer);
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
+      window.removeEventListener("blur", clearCanvasHover);
+      window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [updateNativeCanvasHover]);
 
   const updateFreeformBondPreview = useCallback((
     sourceDocument: ChemDraftDocument,
@@ -15058,6 +15931,24 @@ export function MainWindow({
     }
   }, []);
 
+  // A release can arrive on the page after the object surface changes. Both surfaces must
+  // finish the same bond gesture, or later object moves keep taking the drawing path and
+  // never reach updateNativeCanvasHover (Select happens to clear the stranded drag).
+  const finishNativeBondDrag = useCallback((event: ObjectPointerEvent) => {
+    const drag = nativeBondDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
+    const selectedDocument = selectDocumentObject(documentRef.current, drag.objectId);
+    if (drag.dragging) {
+      applyFreeformBondDocumentAtPoint(selectedDocument, drag.objectId, drag.atomId, drag.latestPoint,
+        drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey, drag.bondOrder);
+    } else {
+      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle, drag.bondOrder);
+    }
+    clearNativeBondDrag(event);
+  }, [applyFreeformBondDocumentAtPoint, applySingleBondDocumentAtPoint, clearNativeBondDrag, pagePointFromPointerEvent]);
+
   const clearNativeBondEditDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = nativeBondEditDragRef.current;
     if (drag?.pointerId === event.pointerId) {
@@ -15085,6 +15976,16 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "lone-pair" && drag.lonePairTarget?.kind === "atom") {
+      const target = drag.lonePairTarget;
+      const molecule = findDocumentObject(drag.startDocument, target.objectId);
+      const atom = molecule?.type === "molecule" ? molecule.atoms.find(atom => atom.id === target.atomId) : undefined;
+      return atom ? applyChargeToolAtNativeAtom(drag.startDocument, { kind: "lone-pair" }, target,
+        lonePairDragDirection(atom, point, drag.altKey)) : drag.startDocument;
+    }
+    if (drag.kind === "bracket" && drag.bracketKind) {
+      return insertNativeBracket(drag.startDocument, drag.startPoint, drag.bracketKind, point);
+    }
     if (drag.kind === "orbital") {
       return aimNativeOrbitalPlacement(drag.placementDocument, drag.objectId, point, drag.shiftKey);
     }
@@ -15141,7 +16042,7 @@ export function MainWindow({
   }, [nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   const commitNativePlacementDrag = useCallback((drag: NativePlacementDragState, releasePoint: ClientPoint): boolean => {
-    const point = drag.kind === "arrow" || drag.kind === "art-line" ? releasePoint : drag.latestPoint;
+    const point = drag.kind === "arrow" || drag.kind === "art-line" || drag.kind === "bracket" || drag.kind === "lone-pair" ? releasePoint : drag.latestPoint;
     const placed = drag.dragging
       ? nativePlacementDocumentFromDrag(drag, point, { preview: false })
       : drag.placementDocument;
@@ -15150,9 +16051,15 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, placed);
+    if (drag.kind === "template" || drag.kind === "orbital" || drag.kind === "bracket" ||
+      (!drag.dragging && (drag.kind === "arrow" || drag.kind === "art-line"))) {
+      commitInsertionHistoryWithPageFit(drag.startDocument, placed, drag.kind === "bracket" ? `Draw ${drag.bracketKind} bracket pair` : undefined);
+    } else {
+      commitDocumentHistoryFrom(drag.startDocument, placed, drag.kind === "lone-pair"
+        ? electronMarkUndoLabel(drag.startDocument, placed, { kind: "lone-pair" }) : undefined);
+    }
     return true;
-  }, [commitDocumentHistoryFrom, nativePlacementDocumentFromDrag, replacePresentDocument]);
+  }, [commitDocumentHistoryFrom, commitInsertionHistoryWithPageFit, nativePlacementDocumentFromDrag, replacePresentDocument]);
 
   // A placement drag's move and release, shared by the page handlers and the object handlers. A
   // press that starts on an object (a chain off an atom, an arrow drawn from atop a reagent)
@@ -15192,11 +16099,12 @@ export function MainWindow({
   const finishNativePlacementDrag = useCallback((drag: NativePlacementDragState, event: ObjectPointerEvent) => {
     event.stopPropagation();
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
+    if (drag.kind === "lone-pair") drag.altKey = event.altKey;
     const changed = commitNativePlacementDrag(drag, point);
     const label = nativePlacementStatusLabel(drag);
     const draggedVerb = drag.kind === "arrow" || drag.kind === "art-line"
       ? "Inserted angled"
-      : drag.kind === "chain"
+      : drag.kind === "chain" || drag.kind === "bracket"
         ? "Inserted"
         : "Inserted rotated";
     // Line-family art arrows stay in the drawing tool (so you can keep clicking out more arrows),
@@ -15206,10 +16114,22 @@ export function MainWindow({
       setArrowEditTargetId(drag.objectId);
       setActiveGraphicTransformObjectId(undefined);
     }
-    setStatus(changed
+    if (drag.kind === "bracket" && changed) {
+      // Selection chrome is shown only by selection tools. Make the new pair visibly selected.
+      const selectToolState = createActiveToolState("tool.select");
+      activeToolCommandIdRef.current = selectToolState.activeCommandId;
+      setActiveToolState(selectToolState);
+      void broadcastToolsetActiveTool(selectToolState.activeCommandId).catch(() => undefined);
+    }
+    setStatus(drag.kind === "lone-pair"
+      ? changed ? "Placed lone pair on hovered atom" : drag.dragging
+        ? "Cannot place the lone pair there: it would fall outside the page. Drag toward the page."
+        : "Cannot place a lone pair on this atom: there is no room inside the page."
+      : changed
       ? drag.dragging ? `${draggedVerb} ${label}` : `Inserted ${label}`
       : `${capitalizeLabel(label)} not placed`);
     clearNativePlacementDrag(event);
+    if (drag.kind === "lone-pair" && changed) rederiveNativeCanvasHoverRef.current(documentRef.current);
   }, [clearNativePlacementDrag, commitNativePlacementDrag, pagePointFromPointerEvent]);
 
   const startNativeFreehandArtDrag = useCallback((
@@ -15300,6 +16220,16 @@ export function MainWindow({
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
+      const object = findDocumentObject(drag.startDocument, drag.objectId);
+      if (object?.type === "electron-mark" && !(drag.groupObjectIds && drag.groupObjectIds.length > 1)) {
+        assignHoveredNativeDeleteTarget(electronMarkDropTarget(drag.startDocument, point));
+      }
+      if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
+        clearObjectTransformPreview(drag.pointerId);
+        // Attached labels need a document preview rather than a rigid translation. Keep the
+        // gesture alive until release records its history entry.
+        replacePresentDocument(objectDragDocument(drag, point), false, true); return;
+      }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
         : objectDragDelta(drag, point);
@@ -15347,7 +16277,7 @@ export function MainWindow({
         arrowPreviewObjects
       });
     });
-  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
+  }, [assignHoveredNativeDeleteTarget, objectDragDelta, objectDragDocument, scheduleObjectTransformPreview, clearObjectTransformPreview, replacePresentDocument]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -15612,7 +16542,8 @@ export function MainWindow({
         objectRotateReadoutTimeoutRef.current = undefined;
         setObjectRotateReadout(undefined);
       }, 1200);
-      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
+      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic" &&
+          !drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         scheduleObjectTransformPreview({
           pointerId: drag.pointerId,
           objectIds: [drag.objectId],
@@ -15694,16 +16625,35 @@ export function MainWindow({
   }, [commitDocumentHistoryFrom, replacePresentDocument]);
 
   const commitObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint): boolean => {
-    const moved = objectDragDocument(drag, point);
     clearObjectTransformPreview(drag.pointerId);
+    const object = findDocumentObject(drag.startDocument, drag.objectId);
+    if (object?.type === "electron-mark" && !(drag.groupObjectIds && drag.groupObjectIds.length > 1)) {
+      assignHoveredNativeDeleteTarget(undefined);
+      const delta = objectDragDelta(drag, point);
+      const result = dropElectronMark(drag.startDocument, object.id,
+        { x: drag.startObjectX + delta.x, y: drag.startObjectY + delta.y }, point);
+      drag.dropStatus = result.status;
+      if (result.document === drag.startDocument) {
+        replacePresentDocument(drag.startDocument);
+        return false;
+      }
+      commitDocumentHistoryFrom(drag.startDocument, result.document, result.undoLabel, { normalized: true });
+      return true;
+    }
+    const moved = objectDragDocument(drag, point);
     if (moved === drag.startDocument) {
       replacePresentDocument(drag.startDocument);
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, moved);
+    const movesMark = (drag.groupObjectIds ?? [drag.objectId]).some(id =>
+      findDocumentObject(drag.startDocument, id)?.type === "electron-mark");
+    const movesGroup = (drag.groupObjectIds?.length ?? 0) > 1 &&
+      (object?.type === "group" || parentGroupForDocumentObject(drag.startDocument.pages[0]?.objects ?? [], drag.objectId) !== undefined);
+    commitDocumentHistoryFrom(drag.startDocument, moved, movesGroup ? "Move group" : movesMark ? "Move electron mark"
+      : object?.type === "text" && object.arrowAttachment?.kind === "conditions" ? "Move Reaction Conditions" : undefined);
     return true;
-  }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDocument, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview, commitDocumentHistoryFrom, objectDragDelta, objectDragDocument, replacePresentDocument]);
 
   const commitGraphicCornerRadius = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): boolean => {
     const edited = graphicCornerRadiusDocumentFromDrag(drag, point);
@@ -15760,7 +16710,7 @@ export function MainWindow({
       });
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, committed);
+    commitDocumentHistoryFrom(drag.startDocument, committed, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined);
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectRotateDocumentFromDrag, objectRotateDragDegrees, replacePresentDocument]);
 
@@ -16043,9 +16993,9 @@ export function MainWindow({
       return false;
     }
 
-    const changed = commitLiveInputPreview(session.startDocument);
+    const changed = commitLiveInputPreview(session.startDocument, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Rotate electron mark" : undefined);
     if (changed && findDocumentObject(session.startDocument, session.objectId)?.type !== "molecule") {
-      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, "Rotate art object");
+      documentUndoLabelsRef.current.set(documentHistoryRef.current.present, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Rotate electron mark" : "Rotate art object");
     }
     updateRotationInput(undefined);
     setObjectRotateReadout(undefined);
@@ -16162,7 +17112,7 @@ export function MainWindow({
       return false;
     }
 
-    const changed = commitLiveInputPreview(session.startDocument);
+    const changed = commitLiveInputPreview(session.startDocument, findDocumentObject(session.startDocument, session.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined);
     updateObjectResizeInput(undefined);
     setObjectResizeReadout(undefined);
     setStatus(changed ? "Stretch applied" : "Stretch unchanged");
@@ -16236,7 +17186,7 @@ export function MainWindow({
       return false;
     }
 
-    commitDocumentHistoryFrom(drag.startDocument, resized);
+    commitDocumentHistoryFrom(drag.startDocument, resized, findDocumentObject(drag.startDocument, drag.objectId)?.type === "electron-mark" ? "Resize electron mark" : undefined);
     return true;
   }, [clearObjectTransformPreview, commitDocumentHistoryFrom, objectResizeDocumentFromDrag, replacePresentDocument, showObjectResizeReadout]);
 
@@ -16315,11 +17265,12 @@ export function MainWindow({
     if (drag?.pointerId === event.pointerId) {
       objectDragRef.current = null;
       clearObjectTransformPreview(event.pointerId);
+      assignHoveredNativeDeleteTarget(undefined);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearObjectTransformPreview]);
+  }, [assignHoveredNativeDeleteTarget, clearObjectTransformPreview]);
 
   const clearGraphicCornerRadiusDrag = useCallback((event: ObjectPointerEvent) => {
     const drag = graphicCornerRadiusDragRef.current;
@@ -16807,7 +17758,11 @@ export function MainWindow({
       // vertex has no DOM glyph and the press lands on the page — honor it before dropping a
       // floating annotation mark at the raw point.
       if (hoveredNativeDeleteTargetRef.current?.kind === "atom") {
-        addChargeToHoveredNativeAtom(activeChargeToolValue);
+        if (activeChargeToolValue.kind === "lone-pair") {
+          startNativePlacementDrag(event, point, { kind: "lone-pair", target: hoveredNativeDeleteTargetRef.current });
+        } else {
+          addChargeToHoveredNativeAtom(activeChargeToolValue);
+        }
         return;
       }
       applyChargeDocumentAtPoint(activeChargeToolValue, point);
@@ -16873,7 +17828,7 @@ export function MainWindow({
         if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
           const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
           if (nextDocument !== documentRef.current) {
-            commitDocumentChange(nextDocument);
+            commitDocumentChangeWithPageFit(nextDocument);
             setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
           }
         }
@@ -16901,7 +17856,9 @@ export function MainWindow({
       if (bracketKind) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -16966,6 +17923,7 @@ export function MainWindow({
     applySymbolGlyphAtPoint,
     applyTextDocumentAtPoint,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     document,
     pagePointFromPointerEvent,
     startAtomLabelEdit,
@@ -16986,6 +17944,7 @@ export function MainWindow({
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
+    selectionClipboardPasteStateRef.current = undefined;
     // Paste from this menu lands where the menu was opened, not where the mouse drifted while
     // reading it.
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
@@ -17417,6 +18376,10 @@ export function MainWindow({
   ]);
 
   const handlePagePointerUp = useCallback((event: ObjectPointerEvent) => {
+    if (nativeBondDragRef.current?.pointerId === event.pointerId) {
+      finishNativeBondDrag(event);
+      return;
+    }
     const groupTransform = groupTransformDragRef.current;
     if (groupTransform?.pointerId === event.pointerId) {
       event.stopPropagation();
@@ -17530,7 +18493,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = objectRotateDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
+        const label = objectRotateDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -17550,7 +18513,7 @@ export function MainWindow({
         );
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
-        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
+        const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${targetLabel}` : `Resized ${targetLabel}`
           : `${capitalizeLabel(targetLabel)} size unchanged`);
@@ -17624,7 +18587,7 @@ export function MainWindow({
       objectDragMachineRef.current = initialInteractionState();
       if (objectDrag.dragging) {
         const changed = commitObjectDrag(objectDrag, point);
-        setStatus(changed ? "Moved selected object" : "Object did not move");
+        setStatus(objectDrag.dropStatus ?? (changed ? "Moved selected object" : "Object did not move"));
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
@@ -17690,7 +18653,7 @@ export function MainWindow({
         : selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
       const next = fromSelectionItems(
         applySelection(
-          toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+          toSelectionItemsMulti(documentRef.current.selection.objectIds, lasso.startNativeSelections),
           toSelectionItems(region.objectIds, region.nativeSelection),
           mode
         ),
@@ -17757,7 +18720,7 @@ export function MainWindow({
     const mode = selectionModeFromEvent(event, { gesture: "region", shiftFallback: shiftKeyPressedRef.current });
     const next = fromSelectionItems(
       applySelection(
-        toSelectionItemsMulti(documentRef.current.selection.objectIds, selectedNativeMoleculePartsRef.current),
+        toSelectionItemsMulti(documentRef.current.selection.objectIds, marquee.startNativeSelections),
         toSelectionItems(region.objectIds, region.nativeSelection),
         mode
       ),
@@ -17780,6 +18743,7 @@ export function MainWindow({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }, [
+    directElectronMarkEditing,
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     clearNativePartDrag,
@@ -17795,6 +18759,7 @@ export function MainWindow({
     clearProjectedPlaneTiltDrag,
     clearTransientInteractionChrome,
     finishNativePlacementDrag,
+    finishNativeBondDrag,
     clearTapeMeasureDrag,
     clearTextResize,
     commitGraphicCornerRadius,
@@ -17821,6 +18786,12 @@ export function MainWindow({
   ]);
 
   const handlePagePointerCancel = useCallback((event: ObjectPointerEvent) => {
+    const objectDrag = objectDragRef.current;
+    if (objectDrag?.pointerId === event.pointerId) {
+      clearObjectDrag(event);
+      objectDragMachineRef.current = initialInteractionState();
+      replacePresentDocument(objectDrag.startDocument);
+    }
     const mechanismDrag = mechanismArrowDragRef.current;
     if (mechanismDrag?.pointerId === event.pointerId) {
       mechanismArrowDragRef.current = null;
@@ -17975,7 +18946,7 @@ export function MainWindow({
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }
-  }, [clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
+  }, [clearObjectDrag, clearGraphicCornerRadiusDrag, clearGraphicGradientDrag, clearGraphicPathEditDrag, clearGraphicMarkerDrag, clearNativeFreehandArtDrag, clearNativePathArtDraw, clearNativePartDrag, clearNativePlacementDrag, clearObjectResizeDrag, clearObjectRotateDrag, clearProjectedPlaneTiltDrag, clearTapeMeasureDrag, clearTextResize, replacePresentDocument]);
 
   const handlePagePointerLeave = useCallback(() => {
     if (nativeBondDragRef.current) {
@@ -18044,7 +19015,7 @@ export function MainWindow({
     const groupedPointerObjectIds = activeToolState.activeKind === "selection"
       ? groupedDragObjectIdsForPointer(currentDocument, objectId)
       : undefined;
-    const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
+    const electronMarkActive = object?.type === "electron-mark" && (directElectronMarkEditing || object.markKind === "charge");
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(
           object,
@@ -18225,10 +19196,15 @@ export function MainWindow({
       return;
     }
 
-    if (activeChargeToolValue && point && !chargeMarkActive) {
+    if (activeChargeToolValue && point && !electronMarkActive) {
       event.stopPropagation();
       if (nativeMoleculeHit?.kind === "atom") {
-        addChargeToHoveredNativeAtom(activeChargeToolValue, { objectId, ...nativeMoleculeHit });
+        if (activeChargeToolValue.kind === "lone-pair") {
+          event.preventDefault();
+          startNativePlacementDrag(event, point, { kind: "lone-pair", target: { objectId, ...nativeMoleculeHit } });
+        } else {
+          addChargeToHoveredNativeAtom(activeChargeToolValue, { objectId, ...nativeMoleculeHit });
+        }
         return;
       }
 
@@ -18246,7 +19222,7 @@ export function MainWindow({
         if (!startNativePlacementDrag(event, point, { kind: "arrow", arrowKind })) {
           const nextDocument = applyReactionArrowToolAtPoint(documentRef.current, point, arrowKind);
           if (nextDocument !== documentRef.current) {
-            commitDocumentChange(nextDocument);
+            commitDocumentChangeWithPageFit(nextDocument);
             setStatus(`Inserted ${nativeReactionArrowStatusLabel(arrowKind)} arrow`);
           }
         }
@@ -18282,7 +19258,9 @@ export function MainWindow({
       if (bracketKind && point) {
         event.preventDefault();
         event.stopPropagation();
-        applyBracketAtPoint(point, bracketKind);
+        if (!startNativePlacementDrag(event, point, { kind: "bracket", bracketKind })) {
+          applyBracketAtPoint(point, bracketKind);
+        }
         return;
       }
     }
@@ -18743,7 +19721,7 @@ export function MainWindow({
       }
     }
 
-    if (shouldDragDocumentObject(object, activeToolState.activeKind)) {
+    if (shouldDragDocumentObject(object, activeToolState.activeKind, directElectronMarkEditing)) {
       event.preventDefault();
       event.stopPropagation();
       if (!shouldActivateDocumentObject(object, "selection")) {
@@ -18915,6 +19893,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setNativeDoubleBondSidePreview(undefined);
   }, [
+    directElectronMarkEditing,
     activeToolState.activeCommandId,
     activeToolState.activeKind,
     activeChargeToolValue,
@@ -18937,6 +19916,7 @@ export function MainWindow({
     applyTextDocumentAtPoint,
     clearTransientInteractionChrome,
     commitDocumentChange,
+    commitDocumentChangeWithPageFit,
     currentEyedropperStatus,
     cycleNativeBondOrder,
     document,
@@ -18953,6 +19933,7 @@ export function MainWindow({
     startOrAppendNativePathArtPoint,
     startNativeFreehandArtDrag,
     startNativeArtLineDrawOrDefault,
+    startNativePlacementDrag,
     startSelectionLasso,
     startTapeMeasureDrag,
     toggleDocumentObjectSelection
@@ -18991,7 +19972,7 @@ export function MainWindow({
       : undefined;
     const canOpenRotationEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19026,7 +20007,42 @@ export function MainWindow({
     });
     setStatus("Z rotation entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+
+  const selectMoleculePartThroughTransformHandle = useCallback((object: MoleculeObject, event: PointerEvent<HTMLButtonElement>): boolean => {
+    if (event.button !== 0 || activeToolState.activeKind !== "selection" || selectionModeFromEvent(event, {
+      gesture: "click",
+      shiftFallback: shiftKeyPressedRef.current
+    }) !== "toggle") {
+      return false;
+    }
+    const selectedPart = selectedNativeMoleculePartRef.current;
+    const target = selectedPart?.objectId === object.id ? nativeTransformableSelectionPart(selectedPart) : undefined;
+    const bounds = target ? nativeMoleculePartBounds(object, target) : undefined;
+    if (!bounds) {
+      return false;
+    }
+    const frame = moleculeTransformFrameForSelection(object, bounds);
+    // Only compact fragments whose frame is expanded in both dimensions need this exception.
+    // Normal-sized selection handles retain their existing priority, including Shift stretching.
+    if (frame.width <= bounds.width || frame.height <= bounds.height) {
+      return false;
+    }
+    const point = pagePointFromPointerEvent(event);
+    const hit = point ? nativeMoleculeCanvasHoverTarget(
+      documentRef.current,
+      point,
+      undefined,
+      hitToleranceForScale(viewportRef.current.scale)
+    ) : undefined;
+    if (!hit) {
+      return false;
+    }
+    // Small fragment frames can put a handle over the next atom or bond. A Shift pick there
+    // belongs to the ordinary selection policy; empty-space handles still start transforms.
+    handleObjectPointerDown(hit.objectId, event);
+    return true;
+  }, [activeToolState.activeKind, handleObjectPointerDown, pagePointFromPointerEvent]);
 
   const handleObjectRotatePointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19040,6 +20056,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
     if (object && isTransformHandleSecondPress(objectId, "rotate-z", event)) {
       openObjectRotateInput(objectId);
       return;
@@ -19053,7 +20072,7 @@ export function MainWindow({
       : undefined;
     const canRotateObject =
       object?.type === "text" ||
-      (object !== undefined && documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)) ||
+      (object !== undefined && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)) ||
       (object?.type === "molecule" && (
         isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
         selectedFragmentBounds !== undefined
@@ -19114,6 +20133,7 @@ export function MainWindow({
           : "Rotate selected art object"
     );
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -19121,6 +20141,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     replacePresentDocument,
     openObjectRotateInput,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
     spin3dRotateSnapshotFor,
   ]);
@@ -19146,7 +20167,7 @@ export function MainWindow({
       : undefined;
     const canOpenTiltEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19194,7 +20215,7 @@ export function MainWindow({
     });
     setStatus("3D rotation entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
   const handleProjectedPlaneTiltPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19208,6 +20229,9 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
     if (object?.type === "graphic" && graphicObjectIsFreehandPath(object)) {
       setStatus("X/Y rotate is disabled for freehand art while transform previews are optimized");
       return;
@@ -19225,7 +20249,7 @@ export function MainWindow({
       : undefined;
     const canTiltObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) &&
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) &&
           (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : isNativeMoleculeGraph(object) &&
           object.atoms.length > 0 &&
@@ -19311,6 +20335,7 @@ export function MainWindow({
       ? "3D rotate: drag to tilt/twist selected fragment"
       : object.type === "molecule" ? "3D rotate: drag to tilt/twist" : "X/Y rotate selected art object");
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -19318,6 +20343,7 @@ export function MainWindow({
     pagePointFromPointerEvent,
     openProjectedPlaneTiltInput,
     replacePresentDocument,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
     spin3dRotateSnapshotFor,
   ]);
@@ -19343,7 +20369,7 @@ export function MainWindow({
       : undefined;
     const canOpenResizeEntry = object && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && currentDocument.selection.objectIds.includes(objectId)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && currentDocument.selection.objectIds.includes(objectId)
         : isNativeMoleculeGraph(object) && (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
             selectedFragmentBounds !== undefined
@@ -19379,7 +20405,7 @@ export function MainWindow({
     });
     setStatus("Stretch entry");
     return true;
-  }, [activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
+  }, [directElectronMarkEditing, activeToolState.activeKind, selectedNativeMoleculePart, updateObjectResizeInput, updateRotationInput]);
 
   const handleGraphicCornerRadiusPointerDown = useCallback((objectId: string, event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -19725,7 +20751,10 @@ export function MainWindow({
 
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
-    if (object && documentObjectSupportsArtTransform(object) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
+    if (object?.type === "molecule" && selectMoleculePartThroughTransformHandle(object, event)) {
+      return;
+    }
+    if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing) && isTransformHandleSecondPress(objectId, `resize-${corner}`, event)) {
       openObjectResizeInput(objectId, corner);
       return;
     }
@@ -19738,7 +20767,7 @@ export function MainWindow({
       : undefined;
     const canResizeObject = object && point && (
       object.type !== "molecule"
-        ? documentObjectSupportsArtTransform(object) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
+        ? documentObjectSupportsArtTransform(object, directElectronMarkEditing) && (currentDocument.selection.objectIds.includes(objectId) || shiftArrowTarget)
         : object.atoms.length > 0 &&
           (
             isWholeNativeMoleculeSelected(currentDocument, objectId, selectedNativeMoleculePart) ||
@@ -19792,6 +20821,7 @@ export function MainWindow({
       ? "Resize selected molecule fragment"
       : object.type === "molecule" ? "Resize selected molecule" : "Resize selected art object");
   }, [
+    directElectronMarkEditing,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
     handleObjectResizeInputKeep,
@@ -19799,6 +20829,7 @@ export function MainWindow({
     openObjectResizeInput,
     pagePointFromPointerEvent,
     replacePresentDocument,
+    selectMoleculePartThroughTransformHandle,
     selectedNativeMoleculePart,
   ]);
 
@@ -19969,10 +21000,13 @@ export function MainWindow({
       if (flagged === 0 && suppressedCount === 0) {
         return undefined;
       }
-      return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount };
+      const problemCommandId = nativeMoleculeHit?.kind === "atom" && object?.type === "molecule" && atomProblem(object, nativeMoleculeHit.atomId)
+        ? atomProblemCommandId({ objectId, atomId: nativeMoleculeHit.atomId }) : undefined;
+      return { scope, suppressed: flagged === 0, count: flagged > 0 ? flagged : suppressedCount, problemCommandId };
     })();
     setPageContextMenu(undefined);
     lastCanvasPointerClientPointRef.current = { x: event.clientX, y: event.clientY };
+    selectionClipboardPasteStateRef.current = undefined;
     setObjectContextMenu({
       objectId,
       targetKind,
@@ -20392,7 +21426,7 @@ export function MainWindow({
       if (objectRotateDrag.dragging) {
         const changed = commitObjectRotateDrag(objectRotateDrag, point);
         const object = findDocumentObject(documentRef.current, objectRotateDrag.objectId);
-        const label = documentObjectTransformLabel(object);
+        const label = documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(changed ? `Rotated ${label}` : `${capitalizeLabel(label)} rotation unchanged`);
       }
       clearObjectRotateDrag(event);
@@ -20412,7 +21446,7 @@ export function MainWindow({
         );
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
-        const label = documentObjectTransformLabel(object);
+        const label = documentObjectTransformLabel(object, directElectronMarkEditing);
         setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${label}` : `Resized ${label}`
           : `${capitalizeLabel(label)} size unchanged`);
@@ -20484,7 +21518,7 @@ export function MainWindow({
       const point = pagePointFromPointerEvent(event) ?? objectDrag.latestPoint;
       if (objectDrag.dragging) {
         const changed = commitObjectDrag(objectDrag, point);
-        setStatus(changed ? "Moved selected object" : "Object did not move");
+        setStatus(objectDrag.dropStatus ?? (changed ? "Moved selected object" : "Object did not move"));
       } else if (objectDrag.bondTarget) {
         cycleNativeBondOrder(objectDrag.bondTarget);
       } else {
@@ -20502,23 +21536,14 @@ export function MainWindow({
       return;
     }
 
-    event.stopPropagation();
-    const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
-    const selectedDocument = selectDocumentObject(document, objectId);
-    if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey, drag.bondOrder);
-    } else {
-      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle, drag.bondOrder);
-    }
-    clearNativeBondDrag(event);
+    finishNativeBondDrag(event);
   }, [
+    directElectronMarkEditing,
     finishNativePlacementDrag,
+    finishNativeBondDrag,
     activeToolState.activeKind,
     assignHoveredNativeDeleteTarget,
-    applyFreeformBondDocumentAtPoint,
-    applySingleBondDocumentAtPoint,
     clearNativeBondEditDrag,
-    clearNativeBondDrag,
     clearNativePartDrag,
     clearBezierArtNodeDrag,
     clearObjectDrag,
@@ -20693,13 +21718,13 @@ export function MainWindow({
     // A side-dependent label the save could not carry is read again from its drawing: say so (short
     // on the status line, each atom named in the log) rather than let the save change it silently.
     const applied = applyEditorSaveResultWithLabelWarnings(documentRef.current, result);
-    commitDocumentChange(applied.document);
+    commitDocumentChangeWithPageFit(applied.document);
     const labelStatus = editorSaveLabelWarningsStatus(applied.labelWarnings);
     if (labelStatus) {
       setStatus(labelStatus);
       applied.labelWarnings.forEach((warning) => console.info(warning.detail));
     }
-  }, [commitDocumentChange]);
+  }, [commitDocumentChangeWithPageFit]);
 
   const createAgentSnapshot = useCallback((): AgentSnapshot => {
     const currentDocument = documentRef.current;
@@ -20879,9 +21904,11 @@ export function MainWindow({
         canRedo,
         hasSelection: document.selection.objectIds.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
+        structureSearchEnabled,
+        hasSearchableStructure,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
-        pluginMenuItems: pluginRuntime.pluginMenuItems,
+        pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
         keybindingScheme
       }),
@@ -20897,7 +21924,10 @@ export function MainWindow({
       visibleToolsetIds,
       toolsetRegistry,
       pluginRuntime.pluginMenuItems,
-      availablePluginUpdateCount
+      availablePluginUpdateCount,
+      structureSearchEnabled,
+      hasSearchableStructure,
+      bracketMenuItems
     ]
   );
 
@@ -20977,6 +22007,7 @@ export function MainWindow({
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
+    onAtomProblemInvoke: (commandId: string) => { void invokeCommandRef.current(commandId); },
     onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
     onTextEditFinish: finishActiveNativeTextEdit,
@@ -21017,7 +22048,7 @@ export function MainWindow({
         if (!selectedIdSet.has(object.id)) return false;
         if (object.type === "text") return true;
         if (object.type === "molecule") return isNativeMoleculeGraph(object);
-        if (!documentObjectSupportsArtTransform(object)) return false;
+        if (!documentObjectSupportsArtTransform(object, directElectronMarkEditing)) return false;
         if (object.type === "graphic" && (activeToolState.activeCommandId === "tool.art.directEdit" || activeGraphicTransformObjectId !== object.id)) {
           // Direct path/gradient controls occupy the frame until the object enters transform mode.
           return !nativeGraphicPathEditPoints(object) && !nativeGraphicPathNodeEditPoints(object) &&
@@ -21119,7 +22150,7 @@ export function MainWindow({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
+        accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
         className="native-file-input"
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
@@ -21216,7 +22247,7 @@ export function MainWindow({
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
-            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled);
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled, compoundLayoutSettings);
             // Render from a given set of groups — the controller passes an optimistic overlay while a
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
@@ -21231,6 +22262,7 @@ export function MainWindow({
                 onInvoke={invoke}
                 customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
+                  commandSpecs: shellCommandSpecs,
                   colorContextKey,
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,
@@ -21243,7 +22275,7 @@ export function MainWindow({
                   currentTextStyle: currentToolbarTextStyle,
                   currentTextScript: currentToolbarTextScript,
                   onArtStylePreview: previewObjectStyleCommand,
-                  onArtStyleCommit: commitObjectStylePreview,
+                  onArtStyleCommit: commitArtStyleCommand,
                   onArtStyleCancel: cancelObjectStylePreview,
                   onMoleculeInspectorPreview: previewMoleculeInspectorCommand,
                   onMoleculeInspectorCommit: commitMoleculeInspectorPreview,
@@ -21396,6 +22428,7 @@ export function MainWindow({
           tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
+          onPointerLeave={() => { pointerInsideCanvasRef.current = false; }}
           onKeyDown={(event) => {
             if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
               const targets = currentMoleculeInspector.targets.bondTargets;
@@ -21474,6 +22507,10 @@ export function MainWindow({
               event.stopPropagation();
             }
           }}
+          onLostPointerCaptureCapture={event => {
+            const drag = nativePlacementDragRef.current;
+            if (drag?.kind === "lone-pair" && drag.pointerId === event.pointerId) cancelNativePlacementDrag();
+          }}
           onMouseDownCapture={event => {
             if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
           }}
@@ -21504,12 +22541,7 @@ export function MainWindow({
             event.preventDefault();
             if (closeTabPromptRef.current) return;
             const files = Array.from(event.dataTransfer.files);
-            void (async () => {
-              for (const file of files) {
-                try { await openDocumentContents(await file.text(), file.name); }
-                catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
-              }
-            })();
+            void openDocumentBatch(files.map(file => ({ contents: () => readBrowserDocumentFile(file), displayName: file.name })));
           }}
           data-zoom-surface="document"
           // Gates the ring interior hit surface (see .native-molecule-ring-hit-target): ring
@@ -21536,7 +22568,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
-                onDoubleClickCapture={handleTableDoubleClick}
+                onDoubleClickCapture={handlePageDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -21546,6 +22578,7 @@ export function MainWindow({
                 ) : null}
                 <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  directElectronMarkEditing={directElectronMarkEditing}
                   {...objectViewHandlers}
                   ariaLabel={document.title}
                   pageHeight={activePage.height}
@@ -21576,6 +22609,12 @@ export function MainWindow({
                       onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
                   </>;
                 })()}
+                {bracketLabelEdit?.tabId === activeDocumentTabId ? (() => {
+                  const object = findDocumentObject(document, bracketLabelEdit.objectId);
+                  return object?.type === "bracket" && bracketLabelPlan(object) ? <BracketLabelEditor
+                    key={`${activeDocumentTabId}:${object.id}`} object={object} ref={bracketLabelEditorRef}
+                    onDraftChange={markDocumentDirty} onFinish={finishBracketLabelEdit} /> : null;
+                })() : null}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -21750,6 +22789,7 @@ export function MainWindow({
 
                   return (
                     <DocumentObjectView
+                      directElectronMarkEditing={directElectronMarkEditing}
                       key={objectRenderKey}
                       {...objectViewHandlers}
                       object={moveArrowPreviewObjects?.get(object.id)?.object ?? object}
@@ -21761,12 +22801,13 @@ export function MainWindow({
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
-                      // Text editor allowance and the selected corner-radius handle use
-                      // screen-sized margins. Other object views stay memoized on zoom.
+                      // Text editor allowance, the selected corner-radius handle and selected
+                      // electron-mark handles use screen sizes. Other views stay memoized on zoom.
                       pageScale={(object.type === "text" && activeTextEditObjectId === object.id) ||
                         (object.type === "graphic" && selected && !inGroupSelection &&
                           !nativeArtToolIsOrbital(activeToolState.activeCommandId) &&
-                          object.graphicKind === "rect")
+                          object.graphicKind === "rect") ||
+                        (directElectronMarkEditing && object.type === "electron-mark" && selected && !inGroupSelection)
                         ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected && !nativeArtToolIsOrbital(activeToolState.activeCommandId)}
@@ -21999,7 +23040,7 @@ export function MainWindow({
             baseToolsets={toolbarCatalog.baseToolsets()}
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
             availableCommands={customizeCommandOptions}
-            isCommandHidden={compoundLayoutsEnabled ? undefined : isCompoundLayoutCommand}
+            isCommandHidden={id => isCompoundLayoutCommandHidden(id, compoundLayoutSettings)}
             onApply={applyCustomizeToolbars}
             onLiveApply={liveApplyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
@@ -22028,7 +23069,7 @@ export function MainWindow({
                 data-open-warnings-button
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
-                aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
+                aria-controls={useHtmlFileWarnings && openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
@@ -22047,7 +23088,7 @@ export function MainWindow({
             Build {CURRENT_BUILD_STAMP} · {__BUILD_STAMP__}
           </div>
         </div>
-        {openWarningsListShown && openWarnings ? (
+        {useHtmlFileWarnings && openWarningsListShown && openWarnings ? (
           <FileWarningsList
             reports={warningReports}
             document={document}
@@ -22073,7 +23114,14 @@ export function MainWindow({
         }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          bracketActions={findDocumentObject(document, objectContextMenu.objectId)?.type === "bracket" ? bracketActions : []}
           tableActions={selectedTable(document) ? tableActions : []}
+          arrowActions={(() => {
+            const object = activePage.objects.find(object => object.id === objectContextMenu.objectId);
+            return object && arrowAttachmentFrame(activePage, object) &&
+              !compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)
+              ? layerActions.filter(action => action.id === "arrow.conditions") : [];
+          })()}
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           bondStereoActions={(() => {
             const targets = currentMoleculeInspector.targets.bondTargets;
@@ -22101,6 +23149,7 @@ export function MainWindow({
             canvasRegionRef.current?.focus({ preventScroll: true });
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (menu && commandId.startsWith("arrow.")) arrowCommandTargetRef.current = menu.objectId;
             if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
               const { scope, suppressed, count } = menu.atomWarning;
               const changed = commitDocumentChange((current) =>
@@ -22124,6 +23173,7 @@ export function MainWindow({
               return;
             }
             invoke(commandId);
+            if (commandId.startsWith("arrow.")) queueMicrotask(() => { arrowCommandTargetRef.current = undefined; });
           }}
         />
       ) : null}
@@ -22471,13 +23521,14 @@ function ImportedPageFitPrompt({ recommendation, onKeep, onResize }: ImportedPag
 
   const prompt = useNativePrompt({
     title: "Imported Content Exceeds Page",
+    serializationKey: "imported-page-fit",
     message: `${recommendation.displayName} extends beyond ${currentLabel}${overflow ? ` by about ${overflow}` : ""}.\n\nChange the page to ${recommendedLabel} to fit the imported content?`,
     kind: "warning",
     choices: [
       { id: "resize", label: `Use ${recommendedLabel} Page` },
       { id: "keep", label: "Cancel", cancel: true }
     ]
-  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.displayName);
+  }, (choice) => { if (choice === "resize") onResize(); else onKeep(); }, recommendation.requestId);
   if (!prompt.visible) return null;
 
   return (
@@ -22525,10 +23576,11 @@ function pageFitRecommendedLabel(recommendation: ImportedPageFitRecommendation):
 
 export function createDefaultExportDialogState(
   document: ChemDraftDocument,
-  destinationDirectory?: string
+  destinationDirectory?: string,
+  savedDocumentPath?: string
 ): ExportDialogState {
   const descriptor = getExportFormatDescriptor("pdf");
-  const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id);
+  const filename = createExportFilename(document, descriptor.extensions[0] ?? descriptor.id, savedDocumentPath);
   return {
     format: descriptor.id,
     filename,
@@ -23602,6 +24654,7 @@ function isSemanticCircularGraphicArc(
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
+  if (bondStyle === "wavy") return "wavy bond";
   if (bondStyle === "wedge") {
     return "solid wedge bond";
   }
@@ -23619,6 +24672,8 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "lone-pair") return "lone pair";
+  if (drag.kind === "bracket") return `${drag.bracketKind} bracket pair`;
   if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
@@ -23686,30 +24741,18 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
 }
 
 /** Why a ring or sprout could not change the target molecule, worded for the status line. */
-export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
+export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal | "atom-no-free-valence"): string {
   switch (reason) {
+    case "atom-no-free-valence":
+      return "that atom has no free valence";
+    case "branched-carbon-full":
+      return "this carbon already uses all four valences; branched alkyl needs one attachment bond";
     case "sprout-no-free-direction":
       return "there is no free direction to grow into without overlapping";
     case "sprout-page-edge":
       return "the page edge blocks every direction";
-    case "sprout-needs-two-valences":
-      return "that atom needs two free valences for this sprout";
-    case "methylidene-needs-neutral-carbon":
-      return "methylidene needs a neutral carbon atom";
     case "closure-bond-exists":
       return "those atoms are already connected";
-    case "atom-no-free-valence":
-      return "that atom has no free valence";
-    case "bond-atom-no-free-valence":
-      return "an atom on that bond has no free valence";
-    case "closure-atom-no-free-valence":
-      return "the ring would close onto an atom with no free valence";
-    case "connection-atom-no-free-valence":
-      return "the atom it would connect to has no free valence";
-    case "double-bond-overfill":
-      return "the ring's double bonds would overfill a neighbouring atom";
-    case "atom-label-not-element":
-      return "that atom's label is an abbreviation; relabel it to an element first";
     case "ring-geometry-unavailable":
       return "the ring's geometry could not be placed there";
     case "structure-not-editable":
@@ -23828,12 +24871,13 @@ export function shouldActivateDocumentObject(object: DocumentObject | undefined,
   return object !== undefined && activeToolKind === "selection";
 }
 
-export function shouldDragDocumentObject(object: DocumentObject | undefined, activeToolKind: string): boolean {
+export function shouldDragDocumentObject(object: DocumentObject | undefined, activeToolKind: string, directElectronMarkEditing = false): boolean {
   if (activeToolKind === "selection") {
     return true;
   }
 
-  return activeToolKind === "charge" && object?.type === "electron-mark" && object.markKind === "charge";
+  return activeToolKind === "charge" && object?.type === "electron-mark" &&
+    (directElectronMarkEditing || object.markKind === "charge");
 }
 
 export function shouldOpenMoleculeEditorFromObjectClick(
@@ -23861,6 +24905,8 @@ export function hoveredNativeTargetShortcutCommand(
   }
 
   if (target?.kind === "bond") {
+    if (key === "w") return "bond.setHoveredBondDisplay.wedge";
+    if (key === "W") return "bond.setHoveredBondDisplay.hashed";
     return Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)
       ? numericBondDrawingHotkeys[key]
       : undefined;
@@ -23889,15 +24935,14 @@ export function hoveredNativeTargetShortcutCommand(
 
 /**
  * A label typed by hovering an atom and pressing an element key, open for continuation. `leftAtom`
- * records that the pointer has since left the atom and its own bonds.
+ * records that the pointer has since left the atom and its own bonds, limiting which keys continue
+ * the label. Commits can still coalesce; cancellation restores only the later text draft.
  */
 type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
   beforeAtom: MoleculeAtom; beforeMolecule: MoleculeObject;
   hotkeyChanged: boolean; hotkeyUndoDocument?: ChemDraftDocument;
-  hotkeyAfterDocument?: ChemDraftDocument;
   saveRevision: number;
-  hotkeyUndoState?: AtomLabelEditState["hotkeyUndoState"];
 };
 
 /**
@@ -23916,14 +24961,30 @@ export function hoverTargetKeepsLabelContinuation(
     : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
 }
 
+/** A drifted label may continue only as a recognized label or the start of an abbreviation. */
+function hoverLabelTextContinues(label: string, key: string): boolean {
+  const draft = label + key;
+  return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
+    [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
+      spelling.startsWith(draft) ||
+      // A partial substituent also counts when the shared grammar recognizes its completion:
+      // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
+      (spelling.startsWith(key) && nativeAtomLabelReading(label + spelling, { bonded: true }).kind === "group")
+    );
+}
+
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
  * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
- * An element key in either case continues while the pointer has stayed on the labelled atom and
- * its own bonds ("CF3"). After leaving, element keys in either case and all digits act on a different
+ * An element key in either case continues while the pointer has stayed on the labelled atom.
+ * On its own bonds or empty canvas, only recognized labels or abbreviation prefixes continue
+ * ("CF3", not "Oo" or "Sv").
+ * After leaving, element keys in either case and all digits act on a different
  * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
  * continues; other element keys over a target start a new label, even on the same atom again.
- * Other letters ("M" in OMe, "e") continue after a drift, as do alphanumeric keys over empty canvas.
+ * Other letters ("M" in OMe, "e") continue after a drift. An element key over empty canvas cannot
+ * reopen a committed relabel; there is no atom there to label. Repeating the starting element
+ * (C in CF3) can still start a word, since that key did not change the element.
  * Nothing continues once the labelled atom no longer carries the label (undone, or changed some
  * other way).
  */
@@ -23944,6 +25005,12 @@ export function hoverLabelContinuesForKey(
   if (atom?.element !== assignment.label) {
     return false;
   }
+  if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
+    return hoverLabelTextContinues(assignment.label, key);
+  }
+  if (target === undefined && !hoverLabelTextContinues(assignment.label, key)) {
+    return false;
+  }
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
   }
@@ -23954,7 +25021,8 @@ export function hoverLabelContinuesForKey(
   if (/^[a-z]$/.test(key) && elementSymbols.some(symbol => symbol === assignment.label + key)) {
     return true;
   }
-  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined && target !== undefined;
+  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined &&
+    (target !== undefined || assignment.beforeAtom.element !== assignment.label);
   return !startsNewLabel;
 }
 
@@ -24051,54 +25119,51 @@ export function initialSelectionClipboardPasteState(
 }
 
 /**
- * Where a pasted ChemDraft selection lands. With `anchor` — the page point under the pointer —
- * the selection is centred there, the way ChemDraw pastes at the cursor. Pasting again WITHOUT
- * moving the pointer steps the copy aside instead of burying it exactly on top of the last one.
- * Without an anchor (no pointer has been over the canvas yet) it falls back to the copy's own
- * position, offset once per repeat.
+ * One placement sequence for every clipboard format, independent of clipboard identity.
+ * The first native copy retains its source-position offset; imports start at their prepared
+ * viewport position. Subsequent pastes step from the first clamped centre until placement resets.
+ * Keep that origin fixed so a run at a page edge does not bounce between two positions.
  */
 export function nextSelectionClipboardPastePlacement(
   payload: ChemDraftSelectionClipboardPayload,
   previousState: SelectionClipboardPasteState | undefined,
   page: DocumentPage,
-  anchor?: ClientPoint
+  anchor?: ClientPoint,
+  initialOffset = 1
 ): { point: ClientPoint; state: SelectionClipboardPasteState } {
   const key = selectionClipboardPayloadKey(payload);
-  const samePayload = previousState?.key === key;
-  const sourceAction = samePayload ? previousState.sourceAction : "external";
-  const previousPasteCount = samePayload ? previousState.pasteCount : 0;
-
-  if (anchor) {
-    const previousAnchor = samePayload ? previousState.anchor : undefined;
-    const pointerStayedPut = previousAnchor !== undefined &&
-      Math.abs(previousAnchor.x - anchor.x) < 1 &&
-      Math.abs(previousAnchor.y - anchor.y) < 1;
-    const anchoredBounds: SelectionBounds = {
-      ...payload.bounds,
-      x: anchor.x - payload.bounds.width / 2,
-      y: anchor.y - payload.bounds.height / 2,
-      centerX: anchor.x,
-      centerY: anchor.y
-    };
-    const point = clampSelectionClipboardPastePoint(
-      selectionClipboardPastePoint(anchoredBounds, page, pointerStayedPut ? previousPasteCount : 0),
-      anchoredBounds,
-      page
-    );
-    return {
-      point,
-      state: { key, sourceAction, pasteCount: previousPasteCount + 1, anchor }
-    };
-  }
-
-  const offsetIndex = sourceAction === "cut" ? previousPasteCount : previousPasteCount + 1;
+  const sourceAction = previousState?.key === key ? previousState.sourceAction : "external";
+  const previousAnchor = previousState?.anchor;
+  const pointerStayedPut = anchor && previousAnchor
+    ? Math.abs(previousAnchor.x - anchor.x) < 1 && Math.abs(previousAnchor.y - anchor.y) < 1
+    : anchor === undefined && previousAnchor === undefined;
+  const continues = previousState?.origin !== undefined && previousState.pasteCount > 0 && pointerStayedPut;
+  const centre = continues ? previousState.origin! : anchor ?? {
+    x: payload.bounds.centerX, y: payload.bounds.centerY
+  };
+  const bounds: SelectionBounds = {
+    ...payload.bounds,
+    x: centre.x - payload.bounds.width / 2,
+    y: centre.y - payload.bounds.height / 2,
+    centerX: centre.x,
+    centerY: centre.y
+  };
+  // A pointer at the copied selection's centre must not hide its first duplicate.
+  // Match both IDs and snapshots: a cut, moved source or external import keeps its
+  // invocation-point placement. A pointer elsewhere is also an explicit new placement.
+  const copiesInPlace = initialOffset > 0 && payload.objects.length > 0 &&
+    Math.abs(centre.x - payload.bounds.centerX) < 1 && Math.abs(centre.y - payload.bounds.centerY) < 1 &&
+    payload.objects.every(object => {
+      const source = page.objects.find(candidate => candidate.id === object.id);
+      return source !== undefined && JSON.stringify(source) === JSON.stringify(object);
+    });
+  const offsetIndex = continues ? previousState.pasteCount
+    : sourceAction === "cut" ? 0 : copiesInPlace ? initialOffset : anchor ? 0 : initialOffset;
+  const point = clampSelectionClipboardPastePoint(selectionClipboardPastePoint(bounds, page, offsetIndex), bounds, page);
   return {
-    point: selectionClipboardPastePoint(payload.bounds, page, offsetIndex),
-    state: {
-      key,
-      sourceAction,
-      pasteCount: previousPasteCount + 1
-    }
+    point,
+    state: { key, sourceAction, pasteCount: continues ? previousState.pasteCount + 1 : 1, anchor,
+      origin: continues ? previousState.origin : point }
   };
 }
 
@@ -24665,6 +25730,11 @@ function SpinOverlay({
   onPointerUp: (event: PointerEvent<SVGSVGElement>) => void;
   onPointerCancel: (event: PointerEvent<SVGSVGElement>) => void;
 }) {
+  const fonts = useCanvasHandwritingFont(useMemo(() => ({
+    drawingStyle, atomLabelStyles: state.atomLabelStyles, sourceMolecule: state.sourceMolecule
+  }), [drawingStyle, state.atomLabelStyles, state.sourceMolecule]));
+  drawingStyle = fonts.drawingStyle;
+  state = { ...state, atomLabelStyles: fonts.atomLabelStyles, sourceMolecule: fonts.sourceMolecule };
   const projection = projectSpin(state.coords3d, state.bondPairs, state.quat, state.placement);
   // Depth-cue weights computed with the EXACT recipe flattenSpunMolecule commits, so the
   // live overlay's stroke weighting is identical to the flattened result (no snap on
@@ -25252,24 +26322,11 @@ function ArtStyleQaLayer({
   );
 }
 
-export function ObjectLayerContextMenu({
-  layoutActions = [],
-  tableActions = [],
-  bondStereoActions = [],
-  objectId,
-  objectIndex,
-  objectCount,
-  targetKind,
-  bondDepthContext,
-  atomWarning,
-  arrowStyleSource,
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function ObjectLayerContextMenu(props: {
+  arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
+  bracketActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
@@ -25277,499 +26334,27 @@ export function ObjectLayerContextMenu({
   targetKind: ObjectContextMenuState["targetKind"];
   bondDepthContext?: ObjectContextMenuState["bondDepthContext"];
   atomWarning?: ObjectContextMenuState["atomWarning"];
-  /** Present when the clicked object is an arrow whose look can become the tool's default. */
   arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const layerLabel = contextMenuLayerLabel(targetKind, objectIndex, objectCount);
-  const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
-  const hasMultipleBondTargets = (bondDepthContext?.targetBondRefs.length ?? 0) > 1;
-
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-
-  // Copy As is a fly-out: open on hover or click, measured so it flips left of the parent when
-  // the right edge would clip it and slides up when the bottom would.
-  const [copyAsOpen, setCopyAsOpen] = useState(false);
-  const [arrangeOpen, setArrangeOpen] = useState(false);
-  const [tableAlignOpen, setTableAlignOpen] = useState(false);
-  const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
-  const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [tableAlignStyle, setTableAlignStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    const parent = tableAlignParentRef.current, flyout = tableAlignFlyoutRef.current;
-    if (!tableAlignOpen || !parent || !flyout) return;
-    const rect = parent.getBoundingClientRect(), menuRect = flyout.getBoundingClientRect();
-    setTableAlignStyle({
-      ...(rect.right + menuRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, rect.top + menuRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [tableAlignOpen, clampedPosition]);
-  const tableRowColumnIds = ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
-    "table.column.insertLeft", "table.column.insertRight", "table.column.delete"];
-  const tableRowColumnActions = tableActions.filter(action => tableRowColumnIds.includes(action.id));
-  const tableAlignActions = tableActions.filter(action => action.id.startsWith("table.column.align."));
-  const arrangeParentRef = useRef<HTMLDivElement | null>(null);
-  const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const pendingSubmenuFocusRef = useRef(false);
-  const [arrangeFlyoutStyle, setArrangeFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (layoutActions.length === 0) { setArrangeOpen(false); return; }
-    if (!arrangeOpen) return;
-    const parent = arrangeParentRef.current;
-    const flyout = arrangeFlyoutRef.current;
-    if (!parent || !flyout) return;
-    const parentRect = parent.getBoundingClientRect();
-    const flyoutRect = flyout.getBoundingClientRect();
-    setArrangeFlyoutStyle({
-      ...(parentRect.right + flyoutRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
-      top: `${-Math.max(0, parentRect.top + flyoutRect.height + 8 - window.innerHeight)}px`
-    });
-  }, [arrangeOpen, clampedPosition, layoutActions.length]);
-  const copyAsParentRef = useRef<HTMLDivElement | null>(null);
-  const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const [copyAsFlyoutStyle, setCopyAsFlyoutStyle] = useState<CSSProperties>({});
-  useLayoutEffect(() => {
-    if (!copyAsOpen) {
-      return;
-    }
-    const parentElement = copyAsParentRef.current;
-    const flyoutElement = copyAsFlyoutRef.current;
-    if (!parentElement || !flyoutElement) {
-      return;
-    }
-    const margin = 8;
-    const parentRect = parentElement.getBoundingClientRect();
-    const flyoutRect = flyoutElement.getBoundingClientRect();
-    const opensLeft = parentRect.right + flyoutRect.width + margin > window.innerWidth;
-    const overflowY = Math.max(0, parentRect.top + flyoutRect.height + margin - window.innerHeight);
-    setCopyAsFlyoutStyle({
-      ...(opensLeft ? { right: "100%" } : { left: "100%" }),
-      top: `${-overflowY}px`
-    });
-  }, [copyAsOpen, clampedPosition]);
-
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
-    setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(false);
-  });
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Object layer options"
-      data-context-object-id={objectId}
-      data-context-target-kind={targetKind}
-      data-context-layer-index={objectIndex >= 0 ? objectIndex : undefined}
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {tableRowColumnActions.map(action => (
-        <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-          data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
-          onClick={() => onInvoke(action.id)}>{action.title}</button>
-      ))}
-      {tableAlignActions.length > 0 ? <>
-        <div className="object-context-menu-submenu" ref={tableAlignParentRef}
-          onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(true); }}
-          onPointerLeave={() => setTableAlignOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={tableAlignOpen}
-            aria-controls={tableAlignOpen ? "canvas-table-align-menu" : undefined}
-            disabled={tableAlignActions.every(action => action.enabled === false)}
-            className="object-context-menu-item object-context-menu-submenu-trigger"
-            onClick={() => {
-              setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(open => !open);
-            }}>
-            <span>Align Column</span><span aria-hidden="true">›</span>
-          </button>
-          {tableAlignOpen ? <div id="canvas-table-align-menu" role="menu" aria-label="Align Column"
-            className="object-context-menu object-context-menu-flyout"
-            ref={tableAlignFlyoutRef} style={tableAlignStyle}>
-            {tableAlignActions.map(action => <button type="button" role="menuitem" key={action.id}
-              className="object-context-menu-item" data-command-id={action.id}
-              disabled={action.enabled === false} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as
-                Record<string, string>)[action.id.split(".").at(-1)!]}
-            </button>)}
-          </div> : null}
-        </div>
-        <div className="object-context-menu-separator" role="separator" />
-      </> : null}
-      {layoutActions.length > 0 ? (
-        <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
-          onPointerLeave={() => setArrangeOpen(false)}>
-          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
-            aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
-            className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => {
-              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
-            }}>
-            <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-          </button>
-          {arrangeOpen ? (
-            <div id="canvas-arrange-menu" className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
-              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}>
-              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
-                <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-                  data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                  {action.title.replace(/^Arrange in (?:a|an) /, "")}
-                </button>
-              ))}
-              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
-                <Fragment key={action.id}>
-                  <div className="object-context-menu-separator" role="separator" />
-                  <button type="button" role="menuitem" className="object-context-menu-item"
-                    data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                    Adjust spacing…
-                  </button>
-                </Fragment>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {(["clipboard.cut", "clipboard.copy", "clipboard.paste"] as const).map((clipboardCommandId) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={clipboardCommandId}
-          data-command-id={clipboardCommandId}
-          onClick={() => onInvoke(clipboardCommandId)}
-        >
-          {clipboardCommandId === "clipboard.cut" ? "Cut" : clipboardCommandId === "clipboard.copy" ? "Copy" : "Paste"}
-        </button>
-      ))}
-      <div
-        className="object-context-menu-submenu"
-        ref={copyAsParentRef}
-        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
-        onPointerLeave={() => setCopyAsOpen(false)}
-      >
-        <button
-          type="button"
-          role="menuitem"
-          aria-haspopup="menu"
-          aria-expanded={copyAsOpen}
-          aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
-          className="object-context-menu-item object-context-menu-submenu-trigger"
-          data-context-submenu="copy-as"
-          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
-        >
-          <span>Copy As</span>
-          <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
-        </button>
-        {copyAsOpen ? (
-          <div
-            className="object-context-menu object-context-menu-flyout"
-            id="canvas-copy-as-menu"
-            role="menu"
-            aria-label="Copy As formats"
-            ref={copyAsFlyoutRef}
-            style={copyAsFlyoutStyle}
-          >
-            {copyAsMenuItems.map((item) => (
-              <button
-                type="button"
-                role="menuitem"
-                className="object-context-menu-item"
-                key={item.commandId}
-                data-command-id={item.commandId}
-                onClick={() => onInvoke(item.commandId)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      <div className="object-context-menu-separator" role="separator" />
-      {atomWarning ? (
-        <>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="atom.toggleWarningSuppression"
-            onClick={() => onInvoke("atom.toggleWarningSuppression")}
-          >
-            {atomWarning.suppressed
-              ? atomWarning.count === 1 ? "Restore Warning" : "Restore Warnings"
-              : atomWarning.count === 1 ? "Clear Warning" : "Clear Warnings"}
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {arrowStyleSource ? (
-        <>
-          <div className="object-context-menu-title">{arrowStyleSource.title}</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id={SET_DEFAULT_ARROW_STYLE_COMMAND_ID}
-            onClick={() => onInvoke(SET_DEFAULT_ARROW_STYLE_COMMAND_ID)}
-          >
-            Set as Default Arrow Style
-          </button>
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {bondStereoActions.length > 0 ? (
-        <>
-          {bondStereoActions.map(action => (
-            <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
-              data-command-id={action.id} disabled={!action.enabled} title={action.disabledReason}
-              onClick={() => onInvoke(action.id)}>
-              {action.title}
-            </button>
-          ))}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      {hasBondDepthContext ? (
-        <>
-          <div className="object-context-menu-title">Bond depth</div>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.bringInFront"
-            onClick={() => onInvoke("bondDepth.bringInFront")}
-          >
-            {hasMultipleBondTargets ? "Bring Selected Bonds In Front" : "Bring Bond In Front"}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="object-context-menu-item"
-            data-command-id="bondDepth.sendBehind"
-            onClick={() => onInvoke("bondDepth.sendBehind")}
-          >
-            {hasMultipleBondTargets ? "Send Selected Bonds Behind" : "Send Bond Behind"}
-          </button>
-          {bondDepthContext?.hasOverrides ? (
-            <button
-              type="button"
-              role="menuitem"
-              className="object-context-menu-item"
-              data-command-id="bondDepth.useDefault"
-              onClick={() => onInvoke("bondDepth.useDefault")}
-            >
-              Use Default Bond Depth
-            </button>
-          ) : null}
-          <div className="object-context-menu-separator" role="separator" />
-        </>
-      ) : null}
-      <div className="object-context-menu-title">{layerLabel}</div>
-      {layerContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          data-command-id={item.commandId}
-          key={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <CanvasContextMenu key={`${props.objectId}:${props.position.x}:${props.position.y}`}
+    {...props} items={buildObjectCanvasMenu(props)} label="Object layer options"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
-
-/**
- * A context menu opens at the pointer, but never off-screen: after mount (and whenever it reopens
- * elsewhere) the panel is measured and pulled back inside the viewport — a right-click near the
- * bottom edge opens the menu ABOVE the cursor instead of clipping.
- */
-function useClampedContextMenuPosition(
-  position: ClientPoint,
-  menuRef: RefObject<HTMLDivElement | null>
-): ClientPoint {
-  const [clampedPosition, setClampedPosition] = useState(position);
-  useLayoutEffect(() => {
-    const menuElement = menuRef.current;
-    if (!menuElement) {
-      setClampedPosition(position);
-      return;
-    }
-    const margin = 8;
-    const rect = menuElement.getBoundingClientRect();
-    setClampedPosition({
-      x: Math.max(margin, Math.min(position.x, window.innerWidth - rect.width - margin)),
-      y: Math.max(margin, Math.min(position.y, window.innerHeight - rect.height - margin))
-    });
-  }, [menuRef, position]);
-  return clampedPosition;
-}
-
-// Navigate only the direct items of each menu; a flyout has its own wrapping loop.
-function useCanvasContextMenuKeyboard(
-  menuRef: RefObject<HTMLDivElement | null>,
-  onDismiss: () => void,
-  onFocusReturn?: () => void,
-  pendingSubmenuFocusRef?: RefObject<boolean>,
-  closeSubmenus?: () => void
-) {
-  const dismissRef = useRef(onDismiss);
-  dismissRef.current = onDismiss;
-  const focusReturnRef = useRef(onFocusReturn);
-  focusReturnRef.current = onFocusReturn;
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    root.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')?.focus();
-    const outside = (event: globalThis.PointerEvent) => {
-      if (!root.contains(event.target as Node)) dismissRef.current();
-    };
-    window.addEventListener("pointerdown", outside, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      if (root.contains(globalThis.document.activeElement) && globalThis.document.hasFocus()) {
-        focusReturnRef.current?.();
-      }
-    };
-  }, [menuRef]);
-  useLayoutEffect(() => {
-    const root = menuRef.current;
-    if (!root) return;
-    for (const button of root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')) {
-      button.tabIndex = button === globalThis.document.activeElement ? 0 : -1;
-    }
-    if (pendingSubmenuFocusRef?.current) {
-      const owner = globalThis.document.activeElement;
-      const submenu = owner?.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-      const first = submenu?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)');
-      if (first) { first.tabIndex = 0; first.focus(); }
-      pendingSubmenuFocusRef.current = false;
-    }
-  });
-  return (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const button = event.target instanceof HTMLButtonElement ? event.target : null;
-    const menu = button?.closest<HTMLElement>('[role="menu"]');
-    if (!button || !menu) return;
-    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')]
-      .filter(item => item.closest('[role="menu"]') === menu);
-    const focus = (item: HTMLButtonElement | undefined) => {
-      if (!item) return;
-      button.tabIndex = -1; item.tabIndex = 0; item.focus();
-    };
-    const index = buttons.indexOf(button);
-    switch (event.key) {
-      case "ArrowDown": case "ArrowUp":
-        event.preventDefault(); event.stopPropagation();
-        focus(buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]);
-        break;
-      case "Home": case "End":
-        event.preventDefault(); event.stopPropagation();
-        focus(event.key === "Home" ? buttons[0] : buttons[buttons.length - 1]);
-        break;
-      case "ArrowRight":
-        if (button.getAttribute("aria-haspopup") === "menu") {
-          event.preventDefault(); event.stopPropagation();
-          const submenu = button.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
-          if (submenu) focus(submenu.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? undefined);
-          else { if (pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true; button.click(); }
-        }
-        break;
-      case "ArrowLeft": case "Escape":
-        if (menu !== menuRef.current) {
-          event.preventDefault(); event.stopPropagation();
-          const owner = menu.parentElement?.querySelector<HTMLButtonElement>(':scope > button[role="menuitem"]');
-          closeSubmenus?.(); focus(owner ?? undefined);
-        } else if (event.key === "Escape") {
-          event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        }
-        break;
-      case "Tab":
-        event.preventDefault(); event.stopPropagation(); dismissRef.current();
-        break;
-      case "Delete": case "Backspace":
-        event.preventDefault(); event.stopPropagation();
-        break;
-      case "Enter": case " ":
-        event.preventDefault(); event.stopPropagation();
-        if (button.getAttribute("aria-haspopup") === "menu" && pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true;
-        button.click();
-        break;
-    }
-  };
-}
-
-const pageContextMenuItems = [
-  { commandId: "clipboard.paste", label: "Paste" },
-  { commandId: "edit.selectAll", label: "Select All" }
-] as const;
 
 /** Right-click menu for bare page: what you can still do when nothing is under the pointer. */
-export function PageContextMenu({
-  position,
-  onInvoke,
-  onFocusReturn,
-  onDismiss = () => {}
-}: {
+export function PageContextMenu(props: {
   position: ClientPoint;
   onInvoke(commandId: string): void;
   onFocusReturn?(): void;
   onDismiss?(): void;
 }) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const clampedPosition = useClampedContextMenuPosition(position, menuRef);
-  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn);
-
-  return (
-    <div
-      className="object-context-menu"
-      role="menu"
-      ref={menuRef}
-      onKeyDown={onMenuKeyDown}
-      aria-label="Page options"
-      data-context-target-kind="page"
-      style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
-      onContextMenu={(event) => {
-        if (isEditableTarget(event.target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {pageContextMenuItems.map((item) => (
-        <button
-          type="button"
-          role="menuitem"
-          className="object-context-menu-item"
-          key={item.commandId}
-          data-command-id={item.commandId}
-          onClick={() => onInvoke(item.commandId)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function contextMenuLayerLabel(
-  targetKind: ObjectContextMenuState["targetKind"],
-  objectIndex: number,
-  objectCount: number
-): string {
-  if (targetKind === "atom" || targetKind === "bond" || targetKind === "parts") {
-    return "Molecule layer";
-  }
-
-  return objectIndex >= 0 ? `Layer ${objectIndex + 1} of ${objectCount}` : "Layer options";
+  return <CanvasContextMenu key={`${props.position.x}:${props.position.y}`}
+    {...props} items={pageCanvasMenu} label="Page options" targetKind="page"
+    onDismiss={props.onDismiss ?? (() => {})} />;
 }
 
 function normalizedRect(startPoint: ClientPoint, latestPoint: ClientPoint): {
@@ -26328,21 +26913,17 @@ export function nativeMoleculeObjectAtPoint(
 
 function moleculeTransformFrameForSelection(
   object: MoleculeObject,
-  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined
+  selectedPartBounds: { x: number; y: number; width: number; height: number } | undefined,
+  selectedAtomIds?: ReadonlySet<string>
 ): MoleculeTransformFrame {
-  const rawFrame = selectedPartBounds
-    ? {
-        x: selectedPartBounds.x - object.x,
-        y: selectedPartBounds.y - object.y,
-        width: selectedPartBounds.width,
-        height: selectedPartBounds.height
-      }
-    : {
-        x: 0,
-        y: 0,
-        width: object.width,
-        height: object.height
-      };
+  const bounds = moleculeSelectionBounds(object, selectedPartBounds ?? object,
+    selectedPartBounds ? selectedAtomIds : undefined);
+  const rawFrame = {
+    x: bounds.x - object.x,
+    y: bounds.y - object.y,
+    width: bounds.width,
+    height: bounds.height
+  };
   const minSize = 28;
   const width = Math.max(rawFrame.width, minSize);
   const height = Math.max(rawFrame.height, minSize);
@@ -27450,11 +28031,14 @@ function selectionStatusLabel(selection: {
   /** Phase 7: when a selection spans several molecules, the aggregate drives the label. */
   nativeSelections?: readonly NativeMoleculeSelectionPart[];
 }): string {
-  if (selection.nativeSelections && selection.nativeSelections.length > 1) {
+  const nativeSelections = selection.nativeSelections ?? (selection.nativeSelection ? [selection.nativeSelection] : []);
+  const partHostIds = new Set(nativeSelections.map(part => part.objectId));
+  const wholeObjectCount = selection.objectIds.filter(objectId => !partHostIds.has(objectId)).length;
+  if (nativeSelections.length > 1 || (nativeSelections.length > 0 && wholeObjectCount > 0)) {
     let atoms = 0;
     let bonds = 0;
     let rings = 0;
-    for (const part of selection.nativeSelections) {
+    for (const part of nativeSelections) {
       if (part.kind === "atom") {
         atoms += 1;
       } else if (part.kind === "bond") {
@@ -27467,6 +28051,10 @@ function selectionStatusLabel(selection: {
         atoms += part.atomIds.length;
         bonds += part.bondIds.length;
       }
+    }
+    if (wholeObjectCount > 0) {
+      const count = atoms + bonds + rings;
+      return `Selected ${count} molecule ${count === 1 ? "part" : "parts"} and ${wholeObjectCount} ${wholeObjectCount === 1 ? "object" : "objects"}`;
     }
     if (rings > 0 && atoms === 0 && bonds === 0) {
       return `Selected ${rings} rings`;
@@ -27525,6 +28113,7 @@ function PageInteractionPortal({ target, children }: { target: HTMLDivElement | 
 const PageSvgSurface = memo(PageSvgSurfaceContent);
 
 function PageSvgSurfaceContent({
+  directElectronMarkEditing = false,
   ariaLabel,
   pageHeight,
   pageWidth,
@@ -27537,6 +28126,7 @@ function PageSvgSurfaceContent({
   editingTableCell,
   ...handlers
 }: {
+  directElectronMarkEditing?: boolean;
   ariaLabel: string;
   pageHeight: number;
   pageWidth: number;
@@ -27546,7 +28136,7 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
-  /** The HTML editing preview owns this text's paint until its edit ends. */
+  /** The SVG editing preview owns this text's paint until its edit ends. */
   editingTextObjectId?: string;
   editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
@@ -27603,55 +28193,68 @@ function PageSvgSurfaceContent({
             const editingText = object.type === "text" && object.id === editingTextObjectId;
             const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
-              <g
-                key={object.id}
-                data-page-svg-object-visual={object.id}
-                data-object-type={object.type}
-                data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
-                opacity={object.id === spinningObjectId ? 0.1 : undefined}
-                visibility={editingText ? "hidden" : undefined}
-                transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
-                onPointerDown={event => handlers.onPointerDown(object.id, event)}
-                onPointerMove={event => handlers.onPointerMove(object.id, event)}
-                onPointerUp={event => handlers.onPointerUp(object.id, event)}
-                onPointerCancel={handlers.onPointerCancel}
-                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
-                onContextMenu={event => handlers.onContextMenu(object.id, event)}
-                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
-              >
-                {object.type === "graphic" ? (
-                  // Keep the existing art renderer and its generous stroke/fill catchers.
-                  // It uses the same art-engine geometry as export, in local coordinates.
-                  <svg x={object.x} y={object.y} width={object.width} height={object.height}
-                    viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
-                    <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
-                      {preview?.artPreviewProxies?.[object.id]
-                        ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
-                        : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
-                    </g>
-                  </svg>
-                ) : (
-                  <>
-                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y}
-                        width={tableLayout?.width ?? object.width}
-                        height={tableLayout?.height ?? object.height}
-                        data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
-                          : projectedPlaneSvgTransformForObject(object)}
-                        fill="transparent" pointerEvents="all" />
-                    ) : null}
-                    {fragments.map(fragment => {
-                      const prefix = editingTableCell?.tableId === object.id
-                        ? `${tableCellElementId(object.id, editingTableCell.rowId,
-                          editingTableCell.columnId)}-line-` : undefined;
-                      return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
-                        child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
-                    })}
-                  </>
-                )}
-              </g>
+              <Fragment key={object.id}>
+                <g
+                  data-page-svg-object-visual={object.id}
+                  data-object-type={object.type}
+                  data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
+                  opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                  visibility={editingText ? "hidden" : undefined}
+                  transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
+                  style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
+                  onPointerDown={event => handlers.onPointerDown(object.id, event)}
+                  onPointerMove={event => handlers.onPointerMove(object.id, event)}
+                  onPointerUp={event => handlers.onPointerUp(object.id, event)}
+                  onPointerCancel={handlers.onPointerCancel}
+                  onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
+                  onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                  onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+                >
+                  {object.type === "graphic" ? (
+                    // Keep the existing art renderer and its generous stroke/fill catchers.
+                    // It uses the same art-engine geometry as export, in local coordinates.
+                    <svg x={object.x} y={object.y} width={object.width} height={object.height}
+                      viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
+                      <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
+                        {preview?.artPreviewProxies?.[object.id]
+                          ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
+                          : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
+                      </g>
+                    </svg>
+                  ) : (
+                    <>
+                      {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" || (directElectronMarkEditing && object.type === "electron-mark") ? (
+                        <rect {...(object.type === "electron-mark" ? electronMarkHitCatcherAttributes(object) : {
+                          x: object.x, y: object.y,
+                          width: tableLayout?.width ?? object.width,
+                          height: tableLayout?.height ?? object.height,
+                          transform: object.type === "table" ? String(fragments[0].attrs.transform ?? "")
+                            : projectedPlaneSvgTransformForObject(object)
+                        })}
+                          data-table-hit-target={object.type === "table" ? object.id : undefined}
+                          data-electron-mark-hit-target={object.type === "electron-mark" ? object.id : undefined}
+                          fill="transparent" pointerEvents="all" />
+                      ) : null}
+                      {fragments.map(fragment => {
+                        const prefix = editingTableCell?.tableId === object.id
+                          ? `${tableCellElementId(object.id, editingTableCell.rowId,
+                            editingTableCell.columnId)}-line-` : undefined;
+                        return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
+                          child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
+                      })}
+                    </>
+                  )}
+                </g>
+                {editingText ? (
+                  // Share the canvas viewport, transform and inherited text styles.
+                  // A second SVG in HTML chrome resolves its fractional viewport
+                  // independently, even with identical text attributes and viewBox math.
+                  <g className="text-object-edit-preview" aria-hidden="true"
+                    transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}>
+                    {fragments.map(renderStaticPageSvgFragment)}
+                  </g>
+                ) : null}
+              </Fragment>
             );
           })}
         </svg>
@@ -27886,6 +28489,7 @@ function useStableCallbacks<T extends Record<string, (...args: never[]) => unkno
 const DocumentObjectView = memo(DocumentObjectViewContent);
 
 function DocumentObjectViewContent({
+  directElectronMarkEditing = false,
   object,
   layerIndex,
   interactionLayer,
@@ -27962,9 +28566,12 @@ function DocumentObjectViewContent({
   onAtomLabelChange,
   onAtomLabelCancel,
   onAtomLabelFinish,
-  onBondStereoBadgeOpen
+  onBondStereoBadgeOpen,
+  onAtomProblemInvoke
 }: {
+  directElectronMarkEditing?: boolean;
   onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
+  onAtomProblemInvoke(commandId: string): void;
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
@@ -28033,7 +28640,7 @@ function DocumentObjectViewContent({
   onObjectResizeInputCancel(input: ObjectResizeInputState): void;
   onContextMenu(objectId: string, event: ObjectMouseEvent): void;
   onTextChange(objectId: string, text: string): void;
-  onTextEditFinish(objectId?: string): void;
+  onTextEditFinish(objectId?: string, reason?: "commit" | "escape"): void;
   onTextSelectionChange(objectId: string, range: NativeTextSelectionRange): void;
   isTextPlaceholderPending(objectId: string): boolean;
   onTextPlaceholderClear(objectId: string): void;
@@ -28043,6 +28650,46 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const textEditorStyle = object.type === "text" ? nativeTextStyleFromObjectStyle(object.style) : undefined;
+  const [textEditorLayout, setTextEditorLayout] = useState<{
+    metrics: NativeTextCssMetrics | undefined;
+    scale: number;
+    offset: { x: number; y: number };
+  }>();
+
+  useLayoutEffect(() => {
+    if (!editingText || object.type !== "text") return;
+    const placement = planTextObjectPlacement(object);
+    const measure = () => {
+      const viewport = measureTextEditorViewport(interactionLayer) ?? { scale: pageScale ?? 1, offset: { x: 0, y: 0 } };
+      setTextEditorLayout({ ...viewport,
+        metrics: measureTextEditorMetrics(placement.style, viewport.scale, placement.lineAdvance * viewport.scale) });
+    };
+    // A monitor move can change browser font rounding without changing page zoom.
+    // Watch the current resolution again after each change, including a move back.
+    let resolution: MediaQueryList | undefined;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution?.addEventListener("change", onResolutionChange);
+    };
+    const onResolutionChange = () => {
+      watchResolution();
+      measure();
+    };
+    const resizeObserver = new ResizeObserver(measure);
+    for (const target of [interactionLayer?.closest(".page"), interactionLayer?.closest(".canvas-region")]) {
+      if (target) resizeObserver.observe(target);
+    }
+    watchResolution();
+    measure();
+    return () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resizeObserver.disconnect();
+    };
+  }, [editingText, object.type, textEditorStyle?.fontFamily, textEditorStyle?.fontSizePx,
+    textEditorStyle?.fontWeight, textEditorStyle?.fontStyle, textEditorStyle?.lineHeight,
+    textEditorStyle?.paragraphSpacingPx, pageScale, pageWidth, pageHeight, interactionLayer]);
 
   useEffect(() => {
     if (!editingText || object.type !== "text") {
@@ -28166,7 +28813,7 @@ function DocumentObjectViewContent({
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      onTextEditFinish(object.id);
+      onTextEditFinish(object.id, "escape");
       return;
     }
 
@@ -28208,7 +28855,7 @@ function DocumentObjectViewContent({
       onAtomLabelCancel(state);
     }
   };
-  const artObjectProjection = documentObjectSupportsArtTransform(object)
+  const artObjectProjection = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectProjectedPlaneProjection(object)
     : undefined;
   const frameBounds = interactionBounds ?? object;
@@ -28251,9 +28898,15 @@ function DocumentObjectViewContent({
       {children}
     </div>, interactionLayer
   ) : <>{children}</>;
-  const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object)
+  const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
     ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
     : undefined;
+  const electronMarkFrame = object.type === "electron-mark" && artObjectProjection?.matrix
+    ? documentObjectProjectedPlaneBounds(object.width, object.height, artObjectProjection.matrix)
+    : object;
+  // Three 18px handle widths, measured on screen, including a rotated mark's frame.
+  const compactElectronMarkFrame = object.type === "electron-mark" &&
+    Math.min(electronMarkFrame.width, electronMarkFrame.height) * (pageScale ?? 1) < 54;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
   const graphicCornerRadiusEditPoint = object.type === "graphic" ? nativeGraphicCornerRadiusEditPoint(object) : undefined;
@@ -28309,15 +28962,16 @@ function DocumentObjectViewContent({
     showGraphicGradientHandles;
   const showArtObjectTransformFrame = (selected || graphicShiftTransformActive) &&
     !inGroupSelection &&
-    documentObjectSupportsArtTransform(object) &&
+    documentObjectSupportsArtTransform(object, directElectronMarkEditing) &&
     !graphicDirectEditChromeActive;
   const zRotationHandleVisible = rotationHandlesVisible || rotateReadout !== undefined;
   const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
   const artObjectTransformFrame = showArtObjectTransformFrame ? (
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
+      compactResizeHandles={compactElectronMarkFrame}
       targetLabel="selected art object"
-      canProjectedPlaneTilt={object.type !== "graphic" || !graphicObjectIsFreehandPath(object)}
+      canProjectedPlaneTilt={object.type !== "electron-mark" && (object.type !== "graphic" || !graphicObjectIsFreehandPath(object))}
       rotationHandlesVisible={rotationHandlesVisible}
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
@@ -28348,8 +29002,14 @@ function DocumentObjectViewContent({
       // Charge-mark chemistry is reconciled INTO atom.formalCharge on commit, so validity and
       // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
-      const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
+      const invalidAtomIds = new Set(invalidAtomStates.filter((state) => !state.warningSuppressed).map((state) => state.atomId));
       const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
+      const invalidHoverLabel = editingAtomLabel?.startedFromHover && editingAtomLabel.draft.trim() &&
+        nativeHoverAtomLabelCompletion(editingAtomLabel.draft) === undefined;
+      if (invalidHoverLabel) {
+        invalidAtomIds.add(editingAtomLabel.atomId);
+        invalidReasonByAtomId.set(editingAtomLabel.atomId, `Incomplete or unrecognized atom label "${editingAtomLabel.draft}"`);
+      }
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)
         .map((atom) => atom.id);
@@ -28388,7 +29048,7 @@ function DocumentObjectViewContent({
         ? nativeMoleculePartBounds(object, transformableSelectedPart)
         : undefined;
       const transformFrame = transformHandlesEnabled && !showGraphicGradientHandles && hasVisibleSelectionTargets && !inGroupSelection && (selected || selectedFragmentBounds)
-        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds)
+        ? moleculeTransformFrameForSelection(object, selectedFragmentBounds, selectedAtomIds)
         : undefined;
       const transformTargetLabel = selectedFragmentBounds ? "selected molecule fragment" : "selected molecule";
       const canProjectedPlaneTilt = transformFrame !== undefined;
@@ -28557,26 +29217,13 @@ function DocumentObjectViewContent({
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
-                <g
-                  className="native-atom-invalid-marker"
-                  data-invalid-atom-id={atom.id}
+                <AtomProblemMarker
+                  target={{ objectId: object.id, atomId: atom.id }}
                   key={`invalid-${atom.id}`}
-                >
-                  <title>{invalidReasonByAtomId.get(atom.id)}</title>
-                  <circle
-                    className="native-atom-invalid-ring"
-                    cx={atom.x - object.x + 9}
-                    cy={atom.y - object.y - 9}
-                    r="6"
-                  />
-                  <text
-                    className="native-atom-invalid-exclamation"
-                    x={atom.x - object.x + 9}
-                    y={atom.y - object.y - 9}
-                  >
-                    !
-                  </text>
-                </g>
+                  explanation={invalidReasonByAtomId.get(atom.id)}
+                  x={atom.x - object.x + 9} y={atom.y - object.y - 9}
+                  invoke={onAtomProblemInvoke}
+                />
               ))}
             {object.atoms
               .filter((atom) => deleteTarget?.kind === "atom" && atom.id === deleteTarget.atomId)
@@ -28730,6 +29377,7 @@ function DocumentObjectViewContent({
               return (
                 <input
                   aria-label="Atom label"
+                  aria-invalid={invalidHoverLabel ? true : undefined}
                   autoCapitalize="none"
                   autoComplete="off"
                   autoCorrect="off"
@@ -28845,7 +29493,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
-        {chrome(null)}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -28853,23 +29501,24 @@ function DocumentObjectViewContent({
   if (object.type === "text") {
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
-    const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
-    // Editor chrome only; never rewrite old/undone stored frames on open. Content and
-    // the 0.5 page-unit metric safety margin scale with zoom. Two borders, one caret
-    // pixel and one CSS pixel for browser layout rounding remain screen-sized.
+    const scale = textEditorLayout?.scale ?? pageScale ?? 1;
+    const contentWidth = editingText ? Math.max(0, ...textObjectSpanLines(object).map(line =>
+      measureNativeTextSpanLineWidth(line, textStyle))) : 0;
+    const editorPlacement = planTextObjectEditorPlacement(object, scale, contentWidth,
+      // Replaced in the layout effect before paint. Non-layout hosts (jsdom) have
+      // no measurable CSS font metrics; they can inject them through the reader.
+      textEditorLayout?.metrics ?? { ascentPx: textStyle.fontSizePx * scale, descentPx: 0 }, textEditorLayout?.offset);
+    // Editor chrome only; never rewrite old/undone stored frames on open.
     const editorFrameCss: CSSProperties = {};
-    if (editingText && !fixedTextWidth) {
-      const scale = pageScale ?? 1;
-      const contentWidth = Math.max(0, ...textObjectSpanLines(object).map(line =>
-        measureNativeTextSpanLineWidth(line, textStyle)));
-      const width = Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
-      const growth = width - object.width * scale;
-      const anchor = textStyle.textAlign === "right" ? 1 : textStyle.textAlign === "center" ? 0.5 : 0;
-      // Grow away from the alignment anchor. Keep the original rotation pivot in page
-      // space by moving it inside the expanded frame by the same amount as its left edge.
-      editorFrameCss.width = `${width}px`;
-      editorFrameCss.left = `${object.x * scale - anchor * growth}px`;
-      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth}px ${object.height * scale / 2}px`;
+    if (editingText) {
+      const frame = editorPlacement.frame;
+      editorFrameCss.width = `${frame.width}px`;
+      editorFrameCss.left = `${frame.left}px`;
+      editorFrameCss.top = `${frame.top}px`;
+      editorFrameCss.height = `${frame.height}px`;
+      editorFrameCss.transformOrigin = `${frame.originX}px ${frame.originY}px`;
+      // Rich-text spans use this inherited scale too, including explicit run sizes.
+      Object.assign(editorFrameCss, { "--page-scale": scale });
     }
 
     const textCss = {
@@ -28885,6 +29534,7 @@ function DocumentObjectViewContent({
     } as CSSProperties;
     const textEditorCss = {
       ...textCss,
+      ...editorPlacement.content,
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
@@ -28960,7 +29610,6 @@ function DocumentObjectViewContent({
         ) : null}
         {editingText ? (
           <>
-            <TextObjectContent object={object} editing />
             <textarea
               aria-label="Text object"
               autoFocus
@@ -28978,7 +29627,7 @@ function DocumentObjectViewContent({
                 }
                 recordTextEditorSelection(event.currentTarget);
               }}
-              // Click-away commits like Escape does (element-symbol text becomes an atom). The
+              // Click-away commits (exact element-symbol text becomes an atom). The
               // explicit id matters: canvas pointer handlers clear the edit state before blur.
               onBlur={(event) => {
                 if (inlineEditorBlurEndsEdit(event.currentTarget)) {
@@ -29352,6 +30001,7 @@ function artPreviewRasterPixelSize(proxy: ArtTransformDragPreviewProxy): { width
 
 function ArtObjectTransformFrame({
   frameStyle,
+  compactResizeHandles = false,
   targetLabel,
   canProjectedPlaneTilt,
   rotationHandlesVisible,
@@ -29376,6 +30026,7 @@ function ArtObjectTransformFrame({
   onResizeInputCancel
 }: {
   frameStyle?: CSSProperties;
+  compactResizeHandles?: boolean;
   targetLabel: string;
   canProjectedPlaneTilt: boolean;
   rotationHandlesVisible: boolean;
@@ -29403,7 +30054,7 @@ function ArtObjectTransformFrame({
   const projectedPlaneTiltHandleVisible = rotationHandlesVisible || projectedPlaneTiltReadout !== undefined;
   return (
     <div
-      className="object-transform-frame"
+      className={`object-transform-frame${compactResizeHandles ? " object-resize-compact" : ""}`}
       data-art-transform-frame="true"
       data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
       style={frameStyle ?? { inset: 0 }}
@@ -29495,10 +30146,12 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
   const width = Math.max(object.width, 1);
   const height = Math.max(object.height, 1);
   // Shared generator with SVG export (layout-engine) so canvas and export cannot drift.
-  const pathD = bracketGlyphPathD(object.bracketKind, width, height);
+  const pathD = bracketGlyphPathD(object.bracketKind, width, height, undefined, object.side);
+  const label = bracketLabelPlan(object);
   return (
     <svg
       className="bracket-glyph"
+      style={{ overflow: "visible" }}
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
       aria-hidden="true"
@@ -29508,6 +30161,9 @@ function BracketGlyph({ object, projection }: { object: BracketObject; projectio
         d={pathD}
         transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}
       />
+      {label ? <text className="bracket-repeat-label" x={label.x} y={label.y} fontSize={label.fontSize}
+        fontFamily={label.fontFamily} fill="#172026" stroke="none"
+        transform={projection?.matrix ? artProjectionSvgTransform(width, height, projection.matrix) : undefined}>{label.text}</text> : null}
     </svg>
   );
 }
@@ -29862,10 +30518,12 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
 }
 
 const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
+  const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   if (object.graphicKind === "image" && object.data.image) {
     const image = object.data.image;
     return (
-      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none" aria-hidden="true">
+      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none"
+        opacity={plan.opacity === 1 ? undefined : plan.opacity} aria-hidden="true">
         <image
           className="graphic-glyph-image"
           href={`data:${image.mimeType};base64,${image.dataBase64}`}
@@ -29875,7 +30533,6 @@ const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" 
       </svg>
     );
   }
-  const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
   const height = plan.height;
@@ -30925,8 +31582,8 @@ interface DocumentObjectProjection {
   matrix?: DocumentObjectProjectionMatrix;
 }
 
-function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
-  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
+function documentObjectSupportsArtTransform(object: DocumentObject, directElectronMarkEditing = false): boolean {
+  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow" || (directElectronMarkEditing && object.type === "electron-mark");
 }
 
 function documentObjectOuterCssTransform(
@@ -31639,14 +32296,17 @@ function documentObjectToolbarColor(object: DocumentObject): string {
   return metadataColor(object.style.color, object.style.strokeColor, object.style.fillColor, "#111111");
 }
 
-function documentObjectTransformLabel(object: DocumentObject | undefined): string {
+function documentObjectTransformLabel(object: DocumentObject | undefined, directElectronMarkEditing = false): string {
   if (object?.type === "text") {
     return "text box";
   }
   if (object?.type === "molecule") {
     return "selected molecule";
   }
-  if (object && documentObjectSupportsArtTransform(object)) {
+  if (object?.type === "electron-mark") {
+    return "electron mark";
+  }
+  if (object && documentObjectSupportsArtTransform(object, directElectronMarkEditing)) {
     return "selected art object";
   }
   return "selected object";
@@ -31673,9 +32333,11 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object, noWrap = false }: { editing?: boolean; object: TextObject; noWrap?: boolean }) {
+function TextObjectContent({ object, noWrap = false }: {
+  object: TextObject; noWrap?: boolean;
+}) {
   return (
-    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
+    <span className="text-object-content"
       style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
@@ -32602,7 +33264,8 @@ export async function createDialogExportPreview(document: ChemDraftDocument, opt
 export async function createDialogExportResult(
   document: ChemDraftDocument,
   state: ExportDialogState,
-  preview = false
+  preview = false,
+  title?: string
 ): Promise<ExportResult> {
   const descriptor = getExportFormatDescriptor(state.format);
   const presentation = state.presentation ?? { width: document.pages[0].width, dpi: 96, crop: "page" as const, background: "white" as const };
@@ -32628,14 +33291,15 @@ export async function createDialogExportResult(
   const dpi = preview ? 96 : sanitizedDialogNumber(presentation.dpi, 96, 36, 1200);
 
   if (state.format === "svg") {
-    const result = exportPhase4Svg(document, {
+    const result = (await exportPhase4Svg(document, {
+      title,
       ...(sized || preview ? { outputWidth: preview ? width : Number((width / dpi * 25.4).toFixed(4)),
       outputHeight: preview ? height : Number((height / dpi * 25.4).toFixed(4)),
       outputUnit: preview ? undefined : "mm" as const } : {}),
       ...(sized ? { background: presentation.background === "transparent" ? "transparent" as const : "#ffffff" } : {}),
       includeWarnings: state.svg.includeWarnings,
       includePageGuides: state.svg.includePageGuides
-    });
+    }));
     return {
       format: descriptor.id,
       kind: "text",
@@ -32653,6 +33317,8 @@ export async function createDialogExportResult(
       includePageGuides: state.pdf.includePageGuides
     });
   }
+
+  if (state.format === "cdx") return exportDocumentCdx(document, false);
 
   if (state.format === "cdxml") {
     return exportPhase4Cdxml(document, {
@@ -32676,11 +33342,11 @@ export async function createDialogExportResult(
     const transparent = rasterFormat === "png" && state.raster.background === "transparent";
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
     // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
-    const svgResult = exportPhase4Svg(document, {
+    const svgResult = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: width, outputHeight: height } : {}),
       includeWarnings: true,
       background: transparent ? "transparent" : "#ffffff"
-    });
+    }));
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
       // Legacy scale-based exports use the source SVG's 96 CSS px/inch. Rust multiplies
@@ -32754,14 +33420,14 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
   return warnings.map((warning) => warning.message).join(" ");
 }
 
-async function pickNativeOpenPath(): Promise<string | undefined> {
+async function pickNativeOpenPaths(): Promise<string[]> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
-    title: "Open ChemDraft or CDXML Document",
-    multiple: false,
+    title: "Open ChemDraft, CDXML or CDX Document",
+    multiple: true,
     fileAccessMode: "scoped"
   });
-  return typeof selected === "string" ? selected : undefined;
+  return typeof selected === "string" ? [selected] : selected ?? [];
 }
 
 async function pickNativeSavePath(
@@ -32772,7 +33438,11 @@ async function pickNativeSavePath(
   const selected = await save({
     title: options?.title ?? "Save ChemDraft Document",
     defaultPath,
-    filters: [{ name: options ? "Saved document" : "ChemDraft", extensions: [options?.extension ?? "chemdraft"] }]
+    filters: options ? [{ name: "Saved document", extensions: [options.extension] }] : [
+      { name: "ChemDraft", extensions: ["chemdraft"] },
+      { name: "CDXML", extensions: ["cdxml"] },
+      { name: "CDX (*.cdx)", extensions: ["cdx"] }
+    ]
   });
   return selected ?? undefined;
 }
@@ -32786,7 +33456,7 @@ async function pickNativeExportPath(
   const { save } = await loadTauriDialogModule();
   const selected = await save({
     title: `Export ${formatLabel}`,
-    defaultPath,
+    defaultPath: exportDefaultPath(defaultPath, extensions),
     filters: [{ name: formatLabel, extensions: [...extensions] }]
   }, focusExportSessionId);
   return selected ?? undefined;
@@ -32800,7 +33470,7 @@ async function pickNativeMoleculeTemplateOpenPath(): Promise<string | undefined>
     fileAccessMode: "scoped",
     filters: [
       { name: "Drawn Structure Settings Templates", extensions: ["template", "cds"] },
-      { name: "ChemDraw Style Sheets", extensions: ["cds"] },
+      { name: "Style Sheets (.cds)", extensions: ["cds"] },
       { name: "ChemDraft Templates", extensions: ["template"] }
     ]
   });
@@ -32835,31 +33505,21 @@ function prewarmNativeDialogModule(): void {
   });
 }
 
-/** An opened document's text, decoded by its byte-order mark (see documentText.ts) — `readTextFile`
- *  alone assumes UTF-8, so a UTF-16 CDXML file opened as noise. */
-async function readNativeTextFile(path: string): Promise<string> {
-  return decodeDocumentBytes(await readNativeBinaryFile(path));
-}
-
 async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
   const { readFile } = await import("@tauri-apps/plugin-fs");
   return readFile(path);
 }
 
-async function takePendingNativeOpenDocument(): Promise<NativeOpenDocumentPayload | undefined> {
+async function takePendingNativeOpenDocuments(): Promise<NativeOpenDocumentPayload[]> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const payload = await invoke<NativeOpenDocumentPayload | null>("take_pending_open_document");
-  return payload ?? undefined;
+  const payloads = await invoke<NativeOpenDocumentPayload[]>("take_pending_open_document");
+  return payloads.filter(isNativeOpenDocumentPayload);
 }
 
 async function listenForNativeOpenDocuments(
-  handler: (payload: NativeOpenDocumentPayload) => void
+  handler: () => void
 ): Promise<() => void> {
-  return listenTauriEvent<NativeOpenDocumentPayload>(nativeOpenDocumentEvent, (event) => {
-    if (isNativeOpenDocumentPayload(event.payload)) {
-      handler(event.payload);
-    }
-  });
+  return listenTauriEvent<null>(nativeOpenDocumentEvent, handler);
 }
 
 function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumentPayload {
@@ -32868,7 +33528,9 @@ function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumen
     value !== null &&
     typeof (value as NativeOpenDocumentPayload).path === "string" &&
     typeof (value as NativeOpenDocumentPayload).displayName === "string" &&
-    typeof (value as NativeOpenDocumentPayload).contents === "string"
+    typeof (value as NativeOpenDocumentPayload).contents === "string" &&
+    ((value as NativeOpenDocumentPayload).bytes === undefined ||
+      Array.isArray((value as NativeOpenDocumentPayload).bytes))
   );
 }
 
@@ -32883,7 +33545,7 @@ async function writeNativeBinaryFile(path: string, bytes: Uint8Array): Promise<v
 }
 
 function ensureChemDraftFileExtension(path: string): string {
-  return /\.(chemdraft|cdxml)$/i.test(path) ? path : `${path}.chemdraft`;
+  return /\.(chemdraft|cdxml|cdx)$/i.test(path) ? path : `${path}.chemdraft`;
 }
 
 function ensureExportFileExtension(path: string, extensions: readonly string[]): string {
@@ -32937,8 +33599,9 @@ function downloadBlob(filename: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-function createExportFilename(document: ChemDraftDocument, extension: string): string {
-  const baseName = document.title.replace(/\.chemdraft$/i, "").trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
+function createExportFilename(document: ChemDraftDocument, extension: string, savedDocumentPath?: string): string {
+  const stem = stripExportFileExtension(savedDocumentPath ? nativePathBasename(savedDocumentPath) : document.title);
+  const baseName = stem.trim().replace(/[^a-z0-9._-]+/gi, "-") || "Untitled";
   // The dialog contract caps filenames at 256 UTF-16 units. The sanitized stem is
   // ASCII, so slicing it cannot split a surrogate pair. Preserve the full extension.
   return `${baseName.slice(0, 256 - extension.length - 1)}.${extension}`;
@@ -33194,6 +33857,14 @@ function chargeValueForToolCommand(commandId: string): NativeElectronMarkSpec | 
     default:
       return undefined;
   }
+}
+
+function objectStyleResultStatus(commandId: string, fallback: string): string {
+  const wave = objectWaveForCommand(commandId);
+  if (wave) return `Wave ${wave.setting} set to ${wave.value}${wave.setting === "smoothness" ? "%" : " px"}`;
+  const electron = electronMarkStyleCommands.find(command => command.id === commandId);
+  if (electron) return `Electron mark ${electron.property} set to ${electron.property === "size" ? electron.value : electron.value.toFixed(2)} px`;
+  return fallback;
 }
 
 export function electronMarkSpecStatusNoun(spec: NativeElectronMarkSpec, placedCharge?: number): string {

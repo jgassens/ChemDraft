@@ -240,6 +240,33 @@ describe.each([
     expect(after.atoms).toHaveLength(before.atoms.length + 3);
     expect(after.bonds.filter(bond => [bond.fromAtomId, bond.toAtomId].includes(before.atoms[0].id))).toHaveLength(4);
     expect(after.atoms.slice(0, before.atoms.length)).toEqual(before.atoms);
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Add branched alkyl");
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("labels key 9 over a bond as one chair-ring fusion undo", async () => {
+    await renderEthane();
+    const before = molecule();
+    await hoverBond();
+    await press("9");
+    expect(molecule().atoms).toHaveLength(before.atoms.length + 4);
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Fuse chair cyclohexane ring");
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
+
+  it("labels the wedge shortcut on a bond", async () => {
+    await renderEthane();
+    const before = molecule();
+    await hoverBond();
+    await press("w");
+    expect(molecule().bonds[0]?.display?.bondStyle).toBe("wedge");
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Make bond wedge");
   });
 
   it.skipIf(scheme !== "chemdraft")("V over an atom switches to the Selection tool without editing chemistry", async () => {
