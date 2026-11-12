@@ -3,6 +3,7 @@ mod clipboard_formats;
 mod clipboard_images;
 mod clipboard_limits;
 mod dialog_windows;
+mod document_menus;
 mod document_session;
 pub mod document_windows;
 mod download_diagnosis;
@@ -155,13 +156,10 @@ const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
-/// The two Close Window / Close Tab items (File and Window menus). Native window closes stay
-/// native; with multiple document tabs the main window routes document.closeTab to the webview.
-/// Two ids because muda item ids are meant to be unique.
+/// The macOS File item follows the active document's tab count. Window > Close Window
+/// always invokes the registered window.close command with CmdOrCtrl+Shift+W.
 #[cfg(target_os = "macos")]
 const CLOSE_WINDOW_FILE_MENU_ID: &str = "app.closeWindow.file";
-#[cfg(target_os = "macos")]
-const CLOSE_WINDOW_WINDOW_MENU_ID: &str = "app.closeWindow.window";
 const DOM_COMMAND_EVENT: &str = "chemdraft:native-command";
 #[cfg(target_os = "macos")]
 const PALETTE_POINTER_EVENT: &str = "chemdraft://palette-pointer";
@@ -1642,17 +1640,6 @@ fn plugin_menu_items_in<'a>(
         .collect()
 }
 
-/// The plugin menu items last synced from the webview. Read by every menu rebuild so the items
-/// survive toolset-driven rebuilds, not only plugin syncs.
-#[derive(Default)]
-struct PluginNativeMenuItems(std::sync::Mutex<Vec<PluginMenuItemInput>>);
-
-/// The Toolbars-menu rows and View-toggle state last pushed by JS (`set_toolbars_menu`). Stored so a
-/// plugin-menu sync (`sync_plugin_menu_items`) can rebuild the whole native menu from the same model
-/// without waiting for the next toolbar push — the menu's source of truth stays the TS toolbar registry.
-#[derive(Default)]
-struct ToolbarsMenuModel(std::sync::Mutex<(Vec<ToolbarMenuEntry>, ViewMenuState)>);
-
 /// Which keyboard-shortcut scheme the app runs under (mirrors the webview's persisted setting; JS
 /// pushes it on startup and on change via `set_keybinding_scheme`). Read at menu-build time so the
 /// few native accelerators that differ between the schemes stay in step with the webview registry.
@@ -1945,8 +1932,7 @@ pub fn run() {
         .manage(external_tools::ExternalToolsState::default())
         .manage(naming_engine::NamingEngineState::default())
         .manage(ToolsetWindowDirectory::default())
-        .manage(PluginNativeMenuItems::default())
-        .manage(ToolbarsMenuModel::default())
+        .manage(document_menus::DocumentMenus::default())
         .manage(KeybindingSchemeState::default())
         // Take over the app's OWN `tauri://` origin so one handler serves both the document and any
         // staged plugin package (ADR-0029 §6 as amended; M36). This *replaces* Tauri's built-in
@@ -2009,30 +1995,8 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
-            // Single brain: every menu click (toolset toggles included) routes to the JS
-            // command dispatcher, which owns visibility and pushes checkmarks back via
-            // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
-            let command_id = event.id().as_ref();
-            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
-                check_for_updates(app);
-                return;
-            }
-            if command_id == APP_QUIT_COMMAND_ID {
-                request_quit(app);
-                return;
-            }
-            #[cfg(target_os = "macos")]
-            if command_id == CLOSE_WINDOW_FILE_MENU_ID || command_id == CLOSE_WINDOW_WINDOW_MENU_ID
-            {
-                close_key_window(app);
-                return;
-            }
-            if is_routed_menu_command(command_id)
-                || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
-            {
-                if let Err(error) = emit_menu_command(app, command_id) {
-                    eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
-                }
+            if let Err(error) = handle_document_menu_event(app, event.id().as_ref()) {
+                eprintln!("Could not route ChemDraft menu command: {error}");
             }
         })
         .on_window_event(|window, event| {
@@ -2067,6 +2031,11 @@ pub fn run() {
                             window
                                 .state::<document_windows::DocumentWindowRegistry>()
                                 .remove(&owner.window_id);
+                            window
+                                .state::<document_menus::DocumentMenus>()
+                                .remove(&owner.window_id);
+                            let _ = reinstall_app_menu(window.app_handle());
+                            let _ = publish_menu_windows(window.app_handle());
                         }
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -2113,6 +2082,8 @@ pub fn run() {
                         dialog_windows::reown_preferences(window.app_handle(), None);
                         if let Some(active) = registry.active_document_window() {
                             if previous.as_deref() != Some(active.window_id.as_str()) {
+                                let _ = reinstall_app_menu(window.app_handle());
+                                let _ = publish_menu_windows(window.app_handle());
                                 let _ = window.app_handle().emit(
                                     "chemdraft://active-document-window",
                                     serde_json::json!({ "windowId": active.window_id }),
@@ -2319,7 +2290,7 @@ pub fn run() {
             }
 
             #[cfg(not(target_os = "macos"))]
-            if let Err(error) = create_app_menu(app).and_then(|menu| install_app_menu(app, menu)) {
+            if let Err(error) = install_app_menu(app) {
                 eprintln!("Could not install the ChemDraft menu: {error}");
             }
 
@@ -2439,6 +2410,8 @@ pub fn run() {
             publish_palette_snapshot,
             palette_routing_state,
             sync_plugin_menu_items,
+            publish_menu_snapshot,
+            run_window_menu_command,
             read_clipboard_payload,
             write_clipboard_items,
             write_clipboard_text_items,
@@ -2669,6 +2642,9 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         };
         app.state::<document_windows::DocumentWindowRegistry>()
             .set_ready(MAIN_WINDOW_LABEL);
+        let menu_app = app.clone();
+        run_on_main_thread_blocking(&window, move || install_app_menu(&menu_app))
+            .and_then(|result| result.map_err(|error| error.to_string()))?;
         window
     };
 
@@ -4398,60 +4374,20 @@ async fn flush_document_session(
 #[tauri::command]
 fn set_toolbars_menu(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     entries: Vec<ToolbarMenuEntry>,
     rulers_visible: bool,
     crosshairs_visible: bool,
     has_multiple_document_tabs: Option<bool>,
 ) -> Result<(), String> {
-    // JS carries the current View-toggle state so the whole-menu rebuild preserves the Show Rulers /
-    // Show Crosshairs checkmarks (they aren't re-mirrored by set_menu_checked like toolset toggles).
-    let view_state = ViewMenuState {
-        rulers_visible,
-        crosshairs_visible,
-        has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
-    };
-    // Remember the pushed model so plugin-menu syncs can rebuild the full menu from it later
-    // (reinstall_app_menu) without waiting for the next toolbar push. JS pushes on every toolbar
-    // visibility or rulers/crosshairs toggle; most pushes only move checkmarks, and a full rebuild
-    // swaps the whole menu bar (on Windows: two SetMenu calls, a resize of the document's client
-    // area and two layout-file writes), so only a structural change rebuilds.
-    let update = {
-        let state = app.state::<ToolbarsMenuModel>();
-        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
-        let update = classify_toolbars_menu_update(&guard, &entries, view_state);
-        *guard = (entries.clone(), view_state);
-        update
-    };
-    if update == ToolbarsMenuUpdate::Unchanged {
-        return Ok(());
-    }
-    app.clone()
-        .run_on_main_thread(move || {
-            let result = if update == ToolbarsMenuUpdate::ChecksOnly {
-                entries
-                    .iter()
-                    .map(|entry| (toolset_toggle_command_id(&entry.toolset_id), entry.visible))
-                    .chain([
-                        ("view.toggleRulers".to_string(), view_state.rulers_visible),
-                        (
-                            "view.toggleCrosshairs".to_string(),
-                            view_state.crosshairs_visible,
-                        ),
-                    ])
-                    .try_for_each(|(command_id, checked)| {
-                        set_check_menu_item_checked_now(&app, &command_id, checked)
-                    })
-            } else {
-                let plugin_items = current_plugin_menu_items(&app);
-                create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                    .and_then(|menu| install_app_menu(&app, menu))
-                    .map_err(|error| error.to_string())
-            };
-            if let Err(error) = result {
-                eprintln!("Could not update ChemDraft toolbar menu: {error}");
-            }
-        })
-        .map_err(|error| error.to_string())
+    update_document_menu(&app, window.label(), |snapshot| {
+        snapshot.entries = entries;
+        snapshot.view = ViewMenuState {
+            rulers_visible,
+            crosshairs_visible,
+            has_multiple_document_tabs: has_multiple_document_tabs.unwrap_or(false),
+        };
+    })
 }
 
 #[tauri::command]
@@ -4481,6 +4417,7 @@ fn focus_main_document_window_if_app_active(app: tauri::AppHandle) -> Result<boo
 #[tauri::command]
 fn set_menu_checked(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     command_id: String,
     checked: bool,
 ) -> Result<(), String> {
@@ -4488,7 +4425,26 @@ fn set_menu_checked(
     if command_id.is_empty() {
         return Err("Menu command id cannot be empty.".to_string());
     }
-    set_check_menu_item_checked(&app, command_id, checked)
+    update_document_menu(&app, window.label(), |snapshot| {
+        if let Some(state) = snapshot
+            .commands
+            .iter_mut()
+            .find(|s| s.command_id == command_id)
+        {
+            state.checked = Some(checked);
+        } else {
+            snapshot.commands.push(document_menus::CommandState {
+                command_id: command_id.into(),
+                enabled: true,
+                checked: Some(checked),
+            });
+        }
+        if let Some(id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
+            if let Some(entry) = snapshot.entries.iter_mut().find(|e| e.toolset_id == id) {
+                entry.visible = checked;
+            }
+        }
+    })
 }
 
 /// Guards the storage path against traversal: plugin ids become directory names, so the
@@ -5797,32 +5753,6 @@ mod plugin_panel_label_tests {
             choose_analysis_window_position(main, area, 380.0, 2000.0, &[]),
             (1216.0, 25.0)
         );
-    }
-
-    #[test]
-    fn close_window_closes_reports_and_hosted_dialogs_through_tauri() {
-        use super::{close_window_route, CloseWindowRoute};
-        assert_eq!(
-            close_window_route(Some(&plugin_panel_window_label("v1x6f7267x70616e656c"))),
-            CloseWindowRoute::TauriClose
-        );
-        assert_eq!(
-            close_window_route(Some("preferences")),
-            CloseWindowRoute::TauriClose
-        );
-        for other in [
-            Some("main"),
-            Some("spin3d-debugger"),
-            Some("toolset-core-main"),
-            Some("plugin-panel-"),
-            None,
-        ] {
-            assert_eq!(
-                close_window_route(other),
-                CloseWindowRoute::PerformClose,
-                "{other:?}"
-            );
-        }
     }
 
     #[test]
@@ -8830,10 +8760,62 @@ fn quit_menu_item_spec(is_macos: bool) -> QuitMenuItem {
     }
 }
 
+fn document_menu_accelerator<'a, R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: &str,
+    accelerator: Option<&'a str>,
+) -> Option<&'a str> {
+    let active = app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window();
+    let source = document_menus::decode_item(id).map(|(label, _)| label);
+    if document_menus::owns_accelerators(
+        cfg!(target_os = "macos"),
+        source,
+        active.as_ref().map(|window| window.native_label.as_str()),
+    ) {
+        accelerator
+    } else {
+        None
+    }
+}
+
+fn document_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: String,
+    text: impl AsRef<str>,
+    enabled: bool,
+    accelerator: Option<&str>,
+) -> tauri::Result<MenuItem<R>> {
+    let accelerator = document_menu_accelerator(app, &id, accelerator);
+    MenuItem::with_id(app, id, text, enabled, accelerator)
+}
+
+fn document_check_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    id: String,
+    text: impl AsRef<str>,
+    enabled: bool,
+    checked: bool,
+    accelerator: Option<&str>,
+) -> tauri::Result<CheckMenuItem<R>> {
+    let accelerator = document_menu_accelerator(app, &id, accelerator);
+    CheckMenuItem::with_id(app, id, text, enabled, checked, accelerator)
+}
+
 /// Custom on both platforms: predefined Quit ends the loop before the webview can flush.
-fn quit_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
+fn quit_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<MenuItem<R>> {
     let item = quit_menu_item_spec(cfg!(target_os = "macos"));
-    MenuItem::with_id(app, item.command_id, item.label, true, item.accelerator)
+    document_menu_item(
+        app,
+        document_menus::item_id(source_label, item.command_id),
+        item.label,
+        true,
+        item.accelerator,
+    )
 }
 
 /// A routed Edit-menu history item: command id, label, and accelerator.
@@ -8860,11 +8842,12 @@ const EDIT_HISTORY_MENU_ITEMS: [EditHistoryMenuItem; 2] = [
 
 fn edit_history_menu_item<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     item: &EditHistoryMenuItem,
 ) -> tauri::Result<MenuItem<R>> {
-    MenuItem::with_id(
+    document_menu_item(
         app,
-        item.command_id,
+        document_menus::item_id(source_label, item.command_id),
         item.label,
         true,
         Some(item.accelerator),
@@ -8877,74 +8860,114 @@ fn is_edit_history_command(command_id: &str) -> bool {
         .any(|item| item.command_id == command_id)
 }
 
-/// Which window a routed menu command is delivered to. Everything goes to the main document window,
-/// except Select All and Undo / Redo, which follow the key window. As with AppKit's
-/// predefined items, ⌘Z in a palette's text field undoes that text. The secondary window forwards
-/// history commands to the main window itself
-/// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
+/// macOS always targets the active document; Windows uses the encoded menu owner.
+/// Utility focus never retargets or validates a document menu.
 fn menu_command_target_label(
     registry: &document_windows::DocumentWindowRegistry,
-    command_id: &str,
-    focused_label: Option<&str>,
+    _command_id: &str,
+    source_label: Option<&str>,
 ) -> Option<String> {
-    // The application service is never a recipient, even if the OS reports anomalous focus.
-    let focused_label = focused_label.filter(|label| *label != "runtime");
-    match focused_label {
-        Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
-            Some(label.to_string())
-        }
-        _ => registry
-            .active_document_window()
-            .map(|document| document.native_label),
-    }
+    document_menus::target(registry, cfg!(target_os = "macos"), source_label)
 }
 
-fn emit_menu_command<R: Runtime>(
+fn handle_document_menu_event<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    command_id: &str,
+    id: &str,
 ) -> Result<(), String> {
-    let focused_label = app
-        .webview_windows()
-        .into_iter()
-        .find(|(_, window)| window.is_focused().unwrap_or(false))
-        .map(|(label, _)| label);
-    let target_label = menu_command_target_label(
+    let decoded = document_menus::decode_item(id);
+    // An unscoped Windows event cannot identify a document owner; fail closed.
+    if !cfg!(target_os = "macos") && decoded.is_none() {
+        return Ok(());
+    }
+    let (source, command) = decoded
+        .map(|(source, command)| (Some(source), command))
+        .unwrap_or((None, id));
+    let target = menu_command_target_label(
         &app.state::<document_windows::DocumentWindowRegistry>(),
-        command_id,
-        focused_label.as_deref(),
-    )
-    .ok_or("Document window is not available.")?;
-    if is_document_window(app, &target_label) {
-        if panel_window::palette_blocks_menu(true, command_id) {
+        command,
+        source,
+    );
+    if !cfg!(target_os = "macos") && target.is_none() {
+        return Ok(());
+    }
+    if command == APP_QUIT_COMMAND_ID {
+        request_quit(app);
+        return Ok(());
+    }
+    if command == CHECK_FOR_UPDATES_COMMAND_ID {
+        check_for_updates(app);
+        return Ok(());
+    }
+    let Some(target) = target else {
+        if matches!(
+            command,
+            "document.new" | "document.open" | document_menus::NEW_WINDOW
+        ) {
+            // Webview creation must run on a worker (WebView2 needs the event loop). A10 alone
+            // enables additional windows; these zero-document actions recreate the first one.
+            let app = app.clone();
+            let open = command == "document.open";
+            thread::spawn(move || {
+                let result = (|| {
+                    let _creation = lock_window_creation()?;
+                    if open {
+                        *app.state::<document_menus::DocumentMenus>()
+                            .pending_open
+                            .lock()
+                            .unwrap() = Some(MAIN_WINDOW_LABEL.into());
+                    }
+                    ensure_main_window_visible(&app)
+                })();
+                if let Err(error) = result {
+                    eprintln!("Could not open document window from menu: {error}");
+                }
+            });
+        }
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    if command == CLOSE_WINDOW_FILE_MENU_ID {
+        if menu_closes_document_tab(
+            &app.state::<document_windows::DocumentWindowRegistry>(),
+            &target,
+            menu_snapshot(app, &target).view.has_multiple_document_tabs,
+        ) {
+            return dispatch_document_menu_command(app, &target, "document.closeTab");
+        }
+        return dispatch_document_menu_command(app, &target, document_menus::CLOSE_WINDOW);
+    }
+    let plugin_items = menu_snapshot(app, &target).plugin_items;
+    if is_routed_menu_command(command)
+        || is_core_routed_dynamic_menu_command(command, &plugin_items)
+        || command == document_menus::NEW_WINDOW
+        || command == document_menus::CLOSE_WINDOW
+        || command.starts_with(document_menus::ACTIVATE_PREFIX)
+    {
+        if panel_window::palette_blocks_menu(true, command) {
             return Ok(());
         }
-        return emit_command_to_main(app, command_id);
+        dispatch_document_menu_command(app, &target, command)?;
+    }
+    Ok(())
+}
+
+fn dispatch_document_menu_command<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    command_id: &str,
+) -> Result<(), String> {
+    if !is_document_window(app, label) {
+        return Err("Unknown document menu target.".into());
     }
     let target = app
-        .get_webview_window(&target_label)
-        .ok_or_else(|| format!("Window {target_label} is not available."))?;
+        .get_webview_window(label)
+        .ok_or("The document window is not available.")?;
     dispatch_dom_command_event(
         &target,
         &NativeCommandPayload {
-            command_id: command_id.to_string(),
+            command_id: command_id.into(),
         },
     )
-}
-
-fn emit_command_to_main<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    command_id: &str,
-) -> Result<(), String> {
-    let main = active_document_webview(app)
-        .ok_or_else(|| "Main document window is not available.".to_string())?;
-    let payload = NativeCommandPayload {
-        command_id: command_id.to_string(),
-    };
-
-    // Single delivery: dispatch the `native-command` DOM event straight into the main webview, which
-    // the JS `listenForToolsetCommands` DOM listener consumes exactly once. (We used to also emit over
-    // the tauri event bus, which fanned out to several listeners and required a JS-side deduper.)
-    dispatch_dom_command_event(&main, &payload)
 }
 
 fn dispatch_dom_command_event<R: Runtime, P: serde::Serialize>(
@@ -9190,7 +9213,8 @@ fn emit_toolset_window_state_to_main<R: Runtime>(
 /// carrying their real state here keeps them from snapping back to a hardcoded default (the checkmark
 /// would otherwise desync and then invert on the next click). JS is the source of truth and passes
 /// the current values; the startup menu uses the defaults, which match the app's initial state.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ViewMenuState {
     rulers_visible: bool,
     crosshairs_visible: bool,
@@ -9213,20 +9237,164 @@ impl Default for ViewMenuState {
 #[tauri::command]
 fn sync_plugin_menu_items(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     items: Vec<PluginMenuItemInput>,
 ) -> Result<(), String> {
-    {
-        let state = app.state::<PluginNativeMenuItems>();
-        let mut guard = state.0.lock().map_err(|error| error.to_string())?;
-        // The webview re-sends the list on every plugin host/panel change (each report push, panel
-        // open/close), almost always unchanged. A rebuild swaps the whole menu bar — on Windows two
-        // SetMenu calls that resize the document's client area — so identical syncs are dropped.
-        if *guard == items {
-            return Ok(());
+    update_document_menu(&app, window.label(), |snapshot| {
+        snapshot.plugin_items = items
+    })
+}
+
+#[tauri::command]
+fn publish_menu_snapshot(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    snapshot: document_menus::Snapshot,
+) -> Result<Vec<MenuWindow>, String> {
+    update_document_menu(&app, window.label(), |current| *current = snapshot)?;
+    let state = app.state::<document_menus::DocumentMenus>();
+    let pending = {
+        let mut pending = state.pending_open.lock().unwrap();
+        if pending.as_deref() == Some(window.label()) {
+            pending.take()
+        } else {
+            None
         }
-        *guard = items;
+    };
+    if pending.is_some() {
+        dispatch_document_menu_command(&app, window.label(), "document.open")?;
     }
-    reinstall_app_menu(&app)
+    Ok(menu_windows(&app))
+}
+
+/// Native half of registered, value-encoded Window commands. No caller may enable A10 creation.
+#[tauri::command]
+async fn run_window_menu_command(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command_id: String,
+) -> Result<(), String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Window commands require a registered document window.".into());
+    }
+    if command_id == document_menus::CLOSE_WINDOW {
+        request_close_window(&app, window.label());
+        return Ok(());
+    }
+    if let Some(id) = command_id.strip_prefix(document_menus::ACTIVATE_PREFIX) {
+        let document = app
+            .state::<document_windows::DocumentWindowRegistry>()
+            .document_window(id)
+            .ok_or("The document window is no longer open.")?;
+        let target = app
+            .get_webview_window(&document.native_label)
+            .ok_or("The document window is not available.")?;
+        target.unminimize().map_err(|e| e.to_string())?;
+        target.show().map_err(|e| e.to_string())?;
+        target.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    if command_id == document_menus::NEW_WINDOW {
+        return Err("Opening an additional document window is not enabled yet.".into());
+    }
+    Err(format!("Unknown window command: {command_id}"))
+}
+
+fn update_document_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    update: impl FnOnce(&mut document_menus::Snapshot),
+) -> Result<(), String> {
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let (previous, next) = app
+        .state::<document_menus::DocumentMenus>()
+        .update(&registry, label, update)?;
+    if previous == next {
+        return Ok(());
+    }
+    let owner = registry
+        .owner_of(label)
+        .ok_or("Unknown document menu owner.")?;
+    let app = app.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            let registry = app.state::<document_windows::DocumentWindowRegistry>();
+            if !registry
+                .document_window(&owner.window_id)
+                .is_some_and(|w| w.incarnation == owner.incarnation)
+            {
+                return;
+            }
+            let current = menu_snapshot(&app, &owner.native_label);
+            let structural = classify_toolbars_menu_update(
+                &(previous.entries, previous.view),
+                &current.entries,
+                current.view,
+            ) == ToolbarsMenuUpdate::Rebuild
+                || previous.plugin_items != current.plugin_items
+                || previous.title != current.title;
+            let result = if previous.title != current.title {
+                install_app_menu(&app)
+            } else if !cfg!(target_os = "macos")
+                || registry
+                    .active_document_window()
+                    .is_some_and(|w| w.window_id == owner.window_id)
+            {
+                if structural {
+                    install_document_menu(&app, Some(&owner.native_label))
+                } else {
+                    apply_current_menu_state(&app, &owner.native_label)
+                }
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                eprintln!("Could not update document menu: {error}");
+            }
+            if let Err(error) = publish_menu_windows(&app) {
+                eprintln!("Could not publish document menu windows: {error}");
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MenuWindow {
+    window_id: String,
+    title: String,
+    active: bool,
+}
+
+fn menu_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<MenuWindow> {
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let active = registry.active_document_window();
+    registry
+        .all_document_windows()
+        .into_iter()
+        .filter(|w| registry.document_window(&w.window_id).is_some())
+        .map(|w| {
+            let title = menu_snapshot(app, &w.native_label).title;
+            MenuWindow {
+                active: active.as_ref().is_some_and(|a| a.window_id == w.window_id),
+                window_id: w.window_id,
+                title: if title.is_empty() {
+                    "Untitled".into()
+                } else {
+                    title
+                },
+            }
+        })
+        .collect()
+}
+
+fn publish_menu_windows<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let windows = menu_windows(app);
+    for label in document_labels(app) {
+        app.emit_to(&label, "chemdraft://menu-windows", &windows)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// How a Toolbars-menu push differs from the menu already installed.
@@ -9262,15 +9430,18 @@ fn classify_toolbars_menu_update(
     }
 }
 
-/// Rebuild and install the app menu on the main thread from the last JS-pushed toolbar model plus the
-/// current plugin menu items. Toolbar rows and View-toggle state come from `ToolbarsMenuModel` (what
-/// `set_toolbars_menu` last stored), so a plugin sync never resets the Toolbars submenu or the View
-/// checkmarks while JS remains the source of truth for both.
 /// Store the webview-owned keybinding scheme and rebuild the native menu so its accelerators match.
 /// JS pushes this on startup and whenever the Preferences toggle changes; the scheme itself is
 /// persisted by the webview (localStorage), so Rust only mirrors it.
 #[tauri::command]
-fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), String> {
+fn set_keybinding_scheme(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    scheme: String,
+) -> Result<(), String> {
+    if !is_document_window(&app, window.label()) {
+        return Err("Only document windows can publish menu shortcuts.".into());
+    }
     let parsed = match scheme.as_str() {
         "chemdraft" => KeybindingScheme::ChemDraft,
         "chemdraw" => KeybindingScheme::ChemDraw,
@@ -9292,8 +9463,8 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
 /// Install a (re)built app menu. Must run on the main thread (every caller does: `setup`, and the
 /// `run_on_main_thread` closures of `set_toolbars_menu` / `reinstall_app_menu`).
 ///
-/// macOS has one app-wide menu bar. Elsewhere the menu belongs to the document window alone and is
-/// set on that window, never app-wide. An app-wide Tauri menu is attached to EVERY window, and
+/// macOS has one app-wide menu bar. Elsewhere each document owns its own menu,
+/// installed on that window, never app-wide. An app-wide Tauri menu is attached to EVERY window, and
 /// attaching a muda menu to a Win32 window subclasses it with `menu_subclass_proc`, whose
 /// `dwrefdata` points at the `Menu`. `remove_menu` clears the bar but never removes that subclass,
 /// and muda's `Drop` only unsubclasses windows still attached — so every palette, popover and the
@@ -9301,19 +9472,34 @@ fn set_keybinding_scheme(app: tauri::AppHandle, scheme: String) -> Result<(), St
 /// next WM_NCACTIVATE/WM_NCPAINT read it: an access violation in `menu_subclass_proc` at startup
 /// (rebuilds racing palette creation) and in GDI32 at exit.
 ///
-/// With the menu on the document window only, no other window is ever subclassed. The document
+/// With menus confined to document windows, utilities are never subclassed. Each document
 /// window itself is safe across a rebuild: on the main thread Tauri runs the queued detach/attach
 /// inline, and `Window::set_menu` holds the previous menu while the new one re-points the subclass,
 /// so the old menu is only freed once nothing refers to it. Keep this on the main thread.
-fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>, menu: Menu<R>) -> tauri::Result<()> {
+fn install_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    for label in document_menus::installation_labels(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        cfg!(target_os = "macos"),
+    ) {
+        install_document_menu(app, label.as_deref())?;
+    }
+    Ok(())
+}
+
+fn install_document_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: Option<&str>,
+) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
-    app.set_menu(menu)?;
-    #[cfg(not(target_os = "macos"))]
     {
-        let Some(window) = active_document_webview(app) else {
-            return Ok(());
-        };
-        window.set_menu(menu)?;
+        let _ = label;
+        app.set_menu(create_document_menu(app, None)?)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(label) = label.filter(|label| is_document_window(app, label)) {
+        if let Some(window) = app.get_webview_window(label) {
+            window.set_menu(create_document_menu(app, Some(label))?)?;
+        }
     }
     Ok(())
 }
@@ -9322,28 +9508,133 @@ fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
     let app = app.clone();
     app.clone()
         .run_on_main_thread(move || {
-            let (entries, view_state) = current_toolbars_menu_model(&app);
-            let plugin_items = current_plugin_menu_items(&app);
-            let result = create_app_menu_for_toolsets(&app, &entries, view_state, &plugin_items)
-                .and_then(|menu| install_app_menu(&app, menu));
-            if let Err(error) = result {
-                eprintln!("Could not update ChemDraft plugin menu: {error}");
+            if let Err(error) = install_app_menu(&app) {
+                eprintln!("Could not update ChemDraft menu: {error}");
             }
         })
         .map_err(|error| error.to_string())
 }
 
+fn create_document_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<Menu<R>> {
+    let registry = app.state::<document_windows::DocumentWindowRegistry>();
+    let target = document_menus::target(&registry, cfg!(target_os = "macos"), source_label);
+    let snapshot = target
+        .as_deref()
+        .map(|label| menu_snapshot(app, label))
+        .unwrap_or_default();
+    let menu = create_app_menu_for_toolsets(
+        app,
+        source_label,
+        &snapshot.entries,
+        snapshot.view,
+        &snapshot.plugin_items,
+    )?;
+    apply_menu_state(menu.items()?, &snapshot, target.is_some())?;
+    Ok(menu)
+}
+
+fn apply_current_menu_state<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    let menu = app.menu();
+    #[cfg(not(target_os = "macos"))]
+    let menu = app.get_webview_window(label).and_then(|w| w.menu());
+    if let Some(menu) = menu {
+        apply_menu_state(menu.items()?, &menu_snapshot(app, label), true)?;
+    } else {
+        install_document_menu(app, Some(label))?;
+    }
+    Ok(())
+}
+
+fn apply_menu_state<R: Runtime>(
+    items: Vec<MenuItemKind<R>>,
+    snapshot: &document_menus::Snapshot,
+    has_document: bool,
+) -> tauri::Result<()> {
+    for item in items {
+        let id = item.id().as_ref();
+        let command = document_menus::decode_item(id)
+            .map(|(_, command)| command)
+            .unwrap_or(id);
+        let state = snapshot
+            .commands
+            .iter()
+            .find(|state| state.command_id == command);
+        let enabled = if has_document {
+            state.map(|s| s.enabled)
+        } else {
+            Some(document_menus::enabled_without_document(command))
+        };
+        let checked = if command.starts_with(document_menus::ACTIVATE_PREFIX) {
+            None
+        } else if command == "view.toggleRulers" {
+            Some(snapshot.view.rulers_visible)
+        } else if command == "view.toggleCrosshairs" {
+            Some(snapshot.view.crosshairs_visible)
+        } else if let Some(id) = command.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
+            snapshot
+                .entries
+                .iter()
+                .find(|e| e.toolset_id == id)
+                .map(|e| e.visible)
+        } else {
+            state.and_then(|s| s.checked)
+        };
+        match item {
+            MenuItemKind::MenuItem(item) => {
+                if let Some(enabled) = enabled {
+                    item.set_enabled(enabled)?;
+                }
+            }
+            MenuItemKind::Check(item) => {
+                if let Some(enabled) = enabled {
+                    item.set_enabled(enabled)?;
+                }
+                if let Some(checked) = checked {
+                    item.set_checked(checked)?;
+                }
+            }
+            MenuItemKind::Submenu(menu) => {
+                // Zero-window mode keeps OS application/help/window affordances usable; disable
+                // document submenus too, including native predefined clipboard items.
+                let text = menu.text()?;
+                if !has_document && !matches!(text.as_str(), "ChemDraft" | "File" | "Help") {
+                    menu.set_enabled(false)?;
+                }
+                apply_menu_state(menu.items()?, snapshot, has_document)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Shared Insert menu for the macOS application menu and Windows document-window menu.
-fn build_insert_submenu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn build_insert_submenu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<Submenu<R>> {
     Submenu::with_items(
         app,
         "Insert",
         true,
         &[
-            &MenuItem::with_id(app, "table.insertDialog", "Table…", true, None::<&str>)?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "template.insertDialog",
+                document_menus::item_id(source_label, "table.insertDialog"),
+                "Table…",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "template.insertDialog"),
                 "Templates…",
                 true,
                 None::<&str>,
@@ -9355,6 +9646,7 @@ fn build_insert_submenu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
 /// Build the Analyze submenu: core entries followed by plugin command IDs.
 fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Submenu<R>> {
     // "Molecular Inspector", matching `commands.ts`'s canonical title and the toolset it opens. The
@@ -9362,16 +9654,16 @@ fn build_analyze_submenu<R: Runtime>(
     // title all said "Molecular Inspector" — one command id wearing two names depending on which
     // surface a user reached it from. `true` for enabled is correct and deliberate: the command is
     // NOT gated on a selection, because the window has its own empty state.
-    let properties = MenuItem::with_id(
+    let properties = document_menu_item(
         app,
-        "analyze.molecularProperties",
+        document_menus::item_id(source_label, "analyze.molecularProperties"),
         "Molecular Inspector\u{2026}",
         true,
         None::<&str>,
     )?;
-    let validate = MenuItem::with_id(
+    let validate = document_menu_item(
         app,
-        "chemistry.validateSelection",
+        document_menus::item_id(source_label, "chemistry.validateSelection"),
         "Validate Selected Structure",
         true,
         None::<&str>,
@@ -9382,9 +9674,9 @@ fn build_analyze_submenu<R: Runtime>(
     let plugin_menu_items = plugin_menu_items_in(plugin_items, "analyze")
         .into_iter()
         .map(|item| {
-            MenuItem::with_id(
+            document_menu_item(
                 app,
-                item.id.as_str(),
+                document_menus::item_id(source_label, item.id.as_str()),
                 item.label.as_str(),
                 item.enabled,
                 None::<&str>,
@@ -9403,64 +9695,111 @@ fn build_analyze_submenu<R: Runtime>(
     Submenu::with_items(app, "Analyze", true, &items)
 }
 
+#[cfg(target_os = "macos")]
 fn create_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
-    // Empty Toolbars submenu; JS pushes the real rows via set_toolbars_menu once it loads. Plugin
-    // items are read from state so menu rebuilds after a plugin sync keep them (ADR-0016).
-    let plugin_items = current_plugin_menu_items(app);
-    create_app_menu_for_toolsets(app, &[], ViewMenuState::default(), &plugin_items)
+    create_document_menu(app, None)
 }
 
-/// The plugin menu items last synced from the webview (empty until the first sync). Read on every menu
-/// build so toolset-driven rebuilds keep the plugin items too (ADR-0016).
-fn current_plugin_menu_items<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<PluginMenuItemInput> {
-    app.try_state::<PluginNativeMenuItems>()
-        .and_then(|state| state.0.lock().ok().map(|items| items.clone()))
+fn menu_snapshot<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> document_menus::Snapshot {
+    app.try_state::<document_menus::DocumentMenus>()
+        .map(|menus| {
+            menus.snapshot(
+                &app.state::<document_windows::DocumentWindowRegistry>(),
+                label,
+            )
+        })
         .unwrap_or_default()
 }
 
-/// The toolbar rows + View state last pushed by `set_toolbars_menu` (defaults until the first push).
-fn current_toolbars_menu_model<R: Runtime>(
+fn create_window_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
-) -> (Vec<ToolbarMenuEntry>, ViewMenuState) {
-    app.try_state::<ToolbarsMenuModel>()
-        .and_then(|state| state.0.lock().ok().map(|model| model.clone()))
-        .unwrap_or_default()
+    source_label: Option<&str>,
+) -> tauri::Result<Submenu<R>> {
+    let target = document_menus::target(
+        &app.state::<document_windows::DocumentWindowRegistry>(),
+        cfg!(target_os = "macos"),
+        source_label,
+    );
+    let snapshot = target
+        .as_deref()
+        .map(|label| menu_snapshot(app, label))
+        .unwrap_or_default();
+    let registered = |id: &str| {
+        snapshot
+            .commands
+            .iter()
+            .any(|state| state.command_id == id && state.enabled)
+    };
+    let menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, document_menus::CLOSE_WINDOW),
+                "Close Window",
+                registered(document_menus::CLOSE_WINDOW),
+                Some("CmdOrCtrl+Shift+W"),
+            )?,
+        ],
+    )?;
+    let windows = menu_windows(app);
+    if !windows.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    for window in windows {
+        let id = format!("{}{}", document_menus::ACTIVATE_PREFIX, window.window_id);
+        menu.append(&document_check_menu_item(
+            app,
+            document_menus::item_id(source_label, &id),
+            window.title,
+            registered(&id),
+            window.active,
+            None::<&str>,
+        )?)?;
+    }
+    Ok(menu)
 }
 
 fn create_app_menu_for_toolsets<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     entries: &[ToolbarMenuEntry],
     view_state: ViewMenuState,
     plugin_items: &[PluginMenuItemInput],
 ) -> tauri::Result<Menu<R>> {
     #[cfg(target_os = "macos")]
-    let native_app_menu = create_native_app_menu(app)?;
-    let page_setup_menu = create_page_setup_menu(app)?;
-    let insert_menu = build_insert_submenu(app)?;
-    let view_menu = create_view_menu(app, entries, view_state)?;
+    let native_app_menu = create_native_app_menu(app, source_label)?;
+    let page_setup_menu = create_page_setup_menu(app, source_label)?;
+    let insert_menu = build_insert_submenu(app, source_label)?;
+    let view_menu = create_view_menu(app, source_label, entries, view_state)?;
     let structure_menu = Submenu::with_items(
         app,
         "Structure",
         true,
         &[
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "structure.cleanup2d",
+                document_menus::item_id(source_label, "structure.cleanup2d"),
                 "Clean up Structure 2D",
                 true,
                 Some("CmdOrCtrl+Shift+K"),
             )?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "text.convertToAtomLabel",
+                document_menus::item_id(source_label, "text.convertToAtomLabel"),
                 "Convert Text to Atom Label",
                 true,
                 None::<&str>,
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "structure.openInteractive3d",
+                document_menus::item_id(source_label, "structure.openInteractive3d"),
                 "Interactive 3D Workspace...",
                 true,
                 None::<&str>,
@@ -9474,9 +9813,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             if item.separator_before {
                 structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
             }
-            structure_menu.append(&MenuItem::with_id(
+            structure_menu.append(&document_menu_item(
                 app,
-                item.id.as_str(),
+                document_menus::item_id(source_label, item.id.as_str()),
                 item.label.as_str(),
                 item.enabled,
                 None::<&str>,
@@ -9485,31 +9824,31 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     }
     let tools_menu = Submenu::with_items(app, "Tools", true, &[])?;
     for item in plugin_menu_items_in(plugin_items, "tools") {
-        tools_menu.append(&MenuItem::with_id(
+        tools_menu.append(&document_menu_item(
             app,
-            item.id.as_str(),
+            document_menus::item_id(source_label, item.id.as_str()),
             item.label.as_str(),
             item.enabled,
             None::<&str>,
         )?)?;
     }
-    let analyze_menu = build_analyze_submenu(app, plugin_items)?;
+    let analyze_menu = build_analyze_submenu(app, source_label, plugin_items)?;
     let plugins_menu = Submenu::with_items(
         app,
         "Plugins",
         true,
         &[
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "plugins.manage",
+                document_menus::item_id(source_label, "plugins.manage"),
                 "Add or Remove Plugins…",
                 true,
                 None::<&str>,
             )?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "plugins.vibeCodeStarter",
+                document_menus::item_id(source_label, "plugins.vibeCodeStarter"),
                 "Vibe Code Your Own Plugin…",
                 true,
                 None::<&str>,
@@ -9520,9 +9859,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     if !plugins_plugin_items.is_empty() {
         plugins_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in plugins_plugin_items {
-            plugins_menu.append(&MenuItem::with_id(
+            plugins_menu.append(&document_menu_item(
                 app,
-                item.id.as_str(),
+                document_menus::item_id(source_label, item.id.as_str()),
                 item.label.as_str(),
                 item.enabled,
                 None::<&str>,
@@ -9530,7 +9869,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
         }
     }
 
-    Menu::with_items(
+    let menu = Menu::with_items(
         app,
         &[
             #[cfg(target_os = "macos")]
@@ -9540,12 +9879,30 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 "File",
                 true,
                 &[
-                    &MenuItem::with_id(app, "document.new", "New", true, Some("CmdOrCtrl+N"))?,
-                    &MenuItem::with_id(app, "document.open", "Open...", true, Some("CmdOrCtrl+O"))?,
-                    &MenuItem::with_id(app, "document.save", "Save", true, Some("CmdOrCtrl+S"))?,
-                    &MenuItem::with_id(
+                    &document_menu_item(
                         app,
-                        "document.saveAs",
+                        document_menus::item_id(source_label, "document.new"),
+                        "New",
+                        true,
+                        Some("CmdOrCtrl+N"),
+                    )?,
+                    &document_menu_item(
+                        app,
+                        document_menus::item_id(source_label, "document.open"),
+                        "Open...",
+                        true,
+                        Some("CmdOrCtrl+O"),
+                    )?,
+                    &document_menu_item(
+                        app,
+                        document_menus::item_id(source_label, "document.save"),
+                        "Save",
+                        true,
+                        Some("CmdOrCtrl+S"),
+                    )?,
+                    &document_menu_item(
+                        app,
+                        document_menus::item_id(source_label, "document.saveAs"),
                         "Save As...",
                         true,
                         Some("CmdOrCtrl+Shift+S"),
@@ -9553,9 +9910,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &PredefinedMenuItem::separator(app)?,
                     &page_setup_menu,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(
+                    &document_menu_item(
                         app,
-                        "export.open",
+                        document_menus::item_id(source_label, "export.open"),
                         "Export...",
                         true,
                         Some(match current_keybinding_scheme(app) {
@@ -9570,15 +9927,15 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(not(target_os = "macos"))]
-                    &preferences_menu_item(app)?,
+                    &preferences_menu_item(app, source_label)?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::separator(app)?,
                     // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
                     // (appUpdates.ts). Linux has no update channel yet, so no item there.
                     #[cfg(any(target_os = "macos", windows))]
-                    &MenuItem::with_id(
+                    &document_menu_item(
                         app,
-                        CHECK_FOR_UPDATES_COMMAND_ID,
+                        document_menus::item_id(source_label, CHECK_FOR_UPDATES_COMMAND_ID),
                         "Check for Updates…",
                         true,
                         None::<&str>,
@@ -9588,6 +9945,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     #[cfg(target_os = "macos")]
                     &close_window_menu_item(
                         app,
+                        source_label,
                         CLOSE_WINDOW_FILE_MENU_ID,
                         view_state.has_multiple_document_tabs,
                     )?,
@@ -9597,7 +9955,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     // is a bare PostQuitMessage, which ends the event loop before the document
                     // window can flush its pending session autosave (see request_quit).
                     #[cfg(not(target_os = "macos"))]
-                    &quit_menu_item(app)?,
+                    &quit_menu_item(app, source_label)?,
                 ],
             )?,
             &Submenu::with_items(
@@ -9608,8 +9966,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     // Routed, not predefined: AppKit's undo:/redo: selectors reach only the
                     // webview's text undo manager, never the drawing's history. The webview sends
                     // a focused text field's undo back to the field (editHistoryRouting.ts).
-                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
-                    &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
+                    &edit_history_menu_item(app, source_label, &EDIT_HISTORY_MENU_ITEMS[0])?,
+                    &edit_history_menu_item(app, source_label, &EDIT_HISTORY_MENU_ITEMS[1])?,
                     &PredefinedMenuItem::separator(app)?,
                     &PredefinedMenuItem::cut(app, None)?,
                     &PredefinedMenuItem::copy(app, None)?,
@@ -9618,58 +9976,58 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         "Copy As",
                         true,
                         &[
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.smiles",
+                                document_menus::item_id(source_label, "clipboard.copyAs.smiles"),
                                 "SMILES",
                                 true,
                                 Some("CmdOrCtrl+Alt+C"),
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.inchi",
+                                document_menus::item_id(source_label, "clipboard.copyAs.inchi"),
                                 "InChI",
                                 true,
                                 None::<&str>,
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.inchiKey",
+                                document_menus::item_id(source_label, "clipboard.copyAs.inchiKey"),
                                 "InChI Key",
                                 true,
                                 None::<&str>,
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.cdxml",
+                                document_menus::item_id(source_label, "clipboard.copyAs.cdxml"),
                                 "CDXML Text",
                                 true,
                                 Some("CmdOrCtrl+D"),
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.mol",
+                                document_menus::item_id(source_label, "clipboard.copyAs.mol"),
                                 "MOL Text",
                                 true,
                                 Some("CmdOrCtrl+Alt+O"),
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.molV2000",
+                                document_menus::item_id(source_label, "clipboard.copyAs.molV2000"),
                                 "MOL V2000 Text",
                                 true,
                                 Some("CmdOrCtrl+Alt+Shift+O"),
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.svg",
+                                document_menus::item_id(source_label, "clipboard.copyAs.svg"),
                                 "SVG",
                                 true,
                                 None::<&str>,
                             )?,
-                            &MenuItem::with_id(
+                            &document_menu_item(
                                 app,
-                                "clipboard.copyAs.png",
+                                document_menus::item_id(source_label, "clipboard.copyAs.png"),
                                 "PNG",
                                 true,
                                 None::<&str>,
@@ -9677,18 +10035,24 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         ],
                     )?,
                     &PredefinedMenuItem::paste(app, None)?,
-                    &MenuItem::with_id(
+                    &document_menu_item(
                         app,
-                        "edit.selectAll",
+                        document_menus::item_id(source_label, "edit.selectAll"),
                         "Select All",
                         true,
                         Some("CmdOrCtrl+A"),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "layout.group", "Group", true, Some("CmdOrCtrl+G"))?,
-                    &MenuItem::with_id(
+                    &document_menu_item(
                         app,
-                        "layout.ungroup",
+                        document_menus::item_id(source_label, "layout.group"),
+                        "Group",
+                        true,
+                        Some("CmdOrCtrl+G"),
+                    )?,
+                    &document_menu_item(
+                        app,
+                        document_menus::item_id(source_label, "layout.ungroup"),
                         "Ungroup",
                         true,
                         Some("CmdOrCtrl+Shift+G"),
@@ -9701,31 +10065,20 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             &tools_menu,
             &analyze_menu,
             &plugins_menu,
-            &Submenu::with_items(
-                app,
-                "Window",
-                true,
-                &[
-                    &PredefinedMenuItem::minimize(app, None)?,
-                    &PredefinedMenuItem::maximize(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    #[cfg(target_os = "macos")]
-                    &close_window_menu_item(
-                        app,
-                        CLOSE_WINDOW_WINDOW_MENU_ID,
-                        view_state.has_multiple_document_tabs,
-                    )?,
-                    #[cfg(not(target_os = "macos"))]
-                    &PredefinedMenuItem::close_window(app, None)?,
-                ],
-            )?,
+            &create_window_menu(app, source_label)?,
             // macOS keeps About in the application menu; elsewhere Help is its home.
             &Submenu::with_items(
                 app,
                 "Help",
                 true,
                 &[
-                    &MenuItem::with_id(app, "help.reportBug", "Report a Bug…", true, None::<&str>)?,
+                    &document_menu_item(
+                        app,
+                        document_menus::item_id(source_label, "help.reportBug"),
+                        "Report a Bug…",
+                        true,
+                        None::<&str>,
+                    )?,
                     #[cfg(not(target_os = "macos"))]
                     &PredefinedMenuItem::separator(app)?,
                     #[cfg(not(target_os = "macos"))]
@@ -9733,7 +10086,30 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 ],
             )?,
         ],
-    )
+    )?;
+    if app
+        .state::<document_windows::DocumentWindowRegistry>()
+        .active_document_window()
+        .is_none()
+    {
+        if let Some(file) = menu.items()?.into_iter().find_map(|item| {
+            item.as_submenu()
+                .filter(|s| s.text().is_ok_and(|text| text == "File"))
+                .cloned()
+        }) {
+            file.insert(
+                &document_menu_item(
+                    app,
+                    document_menus::item_id(source_label, document_menus::NEW_WINDOW),
+                    "New Window",
+                    true,
+                    Some("CmdOrCtrl+Shift+N"),
+                )?,
+                1,
+            )?;
+        }
+    }
+    Ok(menu)
 }
 
 /// Close Window (Cmd+W) on macOS. The predefined item sends `performClose:`, which AppKit refuses
@@ -9743,12 +10119,13 @@ fn create_app_menu_for_toolsets<R: Runtime>(
 #[cfg(target_os = "macos")]
 fn close_window_menu_item<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     id: &str,
     has_multiple_document_tabs: bool,
 ) -> tauri::Result<MenuItem<R>> {
-    MenuItem::with_id(
+    document_menu_item(
         app,
-        id,
+        document_menus::item_id(source_label, id),
         if has_multiple_document_tabs {
             "Close Tab"
         } else {
@@ -9756,17 +10133,6 @@ fn close_window_menu_item<R: Runtime>(
         },
         true,
         Some("CmdOrCtrl+W"),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn main_menu_closes_tab<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
-    menu_closes_document_tab(
-        &app.state::<document_windows::DocumentWindowRegistry>(),
-        label,
-        current_toolbars_menu_model(app)
-            .1
-            .has_multiple_document_tabs,
     )
 }
 
@@ -9805,70 +10171,6 @@ mod document_tab_menu_tests {
     }
 }
 
-/// How Close Window closes the key window.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CloseWindowRoute {
-    /// Tauri's `close()`, which raises `CloseRequested` through the event loop whatever the style
-    /// mask, so the panel takes its own hide-and-notify path in `on_window_event`.
-    TauriClose,
-    /// `performClose:` on the key window: exactly what the predefined item did. Main (which hides
-    /// itself on `CloseRequested`), the 3D debugger, and non-Tauri windows such as
-    /// the About panel all keep their behaviour.
-    PerformClose,
-}
-
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn close_window_route(tauri_label: Option<&str>) -> CloseWindowRoute {
-    match tauri_label {
-        Some(label)
-            if is_plugin_panel_window_label(label) || dialog_windows::is_dialog_label(label) =>
-        {
-            CloseWindowRoute::TauriClose
-        }
-        _ => CloseWindowRoute::PerformClose,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn close_key_window<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-    let Some(key_window) = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow() else {
-        return;
-    };
-    let key_ptr = objc2::rc::Retained::as_ptr(&key_window).cast::<std::ffi::c_void>();
-    let tauri_window = app.webview_windows().into_values().find(|window| {
-        window
-            .ns_window()
-            .is_ok_and(|pointer| pointer.cast_const() == key_ptr)
-    });
-    if tauri_window
-        .as_ref()
-        .is_some_and(|window| main_menu_closes_tab(app, window.label()))
-    {
-        if let Err(error) = emit_command_to_main(app, "document.closeTab") {
-            eprintln!("Could not close the active document tab: {error}");
-        }
-        return;
-    }
-    match (
-        close_window_route(tauri_window.as_ref().map(|window| window.label())),
-        tauri_window,
-    ) {
-        (CloseWindowRoute::TauriClose, Some(window)) => {
-            if let Err(error) = window.close() {
-                eprintln!(
-                    "Could not close ChemDraft window {}: {error}",
-                    window.label()
-                );
-            }
-        }
-        _ => key_window.performClose(None),
-    }
-}
-
 fn about_metadata<R: Runtime>(app: &tauri::AppHandle<R>) -> AboutMetadata<'static> {
     let config = app.config();
     AboutMetadata {
@@ -9885,7 +10187,10 @@ fn about_metadata<R: Runtime>(app: &tauri::AppHandle<R>) -> AboutMetadata<'stati
 }
 
 #[cfg(target_os = "macos")]
-fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn create_native_app_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<Submenu<R>> {
     let package_info = app.package_info();
     let about_metadata = about_metadata(app);
 
@@ -9896,7 +10201,7 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         &[
             &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &PredefinedMenuItem::separator(app)?,
-            &preferences_menu_item(app)?,
+            &preferences_menu_item(app, source_label)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
@@ -9904,30 +10209,81 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             // Same position and Cmd+Q, but route through the session flush before exit.
-            &quit_menu_item(app)?,
+            &quit_menu_item(app, source_label)?,
         ],
     )
 }
 
-fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+fn create_page_setup_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<Submenu<R>> {
     let paper_size_menu = Submenu::with_items(
         app,
         "Paper Size",
         true,
         &[
-            &MenuItem::with_id(app, "page.setSize.letter", "US Letter", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.legal", "US Legal", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "page.setSize.a4", "A4", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.a3", "A3", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.a2", "A2", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.a1", "A1", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.a0", "A0", true, None::<&str>)?,
-            &MenuItem::with_id(app, "page.setSize.a5", "A5", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "page.setSizeCustom",
+                document_menus::item_id(source_label, "page.setSize.letter"),
+                "US Letter",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.legal"),
+                "US Legal",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a4"),
+                "A4",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a3"),
+                "A3",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a2"),
+                "A2",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a1"),
+                "A1",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a0"),
+                "A0",
+                true,
+                None::<&str>,
+            )?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSize.a5"),
+                "A5",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &document_menu_item(
+                app,
+                document_menus::item_id(source_label, "page.setSizeCustom"),
                 "Custom Size…",
                 true,
                 None::<&str>,
@@ -9939,16 +10295,16 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         "Orientation",
         true,
         &[
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "page.setOrientation.portrait",
+                document_menus::item_id(source_label, "page.setOrientation.portrait"),
                 "Portrait",
                 true,
                 None::<&str>,
             )?,
-            &MenuItem::with_id(
+            &document_menu_item(
                 app,
-                "page.setOrientation.landscape",
+                document_menus::item_id(source_label, "page.setOrientation.landscape"),
                 "Landscape",
                 true,
                 None::<&str>,
@@ -9964,10 +10320,13 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
     )
 }
 
-fn preferences_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
-    MenuItem::with_id(
+fn preferences_menu_item<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
+) -> tauri::Result<MenuItem<R>> {
+    document_menu_item(
         app,
-        PREFERENCES_TOGGLE_COMMAND_ID,
+        document_menus::item_id(source_label, PREFERENCES_TOGGLE_COMMAND_ID),
         "Preferences…",
         true,
         Some("CmdOrCtrl+,"),
@@ -9976,15 +10335,16 @@ fn preferences_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result
 
 fn create_view_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     entries: &[ToolbarMenuEntry],
     view_state: ViewMenuState,
 ) -> tauri::Result<Submenu<R>> {
     // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
     // re-check these while the feature is off, desyncing the menu from the document.
     let scheme = current_keybinding_scheme(app);
-    let show_rulers = CheckMenuItem::with_id(
+    let show_rulers = document_check_menu_item(
         app,
-        "view.toggleRulers",
+        document_menus::item_id(source_label, "view.toggleRulers"),
         "Show Rulers",
         true,
         view_state.rulers_visible,
@@ -9993,9 +10353,9 @@ fn create_view_menu<R: Runtime>(
             KeybindingScheme::ChemDraw => "CmdOrCtrl+;",
         }),
     )?;
-    let show_crosshairs = CheckMenuItem::with_id(
+    let show_crosshairs = document_check_menu_item(
         app,
-        "view.toggleCrosshairs",
+        document_menus::item_id(source_label, "view.toggleCrosshairs"),
         "Show Crosshairs",
         true,
         view_state.crosshairs_visible,
@@ -10006,24 +10366,24 @@ fn create_view_menu<R: Runtime>(
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let debugger_separator = PredefinedMenuItem::separator(app)?;
-    let debugger = MenuItem::with_id(
+    let debugger = document_menu_item(
         app,
-        SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID,
+        document_menus::item_id(source_label, SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID),
         "3D Debugger",
         true,
         None::<&str>,
     )?;
-    let toolbars_menu = create_toolbars_menu(app, entries)?;
-    let customize_toolbars = MenuItem::with_id(
+    let toolbars_menu = create_toolbars_menu(app, source_label, entries)?;
+    let customize_toolbars = document_menu_item(
         app,
-        "view.customizeToolbars",
+        document_menus::item_id(source_label, "view.customizeToolbars"),
         "Customize Toolbars...",
         true,
         None::<&str>,
     )?;
-    let customize_main_toolbar = MenuItem::with_id(
+    let customize_main_toolbar = document_menu_item(
         app,
-        "view.customizeMainToolbar",
+        document_menus::item_id(source_label, "view.customizeMainToolbar"),
         "Customize Main Toolbar...",
         true,
         None::<&str>,
@@ -10059,14 +10419,15 @@ struct ToolbarMenuEntry {
 
 fn create_toolbars_menu<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    source_label: Option<&str>,
     entries: &[ToolbarMenuEntry],
 ) -> tauri::Result<Submenu<R>> {
     let menu = Submenu::new(app, "Toolbars", true)?;
 
     for entry in entries {
-        let item = CheckMenuItem::with_id(
+        let item = document_check_menu_item(
             app,
-            toolset_toggle_command_id(&entry.toolset_id),
+            document_menus::item_id(source_label, &toolset_toggle_command_id(&entry.toolset_id)),
             &entry.title,
             true,
             entry.visible,
@@ -11106,64 +11467,27 @@ fn set_check_menu_item_checked<R: Runtime>(
     command_id: &str,
     checked: bool,
 ) -> Result<(), String> {
-    let _ = set_check_menu_item_checked_now(app, command_id, checked);
-
-    let app = app.clone();
-    let command_id = command_id.to_string();
-
-    app.clone()
-        .run_on_main_thread(move || {
-            if let Err(error) = set_check_menu_item_checked_now(&app, &command_id, checked) {
-                eprintln!("Could not update ChemDraft menu check state {command_id}: {error}");
-            }
-        })
-        .map_err(|error| error.to_string())
-}
-
-fn set_check_menu_item_checked_now<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    command_id: &str,
-    checked: bool,
-) -> Result<(), String> {
-    // Off macOS the menu lives on the document window, not the app (see `install_app_menu`).
-    #[cfg(target_os = "macos")]
-    let menu = app.menu();
-    #[cfg(not(target_os = "macos"))]
-    let menu = active_document_webview(app).and_then(|window| window.menu());
-    let Some(menu) = menu else {
+    let Some(window) = active_document_webview(app) else {
         return Ok(());
     };
-    let Some(item) = find_menu_item_by_id(menu.items().unwrap_or_default(), command_id) else {
-        return Ok(());
-    };
-    let Some(check_item) = item.as_check_menuitem() else {
-        return Ok(());
-    };
-
-    check_item
-        .set_checked(checked)
-        .map_err(|error| error.to_string())
-}
-
-fn find_menu_item_by_id<R: Runtime>(
-    items: Vec<MenuItemKind<R>>,
-    command_id: &str,
-) -> Option<MenuItemKind<R>> {
-    for item in items {
-        if item.id().as_ref() == command_id {
-            return Some(item);
-        }
-
-        if let Some(submenu) = item.as_submenu() {
-            if let Some(found) =
-                find_menu_item_by_id(submenu.items().unwrap_or_default(), command_id)
+    update_document_menu(app, window.label(), |snapshot| {
+        if let Some(id) = command_id.strip_prefix(TOOLSET_TOGGLE_PREFIX) {
+            if let Some(entry) = snapshot
+                .entries
+                .iter_mut()
+                .find(|entry| entry.toolset_id == id)
             {
-                return Some(found);
+                entry.visible = checked;
             }
         }
-    }
-
-    None
+        if let Some(state) = snapshot
+            .commands
+            .iter_mut()
+            .find(|state| state.command_id == command_id)
+        {
+            state.checked = Some(checked);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -11495,7 +11819,7 @@ mod tests {
             .split("/// Close Window")
             .next()
             .unwrap();
-        assert!(builder.contains("let insert_menu = build_insert_submenu(app)?;"));
+        assert!(builder.contains("let insert_menu = build_insert_submenu(app, source_label)?;"));
         assert!(builder.find("\"Edit\"").unwrap() < builder.find("&insert_menu,").unwrap());
         assert!(builder.find("&insert_menu,").unwrap() < builder.find("&view_menu,").unwrap());
         let helper = source
@@ -13351,21 +13675,17 @@ mod tests {
 
     #[test]
     fn menu_target_comes_from_the_active_registered_document_without_a_main_fallback() {
-        let registry = document_windows::DocumentWindowRegistry::default();
-        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
-        registry.register("other", "doc-other").unwrap();
-        registry.set_ready("other");
-        assert_eq!(
-            menu_command_target_label(&registry, "file.open", Some("preferences")).as_deref(),
-            Some("doc-other")
-        );
-        registry.mark_activated("toolset-core-main");
-        assert_eq!(
-            menu_command_target_label(&registry, "file.open", None).as_deref(),
-            Some("doc-other")
-        );
-        registry.remove("other");
-        assert!(menu_command_target_label(&registry, "file.open", None).is_none());
+        let registry = ready_document_registry();
+        for is_macos in [true, false] {
+            assert_eq!(
+                document_menus::target(&registry, is_macos, Some("main")).as_deref(),
+                Some("main")
+            );
+            registry.remove("main");
+            assert!(document_menus::target(&registry, is_macos, Some("main")).is_none());
+            registry.register("main", "main").unwrap();
+            registry.set_ready("main");
+        }
     }
 
     #[test]
@@ -13457,7 +13777,8 @@ mod tests {
         }
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}{}{}",
+            include_str!("../capabilities/document-menus.json"),
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
@@ -13937,18 +14258,17 @@ mod tests {
             .split("fn create_page_setup_menu<R: Runtime>")
             .next()
             .unwrap();
-        assert!(menu.contains("&quit_menu_item(app)?"));
+        assert!(menu.contains("&quit_menu_item(app, source_label)?"));
         assert!(!menu.contains("PredefinedMenuItem::quit"));
         let dispatch = source
-            .split(".on_menu_event(|app, event| {")
+            .split("fn handle_document_menu_event<R: Runtime>")
             .nth(1)
             .unwrap()
-            .split(".on_window_event(")
+            .split("fn dispatch_document_menu_command")
             .next()
             .unwrap();
-        assert!(dispatch.contains(
-            "if command_id == APP_QUIT_COMMAND_ID {\n                request_quit(app);\n                return;"
-        ));
+        assert!(dispatch.contains("if command == APP_QUIT_COMMAND_ID"));
+        assert!(dispatch.contains("request_quit(app);"));
     }
 
     /// Edit ▸ Undo/Redo must reach the drawing's history. AppKit's predefined items send undo: to
@@ -13973,61 +14293,33 @@ mod tests {
         expect_false(is_edit_history_command("edit.selectAll"));
     }
 
-    /// Text editing actions follow the key window; other routed commands target the document.
+    /// A8: native menu actions always use the document owner; utilities handle their own text keys.
     #[test]
-    fn text_edit_commands_follow_the_key_window_and_other_commands_go_to_main() {
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "edit.undo",
-                Some("toolset-core-main")
-            )
-            .as_deref()
-            .unwrap(),
-            "toolset-core-main"
-        );
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "edit.redo",
-                Some("preferences")
-            )
-            .as_deref()
-            .unwrap(),
-            "preferences"
-        );
-        assert_eq!(
-            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", Some("main"))
-                .as_deref()
-                .unwrap(),
-            "main"
-        );
-        assert_eq!(
-            menu_command_target_label(&crate::ready_document_registry(), "edit.undo", None)
-                .as_deref()
-                .unwrap(),
-            "main"
-        );
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "edit.selectAll",
-                Some("toolset-core-main")
-            )
-            .as_deref()
-            .unwrap(),
-            "toolset-core-main"
-        );
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "clipboard.copyAs.smiles",
-                Some("preferences")
-            )
-            .as_deref()
-            .unwrap(),
-            "main"
-        );
+    fn native_menu_commands_never_route_to_utilities() {
+        let registry = ready_document_registry();
+        for command in [
+            "edit.undo",
+            "edit.redo",
+            "edit.selectAll",
+            "clipboard.copyAs.smiles",
+        ] {
+            for utility in [
+                "toolset-core-main",
+                "preferences",
+                "dialog-main-pageSize-12",
+                "runtime",
+            ] {
+                assert_eq!(
+                    document_menus::target(&registry, true, Some(utility)).as_deref(),
+                    Some("main")
+                );
+                assert!(document_menus::target(&registry, false, Some(utility)).is_none());
+            }
+            assert_eq!(
+                menu_command_target_label(&registry, command, Some("main")).as_deref(),
+                Some("main")
+            );
+        }
     }
 
     #[test]
@@ -14038,35 +14330,21 @@ mod tests {
     }
 
     #[test]
-    fn select_all_targets_the_focused_dialog_without_touching_document_selection() {
-        let dialog = "dialog-main-pageSize-12";
+    fn select_all_uses_the_document_menu_target_on_both_platforms() {
         assert!(is_routed_menu_command("edit.selectAll"));
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "edit.selectAll",
-                Some(dialog)
-            )
-            .as_deref()
-            .unwrap(),
-            dialog
-        );
-        assert_eq!(
-            menu_command_target_label(
-                &crate::ready_document_registry(),
-                "edit.selectAll",
+        let registry = ready_document_registry();
+        for is_macos in [true, false] {
+            assert_eq!(
+                document_menus::target(&registry, is_macos, Some("main")).as_deref(),
                 Some("main")
-            )
-            .as_deref()
-            .unwrap(),
-            "main"
-        );
-        assert_eq!(
-            menu_command_target_label(&crate::ready_document_registry(), "edit.selectAll", None)
-                .as_deref()
-                .unwrap(),
-            "main"
-        );
+            );
+            let expected = if is_macos { Some("main") } else { None };
+            assert_eq!(
+                document_menus::target(&registry, is_macos, Some("dialog-main-pageSize-12"))
+                    .as_deref(),
+                expected
+            );
+        }
     }
 
     #[test]

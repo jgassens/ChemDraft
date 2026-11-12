@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-publish-menu-snapshot"
+description = "Enables the publish_menu_snapshot command without any pre-configured scope."
+commands.allow = ["publish_menu_snapshot"]
+
+[[permission]]
+identifier = "deny-publish-menu-snapshot"
+description = "Denies the publish_menu_snapshot command without any pre-configured scope."
+commands.deny = ["publish_menu_snapshot"]

@@ -4748,15 +4748,17 @@ mod tests {
             assert!(!path.contains("window.destroy()"));
             assert!(!path.contains("flush_preferences"));
         }
-        // macOS Close Window still uses CloseRequested and its native close-time flush.
+        // A8 document menus close their document owner. Preferences uses its own close
+        // control; its flush-before-disposal paths are asserted above.
         let menu_close = lib
-            .split("fn close_key_window")
+            .split("async fn run_window_menu_command")
             .nth(1)
             .unwrap()
-            .split("fn about_metadata")
+            .split("fn update_document_menu")
             .next()
             .unwrap();
-        assert!(menu_close.contains("(CloseWindowRoute::TauriClose, Some(window)) => {\n            if let Err(error) = window.close()"));
+        assert!(menu_close.contains("request_close_window(&app, window.label())"));
+        assert!(menu_close.contains("is_document_window(&app, window.label())"));
     }
 
     #[test]

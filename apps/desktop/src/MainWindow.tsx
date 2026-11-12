@@ -1,3 +1,5 @@
+import { activateDocumentWindowCommandId, NEW_WINDOW_COMMAND_ID, CLOSE_WINDOW_COMMAND_ID } from "./commands";
+import { stageNativeMenuSnapshot, subscribeNativeMenuWindows, runWindowMenuCommand, type DocumentMenuWindow } from "./window-manager/documentMenus";
 import { createNativeOpenQueue } from "./nativeOpenQueue";
 import { bindPaletteDocument, currentPaletteTarget, type PaletteTarget } from "./window-manager/paletteTarget";
 import { listenForPaletteDocumentActivation } from "./window-manager";
@@ -837,7 +839,6 @@ import {
   listenForToolsetCommands,
   listenForToolsetWindowStates,
   openToolsetWindow,
-  setMenuChecked,
   setToolbarsMenu,
   toolsetCommandSpecsSignature,
   PREFERENCES_WINDOW_KIND,
@@ -865,7 +866,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, flattenAppMenuCommands, structureSearchMenuItems, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
@@ -4545,19 +4546,10 @@ export function MainWindow({
     void broadcastToolsetCustomizeMode({ toolsetId: DEFAULT_TOOLSET_ID, active }).catch(() => undefined);
   }, [effectiveNativePalette, toolsetWindowGeometry]);
 
-  // JS owns toolset visibility, so it also owns the native menu's checkmarks. Mirror the
-  // current visible set onto every toggle item after each change (no-op in the browser).
-  // This is what keeps View > Toolbars accurate now that Rust no longer toggles windows.
-  useEffect(() => {
-    for (const toolset of toolsetRegistry.listToolsets()) {
-      void setMenuChecked(createToolsetToggleCommandId(toolset.id), visibleToolsetIds.has(toolset.id));
-    }
-  }, [toolsetRegistry, visibleToolsetIds]);
-
   // Push the Toolbars menu STRUCTURE (which toolsets + their titles) to the native menu whenever the
   // toolset set changes, so the menu comes from the TS registry rather than Rust's manifest copy —
   // this is what lets Rust stop parsing the manifest. Rebuilding resets checkmarks, so include the
-  // current visibility; between rebuilds the checkmark effect above keeps them in sync in place.
+  // current visibility. The bridge coalesces this with command and plugin state; checks update in place.
   useEffect(() => {
     if (!nativePalette && !isDesktopRuntime()) {
       return;
@@ -11569,6 +11561,17 @@ export function MainWindow({
     []
   );
 
+  const [menuWindows, setMenuWindows] = useState<readonly DocumentMenuWindow[]>([]);
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const update = (windows: readonly DocumentMenuWindow[]) => {
+      setMenuWindows(current => JSON.stringify(current) === JSON.stringify(windows) ? current : windows);
+    };
+    const stop = subscribeNativeMenuWindows(update);
+    const listener = listenCurrentWindowEvent<readonly DocumentMenuWindow[]>("chemdraft://menu-windows", event => update(event.payload));
+    return () => { stop(); void listener.then(unlisten => unlisten()); };
+  }, []);
+
   // Core command handlers are rebuilt every render (they close over live state), but they
   // now populate a plain Map instead of a fresh CommandRegistry. The registry instance
   // itself is created once (below) and its handlers delegate to this ref, so plugin
@@ -11584,6 +11587,16 @@ export function MainWindow({
         }
       });
     };
+
+    // Registered now; A10 enables creation of a second document window.
+    register({ id: NEW_WINDOW_COMMAND_ID, title: "New Window", icon: "new", source: "core", enabled: false },
+      () => runWindowMenuCommand(NEW_WINDOW_COMMAND_ID));
+    register({ id: CLOSE_WINDOW_COMMAND_ID, title: "Close Window", icon: "close", source: "core", shortcut: "CmdOrCtrl+Shift+W" },
+      () => runWindowMenuCommand(CLOSE_WINDOW_COMMAND_ID));
+    for (const window of menuWindows) {
+      const id = activateDocumentWindowCommandId(window.windowId);
+      register({ id, title: `Activate ${window.title}`, icon: "open", source: "core" }, () => runWindowMenuCommand(id));
+    }
 
     const nudgeActions = createSelectionNudgeActions(document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0);
     nudgeActions.forEach(action => register(action, () => {
@@ -12497,7 +12510,7 @@ export function MainWindow({
 
     return bindings;
   }, [
-    isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
+    menuWindows, isSnapshotSessionActive, replacePresentDocument, prepareDocumentCommit, selectedNativeMoleculeParts,
     customSwatchActions, tableActions, activeTableCell, bracketActions, clearScheduledTextEditorFocus,
     activateDocumentTab,
     newDocumentTab,
@@ -12777,8 +12790,8 @@ export function MainWindow({
     location: "structure", command: { kind: "command" as const, id: action.id, commandId: action.id,
       label: action.title, enabled: action.enabled !== false, coreRouted: true }
   })), [bracketActions]);
-  // One complete menu snapshot per result change. The existing native installer attaches menus only
-  // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
+  // Contribute this window's plugin rows to the coalesced complete snapshot. Windows installs
+  // a separate menu on each document window; unchanged snapshots are dropped on both platforms.
   const nativePluginMenuItems = useMemo(() => buildMainWindowNativeMenuItems([
     ...structureSearchMenuItems(structureSearchEnabled, hasSearchableStructure),
     ...bracketMenuItems,
@@ -22079,11 +22092,12 @@ export function MainWindow({
   const appMenuSections = useMemo(
     () =>
       buildAppMenuModel({
+        documentWindows: isDesktopRuntime() ? menuWindows : undefined,
         rulersVisible,
         crosshairsVisible,
         canUndo,
         canRedo,
-        hasSelection: document.selection.objectIds.length > 0,
+        hasSelection: document.selection.objectIds.length > 0 || selectedNativeMoleculeParts.length > 0,
         hasSelectedMolecule: selectedMolecule !== undefined,
         structureSearchEnabled,
         hasSearchableStructure,
@@ -22094,11 +22108,13 @@ export function MainWindow({
         keybindingScheme
       }),
     [
+      menuWindows,
       rulersVisible,
       crosshairsVisible,
       canUndo,
       canRedo,
       document.selection.objectIds.length,
+      selectedNativeMoleculeParts.length,
       quickActions,
       keybindingScheme,
       selectedMolecule,
@@ -22111,6 +22127,18 @@ export function MainWindow({
       bracketMenuItems
     ]
   );
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    stageNativeMenuSnapshot({
+      commands: flattenAppMenuCommands(appMenuSections).map(item => ({
+        commandId: item.commandId,
+        enabled: item.enabled && coreCommandBindings.get(item.commandId)?.spec.enabled !== false,
+        checked: item.checked
+      })),
+      title: documentTabs.find(tab => tab.id === activeDocumentTabId)?.title ?? "Untitled"
+    });
+  }, [appMenuSections, coreCommandBindings, documentTabs, activeDocumentTabId]);
 
   // Opening status chrome is read-only. Keep the popover's command target separate
   // from selection until the user chooses a geometry command.

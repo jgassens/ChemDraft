@@ -83,6 +83,8 @@ fn main() {
             "publish_palette_snapshot",
             "palette_routing_state",
             "sync_plugin_menu_items",
+            "publish_menu_snapshot",
+            "run_window_menu_command",
             "read_clipboard_payload",
             "write_clipboard_items",
             "write_clipboard_text_items",

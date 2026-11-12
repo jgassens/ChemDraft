@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "document-menus",
+  "description": "Document windows publish their own menu snapshots and invoke registered Window commands.",
+  "windows": ["main", "doc-*"],
+  "permissions": ["allow-publish-menu-snapshot", "allow-run-window-menu-command"]
+}

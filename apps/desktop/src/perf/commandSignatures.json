@@ -348,7 +348,7 @@
     "name": "set_toolbars_menu",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -372,7 +372,7 @@
     "name": "set_menu_checked",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, command_id: String, checked: bool,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, checked: bool,",
     "returnType": "Result<(), String>"
   },
   {
@@ -700,7 +700,23 @@
     "name": "sync_plugin_menu_items",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, items: Vec<PluginMenuItemInput>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, items: Vec<PluginMenuItemInput>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "publish_menu_snapshot",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, snapshot: document_menus::Snapshot,",
+    "returnType": "Result<Vec<MenuWindow>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "run_window_menu_command",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String,",
     "returnType": "Result<(), String>"
   },
   {
@@ -708,7 +724,7 @@
     "name": "set_keybinding_scheme",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, scheme: String",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, scheme: String,",
     "returnType": "Result<(), String>"
   },
   {

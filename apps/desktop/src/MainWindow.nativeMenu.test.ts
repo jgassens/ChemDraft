@@ -5,6 +5,7 @@ import { PLUGIN_UPDATES_COMMAND_ID, type PluginAppMenuItem } from "./appMenu";
 import { nativeStylePresetActions } from "./commands";
 import { buildMainWindowNativeMenuItems, syncPluginNativeMenuItems } from "./plugins/nativePluginMenu";
 import { buildOfficialPluginMenuItems, OFFICIAL_PLUGIN_MENUS } from "./plugins/officialPluginMenus";
+import { subscribeNativeMenuWindows } from "./window-manager/documentMenus";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./window-manager", () => ({ isDesktopRuntime: () => true }));
@@ -15,6 +16,21 @@ describe.each(["macos", "windows"] as const)("MainWindow native menu payload (%s
     vi.stubGlobal("navigator", { platform: platform === "macos" ? "MacIntel" : "Win32" });
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it("delivers the initial window list from publication and replays it to a late subscriber", async () => {
+    const windows = [{ windowId: `doc-${platform}`, title: "Drawing", active: true }];
+    vi.mocked(invoke).mockResolvedValueOnce(windows);
+    const listener = vi.fn();
+    const stop = subscribeNativeMenuWindows(listener);
+    try {
+      await syncPluginNativeMenuItems([{ id: `plugin.test.${platform}`, label: platform, enabled: true, location: "analyze" }]);
+      await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(windows));
+    } finally { stop(); }
+    const late = vi.fn();
+    const stopLate = subscribeNativeMenuWindows(late);
+    expect(late).toHaveBeenCalledExactlyOnceWith(windows);
+    stopLate();
+  });
 
   it.each([[], [0], [1], [0, 1]])("separates installed official aliases %j from presets in the synced payload", async (...installed) => {
     const registry = new CommandRegistry();
@@ -54,7 +70,9 @@ describe.each(["macos", "windows"] as const)("MainWindow native menu payload (%s
         coreRouted: true, location: "plugins"
       } : undefined);
       await syncPluginNativeMenuItems(payload);
-      expect(invoke).toHaveBeenLastCalledWith("sync_plugin_menu_items", { items: payload });
+      await vi.waitFor(() => expect(invoke).toHaveBeenLastCalledWith("publish_menu_snapshot", {
+        snapshot: expect.objectContaining({ pluginItems: payload })
+      }));
     }
     expect(contributions).toEqual(before);
   });

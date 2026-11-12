@@ -1119,6 +1119,27 @@ describe("documents in one window", () => {
     expect(setToolbarsMenu).toHaveBeenLastCalledWith(expect.any(Array), false, false, false);
   });
 
+  it("registers Window actions with encoded targets and keeps a second window gated", async () => {
+    await act(async () => native.events.get("chemdraft://menu-windows")?.([
+      { windowId: "main", title: "First drawing", active: true },
+      { windowId: "doc-other", title: "Second drawing", active: false }
+    ]));
+    const registry = documentPort().commandRegistry;
+    expect(registry.has("window.new")).toBe(true);
+    expect(registry.has("window.close")).toBe(true);
+    expect(registry.has("window.activate.doc-other")).toBe(true);
+    await command("window.activate.doc-other");
+    expect(nativeInvoke).toHaveBeenCalledWith("run_window_menu_command", { commandId: "window.activate.doc-other" });
+    await command("window.close");
+    expect(nativeInvoke).toHaveBeenCalledWith("run_window_menu_command", { commandId: "window.close" });
+    await expect(registry.invoke("window.new")).rejects.toThrow("disabled");
+    expect(nativeInvoke).not.toHaveBeenCalledWith("run_window_menu_command", { commandId: "window.new" });
+    await act(async () => native.events.get("chemdraft://menu-windows")?.([
+      { windowId: "main", title: "First drawing", active: true }
+    ]));
+    expect(registry.has("window.activate.doc-other")).toBe(false);
+  });
+
   it("New tab is keyboard-focusable and invokes the registered File New command exactly once", async () => {
     const invoke = vi.spyOn(documentPort().commandRegistry, "invoke");
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="New tab"]')!;

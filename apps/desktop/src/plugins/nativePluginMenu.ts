@@ -1,3 +1,4 @@
+import { stageNativeMenuSnapshot } from "../window-manager/documentMenus";
 import { nativeStylePresetMenuItems, pluginUpdatesAvailableMenuItem, type PluginAppMenuItem } from "../appMenu";
 import { isDesktopRuntime } from "../window-manager";
 
@@ -60,10 +61,5 @@ export async function syncPluginNativeMenuItems(items: readonly NativePluginMenu
   if (!isDesktopRuntime()) {
     return;
   }
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("sync_plugin_menu_items", { items });
-  } catch (error) {
-    console.warn("Could not sync plugin menu items into the native menu:", error);
-  }
+  stageNativeMenuSnapshot({ pluginItems: items });
 }

@@ -1,3 +1,4 @@
+import { stageNativeMenuSnapshot } from "./documentMenus";
 import { loadStartWithFreshDocument } from "../startupSettings";
 import { acceptsPaletteEvent, ACTIVE_DOCUMENT_EVENT, currentPaletteTarget, paletteDocumentIsActive, paletteGestureTarget, paletteTargetRevision, setActivePaletteWindow, bindPaletteSnapshot, type PaletteMessage, type PaletteTarget } from "./paletteTarget";
 export type { PaletteTarget, PaletteMessage } from "./paletteTarget";
@@ -882,8 +883,8 @@ export interface ToolbarMenuEntry {
 
 /**
  * Push the Toolbars menu model to Rust so the native menu's toolset rows come from the TS registry
- * rather than Rust's manifest copy. Use for structure (which toolsets exist / their titles); the
- * per-toggle checkmark still flips in place via setMenuChecked.
+ * rather than Rust's manifest copy. The bridge merges this with the command/plugin snapshot;
+ * native check-only changes update in place. setMenuChecked remains a legacy narrow bridge.
  */
 export async function setToolbarsMenu(
   entries: readonly ToolbarMenuEntry[],
@@ -897,8 +898,7 @@ export async function setToolbarsMenu(
     return;
   }
 
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolbars_menu", { entries, rulersVisible, crosshairsVisible, hasMultipleDocumentTabs }).catch(() => undefined);
+  stageNativeMenuSnapshot({ entries, view: { rulersVisible, crosshairsVisible, hasMultipleDocumentTabs } });
 }
 
 /**

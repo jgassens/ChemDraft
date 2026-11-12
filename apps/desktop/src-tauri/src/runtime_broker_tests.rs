@@ -103,7 +103,11 @@ fn hidden_builder_flags_and_registry_exclusion_are_shared_on_both_platforms() {
     for command in ["edit.undo", "edit.redo", "edit.selectAll", "file.open"] {
         assert_eq!(
             crate::menu_command_target_label(&documents, command, Some(HOST)).as_deref(),
-            Some("doc-b")
+            if cfg!(target_os = "macos") {
+                Some("doc-b")
+            } else {
+                None
+            }
         );
         assert!(crate::menu_command_target_label(
             &DocumentWindowRegistry::default(),
@@ -124,10 +128,11 @@ fn hidden_builder_flags_and_registry_exclusion_are_shared_on_both_platforms() {
         .split("fn reinstall_app_menu")
         .next()
         .unwrap();
-    assert!(install.contains("#[cfg(target_os = \"macos\")]\n    app.set_menu(menu)?;"));
+    assert!(install.contains("app.set_menu(create_document_menu(app, None)?)?;"));
     assert!(install.contains("#[cfg(not(target_os = \"macos\"))]"));
-    assert!(install.contains("active_document_webview(app)"));
-    assert!(!install.contains("get_webview_window"));
+    assert!(install.contains("document_menus::installation_labels("));
+    assert!(install.contains("label.filter(|label| is_document_window(app, label))"));
+    assert!(install.contains("window.set_menu(create_document_menu(app, Some(label))?)?;"));
     let runtime_source = include_str!("runtime_broker.rs");
     let builder = runtime_source
         .split("pub(crate) fn create_runtime_window")

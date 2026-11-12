@@ -17,7 +17,8 @@ import {
 } from "./appMenu";
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
-import { nativeStylePresetCommandId } from "./commands";
+import { activateDocumentWindowCommandId, NEW_WINDOW_COMMAND_ID, CLOSE_WINDOW_COMMAND_ID, nativeStylePresetCommandId } from "./commands";
+import { createMenuSnapshotPublisher, type NativeMenuSnapshot } from "./window-manager/documentMenus";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -61,6 +62,69 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["macos", "windows"] as const)("keeps document snapshots and Window targets independent on %s", platform => {
+    const windows = [
+      { windowId: "a", title: "First drawing", active: true },
+      { windowId: "b", title: "Second drawing", active: false }
+    ];
+    const a = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform, documentWindows: windows,
+      canUndo: true, rulersVisible: true,
+      toolbars: [{ id: "main", commandId: "view.toolset.toggle.core.main", title: "Main", checked: true }] }));
+    const b = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform, documentWindows: windows,
+      canUndo: false, rulersVisible: false,
+      toolbars: [{ id: "art", commandId: "view.toolset.toggle.core.art", title: "Art", checked: false }] }));
+    expect(a.find(item => item.commandId === "edit.undo")?.enabled).toBe(true);
+    expect(b.find(item => item.commandId === "edit.undo")?.enabled).toBe(false);
+    expect(a.find(item => item.commandId === "view.toggleRulers")?.checked).toBe(true);
+    expect(b.find(item => item.commandId === "view.toggleRulers")?.checked).toBe(false);
+    expect(a.some(item => item.commandId === "view.toolset.toggle.core.art")).toBe(false);
+    expect(b.some(item => item.commandId === "view.toolset.toggle.core.main")).toBe(false);
+    expect(a.find(item => item.commandId === activateDocumentWindowCommandId("a"))).toMatchObject({ label: "First drawing", checked: true });
+    const activated = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform,
+      documentWindows: windows.map(window => ({ ...window, active: window.windowId === "b" })) }));
+    expect(activated.find(item => item.commandId === activateDocumentWindowCommandId("b"))?.checked).toBe(true);
+    expect(activated.find(item => item.commandId === CLOSE_WINDOW_COMMAND_ID)?.shortcut).toBe(platform === "macos" ? "⇧⌘W" : "Ctrl+Shift+W");
+    expect(a.some(item => item.commandId === NEW_WINDOW_COMMAND_ID)).toBe(false);
+  });
+
+  it.each(["macos", "windows"] as const)("disables document-only commands without a window on %s", platform => {
+    const items = flattenAppMenuCommands(buildAppMenuModel({ ...EMPTY_CONTEXT, platform,
+      hasDocumentWindow: false, documentWindows: [] }));
+    expect(items.filter(item => item.enabled).map(item => item.commandId)).toEqual([
+      "document.new", NEW_WINDOW_COMMAND_ID, "document.open"
+    ]);
+    expect(items.find(item => item.commandId === NEW_WINDOW_COMMAND_ID)?.shortcut).toBe(platform === "macos" ? "⇧⌘N" : "Ctrl+Shift+N");
+  });
+
+  it("coalesces complete snapshots per window and serializes pending updates", async () => {
+    const deliveries: NativeMenuSnapshot[] = [];
+    let release: (() => void) | undefined;
+    const publishA = createMenuSnapshotPublisher(async snapshot => {
+      deliveries.push(snapshot);
+      await new Promise<void>(resolve => { release = resolve; });
+    });
+    const deliverB = vi.fn().mockResolvedValue(undefined);
+    const publishB = createMenuSnapshotPublisher(deliverB);
+    publishA({ title: "A" });
+    publishA({ commands: [{ commandId: "edit.undo", enabled: true }] });
+    publishA({ view: { rulersVisible: false, crosshairsVisible: true, hasMultipleDocumentTabs: true } });
+    publishB({ title: "B", commands: [{ commandId: "edit.undo", enabled: false }] });
+    await Promise.resolve();
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({ title: "A", view: { hasMultipleDocumentTabs: true }, commands: [{ enabled: true }] });
+    expect(deliverB).toHaveBeenCalledWith(expect.objectContaining({ title: "B", commands: [{ commandId: "edit.undo", enabled: false }] }));
+    publishA({ title: "A latest" });
+    await Promise.resolve();
+    expect(deliveries).toHaveLength(1);
+    release!();
+    await vi.waitFor(() => expect(deliveries).toHaveLength(2));
+    expect(deliveries[1]?.title).toBe("A latest");
+    release!();
+    await Promise.resolve();
+    publishA({ title: "A latest" });
+    await Promise.resolve();
+    expect(deliveries).toHaveLength(2);
+  });
   it.each(["macos", "windows"] as const)("keeps a separate plugin alias block after the drawing styles on %s", platform => {
     const context = { ...EMPTY_CONTEXT, platform };
     const base = buildAppMenuModel(context).find(section => section.id === "structure")!;
@@ -105,8 +169,11 @@ describe("app menu model", () => {
     const routing = source.split("fn is_core_routed_dynamic_menu_command")[1]?.split("fn plugin_menu_items_in")[0];
     expect(routing).toContain("item.core_routed && item.id == command_id");
     const click = source.split(".on_menu_event(")[1]?.split(".on_window_event(")[0];
-    expect(click).toContain("is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))");
-    expect(click).toContain("emit_menu_command(app, command_id)");
+    expect(click).toContain("handle_document_menu_event(app, event.id().as_ref())");
+    const dispatch = source.split("fn handle_document_menu_event<R: Runtime>")[1]!.split("fn dispatch_document_menu_command")[0]!;
+    expect(dispatch).toContain("is_core_routed_dynamic_menu_command(command, &plugin_items)");
+    expect(dispatch).toContain("dispatch_document_menu_command(app, &target, command)");
+    expect(dispatch).toContain("menu_snapshot(app, &target).plugin_items");
     const main = readFileSync("apps/desktop/src/MainWindow.tsx", "utf8");
     expect(main).toContain("for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(");
     expect(main).not.toContain("plugin.runtime.showUpdates");
@@ -138,10 +205,11 @@ describe("app menu model", () => {
     const analyze = source.split("fn build_analyze_submenu<R: Runtime>")[1]?.split("fn create_app_menu")[0];
     expect(analyze).toContain('plugin_menu_items_in(plugin_items, "analyze")');
     const install = source.split("fn install_app_menu<R: Runtime>")[1]?.split("fn reinstall_app_menu")[0];
-    expect(install).toContain('#[cfg(target_os = "macos")]\n    app.set_menu(menu)?;');
+    expect(install).toContain("document_menus::installation_labels(");
+    expect(install).toContain("app.set_menu(create_document_menu(app, None)?)?;");
     expect(install).toContain('#[cfg(not(target_os = "macos"))]');
-    expect(install).toContain("active_document_webview(app)");
-    expect(install).toContain("window.set_menu(menu)?;");
+    expect(install).toContain("label.filter(|label| is_document_window(app, label))");
+    expect(install).toContain("window.set_menu(create_document_menu(app, Some(label))?)?;");
   });
 
   it("exposes routed Select All with the same command and accelerator as the native menu", () => {
@@ -302,7 +370,7 @@ describe("app menu model", () => {
     expect(nativeRoutedCommandIds(model)).toContain(VIBE_CODE_STARTER_COMMAND_ID);
     const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
     const builder = source.split("let plugins_menu =")[1]!.split("let plugins_plugin_items")[0]!;
-    expect(builder).toMatch(/"plugins.manage",\s*"Add or Remove Plugins…"[\s\S]*PredefinedMenuItem::separator\(app\)[\s\S]*"plugins.vibeCodeStarter",\s*"Vibe Code Your Own Plugin…"/);
+    expect(builder).toMatch(/"plugins.manage"\),\s*"Add or Remove Plugins…"[\s\S]*PredefinedMenuItem::separator\(app\)[\s\S]*"plugins.vibeCodeStarter"\),\s*"Vibe Code Your Own Plugin…"/);
   });
 
   it("appends plugin menu items to their target section without disturbing the native routed set", () => {
@@ -390,12 +458,12 @@ describe("Preferences placement", () => {
     const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
     const fileMenu = builder.split('"File",')[1]!.split('"Edit",')[0]!;
-    expect(fileMenu).toContain('#[cfg(not(target_os = "macos"))]\n                    &preferences_menu_item(app)?');
-    expect(fileMenu.indexOf('"export.open"')).toBeLessThan(fileMenu.indexOf("&preferences_menu_item(app)?"));
+    expect(fileMenu).toContain('#[cfg(not(target_os = "macos"))]\n                    &preferences_menu_item(app, source_label)?');
+    expect(fileMenu.indexOf('"export.open"')).toBeLessThan(fileMenu.indexOf("&preferences_menu_item(app, source_label)?"));
     expect(source).toContain('#[cfg(target_os = "macos")]\nfn create_native_app_menu<R: Runtime>');
     const appMenu = source.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
-    expect(appMenu.indexOf("PredefinedMenuItem::about")).toBeLessThan(appMenu.indexOf("&preferences_menu_item(app)?"));
-    expect(appMenu.indexOf("&preferences_menu_item(app)?")).toBeLessThan(appMenu.indexOf("PredefinedMenuItem::services"));
+    expect(appMenu.indexOf("PredefinedMenuItem::about")).toBeLessThan(appMenu.indexOf("&preferences_menu_item(app, source_label)?"));
+    expect(appMenu.indexOf("&preferences_menu_item(app, source_label)?")).toBeLessThan(appMenu.indexOf("PredefinedMenuItem::services"));
     const item = source.split("fn preferences_menu_item<R: Runtime>")[1]!.split("fn create_view_menu")[0]!;
     expect(item).toContain("PREFERENCES_TOGGLE_COMMAND_ID");
     expect(item).toContain('Some("CmdOrCtrl+,")');

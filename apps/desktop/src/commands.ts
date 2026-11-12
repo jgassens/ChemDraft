@@ -117,6 +117,11 @@ export function createSelectionNudgeActions(hasSelection: boolean): CommandSpec[
   }));
 }
 
+/** Window actions encode their target in the id, just like tab and toolbar actions. */
+export const NEW_WINDOW_COMMAND_ID = "window.new";
+export const CLOSE_WINDOW_COMMAND_ID = "window.close";
+export function activateDocumentWindowCommandId(windowId: string): string { return `window.activate.${windowId}`; }
+
 export function activateDocumentTabCommandId(id: string): string {
   return `document.activateTab.${id}`;
 }
