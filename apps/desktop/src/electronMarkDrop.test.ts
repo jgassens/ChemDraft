@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, deserializeDocument, serializeDocument, type ChemDraftDocument, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
-import { atomDisplayLabel, moleculeLayoutLabelBoxes } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, moleculeLayoutLabelBoxes, transformPointForObject } from "@chemdraft/layout-engine";
 import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp,
   stereoPerceptionMolfile, type PagePoint } from "@chemdraft/document-workflow-core";
 import * as workflow from "./documentWorkflow";
@@ -214,6 +214,31 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(result.refused).toBeUndefined();
     expect(dropMark(result.document).anchor.atomId).toBe(molecule.atoms[0].id);
     expect(dropMolecule(result.document).atoms.map(atom => atom.formalCharge)).toEqual([1, 0, 0, 0]);
+    const center = workflow.nativeChargeMarkCenter(dropMark(result.document));
+    const oxygen = transformPointForObject(molecule, molecule.atoms[0]);
+    const nitrogen = transformPointForObject(molecule, molecule.atoms[3]);
+    const oxygenDistance = Math.hypot(center.x - oxygen.x, center.y - oxygen.y);
+    // The unrotated placement is about 22 px from O; allow at most 1.5 drawing bonds.
+    expect(oxygenDistance).toBeLessThanOrEqual(documentDrawingDefaults(document).bondLengthPx * 1.5);
+    expect(Math.hypot(center.x - nitrogen.x, center.y - nitrogen.y)).toBeGreaterThan(oxygenDistance);
+  });
+
+  it.each([0, 180])("places a new charge-tool mark beside rendered O with molecule rotation %s", rotation => {
+    const fixture = rotatedElectronMarkDropFixture(rotation);
+    const document = applyPatch(fixture, { op: "removeObject", objectId: dropMark(fixture).id }, { now: phase4Timestamp });
+    const molecule = dropMolecule(document), atom = molecule.atoms[0];
+    const result = workflow.applyChargeToolAtNativeAtom(document, 1,
+      { kind: "atom", objectId: molecule.id, atomId: atom.id, distanceToPointer: 0 });
+    const mark = dropMark(result), center = workflow.nativeChargeMarkCenter(mark);
+    const oxygen = transformPointForObject(molecule, atom);
+    const nitrogen = transformPointForObject(molecule, molecule.atoms[3]);
+    const oxygenDistance = Math.hypot(center.x - oxygen.x, center.y - oxygen.y);
+    expect(mark.anchor).toMatchObject({ kind: "atom", objectId: molecule.id, atomId: atom.id });
+    expect(oxygenDistance).toBeLessThanOrEqual(documentDrawingDefaults(document).bondLengthPx * 1.5);
+    expect(Math.hypot(center.x - nitrogen.x, center.y - nitrogen.y)).toBeGreaterThan(oxygenDistance);
+    const committed = workflow.normalizeCommittedDocument(result);
+    expect(dropMark(committed)).toEqual(mark);
+    expect(dropMolecule(committed).atoms.map(atom => atom.formalCharge)).toEqual([1, 0, 0, 0]);
   });
 
   it.each(associationSpecs)("keeps a deliberate floating %j through appearance and layout edits until an atom drop", spec => {
@@ -224,13 +249,20 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     let document = drop(floating, point).document;
     const molecule = dropMolecule(document), mark = dropMark(document);
     expect(mark).toMatchObject({ atomAssociation: "explicit", anchor: { kind: "point" } });
+    expect(molecule.atoms.every(atom => (atom.markRadicals ?? 0) === 0)).toBe(true);
     document = workflow.applyElectronMarkStyleToSelection(document, "size", 72);
     document = workflow.rotateDocumentObject(document, mark.id, 73);
     document = workflow.moveDocumentObjects(document, [mark.id], 0, 1);
     document = workflow.normalizeCommittedDocument(document);
     expect(dropMolecule(document)).toEqual(molecule);
     expect(dropMark(document)).toMatchObject({ atomAssociation: "explicit", anchor: { kind: "point" } });
-    const reopened = workflow.normalizeCommittedDocument(workflow.openNativeDocument(serializeDocument(document)).document!);
+    const selected = workflow.normalizeCommittedDocument(workflow.selectDocumentObjects(document,
+      document.pages[0].id, document.pages[0].objects.map(object => object.id)));
+    const withText = workflow.normalizeCommittedDocument(workflow.insertNativeTextObject(selected,
+      { x: 500, y: 400 }, "Unrelated text"));
+    expect(dropMolecule(withText)).toEqual(molecule);
+    expect(dropMark(withText)).toEqual(dropMark(document));
+    const reopened = workflow.normalizeCommittedDocument(workflow.openNativeDocument(serializeDocument(withText)).document!);
     expect(dropMolecule(reopened)).toEqual(molecule);
     expect(dropMark(reopened)).toEqual(dropMark(document));
     // The next intentional atom drop can replace the floating decision, including for radicals.
@@ -238,6 +270,12 @@ describe.each([false, true])("electron-mark drops with direct editing %s", enabl
     expect(attached.refused).toBeUndefined();
     expect(dropMark(attached.document)).toMatchObject({ atomAssociation: "explicit",
       anchor: { kind: "atom", objectId: molecule.id, atomId: fixture.sourceAtom.id } });
+    const contribution = workflow.electronMarkAtomContribution(mark);
+    expect(atomDropState(attached.document, fixture.sourceAtom.id)).toMatchObject({
+      charge: contribution.charge, radicals: contribution.radicals
+    });
+    expect(dropMolecule(attached.document).atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0))
+      .toBe(contribution.radicals);
   });
 
   it("reports chemistry introduced by normalization even without an intended transfer", () => {

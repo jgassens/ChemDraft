@@ -709,8 +709,8 @@ describe("canvas ring-fill layers", () => {
     expect(snapshot().pages[0].objects).toHaveLength(1);
     expect(snapshot().pages[0].objects[0]).toMatchObject({
       id: mark.id, x: mark.x + 45, y: mark.y + 30,
-      // Main's floating radical/lone-pair point anchors retain their original coordinates.
-      anchor: spec.kind === "charge" ? { kind: "point", point: { x: 345, y: 330 } } : mark.anchor
+      // old -> new: radical/lone-pair anchors now record the dropped centre, like charges, with an explicit floating decision.
+      anchor: { kind: "point", point: { x: 345, y: 330 } }
     });
     await command("edit.undo");
     expect(container.querySelector("[data-status-message]")?.textContent).toBe("Undid Move electron mark");
@@ -781,7 +781,9 @@ describe("canvas ring-fill layers", () => {
     await pointer(selectedInk, "pointermove", { x: 345, y: 330 });
     await pointer(selectedInk, "pointerup", { x: 345, y: 330 });
     expect(window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0]).toMatchObject({
-      x: mark.x + 45, y: mark.y + 30, anchor: mark.anchor
+      x: mark.x + 45, y: mark.y + 30,
+      // old -> new: the floating point anchor follows the dropped centre even with direct editing off.
+      anchor: { kind: "point", point: { x: 345, y: 330 } }
     });
   });
 

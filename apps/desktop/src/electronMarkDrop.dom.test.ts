@@ -3,8 +3,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { atomDisplayLabel, moleculeLayoutLabelBoxes } from "@chemdraft/layout-engine";
-import { nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
+import { atomDisplayLabel, moleculeLayoutLabelBoxes, transformPointForObject } from "@chemdraft/layout-engine";
+import { documentDrawingDefaults, nativeAtomBondOrderUsage, nativeImplicitHydrogenCount, phase4Timestamp } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import * as workflow from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -301,6 +301,13 @@ describe.each([false, true])("electron-mark drop interaction with direct editing
     expect(dropMark(snapshot()).anchor.atomId).toBe(oxygen.id);
     expect(dropMolecule(snapshot()).atoms.find(atom => atom.id === oxygen.id)?.formalCharge).toBe(1);
     expect(dropMolecule(snapshot()).atoms.find(atom => atom.id === nitrogen.id)?.formalCharge).toBe(0);
+    const center = workflow.nativeChargeMarkCenter(dropMark(snapshot()));
+    const renderedOxygen = transformPointForObject(molecule, oxygen);
+    const renderedNitrogen = transformPointForObject(molecule, nitrogen);
+    const oxygenDistance = Math.hypot(center.x - renderedOxygen.x, center.y - renderedOxygen.y);
+    // Match the unit regression's bound, based on the unrotated placement distance.
+    expect(oxygenDistance).toBeLessThanOrEqual(documentDrawingDefaults(snapshot()).bondLengthPx * 1.5);
+    expect(Math.hypot(center.x - renderedNitrogen.x, center.y - renderedNitrogen.y)).toBeGreaterThan(oxygenDistance);
     expect(status()).toBe("Charge attached to O (O now H2O)");
   });
 
