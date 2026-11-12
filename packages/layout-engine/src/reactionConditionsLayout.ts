@@ -4,9 +4,11 @@ import { arrowAttachmentFrame, arrowAttachmentPoint, reactionConditionsFrame,
   moleculeOutlineForArrangement, textVisualBoundsForArrangement } from "./arrowAttachmentFrames";
 
 /** Ink obstacles, rather than the empty bounding rectangle around a curved arrow. */
-function conditionsObstacles(page: DocumentPage, labelId: string): NativeArtObstacle[] {
+function conditionsObstacles(page: DocumentPage, arrowId: string, labelId: string): NativeArtObstacle[] {
   return page.objects.flatMap((object): NativeArtObstacle[] => {
     if(object.id===labelId || object.type==='group') return [];
+    // An owning reaction's frame is bookkeeping; its members still contribute their own ink.
+    if(object.type==='reaction' && (object.arrowObjectIds?.includes(arrowId) || object.conditionsTextObjectIds.includes(labelId))) return [];
     if(object.type==='molecule') return [{outline:moleculeOutlineForArrangement(object)}];
     if(object.type==='text') return [textVisualBoundsForArrangement(object)];
     const frame=arrowAttachmentFrame(page,object);
@@ -25,7 +27,7 @@ export function reactionConditionsPlacement(page: DocumentPage, arrow: DocumentO
   const frame=reactionConditionsFrame(page,arrow);if(!frame)return undefined;
   const sign=side==='above'?1:-1;
   const extent=Math.abs(frame.normal.x)*label.width/2+Math.abs(frame.normal.y)*label.height/2;
-  const obstacles=conditionsObstacles(page,label.id);
+  const obstacles=conditionsObstacles(page,arrow.id,label.id);
   const length=frame.length??100, step=Math.min(36,Math.max(12,length*0.12));
   const shifts=[0,-step,step,-2*step,2*step];
   let best: {offset:{x:number;y:number};score:number}|undefined;
