@@ -13945,15 +13945,15 @@ export function documentObjectMoveDeltaResolver(
   objectId: string,
   groupObjectIds?: readonly string[]
 ): (dx: number, dy: number) => PagePoint {
+  const page = pageContainingObject(document, objectId);
+  if (!page) return () => ({ x: 0, y: 0 });
   if (groupObjectIds && groupObjectIds.length > 1) {
-    const page = firstPage(document);
     const ids = resolveGroupedDocumentObjectIds(page.objects, groupObjectIds);
     const bounds = selectionBounds(page.objects, [...expandWithAnchoredMarkIds(page.objects, ids)]);
     return bounds ? (dx, dy) => clampedSelectionMoveDelta(page, bounds, dx, dy) : () => ({ x: 0, y: 0 });
   }
-  const page = pageContainingObject(document, objectId);
   const object = objectOnPage(page, objectId);
-  if (!page || !object) return () => ({ x: 0, y: 0 });
+  if (!object) return () => ({ x: 0, y: 0 });
   return (dx, dy) => {
     const position = clampedObjectMovePosition(page, object, { x: object.x + dx, y: object.y + dy });
     return { x: position.x - object.x, y: position.y - object.y };
@@ -13967,7 +13967,8 @@ export function moveDocumentObjects(
   dx: number,
   dy: number
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  const page = ids.length > 0 ? pageContainingObject(document, ids[0]) : undefined;
+  if (!page) return document;
   const objectIds = resolveGroupedDocumentObjectIds(page.objects, ids);
   const set = expandWithAnchoredMarkIds(page.objects, objectIds);
   const bounds = selectionBounds(page.objects, [...set]);
@@ -13999,11 +14000,12 @@ export function moveCanvasSelection(
   fragments: readonly NativeMoleculeFragmentSelection[],
   delta: PagePoint
 ): ChemDraftDocument {
-  const page = firstPage(document);
+  const selectedId = document.selection.objectIds[0];
+  const page = selectedId ? pageContainingObject(document, selectedId) : undefined;
   // A molecule's part selection takes precedence over its object highlight, as in a part drag.
   const fragmentIds = new Set(fragments.map(fragment => fragment.objectId));
-  const ids = resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds)
-    .filter(id => !fragmentIds.has(id));
+  const ids = page ? resolveGroupedDocumentObjectIds(page.objects, document.selection.objectIds)
+    .filter(id => !fragmentIds.has(id)) : [];
   let moved = document;
   if (ids.length > 1) moved = moveDocumentObjects(moved, ids, delta.x, delta.y);
   else if (ids.length === 1) {
@@ -14060,7 +14062,7 @@ function selectionLayoutObjects(document: ChemDraftDocument): DocumentObject[] {
 
 // Move a top-level layout item by a delta. For a group this moves every descendant together (the
 // same primitive group dragging uses), so the group keeps its internal arrangement. Unlike
-// moveDocumentObjects it neither clamps to the page nor assumes the first page.
+// moveDocumentObjects it does not clamp to the page.
 interface LayoutItemMove {
   objectId: string;
   dx: number;
