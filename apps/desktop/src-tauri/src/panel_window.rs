@@ -350,6 +350,8 @@ pub(crate) fn is_current<R: tauri::Runtime>(
 
 // Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,
 // never from WebView2 child focus messages or delayed Tauri Focused events.
+// Linux has no native activation hook (WM_ACTIVATE / AppKit key notifications) to call this.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
     activation_with_reason(window, active, "window");
 }

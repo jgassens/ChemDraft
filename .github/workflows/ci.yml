@@ -132,6 +132,58 @@ jobs:
 
       - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
+  linux:
+    name: Linux Rust
+    # The Linux port: the GTK/WebKitGTK side of every cfg gate (linux_clipboard.rs, the tooltip's
+    # input shape), so a change that only builds on macOS and Windows cannot break the Linux release.
+    # The TS suite already runs on Linux in the web job.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libsoup-3.0-dev libssl-dev libxdo-dev
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Also required by tauri_build (see the rust job).
+      - run: pnpm --filter @chemdraft/desktop build:web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - run: cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - run: cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
+      # external_tools, naming_engine and ocsr_engine report themselves unsupported on Linux
+      # (local_engine::platform has no Linux implementation yet), so their tests cannot run here.
+      # Remove a --skip when its feature gains a Linux platform.
+      - run: >-
+          cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --
+          --skip external_tools:: --skip naming_engine:: --skip ocsr_engine:: --skip engine3d_sidecar_
+
+      # The 3D sidecar tests write a fake executable and then spawn it. On Linux a fork from a
+      # parallel test can still hold that file open for writing, and exec fails with ETXTBSY
+      # ("Text file busy"). One thread removes the race.
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml engine3d_sidecar_ -- --test-threads=1
+
   build-stamp:
     name: Build stamp bumped
     # PR-only: it compares against the base branch, and a push to main has already been decided.

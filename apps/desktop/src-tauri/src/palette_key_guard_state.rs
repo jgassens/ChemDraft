@@ -35,6 +35,8 @@ pub(crate) enum End {
     Hide,
     Destroy,
     Deactivated,
+    // Raised by the macOS and Windows pointer monitors only.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     Outside,
 }
 
