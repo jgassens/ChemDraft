@@ -43,13 +43,22 @@ describe.each(["macos", "windows"] as const)("page-wide enlargement translation 
     const prompt = vi.fn(async () => test.enlarge ? "enlarge" : "keep");
     const restore = setNativePromptProvider(prompt);
     let history = createDocumentHistory(before);
+    let baseline = before;
     try {
-      await commitWithPageFit(before, proposed, after => { history = { past: [before], present: after, future: [] }; },
+      await commitWithPageFit(before, proposed, (after, fitBaseline) => {
+        baseline = fitBaseline(before);
+        history = { past: [before], present: after, future: [] };
+      },
         { consent: new PageEnlargementConsent(platform) });
       const after = history.present;
       expect(prompt).toHaveBeenCalledOnce();
       expect(after.selection.objectIds).toEqual(["inserted"]);
       expect(after.pages[unaffected]).toEqual(before.pages[unaffected]);
+      // The baseline receives exactly the host's page layout and movement, with no insertion
+      // or selection from the proposed document. It must also leave other pages alone.
+      expect(baseline.selection).toEqual(before.selection);
+      expect(baseline.pages).toEqual(after.pages.map(page => ({ ...page,
+        objects: page.objects.filter(object => object.id !== "inserted") })));
       if (!test.enlarge) expect(after).toEqual(proposed);
       else {
         const fitted = after.pages[affected]!;
