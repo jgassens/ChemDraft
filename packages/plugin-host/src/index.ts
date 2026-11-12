@@ -2,7 +2,7 @@
 // into this package's dist so no `@chemdraft/chem-core` dependency ships (ADR-0031). `ChemDraftDocument`,
 // however, is taken from `@chemdraft/plugin-api` so a consumer using both SDK packages sees ONE canonical
 // document type — not a second, structurally-identical copy inlined here.
-import type { ApplyPatchOptions, DocumentObject, DocumentPatch } from "@chemdraft/chem-core";
+import type { ApplyPatchOptions, DocumentObject, DocumentPatch, DocumentPage } from "@chemdraft/chem-core";
 import { applyPatch, pruneReactionObjectReferences } from "@chemdraft/chem-core";
 import { rebasePluginPatch } from "./rebasePluginPatch";
 export { rebasePluginPatch } from "./rebasePluginPatch";
@@ -38,6 +38,35 @@ function authoredObjectValue(object: DocumentObject): DocumentObject {
   return { ...object, chemistry: { ...object.chemistry,
     warnings: object.chemistry.warnings.filter(warning => warning.code !== "chemistry.bracket_multiplier")
   } };
+}
+
+/** Page fitting must already be replayed on `before`. Only objects and crossings have scoped
+ * write semantics; all other page fields (including future additions) are host-owned. */
+function assertPluginPageWriteScope(before: ChemDraftDocument, after: ChemDraftDocument, scope: ReadonlySet<string>): void {
+  for (let index = 0; index < Math.max(before.pages.length, after.pages.length); index++) {
+    const original = before.pages[index], next = after.pages[index];
+    if (!original || !next) {
+      throw new PluginHostError(`Plugin write refused: page "${(original ?? next)!.id}" was ${original ? "removed" : "added"} outside this command's object scope.`);
+    }
+    const { objects: _objects, crossings, ...shell } = original;
+    const { objects: _nextObjects, crossings: nextCrossings, ...nextShell } = next;
+    if (!sameDocumentValue(shell, nextShell)) {
+      const fields = Object.keys({ ...shell, ...nextShell }).filter(key =>
+        !sameDocumentValue(shell[key as keyof typeof shell], nextShell[key as keyof typeof nextShell]));
+      throw new PluginHostError(`Plugin write refused: page "${original.id}" was changed (${fields.join(", ")}) outside this command's object scope.`);
+    }
+    // Preserve the protected sequence, including duplicate pairs: rendering uses the FIRST
+    // matching override. In-scope records may change without shifting this protected sequence.
+    const protectedCrossings = (values: DocumentPage["crossings"]) =>
+      values.filter(crossing => crossing.bonds.some(ref => !scope.has(ref.objectId)));
+    const protectedBefore = protectedCrossings(crossings), protectedAfter = protectedCrossings(nextCrossings);
+    for (let i = 0; i < Math.max(protectedBefore.length, protectedAfter.length); i++) {
+      if (sameDocumentValue(protectedBefore[i], protectedAfter[i])) continue;
+      const crossing = (protectedBefore[i] ?? protectedAfter[i])!;
+      const outside = crossing.bonds.find(ref => !scope.has(ref.objectId))!;
+      throw new PluginHostError(`Plugin write refused: crossing on page "${original.id}" involving object "${outside.objectId}" (bond "${outside.bondId}") would change, but that object was not selected when the command started.`);
+    }
+  }
 }
 
 /** Host-only preflight. Embedders must rerun against the document they will actually commit after
@@ -118,6 +147,7 @@ export function assertPluginPatchWriteScope(
     }
     throw new PluginHostError(`Patch would change object "${object.id}", which is not selected`);
   }
+  assertPluginPageWriteScope(document, validated, scope);
 }
 
 /** Last check at the history boundary, AFTER all normalization and placement. Only rebased patch
@@ -176,6 +206,7 @@ export function assertPluginDocumentWriteScope(
       throw new PluginHostError(`Plugin write refused: ${entry.object.type} "${entry.object.id}" was added outside this command's insertions.`);
     }
   }
+  assertPluginPageWriteScope(before, after, new Set([...scope, ...inserted]));
 }
 
 function pluginObjectChangeDescription(before: DocumentObject, after: DocumentObject): string {

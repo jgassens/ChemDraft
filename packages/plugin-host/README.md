@@ -53,6 +53,13 @@ history preparation callback so a subsequent normalization cannot bypass it; a r
 When the user approves host-owned page fitting, first apply that exact resize and uniform page
 translation to the baseline as well. The desktop's `commitWithPageFit` supplies this transform to its
 commit callback; it never replans from the baseline or exempts other object position changes.
+Both checks also protect page data. Page `id`, `width`, `height`, `margin`, `layout`, and
+`compatibility` must match the baseline exactly; page additions, removals, and reordering are refused.
+`objects` retain their object-scope checks. A `crossings` record may change only when both referenced
+objects are in scope (selected at command start or inserted by that command). Protected crossing
+records retain every field, occurrence, and relative order (duplicate pairs use the first override). This also
+refuses implicit crossing removal when a selected molecule loses a bond shared with an unselected
+molecule's crossing. Other page fields, including future additions, default to exact comparison.
 Flat `batch` patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without

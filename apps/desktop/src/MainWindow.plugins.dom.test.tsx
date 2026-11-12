@@ -301,24 +301,24 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     }, { commandHandlers: { [command]: handler } }));
     return () => captured.runtime!.host.invokeCommand(command);
   }
-  function chargeMark(molecule: MoleculeObject): ElectronMarkObject {
+  function chargeMark(molecule: MoleculeObject, charge = 1): ElectronMarkObject {
     const atom = molecule.atoms[0]!;
-    return { id: "inserted_charge", type: "electron-mark", markKind: "charge", charge: 1,
+    return { id: "inserted_charge", type: "electron-mark", markKind: "charge", charge,
       atomAssociation: "explicit", anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
       x: atom.x + 12, y: atom.y - 12, width: 18, height: 18, rotation: 0, style: {} };
   }
 
-  it("refuses an inserted explicit charge mark on an unselected carbon, without a receipt, document change or undo entry", async () => {
+  it.each([1, -1])("refuses an inserted explicit %s charge mark on an unselected carbon, without a receipt, document change or undo entry", async charge => {
     const fixture = testContext(false);
     const port = await mount(fixture.context.getDocument()!);
     const before = port.read("initial")!;
     const molecule = before.pages[0]!.objects.find(object => object.type === "molecule")! as MoleculeObject;
     expect(before.selection.objectIds).toEqual([]);
     expect(molecule.atoms[0]!.formalCharge).toBe(0);
-    const patch = { op: "addObject" as const, pageId: before.pages[0]!.id, object: chargeMark(molecule) };
+    const patch = { op: "addObject" as const, pageId: before.pages[0]!.id, object: chargeMark(molecule, charge) };
     // Prove this exact insertion really changes the protected carbon during normalization.
     const unsafe = normalizeCommittedDocument(applyPatch(before, patch));
-    expect((unsafe.pages[0]!.objects[0]! as MoleculeObject).atoms[0]!.formalCharge).toBe(1);
+    expect((unsafe.pages[0]!.objects[0]! as MoleculeObject).atoms[0]!.formalCharge).toBe(charge);
     const invoke = registerWrite(context => context.documents.applyPatch!({ reason: "Insert charge", patch }));
     await act(async () => {
       await expect(invoke()).rejects.toThrow(/Plugin write refused:.*atom.*formal charge/);
@@ -326,6 +326,111 @@ describe("plugin direct writes through mounted desktop normalization", () => {
     expect(port.read("initial")).toBe(before);
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
     expect(port.read("initial")).toBe(before);
+  });
+
+  it.each(["ordinary", "assistant push", "assistant amend"] as const)("refuses a selected molecule's bond deletion that removes a crossing shared with an unselected molecule in %s", async mode => {
+    const fixture = testContext();
+    const drawing = fixture.context.getDocument()!;
+    const neighbor: MoleculeObject = { ...fixture.molecule, id: "unselected_neighbor" };
+    const pageId = drawing.pages[0]!.id;
+    const left = { objectId: fixture.molecule.id, bondId: fixture.molecule.bonds[0]!.id };
+    const right = { objectId: neighbor.id, bondId: neighbor.bonds[0]!.id };
+    const withCrossing = applyPatch(drawing, { op: "batch", patches: [
+      { op: "addObject", pageId, object: neighbor },
+      { op: "setCrossingOverride", pageId, crossing: { bonds: [left, right], front: left } },
+      { op: "setSelection", objectIds: [fixture.molecule.id] }
+    ] });
+    const port = await mount(withCrossing);
+    const initial = port.read("initial")!;
+    const transactions = getAssistantTransactions(port);
+    const tx = mode === "ordinary" ? undefined : transactions.beginAssistantTransaction({
+      pluginId: "org.chemdraft.writeScopeTest", runId: "test-crossing", label: "Delete crossed bond",
+      tabId: "initial", sendSelection: { objectIds: [fixture.molecule.id] }
+    });
+    let before = initial;
+    const patch = { op: "updateObject" as const, objectId: fixture.molecule.id, changes: { bonds: [] } };
+    expect(before.pages[0]!.crossings).toHaveLength(1);
+    const unsafe = normalizeCommittedDocument(applyPatch(before, patch));
+    expect(unsafe.pages[0]!.crossings).toHaveLength(0);
+    expect(unsafe.pages[0]!.objects.find(object => object.id === neighbor.id))
+      .toEqual(before.pages[0]!.objects.find(object => object.id === neighbor.id));
+    const invoke = registerWrite(async context => {
+      if (mode === "assistant amend") {
+        await context.documents.applyPatch!({ reason: "First insertion", patch: { op: "addObject", pageId,
+          object: { ...fixture.text, id: "accepted_text", y: 450 } } });
+        before = port.read("initial")!;
+      }
+      await expect(context.documents.applyPatch!({ reason: "Delete crossed bond", patch }))
+        .rejects.toThrow(/Plugin write refused: crossing.*unselected_neighbor.*not selected/);
+    });
+    await act(async () => { await invoke(); });
+    expect(port.read("initial")).toBe(before);
+    if (tx) await act(async () => { transactions.endAssistantTransaction(tx, { touchedIds: [] }); });
+    expect(port.read("initial")).toEqual(before);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")).toEqual(initial);
+    if (mode === "assistant amend") {
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.redo" } })); });
+      expect(port.read("initial")).toEqual(before);
+    }
+  });
+
+  it.each(["ordinary", "assistant push", "assistant amend"] as const)("refuses moving a selected charged molecule when its mark and charge transfer to an unselected neighbor in %s", async mode => {
+    const fixture = testContext();
+    const drawing = fixture.context.getDocument()!;
+    const neighbor: MoleculeObject = { ...fixture.molecule, id: "unselected_neighbor", x: fixture.molecule.x + 30,
+      atoms: fixture.molecule.atoms.map(atom => ({ ...atom, x: atom.x + 30 })) };
+    // Legacy atom anchors are sticky within the association radius. Moving just the molecule
+    // leaves its mark behind, close enough to charge the neighboring molecule instead.
+    const mark = { ...chargeMark(fixture.molecule), atomAssociation: undefined };
+    const pageId = drawing.pages[0]!.id;
+    const port = await mount(applyPatch(drawing, { op: "batch", patches: [
+      { op: "addObject", pageId, object: neighbor }, { op: "addObject", pageId, object: mark },
+      { op: "setSelection", objectIds: [fixture.molecule.id] }
+    ] }));
+    const initial = port.read("initial")!;
+    const molecule = initial.pages[0]!.objects[0]! as MoleculeObject;
+    expect(molecule.atoms[0]!.formalCharge).toBe(1);
+    expect(initial.selection.objectIds).toEqual([molecule.id]);
+    const patch = { op: "updateObject" as const, objectId: molecule.id, changes: {
+      x: molecule.x + 150, atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 150 }))
+    } };
+    const unsafe = normalizeCommittedDocument(applyPatch(initial, patch));
+    expect((unsafe.pages[0]!.objects[0]! as MoleculeObject).atoms[0]!.formalCharge).toBe(0);
+    expect(initial.pages[0]!.objects.find(object => object.id === neighbor.id)).toMatchObject({
+      atoms: [expect.objectContaining({ formalCharge: 0 }), expect.objectContaining({ formalCharge: 0 })]
+    });
+    expect(unsafe.pages[0]!.objects.find(object => object.id === neighbor.id)).toMatchObject({
+      atoms: [expect.objectContaining({ formalCharge: 1, markCharge: 1 }), expect.objectContaining({ formalCharge: 0 })]
+    });
+    expect(unsafe.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({
+      anchor: { kind: "atom", objectId: neighbor.id, atomId: neighbor.atoms[0]!.id }
+    });
+    const transactions = getAssistantTransactions(port);
+    const tx = mode === "ordinary" ? undefined : transactions.beginAssistantTransaction({
+      pluginId: "org.chemdraft.writeScopeTest", runId: "test-charge-transfer", label: "Move charged molecule",
+      tabId: "initial", sendSelection: { objectIds: [molecule.id] }
+    });
+    let before = initial;
+    const invoke = registerWrite(async context => {
+      if (mode === "assistant amend") {
+        await context.documents.applyPatch!({ reason: "First insertion", patch: { op: "addObject", pageId,
+          object: { ...fixture.text, id: "accepted_text", y: 450 } } });
+        before = port.read("initial")!;
+      }
+      await expect(context.documents.applyPatch!({ reason: "Move charged molecule", patch }))
+        .rejects.toThrow(/Plugin write refused: molecule "unselected_neighbor".*formal charge.*not selected/);
+    });
+    await act(async () => { await invoke(); });
+    expect(port.read("initial")).toBe(before);
+    if (tx) await act(async () => { transactions.endAssistantTransaction(tx, { touchedIds: [] }); });
+    expect(port.read("initial")).toEqual(before);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")).toEqual(initial);
+    if (mode === "assistant amend") {
+      await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.redo" } })); });
+      expect(port.read("initial")).toEqual(before);
+    }
   });
 
   it.each(["radical-dot", "radical-ion"] as const)("refuses an inserted %s mark changing an unselected atom", async kind => {
