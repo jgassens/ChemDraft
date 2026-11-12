@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { draftReleaseBody } from "./draft-release-body.mjs";
 import { BUILD_TARGETS } from "./record-build.mjs";
-import { arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, version } from "./release-test-fixtures.mjs";
+import { arm, commit, fakeReleaseRunner, installer, intel, releaseFixture, updaterPublicKey, version } from "./release-test-fixtures.mjs";
 
 const feed = (name) => `<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><sparkle:version>${version}</sparkle:version><enclosure url="https://example.com/${name}"/></item></channel></rss>`;
 
@@ -22,7 +22,7 @@ function fixture(t) {
   return { ...args, noGaps: true };
 }
 
-const draft = (args, options = {}) => draftReleaseBody(args, { run: fakeReleaseRunner(), ...options });
+const draft = (args, options = {}) => draftReleaseBody(args, { run: fakeReleaseRunner(), updaterPublicKey, ...options });
 
 test("complete release produces ordered sections with explicit gaps or explicit no-gaps", (t) => {
   const args = fixture(t);
@@ -61,6 +61,18 @@ test("feed pointing to the wrong architecture fails", (t) => {
   writeFileSync(join(args.assets, "appcast-intel.xml"), feed(arm));
   assert.throws(() => draft(args), /appcast-intel\.xml:.*x86_64/);
 });
+
+for (const [name, garbage] of [[`${installer}.sig`, "not a signature"], ["latest.json", "not JSON"]]) {
+  for (const state of ["absent", "garbage"]) {
+    test(`release body refuses ${state} Windows updater ${name} with valid build/record pairs`, (t) => {
+      const args = fixture(t);
+      assert.match(draft(args), /Platform differences: None\./);
+      if (state === "absent") unlinkSync(join(args.assets, name));
+      else writeFileSync(join(args.assets, name), garbage);
+      assert.throws(() => draft(args), (error) => error.message.includes(name));
+    });
+  }
+}
 
 test("missing version and notes are named", (t) => {
   const args = fixture(t);

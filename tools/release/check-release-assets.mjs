@@ -34,11 +34,13 @@ export function checkReleaseAssets({ tag, version = tag?.replace(/^v/, ""), comm
     }
     const missing = missingBuildFiles(folder, version);
     const builds = verifyBuildAssets({ assets: folder, version, expectedCommit, allowIncomplete }, {
+      updaterPublicKey,
       checkDmgCommit: platform === "darwin"
         ? (dmg, _target, expected, recordCommit) => verifyDmgSourceCommit(dmg, expected, { run, recordCommit })
         : undefined
     });
-    verifyWindowsUpdateAssets({ assets: folder, version, allowIncomplete }, { updaterPublicKey });
+    // Strict mode validates updater assets in verifyBuildAssets; preserve the partial-upload gate.
+    if (allowIncomplete) verifyWindowsUpdateAssets({ assets: folder, version, allowIncomplete }, { updaterPublicKey });
     if (missing.length) return { complete: false, missing };
     return { complete: true, commit: expectedCommit, builds };
   } finally { if (temporary) cleanup(folder); }

@@ -11,7 +11,8 @@ import { verifyDmgCommit } from "./verify-macos-feed.mjs";
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 export function draftReleaseBody({ version, commit, tag = `v${version}`, assets = process.cwd(), rootDir = ROOT, gaps = [], noGaps = false }, {
-  run = spawnSync, checkDmgCommit = (dmg, target, expected) => verifyDmgCommit(dmg, target, expected, { run })
+  run = spawnSync, checkDmgCommit = (dmg, target, expected) => verifyDmgCommit(dmg, target, expected, { run }),
+  updaterPublicKey
 } = {}) {
   if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) throw new Error("Expected --version X.Y.Z");
   if (!gaps.length && !noGaps) throw new Error("Supply at least one --gap or explicitly pass --no-gaps");
@@ -31,7 +32,7 @@ export function draftReleaseBody({ version, commit, tag = `v${version}`, assets 
     gapMap.get(match[1]).push(match[2].trim());
   }
   const installer = `ChemDraft_${version}_x64-setup.exe`;
-  try { verifyBuildAssets({ assets, version, expectedCommit }, { checkDmgCommit }); }
+  try { verifyBuildAssets({ assets, version, expectedCommit }, { checkDmgCommit, updaterPublicKey }); }
   catch (error) { errors.push(error.message); }
   for (const name of [platforms[0].dmg, platforms[1].dmg, installer, `${installer}.sig`, "latest.json"]) {
     try { if (!statSync(join(assets, name)).isFile()) throw new Error(); }
