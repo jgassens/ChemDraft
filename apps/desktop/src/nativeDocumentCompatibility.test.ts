@@ -88,14 +88,28 @@ describe("native document compatibility notice", () => {
     } finally { restore(); }
   });
 
-  it("uses the supplied minimum in a format-triggered notice", async () => {
+  // (1.1.1) -> (1.3.0): the newer format triggered this notice, so a compatible minimum is misleading.
+  it.each(["1.1.1", "1.2.0"])("names the triggering format when minimum %s is compatible", async minAppVersion => {
     const prompt = vi.fn(async (_options: NativePromptOptions) => "ok");
     const restore = setNativePromptProvider(prompt);
     try {
-      const opened = openNativeDocument(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion: "1.1.1" }));
+      const opened = openNativeDocument(JSON.stringify({ ...createEmptyDocument(), formatVersion: "1.3.0", minAppVersion }));
       await notifyNativeDocumentCompatibility(opened, opened.document!);
-      expect(prompt.mock.calls[0]![0].message).toContain("(1.1.1)");
+      expect(prompt).toHaveBeenCalledTimes(1);
+      expect(prompt.mock.calls[0]![0].message).toContain("(1.3.0)");
     } finally { restore(); }
+  });
+
+  it.each([
+    ["1.2.0", "1.3.1", "1.3.1"], // minimum only
+    ["1.4.0", "1.3.1", "1.3.1"]  // both newer: retain the required app version
+  ])("names a newer minimum with format %s and minimum %s", async (formatVersion, minAppVersion, version) => {
+    const opened = openNativeDocument(JSON.stringify({ ...createEmptyDocument(), formatVersion, minAppVersion }));
+    const present = vi.fn(async (_notice: NativePromptOptions) => "ok");
+    await notifyNativeDocumentCompatibility(opened, opened.document!, "macos", present);
+    expect(present).toHaveBeenCalledTimes(1);
+    expect(present.mock.calls[0]![0].message).toBe(
+      `This file was made with a newer ChemDraft (${version}). Some features may not show. Update to keep them.`);
   });
 
   it("logs legacy visual fallback warnings without adding a newer-file notice", async () => {

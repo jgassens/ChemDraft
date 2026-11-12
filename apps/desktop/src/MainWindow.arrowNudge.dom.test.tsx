@@ -26,7 +26,8 @@ class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform => {
   let root: Root, container: HTMLDivElement, canvas: HTMLElement;
   const current = () => getAssistantHistoryPort().read("initial")!;
-  const molecule = (document = current()) => document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+  const molecule = (document = current()) => document.pages.flatMap(page => page.objects)
+    .find((object): object is MoleculeObject => object.type === "molecule")!;
   const canonical = (document = current()) => OCL.Molecule.fromMolfile(moleculeToMolfileV2000(molecule(document), {
     unknownBondOrders: "refuse", fromDocFrame: true, kekuleBondOrders: new Map()
   }).contents).toSmiles();
@@ -59,6 +60,9 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     });
     initialDocument = selectDocumentObjects(initialDocument, initialDocument.pages[0].id,
       selected ? [molecule(initialDocument).id] : []);
+    await mountDocument(initialDocument, tool);
+  }
+  async function mountDocument(initialDocument: ChemDraftDocument, tool = "tool.select") {
     await act(async () => root.render(<MainWindow initialDocument={initialDocument} initialActiveToolCommandId={tool}
       initialPaletteMode="hidden" initialRulersVisible={false} initialCrosshairsVisible={false}
       nativePalette={false} shortcutPlatform={platform} />));
@@ -111,6 +115,58 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     expect((await key("ArrowDown", { shiftKey: true })).defaultPrevented).toBe(true);
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection down by 10 px");
     expectTranslation(before, 0, 10);
+    await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  function twoPageDrawing() {
+    let initial = insertNativeSingleBondMolecule(createPhase4Document("Page 2 nudge"), { x: 200, y: 200 });
+    initial = structuredClone(insertNativeTextObject(initial, { x: 300, y: 250 }, "Conditions"));
+    const page = initial.pages[0];
+    page.width = 900; page.height = 700;
+    page.layout = { ...page.layout!, widthPx: 900, heightPx: 700 };
+    const text = page.objects.find(object => object.type === "text")!;
+    initial.pages = [{ ...page, id: "page-before", width: 250, height: 250,
+      layout: { ...page.layout, widthPx: 250, heightPx: 250 },
+      objects: [{ ...text, id: "text-before", x: 20, y: 20 }] }, page];
+    return initial;
+  }
+  // Page 2 is not rendered by MainWindow yet; seed its object selection and exercise keyboard routing.
+  // Mixed atom-part/text movement is covered directly in arrowNudge.test.ts.
+  it.each(["text", "molecule", "mixed molecule and text"])("nudges page 2 %s with real arrow events", async kind => {
+    const initial = twoPageDrawing();
+    const page = initial.pages[1];
+    const text = page.objects.find(object => object.type === "text")!;
+    const item = molecule(initial);
+    const ids = kind === "text" ? [text.id]
+      : kind === "molecule" ? [item.id] : [item.id, text.id];
+    await mountDocument(selectDocumentObjects(initial, page.id, ids));
+    const before = current();
+    expect(before.selection.pageId).toBe(page.id);
+    expect((await key("ArrowRight", {}, canvas)).defaultPrevented).toBe(true);
+    expect(current().pages[1].objects.find(object => object.id === text.id)?.x)
+      .toBe(text.x + (ids.includes(text.id) ? 1 : 0));
+    expect(molecule().atoms).toEqual(molecule(before).atoms.map(atom => ({ ...atom,
+      x: atom.x + (kind !== "text" ? 1 : 0) })));
+    expect(molecule().bonds).toEqual(molecule(before).bonds);
+    expect(canonical()).toBe(canonical(before));
+    expect(current().pages[0]).toEqual(before.pages[0]);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection right by 1 px");
+    await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  it.each([false, true])("clamps page 2 nudges at its right edge (multiple objects: %s)", async multiple => {
+    const initial = twoPageDrawing();
+    const page = initial.pages[1];
+    const text = page.objects.find(object => object.type === "text")!;
+    text.x = page.width - text.width - 1;
+    await mountDocument(selectDocumentObjects(initial, page.id, multiple ? [text.id, molecule(initial).id] : [text.id]));
+    const before = current();
+    await key("ArrowRight", { shiftKey: true });
+    expect(current().pages[1].objects.find(object => object.id === text.id)?.x).toBe(page.width - text.width);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Moved selection right by 1 px");
+    const edge = current();
+    await key("ArrowRight");
+    expect(current()).toBe(edge);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Selection is already at the page edge");
+    expect(current().pages[0]).toEqual(before.pages[0]);
     await undo(); expect(current().pages).toEqual(before.pages);
   });
   it("reports the clamped distance and an unchanged selection at the page edge", async () => {

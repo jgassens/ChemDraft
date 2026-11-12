@@ -18,10 +18,10 @@ export async function notifyNativeDocumentCompatibility(
   for (const warning of opened.warnings) {
     if (warning.code.startsWith("NATIVE_")) console.warn("Native document compatibility", warning);
   }
-  const newer = (minimum !== undefined && compareNativeVersions(minimum, NativeDocumentReaderVersion) > 0)
-    || (document.formatVersion !== undefined && compareNativeVersions(document.formatVersion, NativeDocumentFormatVersion) > 0);
-  if (!newer) return;
-  const version = minimum ?? document.formatVersion;
+  const newerMinimum = minimum !== undefined && compareNativeVersions(minimum, NativeDocumentReaderVersion) > 0;
+  const newerFormat = document.formatVersion !== undefined && compareNativeVersions(document.formatVersion, NativeDocumentFormatVersion) > 0;
+  if (!newerMinimum && !newerFormat) return;
+  const version = newerMinimum ? minimum : document.formatVersion;
   await present({
     title: "Newer ChemDraft file",
     message: `This file was made with a newer ChemDraft (${version}). Some features may not show. Update to keep them.`,
