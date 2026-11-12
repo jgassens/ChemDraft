@@ -8265,8 +8265,9 @@ function addChargeMarkAtPoint(
  * that makes it self-contained: `atom.markCharge` records exactly the portion of
  * `atom.formalCharge` the marks contributed. Each pass strips that portion back out (recovering
  * the atom's intrinsic, drawn/imported charge), re-assigns every mark to its nearest
- * atom, and writes both fields fresh — so deleted marks, moved molecules, edited elements, and
- * copies pasted without their mark all settle correctly with no history diffing.
+ * atom unless its association is explicit, and writes both fields fresh — so deleted marks,
+ * moved molecules, edited elements, and copies pasted without their mark all settle correctly
+ * with no history diffing.
  */
 export type CommittedDocumentNormalizationOptions = NativeElectronMarkAssignmentOptions;
 
@@ -8536,6 +8537,11 @@ export function electronMarkMoveAssociation(
   options: ElectronMarkMoveAssociationOptions = {}
 ): ElectronMarkMoveAssociationResult {
   const operation = options.operation ?? "move";
+  // Layout/appearance edits cannot erase an intentional floating drop. A later direct atom
+  // drop can replace it; newly pasted copies retain their existing separate association policy.
+  if (mark.atomAssociation === "explicit" && mark.anchor.kind === "point" && operation !== "paste") {
+    return { anchor: from.x === to.x && from.y === to.y ? mark.anchor : { ...mark.anchor, point: to } };
+  }
   // Turning/resizing a dropped mark about its own centre changes only its appearance.
   if (mark.atomAssociation === "explicit" && operation !== "paste" && from.x === to.x && from.y === to.y) {
     return { anchor: mark.anchor };

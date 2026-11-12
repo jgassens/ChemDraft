@@ -16,7 +16,7 @@ export interface NativeElectronMarkAssignments {
 }
 
 export interface NativeElectronMarkAssignmentOptions {
-  /** A direct drop found no atom in its capture radius. Suppress legacy capture for this commit only. */
+  /** Per-call assignment-query override only. Persist floating drops with an explicit point anchor. */
   floatingElectronMarkIds?: ReadonlySet<string>;
 }
 
@@ -28,7 +28,8 @@ export function electronMarkAtomContribution(mark: ElectronMarkObject): { charge
   return { charge: 0, radicals: mark.markKind === "radical-dot" ? 1 : 0 };
 }
 
-/** Explicit atom anchors stay bound at any distance; legacy anchors are sticky within radius.
+/** Explicit point anchors stay floating; explicit atom anchors stay bound at any distance.
+ * Legacy anchors are sticky within radius.
  * Other marks use the nearest atom in radius without valence-based reassignment.
  * Evaluate on the original page before any geometry changes. Point marks outside the radius float. */
 export function nativeElectronMarkAssignments(
@@ -60,6 +61,11 @@ export function nativeElectronMarkAssignments(
   const assignedChargeByAtomKey = new Map<string, number>();
   const assignedRadicalsByAtomKey = new Map<string, number>();
   const anchorByMarkId = new Map<string, { objectId: string; atomId: string } | undefined>();
+  // A direct drop already made this decision with its own capture radius. Never reinterpret
+  // the user's floating placement during an unrelated edit, layout operation or file open.
+  for (const mark of electronMarks) {
+    if (mark.atomAssociation === "explicit" && mark.anchor.kind === "point") anchorByMarkId.set(mark.id, undefined);
+  }
   // Recording an unassigned result also blocks pass 2 from applying the wider legacy radius.
   for (const id of options.floatingElectronMarkIds ?? []) anchorByMarkId.set(id, undefined);
 

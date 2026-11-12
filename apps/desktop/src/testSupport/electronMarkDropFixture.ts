@@ -1,10 +1,23 @@
-import { applyPatches, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, applyPatches, type ChemDraftDocument, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles, phase4Timestamp } from "@chemdraft/document-workflow-core";
-import { applyChargeToolAtNativeAtom, createPhase4Document, normalizeCommittedDocument, type NativeElectronMarkSpec } from "../documentWorkflow";
+import { applyChargeToolAtNativeAtom, createPhase4Document, moveDocumentObject, normalizeCommittedDocument, type NativeElectronMarkSpec } from "../documentWorkflow";
 
 export const dropMark = (document: ChemDraftDocument) => document.pages[0].objects.find(object => object.type === "electron-mark") as ElectronMarkObject;
 export const dropMolecule = (document: ChemDraftDocument) => document.pages[0].objects.find(object => object.type === "molecule") as MoleculeObject;
+
+/** O–C–C–N in the reported rotation frame, with a distant floating +. */
+export function rotatedElectronMarkDropFixture(rotation: number) {
+  const fixture = electronMarkDropFixture();
+  const floating = normalizeCommittedDocument(moveDocumentObject(fixture.document,
+    dropMark(fixture.document).id, { x: 591, y: 491 }));
+  const graph = testMoleculeFromSmiles("OCCN");
+  const atoms = graph.atoms.map((atom, index) => ({ ...atom, x: 100 + index * 100 / 3, y: 110 }));
+  return applyPatch(floating, { op: "updateObject", objectId: dropMolecule(floating).id, changes: {
+    x: 100, y: 100, width: 100, height: 20, rotation, atoms, bonds: graph.bonds,
+    structure: nativeSingleBondGraphSmiles(atoms, graph.bonds), chemistry: nativeSingleBondGraphMetadata(atoms, graph.bonds)
+  } }, { now: phase4Timestamp });
+}
 
 /** Boc-glycine with separated, hand-authored drop targets and no explicitly bonded hydrogens. */
 export function electronMarkDropFixture(spec: NativeElectronMarkSpec = { kind: "charge", charge: 1 }) {
