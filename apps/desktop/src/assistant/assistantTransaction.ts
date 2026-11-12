@@ -83,21 +83,24 @@ export class AssistantTransactions {
 
   /** Call only after the host has validated the patch and fixed write scope. No tool is retained. */
   writeAssistantTransaction(txId: string, after: ChemDraftDocument, touchedIds: readonly string[] = [],
-    selectionDocument: ChemDraftDocument = after): void {
+    selectionDocument: ChemDraftDocument = after, assertFinalDocument?: (document: ChemDraftDocument) => void): void {
     const tx = this.running(txId);
     const current = this.document(tx.tabId);
     if (after === current) return;
+    const touched = new Set(tx.touched);
     const previous = new Map(current.pages.flatMap(page => page.objects.map(object => [object.id, object] as const)));
     // Host page translation moves unrelated content without making it assistant-selected.
     for (const object of selectionDocument.pages.flatMap(page => page.objects)) {
       const before = previous.get(object.id);
-      if (before !== object && JSON.stringify(before) !== JSON.stringify(object)) tx.touched.add(object.id);
+      if (before !== object && JSON.stringify(before) !== JSON.stringify(object)) touched.add(object.id);
     }
-    for (const id of touchedIds) tx.touched.add(id);
+    for (const id of touchedIds) touched.add(id);
     // Select cumulatively on every write, so even an interrupted entry records its own selection.
-    const selected = withTouchedSelection(after, tx.touched);
-    if (tx.openEntry) this.port.amend(tx.tabId, selected, tx.label);
-    else this.port.push(tx.tabId, tx.writes === 0 && !tx.interrupted ? tx.snapshot ?? current : current, selected, tx.label);
+    const selected = withTouchedSelection(after, touched);
+    if (tx.openEntry) this.port.amend(tx.tabId, selected, tx.label, assertFinalDocument);
+    else this.port.push(tx.tabId, tx.writes === 0 && !tx.interrupted ? tx.snapshot ?? current : current, selected, tx.label, assertFinalDocument);
+    // A rejected final-state guard must not grow the request's selection or open an undo entry.
+    tx.touched = touched;
     tx.openEntry = true;
     tx.writes += 1;
     tx.snapshot = undefined; // History now owns the baseline; do not defeat its memory budget.
