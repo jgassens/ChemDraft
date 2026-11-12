@@ -68,9 +68,12 @@ function pentaneWithRepeatUnit() {
   expect(repeatUnits(bracketed)).toMatchObject([{ members: [{ atomIds: members.map(atom => atom.id) }] }]);
   return bracketed;
 }
-function importedBracketAndNeighbor(usage: "SRU" | "MultipleGroup") {
+function importedBracketAndNeighbor(usage: "SRU" | "MultipleGroup", options: {
+  unresolvedMember?: boolean; keepCrossing?: boolean;
+} = {}) {
   const fixture = readFileSync(new URL("../../../packages/fixtures/cdxml/brackets-native-sru.cdxml", import.meta.url), "utf8");
-  const cdxml = fixture.replace(/<crossingbond[^>]*\/>/, "")
+  const membership = options.unresolvedMember ? fixture.replace('BracketedObjectIDs="10"', 'BracketedObjectIDs="missing"') : fixture;
+  const cdxml = (options.keepCrossing ? membership : membership.replace(/<crossingbond[^>]*\/>/, ""))
     .replaceAll('BracketUsage="SRU"', `BracketUsage="${usage}"`)
     .replace("</page>", `<fragment id="40">
       <n id="41" Element="6" p="300 100"/><n id="42" Element="6" p="330 100"/>
@@ -92,6 +95,69 @@ function setup(answer = "continue") {
 }
 
 describe("online structure search", () => {
+  it("refuses an imported bracket with an unresolved member and a live crossing into the selected molecule", async () => {
+    const { document, member } = importedBracketAndNeighbor("SRU", { unresolvedMember: true, keepCrossing: true });
+    expect(repeatUnits(document, [member])).toMatchObject([{ usage: "sru", members: [] }]);
+    expect(document.pages[0]!.objects.filter(object => object.type === "bracket")
+      .flatMap(bracket => bracket.crossingBondIds ?? [])).toEqual([{ objectId: member.id, bondId: member.bonds[0]!.id }]);
+    expect(member.chemistry?.warnings.some(warning => warning.code === "chemistry.bracket_multiplier") ?? false).toBe(false);
+    const selected = applyPatch(document, { op: "setSelection", objectIds: [member.id] });
+    const flow = setup();
+
+    const error = await flow.search("pubchem", structureSearchDocument(selected)).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(StructureSearchRefusal);
+    expect(structureSearchErrorStatus(error)).toBe("Search can't include a polymer repeat unit. Select atoms outside the brackets.");
+    expect(flow.serialize).not.toHaveBeenCalled();
+    expect(flow.prompt).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["SRU", "MultipleGroup"] as const)("searches an unresolved imported %s member with no crossing reference", async usage => {
+    const { document, member } = importedBracketAndNeighbor(usage, { unresolvedMember: true });
+    expect(repeatUnits(document)).toMatchObject([{ members: [] }]);
+    expect(document.pages[0]!.objects.filter(object => object.type === "bracket")
+      .flatMap(bracket => bracket.crossingBondIds ?? [])).toEqual([]);
+    const selected = applyPatch(document, { op: "setSelection", objectIds: [member.id] });
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", structureSearchDocument(selected))).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CO" });
+  });
+
+  it.each(["native bond", "imported bond", "imported inner atom"] as const)(
+    "refuses an atom-only selection touched by an unresolved bracket's %s reference", async reference => {
+      const { document, member } = importedBracketAndNeighbor("SRU", { unresolvedMember: true, keepCrossing: true });
+      const bracketed = applyPatch(document, { op: "batch", patches: document.pages[0]!.objects
+        .filter(object => object.type === "bracket").map(bracket => ({
+          op: "updateObject" as const, objectId: bracket.id, changes: {
+            crossingBondIds: reference === "native bond" ? bracket.crossingBondIds : [],
+            compatibility: { ...bracket.compatibility!, unknown: { ...bracket.compatibility!.unknown,
+              cdxmlBracketCrossings: reference === "native bond" ? [] : [{
+                ref: { objectId: member.id, bondId: reference === "imported bond" ? member.bonds[0]!.id : "missing-bond" },
+                ...(reference === "imported inner atom" ? { innerAtomId: member.atoms[0]!.id } : {})
+              }]
+            } }
+          }
+        })) });
+      const scoped = structureSearchDocument(bracketed, [{ objectId: member.id, atomIds: [member.atoms[0]!.id], bondIds: [] }]);
+      const flow = setup();
+
+      await expect(flow.search("pubchem", scoped)).rejects.toBeInstanceOf(StructureSearchRefusal);
+      expect(flow.serialize).not.toHaveBeenCalled();
+      expect(flow.prompt).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
+    }
+  );
+
+  it("searches a molecule beside an unresolved imported bracket with a live crossing into another molecule", async () => {
+    const { document, neighbor } = importedBracketAndNeighbor("SRU", { unresolvedMember: true, keepCrossing: true });
+    const selected = applyPatch(document, { op: "setSelection", objectIds: [neighbor.id] });
+    const search = createStructureSearchController({ enabled: () => true, storage, prompt: async () => "continue" });
+
+    await expect(search("pubchem", structureSearchDocument(selected))).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("open_structure_search", { site: "pubchem", smiles: "CC" });
+  });
+
   it.each(["SRU", "MultipleGroup"] as const)("searches the remaining molecule after deleting an imported %s bracket's member", async usage => {
     const { document, member, neighbor } = importedBracketAndNeighbor(usage);
     const removed = deleteSelectedDocumentObjects(document, [member.id]);
