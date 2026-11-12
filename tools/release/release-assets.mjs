@@ -64,7 +64,7 @@ export function missingBuildFiles(assets, version) {
   });
 }
 
-export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomplete = false }, { checkDmgCommit } = {}) {
+export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomplete = false }, { checkDmgCommit, updaterPublicKey } = {}) {
   if (!COMMIT_PATTERN.test(expectedCommit ?? "")) throw new Error("An expected full source commit is mandatory");
   const builds = releaseBuildFiles(version);
   const allowed = new Set(builds.flatMap(({ name }) => [name, `${name}.build.json`]));
@@ -107,5 +107,6 @@ export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomp
     } catch (error) { errors.push(`${name}: ${error.code === "ENOENT" ? "missing release file" : error.message}`); }
   }
   if (errors.length) throw new Error(errors.join("\n"));
+  if (!allowIncomplete) verifyWindowsUpdateAssets({ assets, version }, { updaterPublicKey });
   return checked;
 }
