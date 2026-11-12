@@ -136,7 +136,11 @@ export function parseRows(text) {
 
 // Conservative: even a source label containing a stereo/epimer descriptor needs
 // independent structure evidence. Include German sugar stems and Greek glyphs.
-export const hasStereoDescriptor = name => /(?:[αβ]|alpha|beta|gluco|gluko|galacto|galakto|manno|allo|altro|gulo|ido|talo|\b[dl][-‐-―\s]|(?:^|[\s([,\d])[RS](?=$|[\s)\],-]))/i.test(name);
+// Share the E/Z and cis/trans syntax with the offline audit. Boundaries admit
+// numeric locants and comma-joined mixed descriptors, never letters inside words.
+export const geometricStereoDescriptor = /(?:^|[\s([,\d])[EZ](?=$|[\s)\],\-‐-―])|(?:^|[\s([,\-‐-―])(?:cis|trans)(?=$|[\s)\],\-‐-―])/i;
+export const hasStereoDescriptor = name => geometricStereoDescriptor.test(name)
+  || /(?:[αβ]|alpha|beta|gluco|gluko|galacto|galakto|manno|allo|altro|gulo|ido|talo|\b[dl][-‐-―\s]|(?:^|[\s([,\d])[RS](?=$|[\s)\],-]))/i.test(name);
 const samePubchemIdentity = (a, b) => KEY.test(a ?? "") && KEY.test(b ?? "") && a === b;
 
 /** A new exact name must have positive evidence; an available contradiction vetoes it. */
@@ -363,12 +367,15 @@ export async function cachedJson(cache, category, request, offline = false) {
     }
   }
 }
-export async function loadChemistry() {
+export async function loadRDKit(options = {}) {
   // Reuse the repository's committed engine; no package install or native build is needed.
   const glue = new URL("../packages/rdkit-adapter/vendor/RDKit_minimal.js", import.meta.url);
   const wasm = new URL("../packages/rdkit-adapter/vendor/RDKit_minimal.wasm", import.meta.url);
   const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(createRequire(import.meta.url), dirname(fileURLToPath(glue)));
-  const rdkit = await factory({ wasmBinary: new Uint8Array(readFileSync(wasm)), locateFile: () => fileURLToPath(wasm) });
+  return factory({ ...options, wasmBinary: new Uint8Array(readFileSync(wasm)), locateFile: () => fileURLToPath(wasm) });
+}
+export async function loadChemistry() {
+  const rdkit = await loadRDKit();
   const cache = new Map();
   const diagnose = smiles => {
     if (cache.has(smiles)) return cache.get(smiles);
