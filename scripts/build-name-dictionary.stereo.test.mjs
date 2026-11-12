@@ -4,14 +4,16 @@ import { buildRows, hasStereoDescriptor, loadRDKit, nameAccuracy } from "./build
 import { auditRows, compareOpsin, compareSimpleAlkene, describeStructure } from "./audit-name-dictionary-stereo.mjs";
 
 for (const name of [
-  "E", "Z", "(E)", "(Z)", "E-but-2-ene", "Z-but-2-ene",
+  "(E)", "(Z)", "E-but-2-ene", "Z-but-2-ene", "E-", "Z-",
   "(E)-but-2-ene", "(Z)-but-2-ene", "[E]-but-2-ene", "[2Z]-but-2-ene",
   "(2E,4Z)-hexa-2,4-diene", "[2E,4Z]-hexa-2,4-diene",
   "(1R,2E)-pent-2-en-1-ol", "(2E,4R)-hex-2-en-4-ol",
   "ethyl (2E)-but-2-enoate", "methyl (2Z,4E)-hexa-2,4-dienoate",
-  "cis", "trans", "cis-", "trans-", "cis-but-2-ene", "trans-but-2-ene",
-  "CIS-but-2-ene", "trans but-2-ene", "ethyl trans-but-2-enoate",
+  "cis-", "trans-", "cis-but-2-ene", "trans-but-2-ene",
+  "CIS-but-2-ene", "ethyl trans-but-2-enoate",
   "cis–but-2-ene", "(cis)-but-2-ene",
+  "[trans]-synthetic", "(E,Z)-synthetic", "[2Z,4E]-synthetic", "synthetic-9Z,12Z",
+  "all-E-retinol", "all-Z-retinol", "all-trans-retinol", "all-cis-synthetic",
   // Existing descriptor classes must remain protected.
   "(R)-butan-2-ol", "D-glucose", "beta-carotene"
 ]) test(`recognizes explicit stereo descriptor: ${name}`, () => {
@@ -21,6 +23,9 @@ for (const name of [
 for (const name of [
   "benzene", "zinc", "transferrin", "ethene", "123-45-6", "cistern", "transition",
   "Ethanol", "Zeatin", "(ethyl)benzene", "(zinc) complex",
+  "E", "Z", "vitamin E", "Vitamin E acetate", "Factor Z", "synthetic E compound",
+  "cis", "trans", "trans but-2-ene", "synthetic cis compound", "synthetic, E compound",
+  "synthetic-Eword", "synthetic-Zword", "all-Eword", "all-cisword",
   // Cisplatin names a particular coordination isomer, but its lexicalized trivial
   // name contains no whole-word cis prefix. This detector recognizes descriptor
   // syntax, not the chemical meaning of every trivial name (nor Pt geometry).
@@ -49,7 +54,15 @@ test("unverified Z own label cannot attach to the selected E candidate", async (
   assert.equal(audit.nameDecisions[0].decision, "unverifiable");
 });
 
-for (const name of ["(E)-but-2-ene", "(Z)-but-2-ene", "cis-but-2-ene", "trans-but-2-ene"])
+const dashes = ["-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212", "\ufe63", "\uff0d"];
+const dashNames = dashes.flatMap(dash => [
+  `E${dash}synthetic`, `Z${dash}synthetic`, `cis${dash}but-2-ene`, `trans${dash}but-2-ene`,
+  `all${dash}E${dash}synthetic`, `all${dash}Z${dash}synthetic`,
+  `all${dash}cis${dash}synthetic`, `all${dash}trans${dash}synthetic`
+]);
+
+for (const name of ["(E)-but-2-ene", "(Z)-but-2-ene", "all-E-retinol", "all-Z-retinol",
+  "all-trans-retinol", "all-cis-synthetic", ...dashNames])
   test(`own label needs independent evidence: ${name}`, async () => {
     assert.equal(await nameAccuracy(name, { key: E }, services, true), "unverifiable");
     assert.equal(await nameAccuracy(name, { key: E }, {
@@ -61,6 +74,12 @@ for (const name of ["(E)-but-2-ene", "(Z)-but-2-ene", "cis-but-2-ene", "trans-bu
     assert.equal(await nameAccuracy(name, { key: E }, {
       ...services, opsinSmiles: () => zSmiles
     }, true), "contradicted");
+  });
+
+for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z"])
+  test(`ordinary letter word keeps own-label evidence: ${name}`, async () => {
+    assert.equal(await nameAccuracy(name, { key: E }, services, true), "label");
+    assert.equal(await nameAccuracy(name, { key: E }, services, false), "unverifiable");
   });
 
 const engine = loadRDKit({ print: () => {}, printErr: () => {} });
@@ -92,6 +111,13 @@ test("RDKit-only fallback maps simple alkene locants without generalizing cis/tr
   assert.equal(compareSimpleAlkene("(E)-2-bromobut-2-ene", describe("C/C(Br)=C/C")), "notCheckable");
   assert.equal(compareSimpleAlkene("(E)-but-1-ene", describe("C=CCC")), "notCheckable");
   assert.equal(compareSimpleAlkene("(E)-but-2-ene", describe("[13CH3]/C=C/C")), "notCheckable");
+  for (const dash of dashes) {
+    for (const [descriptor, same, other] of [["E", eSmiles, zSmiles], ["Z", zSmiles, eSmiles],
+      ["trans", eSmiles, zSmiles], ["cis", zSmiles, eSmiles]]) {
+      assert.equal(compareSimpleAlkene(`${descriptor}${dash}but-2-ene`, describe(same)), "correctIsomer");
+      assert.equal(compareSimpleAlkene(`${descriptor}${dash}but-2-ene`, describe(other)), "wrongIsomer");
+    }
+  }
 });
 
 test("audit partitions rows, examines both columns, and does not claim unchecked aliases correct", async () => {
@@ -117,4 +143,59 @@ test("audit partitions rows, examines both columns, and does not claim unchecked
   const mixed = row(partialChiral, ["(2E,4R)-hex-2-en-4-ol"]);
   assert.equal(auditRows([mixed], rdkit, new Map([[mixed.names[0], partialChiral]])).noStereo, 1);
   assert.equal(compareOpsin(rdkit, partial, partialChiral), "noStereo");
+});
+
+test("audit shares descriptor syntax and counts every supported dash spelling", async () => {
+  const rdkit = await engine;
+  for (const name of dashNames) {
+    for (const field of ["names", "suggest"]) {
+      const counts = auditRows([{ smiles: "CC=CC", names: [], suggest: [], [field]: [name] }], rdkit);
+      assert.equal(counts.rowsWithGeometricNames, 1);
+      assert.equal(counts.noStereo, 1);
+    }
+  }
+  for (const name of ["vitamin E", "Vitamin E acetate", "Factor Z"]) {
+    assert.equal(auditRows([{ smiles: eSmiles, names: [name], suggest: [] }], rdkit).rowsWithGeometricNames, 0);
+  }
+  // All-E and pasted dashes must also contribute to the E/Z completeness gate.
+  for (const name of ["all-E-synthetic", "E\ufe63synthetic", "all\uff0dZ\uff0dsynthetic"]) {
+    const chiralOnly = "CC=C[C@H](O)C";
+    const counts = auditRows([{ smiles: chiralOnly, names: [name], suggest: [] }], rdkit,
+      new Map([[name, chiralOnly]]));
+    assert.equal(counts.noStereo, 1);
+  }
+});
+
+test("relative ring cis/trans accepts both enantiomers but rejects the other relative isomer", async () => {
+  const rdkit = await engine;
+  const trans = "O[C@H]1CCCC[C@@H]1O", mirror = "O[C@@H]1CCCC[C@H]1O";
+  const cis = "O[C@H]1CCCC[C@H]1O", cisMirror = "O[C@@H]1CCCC[C@@H]1O";
+  const verdict = (name, bound, expected) => auditRows([{ smiles: bound, names: [name], suggest: [] }],
+    rdkit, new Map([[name, expected]]));
+  for (const [name, bound, expected] of [
+    ["trans-cyclohexane-1,2-diol", trans, mirror], ["trans-cyclohexane-1,2-diol", mirror, trans],
+    ["cis-cyclohexane-1,2-diol", cis, cisMirror], ["cis-cyclohexane-1,2-diol", cisMirror, cis]
+  ]) {
+    assert.equal(verdict(name, bound, expected).correctIsomer, 1);
+  }
+  for (const [bound, expected] of [[cis, trans], [trans, cis], [mirror, cis], [cisMirror, mirror]]) {
+    assert.equal(verdict("cis-cyclohexane-1,2-diol", bound, expected).wrongIsomer, 1);
+  }
+  for (const [bound, expected] of [[trans, mirror], [mirror, trans]]) {
+    assert.equal(compareOpsin(rdkit, bound, expected), "wrongIsomer");
+    for (const dash of dashes) {
+      assert.equal(verdict(`(1R,2R)${dash}trans${dash}cyclohexane-1,2-diol`, bound, expected).wrongIsomer, 1);
+    }
+    assert.equal(verdict("trans-cyclohexane-1,2-diol", "OC1CCCCC1O", expected).noStereo, 1);
+  }
+  // Reflection must not reverse double-bond E/Z, even on a relative ring name.
+  const mixed = "O[C@H]1CCCC[C@H]1/C=C/C";
+  assert.equal(verdict("trans-(E)-synthetic-ring", mixed, "O[C@@H]1CCCC[C@@H]1/C=C/C").correctIsomer, 1);
+  assert.equal(verdict("trans-(E)-synthetic-ring", mixed, "O[C@@H]1CCCC[C@@H]1/C=C\\C").wrongIsomer, 1);
+  // Additional or non-ring centres need an explicit relative-stereo contract.
+  const complex = "O[C@H]1CCC[C@H](F)[C@H]1Cl";
+  const acyclic = "C[C@H](O)[C@H](O)C";
+  for (const expected of [complex, acyclic]) {
+    assert.equal(verdict("trans-synthetic", expected, expected).notCheckable, 1);
+  }
 });

@@ -8,15 +8,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { geometricStereoDescriptor, hasStereoDescriptor, loadRDKit, parseRows, readOpsin } from "./build-name-dictionary.mjs";
+import { geometricStereoDescriptors, normalizeNameDashes, loadRDKit, parseRows, readOpsin } from "./build-name-dictionary.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const pair = (a, b) => [a, b].sort((x, y) => x - y).join(",");
 const assigned = code => code && code !== "(?)";
 const cleanName = name => name.replace(/^!/, "");
-const ezDescriptor = /(?:^|[\s([,\d])[EZ](?=$|[\s)\],\-‐-―])/gi;
 export const geometricNames = row => [...new Set([...row.names, ...row.suggest].map(cleanName))]
-  .filter(name => hasStereoDescriptor(name) && geometricStereoDescriptor.test(name));
+  .filter(name => geometricStereoDescriptors(name).length > 0);
+// Do not relax a name that also specifies absolute tetrahedral stereochemistry.
+const absoluteStereoDescriptor = /(?:[αβ]|alpha|beta|\b[dl][-\s]|(?:^|[\s([,\d-])[RS](?=$|[\s)\],-]))/i;
 
 /** Own and release every engine object; no chemical data is logged. */
 export function describeStructure(rdkit, smiles) {
@@ -40,9 +41,22 @@ export function describeStructure(rdkit, smiles) {
 }
 
 /** Compare only stereo actually asserted by OPSIN; extra bound stereo is allowed. */
-export function compareOpsin(rdkit, boundSmiles, expectedSmiles) {
+export function compareOpsin(rdkit, boundSmiles, expectedSmiles, { relativeOnly = false } = {}) {
   const bound = describeStructure(rdkit, boundSmiles), expected = describeStructure(rdkit, expectedSmiles);
   if (!bound || !expected || (!expected.atomStereo.size && !expected.bondStereo.size)) return "notCheckable";
+  const configurations = [expected];
+  if (relativeOnly && expected.atomStereo.size) {
+    // A two-centre ring cis/trans assertion permits either enantiomer. Reversing
+    // every tetrahedral SMILES tag constructs its full mirror, retaining E/Z,
+    // constitution, isotopes and charges. Never flip individual centres to fit.
+    // More complex relative systems need a richer contract; decline them here.
+    const centres = [...expected.atomStereo.keys()];
+    const rings = expected.graph.extensions?.find(e => e.name === "rdkitRepresentation")?.atomRings ?? [];
+    if (centres.length !== 2 || !rings.some(ring => centres.every(atom => ring.includes(atom)))) return "notCheckable";
+    const mirror = describeStructure(rdkit, expectedSmiles.replace(/@@?/g, tag => tag === "@" ? "@@" : "@"));
+    if (!mirror || mirror.constitution !== expected.constitution) return "notCheckable";
+    configurations.push(mirror);
+  }
   if (bound.canonical === expected.canonical) return "correctIsomer";
   // A different constitution/charge/isotope is not evidence of an isomer error.
   if (bound.constitution !== expected.constitution) return "notCheckable";
@@ -53,15 +67,17 @@ export function compareOpsin(rdkit, boundSmiles, expectedSmiles) {
       JSON.stringify({ useChirality: false, uniquify: false, maxMatches: 1001 })));
     let missingOnly = false;
     for (const { atoms } of matches) {
-      let missing = false, wrong = false;
-      const check = (wanted, actual) => { if (!actual) missing = true; else if (actual !== wanted) wrong = true; };
-      for (const [atom, code] of expected.atomStereo) check(code, bound.atomStereo.get(atoms[atom]));
-      for (const [bond, code] of expected.bondStereo) {
-        const [a, b] = bond.split(",").map(Number);
-        check(code, bound.bondStereo.get(pair(atoms[a], atoms[b])));
+      for (const configuration of configurations) {
+        let missing = false, wrong = false;
+        const check = (wanted, actual) => { if (!actual) missing = true; else if (actual !== wanted) wrong = true; };
+        for (const [atom, code] of configuration.atomStereo) check(code, bound.atomStereo.get(atoms[atom]));
+        for (const [bond, code] of configuration.bondStereo) {
+          const [a, b] = bond.split(",").map(Number);
+          check(code, bound.bondStereo.get(pair(atoms[a], atoms[b])));
+        }
+        if (!wrong && !missing) return "correctIsomer";
+        if (!wrong && missing) missingOnly = true;
       }
-      if (!wrong && !missing) return "correctIsomer";
-      if (!wrong && missing) missingOnly = true;
     }
     // An exhausted match budget cannot prove absence of a compatible mapping.
     if (!matches.length || matches.length >= 1001) return "notCheckable";
@@ -76,7 +92,7 @@ export function compareOpsin(rdkit, boundSmiles, expectedSmiles) {
  */
 export function compareSimpleAlkene(name, bound) {
   if (!bound) return "notCheckable";
-  const normalized = name.replace(/[‐-―−]/g, "-");
+  const normalized = normalizeNameDashes(name);
   const prefix = /^(?:\(([^()]+)\)|\[([^\[\]]+)\]|(E|Z|cis|trans))\s*-\s*(.+)$/i.exec(normalized);
   if (!prefix) return "notCheckable";
   const descriptor = prefix[1] ?? prefix[2] ?? prefix[3], body = prefix[4];
@@ -151,13 +167,18 @@ export function auditRows(rows, rdkit, readings = new Map()) {
       counts.geometricNames++;
       const expected = readings.get(name);
       let result = "notCheckable";
-      const ezCount = [...name.matchAll(ezDescriptor)].length;
+      const descriptors = geometricStereoDescriptors(name);
+      const ezCount = descriptors.filter(code => code === "E" || code === "Z").length;
+      const relativeOnly = descriptors.some(code => code === "CIS" || code === "TRANS")
+        && !absoluteStereoDescriptor.test(normalizeNameDashes(name));
       if (expected) {
         counts.opsinParsedNames++;
         const described = describeStructure(rdkit, expected);
         // Do not confirm an E/Z name using only its independently parsed R/S
         // centres if OPSIN did not represent all explicit E/Z descriptors.
-        if (described && described.bondStereo.size >= ezCount) result = compareOpsin(rdkit, row.smiles, expected);
+        if (described && described.bondStereo.size >= ezCount) {
+          result = compareOpsin(rdkit, row.smiles, expected, { relativeOnly });
+        }
       }
       if (result === "notCheckable") {
         result = compareSimpleAlkene(name, bound);

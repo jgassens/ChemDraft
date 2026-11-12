@@ -136,10 +136,34 @@ export function parseRows(text) {
 
 // Conservative: even a source label containing a stereo/epimer descriptor needs
 // independent structure evidence. Include German sugar stems and Greek glyphs.
-// Share the E/Z and cis/trans syntax with the offline audit. Boundaries admit
-// numeric locants and comma-joined mixed descriptors, never letters inside words.
-export const geometricStereoDescriptor = /(?:^|[\s([,\d])[EZ](?=$|[\s)\],\-‐-―])|(?:^|[\s([,\-‐-―])(?:cis|trans)(?=$|[\s)\],\-‐-―])/i;
-export const hasStereoDescriptor = name => geometricStereoDescriptor.test(name)
+// Reuse nameKey's dash character class (without whitespace) for descriptor
+// parsing and the audit fallback. Keep the frozen legacyNameKey unchanged.
+export const normalizeNameDashes = name => name.replace(/[\u002d\u2010-\u2015\u2212\ufe63\uff0d]/g, "-");
+
+/** Shared syntax for the builder and audit, with one record per descriptor.
+ * Bare letter words are not stereo. E/Z needs brackets, a following dash, or
+ * a numeric locant; cis/trans needs brackets or a following dash.
+ */
+export function geometricStereoDescriptors(name) {
+  const normalized = normalizeNameDashes(name), descriptors = new Map();
+  const add = (index, code) => descriptors.set(index, code.toUpperCase());
+  for (const bracket of normalized.matchAll(/\(([^()]*)\)|\[([^\[\]]*)\]/g)) {
+    const body = bracket[1] ?? bracket[2];
+    for (const token of body.matchAll(/(?:^|,)\s*(?:\d+)?(E|Z|cis|trans)\s*(?=,|$)/gi)) {
+      const codeIndex = token[0].search(/(?:E|Z|cis|trans)\s*$/i);
+      add(bracket.index + 1 + token.index + codeIndex, token[1]);
+    }
+  }
+  // A preceding dash also admits all-E/all-Z/all-cis/all-trans.
+  for (const token of normalized.matchAll(/(?:^|[\s([,\-])(E|Z|cis|trans)(?=-)/gi)) {
+    add(token.index + token[0].length - token[1].length, token[1]);
+  }
+  for (const token of normalized.matchAll(/\d+([EZ])(?=$|[\s)\],-])/gi)) {
+    add(token.index + token[0].length - 1, token[1]);
+  }
+  return [...descriptors.values()];
+}
+export const hasStereoDescriptor = name => geometricStereoDescriptors(name).length > 0
   || /(?:[αβ]|alpha|beta|gluco|gluko|galacto|galakto|manno|allo|altro|gulo|ido|talo|\b[dl][-‐-―\s]|(?:^|[\s([,\d])[RS](?=$|[\s)\],-]))/i.test(name);
 const samePubchemIdentity = (a, b) => KEY.test(a ?? "") && KEY.test(b ?? "") && a === b;
 
