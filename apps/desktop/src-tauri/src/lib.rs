@@ -1420,7 +1420,15 @@ async fn finish_close_window(
         });
         return Err(error);
     }
-    if let Err(error) = window.destroy() {
+    let target = window.clone();
+    let owner_id = owner.window_id.clone();
+    let destroyed = run_on_main_thread_blocking(window, move || {
+        // Restore before destroying the owner: Windows can destroy its owned HWNDs first.
+        panel_full_size::restore_owned(target.app_handle(), &owner_id);
+        target.destroy().map_err(|error| error.to_string())
+    })
+    .and_then(|result| result);
+    if let Err(error) = destroyed {
         registry.cancel_closing(&owner.window_id);
         app.state::<session_coordinator::SessionCoordinator>()
             .cancel_window_close(&owner.window_id)?;
@@ -5223,6 +5231,8 @@ fn close_owned_plugin_panels<R: Runtime>(app: &tauri::AppHandle<R>, source: &str
                 .unwrap_or_else(|p| p.into_inner())
                 .closed(&label);
             let webview: &tauri::Webview<R> = panel.as_ref();
+            // Destruction/navigation may bypass the approved document-close path.
+            panel_full_size::will_hide(&webview.window());
             let _ = persist_plugin_panel_geometry(&webview.window());
             let _ = panel.destroy();
         }

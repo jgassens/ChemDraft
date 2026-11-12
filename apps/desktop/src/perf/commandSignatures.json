@@ -212,8 +212,8 @@
     "name": "quit_after_flush",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle",
-    "returnType": "()"
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64, error: Option<String>,",
+    "returnType": "Result<(), String>"
   },
   {
     "file": "lib.rs",
@@ -252,7 +252,7 @@
     "name": "request_quit_after_close",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, closing_window: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -332,7 +332,7 @@
     "name": "save_document_session",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value, revision: u64, flush: bool, replace_preserved: bool,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value, revision: u64, incarnation: u64, flush: bool, replace_preserved: bool,",
     "returnType": "Result<(), String>"
   },
   {

@@ -472,7 +472,19 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     // Cmd+H keeps enlarged panels as they were; quit still restores every panel.
     const appHide = source.split("fn observe_hide_for_document_key_restore<")[1]!.split("\n}\n")[0]!;
     expect(appHide).not.toContain("restore_all");
-    expect(source).toMatch(/WindowEvent::Destroyed => \{[\s\S]*?panel_full_size::restore_all\(window\.app_handle\(\)\)/);
+    // A7 separates close from quit: destroy restores only its owner's panels; exit restores all.
+    const destroy = source.split(".on_window_event(|window, event| {")[1]!.split("if is_document_window")[0]!;
+    expect(destroy).toMatch(/if matches!\(event, WindowEvent::Destroyed\) \{\s*runtime_broker::forget_window\(window\.app_handle\(\), window\.label\(\)\);/);
+    const broker = readFileSync(join(nativePath, "runtime_broker.rs"), "utf8");
+    expect(broker).toMatch(/fn forget_window[\s\S]*?crate::close_owned_plugin_panels\(app, label\);/);
+    const cleanup = source.split("fn close_owned_plugin_panels<")[1]!.split("\n}\n")[0]!;
+    expect(cleanup).toContain("panel_ownership::owner_id(&label).as_deref() == Some(owner_id.as_str())");
+    expect(cleanup).toMatch(/panel_full_size::will_hide\(&webview.window\(\)\);\s*let _ = persist_plugin_panel_geometry\(&webview.window\(\)\);\s*let _ = panel.destroy\(\);/);
+    const close = source.split("async fn finish_close_window(")[1]!.split("fn claim_window_close(")[0]!;
+    expect(close).toMatch(/run_on_main_thread_blocking\(window, move \|\| \{[\s\S]*?panel_full_size::restore_owned\(target.app_handle\(\), &owner_id\);\s*target.destroy\(\)/);
+    const exit = source.split(".run(|app, event| match event {")[1]!;
+    expect(exit.split("RunEvent::ExitRequested")[1]!.split("RunEvent::Exit =>")[0]!).toContain("panel_full_size::restore_all(app);");
+    expect(exit.split("RunEvent::Exit =>")[1]!.split("RunEvent::Reopen")[0]!).toContain("panel_full_size::restore_all(app);");
     const sizes = readFileSync(join(nativePath, "panel_full_size.rs"), "utf8");
     expect(sizes).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*pub\(super\) fn before_hide/);
     expect(sizes).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*pub\(super\) fn before_hide<R: Runtime>\(_window: &tauri::WebviewWindow<R>\) \{\}/);

@@ -283,8 +283,22 @@ pub(super) fn before_hide<R: Runtime>(window: &tauri::WebviewWindow<R>) {
 pub(super) fn before_hide<R: Runtime>(_window: &tauri::WebviewWindow<R>) {}
 
 pub(super) fn restore_all<R: Runtime>(app: &tauri::AppHandle<R>) {
+    restore_panels(app, None);
+}
+
+pub(super) fn restore_owned<R: Runtime>(app: &tauri::AppHandle<R>, owner: &str) {
+    restore_panels(app, Some(owner));
+}
+
+fn should_restore(label: &str, owner: Option<&str>) -> bool {
+    super::is_plugin_panel_window_label(label)
+        && owner
+            .is_none_or(|owner| super::panel_ownership::owner_id(label).as_deref() == Some(owner))
+}
+
+fn restore_panels<R: Runtime>(app: &tauri::AppHandle<R>, owner: Option<&str>) {
     for (label, window) in app.webview_windows() {
-        if super::is_plugin_panel_window_label(&label) {
+        if should_restore(&label, owner) {
             let webview: &tauri::Webview<R> = window.as_ref();
             will_hide(&webview.window());
         }
@@ -331,6 +345,54 @@ mod tests {
             "",
         ] {
             assert!(authorize(label).is_err(), "{label}");
+        }
+    }
+
+    #[test]
+    fn document_close_restores_only_its_panels_and_exit_restores_every_owner() {
+        let state = State::default();
+        let panels = [
+            "plugin-panel-v1x61x62",
+            "plugin-panel-v2x646f632d62x61x62",
+            "plugin-panel-v2x646f632d63x61x62",
+        ];
+        for label in panels {
+            state
+                .0
+                .lock()
+                .unwrap()
+                .entry(label.into())
+                .or_default()
+                .enable(frame(600.0));
+        }
+        for owner in [Some("doc-b"), Some("main"), None] {
+            let mut restored = Vec::new();
+            for label in panels {
+                if should_restore(label, owner) {
+                    state
+                        .restore(label, |_| {
+                            restored.push(label);
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+            }
+            let expected = match owner {
+                Some("doc-b") => vec![panels[1]],
+                Some("main") => vec![panels[0]],
+                None => vec![panels[2]],
+                _ => unreachable!(),
+            };
+            assert_eq!(restored, expected);
+        }
+        for label in [
+            "main",
+            "doc-b",
+            "runtime",
+            "preferences",
+            "toolset-core-main",
+        ] {
+            assert!(!should_restore(label, None), "{label}");
         }
     }
 
