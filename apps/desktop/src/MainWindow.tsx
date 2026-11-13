@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.12.16.55-codex";
+const CURRENT_BUILD_STAMP = "11.13.14.40-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2463,6 +2463,9 @@ export function MainWindow({
     ))
   );
   const document = documentHistory.present;
+  const [objectDragPagePreview, setObjectDragPagePreview] = useState<{
+    pointerId: number; source: ChemDraftDocument; page: ChemDraftDocument["pages"][number]
+  } | undefined>();
   const [objectTransformPreview, setObjectTransformPreview] = useState<ObjectTransformPreviewState | undefined>();
   const [moveArrowPreviewFragments, setMoveArrowPreviewFragments] = useState<
     ReadonlyMap<string, readonly PageSvgElementFragment[]> | undefined>();
@@ -3283,10 +3286,10 @@ export function MainWindow({
     });
   }, [document, activeAtomLabelEdit]);
   const labelDisplayPage = useMemo(() => {
-    const page = planDisplayPage(activePage, atomLabelPreview);
+    const page = planDisplayPage(objectDragPagePreview?.source === document ? objectDragPagePreview.page : activePage, atomLabelPreview);
     return tableResizePreview ? { ...page, objects: page.objects.map(object =>
       object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
-  }, [activePage, atomLabelPreview, tableResizePreview]);
+  }, [activePage, atomLabelPreview, tableResizePreview, objectDragPagePreview, document]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useCanvasHandwritingFont(useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
@@ -3524,6 +3527,7 @@ export function MainWindow({
     };
   }, [selectedNativeMoleculePart]);
   const clearObjectTransformPreview = useCallback((pointerId?: number) => {
+    setObjectDragPagePreview(current => current && pointerId !== undefined && current.pointerId !== pointerId ? current : undefined);
     const retained = retainedObjectMoveRef.current;
     if (retained && (pointerId === undefined || retained.pointerId === pointerId)) {
       restoreRetainedObjectMoveTargets(retained.targets);
@@ -3558,8 +3562,7 @@ export function MainWindow({
   const installDocumentHistory = useCallback((
     update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
     switchingTabs = false,
-    palettePreview = false,
-    objectDragPreview = false
+    palettePreview = false
   ) => {
     // A chooser may never blur. Close its snapshot transaction before *any* other
     // document write, including live drawing/selection replacements and navigation.
@@ -3586,7 +3589,7 @@ export function MainWindow({
     // Retained moves never install preview documents. Any install while one is active
     // replaces its source geometry, so disarm it before React updates the paint/chrome.
     const drag = objectDragRef.current;
-    if (drag && !objectDragPreview && !graphicObjectIdsForCssDragPreview(drag)) {
+    if (drag && !graphicObjectIdsForCssDragPreview(drag)) {
       objectDragRef.current = null;
       objectDragMachineRef.current = initialInteractionState();
       clearObjectTransformPreview(drag.pointerId);
@@ -3631,8 +3634,7 @@ export function MainWindow({
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
     nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
-    palettePreview = false,
-    objectDragPreview = false
+    palettePreview = false
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
     let changed = false;
@@ -3647,7 +3649,7 @@ export function MainWindow({
       if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
       changed = true;
       return { ...currentHistory, present };
-    }, false, palettePreview, objectDragPreview);
+    }, false, palettePreview);
     return changed;
   }, [installDocumentHistory]);
   // Strip the live draft before normalization, then carry the name across both object changes.
@@ -11939,17 +11941,19 @@ export function MainWindow({
 
         const alignMode = alignModeForCommandId(action.id);
         if (alignMode) {
-          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode));
-          setStatus(changed ? action.title : "Select at least two objects");
+          const warnings: string[] = [];
+          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode, warnings));
+          setStatus([changed ? action.title : "Select at least two objects", ...warnings].join("; "));
           return;
         }
 
         const distributeAxis = distributeAxisForCommandId(action.id);
         if (distributeAxis) {
+          const warnings: string[] = [];
           const changed = commitDocumentChange((current) =>
-            distributeSelectedDocumentObjects(current, distributeAxis, distributeMode)
+            distributeSelectedDocumentObjects(current, distributeAxis, distributeMode, warnings)
           );
-          setStatus(changed ? action.title : "Select at least three objects");
+          setStatus([changed ? action.title : "Select at least three objects", ...warnings].join("; "));
           return;
         }
 
@@ -16188,9 +16192,12 @@ export function MainWindow({
       }
       if (drag.startDocument.pages.some(page => page.objects.some(object => object.type === "text" && object.arrowAttachment?.kind === "conditions"))) {
         clearObjectTransformPreview(drag.pointerId);
-        // Attached labels need a document preview rather than a rigid translation. Keep the
-        // gesture alive until release records its history entry.
-        replacePresentDocument(objectDragDocument(drag, point), false, true); return;
+        // Attached labels need a page preview rather than a rigid translation. Keep it out of
+        // history and documentRef: normalization here would reconcile charge-mark associations,
+        // and Save during the gesture must write the unchanged pre-drag chemistry.
+        setObjectDragPagePreview({ pointerId: drag.pointerId, source: drag.startDocument,
+          page: objectDragDocument(drag, point).pages[0] });
+        return;
       }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
@@ -16239,7 +16246,7 @@ export function MainWindow({
         arrowPreviewObjects
       });
     });
-  }, [assignHoveredNativeDeleteTarget, objectDragDelta, objectDragDocument, scheduleObjectTransformPreview, clearObjectTransformPreview, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, objectDragDelta, objectDragDocument, scheduleObjectTransformPreview, clearObjectTransformPreview]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -22687,7 +22694,7 @@ export function MainWindow({
                     resolvedSelectionObjectIds.length > 1 &&
                     !selectedNativeMoleculePart;
                   const rawGroupSelectionBounds = groupSelectionActive
-                    ? visualSelectionBounds(document.pages[0].objects, resolvedSelectionObjectIds)
+                    ? visualSelectionBounds(labelDisplayPage.objects, resolvedSelectionObjectIds)
                     : undefined;
                   const groupSelectionBounds = rawGroupSelectionBounds
                     ? previewedGroupSelectionBounds(

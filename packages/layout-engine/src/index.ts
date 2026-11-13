@@ -107,6 +107,10 @@ export {
   ArrangementLayouts, ArrangementGridAlignments, planObjectArrangement,
   type ArrangementLayout, type ArrangementGridAlignment, type ArrangementItem, type ArrangementOptions, type ArrangementPlan
 } from "./arrangement";
+export {
+  combinedLayoutBounds, planObjectAlignment, planObjectDistribution,
+  type ObjectAlignMode, type ObjectDistributeAxis, type ObjectDistributeMode
+} from "./alignment";
 
 export {
   atomBondOrderUsageMap,
