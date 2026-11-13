@@ -195,6 +195,7 @@ export {
   type NativeDocumentWarningCode
 } from "./documentRead";
 export { compareNativeVersions, type NativeDocumentWriteWarning } from "./nativeCompatibilityState";
+export { copyNativeObjectExtensions, preservedNativeChemistryValues } from "./nativeObjectExtensions";
 
 export {
   DocumentPatchError,

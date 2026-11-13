@@ -21,6 +21,7 @@ import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydr
 import { nativeDrawingStyleFromObjectStyle, nativeTextStyleFromObjectStyle,
   type NativeDrawingStyle, type NativeTextStyle } from "./styles";
 import { bracketPairs, withoutBracketPairMetadata, withBracketChemistryWarnings } from "./brackets";
+import { nativeExtensionObjectScope, retainNativeExtension } from "./nativeCompatibilityState";
 
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
@@ -388,11 +389,29 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
     throw new DocumentPatchError(`Cannot remove object: object "${objectId}" does not exist.`);
   }
 
+  pruneObjectNativeExtensions(document, location.page.id, new Set([objectId]));
   location.page.objects.splice(location.objectIndex, 1);
   forgetShiftedDuplicateLocations(document);
   document.selection.objectIds = document.selection.objectIds.filter((id) => id !== objectId);
   pruneCrossings(location.page, (crossing) => !crossing.bonds.some((ref) => ref.objectId === objectId));
   pruneReactionReferences(location.page, new Set([objectId]));
+}
+
+function pruneObjectNativeExtensions(document: ChemDraftDocument, pageId: string, objectIds: ReadonlySet<string>, updated = false): void {
+  const extensions = document.compatibility.nativeExtensions;
+  if (!extensions?.length) return;
+  const kept = extensions.flatMap(extension => {
+    const scope = nativeExtensionObjectScope(extension);
+    if (!scope || scope.pageId !== pageId || !objectIds.has(scope.objectId)) return [extension];
+    const retained = updated && retainNativeExtension(document, extension);
+    return retained ? [retained] : [];
+  });
+  if (kept.length === extensions.length && kept.every((extension, index) => extension === extensions[index])) return;
+  // Replace the container: previous undo snapshots still own the complete original state.
+  const compatibility = { ...document.compatibility };
+  if (kept.length) compatibility.nativeExtensions = kept;
+  else delete compatibility.nativeExtensions;
+  document.compatibility = compatibility;
 }
 
 /** Replace changed reactions rather than mutating objects shared with undo snapshots. */
@@ -480,6 +499,7 @@ function removeObjects(document: ChemDraftDocument, objectIds: readonly string[]
     if (removedHere.size === 0) {
       continue;
     }
+    pruneObjectNativeExtensions(document, page.id, removedHere);
     // The draft page owns a fresh objects array (createDraft), so it can simply be replaced; a spread
     // into splice would overflow the argument stack on a page of 100,000 objects.
     page.objects = kept;
@@ -615,6 +635,7 @@ function updateObject(
     updated.atoms = clearChangedAtomHydrogenHints(location.object, updated.atoms, updated.bonds);
   }
   location.page.objects[location.objectIndex] = updated;
+  pruneObjectNativeExtensions(document, location.page.id, new Set([objectId]), true);
   pruneCrossingsAfterObjectUpdate(location.page, location.object, updated);
 }
 
@@ -629,6 +650,7 @@ function removeAnnotation(document: ChemDraftDocument, annotationId: string): vo
   }
 
   location.page.objects.splice(location.objectIndex, 1);
+  pruneObjectNativeExtensions(document, location.page.id, new Set([annotationId]));
   forgetShiftedDuplicateLocations(document);
 }
 
