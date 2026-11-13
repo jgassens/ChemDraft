@@ -14121,7 +14121,9 @@ function selectionLayoutItemMoves(
  * so its deltas are summed here. Applying items one at a time cloned and validated the whole
  * document per object — quadratic for a large selection.
  */
-function applyLayoutItemMoves(document: ChemDraftDocument, moves: readonly LayoutItemMove[], preserveChargeAnchor = false): ChemDraftDocument {
+function applyLayoutItemMoves(
+  document: ChemDraftDocument, moves: readonly LayoutItemMove[], preserveChargeAnchor = false, warningsOut?: string[]
+): ChemDraftDocument {
   const combined = new Map<string, LayoutItemMove>();
   for (const move of moves) {
     const existing = combined.get(move.objectId);
@@ -14138,10 +14140,22 @@ function applyLayoutItemMoves(document: ChemDraftDocument, moves: readonly Layou
     const object = objects.get(move.objectId);
     const anchorMove = object?.type === "electron-mark" && object.anchor.kind === "atom" && object.anchor.objectId
       ? combined.get(object.anchor.objectId) : undefined;
+    const carriedTogether = anchorMove !== undefined &&
+      Math.abs(anchorMove.dx - move.dx) < 1e-9 && Math.abs(anchorMove.dy - move.dy) < 1e-9;
+    // Explicit drops retain their atom identity when the whole pair travels together, just as
+    // in a group drag. Independent translations keep the existing association policy.
+    const explicitPair = object?.type === "electron-mark" && object.atomAssociation === "explicit" && carriedTogether;
+    if (explicitPair) {
+      const molecule = objects.get(object.anchor.objectId!);
+      if (molecule?.type !== "molecule" || !molecule.atoms.some(atom => atom.id === object.anchor.atomId)) {
+        const warning = `Cannot preserve explicit electron mark "${object.id}" association: atom "${object.anchor.atomId}" in molecule "${object.anchor.objectId}" is missing.`;
+        if (!warningsOut) throw new Error(warning);
+        warningsOut.push(warning);
+      }
+    }
     return translateDocumentObjectByPatches(document, move.objectId, move.dx, move.dy, {
       translateAnchoredGeometry: move.translateAnchoredGeometry,
-      preserveChargeAnchor: preserveChargeAnchor && anchorMove !== undefined &&
-        Math.abs(anchorMove.dx - move.dx) < 1e-9 && Math.abs(anchorMove.dy - move.dy) < 1e-9
+      preserveChargeAnchor: (preserveChargeAnchor || explicitPair) && carriedTogether
     });
   });
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
@@ -14289,7 +14303,8 @@ function arrangementItem(pageObjects: readonly DocumentObject[], id: string): Ar
 
 export function alignSelectedDocumentObjects(
   document: ChemDraftDocument,
-  mode: DocumentAlignMode
+  mode: DocumentAlignMode,
+  warningsOut?: string[]
 ): ChemDraftDocument {
   const page = selectionPage(document);
   const layoutItems = selectionLayoutObjects(document)
@@ -14321,7 +14336,7 @@ export function alignSelectedDocumentObjects(
           : 0;
     moves.push(...selectionLayoutItemMoves(page.objects, id, dx, dy));
   }
-  return applyLayoutItemMoves(document, moves);
+  return applyLayoutItemMoves(document, moves, false, warningsOut);
 }
 
 // Visual bounds of a top-level layout item, treating a group as a single box (the union of its
@@ -14342,7 +14357,8 @@ function layoutItemVisualBounds(
 export function distributeSelectedDocumentObjects(
   document: ChemDraftDocument,
   axis: DocumentDistributeAxis,
-  mode: DocumentDistributeMode = "centers"
+  mode: DocumentDistributeMode = "centers",
+  warningsOut?: string[]
 ): ChemDraftDocument {
   const page = selectionPage(document);
   const selectedObjects = selectionLayoutObjects(document);
@@ -14351,7 +14367,7 @@ export function distributeSelectedDocumentObjects(
   }
 
   if (mode === "spacing") {
-    return distributeSelectedDocumentObjectsBySpacing(document, page.objects, selectedObjects, axis);
+    return distributeSelectedDocumentObjectsBySpacing(document, page.objects, selectedObjects, axis, warningsOut);
   }
 
   const centerForAxis = (object: DocumentObject) => {
@@ -14376,14 +14392,15 @@ export function distributeSelectedDocumentObjects(
       ? selectionLayoutItemMoves(page.objects, object.id, delta, 0)
       : selectionLayoutItemMoves(page.objects, object.id, 0, delta)));
   });
-  return applyLayoutItemMoves(document, moves);
+  return applyLayoutItemMoves(document, moves, false, warningsOut);
 }
 
 function distributeSelectedDocumentObjectsBySpacing(
   document: ChemDraftDocument,
   pageObjects: readonly DocumentObject[],
   selectedObjects: readonly DocumentObject[],
-  axis: DocumentDistributeAxis
+  axis: DocumentDistributeAxis,
+  warningsOut?: string[]
 ): ChemDraftDocument {
   const visualBoundsById = new Map(selectedObjects.map((object) => [object.id, layoutItemVisualBounds(pageObjects, object)] as const));
   const visualBoundsForObject = (object: DocumentObject): ObjectBounds => {
@@ -14421,7 +14438,7 @@ function distributeSelectedDocumentObjectsBySpacing(
       : selectionLayoutItemMoves(pageObjects, object.id, 0, delta)));
     targetStart += sizeForAxis(object) + gap;
   });
-  return applyLayoutItemMoves(document, moves);
+  return applyLayoutItemMoves(document, moves, false, warningsOut);
 }
 
 export function duplicateSelectedDocumentObjects(

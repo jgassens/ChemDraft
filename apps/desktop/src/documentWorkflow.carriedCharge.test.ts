@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { serializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatches, serializeDocument, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
 import * as workflow from "./documentWorkflow";
 import { dropElectronMark } from "./electronMarkDrop";
 import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
@@ -29,7 +29,78 @@ function expectCarriedCharges(document: ChemDraftDocument, expected: number[]) {
   }
 }
 
+function groupedChargeForLayout(grouped = true) {
+  let document = distantAttachedCharge();
+  if (grouped) document = workflow.groupSelectedDocumentObjects(document);
+  const selectedIds = document.selection.objectIds;
+  const boxes: GraphicObject[] = [
+    { id: "layout-first", type: "graphic", graphicKind: "rect", x: 10, y: 10, width: 20, height: 20, rotation: 0, style: {}, data: {} },
+    { id: "layout-last", type: "graphic", graphicKind: "rect", x: 700, y: 560, width: 20, height: 20, rotation: 0, style: {}, data: {} }
+  ];
+  document = applyPatches(document, boxes.map(object => ({ op: "addObject", pageId: document.pages[0].id, object })));
+  return workflow.selectDocumentObjects(document, document.pages[0].id, [...selectedIds, ...boxes.map(box => box.id)]);
+}
+
+const chargeLayoutOperations = [
+  ...(["left", "center", "right", "top", "middle", "bottom"] as const).map(mode => ({
+    name: `align ${mode}`, apply: (document: ChemDraftDocument) => workflow.alignSelectedDocumentObjects(document, mode)
+  })),
+  ...(["horizontal", "vertical"] as const).flatMap(axis => (["centers", "spacing"] as const).map(mode => ({
+    name: `distribute ${axis} ${mode}`,
+    apply: (document: ChemDraftDocument) => workflow.distributeSelectedDocumentObjects(document, axis, mode)
+  })))
+];
+
 describe("complete molecule carried with its distant explicit charge", () => {
+  it.each(["mark only", "different deltas"])("keeps the existing align policy when the pair does not travel together: %s", selection => {
+    let document = groupedChargeForLayout(false);
+    if (selection === "mark only") document = workflow.selectDocumentObjects(document, document.pages[0].id,
+      [dropMark(document).id, "layout-first"]);
+    const edited = workflow.alignSelectedDocumentObjects(document, "left");
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expect(dropMark(edited).atomAssociation).toBeUndefined();
+    expect(dropMark(committed).anchor.kind).toBe("point");
+    expect(dropMolecule(committed).atoms.find(atom => atom.element === "N")?.formalCharge).toBe(0);
+  });
+
+  it.each(["align", "distribute"] as const)("warns when %s cannot carry an explicit pair with a missing atom, or fails without a sink", operation => {
+    let document = groupedChargeForLayout();
+    const mark = dropMark(document);
+    document = applyPatches(document, [{ op: "updateObject", objectId: mark.id,
+      changes: { anchor: { ...mark.anchor, atomId: "missing_atom" } } }]);
+    const apply = (warnings?: string[]) => operation === "align"
+      ? workflow.alignSelectedDocumentObjects(document, "left", warnings)
+      : workflow.distributeSelectedDocumentObjects(document, "horizontal", "spacing", warnings);
+    const warnings: string[] = [];
+    apply(warnings);
+    expect(warnings).toEqual([
+      `Cannot preserve explicit electron mark "${mark.id}" association: atom "missing_atom" in molecule "${dropMolecule(document).id}" is missing.`
+    ]);
+    expect(() => apply()).toThrow(warnings[0]);
+  });
+
+  it.each(chargeLayoutOperations)("preserves the grouped pair through $name, commit and save/reopen", ({ apply }) => {
+    const document = groupedChargeForLayout(), original = dropMolecule(document), mark = dropMark(document);
+    const originalJson = serializeDocument(document);
+    const edited = apply(document);
+    const moved = dropMolecule(edited), movedMark = dropMark(edited);
+    const dx = moved.x - original.x, dy = moved.y - original.y;
+    expect(Math.abs(dx) + Math.abs(dy)).toBeGreaterThan(1);
+    expect(movedMark.x).toBeCloseTo(mark.x + dx);
+    expect(movedMark.y).toBeCloseTo(mark.y + dy);
+    expectCarriedCharges(edited, [1]);
+    const committed = workflow.normalizeCommittedDocument(edited);
+    expectCarriedCharges(committed, [1]);
+    expect(dropMolecule(committed).atoms).toEqual(original.atoms.map(atom => ({ ...atom, x: atom.x + dx, y: atom.y + dy })));
+    expect(dropMolecule(committed).bonds).toEqual(original.bonds);
+    expect(dropMolecule(committed).structure).toBe(original.structure);
+    expect(dropMolecule(committed).chemistry).toEqual(original.chemistry);
+    expect(serializeDocument(document)).toBe(originalJson);
+    const reopened = workflow.openNativeDocument(serializeDocument(committed));
+    expect(reopened.document).toBeDefined();
+    expectCarriedCharges(workflow.normalizeCommittedDocument(reopened.document!), [1]);
+  });
+
   it.each(["move", "duplicate", "copy/paste"] as const)("preserves nitrogen charge through %s, commit and save/reopen", operation => {
     const document = distantAttachedCharge();
     const original = dropMolecule(document);

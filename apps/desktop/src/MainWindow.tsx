@@ -11941,17 +11941,19 @@ export function MainWindow({
 
         const alignMode = alignModeForCommandId(action.id);
         if (alignMode) {
-          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode));
-          setStatus(changed ? action.title : "Select at least two objects");
+          const warnings: string[] = [];
+          const changed = commitDocumentChange((current) => alignSelectedDocumentObjects(current, alignMode, warnings));
+          setStatus([changed ? action.title : "Select at least two objects", ...warnings].join("; "));
           return;
         }
 
         const distributeAxis = distributeAxisForCommandId(action.id);
         if (distributeAxis) {
+          const warnings: string[] = [];
           const changed = commitDocumentChange((current) =>
-            distributeSelectedDocumentObjects(current, distributeAxis, distributeMode)
+            distributeSelectedDocumentObjects(current, distributeAxis, distributeMode, warnings)
           );
-          setStatus(changed ? action.title : "Select at least three objects");
+          setStatus([changed ? action.title : "Select at least three objects", ...warnings].join("; "));
           return;
         }
 
@@ -22692,7 +22694,7 @@ export function MainWindow({
                     resolvedSelectionObjectIds.length > 1 &&
                     !selectedNativeMoleculePart;
                   const rawGroupSelectionBounds = groupSelectionActive
-                    ? visualSelectionBounds(document.pages[0].objects, resolvedSelectionObjectIds)
+                    ? visualSelectionBounds(labelDisplayPage.objects, resolvedSelectionObjectIds)
                     : undefined;
                   const groupSelectionBounds = rawGroupSelectionBounds
                     ? previewedGroupSelectionBounds(
