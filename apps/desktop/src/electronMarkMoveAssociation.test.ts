@@ -43,7 +43,26 @@ describe.each([false, true])("main's mark association policy with direct editing
       const result = normalizeDocumentEdit(before, patched);
       const expected = (mainOracle.cases as Record<string, unknown>)[`${JSON.stringify(spec)}: ${name}`];
       expect(expected, name).toBeDefined();
-      expect(associationState(patched, result.document), name).toEqual(expected);
+      if (["alignment", "crowded alignment", "crowded multi molecule group alignment"].includes(name)) {
+        // Ordinary marks keep their anchors whenever carried with the molecule, selected or not.
+        const state = associationState(patched, result.document);
+        const original = associationState(before, before);
+        expect(state.stored, name).toEqual(original.stored);
+        expect(state.committed, name).toEqual(original.committed);
+        expect(result.chemistryChanges, name).toEqual([]);
+        for (const molecule of moleculesIn(result.document)) {
+          const old = moleculesIn(before).find(object => object.id === molecule.id)!;
+          expect(molecule.bonds, name).toEqual(old.bonds);
+          expect(molecule.chemistry, name).toEqual(old.chemistry);
+          molecule.atoms.forEach((atom, index) => {
+            expect({ ...atom, x: old.atoms[index].x, y: old.atoms[index].y }, name).toEqual(old.atoms[index]);
+          });
+        }
+        // Keep the pinned movement oracle: only association and resulting chemistry change.
+        const positions = (state: ReturnType<typeof associationState>) => state.molecules.map(([id, atoms]) =>
+          [id, (atoms as { x: number; y: number }[]).map(({ x, y }) => ({ x, y }))]);
+        expect(positions(state), name).toEqual(positions(expected as ReturnType<typeof associationState>));
+      } else expect(associationState(patched, result.document), name).toEqual(expected);
       expect(result.chemistryChanges).toEqual(electronMarkChemistryChanges(before, result.document));
       expect(JSON.stringify(before)).toBe(beforeJson);
       expect(JSON.stringify(patched)).toBe(patchedJson);
