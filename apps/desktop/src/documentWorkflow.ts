@@ -1,4 +1,4 @@
-import { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
+import { nativeChargePlacementPointForAtom, nativeRadicalPlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
 export { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
 import {
   atomProblem, readNativeDocumentContents, formulaSpansFromText,
@@ -7540,7 +7540,8 @@ export function applyChargeToolAtNativeAtom(
     );
   }
 
-  const point = nativeChargePlacementPointForAtom(molecule, target.atomId, page.objects, page.width, page.height);
+  const placement = normalized.kind === "radical-dot" ? nativeRadicalPlacementPointForAtom : nativeChargePlacementPointForAtom;
+  const point = placement(molecule, target.atomId, page.objects, page.width, page.height);
   return point
     ? addChargeMarkAtPoint(document, page.id, normalized, point, {
         objectId: molecule.id,

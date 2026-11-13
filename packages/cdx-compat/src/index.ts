@@ -56,7 +56,7 @@ import {
 } from "./cdxBinary";
 import { abbreviationExpansionIssue, cdxmlAtomChemistry, cdxmlAtomNativeState, elementFromCdxmlAtom, restoreCdxmlAbbreviations } from "./abbreviations";
 import { cdxmlToCssPx, cssPxToCdxml, formatNumber, formatPoint } from "./coordinates";
-import { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx } from "@chemdraft/layout-engine";
+import { nativeChargePlacementPointForAtom, nativeRadicalPlacementPointForAtom, nativeChargeMarkSizePx } from "@chemdraft/layout-engine";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -1291,16 +1291,29 @@ function isStandardAtomRadicalMark(
   const atom = molecule.atoms.find(atom => atom.id === atomId);
   if (!atom) return false;
   // Source handles follow direct edits to the atom's radical state, including its removal.
-  // Their initial frame distinguishes an untouched import handle from authored appearance.
+  // Compare the current atom-relative frame: a stationary dot must not stay exempt when
+  // its atom moves away, while translating both together preserves the imported appearance.
   const imported = mark.compatibility?.unknown.cdxmlRadicalMarkPlacement;
-  if (isRecord(imported)) return imported.objectId === objectId && imported.atomId === atomId
-    && imported.x === mark.x && imported.y === mark.y;
-  if (atom.markRadicals !== 1 && atom.markRadicals !== 2) return false;
+  if (isRecord(imported)) {
+    if (imported.objectId !== objectId || imported.atomId !== atomId) return false;
+    if (typeof imported.offsetX === "number" && typeof imported.offsetY === "number") {
+      const atomPoint = transformPointForObject(molecule, atom);
+      return Math.abs(mark.x - atomPoint.x - imported.offsetX) < 1e-8
+        && Math.abs(mark.y - atomPoint.y - imported.offsetY) < 1e-8;
+    }
+    // Older native payloads lack relative coordinates: require the current default below.
+  }
+  if (!isRecord(imported) && atom.markRadicals !== 1 && atom.markRadicals !== 2) return false;
   const carried = page.objects.filter(object => object.type === "electron-mark"
     && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atom.id
     && (object.markKind === "radical-dot" || object.markKind === "charge" && object.radical)).length;
-  if (carried !== atom.markRadicals) return false;
-  const point = nativeChargePlacementPointForAtom(molecule, atom.id, page.objects, page.width, page.height);
+  if (!isRecord(imported) && carried !== atom.markRadicals) return false;
+  // Legacy imports placed both triplet dots in the charge-tool slot. Keep those untouched
+  // payloads warning-free too, but only while that slot still matches the atom's position.
+  const point = isRecord(imported)
+    ? nativeChargePlacementPointForAtom(molecule, atom.id, page.objects, page.width, page.height)
+    : nativeRadicalPlacementPointForAtom(molecule, atom.id,
+      page.objects.slice(0, page.objects.indexOf(mark)), page.width, page.height);
   if (!point) return false;
   const size = nativeChargeMarkSizePx;
   const x = Math.max(0, Math.min(point.x - size / 2, page.width - size));
@@ -3217,7 +3230,7 @@ function addImportedRadicalMarks(page: DocumentPage): void {
         .reduce((sum, mark) => sum + (mark.markKind === "radical-dot" || mark.markKind === "charge" && mark.radical ? 1 : 0), 0);
       const missing = (atom.markRadicals ?? 0) - carried;
       for (let index = 0; index < missing; index++) {
-        const point = nativeChargePlacementPointForAtom(molecule, atom.id, page.objects, page.width, page.height)!;
+        const point = nativeRadicalPlacementPointForAtom(molecule, atom.id, page.objects, page.width, page.height)!;
         const size = nativeChargeMarkSizePx;
         const baseId = `${molecule.id}_${atom.id}_radical_${index + 1}`;
         let id = baseId;
@@ -3231,8 +3244,10 @@ function addImportedRadicalMarks(page: DocumentPage): void {
           anchor: { kind: "atom", objectId: molecule.id, atomId: atom.id },
           atomAssociation: "explicit"
         };
+        const atomPoint = transformPointForObject(molecule, atom);
         mark.compatibility = { warnings: [], unknown: { cdxmlRadicalMarkPlacement: {
-          x: mark.x, y: mark.y, objectId: molecule.id, atomId: atom.id
+          x: mark.x, y: mark.y, offsetX: mark.x - atomPoint.x, offsetY: mark.y - atomPoint.y,
+          objectId: molecule.id, atomId: atom.id
         } } };
         page.objects.push(mark);
         marks.push(mark);

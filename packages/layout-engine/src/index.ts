@@ -1,5 +1,6 @@
 export * from "./layoutQuality";
 export * from "./electronMarkPlacement";
+import { nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "./electronMarkPlacement";
 export { rotatedGraphicLocalBounds } from "./graphicBounds";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
@@ -4119,6 +4120,62 @@ export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "s
   }
 
   return [{ text: object.text, script: "normal", style: {} }];
+}
+
+/** The atom tool and import use the same open bond-growth slot and label-placement policy.
+ * Keep this module independent of container decoders so importers can reuse it directly. */
+export function nativeChargePlacementPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number,
+  mark?: ElectronMarkObject
+): LayoutPoint | undefined {
+  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
+  if (!atom) return undefined;
+  const hitRadius = nativeAtomHitRadiusPx;
+  const hit = findNearestAtomAtPoint({ atoms: molecule.atoms, point: atom, hitRadius });
+  const style = nativeDrawingStyleFromObjectStyle(molecule.style);
+  const growth = hit && planBondExtension({
+    atoms: molecule.atoms, bonds: molecule.bonds, clickPoint: atom,
+    bondLength: style.bondLengthPx, hitRadius,
+    targetBondAngleDegrees: style.chainAngleDegrees, preferredAtomId: hit.atomId,
+    pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
+    objectBounds: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height }
+  });
+  // Direct drops clear their whole frame from labels; new tool marks retain the original slot.
+  const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
+    growthPoint: growth && growth.sourceAtomId === atomId && !growth.targetAtomId ? growth.newAtomPoint : undefined,
+    mark,
+    avoidLabelOverlap: mark !== undefined
+  });
+  return localPoint && transformPointForObject(molecule, localPoint);
+}
+
+/** A repeated radical uses the tool's existing open-angle search, including occupied marks,
+ * instead of putting another handle in the same bond-growth slot. */
+export function nativeRadicalPlacementPointForAtom(
+  molecule: MoleculeObject,
+  atomId: string,
+  objects: readonly DocumentObject[],
+  pageWidth: number,
+  pageHeight: number
+): LayoutPoint | undefined {
+  const occupied = objects.some(object => object.type === "electron-mark" && object.markKind === "radical-dot"
+    && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId);
+  if (!occupied) return nativeChargePlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight);
+  // The existing charge-centre score already chooses clear space; radical dots occupy it too.
+  const obstacles = objects.map(object => {
+    if (object.type !== "electron-mark" || object.markKind !== "radical-dot" && object.markKind !== "charge") return object;
+    // Stored handles are in page coordinates; the candidate search runs in the atom's frame.
+    const center = inverseTransformPointForObject(molecule, { x: object.x + object.width / 2, y: object.y + object.height / 2 });
+    return { ...object, markKind: "charge" as const, x: center.x - object.width / 2, y: center.y - object.height / 2 };
+  });
+  const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, obstacles, pageWidth, pageHeight, {
+    avoidLabelOverlap: false
+  });
+  return localPoint && transformPointForObject(molecule, localPoint);
 }
 
 /**

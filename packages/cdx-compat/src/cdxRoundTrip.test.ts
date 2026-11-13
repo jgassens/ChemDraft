@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cdxmlFixtures } from "@chemdraft/fixtures";
-import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, readSerializedDocument, serializeDocument, type ChemDraftDocument, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
+import { createEmptyDocument, createPageLayout, createCustomPageLayout, pageMarginFromLayout, GraphicObjectSchema, GraphicObjectDataSchema, readSerializedDocument, serializeDocument, type ChemDraftDocument, type ElectronMarkObject, type GraphicObject, type MoleculeObject, type PageLayout } from "@chemdraft/chem-core";
 import { createNativeReactionArrow, nativeImplicitHydrogenCount, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { applyChargeToolAtNativeAtom, normalizeCommittedDocument } from "../../../apps/desktop/src/documentWorkflow";
 import { graphicPathEditPoints } from "@chemdraft/art-engine";
@@ -916,20 +916,28 @@ describe("chemical and drawing round trips", () => {
     expect(cdxml).not.toMatch(/(?:Head|Tail)3D=/);
   });
 
-  it.each([false, true])("places imported radical marks exactly like the atom tool (binary=%s)", binary => {
-    const source = wrap(fragment([[6, 40, 100, 'Radical="Doublet"']], []));
+  // Cover both tool presses: a triplet must share the tool's second-dot placement as well.
+  it.each([false, true].flatMap(binary => ["Doublet", "Triplet"].map(radical => ({ binary, radical }))))(
+    "places imported $radical marks exactly like the atom tool (binary=$binary)", ({ binary, radical }) => {
+    const source = wrap(fragment([[6, 40, 100, `Radical="${radical}"`]], []));
     const imported = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
     const molecule = imported.pages[0].objects[0] as MoleculeObject;
-    const mark = imported.pages[0].objects.find(object => object.type === "electron-mark")!;
+    const marks = imported.pages[0].objects.filter(object => object.type === "electron-mark");
     const drawn = structuredClone(imported);
     drawn.pages[0].objects = drawn.pages[0].objects.filter(object => object.type !== "electron-mark");
     delete (drawn.pages[0].objects[0] as MoleculeObject).atoms[0].markRadicals;
-    const placedDocument = applyChargeToolAtNativeAtom(drawn, { kind: "radical-dot" }, {
+    const target = {
       kind: "atom", objectId: molecule.id, atomId: molecule.atoms[0].id, distanceToPointer: 0
-    });
-    const placed = placedDocument.pages[0].objects.find(object => object.type === "electron-mark")!;
-    expect(mark).toMatchObject({ x: placed.x, y: placed.y, width: placed.width, height: placed.height,
-      rotation: placed.rotation, style: placed.style, anchor: placed.anchor });
+    } as const;
+    let placedDocument = drawn;
+    for (const mark of marks) {
+      placedDocument = normalizeCommittedDocument(applyChargeToolAtNativeAtom(placedDocument, { kind: "radical-dot" }, target));
+      const placed = placedDocument.pages[0].objects.find(
+        (object): object is ElectronMarkObject => object.type === "electron-mark" && object.id === placedDocument.selection.objectIds[0]
+      )!;
+      expect(mark).toMatchObject({ x: placed.x, y: placed.y, width: placed.width, height: placed.height,
+        rotation: placed.rotation, style: placed.style, anchor: placed.anchor });
+    }
     // Default app dots encode the same atom Radical attribute as default imported dots.
     const committed = normalizeCommittedDocument(placedDocument);
     for (const exported of [exportDocumentToCdxml(committed, { embedNativePayload: false }),
@@ -950,6 +958,27 @@ describe("chemical and drawing round trips", () => {
     const refused = importCdx(bytesFromCdxml(source.replace("Triplet", "Singlet")));
     expect(refused.document).toBeUndefined();
     expect(refused.warnings.some((w) => w.code === "cdxml.atom_radical_unsupported")).toBe(true);
+  });
+
+  it.each([false, true])("imports distinct triplet dots and preserves CH2 with two radicals (binary=%s)", binary => {
+    const source = wrap(fragment([[6, 100, 100, 'Radical="Triplet"']], []));
+    const imported = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const normalized = normalizeCommittedDocument(imported);
+    const molecule = normalized.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(molecule.atoms[0].markRadicals).toBe(2);
+    expect(nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds)).toMatchObject({ formula: "CH2", radicalCount: 2 });
+    const marks = normalized.pages[0].objects.filter(object => object.type === "electron-mark");
+    expect(marks).toHaveLength(2);
+    const [first, second] = marks;
+    const overlap = first.x < second.x + second.width && first.x + first.width > second.x
+      && first.y < second.y + second.height && first.y + first.height > second.y;
+    expect(overlap).toBe(false);
+    for (const output of [exportDocumentToCdxml(normalized, { embedNativePayload: false }),
+      exportDocumentToCdx(normalized, { embedNativePayload: false })]) {
+      expect(output.warnings.filter(warning => warning.code === "cdxml.electron_mark_appearance_payload_only")).toEqual([]);
+      const xml = "bytes" in output ? cdxElementToCdxml(readCdx(output.bytes)) : output.contents;
+      expect(xml.match(/Radical="Triplet"/g)).toHaveLength(1);
+    }
   });
 });
 
