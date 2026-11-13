@@ -1,4 +1,4 @@
-import { moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { isEngineDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
 import { expandNativeMoleculeLabelGroups, nativeSingleHeavyElementLabelValence } from "@chemdraft/document-workflow-core";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
@@ -59,9 +59,83 @@ export function pluginFacingStructure(
   return { structureFormat: molecule.structureFormat, structure: molecule.structure };
 }
 
+/** Signed orientation, with a relative tolerance for roundoff at collinear points after rotation. */
+function orientation(a: MoleculeAtom, b: MoleculeAtom, c: MoleculeAtom): number {
+  const bx = b.x - a.x;
+  const by = b.y - a.y;
+  const cx = c.x - a.x;
+  const cy = c.y - a.y;
+  const cross = bx * cy - by * cx;
+  return Math.abs(cross) <= 1e-10 * Math.hypot(bx, by) * Math.hypot(cx, cy) ? 0 : Math.sign(cross);
+}
+
 /**
- * A coordinate-free fallback for molecules whose stored structure cannot represent their live
- * graph (for example, an unknown-order bond). Moving such a molecule must not stale a report,
+ * Conservative local stereo geometry, not CIP assignments. Orientation signs retain the geometry
+ * that a plugin's molfile reader uses without retaining positions, angles or bond lengths. This
+ * avoids loading a chemistry engine during render. Work runs only on cache misses for owned graphs.
+ */
+function moleculeStereoGeometry(molecule: MoleculeObject): Array<[string, number[]]> {
+  const stereoBonds = molecule.bonds.filter(bond =>
+    (bond.order === "double" && bond.stereo !== "either") ||
+    bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"
+  );
+  if (stereoBonds.length === 0) return [];
+
+  const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+  const neighbors = new Map(molecule.atoms.map(atom => [atom.id, [] as MoleculeAtom[]]));
+  for (const bond of molecule.bonds) {
+    const from = atoms.get(bond.fromAtomId);
+    const to = atoms.get(bond.toAtomId);
+    if (from && to) {
+      neighbors.get(from.id)!.push(to);
+      neighbors.get(to.id)!.push(from);
+    }
+  }
+
+  const signature: Array<[string, number[]]> = [];
+  const centers = new Set<string>();
+  for (const bond of stereoBonds) {
+    const from = atoms.get(bond.fromAtomId);
+    const to = atoms.get(bond.toAtomId);
+    if (!from || !to) continue;
+
+    if (bond.order === "double" && bond.stereo !== "either") {
+      const left = neighbors.get(from.id)!.filter(atom => atom.id !== to.id);
+      const right = neighbors.get(to.id)!.filter(atom => atom.id !== from.id);
+      if (left.length && right.length) {
+        const sides = [...left, ...right].map(atom => orientation(from, to, atom));
+        // Relative sides encode E/Z; reversing every side together preserves the signature.
+        const reference = sides.find(side => side !== 0) ?? 1;
+        signature.push([bond.id, sides.map(side => side * reference)]);
+      }
+    }
+
+    const style = bond.display?.bondStyle;
+    if ((style === "wedge" || style === "hashed") && !centers.has(from.id)) {
+      centers.add(from.id); // The molfile puts the narrow (stereocentre) end first.
+      const ligands = neighbors.get(from.id)!;
+      if (ligands.length < 3 || ligands.length > 4) continue;
+      const points = [from, ...ligands];
+      const signs: number[] = [];
+      // Include triangles through the centre (implicit H) and through three ligands (four
+      // explicit substituents). Their handedness can change with fixed wedge/hash flags.
+      // At most five points keeps this bounded even for malformed, high-degree graphs.
+      for (let i = 0; i < points.length - 2; i++) {
+        for (let j = i + 1; j < points.length - 1; j++) {
+          for (let k = j + 1; k < points.length; k++) {
+            signs.push(orientation(points[i]!, points[j]!, points[k]!));
+          }
+        }
+      }
+      signature.push([from.id, signs]);
+    }
+  }
+  return signature;
+}
+
+/**
+ * A rigid-motion-invariant key for the live graph that supplies the plugin's structure, including edits
+ * the stored structure may not reflect (for example, isotopes). Moving a molecule must not stale a report,
  * while changes to its chemistry, atoms, bonds, superatoms, or R-groups must.
  */
 function moleculeGraphKey(molecule: MoleculeObject): string {
@@ -69,32 +143,47 @@ function moleculeGraphKey(molecule: MoleculeObject): string {
     chemistry: molecule.chemistry,
     atoms: molecule.atoms.map(({ x: _x, y: _y, z: _z, labelOffset: _labelOffset, ...atom }) => atom),
     bonds: molecule.bonds,
+    stereoGeometry: moleculeStereoGeometry(molecule),
     superatoms: molecule.superatoms,
     rGroups: molecule.rGroups
   });
 }
 
+// Engine documents own immutable objects: applyPatches shares untouched molecules and replaces
+// edited ones through updateObject/mergeObjectChanges; adoptDerivedDocument validates replacements.
+// MainWindow admits initial/opened documents through toEngineDocument/admitParsedDocument. Cache
+// only that ownership contract, since callers can still mutate non-engine documents in place.
+// Weak keys also let discarded molecules and their graph-sized hash inputs be collected.
+const sourceFingerprints = new WeakMap<MoleculeObject, {
+  documentId: string;
+  pageId: string;
+  fingerprint: string;
+}>();
+
 /** Keep selection snapshots and open-panel staleness checks on precisely the same source key. */
 function moleculeSourceFingerprint(
-  documentId: string,
+  document: ChemDraftDocument,
   pageId: string,
   molecule: MoleculeObject
 ): string {
-  // A label's recorded bond side decides what a cyano label means, and the stored string need not
-  // show it, so it is keyed alongside. Only molecules that have one gain the suffix: every other
-  // payload stays byte-for-byte what it was.
-  const sides = (molecule.atoms ?? []).flatMap((atom) => (atom.labelBondSide ? [[atom.id, atom.labelBondSide]] : []));
-  const sideKey = sides.length > 0 ? `\nlabelBondSide:${JSON.stringify(sides)}` : "";
-  return createStructureSourceFingerprint({
-    documentId,
+  const cacheable = isEngineDocument(document);
+  const cached = cacheable ? sourceFingerprints.get(molecule) : undefined;
+  if (cached?.documentId === document.id && cached.pageId === pageId) {
+    return cached.fingerprint;
+  }
+  const fingerprint = createStructureSourceFingerprint({
+    documentId: document.id,
     pageId,
     objectId: molecule.id,
     structureFormat: molecule.structureFormat,
-    // Retain the existing payload byte-for-byte whenever it is available. Empty stored structures
-    // occur when a graph cannot be written safely as SMILES, so key that graph instead (it already
-    // carries every atom field but the coordinates, the recorded sides included).
-    structure: molecule.structure === "" ? moleculeGraphKey(molecule) : `${molecule.structure}${sideKey}`
+    // Match pluginFacingStructure's live-graph preference: stored text can miss isotope, charge,
+    // radical and label-side edits. Keep the stored-text key only when there is no live graph.
+    structure: molecule.atoms?.length > 0 || molecule.structure === "" ? moleculeGraphKey(molecule) : molecule.structure
   });
+  if (cacheable) {
+    sourceFingerprints.set(molecule, { documentId: document.id, pageId, fingerprint });
+  }
+  return fingerprint;
 }
 
 /**
@@ -129,9 +218,8 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
       pageId: hit.pageId,
       structureFormat: facing.structureFormat,
       structure: facing.structure,
-      // Fingerprint stays keyed on the object's own coordinate-free structure string (not the
-      // emitted molfile) so a pure move never reads as a content change / staleness.
-      sourceFingerprint: moleculeSourceFingerprint(document.id, hit.pageId, hit.molecule)
+      // Retain stereo geometry while keeping pure translations and rotations out of the key.
+      sourceFingerprint: moleculeSourceFingerprint(document, hit.pageId, hit.molecule)
     });
   }
 
@@ -139,7 +227,7 @@ export function buildPluginSelectionSnapshot(document: ChemDraftDocument, warnin
 }
 
 /**
- * Recompute the source fingerprint for a specific molecule in the current document (independent of
+ * Read the source fingerprint for a specific molecule in the current document (independent of
  * selection), for staleness detection (D-09): a panel report carries the fingerprint it was computed
  * against; if this no longer matches — or the object is gone — the report is stale. Returns undefined
  * when the object no longer exists or is not a molecule.
@@ -148,7 +236,7 @@ export function computeObjectFingerprint(document: ChemDraftDocument, objectId: 
   for (const page of document.pages) {
     for (const object of page.objects) {
       if (object.type === "molecule" && object.id === objectId) {
-        return moleculeSourceFingerprint(document.id, page.id, object);
+        return moleculeSourceFingerprint(document, page.id, object);
       }
     }
   }

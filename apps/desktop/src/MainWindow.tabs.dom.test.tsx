@@ -6,7 +6,10 @@ import { IdentityVerificationTimeoutError } from "./depiction2d/identityWorkerCl
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
+import { withNativeUtilitySuspension } from "./nativeUtilitySuspension";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
@@ -151,7 +154,21 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
-  ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeFile
+  ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeFile,
+  stat: async () => ({ size: 0 }),
+  open: async (path: string) => {
+    const bytes = await native.readFile(path);
+    let offset = 0;
+    return {
+      read: async (buffer: Uint8Array) => {
+        const count = Math.min(buffer.length, bytes.length - offset);
+        buffer.set(bytes.subarray(offset, offset + count));
+        offset += count;
+        return count;
+      },
+      close: async () => {}
+    };
+  }
 }));
 vi.mock("./plugins/createPluginRuntime", async (original) => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
@@ -243,11 +260,11 @@ describe("documents in one window", () => {
     vi.useRealTimers();
   });
 
-  async function mount(initialDocument = createPhase4Document("Untitled"), strict = false) {
+  async function mount(initialDocument = createPhase4Document("Untitled"), strict = false, shortcutPlatform?: ShortcutPlatform) {
     root = createRoot(container);
     await act(async () => {
       const main = createElement(MainWindow, {
-        initialDocument, initialActiveToolCommandId: "tool.select",
+        initialDocument, initialActiveToolCommandId: "tool.select", shortcutPlatform,
         initialPaletteMode: "hidden", initialCrosshairsVisible: false, initialRulersVisible: false, nativePalette: true
       });
       root!.render(strict ? createElement(StrictMode, null, main) : main);
@@ -733,11 +750,13 @@ describe("documents in one window", () => {
     expect(hoverMolecule().atoms[1]!.element).toBe("N");
   });
 
-  it("Escape discards the first letter even when rollback constructs document keys in a different order", async () => {
+  it("Escape keeps the first letter and its undo entry even when rollback constructs document keys in a different order", async () => {
     await mountHoverChain();
     const before = bridge().snapshot().document;
     await hoverChainAtom(1);
-    for (const key of "NMe") await labelKey(key);
+    await labelKey("N");
+    const afterFirstLetter = bridge().snapshot().document;
+    for (const key of "Me") await labelKey(key);
     const restore = atomLabelDraft.restoreAtomLabelDraft;
     vi.spyOn(atomLabelDraft, "restoreAtomLabelDraft").mockImplementation((document, state) => {
       const restored = restore(document, state);
@@ -745,8 +764,10 @@ describe("documents in one window", () => {
     });
     await labelKey("Escape");
     expect(labelEditor()).toBeNull();
+    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
+    await command("edit.undo");
     expect(bridge().snapshot().document).toEqual(before);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
   });
 
   it.each(["document.save", "document.saveAs"])("Escape after %s during a hover draft keeps the saved path and marks the canvas dirty", async saveCommand => {
@@ -756,7 +777,9 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().file).toEqual({ path: "/tmp/chain.chemdraft", dirty: false });
     const before = bridge().snapshot().document;
     await hoverChainAtom(1);
-    for (const key of "NMe") await labelKey(key);
+    await labelKey("N");
+    const afterFirstLetter = bridge().snapshot().document;
+    for (const key of "Me") await labelKey(key);
     expect(labelEditor()?.value).toBe("NMe");
     const savedPath = saveCommand === "document.saveAs" ? "/tmp/renamed-chain.chemdraft" : "/tmp/chain.chemdraft";
     if (saveCommand === "document.saveAs") native.savePicker.mockResolvedValueOnce(savedPath);
@@ -769,10 +792,12 @@ describe("documents in one window", () => {
     expect(savedMolecule.atoms[1]!.element).toBe("NMe");
     expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: false });
     await labelKey("Escape");
-    expect(bridge().snapshot().document).toEqual(before);
+    expect(bridge().snapshot().document).toEqual(afterFirstLetter);
     expect(bridge().snapshot().file).toEqual({ path: savedPath, dirty: true });
     expect(document.title).toContain(`${savedPath.split("/").at(-1)} •`);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
+    await command("edit.undo");
+    expect(bridge().snapshot().document).toEqual(before);
   });
 
   it("keeps proposals across switches and activates their source tab for one selected, undoable insertion", async () => {
@@ -1016,6 +1041,215 @@ describe("documents in one window", () => {
     expect(bridge().snapshot().file.dirty).toBe(true);
   });
 
+  function futureFileContents(name: string) {
+    return JSON.stringify({ ...createPhase4Document(name), formatVersion: "1.10.0", minAppVersion: "1.10.2",
+      conditionsLabel: { text: "keep future content" }, styles: { drawing: { stylePresetId: "future-preset" } } });
+  }
+
+  it.each(["picker", "os/recent", "native drop", "browser drop", "browser picker"])(
+    "native compatibility: %s opens with one notice and preserves future data on save", async path => {
+      const prompts: NativePromptOptions[] = [];
+      const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const contents = futureFileContents("Future drawing");
+      try {
+        if (path === "picker") {
+          native.picker.mockResolvedValueOnce("C:\\Drawings\\future.chemdraft");
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await command("document.open");
+        } else if (path === "os/recent") {
+          const payload = { path: "C:\\Drawings\\future.chemdraft", displayName: "future.chemdraft", contents };
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+          // Activating an already-open file is not another open and must not show another box.
+          await act(async () => native.events.get("chemdraft://open-document")!(payload));
+        } else if (path === "native drop") {
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(contents));
+          await act(async () => native.events.get("tauri://drag-drop")!({ paths: ["C:\\Drawings\\future.chemdraft"] }));
+        } else {
+          native.desktop = false;
+          // Browser opening now reads bounded bytes so CDX and BOM-encoded text share a transport.
+          const bytes = new TextEncoder().encode(contents);
+          const file = { name: "future.chemdraft", size: bytes.byteLength, arrayBuffer: async () => bytes.buffer };
+          if (path === "browser drop") {
+            const event = new Event("drop", { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
+            await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
+          } else {
+            const input = container.querySelector<HTMLInputElement>('input[type="file"][accept*="chemdraft"]')!;
+            Object.defineProperty(input, "files", { value: [file], configurable: true });
+            await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+          }
+        }
+        expect(bridge().snapshot().document.title).toBe("Future drawing");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ owner: "document",
+          message: "This file was made with a newer ChemDraft (1.10.2). Some features may not show. Update to keep them." });
+        // Exercise app history admission and the Save path, including edits made after opening.
+        native.desktop = true;
+        await paste("An edit");
+        native.savePicker.mockResolvedValueOnce("C:\\Drawings\\saved.chemdraft");
+        await command("document.saveAs");
+        const saved = native.writeFile.mock.calls.at(-1)![1];
+        const reopened = openNativeDocument(saved);
+        expect(reopened.nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+        expect(reopened.warnings.map(warning => warning.code)).toEqual(expect.arrayContaining([
+          "NATIVE_UNKNOWN_FIELD_PRESERVED", "NATIVE_STYLE_PRESET_FALLBACK"
+        ]));
+        expect(prompts).toHaveLength(1);
+      } finally { restore(); }
+    });
+
+  it("native compatibility: session restore shows once per installed file, including StrictMode", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const future = buildDocumentSessionEnvelope({ contents: futureFileContents("Restored future"), payloadHash: "future", filename: "future.chemdraft" },
+        { dirty: true }, "future.chemdraft", false);
+      native.session = future;
+      act(() => root!.unmount());
+      container.innerHTML = "";
+      await mount(createPhase4Document("Untitled"), true);
+      expect(bridge().snapshot().document.title).toBe("Restored future");
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]!.message).toContain("(1.10.2)");
+      const saved = await flush();
+      expect(openNativeDocument(saved.tabs![0]!.contents).nativeDocumentVersions?.minAppVersion).toBe("1.10.2");
+    } finally { restore(); }
+  });
+
+  it("native compatibility: older and same-version opens and session restores remain quiet", async () => {
+    const prompts: NativePromptOptions[] = [];
+    const restore = setNativePromptProvider(async prompt => { prompts.push(prompt); return "ok"; });
+    try {
+      for (const minimum of [undefined, "1.1.1", "1.2.0"]) {
+        const contents = JSON.stringify({ ...createPhase4Document(`Minimum ${minimum}`), minAppVersion: minimum });
+        await act(async () => native.events.get("chemdraft://open-document")!({
+          contents, displayName: `${minimum}.chemdraft`, path: `/tmp/${minimum}.chemdraft`
+        }));
+      }
+      await flush(); await remount();
+      expect(prompts).toEqual([]);
+    } finally { restore(); }
+  });
+
+  describe.each(["macos", "windows"] as const)("restored native compatibility on %s", platform => {
+    const toolsetIds = ["core.main", "core.art"];
+    const layout = {
+      version: 1, toolsetOrder: [], userToolsets: [],
+      toolsetOverrides: toolsetIds.map(toolsetId => ({ toolsetId, visible: true }))
+    };
+    const fixture = (name: string) => readFileSync(resolve(
+      "packages/chem-core/src/__fixtures__/compat", `${name}.chemdraft`), "utf8");
+    const path = (name: string) => platform === "windows" ? `C:\\Drawings\\${name}.chemdraft` : `/tmp/${name}.chemdraft`;
+    async function restart(strict = false) {
+      act(() => root!.unmount());
+      container.innerHTML = "";
+      native.toolsetWindows.clear();
+      await mount(createPhase4Document("Untitled"), strict, platform);
+    }
+
+    it("creates the native toolsets before either restored notice and never falls back while notices are open", async () => {
+      vi.useFakeTimers();
+      native.suspendUtilities = true;
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      native.session = buildDocumentTabsSession(["newer-1.3", "newer-format-only"].map(name =>
+        buildDocumentSessionEnvelope({ contents: fixture(name), payloadHash: name, filename: `${name}.chemdraft` },
+          { path: path(name), dirty: false }, `${name}.chemdraft`, false)), 0);
+      const events: string[] = [];
+      const prompts: NativePromptOptions[] = [];
+      const restore = setNativePromptProvider(prompt => withNativeUtilitySuspension(() => {
+        events.push("notice"); prompts.push(prompt);
+        return new Promise<string>(resolve => { pendingPrompt = { prompt, resolve }; });
+      }));
+      let finishLayout!: (value: unknown) => void;
+      const loadingLayout = new Promise(resolve => { finishLayout = resolve; });
+      native.loadToolsetLayout.mockImplementation(() => loadingLayout);
+      let finishArt!: () => void;
+      const openNormally = native.openToolset.getMockImplementation()!;
+      native.openToolset.mockImplementation(async id => {
+        events.push(`request:${id}`);
+        if (id === "core.art") await new Promise<void>(resolve => { finishArt = resolve; });
+        const state = await openNormally(id);
+        events.push(`created:${id}`);
+        return state;
+      });
+      native.openToolset.mockClear();
+      try {
+        await restart(true);
+        expect(tabs()).toHaveLength(2);
+        expect(native.openToolset).not.toHaveBeenCalled();
+        expect(prompts).toEqual([]);
+        await act(async () => finishLayout(layout));
+        for (const id of toolsetIds) expect(native.openToolset).toHaveBeenCalledWith(id, expect.anything());
+        expect(prompts).toEqual([]);
+        expect(native.suspensionDepth).toBe(0);
+        await act(async () => finishArt());
+        expect(events).toEqual(["request:core.main", "created:core.main", "request:core.art", "created:core.art", "notice"]);
+        expect(prompts).toHaveLength(1);
+        expect(pendingPrompt?.prompt.title).toBe("Newer ChemDraft file");
+        expect(native.suspensionDepth).toBe(1);
+        for (const id of toolsetIds) expect(native.toolsetWindows.has(id)).toBe(true);
+
+        // A late catalog update must not treat temporarily hidden toolsets as native failures.
+        native.openToolset.mockClear();
+        const runtime = vi.mocked(createPluginRuntime).mock.results.at(-1)!.value as DesktopPluginRuntime;
+        await act(async () => runtime.registerPlugin({
+          id: "org.test.newer-restore", name: "Late startup plugin", version: "0.0.1", apiVersion: "^0.1.6",
+          entry: "dist/plugin.js", permissions: [], contributes: { commands: [] }
+        }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+        expect(native.openToolset).not.toHaveBeenCalled();
+        expect(container.querySelector(".native-shell")).not.toBeNull();
+        expect(container.querySelector('[role="status"]')?.textContent).not.toContain("unavailable");
+        await modalButton("OK");
+        expect(prompts).toHaveLength(2);
+        expect(pendingPrompt?.prompt.title).toBe("Newer ChemDraft file");
+        await modalButton("OK");
+        expect(prompts).toHaveLength(2);
+        expect(native.suspensionDepth).toBe(0);
+        for (const id of toolsetIds) expect(native.toolsetWindows.get(id)).toBe(true);
+        expect(container.querySelector(".native-shell")).not.toBeNull();
+      } finally { restore(); }
+    });
+
+    it.each(["newer-1.3", "newer-format-only", "plain-1.2"])(
+      "gives %s identical notices through File > Open and successive autosave restores", async name => {
+        native.suspendUtilities = true;
+        native.loadToolsetLayout.mockResolvedValue(layout);
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        const prompts: NativePromptOptions[] = [];
+        const restore = setNativePromptProvider(prompt => withNativeUtilitySuspension(async () => {
+          for (const id of toolsetIds) expect(native.toolsetWindows.has(id)).toBe(true);
+          prompts.push(prompt);
+          return "ok";
+        }));
+        try {
+          await restart();
+          native.picker.mockResolvedValueOnce(path(name));
+          native.readFile.mockResolvedValueOnce(new TextEncoder().encode(fixture(name)));
+          await command("document.open");
+          const expected = [...prompts];
+          expect(expected).toHaveLength(name === "plain-1.2" ? 0 : 1);
+          if (expected.length) expect(expected[0]).toMatchObject({ title: "Newer ChemDraft file", owner: "document",
+            message: "This file was made with a newer ChemDraft (1.3.0). Some features may not show. Update to keep them." });
+          for (let relaunch = 0; relaunch < 2; relaunch++) {
+            const saved = await flush();
+            if (name === "newer-format-only") {
+              // File > Save intentionally omits unused version headers; the session must retain them.
+              expect(openNativeDocument(saved.tabs![0]!.contents).document?.formatVersion).toBeUndefined();
+              expect(saved.tabs![0]!.nativeDocumentVersions).toEqual({ formatVersion: "1.3.0" });
+            }
+            prompts.length = 0;
+            await restart();
+            expect(prompts).toEqual(expected);
+            expect(container.querySelector(".native-shell")).not.toBeNull();
+            for (const id of toolsetIds) expect(native.toolsetWindows.get(id)).toBe(true);
+          }
+        } finally { restore(); }
+      });
+  });
+
   it("Open adds a tab for an edited Untitled, including after undo and after Save", async () => {
     await paste("Never replace this drawing");
     await command("edit.undo");
@@ -1046,7 +1280,8 @@ describe("documents in one window", () => {
     native.desktop = false;
     async function drop(name: string) {
       const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: { files: [{ name, text: async () => fileContents(name) }] } });
+      const bytes = new TextEncoder().encode(fileContents(name));
+      Object.defineProperty(event, "dataTransfer", { value: { files: [{ name, size: bytes.length, arrayBuffer: async () => bytes.buffer }] } });
       await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
     }
     await drop("First.chemdraft");
@@ -1056,6 +1291,154 @@ describe("documents in one window", () => {
     await drop("First.chemdraft");
     expect(tabs()).toHaveLength(2);
     expect(active()).toBe(0);
+  });
+
+  describe("imported page-size prompt queue", () => {
+    // Real external CDXML: the second atom extends past the declared Letter page.
+    const oversized = `<?xml version="1.0"?><CDXML><page id="p1" BoundingBox="0 0 612 792">
+      <fragment id="f1"><n id="a1" p="75 75"/><n id="a2" p="975 75"/>
+      <b id="b1" B="a1" E="a2" Order="1"/></fragment></page></CDXML>`;
+    async function osOpen(path: string, contents = oversized) {
+      await act(async () => native.events.get("chemdraft://open-document")!({
+        path, displayName: path.split("/").at(-1)!, contents
+      }));
+    }
+    // Match the binary-capable browser reader, including its pre-read size check.
+    function browserFile(name: string, contents: string) {
+      const bytes = new TextEncoder().encode(contents);
+      return { name, size: bytes.length, arrayBuffer: async () => bytes.buffer };
+    }
+    async function browserDrop(files: Pick<File, "name" | "size" | "arrayBuffer">[]) {
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: { files } });
+      await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
+    }
+    function expectPageFit(name: string) {
+      expect(pendingPrompt?.prompt.title).toBe("Imported Content Exceeds Page");
+      expect(pendingPrompt?.prompt.message).toMatch(new RegExp(`^${name.replaceAll(".", "\\.")} extends beyond`));
+    }
+    async function dismissPageFit(choice: "keep" | "resize") {
+      const label = pendingPrompt!.prompt.choices.find(candidate => candidate.id === choice)!.label;
+      await modalButton(label);
+    }
+
+    it("keeps a delayed batch read ahead of later files after cancelling a close", async () => {
+      let finishB!: (contents: Uint8Array) => void;
+      let finishC!: (contents: Uint8Array) => void;
+      const delayedB = new Promise<Uint8Array>(resolve => { finishB = resolve; });
+      const delayedC = new Promise<Uint8Array>(resolve => { finishC = resolve; });
+      native.readFile.mockResolvedValueOnce(new TextEncoder().encode(oversized))
+        .mockReturnValueOnce(delayedB)
+        .mockReturnValueOnce(delayedC);
+      await act(async () => native.events.get("tauri://drag-drop")!({
+        paths: ["/drawings/A.cdxml", "/drawings/B.cdxml", "/drawings/C.cdxml"]
+      }));
+      expectPageFit("A.cdxml");
+      await dismissPageFit("resize");
+      expect(native.readFile).toHaveBeenCalledWith("/drawings/B.cdxml");
+      await closeTab();
+      const closePrompt = pendingPrompt;
+      expect(closePrompt?.prompt.title).toContain("Save");
+      await act(async () => finishB(new TextEncoder().encode(oversized)));
+      expect(pendingPrompt).toBe(closePrompt);
+      expect(tabs()).toHaveLength(1);
+      await modalButton("Cancel");
+      // Complete C's delayed read after Cancel. If B was re-appended at the tail,
+      // C will prompt first; holding B's original slot keeps the prompt order intact.
+      await act(async () => finishC(new TextEncoder().encode(oversized)));
+      expectPageFit("B.cdxml");
+      await dismissPageFit("keep");
+      expectPageFit("C.cdxml");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      expect(tabs().map(tab => tab.textContent)).toEqual(["A.cdxml •", "B.cdxml", "C.cdxml"]);
+    });
+
+    it("prompts for consecutive same-basename paths and releases the queue when the second tab closes", async () => {
+      await osOpen("/first/drawing.cdxml");
+      expectPageFit("drawing.cdxml");
+      const firstPrompt = pendingPrompt;
+      await osOpen("/second/drawing.cdxml");
+      await osOpen("/third/after.chemdraft", fileContents("After closing the prompt"));
+      expect(pendingPrompt).toBe(firstPrompt);
+      expect(tabs()).toHaveLength(1);
+      await dismissPageFit("keep");
+      expectPageFit("drawing.cdxml");
+      expect(pendingPrompt).not.toBe(firstPrompt);
+      expect(bridge().snapshot().file.path).toBe("/second/drawing.cdxml");
+      const closedPrompt = pendingPrompt!;
+      pendingPrompt = undefined;
+      await closeTab();
+      expect(bridge().snapshot().file.path).toBe("/third/after.chemdraft");
+      expect(tabs()).toHaveLength(2);
+      // A late native answer for the closed tab cannot resize the newly active drawing.
+      const after = bridge().snapshot().document;
+      await act(async () => closedPrompt.resolve("resize"));
+      expect(bridge().snapshot().document).toEqual(after);
+      expect(pendingPrompt).toBeUndefined();
+    });
+
+    it.each(["keep", "resize"] as const)("does not re-ask after %s when returning to the previous tab", async choice => {
+      await osOpen("/drawings/A.cdxml");
+      expectPageFit("A.cdxml");
+      await osOpen("/drawings/B.cdxml");
+      await dismissPageFit(choice);
+      expectPageFit("B.cdxml");
+      await dismissPageFit("keep");
+      expect(pendingPrompt).toBeUndefined();
+      await activate(0);
+      expect(bridge().snapshot().file.path).toBe("/drawings/A.cdxml");
+      expect(pendingPrompt).toBeUndefined();
+      expect(bridge().snapshot().document.pages[0]!.layout.presetId).toBe(choice === "resize" ? "custom" : "letter");
+    });
+
+    it.each(["native drop", "browser drop", "startup restore", "close cancellation"])(
+      "reserves A and B before C arrives during A's prompt (%s)", async source => {
+        if (source === "native drop") {
+          native.readFile.mockRejectedValueOnce(new Error("File read refused"))
+            .mockResolvedValueOnce(new TextEncoder().encode("invalid document"))
+            .mockResolvedValueOnce(new TextEncoder().encode(oversized))
+            .mockResolvedValueOnce(new TextEncoder().encode(oversized));
+          await act(async () => native.events.get("tauri://drag-drop")!({
+            paths: ["/drawings/unreadable.cdxml", "/drawings/invalid.cdxml", "/drawings/A.cdxml", "/drawings/B.cdxml"]
+          }));
+        } else if (source === "browser drop") {
+          native.desktop = false;
+          await remount();
+          await browserDrop([
+            { ...browserFile("unreadable.cdxml", oversized), arrayBuffer: async () => { throw new Error("File read refused"); } },
+            browserFile("invalid.cdxml", "invalid document"),
+            ...["A.cdxml", "B.cdxml"].map(name => browserFile(name, oversized))
+          ]);
+        } else {
+          let finishRestore: ((value: unknown) => void) | undefined;
+          if (source === "startup restore") {
+            native.load.mockImplementationOnce(() => new Promise(resolve => { finishRestore = resolve; }));
+            await remount();
+          } else {
+            await paste("Drawing retained by Cancel");
+            await closeTab();
+          }
+          await osOpen("/drawings/A.cdxml");
+          await osOpen("/drawings/B.cdxml");
+          if (finishRestore) await act(async () => finishRestore!(undefined));
+          else await modalButton("Cancel");
+        }
+        expectPageFit("A.cdxml");
+        // A later request must follow every member of the earlier batch.
+        if (source === "browser drop") await browserDrop([browserFile("C.cdxml", oversized)]);
+        else await osOpen("/drawings/C.cdxml");
+        expectPageFit("A.cdxml");
+        await dismissPageFit("keep");
+        expectPageFit("B.cdxml");
+        await dismissPageFit("keep");
+        expectPageFit("C.cdxml");
+        await dismissPageFit("keep");
+        expect(pendingPrompt).toBeUndefined();
+        const titles = tabs().map(tab => tab.textContent);
+        expect(titles.slice(-3)).toEqual(["A.cdxml", "B.cdxml", "C.cdxml"]);
+      }
+    );
   });
 
   it("recognizes Windows file identity across separator and case differences", () => {
@@ -1332,7 +1715,7 @@ describe("documents in one window", () => {
       native.dialogListener!(delivery); native.dialogListener!(delivery);
     });
     await vi.waitFor(() => expect(native.writeFile.mock.calls.filter(([path]) => path.startsWith("/tmp/"))).toHaveLength(1));
-    expect(native.writeFile).toHaveBeenCalledWith("/tmp/granted-without-extension", exportPhase4Svg(origin, options.svg).contents);
+    expect(native.writeFile).toHaveBeenCalledWith("/tmp/granted-without-extension", (await exportPhase4Svg(origin, options.svg)).contents);
     expect(active()).toBe(1);
     expect(native.dialogPublish).toHaveBeenCalledWith("opaque", expect.objectContaining({ data: expect.objectContaining({ status: "exported" }) }));
   });
@@ -1769,7 +2152,7 @@ describe("documents in one window", () => {
       if (kind.includes("identity")) {
         await vi.waitFor(() => {
           expect(container.querySelector('[role="status"]')?.textContent)
-            .toBe("Paste cancelled while quitting");
+            .toBe("Paste canceled while quitting");
         }, { timeout: 15_000 });
       }
       expect(bridge().snapshot().document).toEqual(saved);

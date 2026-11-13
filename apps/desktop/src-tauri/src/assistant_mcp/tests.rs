@@ -491,8 +491,8 @@ async fn deadlines_busy_fifth_call_cancellation_and_close_mid_call() {
     let request = f.receive().await;
     let reply = call.await.unwrap();
     assert_eq!(
-        reply.json()["error"],
-        json!({"code":-32000,"message":"ChemDraft did not answer in time"})
+        reply.json()["result"],
+        json!({"isError":true,"content":[{"type":"text","text":"ChemDraft tool deadline exceeded"}]})
     );
     assert!(f
         .manager
@@ -522,7 +522,7 @@ async fn deadlines_busy_fifth_call_cancellation_and_close_mid_call() {
     assert_eq!(cancelled.request_id, "1");
     assert_eq!(
         calls.remove(0).await.unwrap().json()["error"]["message"],
-        "ChemDraft request cancelled"
+        "ChemDraft request canceled"
     );
     f.manager.close(&f.session_id);
     for call in calls {
@@ -535,6 +535,20 @@ async fn deadlines_busy_fifth_call_cancellation_and_close_mid_call() {
 }
 
 #[test]
+fn tool_timeout_is_a_model_visible_result() {
+    assert_eq!(
+        protocol::deadline_response(json!("extra-call"), "tools/call"),
+        json!({"jsonrpc":"2.0","id":"extra-call","result":{
+            "isError":true,"content":[{"type":"text","text":"ChemDraft tool deadline exceeded"}]
+        }})
+    );
+    assert_eq!(
+        protocol::deadline_response(json!("list"), "tools/list"),
+        protocol::error(json!("list"), -32000, "ChemDraft did not answer in time")
+    );
+}
+
+#[test]
 fn tool_deadlines_preserve_reads_and_allow_bounded_confirmation() {
     for (method, name, seconds) in [
         ("tools/list", "", 10),
@@ -542,6 +556,7 @@ fn tool_deadlines_preserve_reads_and_allow_bounded_confirmation() {
         ("tools/call", "name_to_structure", 45),
         ("tools/call", "structure_to_name", 45),
         ("tools/call", "get_document", 120),
+        ("tools/call", "plugin_lookup", 120),
         ("tools/call", "get_selection", 120),
         ("tools/call", "get_structure", 120),
         ("tools/call", "validate_smiles", 120),
@@ -586,10 +601,7 @@ async fn write_call_survives_120_seconds_waiting_for_the_bridge() {
         !write.is_finished(),
         "write timed out before the human decision cap"
     );
-    assert_eq!(
-        read.await.unwrap().json()["error"]["message"],
-        "ChemDraft did not answer in time"
-    );
+    assert_eq!(read.await.unwrap().json()["result"]["isError"], true);
     let cancelled = f.receive().await;
     assert_eq!(cancelled.method, "cancel");
     assert_eq!(cancelled.request_id, read_request.request_id);

@@ -50,6 +50,33 @@ pub fn install(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn reply_to_termination<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    flow: &'static super::QuitFlow,
+) {
+    if let Err(error) = super::dispatch_appkit_reply_with(
+        flow,
+        MainThreadMarker::new().is_some(),
+        |reply| app.run_on_main_thread(move || reply()),
+        |reply| {
+            let block = block2::RcBlock::new(move || reply());
+            // SAFETY: The block captures only a Send + Sync task. Foundation copies it
+            // and executes it on the main queue, independently of Tauri's event proxy.
+            unsafe {
+                objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block);
+            }
+        },
+        || {
+            let mtm =
+                MainThreadMarker::new().expect("AppKit quit reply must run on the main thread");
+            objc2_app_kit::NSApplication::sharedApplication(mtm)
+                .replyToApplicationShouldTerminate(true);
+        },
+    ) {
+        eprintln!("Could not dispatch AppKit termination reply via Tauri; queued native fallback: {error}");
+    }
+}
+
 unsafe extern "C" fn should_terminate(
     _: &AnyObject,
     _: Sel,
@@ -72,15 +99,31 @@ unsafe extern "C" fn should_terminate(
             }
         }
     };
-    if super::should_prompt_appkit_quit(
+    let reply_pending = super::QUIT.appkit_reply.lock().unwrap().awaiting_delivery();
+    match super::appkit_quit_decision(
+        cfg!(target_os = "macos"),
         super::ASK_TO_SAVE_ON_QUIT.load(std::sync::atomic::Ordering::SeqCst),
         super::APP_QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+        reply_pending,
         reason,
     ) {
-        if let Some(app) = APP.get() {
-            super::request_quit(app);
-            return NSApplicationTerminateReply::TerminateCancel; // Return to the event loop while the user chooses.
+        super::AppkitQuitDecision::Prompt => {
+            if let Some(app) = APP.get() {
+                super::request_quit(app);
+                return NSApplicationTerminateReply::TerminateCancel;
+            }
         }
+        super::AppkitQuitDecision::DeferReply => {
+            if let Some(app) = APP.get() {
+                if super::request_appkit_quit_with(&super::QUIT, app) {
+                    return NSApplicationTerminateReply::TerminateLater;
+                }
+            }
+        }
+        super::AppkitQuitDecision::WaitForReply => {
+            return NSApplicationTerminateReply::TerminateLater;
+        }
+        super::AppkitQuitDecision::TerminateNow => {}
     }
-    NSApplicationTerminateReply::TerminateNow // Preference off, decided exit, or system termination.
+    NSApplicationTerminateReply::TerminateNow
 }

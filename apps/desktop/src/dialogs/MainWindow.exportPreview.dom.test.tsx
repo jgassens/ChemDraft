@@ -2,7 +2,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MainWindow } from "../MainWindow";
+import { MainWindow, createDefaultExportDialogState } from "../MainWindow";
+import { desktopExportFormatDescriptors } from "../desktopExportFormats";
+import { updateExportDialogFormat } from "./ExportForm";
 import { applyNativeChainTool, createPhase4Document, selectDocumentObjects } from "../documentWorkflow";
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
@@ -14,9 +16,11 @@ import type { DialogDelivery } from "./dialogTransport";
 import * as atomLabelDraft from "../atomLabelDraft";
 import * as workflow from "../documentWorkflow";
 import { perfProbe, startPerfProbe } from "../perf/runtime";
+import { lastExportDirectory } from "../exportDirectory";
 
 const native = vi.hoisted(() => ({
   snapshot: undefined as DialogMessage | undefined, receive: undefined as ((message: DialogDelivery) => void) | undefined,
+  save: vi.fn(), writeTextFile: vi.fn(),
   publish: vi.fn(), invoke: vi.fn(), preferences: vi.fn().mockResolvedValue(undefined), events: new Map<string, (event: { payload: unknown }) => void>()
 }));
 vi.mock("./dialogTransport", () => ({ nativeDialogTransport: {
@@ -24,6 +28,10 @@ vi.mock("./dialogTransport", () => ({ nativeDialogTransport: {
   open: async (snapshot: DialogMessage) => { native.snapshot = snapshot; return { hostId: "host", windowLabel: "dialog-main-export-1" }; },
   publish: native.publish, close: async () => {}
 } }));
+vi.mock("../nativeFileDialog", () => ({ save: native.save, prewarmNativeFileDialogs: vi.fn() }));
+vi.mock("@tauri-apps/plugin-fs", async original => ({
+  ...await original<typeof import("@tauri-apps/plugin-fs")>(), writeTextFile: native.writeTextFile
+}));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("../window-manager", async original => ({
   ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true,
@@ -48,6 +56,8 @@ async function send(type: "action" | "ready", data: unknown) {
   await act(async () => native.receive!({ senderWindowId: "dialog-main-export-1", windowLabel: "dialog-main-export-1", message: { ...native.snapshot!, requestId: crypto.randomUUID(), type, data } }));
 }
 beforeEach(async () => {
+  lastExportDirectory.current = undefined;
+  native.save.mockReset(); native.writeTextFile.mockReset();
   vi.clearAllMocks(); native.publish.mockResolvedValue(undefined); native.invoke.mockResolvedValue(null); native.events.clear();
   vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -64,7 +74,7 @@ beforeEach(async () => {
     initialPaletteMode: "hidden", initialCrosshairsVisible: false, initialRulersVisible: false, nativePalette: true
   })));
 });
-afterEach(() => { perfProbe?.stop(); act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "/"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { lastExportDirectory.current = undefined; perfProbe?.stop(); act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "/"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it.each([
   { commandId: "view.togglePreferences", ipc: "toggle_preferences_window", label: "preferences" },
@@ -184,4 +194,62 @@ it("renders preview from the same pending atom-label flush as export without clo
   const source = svg.mock.calls.at(-1)![0];
   expect(source.pages[0].objects.find(object => object.type === "molecule")).toEqual(bridge().snapshot().document.pages[0].objects.find(object => object.type === "molecule"));
   expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe("NMe");
+});
+
+it.each(["macos", "windows"] as const)("passes a single extension to the native save box for every format on %s", async platform => {
+  const folder = platform === "macos" ? "/Users/me/Figures/" : "C:\\Figures\\";
+  native.save.mockResolvedValue(null);
+  await command("export.open"); await send("ready", {});
+  const snapshot = native.snapshot!;
+  if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+  for (const descriptor of desktopExportFormatDescriptors.filter(descriptor => descriptor.status === "implemented")) {
+    const expected = `colours.${descriptor.extensions[0]}`;
+    for (const savedPath of [undefined, `${folder}colours.CDXML`]) {
+      const initial = createDefaultExportDialogState(createPhase4Document("colours.cdxml"), folder, savedPath);
+      expect(initial.filename).toBe("colours.pdf");
+      expect(updateExportDialogFormat(initial, descriptor.id).filename).toBe(expected);
+    }
+    // Exercise the real destination handler, including an old source suffix in a picker hint.
+    for (const destinationPath of [undefined, `${folder}colours.cdxml`]) {
+      lastExportDirectory.current = folder;
+      await send("action", { action: "chooseDestination", options: { ...snapshot.data.options, format: descriptor.id, filename: "colours.cdxml", destinationPath } });
+      expect(native.save).toHaveBeenLastCalledWith({
+        title: `Export ${descriptor.menuLabel}`,
+        defaultPath: `${destinationPath ? folder : `${folder.slice(0, -1)}/`}colours.${descriptor.extensions[0]}`,
+        filters: [{ name: descriptor.menuLabel, extensions: [...descriptor.extensions] }]
+      }, expect.any(String));
+    }
+  }
+  // Export without a location also proposes a filename before opening the same native box.
+  await send("action", { action: "export", options: { ...snapshot.data.options, format: "svg", filename: "colours.cdxml" } });
+  expect(native.save).toHaveBeenLastCalledWith(expect.objectContaining({
+    defaultPath: `${folder.slice(0, -1)}/colours.svg`
+  }), expect.any(String));
+});
+
+it.each(["failed", "cancelled", "saved"] as const)("updates the shared export folder only after a document write succeeds (%s)", async outcome => {
+  lastExportDirectory.current = "/previous/exports";
+  native.save.mockResolvedValue("/chosen/drawing.svg");
+  if (outcome === "failed") native.writeTextFile.mockRejectedValue(new Error("disk full"));
+  else native.writeTextFile.mockImplementation(async () => {
+    expect(lastExportDirectory.current).toBe("/previous/exports");
+  });
+  await command("export.open"); await send("ready", {});
+  const snapshot = native.snapshot!;
+  if (snapshot.type !== "snapshot" || snapshot.dialogKind !== "export") throw new Error("Missing Export snapshot");
+  const options = { ...snapshot.data.options, format: "svg", filename: "drawing.svg" };
+  await send("action", { action: "chooseDestination", options });
+  await vi.waitFor(() => expect(native.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: expect.objectContaining({ status: "picked" }) })));
+  expect(lastExportDirectory.current).toBe("/previous/exports");
+  native.publish.mockClear();
+  if (outcome === "cancelled") {
+    await send("action", { action: "cancel" });
+    expect(native.writeTextFile.mock.calls.some(([path]) => path === "/chosen/drawing.svg")).toBe(false);
+    expect(lastExportDirectory.current).toBe("/previous/exports");
+    return;
+  }
+  await send("action", { action: "export", options: { ...options, destinationPath: "/chosen/drawing.svg" } });
+  await vi.waitFor(() => expect(native.publish).toHaveBeenCalledWith("host", expect.objectContaining({ data: expect.objectContaining({ status: outcome === "failed" ? "error" : "exported" }) })));
+  expect(native.writeTextFile).toHaveBeenCalledWith("/chosen/drawing.svg", expect.any(String));
+  expect(lastExportDirectory.current).toBe(outcome === "saved" ? "/chosen" : "/previous/exports");
 });

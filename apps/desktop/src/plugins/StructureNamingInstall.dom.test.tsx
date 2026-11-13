@@ -88,8 +88,8 @@ it("Cancel installation calls the native cancellation and displays neutral cance
   await act(async () => h.button("Cancel installation").click());
   expect(h.engine.cancelInstall).toHaveBeenCalledOnce();
   expect(await result).toEqual({ status: "cancelled" });
-  expect(container.textContent).toContain("Installation was cancelled.");
-  expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was cancelled.");
+  expect(container.textContent).toContain("Installation was canceled.");
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Installation was canceled.");
 });
 it.each([
   ["Couldn't reach github.com: the connection timed out.", "Couldn't reach github.com: the connection timed out."],

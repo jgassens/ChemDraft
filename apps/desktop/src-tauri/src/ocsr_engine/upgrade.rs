@@ -38,6 +38,7 @@ use super::platform::EnginePlatform;
 use super::receipt::{
     write_receipt, InPlaceUpgrade, InstallReceipt, LegacyReceiptV1, LEGACY_RECEIPT_VERSION,
 };
+use super::requirements::RequirementsProfile;
 use super::{InstallError, InstallErrorCode};
 
 /// What the user is told when an older engine does not match this build.
@@ -147,10 +148,11 @@ pub fn verify_legacy_engine(
         )));
     }
     let lock_sha256 = pins::text_sha256(requirements);
-    if lock_sha256 != pins::REQUIREMENTS_LOCK_SHA256 {
+    let profile = RequirementsProfile::for_target(platform.target());
+    if lock_sha256 != profile.sha256 {
         return Err(mismatch(format!(
             "the bundled requirements lock is {lock_sha256}, not the reviewed {}",
-            pins::REQUIREMENTS_LOCK_SHA256
+            profile.sha256
         )));
     }
     let lock = parse_lock(&String::from_utf8_lossy(requirements)).map_err(mismatch)?;
@@ -1001,6 +1003,37 @@ pub(crate) mod tests {
         assert!(parse_lock("--index-url https://example.invalid\ntorch==2.14.0\n").is_err());
         assert_eq!(normalize_name("Typing_Extensions"), "typing-extensions");
         assert_eq!(normalize_name("ruamel.yaml"), "ruamel-yaml");
+    }
+
+    #[test]
+    fn legacy_verification_and_upgrade_reject_another_profiles_lock_before_probing() {
+        let root = temp_root("intel-wrong-lock");
+        let engine = fake_legacy_engine(&root);
+        let platform = MacPlatform::new(MacArchitecture::X86_64);
+        let mut legacy = owner_legacy_receipt();
+        // Let the legacy platform pins match, so only the profile's lock check rejects it.
+        legacy.uv_asset = platform.uv_asset().to_string();
+        legacy.uv_sha256 = platform.uv_sha256().to_string();
+        let before = fs::read(engine.join(RECEIPT_FILE)).expect("receipt");
+        let probe = FakeProbe::matching();
+        let result = upgrade_legacy_receipt(
+            &engine,
+            &platform,
+            &legacy,
+            BUNDLED_REQUIREMENTS.as_bytes(),
+            &fake_model_pin(),
+            &probe,
+            &AtomicBool::new(false),
+        );
+        assert!(
+            matches!(result, Err(UpgradeError::Mismatch(ref message)) if message.contains("requirements lock"))
+        );
+        assert_eq!(probe.call_count(), 0);
+        assert_eq!(
+            fs::read(engine.join(RECEIPT_FILE)).expect("receipt"),
+            before
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -87,6 +87,19 @@ async function run(argv: readonly string[]): Promise<{
 }
 
 describe("chemdraft analyze", () => {
+  it("returns unsupported statuses and no formula, mass or SMILES for an unknown-order bond", async () => {
+    const { code, results } = await run(["--smiles", "C~C", "--methods", SUMMARY_METHODS]);
+    expect(code).toBe(0);
+    const result = results[0]!;
+    expect(result.ok).toBe(true);
+    expect(result.run?.status).toBe("unsupported");
+    expect(result.run?.warnings).toContainEqual(expect.objectContaining({ code: "structure.unknown_bond_order" }));
+    for (const field of ["formula", "averageMass", "monoisotopicMass", "canonicalSmiles", "inchiKey", "logP"] as const) {
+      expect(result.summary?.[field]).toMatchObject({ value: null, status: "unsupported", reason: expect.stringContaining("unknown or query bond order") });
+    }
+    expect(result.summary?.pka).toMatchObject({ value: null, status: "unsupported" });
+  });
+
   it("returns aspirin's full run and compact source-preserving summary", async () => {
     const { code, results } = await run([
       "--smiles", ASPIRIN,

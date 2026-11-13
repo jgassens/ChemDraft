@@ -42,10 +42,16 @@ pub(crate) fn open_problem_report_email(url: String) -> Result<(), String> {
     if !is_problem_report_mailto(&url) {
         return Err("Only a ChemDraft problem report can be opened this way.".into());
     }
+    open_external_address(&url)
+        .map_err(|error| format!("Could not open your email program to send the report: {error}"))
+}
+
+/// OS protocol opener; callers validate the address before handing it to this helper.
+pub(crate) fn open_external_address(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("/usr/bin/open");
-        command.arg(&url);
+        command.arg(url);
         command
     };
     // `start` and `explorer` both mangle `&` in a URL; the URL protocol handler takes it whole.
@@ -55,19 +61,17 @@ pub(crate) fn open_problem_report_email(url: String) -> Result<(), String> {
         let mut command = std::process::Command::new("rundll32.exe");
         command
             .arg("url.dll,FileProtocolHandler")
-            .arg(&url)
+            .arg(url)
             .without_console_window();
         command
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut command = {
         let mut command = std::process::Command::new("xdg-open");
-        command.arg(&url);
+        command.arg(url);
         command
     };
-    let mut child = command.spawn().map_err(|error| {
-        format!("Could not open your email program to send the report: {error}")
-    })?;
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });

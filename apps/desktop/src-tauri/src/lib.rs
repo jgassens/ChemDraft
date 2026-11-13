@@ -30,6 +30,7 @@ mod plugin_panel_acl_tests;
 mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
+mod structure_search;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
@@ -68,6 +69,7 @@ use tauri::{
     webview::PageLoadEvent,
     Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 use webview_context_menus::disable_default_context_menus;
 
 #[cfg(target_os = "macos")]
@@ -109,7 +111,6 @@ const SPIN3D_DEBUGGER_TOGGLE_COMMAND_ID: &str = "view.toggle3dDebugger";
 const PREFERENCES_WINDOW_LABEL: &str = "preferences";
 const PREFERENCES_WINDOW_ROUTE: &str = "/?window=preferences";
 const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";
-#[cfg(any(target_os = "macos", windows))]
 const CHECK_FOR_UPDATES_COMMAND_ID: &str = "app.checkForUpdates";
 /// The two Close Window / Close Tab items (File and Window menus). Native window closes stay
 /// native; with multiple document tabs the main window routes document.closeTab to the webview.
@@ -172,15 +173,93 @@ enum QuitPromptPhase {
     Flushing,
 }
 
-// Missing/ordinary quit reason means Dock or AppleScript Quit. Any other reason describes
-// system termination: never block logout/shutdown/restart with a save prompt.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn should_prompt_appkit_quit(enabled: bool, quitting: bool, reason: u32) -> bool {
-    enabled && !quitting && (reason == 0 || reason == u32::from_be_bytes(*b"quit"))
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AppkitQuitDecision {
+    TerminateNow,
+    Prompt,
+    DeferReply,
+    WaitForReply,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn appkit_quit_decision(
+    is_macos: bool,
+    enabled: bool,
+    quitting: bool,
+    reply_pending: bool,
+    reason: u32,
+) -> AppkitQuitDecision {
+    if !is_macos {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if reply_pending {
+        return AppkitQuitDecision::WaitForReply;
+    }
+    if quitting {
+        return AppkitQuitDecision::TerminateNow;
+    }
+    if enabled {
+        // System termination must never wait for a save prompt.
+        return if reason == 0 || reason == u32::from_be_bytes(*b"quit") {
+            AppkitQuitDecision::Prompt
+        } else {
+            AppkitQuitDecision::TerminateNow
+        };
+    }
+    AppkitQuitDecision::DeferReply
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppkitReplyState {
+    Idle,
+    Pending,
+    Claimed,
+    Delivered,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl AppkitReplyState {
+    fn awaiting_delivery(self) -> bool {
+        matches!(self, Self::Pending | Self::Claimed)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+type AppkitReplyTask = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// A dispatch failure leaves the reply claimed until the native fallback actually runs it.
+/// Both dispatchers share one consumable reply, even if a failed dispatcher retained its task.
+#[cfg(any(target_os = "macos", test))]
+fn dispatch_appkit_reply_with<E>(
+    flow: &'static QuitFlow,
+    on_main_thread: bool,
+    dispatch: impl FnOnce(AppkitReplyTask) -> Result<(), E>,
+    fallback: impl FnOnce(AppkitReplyTask),
+    reply: impl FnOnce() + Send + 'static,
+) -> Result<(), E> {
+    let reply = Mutex::new(Some(reply));
+    let deliver: AppkitReplyTask = std::sync::Arc::new(move || {
+        let reply = reply.lock().unwrap().take();
+        if let Some(reply) = reply {
+            reply();
+            *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Delivered;
+        }
+    });
+    if on_main_thread {
+        deliver();
+        return Ok(());
+    }
+    if let Err(error) = dispatch(deliver.clone()) {
+        fallback(deliver);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// A quit's state and timings. A visible save prompt can pause the grace and cancel a request;
-/// once `quitting` is set, the exit watchdog remains unchanged.
+/// AppKit termination uses its reply handshake, while menu quits retain the exit watchdog.
 struct QuitFlow {
     /// Set while a quit is requested; cancellation permits another request.
     requested: AtomicBool,
@@ -190,6 +269,9 @@ struct QuitFlow {
     watchdog_armed: AtomicBool,
     /// Generation and visible-prompt flag, serialized with timeout/cancel decisions.
     prompt: Mutex<(u64, QuitPromptPhase)>,
+    /// Claiming a reply and delivering it on the main thread are separate transitions.
+    #[cfg(any(target_os = "macos", test))]
+    appkit_reply: Mutex<AppkitReplyState>,
     flush_grace: Duration,
     exit_watchdog: Duration,
 }
@@ -203,6 +285,8 @@ impl QuitFlow {
         Self {
             requested: AtomicBool::new(false),
             prompt: Mutex::new((0, QuitPromptPhase::Idle)),
+            #[cfg(any(target_os = "macos", test))]
+            appkit_reply: Mutex::new(AppkitReplyState::Idle),
             quitting,
             watchdog_armed: AtomicBool::new(false),
             flush_grace,
@@ -256,6 +340,11 @@ trait QuitHost: Clone + Send + 'static {
     }
     /// Asks the event loop, on the main thread, to end the app.
     fn exit(&self);
+    /// Completes the pending AppKit termination handshake on the main thread.
+    #[cfg(any(target_os = "macos", test))]
+    fn reply_to_appkit_termination(&self, _flow: &'static QuitFlow) {
+        unreachable!("AppKit termination is only available on macOS");
+    }
     /// Ends the process now, from the watchdog thread.
     fn force_exit(&self, waited: Duration, reason: QuitReason);
 }
@@ -279,6 +368,11 @@ impl<R: Runtime> QuitHost for tauri::AppHandle<R> {
 
     fn exit(&self) {
         tauri::AppHandle::exit(self, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reply_to_appkit_termination(&self, flow: &'static QuitFlow) {
+        macos_quit::reply_to_termination(self, flow);
     }
 
     /// Windows: `exit` only asks the event loop to stop, and the event loop runs on the main thread,
@@ -367,8 +461,30 @@ fn request_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, force_repea
     let host = host.clone();
     thread::spawn(move || {
         thread::sleep(flow.flush_grace);
-        quit_now_with(flow, &host, QuitReason::GraceExpired);
+        expire_quit_flush_with(flow, &host);
     });
+}
+
+fn expire_quit_flush_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) {
+    quit_now_with(flow, host, QuitReason::GraceExpired);
+}
+
+/// AppKit keeps the original Dock/AppleScript/system termination request open while we flush.
+/// If a menu quit already requested a flush, reuse it and its existing deadline.
+/// False means another quit was already decided, so the delegate must return TerminateNow.
+#[cfg(any(target_os = "macos", test))]
+fn request_appkit_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> bool {
+    let mut reply = flow.appkit_reply.lock().unwrap();
+    if *reply != AppkitReplyState::Idle {
+        return true;
+    }
+    if flow.quitting.load(Ordering::SeqCst) {
+        return false;
+    }
+    *reply = AppkitReplyState::Pending;
+    drop(reply);
+    request_quit_with(flow, host, false);
+    true
 }
 
 fn request_prompted_quit_with<H: QuitHost>(flow: &'static QuitFlow, host: &H) -> Option<u64> {
@@ -428,11 +544,43 @@ fn resume_prompted_quit_with<H: QuitHost>(
     true
 }
 
-/// The quit is decided: the session is written, or its grace has run out. The exit watchdog is
-/// armed here and nowhere else, so it can never end a process whose session has not been flushed
-/// or given its grace. Only the first decision arms it, so its `reason` is the path that decided.
+/// The session is written, or its grace has run out. Reply to a deferred AppKit termination;
+/// otherwise arm the exit watchdog here and nowhere else, then request event-loop exit.
 fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitReason) {
+    #[cfg(any(target_os = "macos", test))]
+    {
+        let mut reply = flow.appkit_reply.lock().unwrap();
+        // Confirmation and deadline race for this transition. Late confirmations/timeouts
+        // must neither reply again nor fall through to AppHandle::exit.
+        match *reply {
+            AppkitReplyState::Claimed | AppkitReplyState::Delivered => return,
+            AppkitReplyState::Pending => {
+                // A menu repeat must not complete AppKit's handshake before the flush/deadline.
+                if reason == QuitReason::RepeatedRequest {
+                    return;
+                }
+                *reply = AppkitReplyState::Claimed;
+                // Let Tao's applicationWillTerminate -> RunEvent::Exit do normal cleanup.
+                // Any ExitRequested in between must also pass without requesting a new flush.
+                flow.quitting.store(true, Ordering::SeqCst);
+                drop(reply);
+                if reason == QuitReason::NoDocument {
+                    // This path can run inside applicationShouldTerminate. Dispatch from a
+                    // worker so its TerminateLater return precedes the main-thread YES.
+                    let host = host.clone();
+                    thread::spawn(move || host.reply_to_appkit_termination(flow));
+                } else {
+                    host.reply_to_appkit_termination(flow);
+                }
+                return;
+            }
+            AppkitReplyState::Idle => {
+                flow.quitting.store(true, Ordering::SeqCst);
+            }
+        }
+    }
     // Raised first so the palette teardown that follows isn't recorded as user closes.
+    #[cfg(not(any(target_os = "macos", test)))]
     flow.quitting.store(true, Ordering::SeqCst);
     if !flow.watchdog_armed.swap(true, Ordering::SeqCst) {
         let host = host.clone();
@@ -448,8 +596,7 @@ fn quit_now_with<H: QuitHost>(flow: &'static QuitFlow, host: &H, reason: QuitRea
 /// The document window's answer to `QUIT_FLUSH_REQUEST_EVENT`: its session is written, quit now.
 /// `async`, so it runs on a worker: a sync command runs on the main thread, and when a window build
 /// held that thread the answer waited too, so the quit (and the exit watchdog) started only when the
-/// 3 s grace ran out. Deciding here touches atomics, starts the watchdog and posts the exit request,
-/// none of which needs the main thread.
+/// 3 s grace ran out. Deciding here posts the exit request or AppKit reply to the main thread.
 #[tauri::command]
 async fn quit_after_flush(app: tauri::AppHandle) {
     quit_now_with(&QUIT, &app, QuitReason::FlushConfirmed);
@@ -585,6 +732,7 @@ async fn confirm_prompted_quit(
 
 const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
+const TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME: &str = "toolbar-layout-state.v2.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
     "table.insertDialog",
@@ -642,6 +790,8 @@ struct PluginMenuItemInput {
     id: String,
     #[serde(default)]
     core_routed: bool,
+    #[serde(default)]
+    separator_before: bool,
     label: String,
     #[serde(default = "default_plugin_menu_location")]
     location: String,
@@ -731,6 +881,8 @@ struct NativeOpenDocumentPayload {
     path: String,
     display_name: String,
     contents: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -1024,18 +1176,8 @@ pub fn run() {
             // command dispatcher, which owns visibility and pushes checkmarks back via
             // `set_menu_checked`. Rust no longer opens palettes or special-cases toolsets.
             let command_id = event.id().as_ref();
-            #[cfg(target_os = "macos")]
             if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
                 check_for_updates(app);
-                return;
-            }
-            // Windows runs the check in the document webview: it owns the prompt, the download
-            // progress, and the session flush that must precede the installer (appUpdates.ts).
-            #[cfg(windows)]
-            if command_id == CHECK_FOR_UPDATES_COMMAND_ID {
-                if let Err(error) = emit_command_to_main(app, command_id) {
-                    eprintln!("Could not route the update check: {error}");
-                }
                 return;
             }
             if command_id == APP_QUIT_COMMAND_ID {
@@ -1355,6 +1497,8 @@ pub fn run() {
             dialog_windows::dialog_publish,
             dialog_windows::dialog_close,
             problem_reports::open_problem_report_email,
+            structure_search::open_structure_search,
+            structure_search::set_structure_search_enabled,
             problem_reports::take_pending_crash_report,
             open_toolset_window,
             close_toolset_window,
@@ -1405,6 +1549,7 @@ pub fn run() {
             write_clipboard_image,
             toggle_spin3d_debugger_window,
             toggle_preferences_window,
+            dialog_windows::preferences_ready,
             window_logical_position,
             agent_bridge_status,
             palette_focus_diagnostic,
@@ -1466,9 +1611,7 @@ pub fn run() {
                 }
             }
             RunEvent::Exit => {
-                // macos_quit's applicationShouldTerminate: intercepts ordinary AppKit quit
-                // only when the preference is enabled. System termination and preference-off
-                // AppKit quit still reach this final, non-blocking cleanup as before.
+                // AppKit quit decisions are handled before this final cleanup.
                 APP_QUITTING.store(true, Ordering::SeqCst);
                 panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
@@ -1498,17 +1641,83 @@ pub fn run() {
         });
 }
 
-#[cfg(target_os = "macos")]
-fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let Some(updater) = app.sparkle_updater() else {
-        // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately does
-        // not start there. Packaged builds always have an updater unless their Info.plist is broken.
-        eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
-        return;
-    };
+// Must match appUpdateChannelNotice in apps/desktop/src/appUpdates.ts.
+const DEVELOPMENT_UPDATES_MESSAGE: &str =
+    "Updates are off in development builds. Install the released ChemDraft to get updates.";
 
-    if let Err(error) = updater.check_for_updates() {
-        eprintln!("Could not check for a ChemDraft update: {error}");
+fn update_channel_available(identifier: &str, feed_url: Option<&str>) -> bool {
+    identifier == "org.chemdraft.desktop" && feed_url.is_some_and(|url| !url.trim().is_empty())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCheckRoute {
+    DevelopmentNotice,
+    RunUpdater,
+}
+
+fn update_check_route(identifier: &str, feed_url: Option<&str>) -> UpdateCheckRoute {
+    if update_channel_available(identifier, feed_url) {
+        UpdateCheckRoute::RunUpdater
+    } else {
+        UpdateCheckRoute::DevelopmentNotice
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn update_feed_url<R: Runtime>(_app: &tauri::AppHandle<R>) -> Option<String> {
+    objc2_foundation::NSBundle::mainBundle()
+        .objectForInfoDictionaryKey(&NSString::from_str("SUFeedURL"))?
+        .downcast_ref::<NSString>()
+        .map(|url| url.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn update_feed_url<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")?
+        .get("endpoints")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|url| !url.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn check_for_updates<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let feed_url = update_feed_url(app);
+    if update_check_route(&app.config().identifier, feed_url.as_deref())
+        == UpdateCheckRoute::DevelopmentNotice
+    {
+        let mut message = app
+            .dialog()
+            .message(DEVELOPMENT_UPDATES_MESSAGE)
+            .title("ChemDraft Update");
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+            message = message.parent(&window);
+        }
+        message.show(|_| {});
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let Some(updater) = app.sparkle_updater() else {
+            // `tauri dev` runs the binary outside an application bundle, so Sparkle deliberately
+            // does not start there.
+            eprintln!("Sparkle update checks are unavailable outside a packaged ChemDraft app.");
+            return;
+        };
+
+        if let Err(error) = updater.check_for_updates() {
+            eprintln!("Could not check for a ChemDraft update: {error}");
+        }
+    }
+    // Windows keeps the existing webview flow, including saving before the installer takes over.
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = emit_command_to_main(app, CHECK_FOR_UPDATES_COMMAND_ID) {
+        eprintln!("Could not route the update check: {error}");
     }
 }
 
@@ -2001,8 +2210,8 @@ async fn suspend_toolset_windows(
                     ))
                 })
                 .collect::<Result<_, String>>()?;
-            // Only the first acquisition reads the native order. A nested prompt must keep the
-            // first snapshot, including while waiting for a minimized document to return.
+            // Only the first acquisition reads the native order. Nested prompts and re-acquisition
+            // during pending restoration keep the original order; newly visible windows join it.
             let top_to_bottom = if UTILITY_SUSPENSION
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2577,17 +2786,181 @@ fn load_toolset_customization_state(
     app: tauri::AppHandle,
 ) -> Result<Option<serde_json::Value>, String> {
     let path = toolset_customization_state_path(&app)?;
-    let Some(contents) = read_optional_file(&path)? else {
-        return Ok(None);
-    };
-
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))
+    read_toolset_customization_state(&path)
 }
 
-/// JS owns toolbar customization now (visibility, layout, user toolsets). It serializes the whole
-/// `ToolsetLayoutState` and persists it here; Rust just writes the opaque JSON to disk.
+// Frozen v1.1.1 top-level contract. New layout fields belong ONLY in the side file: the released
+// app uses a strict Zod schema and cannot ignore unknown fields in toolbar-layout-state.json.
+const LEGACY_TOOLSET_CUSTOMIZATION_KEYS: &[&str] = &[
+    "version",
+    "toolsetOrder",
+    "toolsetOverrides",
+    "userToolsets",
+];
+
+// Transient load provenance, consumed by the desktop migration before schema validation.
+const TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY: &str =
+    "mainToolbarDefaultsMetadataUnavailable";
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolsetCustomizationExtensions {
+    version: u32,
+    // Bind metadata to its layout. An older app may rewrite the main file without touching this
+    // one, and an interrupted two-file save must not apply a revision to the wrong layout.
+    legacy_state: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+    // Retain the binding for the main file still on disk while publishing the next one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<ToolsetCustomizationBinding>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolsetCustomizationBinding {
+    legacy_state: serde_json::Value,
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+fn valid_toolset_customization_fields(fields: &serde_json::Map<String, serde_json::Value>) -> bool {
+    // Keep this list aligned with the in-memory ToolsetLayoutState schema. Unrecognised
+    // side-file fields are corrupt/unsupported metadata, not layout.
+    fields
+        .keys()
+        .all(|key| key == "mainToolbarDefaultsRevision")
+        && fields
+            .get("mainToolbarDefaultsRevision")
+            .is_none_or(|value| value.as_u64().is_some_and(|revision| revision > 0))
+}
+
+fn split_toolset_customization_state(
+    state: serde_json::Value,
+) -> Result<(serde_json::Value, ToolsetCustomizationExtensions), String> {
+    let serde_json::Value::Object(mut fields) = state else {
+        return Err("Toolbar customization state must be an object".into());
+    };
+    // This is an IPC hint, never a persisted layout field (including in the side file).
+    fields.remove(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY);
+    let (legacy, fields) = fields
+        .into_iter()
+        .partition(|(key, _)| LEGACY_TOOLSET_CUSTOMIZATION_KEYS.contains(&key.as_str()));
+    let legacy = serde_json::Value::Object(legacy);
+    let extensions = ToolsetCustomizationExtensions {
+        version: 1,
+        legacy_state: legacy.clone(),
+        fields,
+        previous: None,
+    };
+    Ok((legacy, extensions))
+}
+
+fn read_toolset_customization_state(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    let Some(contents) = read_optional_file(path)? else {
+        return Ok(None);
+    };
+    let state = serde_json::from_str(&contents)
+        .map_err(|error| format!("Toolbar customization state is invalid: {error}"))?;
+    restore_toolset_customization_extensions(path, state).map(Some)
+}
+
+fn restore_toolset_customization_extensions(
+    path: &Path,
+    state: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (mut legacy, inline) = split_toolset_customization_state(state)?;
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    // The side file is optional metadata. Missing, unreadable or invalid metadata must never
+    // discard the user's otherwise valid layout (main-file errors still propagate above).
+    let side_contents = read_optional_file(&side_path);
+    // No side file is the normal v1.1.1 upgrade path: JS must still migrate its old defaults.
+    // Only a present/unreadable side file can indicate lost metadata from a newer build.
+    let side_missing = matches!(&side_contents, Ok(None));
+    let extensions = side_contents
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<ToolsetCustomizationExtensions>(&text).ok())
+        .filter(|side| side.version == 1)
+        .and_then(|side| {
+            if side.legacy_state == legacy && valid_toolset_customization_fields(&side.fields) {
+                Some(side.fields)
+            } else {
+                side.previous
+                    .filter(|previous| {
+                        previous.legacy_state == legacy
+                            && valid_toolset_customization_fields(&previous.fields)
+                    })
+                    .map(|previous| previous.fields)
+            }
+        });
+    let fields = legacy.as_object_mut().expect("split returns an object");
+    if let Some(extensions) = extensions {
+        fields.extend(extensions);
+    }
+    // Earlier 1.2 builds wrote extensions inline. They take precedence until the next save
+    // moves them to the side file and repairs the legacy file for a downgrade.
+    fields.extend(inline.fields);
+    if !side_missing && !fields.contains_key("mainToolbarDefaultsRevision") {
+        fields.insert(
+            TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY.into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    Ok(legacy)
+}
+
+fn write_toolset_customization_state(path: &Path, state: serde_json::Value) -> Result<(), String> {
+    write_toolset_customization_state_with_main_writer(path, state, write_file_atomic)
+}
+
+fn write_toolset_customization_state_with_main_writer(
+    path: &Path,
+    state: serde_json::Value,
+    write_main: impl FnOnce(&Path, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let (legacy, mut extensions) = split_toolset_customization_state(state)?;
+    // An explicit replacement can recover malformed JSON: there is no usable previous binding
+    // to preserve. Genuine read failures still abort before either file is written; LOAD remains
+    // strict so it can never turn corrupt saved data into defaults and overwrite it silently.
+    let contents = match fs::read(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let previous = contents
+        .and_then(|contents| serde_json::from_slice::<serde_json::Value>(&contents).ok())
+        .filter(serde_json::Value::is_object)
+        .map(|state| restore_toolset_customization_extensions(path, state))
+        .transpose()?;
+    // Read back whichever binding matches the CURRENT main file, including a previous binding
+    // left by an interrupted save. Repeated failed saves must not evict that binding either.
+    if let Some(previous) = previous {
+        let (previous_legacy, previous_extensions) = split_toolset_customization_state(previous)?;
+        if previous_legacy != legacy {
+            extensions.previous = Some(ToolsetCustomizationBinding {
+                legacy_state: previous_legacy,
+                fields: previous_extensions.fields,
+            });
+        }
+    }
+    let side_path = path.with_file_name(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME);
+    let side_contents =
+        serde_json::to_string_pretty(&extensions).map_err(|error| error.to_string())?;
+    let contents = serde_json::to_string_pretty(&legacy).map_err(|error| error.to_string())?;
+    // Publish both bindings before replacing main: a failed rename or interrupted process can
+    // then load the revision for either complete main file without repeating a defaults migration.
+    write_file_atomic(&side_path, &side_contents)?;
+    write_main(path, &contents)?;
+    if extensions.previous.take().is_some() {
+        let collapsed =
+            serde_json::to_string_pretty(&extensions).map_err(|error| error.to_string())?;
+        // Main is committed. Cleanup is optional: both bindings remain safe if this fails or the
+        // process stops here, and the next save retries collapsing to just the committed binding.
+        let _ = write_file_atomic(&side_path, &collapsed);
+    }
+    Ok(())
+}
+
+/// JS owns toolbar customization. Rust separates its extensions from the strict v1.1.1 file.
 #[tauri::command]
 fn save_toolset_customization_state(
     app: tauri::AppHandle,
@@ -2600,8 +2973,395 @@ fn save_toolset_customization_state(
         return Ok(());
     }
     let path = toolset_customization_state_path(&app)?;
-    let contents = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
-    write_file_atomic(&path, &contents)
+    write_toolset_customization_state(&path, state)
+}
+
+#[cfg(test)]
+mod toolbar_customization_persistence_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    struct Files(PathBuf);
+
+    impl Files {
+        fn new() -> Self {
+            static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "chemdraft-toolbar-downgrade-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+
+        fn main(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_STATE_FILENAME)
+        }
+
+        fn side(&self) -> PathBuf {
+            self.0.join(TOOLSET_CUSTOMIZATION_EXTENSIONS_FILENAME)
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> (Value, Value) {
+        // The Vitest downgrade contract parses this exact expected on-disk main file with a
+        // frozen copy of tag v1.1.1's COMPLETE Zod schema, including strict nested objects.
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../src/__fixtures__/toolbarLayoutDowngrade.json"
+        ))
+        .unwrap();
+        let legacy = fixture["legacyState"].clone();
+        let mut current = legacy.clone();
+        current
+            .as_object_mut()
+            .unwrap()
+            .extend(fixture["extensions"].as_object().unwrap().clone());
+        (legacy, current)
+    }
+
+    fn read_json(path: &Path) -> Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn without_metadata(mut legacy: Value) -> Value {
+        legacy[TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY] = json!(true);
+        legacy
+    }
+
+    #[test]
+    fn saves_released_file_shape_and_round_trips_extensions() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+        // Saving a state without extensions must clear any previously stored revision.
+        write_toolset_customization_state(&files.main(), legacy.clone()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+    }
+
+    fn assert_explicit_save_recovers_corrupt_main_file(with_side_file: bool) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), "{").unwrap();
+        if with_side_file {
+            let mut stale_legacy = legacy.clone();
+            stale_legacy["toolsetOverrides"][0]["visible"] = json!(false);
+            fs::write(
+                files.side(),
+                json!({
+                    "version": 1,
+                    "legacyState": stale_legacy,
+                    "fields": {"mainToolbarDefaultsRevision": 2}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        // Use the persistence function called by save_toolset_customization_state: an explicit
+        // customization must replace corrupt saved data with the user's chosen valid layout.
+        write_toolset_customization_state(&files.main(), current.clone())
+            .expect("explicit customization must recover a corrupt main file");
+        // This exact fixture has the frozen v1.1.1 shape, with no extension fields inline.
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side()),
+            json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file() {
+        assert_explicit_save_recovers_corrupt_main_file(false);
+    }
+
+    #[test]
+    fn explicit_save_recovers_corrupt_main_file_with_valid_side_file() {
+        assert_explicit_save_recovers_corrupt_main_file(true);
+    }
+
+    fn assert_explicit_save_recovers_invalid_main_bytes(contents: &[u8]) {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), contents).unwrap();
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn explicit_save_recovers_null_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"null");
+    }
+
+    #[test]
+    fn explicit_save_recovers_array_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(b"[]");
+    }
+
+    #[test]
+    fn explicit_save_recovers_non_utf8_main_file() {
+        assert_explicit_save_recovers_invalid_main_bytes(&[0xff, 0xfe]);
+    }
+
+    #[test]
+    fn explicit_save_propagates_main_file_read_errors_without_writing() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        // A directory at the main path causes a genuine I/O failure on macOS and Windows,
+        // independent of whether the test runner can bypass filesystem permission bits.
+        fs::create_dir(files.main()).unwrap();
+        let side = json!({
+            "version": 1,
+            "legacyState": legacy,
+            "fields": {"mainToolbarDefaultsRevision": 2}
+        })
+        .to_string();
+        fs::write(files.side(), &side).unwrap();
+        let read_error = fs::read_to_string(files.main()).unwrap_err().to_string();
+
+        assert_eq!(
+            write_toolset_customization_state(&files.main(), current).unwrap_err(),
+            read_error
+        );
+        assert!(files.main().is_dir());
+        assert_eq!(fs::read_to_string(files.side()).unwrap(), side);
+    }
+
+    #[test]
+    fn migrates_inline_prerelease_revision_and_repairs_on_next_save() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), current.to_string()).unwrap();
+        // Test with no side file and with an older conflicting side-file revision.
+        for side in [
+            None,
+            Some(json!({
+                "version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 2}
+            })),
+        ] {
+            if let Some(side) = side {
+                fs::write(files.side(), side.to_string()).unwrap();
+            }
+            let loaded = read_toolset_customization_state(&files.main())
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, current);
+        }
+        let loaded = read_toolset_customization_state(&files.main())
+            .unwrap()
+            .unwrap();
+        write_toolset_customization_state(&files.main(), loaded).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"],
+            json!({"mainToolbarDefaultsRevision": 1})
+        );
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn legacy_layout_without_side_file_loads_without_metadata_hint() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(legacy)
+        );
+    }
+
+    #[test]
+    fn present_but_corrupt_or_unreadable_side_file_sets_metadata_hint() {
+        let files = Files::new();
+        let (legacy, _) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        let valid = json!({"version": 1, "legacyState": legacy, "fields": {"mainToolbarDefaultsRevision": 1}});
+        let mut corrupt = vec![
+            "{".to_string(),
+            "null".to_string(),
+            "[]".to_string(),
+            "{}".to_string(),
+        ];
+        for revision in [json!(0), json!(-1), json!(1.5), json!("1"), Value::Null] {
+            let mut side = valid.clone();
+            side["fields"]["mainToolbarDefaultsRevision"] = revision;
+            corrupt.push(side.to_string());
+        }
+        for (key, value) in [
+            ("version", json!(2)),
+            ("legacyState", json!({})),
+            ("fields", json!([])),
+            ("fields", json!({"version": 1})),
+            ("fields", json!({"unknown": true})),
+            ("unknown", json!(true)),
+        ] {
+            let mut side = valid.clone();
+            side[key] = value;
+            corrupt.push(side.to_string());
+        }
+        for side in corrupt {
+            fs::write(files.side(), &side).unwrap();
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(without_metadata(legacy.clone())),
+                "side file: {side}"
+            );
+        }
+        fs::remove_file(files.side()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+    }
+
+    #[test]
+    fn older_app_edits_and_interrupted_saves_do_not_reuse_stale_revision() {
+        let files = Files::new();
+        let (mut legacy, current) = fixture();
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        legacy["toolsetOverrides"][0]["visible"] = json!(false);
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(without_metadata(legacy))
+        );
+        // An orphan side file must never resurrect a layout when the main file is absent.
+        fs::remove_file(files.main()).unwrap();
+        assert!(read_toolset_customization_state(&files.main())
+            .unwrap()
+            .is_none());
+        fs::write(files.main(), "{").unwrap();
+        assert!(read_toolset_customization_state(&files.main()).is_err());
+    }
+
+    #[test]
+    fn future_top_level_fields_cannot_leak_into_released_file() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        current["futureExtension"] = json!({"value": true});
+        write_toolset_customization_state(&files.main(), current).unwrap();
+        assert_eq!(read_json(&files.main()), legacy);
+        assert_eq!(
+            read_json(&files.side())["fields"]["futureExtension"],
+            json!({"value": true})
+        );
+    }
+
+    #[test]
+    fn side_write_failure_is_reported_and_leaves_existing_layout_intact() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        fs::create_dir(files.side()).unwrap();
+        assert!(write_toolset_customization_state(&files.main(), current).is_err());
+        assert_eq!(read_json(&files.main()), legacy);
+    }
+
+    #[test]
+    fn failed_main_write_preserves_revision_and_custom_layout_on_next_load() {
+        let files = Files::new();
+        let (legacy, current) = fixture();
+        // Main has itemOrder AND itemAdditions. Losing this revision used to make startup
+        // add Chain and hide Double/Triple Bond, then persist that destructive fallback.
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        let mut pending = current.clone();
+        pending["toolsetOverrides"][0]["itemOrder"]["core.main.items"] = json!([
+            "tool.select",
+            "tool.doubleBond",
+            "user.main.space.1",
+            "tool.tripleBond"
+        ]);
+        pending["toolsetOverrides"][0]["itemAdditions"][0]["index"] = json!(2);
+        let (pending_legacy, _) = split_toolset_customization_state(pending.clone()).unwrap();
+
+        for _ in 0..2 {
+            let result = write_toolset_customization_state_with_main_writer(
+                &files.main(),
+                pending.clone(),
+                |_, _| Err("injected main rename failure".into()),
+            );
+            assert_eq!(result.unwrap_err(), "injected main rename failure");
+            assert_eq!(read_json(&files.main()), legacy);
+            let side = read_json(&files.side());
+            assert_eq!(side["legacyState"], pending_legacy);
+            assert_eq!(side["previous"]["legacyState"], legacy);
+            assert_eq!(side["previous"]["fields"]["mainToolbarDefaultsRevision"], 1);
+            // A fresh load, including after another failed save, returns the complete old state.
+            assert_eq!(
+                read_toolset_customization_state(&files.main()).unwrap(),
+                Some(current.clone())
+            );
+        }
+
+        // Also simulate a process stopping just AFTER main rename, before optional cleanup.
+        fs::write(files.main(), pending_legacy.to_string()).unwrap();
+        let loaded = read_toolset_customization_state(&files.main())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, pending);
+        write_toolset_customization_state(&files.main(), loaded).unwrap();
+        assert!(read_json(&files.side()).get("previous").is_none());
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(pending)
+        );
+    }
+
+    #[test]
+    fn successful_main_write_collapses_bindings_and_transient_hint_is_never_persisted() {
+        let files = Files::new();
+        let (legacy, mut current) = fixture();
+        fs::write(files.main(), legacy.to_string()).unwrap();
+        current["toolsetOverrides"][0]["visible"] = json!(false);
+        current[TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY] = json!(true);
+        write_toolset_customization_state(&files.main(), current.clone()).unwrap();
+        let side = read_json(&files.side());
+        assert!(side.get("previous").is_none());
+        assert!(side["fields"]
+            .get(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY)
+            .is_none());
+        assert!(read_json(&files.main())
+            .get(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY)
+            .is_none());
+        current
+            .as_object_mut()
+            .unwrap()
+            .remove(TOOLSET_CUSTOMIZATION_METADATA_UNAVAILABLE_KEY);
+        assert_eq!(
+            read_toolset_customization_state(&files.main()).unwrap(),
+            Some(current)
+        );
+    }
 }
 
 #[tauri::command]
@@ -3964,15 +4724,18 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn close_window_closes_report_windows_through_tauri_and_everything_else_natively() {
+    fn close_window_closes_reports_and_hosted_dialogs_through_tauri() {
         use super::{close_window_route, CloseWindowRoute};
         assert_eq!(
             close_window_route(Some(&plugin_panel_window_label("v1x6f7267x70616e656c"))),
             CloseWindowRoute::TauriClose
         );
+        assert_eq!(
+            close_window_route(Some("preferences")),
+            CloseWindowRoute::TauriClose
+        );
         for other in [
             Some("main"),
-            Some("preferences"),
             Some("spin3d-debugger"),
             Some("toolset-core-main"),
             Some("plugin-panel-"),
@@ -6059,7 +6822,7 @@ async fn toggle_spin3d_debugger_window(app: tauri::AppHandle) -> Result<(), Stri
     ensure_spin3d_debugger_window(&app).map(|_| ())
 }
 
-/// Whether a Preferences / 3D Debugger toggle should hide its window (otherwise it is shown and
+/// Whether the 3D Debugger toggle should hide its window (otherwise it is shown and
 /// brought forward).
 ///
 /// macOS and Linux keep the original rule: a visible window is hidden. On Windows a visible window
@@ -6195,39 +6958,114 @@ fn spin3d_debugger_window_route() -> &'static str {
 #[tauri::command]
 async fn toggle_preferences_window(app: tauri::AppHandle) -> Result<(), String> {
     let _creation = lock_window_creation()?;
-    if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        if toggle_should_hide(&window) {
-            return window.hide().map_err(|error| error.to_string());
-        }
-    }
-
     ensure_preferences_window(&app).map(|_| ())
 }
 
 fn ensure_preferences_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, String> {
+    let target = app.clone();
+    with_preferences_owner_restored(
+        || {
+            run_on_main_thread_blocking(app, move || {
+                restore_preferences_owner_if_needed(
+                    quit_in_progress(),
+                    utility_windows_suspended(),
+                    || {
+                        let owner = target
+                            .get_webview_window(MAIN_WINDOW_LABEL)
+                            .ok_or("Main document window is not available.")?;
+                        Ok((
+                            owner.is_minimized().map_err(|error| error.to_string())?,
+                            owner.is_visible().map_err(|error| error.to_string())?,
+                        ))
+                    },
+                    || {
+                        focus_main_document_window_impl(&target, MainWindowFocusMode::Force)
+                            .map(|_| ())
+                    },
+                )
+            })
+            .map_err(|error| format!("Could not restore document for Preferences: {error}"))
+            .and_then(|result| result)
+        },
+        || create_or_raise_preferences_window(app),
+    )
+}
+
+/// Placement needs the restored document's monitor/frame, and Windows hides owned windows while
+/// their owner is minimized. Complete restoration before either the create or retained reveal path.
+fn with_preferences_owner_restored<T>(
+    restore_owner: impl FnOnce() -> Result<(), String>,
+    create_or_raise: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    restore_owner()?;
+    create_or_raise()
+}
+
+/// Main-thread-only in production. Leave visible documents in their current stacking order;
+/// suspended reveals continue through the shared dialog path, which defers them until release.
+fn restore_preferences_owner_if_needed(
+    quitting: bool,
+    utilities_suspended: bool,
+    owner_state: impl FnOnce() -> Result<(bool, bool), String>,
+    restore_owner: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if quitting {
+        return Err(QUITTING_WINDOW_REFUSAL.to_string());
+    }
+    if utilities_suspended {
+        return Ok(());
+    }
+    let restore_error = |error| format!("Could not restore document for Preferences: {error}");
+    let (minimized, visible) = owner_state().map_err(restore_error)?;
+    if minimized || !visible {
+        restore_owner().map_err(restore_error)?;
+    }
+    Ok(())
+}
+
+fn create_or_raise_preferences_window<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
     if let Some(window) = app.get_webview_window(PREFERENCES_WINDOW_LABEL) {
-        window.show().map_err(|error| error.to_string())?;
-        window.unminimize().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || dialog_windows::show_preferences(&target))
+            .and_then(|result| result)?;
         return Ok(window);
     }
+    let owner = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or("Unknown dialog owner")?;
 
-    let window = WebviewWindowBuilder::new(
+    dialog_windows::prepare_preferences();
+    let builder = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
         WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
     )
     .title("ChemDraft Preferences")
-    .inner_size(460.0, 360.0)
-    .min_inner_size(360.0, 280.0)
+    .inner_size(640.0, 600.0)
+    .min_inner_size(360.0, 180.0)
     .resizable(true)
+    .maximizable(false)
+    .minimizable(false)
+    .focused(false)
+    .skip_taskbar(true)
     .accept_first_mouse(true)
-    .visible(true)
-    .center()
-    .build()
-    .map_err(|error| error.to_string())?;
+    .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(dialog_windows::macos_dialog_title_bar_style());
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder;
+    #[cfg(windows)]
+    let builder = builder.parent(&owner).map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    let builder = {
+        let _ = owner;
+        builder
+    };
+    let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
     Ok(window)
 }
@@ -6426,7 +7264,7 @@ fn resolve_engine3d_sidecar_path(env_override: Option<String>) -> Option<PathBuf
 const SIDECAR_PLACEHOLDER_MARKER: &[u8] = b"avogadro3d-sidecar placeholder";
 
 /// A file that can actually be started as the sidecar. The `binaries/` placeholders for targets
-/// without a real build (Intel macOS, Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
+/// without a real build (Linux) are small `#!/bin/sh … exit 2` scripts: `is_file`
 /// accepted them, so status said "bundled" and every session failed when the script exited. They
 /// are recognised by their marker on every platform; Windows additionally requires a PE image
 /// (a text placeholder there failed to start with OS error 193).
@@ -6937,7 +7775,7 @@ fn handle_opened_document_urls<R: Runtime>(
 }
 
 /// Document paths passed on the command line (Windows/Linux shell opens, and argv forwarded from a
-/// second launch). Flags are skipped; the first existing `.chemdraft`/`.cdxml` file wins,
+/// second launch). Flags are skipped; the first supported document file wins,
 /// mirroring the first-file-URL rule of the macOS path.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn handle_opened_document_args<R: Runtime>(
@@ -6965,13 +7803,23 @@ fn is_openable_document_path(path: &Path) -> bool {
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            // `.cdx` cannot be read yet, but it is accepted so the opener can say so; filtering it
-            // out here made "Open with ChemDraft" on a .cdx do nothing at all.
             extension.eq_ignore_ascii_case("chemdraft")
                 || extension.eq_ignore_ascii_case("cdxml")
                 || extension.eq_ignore_ascii_case("cdx")
         });
-    extension_ok && path.is_file()
+    if !path.is_file() {
+        return false;
+    }
+    if extension_ok {
+        return true;
+    }
+    // A renamed binary CDX still opens; inspect only its header here.
+    use std::io::Read;
+    let mut header = [0; 8];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && header == *b"VjCD0100"
 }
 
 /// Queue an opened document for the window to drain on mount (cold start). Only after setup,
@@ -7018,11 +7866,8 @@ fn open_document_payload_from_url(
     open_document_payload_from_path(&path).map(Some)
 }
 
-/// An opened document's bytes as text, by the same rule as `decodeDocumentBytes` (documentText.ts):
-/// a UTF-8/UTF-16 byte-order mark decides, otherwise lenient UTF-8. `read_to_string` failed on
-/// anything that was not valid UTF-8, and that failure was only logged — so double-clicking a UTF-16
-/// CDXML file (or a .cdx renamed .cdxml) did nothing at all. Now it reaches the opener, which can say
-/// what the file is.
+/// Text documents use the same byte-order-mark rule as documentText.ts. Binary CDX is dispatched
+/// before this decoder and travels as bytes through the existing shell-open event and pending queue.
 fn decode_document_text(bytes: &[u8]) -> String {
     let utf16 = |body: &[u8], little_endian: bool| {
         let units = body
@@ -7045,8 +7890,29 @@ fn decode_document_text(bytes: &[u8]) -> String {
     }
 }
 
+const MAX_OPEN_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayload, String> {
-    let contents = decode_document_text(&fs::read(path).map_err(|error| error.to_string())?);
+    use std::io::Read;
+    let read_error = |error| format!("Could not read document {}: {error}", path.display());
+    let file = fs::File::open(path).map_err(read_error)?;
+    let too_big = || "Document exceeds the 64 MB size limit".to_string();
+    if file.metadata().map_err(read_error)?.len() > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    // Keep the read bounded even if another process grows the file after the metadata check.
+    let mut data = Vec::new();
+    file.take(MAX_OPEN_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(read_error)?;
+    if data.len() as u64 > MAX_OPEN_DOCUMENT_BYTES {
+        return Err(too_big());
+    }
+    let (contents, bytes) = if data.starts_with(b"VjCD0100") {
+        (String::new(), Some(data))
+    } else {
+        (decode_document_text(&data), None)
+    };
     let display_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -7057,6 +7923,7 @@ fn open_document_payload_from_path(path: &Path) -> Result<NativeOpenDocumentPayl
         path: path.to_string_lossy().to_string(),
         display_name,
         contents,
+        bytes,
     })
 }
 
@@ -7389,6 +8256,9 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     if !structure_plugin_items.is_empty() {
         structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
         for item in structure_plugin_items {
+            if item.separator_before {
+                structure_menu.append(&PredefinedMenuItem::separator(app)?)?;
+            }
             structure_menu.append(&MenuItem::with_id(
                 app,
                 item.id.as_str(),
@@ -7397,6 +8267,16 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                 None::<&str>,
             )?)?;
         }
+    }
+    let tools_menu = Submenu::with_items(app, "Tools", true, &[])?;
+    for item in plugin_menu_items_in(plugin_items, "tools") {
+        tools_menu.append(&MenuItem::with_id(
+            app,
+            item.id.as_str(),
+            item.label.as_str(),
+            item.enabled,
+            None::<&str>,
+        )?)?;
     }
     let analyze_menu = build_analyze_submenu(app, plugin_items)?;
     let plugins_menu = Submenu::with_items(
@@ -7603,6 +8483,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
             &insert_menu,
             &view_menu,
             &structure_menu,
+            &tools_menu,
             &analyze_menu,
             &plugins_menu,
             &Submenu::with_items(
@@ -7700,7 +8581,7 @@ enum CloseWindowRoute {
     /// mask, so the panel takes its own hide-and-notify path in `on_window_event`.
     TauriClose,
     /// `performClose:` on the key window: exactly what the predefined item did. Main (which hides
-    /// itself on `CloseRequested`), Preferences, the 3D debugger, and non-Tauri windows such as
+    /// itself on `CloseRequested`), the 3D debugger, and non-Tauri windows such as
     /// the About panel all keep their behaviour.
     PerformClose,
 }
@@ -9049,6 +9930,309 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn preferences_restores_hidden_and_iconic_owners_before_create_or_raise() {
+        use std::cell::RefCell;
+
+        #[derive(Clone, Copy)]
+        struct Owner {
+            visible: bool,
+            minimized: bool,
+            monitor: Option<&'static str>,
+            frame: (i32, i32, u32, u32),
+        }
+
+        for (platform, initial) in [
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: true,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: true,
+                    minimized: true,
+                    monitor: Some("nearest"),
+                    frame: (-32_000, -32_000, 0, 0),
+                },
+            ),
+            (
+                "macos",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+            (
+                "windows",
+                Owner {
+                    visible: false,
+                    minimized: false,
+                    monitor: None,
+                    frame: (0, 0, 0, 0),
+                },
+            ),
+        ] {
+            for retained in [false, true] {
+                let owner = RefCell::new(initial);
+                let events = RefCell::new(Vec::new());
+                with_preferences_owner_restored(
+                    || {
+                        restore_preferences_owner_if_needed(
+                            false,
+                            false,
+                            || {
+                                let owner = owner.borrow();
+                                Ok((owner.minimized, owner.visible))
+                            },
+                            || {
+                                events.borrow_mut().push("unminimize");
+                                let mut owner = owner.borrow_mut();
+                                owner.minimized = false;
+                                owner.monitor = Some("document");
+                                owner.frame = (100, 100, 1200, 800);
+                                events.borrow_mut().push("show");
+                                owner.visible = true;
+                                Ok(())
+                            },
+                        )
+                    },
+                    || {
+                        let owner = owner.borrow();
+                        assert!(owner.visible && !owner.minimized, "{platform}");
+                        if !retained {
+                            if platform == "windows" {
+                                events.borrow_mut().push("parent");
+                            }
+                            events.borrow_mut().push("create");
+                        }
+                        events.borrow_mut().push("monitor");
+                        assert_eq!(owner.monitor, Some("document"), "{platform}");
+                        events.borrow_mut().push("frame");
+                        assert_eq!(owner.frame, (100, 100, 1200, 800), "{platform}");
+                        events.borrow_mut().push("raise");
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                let mut expected = vec!["unminimize", "show"];
+                if !retained {
+                    if platform == "windows" {
+                        expected.push("parent");
+                    }
+                    expected.push("create");
+                }
+                expected.extend(["monitor", "frame", "raise"]);
+                assert_eq!(
+                    *events.borrow(),
+                    expected,
+                    "{platform}, retained={retained}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preferences_leaves_visible_non_minimized_owner_order_unchanged() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    false,
+                    || Ok((false, true)),
+                    || panic!("Opening Preferences must not raise an already visible document"),
+                )
+            },
+            || {
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_does_not_restore_or_open_during_quit() {
+        for suspended in [false, true] {
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        true,
+                        suspended,
+                        || panic!("Quitting must be checked before querying the owner"),
+                        || panic!("Quitting must not restore the document"),
+                    )
+                },
+                || -> Result<(), String> {
+                    panic!("Quitting must not create or raise Preferences")
+                },
+            );
+            assert_eq!(result, Err(QUITTING_WINDOW_REFUSAL.to_string()));
+        }
+    }
+
+    #[test]
+    fn preferences_skips_owner_restore_during_utility_suspension() {
+        let continued = std::cell::Cell::new(false);
+        with_preferences_owner_restored(
+            || {
+                restore_preferences_owner_if_needed(
+                    false,
+                    true,
+                    || panic!("Suspension must be checked before querying the owner"),
+                    || panic!("Suspension must not restore the document"),
+                )
+            },
+            || {
+                // The existing show path enrolls the reveal in utility restoration.
+                continued.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(continued.get());
+    }
+
+    #[test]
+    fn preferences_owner_restore_failure_prevents_create_and_retained_reveal() {
+        for error in [
+            "unminimize failed",
+            "show failed",
+            "main thread unavailable",
+        ] {
+            let continued = std::cell::Cell::new(false);
+            let result = with_preferences_owner_restored(
+                || {
+                    restore_preferences_owner_if_needed(
+                        false,
+                        false,
+                        || Ok((true, false)),
+                        || Err(error.to_string()),
+                    )
+                },
+                || {
+                    continued.set(true);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                result,
+                Err(format!(
+                    "Could not restore document for Preferences: {error}"
+                ))
+            );
+            assert!(!continued.get());
+        }
+    }
+
+    fn plist_feed_url(text: &str) -> Option<String> {
+        let mut uncommented = String::new();
+        let mut remaining = text;
+        while let Some((before, comment)) = remaining.split_once("<!--") {
+            uncommented.push_str(before);
+            remaining = comment.split_once("-->")?.1;
+        }
+        uncommented.push_str(remaining);
+        uncommented
+            .split_once("<key>SUFeedURL</key>")
+            .and_then(|(_, value)| value.trim_start().strip_prefix("<string>"))
+            .and_then(|value| value.split_once("</string>"))
+            .map(|(feed, _)| feed.to_string())
+    }
+
+    #[test]
+    fn released_update_configurations_route_to_updater_and_dev_to_notice() {
+        assert_eq!(
+            plist_feed_url("<!-- <key>SUFeedURL</key><string>commented</string> -->"),
+            None
+        );
+        assert_eq!(
+            plist_feed_url(
+                "<!-- first -->\n<!--\n<key>SUFeedURL</key>\n<string>commented</string>\n-->"
+            ),
+            None
+        );
+        assert_eq!(
+            plist_feed_url("<!-- ignored -->\n<key>SUFeedURL</key>\n  <string>https://chemdraft.ai/appcast.xml</string>"),
+            Some("https://chemdraft.ai/appcast.xml".to_string())
+        );
+        let config_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.conf.json"))
+                .expect("read tauri.conf.json"),
+        )
+        .expect("parse tauri.conf.json");
+        let identifier = config["identifier"]
+            .as_str()
+            .expect("tauri.conf.json identifier must be a string");
+        assert_eq!(identifier, "org.chemdraft.desktop");
+
+        let assert_routes = |file: &str, feed: &str| {
+            assert_eq!(
+                update_check_route(identifier, Some(feed)),
+                UpdateCheckRoute::RunUpdater,
+                "released app must reach the updater with {file}"
+            );
+            assert_eq!(
+                update_check_route("org.chemdraft.desktop.dev", Some(feed)),
+                UpdateCheckRoute::DevelopmentNotice,
+                "development app must show the notice with {file}"
+            );
+        };
+
+        for file in ["Info.plist", "Info.intel.plist"] {
+            let plist = std::fs::read_to_string(config_dir.join(file))
+                .unwrap_or_else(|error| panic!("read {file}: {error}"));
+            let feed = plist_feed_url(&plist)
+                .unwrap_or_else(|| panic!("{file} must contain an SUFeedURL string"));
+            assert_routes(file, &feed);
+        }
+
+        let windows_config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(config_dir.join("tauri.windows.conf.json"))
+                .expect("read tauri.windows.conf.json"),
+        )
+        .expect("parse tauri.windows.conf.json");
+        let feed = windows_config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri.windows.conf.json plugins.updater.endpoints must be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .find(|url| !url.trim().is_empty())
+            .expect("tauri.windows.conf.json must contain a non-empty updater endpoint");
+        assert_routes("tauri.windows.conf.json", feed);
+    }
+
+    #[test]
+    fn update_channel_requires_release_identifier_and_feed_on_both_platforms() {
+        for feed in [
+            "https://chemdraft.ai/appcast.xml",
+            "https://chemdraft.ai/latest.json",
+        ] {
+            assert!(update_channel_available(
+                "org.chemdraft.desktop",
+                Some(feed)
+            ));
+            assert!(!update_channel_available(
+                "org.chemdraft.desktop.dev",
+                Some(feed)
+            ));
+            assert!(!update_channel_available("org.chemdraft.desktop.dev", None));
+        }
+        for feed in [None, Some(""), Some("  ")] {
+            assert!(!update_channel_available("org.chemdraft.desktop", feed));
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_utf16_and_utf8_text_share_the_decoded_cap() {
@@ -9130,6 +10314,7 @@ mod tests {
             path: "cold-open.chemdraft".into(),
             display_name: "cold-open.chemdraft".into(),
             contents: "<CDXML/>".into(),
+            bytes: None,
         }
     }
 
@@ -9216,17 +10401,14 @@ mod tests {
     #[test]
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        for triple in [
-            "x86_64-apple-darwin",
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-        ] {
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
             let placeholder = binaries.join(format!("avogadro3d-sidecar-{triple}"));
             assert!(is_sidecar_placeholder(&placeholder), "{triple}");
             assert!(!is_runnable_sidecar(&placeholder), "{triple}");
         }
         for real in [
             "avogadro3d-sidecar-aarch64-apple-darwin",
+            "avogadro3d-sidecar-x86_64-apple-darwin",
             "avogadro3d-sidecar-x86_64-pc-windows-msvc.exe",
         ] {
             assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");
@@ -9546,6 +10728,11 @@ mod tests {
             }
         }
 
+        fn reply_to_appkit_termination(&self, flow: &'static QuitFlow) {
+            self.calls.lock().unwrap().push("reply YES");
+            *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Delivered;
+        }
+
         fn force_exit(&self, _waited: Duration, reason: QuitReason) {
             *self.forced_reason.lock().unwrap() = Some(reason);
             self.calls.lock().unwrap().push("force exit");
@@ -9659,22 +10846,249 @@ mod tests {
     }
 
     #[test]
-    fn appkit_quit_checks_preference_but_system_termination_never_waits() {
-        assert!(should_prompt_appkit_quit(true, false, 0));
-        assert!(should_prompt_appkit_quit(
-            true,
-            false,
-            u32::from_be_bytes(*b"quit")
-        ));
-        assert!(!should_prompt_appkit_quit(false, false, 0));
-        assert!(!should_prompt_appkit_quit(true, true, 0));
+    fn appkit_quit_checks_platform_preference_and_pending_reply() {
+        for reason in [0, u32::from_be_bytes(*b"quit")] {
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, reason),
+                AppkitQuitDecision::DeferReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, reason),
+                AppkitQuitDecision::Prompt
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, true, reason),
+                AppkitQuitDecision::WaitForReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, true, reason),
+                AppkitQuitDecision::WaitForReply
+            );
+            for enabled in [false, true] {
+                for pending in [false, true] {
+                    assert_eq!(
+                        appkit_quit_decision(true, enabled, true, pending, reason),
+                        if pending {
+                            AppkitQuitDecision::WaitForReply
+                        } else {
+                            AppkitQuitDecision::TerminateNow
+                        }
+                    );
+                    assert_eq!(
+                        appkit_quit_decision(false, enabled, false, pending, reason),
+                        AppkitQuitDecision::TerminateNow
+                    );
+                }
+            }
+        }
         for reason in [*b"logo", *b"rlgo", *b"rest", *b"shut", *b"rrst", *b"rsdn"] {
-            assert!(!should_prompt_appkit_quit(
+            assert_eq!(
+                appkit_quit_decision(true, false, false, false, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::DeferReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, false, false, true, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::WaitForReply
+            );
+            assert_eq!(
+                appkit_quit_decision(true, true, false, false, u32::from_be_bytes(reason)),
+                AppkitQuitDecision::TerminateNow
+            );
+        }
+    }
+
+    #[test]
+    fn appkit_quit_replies_once_on_confirmation() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host);
+        // A duplicate delegate callback reuses the pending handshake and flush.
+        for _ in 0..2 {
+            assert_eq!(
+                appkit_quit_decision(
+                    true,
+                    false,
+                    flow.quitting.load(Ordering::SeqCst),
+                    flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                    0
+                ),
+                AppkitQuitDecision::WaitForReply
+            );
+            request_appkit_quit_with(flow, &host);
+            assert_eq!(host.calls(), ["ask to flush"]);
+        }
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        expire_quit_flush_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        assert!(!should_flush_exit_request(
+            true,
+            None,
+            flow.quitting.load(Ordering::SeqCst)
+        ));
+        assert_eq!(
+            appkit_quit_decision(
                 true,
                 false,
-                u32::from_be_bytes(reason)
-            ));
+                flow.quitting.load(Ordering::SeqCst),
+                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
+    }
+
+    #[test]
+    fn appkit_quit_replies_once_on_timeout_and_ignores_late_confirmation() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_appkit_quit_with(flow, &host);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        // Fire the production timeout callback without waiting on a clock.
+        expire_quit_flush_with(flow, &host);
+        expire_quit_flush_with(flow, &host);
+        // A renderer finishing after the deadline must not reply again or post an exit.
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(!flow.watchdog_armed.load(Ordering::SeqCst));
+        assert_eq!(
+            appkit_quit_decision(
+                true,
+                false,
+                flow.quitting.load(Ordering::SeqCst),
+                flow.appkit_reply.lock().unwrap().awaiting_delivery(),
+                0
+            ),
+            AppkitQuitDecision::TerminateNow
+        );
+    }
+
+    #[test]
+    fn appkit_confirmation_and_timeout_race_for_one_reply() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        assert!(request_appkit_quit_with(flow, &host));
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = [QuitReason::FlushConfirmed, QuitReason::GraceExpired]
+            .into_iter()
+            .map(|reason| {
+                let host = host.clone();
+                let start = start.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    quit_now_with(flow, &host, reason);
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
         }
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+        assert!(flow.quitting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn appkit_quit_reuses_an_existing_menu_flush() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        request_quit_with(flow, &host, true);
+        assert!(request_appkit_quit_with(flow, &host));
+        request_quit_with(flow, &host, true);
+        assert_eq!(host.calls(), ["ask to flush"]);
+        assert!(!flow.quitting.load(Ordering::SeqCst));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.calls(), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_quit_without_a_document_replies_once() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(false);
+        assert!(request_appkit_quit_with(flow, &host));
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert_eq!(host.wait_for_calls(2), ["ask to flush", "reply YES"]);
+    }
+
+    #[test]
+    fn appkit_failed_dispatch_uses_native_fallback_and_delivers_exactly_once() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Claimed;
+        let primary_task = Mutex::new(None);
+        let fallback_task = Mutex::new(None);
+        let replies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = replies.clone();
+        let result = dispatch_appkit_reply_with(
+            flow,
+            false,
+            |task| {
+                // Even a dispatcher that retains a task before failing cannot double-reply.
+                *primary_task.lock().unwrap() = Some(task);
+                Err("event proxy closed")
+            },
+            |task| *fallback_task.lock().unwrap() = Some(task),
+            move || {
+                delivered.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(result, Err("event proxy closed"));
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Claimed
+        );
+        assert!(flow.appkit_reply.lock().unwrap().awaiting_delivery());
+        assert_eq!(replies.load(Ordering::SeqCst), 0);
+
+        let host = StuckAppHost::new(true);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        expire_quit_flush_with(flow, &host);
+        assert!(host.calls().is_empty());
+
+        let fallback = fallback_task.into_inner().unwrap().unwrap();
+        fallback();
+        fallback();
+        primary_task.into_inner().unwrap().unwrap()();
+        assert_eq!(replies.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Delivered
+        );
+        assert!(!flow.appkit_reply.lock().unwrap().awaiting_delivery());
+    }
+
+    #[test]
+    fn appkit_reply_on_main_thread_delivers_without_dispatch() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        *flow.appkit_reply.lock().unwrap() = AppkitReplyState::Claimed;
+        let replies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = replies.clone();
+        assert_eq!(
+            dispatch_appkit_reply_with(
+                flow,
+                true,
+                |_| -> Result<(), ()> { panic!("already on the main thread") },
+                |_| panic!("already on the main thread"),
+                move || {
+                    delivered.fetch_add(1, Ordering::SeqCst);
+                },
+            ),
+            Ok(())
+        );
+        assert_eq!(replies.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *flow.appkit_reply.lock().unwrap(),
+            AppkitReplyState::Delivered
+        );
+    }
+
+    #[test]
+    fn appkit_quit_does_not_defer_an_already_decided_menu_exit() {
+        let flow = test_quit_flow(NEVER, NEVER);
+        let host = StuckAppHost::new(true);
+        quit_now_with(flow, &host, QuitReason::FlushConfirmed);
+        assert!(!request_appkit_quit_with(flow, &host));
+        assert_eq!(host.calls(), ["exit"]);
     }
 
     #[test]
@@ -9900,8 +11314,6 @@ mod tests {
         assert!(is_openable_document_path(&dir.join("a.chemdraft")));
         assert!(is_openable_document_path(&dir.join("b.CDXML")));
         assert!(!is_openable_document_path(&dir.join("c.txt")));
-        // A ChemDraw binary reaches the opener, which says what it is; filtering it out here made
-        // "Open with ChemDraft" on a .cdx do nothing at all.
         assert!(is_openable_document_path(&dir.join("d.Cdx")));
         assert!(!is_openable_document_path(&dir.join("missing.cdxml")));
         assert!(!is_openable_document_path(&dir));
@@ -9909,6 +11321,23 @@ mod tests {
         let payload = open_document_payload_from_path(&dir.join("a.chemdraft")).expect("payload");
         assert_eq!(payload.display_name, "a.chemdraft");
         assert_eq!(payload.contents, "<CDXML/>");
+        assert!(payload.bytes.is_none());
+        assert!(serde_json::to_value(&payload)
+            .unwrap()
+            .get("bytes")
+            .is_none());
+
+        let binary = [b"VjCD0100".as_slice(), &[0xFF, 0x00, 0x80]].concat();
+        for name in ["renamed.data", "binary.cdxml", "binary.cdx"] {
+            let path = dir.join(name);
+            fs::write(&path, &binary).expect("binary fixture");
+            assert!(is_openable_document_path(&path));
+            let payload = open_document_payload_from_path(&path).expect("binary payload");
+            assert!(payload.contents.is_empty());
+            assert_eq!(payload.bytes.as_deref(), Some(binary.as_slice()));
+            let json = serde_json::to_value(&payload).expect("binary event serialization");
+            assert_eq!(json["bytes"], serde_json::json!(binary));
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -10481,6 +11910,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.first".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "First".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: true,
@@ -10488,6 +11918,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.analyze".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Analyze".to_owned(),
                 location: "analyze".to_owned(),
                 enabled: true,
@@ -10495,6 +11926,7 @@ mod tests {
             PluginMenuItemInput {
                 id: "plugin.second".to_owned(),
                 core_routed: false,
+                separator_before: false,
                 label: "Second".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: false,
@@ -10546,6 +11978,7 @@ mod tests {
         let mut item = PluginMenuItemInput {
             id: "plugins.showUpdates".to_owned(),
             core_routed: false,
+            separator_before: false,
             label: "Plugin Updates Available (1)…".to_owned(),
             location: "plugins".to_owned(),
             enabled: true,
@@ -10887,11 +12320,8 @@ mod tests {
         be.extend(units.iter().flat_map(|unit| unit.to_be_bytes()));
         assert_eq!(decode_document_text(&be), xml);
 
-        // A binary ChemDraw file must still reach the opener, signature intact, so it can say what
-        // the file is rather than the open silently doing nothing.
-        let mut cdx = b"VjCD0100".to_vec();
-        cdx.extend_from_slice(&[0x04, 0x03, 0x02, 0x01, 0xFF, 0x00, 0x80]);
-        assert!(decode_document_text(&cdx).starts_with("VjCD0100"));
+        let native = "{\"schemaVersion\":1}";
+        assert_eq!(decode_document_text(native.as_bytes()), native);
     }
 
     /// NSIS ignores `rank`, so a Windows `.cdxml` association is never "Alternate": a per-user install
@@ -10932,6 +12362,22 @@ mod tests {
         }));
         expect_true(engine3d_bundled_binary_name().starts_with(ENGINE3D_SIDECAR_BASENAME));
         expect_true(engine3d_bundled_binary_name().contains(engine3d_target_triple()));
+    }
+
+    #[test]
+    fn open_document_rejects_oversized_file() {
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-open-oversized-{}", std::process::id()));
+        let file = fs::File::create(&path).expect("create fixture");
+        file.set_len(MAX_OPEN_DOCUMENT_BYTES + 1)
+            .expect("size fixture");
+        drop(file);
+        let error = match open_document_payload_from_path(&path) {
+            Ok(_) => panic!("oversized document must be refused"),
+            Err(error) => error,
+        };
+        fs::remove_file(path).expect("remove fixture");
+        assert_eq!(error, "Document exceeds the 64 MB size limit");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]

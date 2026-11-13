@@ -37,6 +37,10 @@ model's, and that the atoms and hydrogens are what RDKit reads from the entry's 
 The chemistry these groups take part in (reading a label, free valence, validation) lives in
 `@chemdraft/document-workflow-core`; this package holds data only.
 
+`schemeSodiumHydroxideAbbreviation` is explicit scheme-builder data in the same table module.
+It is excluded from typed-label lookup: only an atom carrying matching `schemeAbbreviation`
+metadata uses its ion-pair expansion. Existing typed NaOH formula placeholders keep their meaning.
+
 ## Generic labels (`src/genericLabels.ts`)
 
 Placeholders drawn on purpose — R, R′, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?, and the dummy atom `*` —
@@ -49,8 +53,7 @@ peptide abbreviation for Cbz.
 
 Insert > Templates… opens the desktop's modeless, document-owned picker (the browser preview has
 an in-page fallback). It is also available in Customize Main Toolbar, with an original ring/grid
-glyph, and is not on the default toolbar. Search matches normalized substrings of names and
-synonyms, including Greek or spelled-out `beta`, `β-CD`, `crown`, `cucurbit[7]` and `pillar`.
+glyph, and is not on the default toolbar. Search matches normalized substrings of names, synonyms, and family headings, including Greek or spelled-out `beta`, `β-CD`, `crown`, `cucurbit[7]`, `pillar`, and `cyclophane`.
 Families follow this package's order; pillararenes sit beside their matching dimethoxy variants.
 Tiles show shared-renderer SVG drawings, with synonyms/formula in their accessible description.
 Arrow keys navigate; click, Enter or Space inserts and keeps the picker open. Escape closes it.

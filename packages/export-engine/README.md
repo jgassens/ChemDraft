@@ -2,7 +2,32 @@
 
 Coordinates export formats and warning reporting.
 
+SVG export is synchronous. Before calling `exportDocumentToSvg(document, options)`, await
+`ensureSvgFontsLoaded(document, options)`. It loads Patrick Hand dynamically only if the exported
+page renders that font; otherwise it loads no payload. Unprepared Sketch exports throw
+`HandwritingFontNotLoadedError`. `ensureHandwritingFontLoaded()` is also available for explicit
+preparation. PDF prepares its own fonts through the same lazy loader.
+
 Format-specific work should go through the correct adapters and compatibility packages.
+
+`repeatUnits` uses chem-core's shared `resolveRepeatUnitAtomMembership`, with atom placement
+from layout-engine, so UI counts, CDXML/CDX, analysis and structure search share atom membership.
+`repeatUnitMolfileGroups` resolves repeat brackets against the exported molecules, including
+atom subsets within a molecule. It carries membership through export-time molecule combination and
+expanded abbreviations for SRU output. Imported whole-molecule members retain snapshots of every
+atom and bond; native merges, deletions or unverifiable identity changes decline SRU output with
+the source bracket id and a specific warning. Moving brackets or copying them with all members
+retains membership. Older native documents without whole-molecule identity snapshots (including
+empty snapshot arrays) also decline: import maps alone cannot rule out deleted and redrawn ids.
+The existing strict snapshot/provenance fields and their native-version rules are reused.
+Incomplete or ambiguous mappings warn with the source bracket id, including a deleted last member
+when exporting the remaining page. A partial selection known to be unrelated stays quiet.
+Native units without a known rotation frame remain unresolved diagnostics with no guessed atoms;
+MOL and SMILES warn even when only a same-page molecule is selected and no member references exist.
+`repeatUnitExportWarnings` reports the repeat label, atom count and source bracket when a graph-only
+format such as SMILES omits SRU semantics, including when only the molecule is selected.
+Desktop MOL export omits the one-copy loss warning when a real SRU S-group represents the unit,
+for both native and imported membership; declined units retain their specific loss warnings.
 
 ## Table clipboard payloads
 
@@ -103,3 +128,7 @@ ASCII molecule from the app and CLI/MCP. Inspect μ, ₆, ⁻, Greek letters and
 all four font styles, label halos, centered labels and mixed styled spans. Select
 and copy text into a plain text editor, and search the PDF for the original Unicode
 string. Compare label alignment with the canvas, especially at small sizes.
+
+Attached reaction conditions render through the same resolved page plan as the canvas. SVG keeps
+formatted runs contiguous and PDF uses the shared script positions. Native files retain attachments;
+CDXML keeps its existing best-effort text export contract.

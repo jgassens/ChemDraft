@@ -25,9 +25,48 @@ failure reports an error in the document status; it never creates an in-page des
 - `App.tsx`: dialog routing precedes other routes. All window components are lazy imports, so the
   dialog entry does not initialize MainWindow, chemistry engines, or the plugin runtime.
 - `src-tauri/src/dialog_windows.rs`: registration, validation, native construction/reveal/ownership,
-  close/destroy hooks, bounded sessions, and position persistence.
+  close/destroy hooks, bounded sessions, and frame persistence.
 - `src-tauri/capabilities/dialog-host.json` / `dialog-owner.json`: host receive/send only versus
   main-only create/publish/close. Existing filesystem/dialog/capture/engine grants are unchanged.
+
+## Preferences frame lifecycle
+
+Preferences retains the `preferences` label, its existing renderer, and its settings permissions.
+Its native frame is registered with this host: `place_window`, `sample_position`, the bounded
+position worker, and close flushing share `dialog-positions.json` under the `preferences` key.
+First open centers over the document. Subsequent opens restore the saved monitor-relative position
+at the destination display scale. Finite saved frames on an existing monitor are clamped to its
+work area, including off-screen frames; a missing monitor uses the existing centering fallback.
+Minimized, maximized, fullscreen and suspended frames are excluded. Preferences excludes the
+position applied by placement and OS adjustments within two physical pixels per axis (or one
+logical pixel rounded up at the window's scale, whichever is larger). The placement marker remains
+until a move exceeds that tolerance or the window closes; larger user moves are accepted immediately.
+Retained-window reveal preserves its position. Windows uses document ownership without a taskbar
+entry; macOS uses the host's floating level and activation policy. Owner dismissal closes it too.
+Preferences does not become a protocol draft window or receive dialog transport permissions.
+
+Native regression tests cover first-open centering, per-kind persistence/reopen at a different scale,
+OS rounding and immediate user moves after placement, DPI-scaled tolerance, off-screen clamping
+and missing-monitor fallback. They require
+native execution on both platforms; follow the Preferences checks in the standing manual stress
+checklist for real-window verification.
+
+## Atom problems
+
+Value-encoded `atom.problem.open.<object>.<atom>` commands open the `atomProblem` kind from a
+focusable (!) badge or the atom context menu, including suppressed invalid atoms. The one live
+problem window retargets within a tab without changing its native frame; changing its originating
+tab closes the old session before opening the new one. It shares the modeless construction,
+document ownership, first-open centering, per-kind position persistence, floating-toolbar stacking
+and Windows taskbar policy. Native creation failure reports status without an in-page fallback.
+
+The window receives only a bounded explanation, typed action labels and a target version. Its
+actions are limited to hydrogens, the existing suggested charge, Ignore and Restore. Rust and the
+coordinator reject unavailable actions and stale target versions. The owner revalidates against
+the current drawing before patching; one labeled history entry selects the atom. Inactive-tab
+actions update that tab's own history and atom selection. Opening never writes. Live updates show
+No problem after correction/deletion, and tab close/replacement settles the session normally.
+Suppression hides the badge only: validation still supplies the explanation and Restore action.
 
 
 ## Local engine installation
@@ -100,7 +139,7 @@ wait through a pending destination picker and resume afterward; the host retains
 it arrives before the picker receipt. Superseded form requests abort their local wait and ignore
 stale render completions. A native rasterization already started cannot be interrupted. Oversized previews report a
 specific error; the final export remains a separate explicit action.
-PDF previews show the PDF writer's shared SVG page layout in an image, labelled
+PDF previews show the PDF writer's shared SVG page layout in an image, labeled
 “Preview of the PDF page layout”, with PDF page-guide settings and a white background.
 They require no embedded PDF viewer in WKWebView or WebView2; final PDF generation is unchanged.
 Oversized error text is replaced with a fixed bounded failure message; any other oversized delivery
@@ -163,33 +202,110 @@ a toolbar even if that toolbar needs a later restore retry.
 Dialogs participate in `UTILITY_SUSPENSION` alongside panels and toolbars, using the existing #140
 relative stacking restore. A native message/file box hides them and restores only still-live
 sessions. Opening Page Size acquires no suspension. Dialog moves never update toolbar frames or
-logical toolbar visibility. First placement centres on the owner's usable frame and clamps to the
+logical toolbar visibility. First placement centers on the owner's usable frame and clamps to the
 monitor work area, using the destination monitor's scale. Placement first moves to that monitor,
 then sets client size at its DPI, measures the resulting outer frame and clamps that actual frame.
 This avoids Windows WM_DPICHANGED scaling an already destination-sized client twice.
 Kinds can opt into content-fit sizing with `fit_content` in the per-kind spec. The form is a
-shared `.cd-dialog-fit` column (App.css) that fills the window: a `.cd-dialog-fit-body` that
+shared `.cd-dialog-fit` column (App.css), or Export's existing grid with the same body marker,
+that fills the window: a `.cd-dialog-fit-body` that
 scrolls (`overflow: auto`) above a pinned `.cd-dialog-fit-footer` button row, so the buttons stay
 reachable even when the window is shorter than the content. The form measures its natural height
 once after fonts are ready, with a bounded wait, lifting the column's height and the body's clip
 while it measures, and sends `contentHeight` (CSS px) and `pixelRatio` in its `ready` message.
-Both sides accept only a finite `contentHeight` of at most 4096 and a `pixelRatio` from 0.5 to 8;
-the form sends an empty `ready` otherwise and the native host rejects such a payload, so the spec
-size applies. When `ready` arrives the host records the window's native scale factor with it, and
+The measurement also checks the live body's `scrollHeight - clientHeight` before changing the
+layout. A temporary intrinsic grid can be shorter than the restored flex/grid layout, particularly
+with native controls and font metrics; the root's height alone does not include a nested body's
+clipped content. When the live body overflows, the full client height plus that overflow is a
+second content minimum. This includes Custom Page Size's wrapped fields and Export's final
+**Include page guides** option. A live viewport without overflow never becomes a content minimum,
+so an oversized remembered frame is not mistaken for intrinsic content.
+The form also probes its intrinsic minimum width with a temporary `min-content` grid and supplies
+`contentWidth`, including any live horizontal overflow. It measures width even after a fit removes
+overflow, so the live minimum is not lost on the next report. The probe allows wrapping and does not
+mistake a larger user viewport for required content. Both sides accept only finite positive
+`contentHeight` and optional `contentWidth` values of at most 4096 and a `pixelRatio` from 0.5 to 8;
+the form sends an empty `ready` otherwise, so the initial spec size applies. The native host
+rejects a malformed nonempty payload. When `ready` arrives the host records the window's native scale factor with it, and
 at reveal converts the measurement through that scale (physical height ÷ scale at measurement),
 so a display-scale change between measurement and reveal neither doubles nor collapses the
-height; placement then sizes the client at the destination's scale. The inner height is never
-below the kind's minimum, every resize, the first included, is bounded by the destination work
-area, and the result is clamped through the same move-then-resize-then-clamp placement. Reopening
-does not resize, and later content growth (fields wrapping in a narrow window, a long message)
-scrolls the body instead of triggering another measurement or resize.
-`dialog-positions.json` remembers logical
-position, monitor identity and normalized work-area offsets per kind. Removed monitors recover
-onto the owner's monitor. Genuine moves are debounced; hidden, minimized, maximized, fullscreen,
-initial, restoration and quit moves are excluded. One bounded-notification worker debounces movement bursts, takes pending
+height; placement then sizes the client at the destination's scale. On macOS, synchronous AppKit
+`setFrameOrigin` moves to the destination in logical points (with the global Y axis flipped),
+then `setContentSize` completes before frame measurement and minimum-size restoration. Tao queues
+moves and content resizes on macOS and converts physical requests through the current backing scale;
+using its queued move before a synchronous resize would still measure at the origin monitor's
+scale and could double the minimum height on a 2x-to-1x move. Windows retains Tauri's synchronous
+move and inner-size paths. Native title bars and borders are additional to the measured content
+height. The natural content height has a 1px floor, independent of the kind's resize minimum:
+that minimum must never add an empty band. The destination monitor's OS work area already excludes
+the taskbar/menu bar/Dock; the shared host additionally reserves a 12 logical-pixel margin on every
+edge. Every initial/reopened client is capped to that area minus the *measured* title bar and
+borders. Placement re-centers the final outer frame on first open and restores the saved logical
+outer origin on subsequent opens, clamping only to keep the frame inside the work area. Saved
+normalized offsets remain readable for file compatibility but no longer reconstruct the origin:
+that reconstruction changed the position whenever the newly measured size differed from the saved
+outer size. Physical Windows origins are rounded so fractional DPI conversions do not lose a pixel
+on each round trip. The live minimum inner size follows the latest measured logical content size
+on both platforms, capped by the resulting client after decoration subtraction. Each re-fit can
+increase or decrease the minimum independently of a larger user size. Retained windows, including
+Preferences, reuse their latest measurement when shown again. Small screens and short forms remain
+usable. Later content growth (fields wrapping in a narrow window, a long
+message) re-fits from the live origin without taking focus. Screen-capped content scrolls above
+the pinned actions.
+Measured content minima win over smaller remembered/live dimensions independently; larger user
+dimensions remain intact. The shared native placement caps the result to the work area after
+subtracting decorations, including when the content itself exceeds the screen.
+`dialog-positions.json` remembers logical client `size` alongside position, monitor identity and
+normalized work-area offsets per kind. Old position-only records remain readable. A genuine resize
+records the client size; subsequent moves preserve it. A larger remembered size is retained, then
+is capped to the current destination screen. Custom Page Size is nonresizable and ignores persisted
+sizes on a fresh open; its retained live frame still uses the same content minimum. Retained
+windows also re-clamp their live frame on reopen, without replacing the draft. Removed monitors
+recover onto the owner's monitor. Genuine frame changes are debounced; hidden, minimized,
+maximized, fullscreen, initial, restoration and quit frames are excluded. One bounded-notification worker debounces movement bursts, takes pending
 positions under the registry lock, then reads/writes outside that lock. Final close flushes share
 an IO mutex with the worker so an older worker snapshot cannot overwrite the final position.
 Warm snapshot replay does not replace a draft or recentre a moved window.
+
+
+### Content-sized dialogs (1.2)
+
+All dimensions below are logical client pixels. Heights are measured after fonts settle and then
+capped by the shared native placement above; exact heights vary with fonts, wrapping and text scale.
+
+| Dialog | Previous initial size / constraint | Initial size now |
+| --- | --- | --- |
+| Preferences | 460 × 360, whole-window scrolling | 640 wide × natural content height, screen capped |
+| Insert Table | 480 wide, 240 minimum height | 480 wide × natural height, no 240px floor; resize minimum 360 × 120 |
+| Export | 520 × 620 | 520 wide × natural height, for either preview preference; preview reserves its final height before measurement |
+| Custom Page Size | 420 × 300 | 420 wide × natural height; remains nonresizable |
+| Adjust Arrangement Spacing | 540 × 600 | 540 wide × natural height, including its preview |
+| Engine Installation | 520 × 480 | 520 wide × natural initial disclosure height |
+| Tool Installation | 520 × 460 | 520 wide × natural initial disclosure height |
+| Vibe Code guide | Already content fit | Same fitting; now also remembers user size and reserves the screen margin |
+
+Templates intentionally retains a 620 × 700 browsing viewport, with the same frame persistence and
+screen cap. This work does not migrate plugin-owned reports or other independent utility panels.
+
+Preferences retains its application-wide route and settings broadcasts. Its hidden, unfocused
+native construction now uses Windows document ownership, skip-taskbar, non-minimizable traits and
+the shared host's geometry, floating level, suspension, stacking and owner dismissal. Only its
+actual calling window can invoke `preferences_ready`, granted solely by
+`capabilities/preferences-layout.json`; it reports the same bounded `ContentFit` measurement.
+Preferences uses the same `DialogPlacement`, AppKit/Tauri setters and debounced frame worker as
+session dialogs, with a small application-wide lifecycle record instead of a document-tab draft.
+No second sizing or frame-storage mechanism is introduced.
+
+Frontend regression tests exercise natural-content measurement for fitting and screen-taller
+content and oversized old viewports, both form platforms and DPI 1/1.5/2, and verify style restoration
+and pinned actions. The Rust placement simulation exercises both native platform setters, origin
+versus destination DPI, remembered sizes larger than a new screen, negative coordinates, decoration
+subtraction and heights below the previous minimum. New pure-helper tests cover logical frame
+round trips, old/invalid size records and work-area margins, immediate user versus programmatic resize events, and preserving a user
+size through later move-only writes. Regression cases also cover live width/height minimum updates
+on grow/shrink re-fits and three Custom Page Size save/reopen cycles at Windows 1x/1.5x and macOS 2x,
+including a different initial measurement from the saved frame. Native tests, lint/builds and hands-on
+checks on macOS and Windows are left to integration for this worker task.
 
 Escape, title-bar close and Cmd/Ctrl+W cancel. Valid Enter in a field applies; composition Enter does
 not. The first field focuses on mount, and dialog Undo/Redo stays local to text fields. macOS
@@ -213,10 +329,10 @@ typed callback and do not receive native window or download authority.
 
 ## Structure templates
 
-`template.insertDialog` opens the modeless `structureTemplates` kind, labelled
+`template.insertDialog` opens the modeless `structureTemplates` kind, labeled
 `dialog-main-structureTemplates-<slot>`, through the same opaque-host route in `App.tsx`.
 It starts at 620 × 700 logical pixels (minimum 420 × 360), resizes, and inherits document ownership,
-first centring, per-kind position persistence, utility suspension, focus and originating-tab dismissal
+first centering, per-kind position persistence, utility suspension, focus and originating-tab dismissal
 on both platforms. Reopening shows and focuses the retained window without resetting its search.
 Browser builds use the same `StructureTemplatePicker` body in an in-page fallback.
 
@@ -228,7 +344,7 @@ are reserved and deduplicated through the shared private transport. An `inserted
 the reservation for the next insertion without closing the window; errors allow an explicit retry.
 The owner dispatches `template.insert.<id>` into its command registry in the originating tab's context,
 including when another tab is active. Each insertion adds/selects one molecule through document
-patches at the fixed document bond length, centred in that tab's visible page area, with one labelled
+patches at the fixed document bond length, centered in that tab's visible page area, with one labeled
 Undo entry. Closing/replacing the source tab invalidates the session.
 
 The picker body loads lazily. It builds thumbnails from trusted built-in layouts through
@@ -246,7 +362,7 @@ body, and an owner callback in the coordinator. Extend Rust's kind/label allowli
 capability window matcher; URLs remain host IDs. Keep files, history, settings and plugin operations
 in MainWindow. Add contract, lifecycle, originating-context and both-platform manual tests.
 
-Plugin prompts, report readers, plugin manager, toolbar customization and colour editors
+Plugin prompts, report readers, plugin manager and toolbar customization
 are deliberately unimplemented. Modal plugin prompts need an explicit document input lease at the
 coordinator seam, including all command/pointer/menu/clipboard paths and dependent prompt stacking;
 Page Size has no such lease. Other kinds will need their own busy/progress contracts,
@@ -254,16 +370,19 @@ snapshot revisions and cancellation semantics before they can use the host.
 
 ## Stage 2: modeless Export
 
-`export.open` opens the second registered kind, `export`, labelled `dialog-main-export-<slot>`.
+`export.open` opens the second registered kind, `export`, labeled `dialog-main-export-<slot>`.
 It is modeless: drawing, toolbars, and other tabs remain usable. Page Size and Export may each
-retain a session for the same tab. Export starts at 520 × 620 logical pixels, has a 420 × 360
-minimum, resizes with its form body scrolling and its action footer always visible, and cannot minimize or maximize. Its ownership,
-floating level, macOS unparented/hides-on-deactivate behavior, first centring, per-kind position
+retain a session for the same tab. Export starts at a 520px logical width with content-fit height
+(520 × 620 before ready or without a measurement). Its 420 × 360 resize minimum is bounded by the
+fitted client. Its body scrolls above always-visible actions; it cannot minimize or maximize. Its ownership,
+floating level, macOS unparented/hides-on-deactivate behavior, first centering, per-kind position
 persistence, and utility suspension are the same shared paths as Page Size. No AppKit child
 relationship or new global window privilege is introduced. Browser builds retain an in-page
 surface containing the very same Export form and validation.
 
-The trusted Export body loads lazily and sends ready only after its form commits and focuses the
+The preview placeholder reserves the same 220px content height as the rendered image, with no
+inline-image baseline, so a preview arriving after ready adds no height. The trusted Export body
+loads lazily and sends ready only after its form commits and focuses the
 filename field; Page Size retains its existing commit-ready path. The snapshot contains only the
 originating drawing's title and small initial options. Typed actions
 are `chooseDestination`, `export` (each carrying validated options), and `cancel`. MainWindow owns
@@ -285,7 +404,7 @@ extension after the panel returns. Overlong path receipts fail visibly before a 
 
 Results are `accepted`, `progress`, `picked`, `cancelled`, `error`, or `exported`, with bounded path/name, error
 or warning notice data. Main returns preparation/picker/write progress without completing the
-request receipt or releasing its reservation. Failed operations and cancelled
+request receipt or releasing its reservation. Failed operations and canceled
 panels release the reservation for an explicit retry. Completed exports keep Export disabled and
 show success and warning details inside the dialog until Close/Escape/Cmd-or-Ctrl+W/title-bar close.
 The original export functions, option mapping, PDF metadata generation, and rasterizer input are
@@ -361,6 +480,7 @@ the orchestrator to handle during integration.
 | Opening versus tab close | Register pending sessions before subscription awaits; cancellation prevents creation or closes a late build | Coordinator deferred-subscription and late-creation tests |
 | Reused tab ID | Settle the originating session before installing a replacement document history | `MainWindow.tabs.dom.test.tsx` replaces pristine Untitled, injects late Apply/closed deliveries, and verifies a fresh session works on the replacement |
 | Mixed-DPI sizing | Move, destination client resize, measure actual outer frame, clamp | Rust `placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame` simulates WM_DPICHANGED and title-bar/border dimensions |
+| Content-fit final frame and minimum | Complete placement and logical minimum update before draining queued operations | Rust `dialog_placement_and_minimum_have_correct_final_sizes_on_both_platforms` asserts final client/outer sizes, minimum and position for both platform paths, remembered 1x/2x moves, negative coordinates and small work areas |
 | Reopen | Reinvoke open with the retained snapshot; Rust shows/configures/focuses the same ready window without placement | Coordinator retained-snapshot reopen test |
 | Move persistence | One bounded-notification worker; coalesced burst; latest move across tabs wins; registry snapshot before off-lock IO; close flush serialized against worker writes | Rust `persistence_worker_coalesces_a_burst_and_writes_after_registry_unlock` exercises 1000 moves and asserts the write callback can acquire the registry lock; `a_coalesced_kind_remembers_the_latest_move_across_tabs` covers multiple dialogs |
 | macOS Select All | Native and web Edit menus register the existing command; native routing follows the key window; shared field selection keeps dialog edits local with no document forwarding | Rust `select_all_targets_the_focused_dialog_without_touching_document_selection`, `appMenu.test.ts`, `editMenuUndo.dom.test.ts` and dialog DOM keyboard/menu tests |
@@ -444,8 +564,8 @@ focus, and returning from another application never activates ChemDraft.
 
 ## Compound spacing adapter
 
-`arrangementSpacing` reuses the modeless native host, with a 540 × 600 initial client and
-resizing enabled. Sessions are keyed by originating tab and kind, allowing Page Size, Export and
+`arrangementSpacing` reuses the modeless native host, with a 540px initial width,
+content-fit height and resizing enabled (540 × 600 remains the pre-ready fallback). Sessions are keyed by originating tab and kind, allowing Page Size, Export and
 spacing to coexist. Closing/replacing a tab closes all three; disabling layouts closes spacing only.
 The owner retains an immutable document snapshot and validates it again on preview/Save.
 Changes go through the owning tab's history, including when inactive, with one undo entry.
@@ -459,3 +579,15 @@ both kind-specific messages. The host assembles only the current request in orde
 bounded total and a timeout; stale/partial/error previews cannot enable Save. Native bootstrap,
 focus/ownership, monitor placement, position persistence and native-prompt suspension reuse
 the shared host unchanged. Browser builds use the same draft-only form in their fallback.
+
+## Custom color slots
+
+`customColor` is a modeless document-owned dialog (`dialog-main-customColor-<slot>`), initially
+460 × 480 logical pixels and resizable. It uses the shared centering, per-kind saved position,
+Windows ownership/no-taskbar policy, and private session channels. Its strict snapshot contains
+only the title, swatch number (1–4), slot (1–2), and current normalized hex color or null.
+Hex, RGB and approximate CMYK input share the pure swatch parsers; the form previews valid values
+and sends only normalized RGB hex on OK. The owner persists the slot without applying it to the
+drawing, and Clear invokes the slot's registered clear command. Changing slots replaces the
+previous draft; reopening the same slot retains it. Settings notifications and storage events
+refresh every palette webview. No plugin API or dialog-owner permission is broadened.

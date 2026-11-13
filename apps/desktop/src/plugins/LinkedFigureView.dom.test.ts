@@ -4,17 +4,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginLinkedFigureSpectrum, PluginLinkedFigureStructure } from "@chemdraft/plugin-api";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
 import {
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
   type AnnotationLabelBox
 } from "@chemdraft/layout-engine";
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createSpectrumEnvelope, LinkedFigureView, restoreLinkedFigureWindowFrame, sampleStyledEnvelope } from "./LinkedFigureView";
-import { exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
+import { copySpectrumToClipboard, exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
 import { installPluginPanelInputFocus, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 
 const nativePanel = vi.hoisted(() => ({
@@ -85,6 +86,16 @@ function click(element: Element): void {
   act(() => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 async function enlargeNativeFigure(): Promise<void> {
@@ -920,6 +931,247 @@ describe("LinkedFigureView", () => {
     expect(document.getElementById(menu.id)).toBeNull();
   });
 
+  it.each([
+    { action: "copy", rejects: false },
+    { action: "png", rejects: false },
+    { action: "jdx", rejects: false },
+    { action: "png", rejects: true },
+    { action: "jdx", rejects: true }
+  ])("ignores $action completion after unmount (rejects: $rejects)", async ({ action, rejects }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copy = deferred<Awaited<ReturnType<typeof copySpectrumToClipboard>>>();
+    const save = deferred<Awaited<ReturnType<typeof exportSpectrumFigure>>>();
+    if (action === "copy") vi.mocked(copySpectrumToClipboard).mockReturnValueOnce(copy.promise);
+    else if (action === "jdx") vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
+    else vi.mocked(exportSpectrumFigure).mockReturnValueOnce(save.promise);
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const resetStatus = vi.fn();
+    const schedule = window.setTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: any[]) => {
+      if (delay !== 1400 && delay !== 1800) return schedule(handler, delay, ...args);
+      return schedule(() => {
+        resetStatus();
+        if (typeof handler === "function") handler(...args);
+      }, delay);
+    }) as unknown as typeof window.setTimeout);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      if (action === "copy") {
+        click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Copy")!);
+        expect(copySpectrumToClipboard).toHaveBeenCalledOnce();
+      } else {
+        click(container!.querySelector('[aria-haspopup="menu"]')!);
+        click(container!.querySelectorAll('[role="menuitem"]')[action === "jdx" ? 0 : 1]);
+        expect(action === "jdx" ? saveTextFile : exportSpectrumFigure).toHaveBeenCalledOnce();
+      }
+      if (action !== "copy") {
+        const button = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+        expect(button.textContent).toBe("Exporting…");
+        expect(button.disabled).toBe(true);
+      }
+      expect(timeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 1400);
+      expect(timeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 1800);
+      await act(async () => {
+        root!.unmount();
+        root = undefined;
+      });
+      expect(container!.childElementCount).toBe(0);
+      const timersAfterUnmount = vi.getTimerCount();
+      timeoutSpy.mockClear();
+      await act(async () => {
+        if (action === "copy") copy.resolve("image");
+        else if (rejects) save.reject(new Error("Save failed"));
+        else save.resolve("saved");
+        await (action === "copy" ? copy.promise : save.promise).catch(() => {});
+      });
+      expect(timeoutSpy).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timersAfterUnmount);
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(resetStatus).not.toHaveBeenCalled();
+      expect(container!.childElementCount).toBe(0);
+      // React may silently ignore a setter after unmount. Check observable effects as well
+      // as diagnostics: no feedback DOM, scheduled timer, or reset callback may survive.
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      consoleError.mockRestore();
+      timeoutSpy.mockRestore();
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(exportSpectrumFigure).mockReset();
+      vi.mocked(saveTextFile).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { action: "export", delay: 1800, status: "Exported", idle: "Export" },
+    { action: "copy", delay: 1400, status: "Copied", idle: "Copy" }
+  ])("resets mounted $action feedback and replaces its timer on repeat", async ({ action, delay, status, idle }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Count feedback timers specifically; DOM focus handling may schedule other timeouts.
+    const liveTimers = new Set<number>();
+    const schedule = window.setTimeout.bind(window);
+    const cancel = window.clearTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number, ...args: any[]) => {
+      if (timeout !== delay) return schedule(handler, timeout, ...args);
+      const timer = schedule(() => {
+        liveTimers.delete(timer);
+        if (typeof handler === "function") handler(...args);
+      }, timeout);
+      liveTimers.add(timer);
+      return timer;
+    }) as unknown as typeof window.setTimeout);
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout").mockImplementation(((timer?: number) => {
+      if (timer !== undefined) liveTimers.delete(timer);
+      cancel(timer);
+    }) as unknown as typeof window.clearTimeout);
+    try {
+      // Strict Mode replays effect setup/cleanup; the mounted guard must be restored on setup.
+      mount(createElement(StrictMode, null, createElement(LinkedFigureView, { spectrum })));
+      const button = action === "export"
+        ? container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!
+        : [...container!.querySelectorAll("button")].find((candidate) => candidate.textContent === "Copy")!;
+      const perform = async (): Promise<void> => {
+        const copy = deferred<Awaited<ReturnType<typeof copySpectrumToClipboard>>>();
+        const save = deferred<Awaited<ReturnType<typeof saveTextFile>>>();
+        if (action === "export") vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
+        else vi.mocked(copySpectrumToClipboard).mockReturnValueOnce(copy.promise);
+        click(button);
+        if (action === "export") {
+          click(container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!);
+          expect(button.textContent).toBe("Exporting…");
+        }
+        await act(async () => {
+          if (action === "export") save.resolve("saved");
+          else copy.resolve("image");
+          await (action === "export" ? save.promise : copy.promise);
+        });
+        expect(button.textContent).toBe(status);
+        expect(liveTimers.size).toBe(1);
+      };
+      await perform();
+      act(() => { vi.advanceTimersByTime(delay - 1); });
+      expect(button.textContent).toBe(status);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(button.textContent).toBe(idle);
+      expect(liveTimers.size).toBe(0);
+      if (action === "export") expect(container!.querySelector('[role="status"]')).toBeNull();
+
+      await perform();
+      act(() => { vi.advanceTimersByTime(delay / 2); });
+      await perform();
+      // The original deadline passes, but the replacement timer retains the feedback.
+      act(() => { vi.advanceTimersByTime(delay - 1); });
+      expect(button.textContent).toBe(status);
+      expect(liveTimers.size).toBe(1);
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(button.textContent).toBe(idle);
+      expect(liveTimers.size).toBe(0);
+      if (action === "export") expect(container!.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(saveTextFile).mockReset();
+      timeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { action: "export", delay: 1800, status: "Exported" },
+    { action: "copy", delay: 1400, status: "Copied" }
+  ])("clears the $action status timer when unmounted", async ({ action, delay, status }) => {
+    // Track the status timer specifically; other code may also schedule timeouts.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const resetStatus = vi.fn();
+    let statusTimer: number | undefined;
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const schedule = window.setTimeout.bind(window);
+    const timeoutSpy = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number, ...args: any[]) => {
+      if (timeout !== delay) return schedule(handler, timeout, ...args);
+      statusTimer = schedule(() => {
+        resetStatus();
+        if (typeof handler === "function") handler(...args);
+      }, timeout);
+      return statusTimer;
+    }) as unknown as typeof window.setTimeout);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      let button: HTMLButtonElement;
+      if (action === "export") {
+        const save = deferred<Awaited<ReturnType<typeof saveTextFile>>>();
+        vi.mocked(saveTextFile).mockReturnValueOnce(save.promise);
+        button = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+        click(button);
+        click(container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!);
+        expect(button.textContent).toBe("Exporting…");
+        await act(async () => {
+          save.resolve("saved");
+          await save.promise;
+        });
+      } else {
+        vi.mocked(copySpectrumToClipboard).mockResolvedValueOnce("image");
+        button = [...container!.querySelectorAll("button")].find((candidate) => candidate.textContent === "Copy")!;
+        await act(async () => button.click());
+      }
+      expect(button.textContent).toBe(status);
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), delay);
+      expect(statusTimer).toBeDefined();
+      expect(clearTimeoutSpy).not.toHaveBeenCalledWith(statusTimer);
+      await act(async () => {
+        root!.unmount();
+        root = undefined;
+      });
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(statusTimer);
+      await act(async () => {
+        vi.advanceTimersByTime(delay + 1);
+      });
+      // React silently ignores setters after unmount, so check that the callback containing
+      // the state update never executes rather than relying on warnings or thrown errors.
+      expect(resetStatus).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        root?.unmount();
+        root = undefined;
+      });
+      timeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      vi.mocked(copySpectrumToClipboard).mockReset();
+      vi.mocked(saveTextFile).mockReset();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["jdx", "png", "svg", "pdf"] as const)("discloses rule estimates through the %s export action", async (format) => {
+    mount(createElement(LinkedFigureView, { spectrum: {
+      ...spectrum,
+      comparison: { primaryLabel: "HOSE", alternativeLabel: "increment" },
+      peaks: spectrum.peaks.map((peak, index) => ({ ...peak, estimated: index === 0 }))
+    } }));
+    click(container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!);
+    const items = [...container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
+    if (format === "jdx") {
+      const jdx = vi.mocked(saveTextFile).mock.calls[0]![1];
+      expect(jdx).toContain("Rule-based shift estimates are present");
+      expect(jdx).toContain("HOSE (non-estimated primary peaks only); rule-based estimates");
+    } else {
+      const markup = vi.mocked(exportSpectrumFigure).mock.calls[0]![1];
+      const exported = new DOMParser().parseFromString(markup, "image/svg+xml").documentElement;
+      expect(exported.querySelector(".lf-spectrum-note")?.textContent).toContain("rule-estimated");
+      expect(markup).toContain("HOSE = non-estimated primary peaks only");
+      expect(markup).not.toContain("method = HOSE only");
+    }
+  });
+
   it.each(["jdx", "png", "svg", "pdf"] as const)("reports cancelled and failed %s exports", async (format) => {
     mount(createElement(LinkedFigureView, { spectrum }));
     const exporter = format === "jdx" ? vi.mocked(saveTextFile) : vi.mocked(exportSpectrumFigure);
@@ -929,7 +1181,7 @@ describe("LinkedFigureView", () => {
       const items = container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
       await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
       expect(container!.querySelector('[aria-haspopup="menu"]')!.textContent).toBe(outcome === "cancelled" ? "Export" : "Export failed");
-      expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export cancelled." : "Spectrum export failed.");
+      expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export canceled." : "Spectrum export failed.");
     }
   });
 
@@ -1315,17 +1567,75 @@ describe("LinkedFigureView", () => {
     checkBackgrounds(container!.querySelector(".lf-spectrum")!, ".lf-peak-label");
     const structureSvg = container!.querySelector(".lf-structure")!;
     checkBackgrounds(structureSvg, ".lf-shift-label");
-    // Overwide annotations force the fallback shelf; the last leader crosses a nearer label's box.
-    const firstBox = textBox(structureSvg.querySelector<SVGTextElement>(".lf-shift-label")!);
-    const lastLeader = [...structureSvg.querySelectorAll(".lf-label-leader")].at(-1)!;
-    expect(Number(lastLeader.getAttribute("x1"))).toBeGreaterThan(firstBox.x);
-    expect(Number(lastLeader.getAttribute("x1"))).toBeLessThan(firstBox.x + firstBox.width);
-    expect(Number(lastLeader.getAttribute("y1"))).toBeLessThan(firstBox.y);
-    expect(Number(lastLeader.getAttribute("y2"))).toBeGreaterThan(firstBox.y + firstBox.height);
+    // Degenerate coincident vertices still retain every label and opaque background; carbon
+    // leaders use routed polylines rather than relying on a white box to hide text crossings.
+    const structureLeaders = [...structureSvg.querySelectorAll("polyline.lf-label-leader")];
+    expect(structureLeaders).toHaveLength(count);
+    for (const leader of structureLeaders) {
+      const points = leader.getAttribute("points")!.trim().split(/\s+/).map(pair => pair.split(",").map(Number));
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      expect(points.every(point => point.length === 2 && point.every(Number.isFinite))).toBe(true);
+      expect(new Set(points.map(point => point.join(","))).size).toBeGreaterThanOrEqual(2);
+    }
     const svg = standaloneSpectrumSvg(container!.querySelector<SVGSVGElement>(".lf-spectrum")!);
     const exported = new DOMParser().parseFromString(svg, "text/html");
     checkBackgrounds(exported.querySelector("svg")!, ".lf-peak-label");
   });
+
+  it("paints routed carbon leaders beneath the molecule and preserves shift assignments", () => {
+    const depiction = depictSmiles2D("Cc1ccccc1");
+    mount(createElement(LinkedFigureView, {
+      spectrum: {
+        nucleus: "13C", domain: { min: 0, max: 200 },
+        peaks: depiction.atoms.map((_, index) => ({ id: `c${index}`, ppm: 120 + index, intensity: 1, atomIndices: [index] }))
+      },
+      structure: {
+        atoms: depiction.atoms.map((atom, index) => ({ ...atom, index })),
+        bonds: depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 }))
+      }
+    }));
+    const svg = container!.querySelector(".lf-structure")!;
+    const bond = svg.querySelector(".lf-bond")!;
+    const leaders = [...svg.querySelectorAll("polyline.lf-label-leader")];
+    expect(leaders).toHaveLength(depiction.atoms.length);
+    for (const leader of leaders) {
+      expect(leader.getAttribute("points")!.split(" ").length).toBeGreaterThanOrEqual(3);
+      expect(leader.getAttribute("fill")).toBe("none");
+      expect(leader.compareDocumentPosition(bond) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    for (let index = 0; index < depiction.atoms.length; index++) {
+      expect(svg.querySelector(`[data-atom-index="${index}"] .lf-shift-label`)!.textContent).toBe(`${120 + index}.00`);
+    }
+  });
+
+  it.each(["Cc1ccccc1", "c1ccc2ccccc2c1"].flatMap(smiles => [false, true].map(large => ({ smiles, large }))))(
+    "connects every rendered carbon label edge ($smiles, large: $large)", ({ smiles, large }) => {
+      const depiction = depictSmiles2D(smiles);
+      mount(createElement(LinkedFigureView, {
+        spectrum: { nucleus: "13C", domain: { min: 0, max: 200 },
+          peaks: depiction.atoms.map((_, index) => ({ id: `c${index}`, ppm: 120 + index, intensity: 1, atomIndices: [index] })) },
+        structure: { atoms: depiction.atoms.map((atom, index) => ({ ...atom, index })),
+          bonds: depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 })) }
+      }));
+      if (large) click([...container!.querySelectorAll("button")].find(button => button.textContent === "Full size")!);
+      const svg = document.querySelector(".lf-structure")!;
+      const leaders = [...svg.querySelectorAll("polyline.lf-label-leader")];
+      for (const [index, leader] of leaders.entries()) {
+        const text = svg.querySelector<SVGTextElement>(`[data-atom-index="${index}"] .lf-shift-label`)!;
+        const box = textBox(text);
+        // The SVG advance must be explicit: system UI font fallback must not leave a large
+        // invisible tail between the last glyph and the edge used by the geometry router.
+        expect(Number(text.getAttribute("textLength"))).toBeCloseTo(box.width);
+        const [x, y] = leader.getAttribute("points")!.trim().split(/\s+/).at(-1)!.split(",").map(Number);
+        expect(x).toBeGreaterThanOrEqual(box.x - 1e-6);
+        expect(x).toBeLessThanOrEqual(box.x + box.width + 1e-6);
+        expect(y).toBeGreaterThanOrEqual(box.y - 1e-6);
+        expect(y).toBeLessThanOrEqual(box.y + box.height + 1e-6);
+        expect(Math.min(Math.abs(x - box.x), Math.abs(x - box.x - box.width), Math.abs(y - box.y), Math.abs(y - box.y - box.height)))
+          .toBeLessThan(1e-6);
+      }
+    }
+  );
 
   it.each([380, 508, 1200])("keeps the exit control in wrapping toolbar flow at %spx", (width) => {
     mount(createElement(LinkedFigureView, { spectrum, structure }));

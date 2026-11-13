@@ -11,6 +11,7 @@ import {
   editActions,
   pageOrientationActions,
   pageSizeActions,
+  selectionNudgeActions,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -18,6 +19,29 @@ import {
 } from "./commands";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import type { KeybindingScheme } from "./keybindingSettings";
+import { isEditableTarget } from "./editableTarget";
+export { isBrowserReloadChord } from "./browserReloadGuard";
+
+/** Document coordinates use CSS-pixel units, with positive y pointing down the page. */
+export function arrowNudgeOffset(key: string, shift = false): { x: number; y: number } | undefined {
+  const step = shift ? 10 : 1;
+  switch (key) {
+    case "ArrowLeft": return { x: -step, y: 0 };
+    case "ArrowRight": return { x: step, y: 0 };
+    case "ArrowUp": return { x: 0, y: -step };
+    case "ArrowDown": return { x: 0, y: step };
+    default: return undefined;
+  }
+}
+
+export function arrowNudgeContinuesBurst(lastPress: number | undefined, now: number): boolean {
+  return lastPress !== undefined && now >= lastPress && now - lastPress < 1000;
+}
+
+/** Controls keep their own arrow navigation, including toolbar flyout buttons. */
+export function isArrowNudgeEditorTarget(target: EventTarget | null): boolean {
+  return isEditableTarget(target) || (target instanceof Element && !!target.closest("input, textarea, select, button"));
+}
 
 /**
  * Platform-convention chords bound in addition to a command's own `shortcut`. Windows and Linux
@@ -71,6 +95,7 @@ export function createMainWindowShortcutCommands(
     ...state.layerActions,
     ...copyAsActions,
     ...editActions,
+    ...selectionNudgeActions,
     ...state.toolCommandSpecs,
     ...viewActions,
     ...pageSizeActions,
@@ -103,24 +128,4 @@ export function createDesktopShortcutRegistry(
 
 export function detectDesktopShortcutPlatform(): ShortcutPlatform {
   return detectShortcutPlatform();
-}
-
-/**
- * WebView2's built-in browser shortcuts stay enabled (wry turns them on and Tauri exposes no switch),
- * so off macOS F5 / Ctrl+F5 / Ctrl+R / Ctrl+Shift+R reload the document webview — discarding undo
- * history, selection and anything newer than the last session autosave. The document window
- * suppresses these chords unless a ChemDraft command claims them (Ctrl+R is Show Rulers in the
- * ChemDraft scheme). macOS's WKWebView has no reload shortcut.
- */
-export function isBrowserReloadChord(
-  event: { key: string; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean },
-  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
-): boolean {
-  if (platform === "macos" || event.altKey || event.metaKey) {
-    return false;
-  }
-  if (event.key === "F5" || event.key === "BrowserRefresh") {
-    return true;
-  }
-  return Boolean(event.ctrlKey) && event.key.toLowerCase() === "r";
 }

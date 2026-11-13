@@ -140,7 +140,7 @@ count/element validated before scatter; any failure ⇒ OCL fallback or `unsuppo
 - 2026-06-15: **Phase 1 complete.** New `spin3dRefineCaps.ts` (shared size→cap policy) +
   `spin3dSettings.ts` (modes, localStorage persistence, options resolver). Adapter
   `refine` → re-runnable `refineFromEmbedded` (snapshots embedded coords, restores before
-  each minimise). Worker: `options` on request, two-level cache (embed by molfile,
+  each minimize). Worker: `options` on request, two-level cache (embed by molfile,
   refined memoised per mode), embed always requests refine capability. Client + MainWindow
   thread options through generate/prefetch/in-page fallback. Verified `OCL.ForceFieldMMFF94`
   exposes MMFF94/MMFF94S/MMFF94SPLUS + setAtomX/Y/Z. Tests: settings (8) + adapter

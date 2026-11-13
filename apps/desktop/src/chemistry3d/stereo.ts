@@ -102,7 +102,7 @@ export function assertComponentStereo(rdkit: RdkitMinimalModule, model: Plugin3D
     const actual = stereoGraph(geometry);
     for (const center of specifiedCenters(expected)) {
       if (parity(expected, center) !== parity(actual, center)) {
-        throw new Error(`Component ${index + 1}: ${phase} would change specified tetrahedral stereo at centre ${center + 1}; restore the input geometry.`);
+        throw new Error(`Component ${index + 1}: ${phase} would change specified tetrahedral stereo at center ${center + 1}; restore the input geometry.`);
       }
     }
     for (const bond of expected.bonds) {

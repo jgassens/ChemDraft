@@ -1,4 +1,4 @@
-import { applyPatch, createEmptyDocument, type DocumentPatch, type DocumentObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, toEngineDocument, type BracketObject, type DocumentPatch, type DocumentObject, type MoleculeObject, type ReactionObject } from "@chemdraft/chem-core";
 import type { PluginCommandContext, PluginSelectionSnapshot } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import { PluginHost, writePatchOps, type PluginPatchApplicationRequest } from "./index";
@@ -8,16 +8,41 @@ const text = (id: string): DocumentObject => ({
   id, type: "text", x: 0, y: 0, width: 10, height: 10, rotation: 0, style: {}, text: id, spans: []
 });
 const snapshot = (objectIds: string[]): PluginSelectionSnapshot => ({ objectIds, molecules: [] });
+const bracket = (id: string, pairId: string, side: "open" | "close"): BracketObject => ({
+  id, type: "bracket", bracketKind: "square", pairId, side, repeatUnit: true, bracketUsage: "sru",
+  ...(side === "close" ? { label: "n" } : {}), containedObjectIds: [],
+  x: 100, y: 100, width: 10, height: 100, rotation: 0, style: {}
+});
+const cachedMolecule = (): MoleculeObject => ({
+  id: "mol_3", type: "molecule", x: 110, y: 120, width: 30, height: 20, rotation: 0, style: {},
+  structureFormat: "smiles", structure: "CC",
+  atoms: [{ id: "a1", element: "C", x: 110, y: 120, formalCharge: 0 },
+    { id: "a2", element: "C", x: 140, y: 120, formalCharge: 0 }],
+  bonds: [{ id: "bond", fromAtomId: "a1", toAtomId: "a2", order: "single" }], superatoms: [], rGroups: [],
+  chemistry: { formula: "C2H6", averageMass: 30.07, atomCount: 2, bondCount: 1, totalCharge: 0,
+    isotopeLabels: [], stereochemistry: [], warnings: [{ code: "test.retained", message: "Keep this warning" }] }
+});
+const reaction = (reference: "components" | "conditions" | "arrows" | "plusses" | "metadata"): ReactionObject => ({
+  id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {}, mappingState: "absent",
+  components: reference === "components" ? [{ role: "agent", objectId: "mol_1" }] : [],
+  conditionsTextObjectIds: reference === "conditions" ? ["mol_1"] : [],
+  arrowObjectIds: reference === "arrows" ? ["mol_1"] : [],
+  plusObjectIds: reference === "plusses" ? ["mol_1"] : [],
+  ...(reference === "metadata" ? { compatibility: { warnings: [], unknown: {
+    cdxmlStepReferences: { ReactionStepObjectsAboveArrow: ["mol_1"] }
+  } } } : {})
+});
 
 function fixture(
   selectedIds: string[],
   run: (context: PluginCommandContext) => unknown | Promise<unknown>,
-  getSelection?: () => PluginSelectionSnapshot | Promise<PluginSelectionSnapshot>
+  getSelection?: () => PluginSelectionSnapshot | Promise<PluginSelectionSnapshot>,
+  objects: DocumentObject[] = []
 ) {
   let document = createEmptyDocument({ now });
   const pageId = document.pages[0]!.id;
-  document = applyPatch(document, { op: "batch", patches: ["mol_1", "mol_7"].map((id) => ({
-    op: "addObject", pageId, object: text(id)
+  document = applyPatch(document, { op: "batch", patches: [text("mol_1"), text("mol_7"), ...objects].map((object) => ({
+    op: "addObject", pageId, object
   })) }, { now });
   document = { ...document, selection: { pageId, objectIds: selectedIds } };
   const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
@@ -42,6 +67,408 @@ function fixture(
 }
 
 describe("direct-write invocation scope", () => {
+  it.each(["before read", "during read"] as const)("reports a document switch before preflight errors (%s)", async timing => {
+    let key = "original";
+    const document = createEmptyDocument({ now });
+    const applyDocumentPatch = vi.fn();
+    const getActiveDocument = vi.fn(async () => {
+      key = "switched";
+      return document;
+    });
+    const host = new PluginHost({ getActiveDocument, getActiveDocumentKey: () => key, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.switch", name: "Switch", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.switch.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.switch.run": ctx => {
+      if (timing === "before read") key = "switched";
+      return ctx.documents.applyPatch!({ reason: "Edit object from original document", patch: {
+        op: "updateObject", objectId: "missing-in-new-document", changes: { x: 20 }
+      } });
+    } } });
+    await expect(host.invokeCommand("plugin.switch.run", { writeSelection: snapshot(["missing-in-new-document"]) }))
+      .rejects.toThrow("The document changed while the plugin was running; nothing was inserted.");
+    expect(getActiveDocument).toHaveBeenCalledTimes(timing === "before read" ? 0 : 1);
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it.each(["label", "repeat count", "remove pair"] as const)("allows %s changes beside an unselected molecule's cached chemistry", async operation => {
+    const multiple = operation === "repeat count";
+    const open = { ...bracket("open", "pair", "open"), containedObjectIds: ["mol_3"],
+      bracketUsage: multiple ? "multiple" as const : "sru" as const };
+    const close = { ...open, id: "close", side: "close" as const, x: 160, label: "n",
+      ...(multiple ? { repeatCount: 2 } : {}) };
+    const f = fixture(["open", "close"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected brackets", patch:
+      operation === "remove pair" ? { op: "batch", patches: [
+        { op: "removeObject", objectId: "open" }, { op: "removeObject", objectId: "close" }
+      ] } : { op: "updateObject", objectId: "close", changes: multiple ? { repeatCount: 4 } : { label: "m" } }
+    }), undefined, [cachedMolecule(), open, close]);
+    const before = f.document().pages[0].objects.find(object => object.id === "mol_3") as MoleculeObject;
+    expect(before.chemistry!.warnings.some(warning => warning.code === "chemistry.bracket_multiplier")).toBe(true);
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    const after = f.document().pages[0].objects.find(object => object.id === "mol_3") as MoleculeObject;
+    expect(after.chemistry!.warnings).not.toEqual(before.chemistry!.warnings);
+    expect({ ...after, chemistry: { ...after.chemistry, warnings: before.chemistry!.warnings } }).toEqual(before);
+    expect(after.chemistry!.warnings).toContainEqual({ code: "test.retained", message: "Keep this warning" });
+    if (operation !== "remove pair") expect(after.chemistry!.warnings.at(-1)!.message).toContain(multiple ? "x4" : "repeat unit m");
+  });
+
+  it.each([false, true])("allows writes with repeated unselected ids (shared references = %s)", async shared => {
+    const empty = createEmptyDocument({ now });
+    let document = toEngineDocument({ ...empty, pages: [{ ...empty.pages[0], objects: [
+      text("selected"), text("duplicate"), { ...text("duplicate"), x: 50 }, { ...text("duplicate"), x: 100 }
+    ] }], selection: { pageId: empty.pages[0].id, objectIds: ["selected"] } });
+    if (!shared) document = structuredClone(document);
+    const before = document.pages[0].objects.slice(1);
+    const applyDocumentPatch = vi.fn((request: PluginPatchApplicationRequest) => {
+      document = applyPatch(document, request.patch.patch);
+      return { applied: true as const, objectIds: ["selected"] };
+    });
+    const host = new PluginHost({ getActiveDocument: () => document, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.duplicates", name: "Duplicates", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.duplicates.run", title: "Run" }] }
+    }, { commandHandlers: { "plugin.duplicates.run": ctx => ctx.documents.applyPatch!({ reason: "Move selected text", patch: {
+      op: "moveObject", objectId: "selected", x: 20, y: 30
+    } }) } });
+    await expect(host.invokeCommand("plugin.duplicates.run")).resolves.toMatchObject({ applied: true });
+    expect(applyDocumentPatch).toHaveBeenCalledOnce();
+    expect(document.pages[0].objects.slice(1)).toEqual(before);
+  });
+
+  it.each(["remove", "change bonds"] as const)("names an indirect bracket change when a selected molecule is edited: %s", async operation => {
+    const open = { ...bracket("b7", "pair", "open"), containedObjectIds: ["mol_3"],
+      crossingBondIds: [{ objectId: "mol_3", bondId: "bond" }] };
+    const f = fixture(["mol_3"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected molecule", patch:
+      operation === "remove" ? { op: "removeObject", objectId: "mol_3" } :
+        { op: "updateObject", objectId: "mol_3", changes: { bonds: [] } }
+    }), undefined, [cachedMolecule(), open, { ...open, id: "close", side: "close", x: 160, label: "n" }]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(operation === "remove" ?
+      'Removing "mol_3" would change bracket "b7", which is not selected' :
+      'Patch would change object "b7", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
+  it.each(["selected", "inserted", "colliding insertion"] as const)("refuses pairId hijacking by a %s bracket atomically", async mode => {
+    const inserted = mode !== "selected";
+    const id = mode === "colliding insertion" ? "old-open" : "editable";
+    const f = fixture(inserted ? [] : [id, "editable-close"], ctx => ctx.documents.applyPatch!({
+      reason: "Hijack an existing pair", patch: { op: "batch", patches: [
+        ...(inserted ? [
+          { op: "addObject" as const, pageId: f.pageId, object: bracket(id, "new-pair", "open") },
+          { op: "addObject" as const, pageId: f.pageId, object: bracket("editable-close", "new-pair", "close") }
+        ] : []),
+        { op: "updateObject", objectId: id, changes: { pairId: "old-pair" } }
+      ] }
+    }), undefined, [cachedMolecule(),
+      { ...bracket("old-open", "old-pair", "open"), containedObjectIds: ["mol_3"] },
+      { ...bracket("old-close", "old-pair", "close"), containedObjectIds: ["mol_3"] },
+      ...(!inserted ? [bracket(id, "new-pair", "open"), bracket("editable-close", "new-pair", "close")] : [])]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "old-open", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
+  it("refuses removing one bracket when its partner is outside the write scope", async () => {
+    const f = fixture(["open"], ctx => ctx.documents.applyPatch!({ reason: "Remove half a pair", patch: {
+      op: "removeObject", objectId: "open"
+    } }), undefined, [cachedMolecule(),
+      { ...bracket("open", "pair", "open"), containedObjectIds: ["mol_3"] },
+      { ...bracket("close", "pair", "close"), containedObjectIds: ["mol_3"] }]);
+    const before = f.document();
+    await expect(f.host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "close", which is not selected');
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    expect(f.document()).toBe(before);
+  });
+
+  it("still detects an indirect change to one occurrence of a repeated bracket id", async () => {
+    // Duplicate ids are valid on load, though individual addObject operations refuse collisions.
+    const source = createEmptyDocument({ now });
+    const document = toEngineDocument({ ...source, pages: [{ ...source.pages[0], objects: [
+      bracket("open", "pair", "open"), bracket("duplicate", "pair", "close"),
+      bracket("other-open", "other-pair", "open"), bracket("duplicate", "other-pair", "close")
+    ] }], selection: { objectIds: ["open"] } });
+    const applyDocumentPatch = vi.fn();
+    const host = new PluginHost({ getActiveDocument: () => document, applyDocumentPatch });
+    host.registerPlugin({ id: "org.test.scope", name: "Scope", version: "0.0.1", apiVersion: "^0.1.8", entry: "plugin.js",
+      permissions: ["document.write"], contributes: { commands: [{ id: "plugin.scope.run", title: "Run" }] }
+    }, {
+      commandHandlers: { "plugin.scope.run": ctx => ctx.documents.applyPatch!({ reason: "Remove half a pair", patch: {
+        op: "removeObject", objectId: "open"
+      } }) }
+    });
+    await expect(host.invokeCommand("plugin.scope.run"))
+      .rejects.toThrow('Patch would change object "duplicate", which is not selected');
+    expect(applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it.each(["edit", "remove one", "remove both"] as const)("allows an in-scope bracket pair operation: %s", async operation => {
+    const f = fixture(operation === "edit" ? ["close"] : ["open", "close"], ctx => ctx.documents.applyPatch!({ reason: "Edit selected pair", patch:
+      operation === "edit" ? { op: "updateObject", objectId: "close", changes: { label: "m" } } :
+        { op: "batch", patches: (operation === "remove one" ? ["open"] : ["open", "close"]).map(objectId =>
+          ({ op: "removeObject", objectId })) }
+    }), undefined, [bracket("open", "pair", "open"), bracket("close", "pair", "close")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    expect(f.applyDocumentPatch).toHaveBeenCalledOnce();
+    if (operation === "edit") expect(f.document().pages[0].objects.find(object => object.id === "close"))
+      .toMatchObject({ pairId: "pair", label: "m", bracketUsage: "sru" });
+  });
+
+  it("names the actual removal that would change an out-of-scope reaction", async () => {
+    const f = fixture(["mol_7", "mol_1"], ctx => ctx.documents.applyPatch!({ reason: "Remove drawables", patch: {
+      op: "batch", patches: [
+        { op: "removeObject", objectId: "mol_7" },
+        { op: "removeObject", objectId: "mol_1" }
+      ]
+    } }), undefined, [reaction("metadata")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(
+      "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+    );
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it("allows a colliding insertion followed by a selected removal through the embedding rebaser atomically (F2)", async () => {
+    const f = fixture(["remove-me"], context => context.documents.applyPatch!({ reason: "Insert and remove", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: f.pageId, object: text("existing") },
+        { op: "removeObject", objectId: "remove-me" }
+      ]
+    } }), undefined, [text("existing"), text("remove-me")]);
+    const apply = f.applyDocumentPatch.getMockImplementation()!;
+    // Model the embedding desktop's collision rebasing before its atomic core application.
+    f.applyDocumentPatch.mockImplementation(request => apply({ ...request, patch: { ...request.patch, patch: {
+      op: "batch", patches: writePatchOps(request.patch.patch as DocumentPatch).map(op =>
+        op.op === "addObject" && op.object.id === "existing"
+          ? { ...op, object: { ...op.object, id: "existing_copy" } } : op)
+    } } }));
+
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toEqual({ applied: true, objectIds: ["existing_copy"] });
+    expect(f.applyDocumentPatch).toHaveBeenCalledTimes(1);
+    expect(f.document().pages[0].objects).toEqual([
+      text("mol_1"), text("mol_7"), text("existing"), { ...text("existing"), id: "existing_copy" }
+    ]);
+    expect(f.document().pages[0].objects.some(object => object.id === "remove-me")).toBe(false);
+  });
+
+  it("gives all writes one live signal per command and aborts it when the command ends", async () => {
+    let index = 0;
+    const f = fixture([], async ctx => {
+      for (let i = 0; i < 2; i++) await ctx.documents.applyPatch!({ reason: "Insert", patch: {
+        op: "addObject", pageId: f.pageId, object: text(`insert_${++index}`)
+      } });
+    });
+    const apply = f.applyDocumentPatch.getMockImplementation()!;
+    f.applyDocumentPatch.mockImplementation(request => {
+      expect(request.signal?.aborted).toBe(false);
+      return apply(request);
+    });
+    await f.host.invokeCommand("plugin.scope.run");
+    const first = f.applyDocumentPatch.mock.calls[0]![0].signal!;
+    expect(f.applyDocumentPatch.mock.calls[1]![0].signal).toBe(first);
+    expect(first.aborted).toBe(true);
+    await f.host.invokeCommand("plugin.scope.run");
+    expect(f.applyDocumentPatch.mock.calls[2]![0].signal).not.toBe(first);
+    expect(f.applyDocumentPatch.mock.calls[2]![0].signal?.aborted).toBe(true);
+  });
+  describe.each(["missing", "unavailable"] as const)("document provider %s", provider => {
+    it.each([false, true])("refuses writes without removals when scope cannot be checked (batch = %s)", async batch => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(() => undefined);
+      const host = new PluginHost({
+        ...(provider === "unavailable" ? { getActiveDocument } : {}),
+        applyDocumentPatch: f.applyDocumentPatch
+      });
+      const patches: DocumentPatch[] = [
+        { op: "addObject", pageId: f.pageId, object: text("new") },
+        { op: "addAnnotation", pageId: f.pageId, annotation: {
+          id: "note", type: "annotation", x: 0, y: 0, width: 10, height: 10,
+          rotation: 0, style: {}, targetObjectIds: [], message: "note"
+        } },
+        { op: "updateObject", objectId: "mol_1", changes: { text: "edited" } },
+        { op: "moveObject", objectId: "mol_1", x: 10, y: 20 },
+        { op: "setObjectOrder", pageId: f.pageId, objectIds: ["mol_7", "mol_1", "new", "note"] }
+      ];
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": async ctx => {
+          for (const patch of batch ? [{ op: "batch" as const, patches }] : patches) {
+            await ctx.documents.applyPatch!({ reason: "no removals", patch });
+          }
+        } }
+      });
+      // Explicit Send scope avoids the separate invocation-start selection read.
+      const before = f.document();
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1", "mol_7"]) }))
+        .rejects.toThrow("no active document is available to check write scope");
+      expect(getActiveDocument).toHaveBeenCalledTimes(provider === "unavailable" ? 1 : 0);
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
+    });
+
+    it.each([false, true])("refuses removals when their reaction scope cannot be checked (request scope = %s)", async requestScope => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(() => undefined);
+      const host = new PluginHost({
+        ...(provider === "unavailable" ? { getActiveDocument } : {}),
+        applyDocumentPatch: f.applyDocumentPatch
+      });
+      const patch = { reason: "remove selected", patch: { op: "removeObject" as const, objectId: "mol_1" } };
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": ctx => requestScope
+          ? host.applyPatchForPlugin("org.test.scope", undefined, patch, {
+            objectIds: ["mol_1"], getDocument: () => undefined, apply: f.applyDocumentPatch
+          })
+          : ctx.documents.applyPatch!(patch) }
+      });
+      const before = f.document();
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot(["mol_1"]) }))
+        .rejects.toThrow(`Plugin patch refused: no ${requestScope ? "request" : "active"} document is available to check reaction removal scope.`);
+      expect(getActiveDocument).toHaveBeenCalledTimes(!requestScope && provider === "unavailable" ? 1 : 0);
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
+    });
+  });
+
+  describe("fixed request document", () => {
+    it.each([false, true])("checks the request's reaction cascade (reaction in scope = %s)", async inScope => {
+      const f = fixture([], () => {}, undefined, [reaction("components")]);
+      // The foreground tab has no removed object, so previewing it would miss the cascade.
+      const foreground = createEmptyDocument({ now });
+      const getActiveDocument = vi.fn(() => foreground);
+      const getDocument = vi.fn(async () => f.document());
+      const host = new PluginHost({ getActiveDocument });
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": () => host.applyPatchForPlugin("org.test.scope", undefined,
+          { reason: "remove from request tab", patch: { op: "removeObject", objectId: "mol_1" } }, {
+            objectIds: inScope ? ["mol_1", "step"] : ["mol_1"], getDocument, apply: f.applyDocumentPatch
+          }) }
+      });
+      const before = f.document();
+      const pending = host.invokeCommand("plugin.scope.run", { writeSelection: snapshot([]) });
+      if (inScope) {
+        await expect(pending).resolves.toMatchObject({ applied: true });
+        expect(f.applyDocumentPatch).toHaveBeenCalledOnce();
+        expect(f.document().pages[0]!.objects.find(object => object.id === "step")).toMatchObject({ components: [] });
+        expect(f.document().pages[0]!.objects.some(object => object.id === "mol_1")).toBe(false);
+      } else {
+        await expect(pending).rejects.toThrow("removing mol_1 would change reaction step");
+        expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+        expect(f.document()).toBe(before);
+      }
+      expect(getDocument).toHaveBeenCalledOnce();
+      expect(getActiveDocument).not.toHaveBeenCalled();
+      expect(foreground.pages[0]!.objects).toEqual([]);
+    });
+
+    it("does not fall back to the foreground when the request document is unavailable", async () => {
+      const f = fixture([], () => {});
+      const getActiveDocument = vi.fn(f.document);
+      const getDocument = vi.fn(async () => undefined);
+      const host = new PluginHost({ getActiveDocument });
+      host.registerPlugin(f.host.getPlugin("org.test.scope")!.manifest, {
+        commandHandlers: { "plugin.scope.run": () => host.applyPatchForPlugin("org.test.scope", undefined,
+          { reason: "closed request tab", patch: { op: "removeObject", objectId: "mol_1" } }, {
+            objectIds: ["mol_1"], getDocument, apply: f.applyDocumentPatch
+          }) }
+      });
+      await expect(host.invokeCommand("plugin.scope.run", { writeSelection: snapshot([]) }))
+        .rejects.toThrow("no request document is available to check reaction removal scope");
+      expect(getDocument).toHaveBeenCalledOnce();
+      expect(getActiveDocument).not.toHaveBeenCalled();
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe.each(["components", "conditions", "arrows", "plusses", "metadata"] as const)("reaction %s references", reference => {
+    it.each([false, true])("refuses an out-of-scope cascade atomically (batch = %s)", async batch => {
+      const f = fixture(["mol_1", "mol_7"], async ctx => {
+        const removal: DocumentPatch = { op: "removeObject", objectId: "mol_1" };
+        await expect(ctx.documents.applyPatch!({ reason: "remove drawable", patch: batch ? {
+          op: "batch", patches: [
+            { op: "updateObject", objectId: "mol_7", changes: { text: "must not change" } },
+            { op: "addObject", pageId: f.pageId, object: text("unaccepted") }, removal
+          ]
+        } : removal })).rejects.toThrow(
+          "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+        );
+        await expect(ctx.documents.applyPatch!({ reason: "rejected insertion", patch: {
+          op: "removeObject", objectId: "unaccepted"
+        } })).rejects.toThrow("unaccepted was not selected");
+      }, undefined, [reaction(reference)]);
+      const before = f.document();
+      await f.host.invokeCommand("plugin.scope.run");
+      expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+      expect(f.document()).toBe(before);
+    });
+
+    it.each(["selected", "inserted", "batch insertion"])("allows a cascade when the reaction is %s", async mode => {
+      const step = reaction(reference);
+      const f = fixture(mode === "selected" ? ["mol_1", "step"] : ["mol_1"], async ctx => {
+        const insertion: DocumentPatch = { op: "addObject", pageId: f.pageId, object: step };
+        if (mode === "inserted") await ctx.documents.applyPatch!({ reason: "insert reaction", patch: insertion });
+        return ctx.documents.applyPatch!({ reason: "remove drawable", patch: {
+          op: "batch", patches: [
+            ...(mode === "batch insertion" ? [insertion] : []),
+            { op: "removeObject", objectId: "mol_1" }
+          ]
+        } });
+      }, undefined, mode === "selected" ? [step] : []);
+      await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+      const objects = f.document().pages[0]!.objects;
+      expect(objects.some(object => object.id === "mol_1")).toBe(false);
+      expect(objects.find(object => object.id === "step")).toMatchObject({
+        components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: [],
+        ...(reference === "metadata" ? { compatibility: { unknown: {
+          cdxmlStepReferences: { ReactionStepObjectsAboveArrow: [] }
+        } } } : {})
+      });
+    });
+  });
+
+  it("does not authorize a cascade using a later insertion with the reaction's id", async () => {
+    const f = fixture(["mol_1"], ctx => ctx.documents.applyPatch!({ reason: "later insertion", patch: {
+      op: "batch", patches: [
+        { op: "removeObject", objectId: "mol_1" },
+        { op: "addObject", pageId: f.pageId, object: reaction("components") }
+      ]
+    } }), undefined, [reaction("components")]);
+    await expect(f.host.invokeCommand("plugin.scope.run")).rejects.toThrow(
+      "Plugin patch refused: removing mol_1 would change reaction step, which this command may not modify."
+    );
+    expect(f.applyDocumentPatch).not.toHaveBeenCalled();
+  });
+
+  it("accepts a native reaction referencing page drawables, including later batch insertions", async () => {
+    const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "Insert synthetic reaction", patch: {
+      op: "batch", patches: [
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {},
+          components: [{ role: "reactant", objectId: "mol_1" }, { role: "product", objectId: "mol_7" }],
+          conditionsTextObjectIds: ["conditions"], arrowObjectIds: ["arrow"], plusObjectIds: ["plus"], mappingState: "absent"
+        } },
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "arrow", type: "reaction-arrow", x: 30, y: 10, width: 40, height: 1, rotation: 0, style: {},
+          arrowKind: "forward", start: { kind: "point", point: { x: 30, y: 10 } },
+          end: { kind: "point", point: { x: 70, y: 10 } }, labels: []
+        } },
+        { op: "addObject", pageId: f.pageId, object: {
+          id: "plus", type: "plus", x: 10, y: 10, width: 10, height: 10, rotation: 0, style: {}
+        } },
+        { op: "addObject", pageId: f.pageId, object: text("conditions") }
+      ]
+    } }));
+    await expect(f.host.invokeCommand("plugin.scope.run")).resolves.toMatchObject({ applied: true });
+    const objects = f.document().pages[0].objects;
+    const reaction = objects.find(object => object.type === "reaction");
+    expect(reaction).toMatchObject({ arrowObjectIds: ["arrow"], plusObjectIds: ["plus"] });
+    if (reaction?.type !== "reaction") throw new Error("Expected reaction");
+    for (const id of [...reaction.components.map(component => component.objectId), ...reaction.conditionsTextObjectIds,
+      ...(reaction.arrowObjectIds ?? []), ...(reaction.plusObjectIds ?? [])]) {
+      expect(objects.some(object => object.id === id), id).toBe(true);
+    }
+  });
+
   it.each(["addObject", "addAnnotation"])("rejects a malformed %s batch with a validation error before applying anything", async op => {
     const f = fixture([], ctx => ctx.documents.applyPatch!({ reason: "malformed", patch: {
       op: "batch", patches: [

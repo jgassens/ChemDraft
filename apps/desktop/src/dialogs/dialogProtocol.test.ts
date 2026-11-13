@@ -158,3 +158,15 @@ it("validates the template picker snapshot and its restricted actions", () => {
   }
   expect(parseDialogMessage({ ...message, type: "result", data: { status: "inserted" } })).toBeDefined();
 });
+
+it("validates bounded conditions drafts and rejects extra fields and mismatched actions",()=>{
+  const draft={side:"above",spans:[{text:"K",script:"normal"},{text:"2",script:"subscript"},{text:"CO3",script:"normal"}]};
+  const conditions={...snapshot(),dialogKind:"reactionConditions",data:{title:"Drawing",arrowId:"arrow",draft}};
+  expect(parseDialogMessage(conditions)).toEqual(conditions);
+  expect(parseDialogMessage({...conditions,type:"action",data:{action:"apply",draft}})).toBeDefined();
+  for(const data of [{action:"apply",width:1,height:1,unit:"inch"},{action:"apply",draft:{...draft,path:"private"}},
+    {action:"apply",draft:{side:"above",spans:[{text:"x",script:"html"}]}},
+    {action:"apply",draft:{side:"above",spans:[{text:"x".repeat(2001),script:"normal"}]}},
+    {action:"cancel",draft}])
+    expect(parseDialogMessage({...conditions,type:"action",data})).toBeUndefined();
+});

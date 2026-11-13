@@ -6,6 +6,7 @@ import {
   TOOLSET_TOOLTIP_WINDOW_KIND
 } from "./window-manager";
 import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
+import { installBrowserReloadGuard } from "./browserReloadGuard";
 
 const MainWindow = lazy(() => import("./MainWindow").then(m => ({ default: m.MainWindow })));
 const PaletteWindow = lazy(() => import("./PaletteWindow").then(m => ({ default: m.PaletteWindow })));
@@ -42,6 +43,7 @@ export function App() {
  * focused text field, or hand the command to the main window's document history.
  */
 function SecondaryWindowEditHistory({ dialog = false }: { dialog?: boolean }): null {
+  useEffect(() => installBrowserReloadGuard(), []);
   useEffect(() => installSecondaryWindowEditHistory({ forwardToMain: dialog ? () => {} : routeToolsetCommand }), [dialog]);
   return null;
 }

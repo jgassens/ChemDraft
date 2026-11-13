@@ -35,7 +35,7 @@ export class Chemistry3dQueue {
         }
       };
       const abort = () => finish(undefined, controller.signal.reason instanceof Error && controller.signal.reason.name !== "AbortError" ? controller.signal.reason :
-        new Error(`chemistry.${method} cancelled because the plugin command ended.`));
+        new Error(`chemistry.${method} canceled because the plugin command ended.`));
       let remaining = timeoutMs;
       let armedAt = Date.now();
       const expire = () => controller.abort(new Error(

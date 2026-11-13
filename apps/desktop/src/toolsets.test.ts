@@ -9,6 +9,7 @@ import {
   getToolsetItemGroups,
   migrateLegacyMainToolbarLayoutState,
   migrateRenamedCommandIdsInLayoutState,
+  migrateBracketToolbarOrder,
   type DesktopToolsetRegistry,
   commandShortcutDisplay,
   compactMacShortcutLabel,
@@ -85,11 +86,40 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
-  it("keeps Double Bond and Triple Bond off the default Main toolbar", () => {
-    const ids = getToolsetItemGroups("core.main").flat().map(item => item.id);
-    expect(ids).toContain("tool.bond");
-    expect(ids).not.toContain("tool.doubleBond");
-    expect(ids).not.toContain("tool.tripleBond");
+  it("keeps Round Bracket beside Square Bracket in defaults and older saved orders", () => {
+    const defaults = getToolsetItemGroups("core.main").flat().map(item => item.id);
+    expect(defaults[defaults.indexOf("tool.squareBracket") + 1]).toBe("tool.roundBracket");
+    const state = { version: 1, userToolsets: [], toolsetOverrides: [{ toolsetId: "core.main",
+      itemOrder: { "core.main.items": defaults.filter(id => id !== "tool.roundBracket") } }] };
+    const migrated = migrateBracketToolbarOrder(state);
+    const items = getToolsetItemGroups("core.main", createDesktopToolsetRegistry(state)).flat().map(item => item.id);
+    // Saved Main layouts retain the previous bond defaults as well as gaining Round Bracket.
+    const previousDefaults = [...defaults.filter(id => id !== "tool.doubleBond" && id !== "tool.tripleBond"), "tool.chain"];
+    expect(items).toEqual(previousDefaults);
+    expect(items[items.indexOf("tool.squareBracket") + 1]).toBe("tool.roundBracket");
+    expect(migrateBracketToolbarOrder(migrated)).toBe(migrated);
+    // An explicit custom placement is the user's choice and is retained.
+    const custom = { ...state, toolsetOverrides: [{ toolsetId: "core.main",
+      itemOrder: { "core.main.items": [...defaults.filter(id => id !== "tool.roundBracket"), "tool.roundBracket"] } }] };
+    expect(migrateBracketToolbarOrder(custom)).toBe(custom);
+  });
+  it("puts Single, Double and Triple Bond together on default Main and leaves Chain in the gallery", () => {
+    const items = getToolsetItemGroups("core.main").flat();
+    const ids = items.map(item => item.id);
+    expect(ids.slice(ids.indexOf("tool.bond"), ids.indexOf("tool.bond") + 3)).toEqual([
+      "tool.bond", "tool.doubleBond", "tool.tripleBond"
+    ]);
+    expect(ids).not.toContain("tool.chain");
+    for (const [id, label, assetName] of [
+      ["tool.doubleBond", "Double Bond", "Custom_Bond_Double"],
+      ["tool.tripleBond", "Triple Bond", "Custom_Bond_Triple"]
+    ]) {
+      expect(items.find(item => item.id === id)).toMatchObject({
+        kind: "button", label, assetName, category: "structure",
+        primary: { type: "command", command: { id } }, submenu: null,
+        tooltip: { title: label }, layout: { colSpan: 1, rowSpan: 1 }
+      });
+    }
   });
   it("maps legacy command items to schema-backed palette items", () => {
     const item = getToolsetItemGroups("core.legacy", registry([legacyToolset]))[0][0];
@@ -244,7 +274,8 @@ describe("desktop toolset mapping", () => {
       "tool.wedgeBond",
       "tool.hashedBond",
       "tool.dashedBond",
-      "tool.boldBond"
+      "tool.boldBond",
+      "tool.wavyBond"
     ]);
     const wedge = item?.submenu?.items.find((command) => command.id === "tool.wedgeBond");
     expect(wedge).toMatchObject({

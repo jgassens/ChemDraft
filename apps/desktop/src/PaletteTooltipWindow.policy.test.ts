@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("./App.css", import.meta.url), "utf8");
@@ -67,4 +68,114 @@ it("uses the light toolbar theme for native select menus, including their opaque
   expect(options).toContain("background-color: var(--cd-bg-control);");
   expect(options).toContain("color: var(--cd-text-primary);");
   expect(cssRule(":root")).toContain("--cd-bg-control: #ffffff;");
+});
+
+it("covers every dialog and panel select with the shared light menu rules", () => {
+  const selectors = [".native-dialog-panel-select", ".lf-select"];
+  const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+  const sharedRule = rules.find((match) =>
+    match[1]!.split(",").some((entry) => entry.trim() === ".toolbar-select")
+    && match[2]!.trim() === "color-scheme: light;"
+  );
+  const optionRule = rules.find((match) =>
+    match[1]!.split(",").some((entry) => entry.trim() === ".toolbar-select option")
+  );
+  expect(sharedRule).toBeDefined();
+  expect(optionRule).toBeDefined();
+  const sharedSelectors = sharedRule![1]!.split(",").map((entry) => entry.trim());
+  const optionSelectors = optionRule![1]!.split(",").map((entry) => entry.trim());
+  expect(sharedSelectors).toContain(".molecule-inspector-field select");
+  expect(optionSelectors).toContain(".molecule-inspector-field select option");
+  for (const selector of selectors) {
+    expect(sharedSelectors).toContain(selector);
+    expect(optionSelectors).toContain(`${selector} option`);
+  }
+
+  const sources = [
+    ["dialogs/ExportForm.tsx", "native-dialog-panel-select"],
+    ["dialogs/PageSizeForm.tsx", "native-dialog-panel-select"],
+    ["dialogs/InsertTableForm.tsx", "native-dialog-panel-select"],
+    ["analysis/MolecularInspectorPane.tsx", "native-dialog-panel-select"],
+    ["plugins/PluginReportRenderer.tsx", "native-dialog-panel-select"],
+    ["plugins/LinkedFigureView.tsx", "lf-select"],
+  ];
+  for (const [path, className] of sources) {
+    const source = readFileSync(new URL(`./${path}`, import.meta.url), "utf8");
+    const selects = [...source.matchAll(/<select\b([^>]*?)>/g)];
+    expect(selects.length, path).toBeGreaterThan(0);
+    for (const select of selects) {
+      expect(select[1], path).toContain(`className="${className}"`);
+    }
+  }
+});
+
+it("requires every native select in desktop source to use a shared readable menu rule", () => {
+  const directClasses = ["toolbar-select", "native-dialog-panel-select", "lf-select"];
+  for (const className of directClasses) {
+    const rules = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+    expect(rules.some(rule => rule[1]!.split(",").some(selector => selector.trim() === `.${className}`)
+      && rule[2]!.includes("color-scheme: light;")), className).toBe(true);
+    expect(cssRule(`.${className} option`)).toBe(cssRule(".toolbar-select option"));
+  }
+  function sources(directory: URL): URL[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+      const path = new URL(entry.name + (entry.isDirectory() ? "/" : ""), directory);
+      return entry.isDirectory() ? sources(path)
+        : /\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name) ? [path] : [];
+    });
+  }
+  const uncovered: string[] = [];
+  let count = 0;
+  for (const path of sources(new URL("./", import.meta.url))) {
+    const text = readFileSync(path, "utf8");
+    // A tag whose source text is exactly "select" requires that word. Avoid parsing the
+    // rest of the desktop for this policy, especially during the full parallel gauntlet.
+    if (!/\bselect\b/.test(text)) continue;
+    const source = ts.createSourceFile(path.pathname, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    function classes(opening: ts.JsxOpeningLikeElement): string[] {
+      const attribute = opening.attributes.properties.find((attr): attr is ts.JsxAttribute => ts.isJsxAttribute(attr) && attr.name.getText(source) === "className");
+      const value = attribute?.initializer;
+      if (value && ts.isStringLiteral(value)) return value.text.split(/\s+/);
+      if (value && ts.isJsxExpression(value) && value.expression && ts.isTemplateExpression(value.expression)) {
+        // Only complete classes before the first interpolation are guaranteed on every render.
+        return value.expression.head.text.split(/\s+/).slice(0, -1);
+      }
+      return [];
+    }
+    function visit(node: ts.Node, inherited = false) {
+      const opening = ts.isJsxElement(node) ? node.openingElement : ts.isJsxSelfClosingElement(node) ? node : undefined;
+      const own = opening ? classes(opening) : [];
+      const inspector = inherited || own.includes("molecule-inspector-field");
+      if (opening?.tagName.getText(source) === "select") {
+        count += 1;
+        if (!inspector && !directClasses.some(className => own.includes(className))) {
+          const line = source.getLineAndCharacterOfPosition(opening.getStart(source)).line + 1;
+          uncovered.push(`${path.pathname}:${line}`);
+        }
+      }
+      ts.forEachChild(node, child => visit(child, inspector));
+    }
+    visit(source);
+  }
+  expect(count).toBeGreaterThan(30);
+  expect(uncovered, "Add a shared readable-menu class to these selects").toEqual([]);
+});
+
+it("forbids native title tooltips on Art palette controls", () => {
+  const text = readFileSync(new URL("./ToolPalette.tsx", import.meta.url), "utf8");
+  const source = ts.createSourceFile("ToolPalette.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const art = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "ArtToolbarStyleControls");
+  expect(art).toBeDefined();
+  const nativeTitles: string[] = [];
+  function visit(node: ts.Node) {
+    if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && /^[a-z]/.test(node.tagName.getText(source))) {
+      for (const attr of node.attributes.properties) {
+        if (ts.isJsxAttribute(attr) && attr.name.getText(source) === "title") nativeTitles.push(attr.getText(source));
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(art!);
+  expect(nativeTitles).toEqual([]);
+  expect(art!.getText(source)).toContain("<PaletteControlTooltip tooltip=");
 });

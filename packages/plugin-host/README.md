@@ -6,7 +6,7 @@ API 0.1.19 rejects oversized or non-finite panel reports through the existing `s
 validation failure path, before forwarding any content to the panel. See the SDK's
 `PluginPanelReportLimits` and `docs/plugin-architecture/AUTHORING.md` for the complete limits.
 
-This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
+This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for review, and applies `document.write` patches directly through the embedding host, only from the owning plugin's active command invocation. Recognition results require proposal review. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
 Preserve it when copying bonds; it is valid only on double bonds.
@@ -33,11 +33,43 @@ snapshots the input, requires the invoked plugin to declare its `panelId`, and d
 `context.input` only for that invocation. Reports may bind prompt, select, and action controls only
 to commands declared and registered by the reporting plugin.
 
-Direct writes enforce an invocation's initial selection plus its accepted insertions. Flat `batch`
-patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
+Direct writes enforce an invocation's initial selection plus its accepted insertions. Write-scope
+preflight and desktop application share `rebasePluginPatch`, including object references and independent
+bracket pair ids. Every write is applied to an atomic draft and refused if core validation changes
+any authored field outside that scope, naming the first offending object. Preflight's only excluded derived
+object field is `molecule.chemistry.warnings` entries with code `chemistry.bracket_multiplier`,
+which validation regenerates from the enclosing brackets. Other cached chemistry and warnings remain
+protected, as do bracket pair/repeat metadata, membership references, and molecular graphs.
+Repeated object ids match by reference identity first, then by remaining occurrence order.
+Removal checks also inspect
+the core's atomic draft before removal, without normalizing
+partly inserted groups between operations. Embedding hosts rerun `assertPluginPatchWriteScope` against
+their commit-time document using the callback's host-only `writeScopeObjectIds`, then rebase and apply.
+Before recording history, embedders must also call `assertPluginDocumentWriteScope` with that baseline,
+the authored patch, and the **final** document after all normalization and page placement. This check
+protects every object field (including derived warnings), rejects unrequested derived additions, and
+grants insertion scope only to rebased patch ids absent from the baseline. Run it inside the final
+history preparation callback so a subsequent normalization cannot bypass it; a refusal records no undo.
+When the user approves host-owned page fitting, first apply that exact resize and uniform page
+translation to the baseline as well. The desktop's `commitWithPageFit` supplies this transform to its
+commit callback; it never replans from the baseline or exempts other object position changes.
+Both checks also protect page data. Page `id`, `width`, `height`, `margin`, `layout`, and
+`compatibility` must match the baseline exactly; page additions, removals, and reordering are refused.
+`objects` retain their object-scope checks. A `crossings` record may change only when both referenced
+objects are in scope (selected at command start or inserted by that command). Protected crossing
+records retain every field, occurrence, and relative order (duplicate pairs use the first override). This also
+refuses implicit crossing removal when a selected molecule loses a bond shared with an unselected
+molecule's crossing. Other page fields, including future additions, default to exact comparison.
+Flat `batch` patches (1–256 operations) are checked as a whole before application. `invokeCommand(commandId,
 { writeSelection })` lets an embedding host pass a selection snapshot captured at Send; otherwise
 the host snapshots only `getActiveDocument().selection.objectIds` at invocation start, without
 calling the plugin-visible selection provider. `writePatchOps` flattens a validated batch.
+
+The embedding `applyDocumentPatch` callback also receives an optional host-only `signal`, stable
+across writes in one command and aborted when that command ends or unregisters. The desktop uses
+its identity to ask about page enlargement once per user action, and its cancellation to reject
+late writes while a native page question is open. This is not a plugin-visible capability or a
+change to `@chemdraft/plugin-api`.
 
 Canvas overlays are registered only with `ui.canvas`, owned command references, and an overlay id
 unique across registered plugins. `listCanvasOverlays()` returns `{ pluginId, overlay }` entries.
@@ -66,3 +98,9 @@ text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique a
 prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
 `ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
 focus defaults to false. Embedding hosts resolve action metadata from their current content store.
+
+
+API 0.1.21 forwards `chemistry.properties` through the permission-checked `computeProperties`
+embedding callback, validates its response, and supports `onAssistantToolCall` registrations.
+The assistant controller owns session validation and lifetime; `invokeAssistantTool` supplies a
+declared-only capability context for the callback and invalidates it when the call is cancelled.
