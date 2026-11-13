@@ -1,4 +1,5 @@
-import { electronMarkPlacementPointForAtom } from "@chemdraft/layout-engine";
+import { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
+export { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
 import {
   atomProblem, readNativeDocumentContents, formulaSpansFromText,
   nativeElectronMarkAtomKey, nativeElectronMarkAssignments, isEditableNativeMoleculeGraph,
@@ -860,9 +861,6 @@ const projectedPlaneTiltMaxDegrees = 360;
 export const documentObjectProjectedPlaneTiltMaxDegrees = projectedPlaneTiltMaxDegrees;
 
 export const projectedPlaneTiltMaxRadians = projectedPlaneTiltMaxDegrees * Math.PI / 180;
-
-export const nativeAtomHitRadiusPx = 8;
-export const nativeChargeMarkSizePx = 18;
 
 const nativeBondLength = nativeBondLengthPx;
 const nativeCarbonSingleBondLengthAngstrom = 1.56;
@@ -7652,29 +7650,6 @@ function nativeAssociatedChargeMarkForAtom(
     .map((mark) => ({ mark, distance: distance(nativeChargeMarkCenter(mark), atom) }))
     .filter((entry) => entry.distance <= radius)
     .sort((left, right) => left.distance - right.distance)[0]?.mark;
-}
-
-export function nativeChargePlacementPointForAtom(
-  molecule: MoleculeObject,
-  atomId: string,
-  objects: readonly DocumentObject[],
-  pageWidth: number,
-  pageHeight: number,
-  mark?: ElectronMarkObject
-): PagePoint | undefined {
-  const atom = molecule.atoms.find(candidate => candidate.id === atomId);
-  if (!atom) return undefined;
-  const growth = previewNativeMoleculeBondGrowth(molecule, atom, pageWidth, pageHeight);
-  // Direct drops supply their mark and have an explicit association. New tool marks must keep
-  // the legacy point: label clearance can push them outside distance-based association.
-  const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
-    growthPoint: growth && growth.atomId === atomId && !growth.targetAtomId ? growth.newAtomPoint : undefined,
-    mark,
-    avoidLabelOverlap: mark !== undefined
-  });
-  // Growth and label clearance use the atom's local frame. Both drops and the charge tool
-  // store the mark separately in page coordinates, beside the rendered atom.
-  return localPoint && transformPointForObject(molecule, localPoint);
 }
 
 /** The growth the on-canvas arrow is showing: where the new atom lands, or which existing atom
