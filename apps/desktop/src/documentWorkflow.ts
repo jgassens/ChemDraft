@@ -13998,10 +13998,13 @@ export function moveDocumentObjects(
   // One patch batch for the whole selection: each translation reads only its own object, and every
   // object is visited once, so computing all of them against `document` is the same as applying
   // them in turn — without a whole-document clone and validation per object.
+  const carriedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches = page.objects.flatMap((object) =>
     set.has(object.id)
       ? translateDocumentObjectByPatches(document, object.id, cdx, cdy, {
-          translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, set)
+          translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, set),
+          preserveChargeAnchor: object.type === "electron-mark" && object.atomAssociation === "explicit" &&
+            carriedMarkIds.has(object.id)
         })
       : []
   );
@@ -14447,7 +14450,7 @@ export function duplicateSelectedDocumentObjects(
   const duplicateIdByOriginalId = new Map<string, string>();
   for (const object of selectedObjects) {
     const duplicate = structuredClone(object) as DocumentObject;
-    // Copies use the normal association policy, including a zero-offset duplicate.
+    // Standalone marks use the normal policy; explicit pairs are remapped after all copies exist.
     if (duplicate.type === "electron-mark") delete duplicate.atomAssociation;
     duplicate.id = allocateId(duplicateObjectIdPrefix(object));
     duplicates.push(duplicate);
@@ -14455,6 +14458,8 @@ export function duplicateSelectedDocumentObjects(
     duplicateIdByOriginalId.set(object.id, duplicate.id);
     patches.push({ op: "addObject", pageId: page.id, object: duplicate });
   }
+  remapCopiedExplicitElectronMarkAssociations(selectedObjects,
+    new Map(selectedObjects.map((object, index) => [object.id, duplicates[index]])), warningsOut);
 
   // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
   // before the group containing it maps its children. Only the selected groups used to be copied —
@@ -14861,6 +14866,8 @@ export function pasteSelectionClipboardPayload(
     pastedById.set(pasted.id, pasted);
     patches.push({ op: "addObject", pageId: page.id, object: pasted });
   }
+  remapCopiedExplicitElectronMarkAssociations(sourceChildren,
+    new Map(sourceChildren.map(object => [object.id, pastedById.get(idBySourceId.get(object.id)!)!])), warningsOut);
 
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
   for (const object of sourceChildren) {
@@ -14920,6 +14927,31 @@ export function pasteSelectionClipboardPayload(
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
   return applyPatches(document, patches, { now: phase4Timestamp });
+}
+
+/** Copies retain local atom ids: remap the molecule id and validate the copied atom identity. */
+function remapCopiedExplicitElectronMarkAssociations(
+  sources: readonly DocumentObject[],
+  copiesBySourceId: ReadonlyMap<string, DocumentObject>,
+  warningsOut?: string[]
+): void {
+  for (const source of sources) {
+    if (source.type !== "electron-mark" || source.atomAssociation !== "explicit" ||
+      source.anchor.kind !== "atom" || source.anchor.objectId === undefined) continue;
+    const molecule = copiesBySourceId.get(source.anchor.objectId);
+    // Copying just a mark retains the existing standalone association policy.
+    if (!molecule) continue;
+    const copy = copiesBySourceId.get(source.id);
+    if (copy?.type !== "electron-mark") continue;
+    if (molecule.type !== "molecule" || !molecule.atoms.some(atom => atom.id === source.anchor.atomId)) {
+      const warning = `Cannot preserve explicit electron mark "${source.id}" association: copied atom "${source.anchor.atomId}" in molecule "${source.anchor.objectId}" is missing.`;
+      if (!warningsOut) throw new Error(warning);
+      warningsOut.push(warning);
+      continue;
+    }
+    copy.anchor = { ...source.anchor, objectId: molecule.id };
+    copy.atomAssociation = "explicit";
+  }
 }
 
 /** A copied step refers to the copied drawables, including forward references and shared intermediates. */
