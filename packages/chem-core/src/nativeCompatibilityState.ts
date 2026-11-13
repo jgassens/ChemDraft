@@ -81,6 +81,22 @@ export function nativeExtensionTarget(root: unknown, extension: NativeExtension)
   return resolveExtensionTarget(root, extension).target;
 }
 
+/** The page/object scope of document-level state. Atom and bond IDs remain molecule-local. */
+export function nativeExtensionObjectScope(extension: NativeExtension): { pageId: string; objectId: string } | undefined {
+  const [pages, page, objects, object] = extension.path;
+  return pages === "pages" && typeof page === "object" && "id" in page
+    && objects === "objects" && typeof object === "object" && "id" in object
+    ? { pageId: page.id, objectId: object.id } : undefined;
+}
+
+/** Keep edited positional arrays until save can report their loss; retire removed identities and
+ * explicitly replaced fallback values immediately, before an ID or fallback can be reused. */
+export function retainNativeExtension(root: unknown, extension: NativeExtension): boolean {
+  const resolution = resolveExtensionTarget(root, extension);
+  const editedSegment = resolution.editedArrayPath && extension.path[resolution.editedArrayPath.length];
+  return Boolean(resolution.target || (typeof editedSegment === "object" && "index" in editedSegment));
+}
+
 function resolveExtensionTarget(root: unknown, extension: NativeExtension): {
   target?: { parent: object; key: string | number };
   editedArrayPath?: NativeExtension["path"];
