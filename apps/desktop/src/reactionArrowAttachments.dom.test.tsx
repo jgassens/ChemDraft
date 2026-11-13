@@ -98,11 +98,14 @@ it.each(["molecule", "arrow"] as const)("cancels a %s drag on a page with condit
   const target = container.querySelector(`[data-page-svg-object-visual="${original.id}"], [data-object-id="${original.id}"]`)!;
   const start = original.type === "molecule" ? { x: (original.atoms[0]!.x + original.atoms[1]!.x) / 2,
     y: (original.atoms[0]!.y + original.atoms[1]!.y) / 2 } : { x: 220, y: 250 };
+  const frame = () => container.querySelector<HTMLElement>(`[data-object-id="${original.id}"]`)!;
+  const originalLeft = parseFloat(frame().style.left), originalTop = parseFloat(frame().style.top);
   for (const [type, dx, dy] of [["pointerdown", 0, 0], ["pointermove", 10, 10], ["pointermove", 30, 40], ["pointercancel", 30, 40]] as const) {
     if (type === "pointercancel") {
-      const preview = snapshot().pages[0].objects.find(object => object.id === original.id)!;
-      expect(preview.x).toBeCloseTo(original.x + 30);
-      expect(preview.y).toBeCloseTo(original.y + 40);
+      // The moved preview is rendered separately; the live document stays safe to save.
+      expect(snapshot().pages[0].objects.find(object => object.id === original.id)).toEqual(original);
+      expect(parseFloat(frame().style.left)).toBeCloseTo(originalLeft + 30 / snapshot().pages[0].width * 100);
+      expect(parseFloat(frame().style.top)).toBeCloseTo(originalTop + 40 / snapshot().pages[0].height * 100);
     }
     const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons: type === "pointercancel" ? 0 : 1,
       clientX: start.x + dx, clientY: start.y + dy });
@@ -110,6 +113,8 @@ it.each(["molecule", "arrow"] as const)("cancels a %s drag on a page with condit
     await act(async () => (container.querySelector(`[data-page-svg-object-visual="${original.id}"], [data-object-id="${original.id}"]`) ?? target).dispatchEvent(event));
   }
   expect(snapshot().pages[0].objects.find(object => object.id === original.id)).toEqual(original);
+  expect(parseFloat(frame().style.left)).toBeCloseTo(originalLeft);
+  expect(parseFloat(frame().style.top)).toBeCloseTo(originalTop);
   expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
 });
 
