@@ -980,6 +980,30 @@ describe("chemical and drawing round trips", () => {
       expect(xml.match(/Radical="Triplet"/g)).toHaveLength(1);
     }
   });
+
+  it.each([false, true])("imports bonded triplet dots with nonoverlapping frames (binary=%s)", binary => {
+    const source = wrap(`<fragment id="2"><n id="10" p="200 200" Element="6" Radical="Triplet"/>
+      <n id="11" p="189 181" Element="6"/><n id="12" p="189 219" Element="6"/>
+      <b id="20" B="10" E="11" Order="1"/><b id="21" B="10" E="12" Order="1"/></fragment>`);
+    const imported = requireDocument(binary ? importCdx(bytesFromCdxml(source)) : openChemDraftPayload(source));
+    const marks = imported.pages[0].objects.filter((object): object is ElectronMarkObject => object.type === "electron-mark");
+    expect(marks).toHaveLength(2);
+    const [first, second] = marks;
+    expect(Math.hypot(first.x + first.width / 2 - second.x - second.width / 2,
+      first.y + first.height / 2 - second.y - second.height / 2)).toBeGreaterThanOrEqual(4.2);
+    expect(first.x < second.x + second.width && first.x + first.width > second.x
+      && first.y < second.y + second.height && first.y + first.height > second.y).toBe(false);
+    const normalized = normalizeCommittedDocument(imported);
+    const molecule = normalized.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    expect(molecule.atoms[0].markRadicals).toBe(2);
+    expect(nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds)).toMatchObject({ formula: "C3H6", radicalCount: 2 });
+    for (const output of [exportDocumentToCdxml(normalized, { embedNativePayload: false }),
+      exportDocumentToCdx(normalized, { embedNativePayload: false })]) {
+      expect(output.warnings.filter(warning => warning.code === "cdxml.electron_mark_appearance_payload_only")).toEqual([]);
+      const xml = "bytes" in output ? cdxElementToCdxml(readCdx(output.bytes)) : output.contents;
+      expect(xml.match(/Radical="Triplet"/g)).toHaveLength(1);
+    }
+  });
 });
 
 describe("native payload Save As and interchange Export", () => {

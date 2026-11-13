@@ -4153,8 +4153,7 @@ export function nativeChargePlacementPointForAtom(
   return localPoint && transformPointForObject(molecule, localPoint);
 }
 
-/** A repeated radical uses the tool's existing open-angle search, including occupied marks,
- * instead of putting another handle in the same bond-growth slot. */
+/** A repeated radical keeps the open-angle preference, but must clear existing mark frames. */
 export function nativeRadicalPlacementPointForAtom(
   molecule: MoleculeObject,
   atomId: string,
@@ -4165,7 +4164,7 @@ export function nativeRadicalPlacementPointForAtom(
   const occupied = objects.some(object => object.type === "electron-mark" && object.markKind === "radical-dot"
     && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId);
   if (!occupied) return nativeChargePlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight);
-  // The existing charge-centre score already chooses clear space; radical dots occupy it too.
+  // Retain the existing distance score as a preference among unoccupied candidates.
   const obstacles = objects.map(object => {
     if (object.type !== "electron-mark" || object.markKind !== "radical-dot" && object.markKind !== "charge") return object;
     // Stored handles are in page coordinates; the candidate search runs in the atom's frame.
@@ -4173,7 +4172,9 @@ export function nativeRadicalPlacementPointForAtom(
     return { ...object, markKind: "charge" as const, x: center.x - object.width / 2, y: center.y - object.height / 2 };
   });
   const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, obstacles, pageWidth, pageHeight, {
-    avoidLabelOverlap: false
+    avoidLabelOverlap: false,
+    occupiedMarks: objects.filter((object): object is ElectronMarkObject => object.type === "electron-mark"
+      && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId)
   });
   return localPoint && transformPointForObject(molecule, localPoint);
 }
@@ -4194,13 +4195,15 @@ export function electronMarkPlacementPointForAtom(
     growthPoint?: LayoutPoint;
     mark?: Pick<ElectronMarkObject, "width" | "height" | "rotation">;
     avoidLabelOverlap?: boolean;
+    /** Page-coordinate frames that must remain clear, including after placement is clamped. */
+    occupiedMarks?: readonly Pick<ElectronMarkObject, "x" | "y" | "width" | "height" | "rotation">[];
   } = {}
 ): LayoutPoint | undefined {
   const atom = molecule.atoms.find(candidate => candidate.id === atomId);
   if (!atom) return undefined;
   const avoidLabelOverlap = options.avoidLabelOverlap !== false;
   // Tool placements must use the growth slot verbatim, even at a page edge.
-  if (!avoidLabelOverlap && options.growthPoint) return options.growthPoint;
+  if (!avoidLabelOverlap && options.growthPoint && !options.occupiedMarks?.length) return options.growthPoint;
   const mark = options.mark ?? { width: 18, height: 18, rotation: 0 };
   const radians = degreesToRadians(mark.rotation);
   const halfWidth = (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2;
@@ -4208,6 +4211,14 @@ export function electronMarkPlacementPointForAtom(
   const plan = avoidLabelOverlap ? planMoleculeAtomLabels(molecule).find(plan => plan.atom.id === atomId) : undefined;
   const glyph = plan && atomLabelGlyphBounds(plan);
   const clearance = 2;
+  const occupiedFrames = (options.occupiedMarks ?? []).map(mark => {
+    const radians = degreesToRadians(mark.rotation);
+    return {
+      x: mark.x + mark.width / 2, y: mark.y + mark.height / 2,
+      halfWidth: (Math.abs(Math.cos(radians)) * mark.width + Math.abs(Math.sin(radians)) * mark.height) / 2,
+      halfHeight: (Math.abs(Math.sin(radians)) * mark.width + Math.abs(Math.cos(radians)) * mark.height) / 2
+    };
+  });
   const exclusion = plan && glyph ? {
     left: plan.anchor.x + glyph.x - halfWidth - clearance,
     right: plan.anchor.x + glyph.x + glyph.width + halfWidth + clearance,
@@ -4230,7 +4241,19 @@ export function electronMarkPlacementPointForAtom(
       x: clamp(point.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
       y: clamp(point.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
     };
-    return insideLabel(bounded) ? undefined : bounded;
+    if (insideLabel(bounded)) return undefined;
+    if (occupiedFrames.length) {
+      // Tool/import handles remain unrotated in page coordinates, even on a rotated molecule.
+      // Match their final page-edge clamp before checking their whole frames, not just the ink.
+      const pagePoint = transformPointForObject(molecule, bounded);
+      const center = {
+        x: clamp(pagePoint.x, halfWidth, Math.max(halfWidth, pageWidth - halfWidth)),
+        y: clamp(pagePoint.y, halfHeight, Math.max(halfHeight, pageHeight - halfHeight))
+      };
+      if (occupiedFrames.some(frame => Math.abs(center.x - frame.x) < halfWidth + frame.halfWidth + clearance
+        && Math.abs(center.y - frame.y) < halfHeight + frame.halfHeight + clearance)) return undefined;
+    }
+    return bounded;
   };
   // The natural home is the same open slot the bond tool would use.
   if (options.growthPoint) {
@@ -4266,21 +4289,28 @@ export function electronMarkPlacementPointForAtom(
   const chargeCenters = objects
     .filter((object): object is ElectronMarkObject => object.type === "electron-mark" && object.markKind === "charge")
     .map(mark => ({ x: mark.x + mark.width / 2, y: mark.y + mark.height / 2 }));
-  const candidates = Array.from({ length: 16 }, (_, index) => {
-    const angle = -Math.PI + index * Math.PI / 8;
-    const point = { x: atom.x + Math.cos(angle) * placementRadius, y: atom.y + Math.sin(angle) * placementRadius };
-    const placed = clearPoint(point);
-    if (!placed) return [];
-    const boundaryPenalty = distance(point, placed);
-    const bondSeparation = neighborAngles.length === 0 ? Math.PI
-      : Math.min(...neighborAngles.map(neighborAngle => placementAngularDistance(angle, neighborAngle)));
-    const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) => sum + Math.min(1, distance(placed, otherAtom) / (bondLength * 1.5)), 0);
-    const chargeDistanceScore = chargeCenters.reduce((sum, center) => sum + Math.min(1, distance(placed, center) / (bondLength * 1.5)), 0);
-    const preferredScore = 1 - placementAngularDistance(angle, preferredOpenAngle) / Math.PI;
-    return [{ point: placed,
-      score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10 }];
-  }).flat();
-  return candidates.sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]?.point;
+  const ringStep = Math.max(mark.width, mark.height) + clearance;
+  const ringCount = occupiedFrames.length ? 1 + Math.ceil(Math.hypot(pageWidth, pageHeight) / ringStep) : 1;
+  for (let ring = 0; ring < ringCount; ring++) {
+    const radius = placementRadius + ring * ringStep;
+    const candidates = Array.from({ length: 16 }, (_, index) => {
+      const angle = -Math.PI + index * Math.PI / 8;
+      const point = { x: atom.x + Math.cos(angle) * radius, y: atom.y + Math.sin(angle) * radius };
+      const placed = clearPoint(point);
+      if (!placed) return [];
+      const boundaryPenalty = distance(point, placed);
+      const bondSeparation = neighborAngles.length === 0 ? Math.PI
+        : Math.min(...neighborAngles.map(neighborAngle => placementAngularDistance(angle, neighborAngle)));
+      const atomDistanceScore = otherAtoms.reduce((sum, otherAtom) => sum + Math.min(1, distance(placed, otherAtom) / (bondLength * 1.5)), 0);
+      const chargeDistanceScore = chargeCenters.reduce((sum, center) => sum + Math.min(1, distance(placed, center) / (bondLength * 1.5)), 0);
+      const preferredScore = 1 - placementAngularDistance(angle, preferredOpenAngle) / Math.PI;
+      return [{ point: placed,
+        score: bondSeparation * 1000 + atomDistanceScore * 20 + chargeDistanceScore * 10 + preferredScore - boundaryPenalty * 10 }];
+    }).flat();
+    const point = candidates.sort((left, right) => right.score - left.score || left.point.y - right.point.y || left.point.x - right.point.x)[0]?.point;
+    if (point) return point;
+  }
+  return undefined;
 }
 
 /** The direct-edit catcher shares the symbol's frame and rotation, including its blank corners. */
