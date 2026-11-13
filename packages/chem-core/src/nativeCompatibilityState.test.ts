@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, readDocument, serializeDocument } from "./document";
+import { createEmptyDocument, readDocument, serializeDocument, serializeDocumentWithWarnings } from "./document";
+import { applyPatchWithHistory, createDocumentHistory, redo, undo } from "./history";
 import { applyPatch, applyPatches } from "./patches";
 
 function openedDocument() {
@@ -14,6 +15,56 @@ function openedDocument() {
 }
 
 describe("native compatibility state lifecycle", () => {
+  it.each(["removal", "format edit", "replacement"] as const)(
+    "permanently retires positional chemistry after %s, retaining the loss warning and exact undo",
+    change => {
+      const raw = JSON.parse(serializeDocument(openedDocument()));
+      raw.pages[0].objects[0].bonds[0].order = "single";
+      raw.pages[0].objects[0].superatoms = [{ label: "Me", expandedStructure: "opaque source",
+        expandedStructureFormat: "future-format" }];
+      const opened = readDocument(raw).document;
+      const molecule = opened.pages[0]!.objects[0]!;
+      if (molecule.type !== "molecule") throw new Error("Expected molecule");
+      const originalContents = serializeDocument(opened);
+      const changed = applyPatchWithHistory(createDocumentHistory(opened), {
+        op: "updateObject", objectId: molecule.id, changes: { superatoms: change === "removal" ? []
+          : molecule.superatoms.map(superatom => change === "format edit"
+            ? { ...superatom, expandedStructureFormat: "smiles" }
+            : { ...superatom, label: "Et" }) }
+      });
+      const reset = applyPatchWithHistory(changed, { op: "updateObject", objectId: molecule.id,
+        changes: { superatoms: structuredClone(molecule.superatoms) } });
+      const saved = serializeDocumentWithWarnings(reset.present);
+      expect(JSON.parse(saved.contents).pages[0].objects[0].superatoms[0].expandedStructureFormat).toBe("unknown");
+      expect(saved.warnings).toEqual([expect.objectContaining({ code: "NATIVE_EXTENSION_DATA_DROPPED",
+        path: ["pages", opened.pages[0]!.id, "objects", molecule.id, "superatoms"], originalValue: "future-format" })]);
+
+      const undoneReset = undo(reset);
+      expect(undoneReset.present).toBe(changed.present);
+      expect(serializeDocumentWithWarnings(undoneReset.present).warnings).toEqual(saved.warnings);
+      const undoneChange = undo(undoneReset);
+      expect(undoneChange.present).toBe(opened);
+      expect(serializeDocument(undoneChange.present)).toBe(originalContents);
+      expect(serializeDocumentWithWarnings(undoneChange.present).warnings).toEqual([]);
+      const redone = redo(redo(undoneChange));
+      expect(redone.present).toBe(reset.present);
+      expect(serializeDocumentWithWarnings(redone.present)).toEqual(saved);
+    }
+  );
+
+  it("retires positional chemistry between updates in the same atomic batch", () => {
+    const raw = JSON.parse(serializeDocument(openedDocument()));
+    raw.pages[0].objects[0].superatoms = [{ label: "Me", expandedStructureFormat: "future-format" }];
+    const opened = readDocument(raw).document;
+    const molecule = opened.pages[0]!.objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
+    const replaced = applyPatches(opened, [
+      { op: "updateObject", objectId: molecule.id, changes: { superatoms: [] } },
+      { op: "updateObject", objectId: molecule.id, changes: { superatoms: molecule.superatoms } }
+    ]);
+    expect(JSON.parse(serializeDocument(replaced)).pages[0].objects[0].superatoms[0].expandedStructureFormat).toBe("unknown");
+  });
+
   it("prunes deleted object state before an ID can be reused, even in one batch", () => {
     const opened = openedDocument();
     const replacement = structuredClone(opened.pages[0]!.objects[0]!);

@@ -31,10 +31,13 @@ export function copyNativeObjectExtensions(
     const scope = nativeExtensionObjectScope(extension);
     const objectId = scope && objectIds.get(scope.objectId);
     const pageId = objectId && destinations.get(objectId);
-    if (!objectId || !pageId || !retainNativeExtension(source, extension)) continue;
-    const copied = { ...extension, path: ["pages", { id: pageId }, "objects", { id: objectId }, ...extension.path.slice(4)] };
+    if (!objectId || !pageId) continue;
+    const retained = retainNativeExtension(source, extension);
+    if (!retained) continue;
+    const copied = { ...retained, path: ["pages", { id: pageId }, "objects", { id: objectId }, ...retained.path.slice(4)] };
     // A fragment deliberately excludes some original atoms/bonds. Their state is not copied.
-    if (retainNativeExtension(destination, copied)) extensions.push(structuredClone(copied));
+    const destinationExtension = retainNativeExtension(destination, copied);
+    if (destinationExtension) extensions.push(structuredClone(destinationExtension));
   }
   if (!extensions.length) return destination;
   const base = toEngineDocument(destination);

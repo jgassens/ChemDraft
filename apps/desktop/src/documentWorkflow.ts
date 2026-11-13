@@ -19913,8 +19913,8 @@ export function analysisSubjectKey(molecule: MoleculeObject, document?: ChemDraf
  * Keep this import on demand: copying a drawing must not load RDKit at application startup.
  */
 export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
+  if (refusePreservedChemistryCopy(document, "SMILES", warningsOut)) return undefined;
   const molecules = copyAsScopeMolecules(document);
-  if (refusePreservedChemistryCopy(document, molecules, "SMILES", warningsOut)) return undefined;
   reportRepeatUnitExportWarnings(document, "SMILES", molecules, warningsOut);
   if (molecules.length === 0) {
     return undefined;
@@ -19946,8 +19946,8 @@ export function copyAsMolfile(
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
+  if (refusePreservedChemistryCopy(document, "MOL", warningsOut)) return undefined;
   const molecules = copyAsScopeMolecules(document);
-  if (refusePreservedChemistryCopy(document, molecules, "MOL", warningsOut)) return undefined;
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
@@ -19995,8 +19995,14 @@ export function copyAsMolfile(
 
 const copyAsPagePaddingPx = 16;
 
-function refusePreservedChemistryCopy(document: ChemDraftDocument, molecules: readonly MoleculeObject[], format: string, warningsOut?: string[]): boolean {
-  const values = preservedNativeChemistryValues(document, new Set(molecules.map(molecule => molecule.id)));
+function refusePreservedChemistryCopy(document: ChemDraftDocument, format: string, warningsOut?: string[]): boolean {
+  const scope = copyAsScopeObjects(document);
+  let values = preservedNativeChemistryValues(document, new Set(scope.map(object => object.id)));
+  // Inspect the full scope before the editable-graph filter can omit source-only chemistry.
+  // If that filter would fall back to the page, check its full scope too.
+  if (!values.length && !scope.some(object => object.type === "molecule" && isEditableNativeMoleculeGraph(object))) {
+    values = preservedNativeChemistryValues(document, new Set(firstPage(document).objects.map(object => object.id)));
+  }
   if (!values.length) return false;
   const message = `Copy as ${format} refused: preserved source chemistry (${values.map(value => JSON.stringify(value)).join(", ")}) cannot be represented. Use native ChemDraft copy to keep it.`;
   if (!warningsOut) throw new Error(message);

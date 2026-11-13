@@ -52,7 +52,9 @@ ignorable headers are omitted for plain 1.1.1 documents. See
 [the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
 
 Preservation follows unique IDs. Identity-free arrays restore only while their known content is
-unchanged. Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
+unchanged. A mismatch permanently retires restoration even if matching content is later reinserted;
+the pending loss warning remains in the snapshot, and undo restores eligibility exactly.
+Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
 `serializeDocumentWithWarnings` returns `{ contents, warnings }`, and the validated container API
 `prepareNativeDocumentForSerializationWithWarnings` returns `{ value, warnings }`.
 Object and nested atom/bond deletion retires the corresponding extension state in the patch result;

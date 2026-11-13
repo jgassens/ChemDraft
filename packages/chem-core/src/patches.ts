@@ -400,12 +400,13 @@ function removeObject(document: ChemDraftDocument, objectId: string): void {
 function pruneObjectNativeExtensions(document: ChemDraftDocument, pageId: string, objectIds: ReadonlySet<string>, updated = false): void {
   const extensions = document.compatibility.nativeExtensions;
   if (!extensions?.length) return;
-  const kept = extensions.filter(extension => {
+  const kept = extensions.flatMap(extension => {
     const scope = nativeExtensionObjectScope(extension);
-    return !scope || scope.pageId !== pageId || !objectIds.has(scope.objectId)
-      || (updated && retainNativeExtension(document, extension));
+    if (!scope || scope.pageId !== pageId || !objectIds.has(scope.objectId)) return [extension];
+    const retained = updated && retainNativeExtension(document, extension);
+    return retained ? [retained] : [];
   });
-  if (kept.length === extensions.length) return;
+  if (kept.length === extensions.length && kept.every((extension, index) => extension === extensions[index])) return;
   // Replace the container: previous undo snapshots still own the complete original state.
   const compatibility = { ...document.compatibility };
   if (kept.length) compatibility.nativeExtensions = kept;

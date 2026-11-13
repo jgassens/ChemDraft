@@ -5,7 +5,7 @@ import {
 } from "@chemdraft/chem-core";
 import {
   copyAsMolfile, copyAsSmiles, createSelectionClipboardPayload, deleteSelectedDocumentObjects,
-  createNativeSavePayload, duplicateSelectedDocumentObjects, openNativeDocument, parseSelectionClipboardPayload, pasteSelectionClipboardPayload,
+  createNativeSavePayload, duplicateSelectedDocumentObjects, groupSelectedDocumentObjects, openNativeDocument, parseSelectionClipboardPayload, pasteSelectionClipboardPayload,
   selectDocumentObjects, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 
@@ -25,6 +25,21 @@ function savedOrders(document: ChemDraftDocument): string[] {
   return JSON.parse(serializeDocument(document)).pages[0].objects.map(
     (object: { bonds: { order: string }[] }) => object.bonds[0]!.order
   );
+}
+
+function mixedCopyDocument() {
+  const raw = JSON.parse(serializeDocument(sourceDocument(["single"])));
+  raw.pages[0].objects.push({ ...raw.pages[0].objects[0], id: "source-only", structure: "opaque source",
+    structureFormat: "future-format", atoms: [], bonds: [] });
+  raw.pages[0].objects.push({ id: "caption", type: "text", text: "Caption", spans: [],
+    x: 100, y: 200, width: 100, height: 22, rotation: 0, style: {} });
+  return readDocument(raw).document;
+}
+
+const chemistryCopyFormats = ["MOL V2000", "MOL V3000", "SMILES"] as const;
+function copyChemistry(document: ChemDraftDocument, format: typeof chemistryCopyFormats[number], warnings: string[]) {
+  return format === "SMILES" ? copyAsSmiles(document, warnings)
+    : copyAsMolfile(document, format === "MOL V2000" ? "v2000" : "v3000", warnings);
 }
 
 describe("preserved source chemistry in native editing workflows", () => {
@@ -89,6 +104,36 @@ describe("preserved source chemistry in native editing workflows", () => {
     expect(await copyAsSmiles(document, warnings)).toBeUndefined();
     expect(warnings).toHaveLength(2);
     expect(warnings.every(message => /refused.*preserved.*quadruple.*native ChemDraft copy/.test(message))).toBe(true);
+  });
+
+  describe.each(chemistryCopyFormats)("%s copy scope", format => {
+    it.each(["selection", "whole page", "group", "annotation fallback"])(
+      "refuses source-only preserved chemistry in the full %s before graph filtering",
+      async scope => {
+        let document = mixedCopyDocument();
+        if (scope !== "whole page") {
+          document = selectDocumentObjects(document, document.pages[0]!.id,
+            scope === "annotation fallback" ? ["caption"] : ["molecule_001", "source-only"]);
+          if (scope === "group") document = groupSelectedDocumentObjects(document);
+        }
+        const before = serializeDocument(document);
+        const warnings: string[] = [];
+        expect(await copyChemistry(document, format, warnings)).toBeUndefined();
+        expect(warnings).toEqual([`Copy as ${format === "SMILES" ? "SMILES" : "MOL"} refused: preserved source chemistry ("future-format") cannot be represented. Use native ChemDraft copy to keep it.`]);
+        expect(serializeDocument(document)).toBe(before);
+      }
+    );
+
+    it("still copies normal selected chemistry when preserved chemistry is outside the scope", async () => {
+      const opened = mixedCopyDocument();
+      const document = selectDocumentObjects(opened, opened.pages[0]!.id, ["molecule_001"]);
+      const warnings: string[] = [];
+      const copied = await copyChemistry(document, format, warnings);
+      expect(copied).toBeTruthy();
+      expect(warnings).toEqual([]);
+      if (format === "SMILES") expect(copied).toBe("CC");
+      else expect(copied).toContain(format === "MOL V2000" ? "V2000" : "V3000");
+    });
   });
 
   it("keeps distinct chemistry for copied molecules sharing atom and bond IDs", () => {

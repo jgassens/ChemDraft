@@ -24,7 +24,10 @@ export const NativeExtensionsSchema = z.array(z.object({
   path: z.array(ExtensionPathSegmentSchema).min(1),
   kind: z.enum(["field", "enum"]),
   originalValue: z.unknown(),
-  fallbackValue: z.unknown().optional()
+  fallbackValue: z.unknown().optional(),
+  // A pending array-loss warning, separate from restoration. Once set, matching content
+  // cannot reactivate this entry. Store a path prefix length so copies can remap its scope.
+  droppedArrayPathLength: z.number().int().nonnegative().optional()
 }).strict());
 
 export type NativeExtension = z.infer<typeof NativeExtensionsSchema>[number];
@@ -89,18 +92,24 @@ export function nativeExtensionObjectScope(extension: NativeExtension): { pageId
     ? { pageId: page.id, objectId: object.id } : undefined;
 }
 
-/** Keep edited positional arrays until save can report their loss; retire removed identities and
- * explicitly replaced fallback values immediately, before an ID or fallback can be reused. */
-export function retainNativeExtension(root: unknown, extension: NativeExtension): boolean {
+/** Retire mismatched positional entries permanently while keeping their pending loss warning.
+ * Removed identities and explicitly replaced non-positional fallbacks are discarded outright. */
+export function retainNativeExtension(root: unknown, extension: NativeExtension): NativeExtension | undefined {
+  if (extension.droppedArrayPathLength !== undefined) return extension;
   const resolution = resolveExtensionTarget(root, extension);
+  if (resolution.target) return extension;
   const editedSegment = resolution.editedArrayPath && extension.path[resolution.editedArrayPath.length];
-  return Boolean(resolution.target || (typeof editedSegment === "object" && "index" in editedSegment));
+  return typeof editedSegment === "object" && "index" in editedSegment
+    ? { ...extension, droppedArrayPathLength: resolution.editedArrayPath!.length } : undefined;
 }
 
 function resolveExtensionTarget(root: unknown, extension: NativeExtension): {
   target?: { parent: object; key: string | number };
   editedArrayPath?: NativeExtension["path"];
 } {
+  if (extension.droppedArrayPathLength !== undefined) {
+    return { editedArrayPath: extension.path.slice(0, extension.droppedArrayPathLength) };
+  }
   let parent = root;
   let tableColumnIds: string[] | undefined;
   // Resolve the final segment too: an entire unknown effect can itself be an array member.
