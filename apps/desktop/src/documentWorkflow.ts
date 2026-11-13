@@ -74,6 +74,10 @@ import {
 } from "@chemdraft/art-engine";
 import {
   adoptDerivedDocument,
+  copyNativeObjectExtensions,
+  preservedNativeChemistryValues,
+  readDocument,
+  serializeDocument,
   bracketChemistryWarnings,
   bracketPairs,
   withoutBracketPairMetadata,
@@ -84,7 +88,6 @@ import {
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
   createImageGraphicObject,
-  DocumentObjectSchema,
   createPageLayout,
   createCustomPageLayout,
   cssPxToPageSize,
@@ -374,6 +377,12 @@ export interface ChemDraftSelectionClipboardPayload {
   selectionIds: string[];
   bounds: SelectionBounds;
   warnings?: string[];
+  /** In-memory source state. Serialized clipboard objects carry the reconstructed native values
+   * and version headers instead, and are validated by the native reader when received. */
+  nativeSource?: ChemDraftDocument;
+  formatVersion?: string;
+  minAppVersion?: string;
+  ignorableFields?: string[];
 }
 
 export interface NativeTextSelectionRange {
@@ -14536,7 +14545,8 @@ export function duplicateSelectedDocumentObjects(
     duplicate.arrowAttachment = parentObjectId ? { ...duplicate.arrowAttachment, parentObjectId } : undefined;
   }
   const next = applyPatches(document, patches, { now: phase4Timestamp });
-  return reconcileReactionArrowAttachments(moveDocumentObjects(next, selectionIds, offset.x, offset.y));
+  return copyNativeObjectExtensions(document,
+    reconcileReactionArrowAttachments(moveDocumentObjects(next, selectionIds, offset.x, offset.y)), duplicateIdByOriginalId);
 }
 
 /**
@@ -14582,10 +14592,12 @@ export function createSelectionClipboardPayload(
   const clipboardObjects = structuredClone(copiedObjects) as DocumentObject[];
   const warnings: string[] = [];
   remapCopiedBracketPairs(clipboardObjects, new Map(clipboardObjects.map(object => [object.id, object.id])), warnings);
+  const nativeSource = selectionClipboardNativeSource(document, clipboardObjects);
   return {
     kind: "chemdraft-selection",
     version: 1,
     objects: clipboardObjects,
+    ...(nativeSource ? { nativeSource } : {}),
     ...(warnings.length ? { warnings } : {}),
     selectionIds: [
       ...document.selection.objectIds.filter((objectId) =>
@@ -14660,7 +14672,20 @@ function createNativeMoleculeFragmentClipboardPayload(
 export function serializeSelectionClipboardPayload(
   payload: ChemDraftSelectionClipboardPayload
 ): string {
-  return JSON.stringify(payload);
+  const { nativeSource, ...serialized } = payload;
+  if (!nativeSource) return JSON.stringify(serialized);
+  // Ship source values through the same reader/writer contract as native files, rather than
+  // trusting an arbitrary extension-state sidecar supplied by the clipboard.
+  const native = JSON.parse(serializeDocument(nativeSource)) as ChemDraftDocument;
+  return JSON.stringify({ ...serialized, objects: native.pages[0]!.objects,
+    formatVersion: native.formatVersion, minAppVersion: native.minAppVersion, ignorableFields: native.ignorableFields });
+}
+
+function selectionClipboardNativeSource(document: ChemDraftDocument, objects: DocumentObject[]): ChemDraftDocument | undefined {
+  const empty = createEmptyDocument({ pageId: firstPage(document).id });
+  const scoped = { ...empty, pages: [{ ...empty.pages[0]!, objects }] };
+  const copied = copyNativeObjectExtensions(document, scoped, new Map(objects.map(object => [object.id, object.id])));
+  return copied.compatibility.nativeExtensions?.length ? copied : undefined;
 }
 
 // Human-readable representation for the public `text/plain` clipboard flavor. External apps (Word,
@@ -14700,9 +14725,14 @@ export function parseSelectionClipboardPayload(
       return undefined;
     }
 
-    const objects = payload.objects
-      .map(parseClipboardDocumentObject)
-      .filter((object): object is DocumentObject => object !== undefined);
+    const empty = createEmptyDocument();
+    const read = readDocument({ ...empty,
+      ...(payload.formatVersion !== undefined ? { formatVersion: payload.formatVersion } : {}),
+      ...(payload.minAppVersion !== undefined ? { minAppVersion: payload.minAppVersion } : {}),
+      ...(payload.ignorableFields !== undefined ? { ignorableFields: payload.ignorableFields } : {}),
+      pages: [{ ...empty.pages[0]!, objects: payload.objects }]
+    });
+    const objects = read.document.pages[0]!.objects;
     if (objects.length === 0 || objects.length !== payload.objects.length) {
       return undefined;
     }
@@ -14711,6 +14741,7 @@ export function parseSelectionClipboardPayload(
       kind: "chemdraft-selection",
       version: 1,
       objects,
+      ...(read.document.compatibility.nativeExtensions?.length ? { nativeSource: read.document } : {}),
       ...(Array.isArray(payload.warnings) ? { warnings: payload.warnings.filter((message): message is string => typeof message === "string") } : {}),
       selectionIds: payload.selectionIds.filter((id): id is string => typeof id === "string"),
       bounds: {
@@ -14919,7 +14950,8 @@ export function pasteSelectionClipboardPayload(
   remapCopiedReactionReferences(document, patches, idBySourceId);
   patches.push({ op: "setSelection", pageId: page.id, objectIds: fallbackSelectionIds });
 
-  return applyPatches(document, patches, { now: phase4Timestamp });
+  const next = applyPatches(document, patches, { now: phase4Timestamp });
+  return payload.nativeSource ? copyNativeObjectExtensions(payload.nativeSource, next, idBySourceId) : next;
 }
 
 /** A copied step refers to the copied drawables, including forward references and shared intermediates. */
@@ -15070,14 +15102,6 @@ function mapAnchorPoint(anchor: Anchor, map: (point: PagePoint) => PagePoint): A
   return anchor.kind === "point" && anchor.point
     ? { ...anchor, point: map(anchor.point) }
     : anchor;
-}
-
-// Fully validate (and normalize) a clipboard object against the document schema. Shallow base-field
-// checks let objects with missing type-specific fields through, which then throw later at applyPatch
-// instead of being rejected so paste can fall back safely.
-function parseClipboardDocumentObject(value: unknown): DocumentObject | undefined {
-  const result = DocumentObjectSchema.safeParse(value);
-  return result.success ? result.data : undefined;
 }
 
 function duplicateObjectIdPrefix(object: DocumentObject): string {
@@ -19889,6 +19913,7 @@ export function analysisSubjectKey(molecule: MoleculeObject, document?: ChemDraf
  * Keep this import on demand: copying a drawing must not load RDKit at application startup.
  */
 export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
+  if (refusePreservedChemistryCopy(document, "SMILES", warningsOut)) return undefined;
   const molecules = copyAsScopeMolecules(document);
   reportRepeatUnitExportWarnings(document, "SMILES", molecules, warningsOut);
   if (molecules.length === 0) {
@@ -19921,6 +19946,7 @@ export function copyAsMolfile(
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
+  if (refusePreservedChemistryCopy(document, "MOL", warningsOut)) return undefined;
   const molecules = copyAsScopeMolecules(document);
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
@@ -19968,6 +19994,21 @@ export function copyAsMolfile(
 }
 
 const copyAsPagePaddingPx = 16;
+
+function refusePreservedChemistryCopy(document: ChemDraftDocument, format: string, warningsOut?: string[]): boolean {
+  const scope = copyAsScopeObjects(document);
+  let values = preservedNativeChemistryValues(document, new Set(scope.map(object => object.id)));
+  // Inspect the full scope before the editable-graph filter can omit source-only chemistry.
+  // If that filter would fall back to the page, check its full scope too.
+  if (!values.length && !scope.some(object => object.type === "molecule" && isEditableNativeMoleculeGraph(object))) {
+    values = preservedNativeChemistryValues(document, new Set(firstPage(document).objects.map(object => object.id)));
+  }
+  if (!values.length) return false;
+  const message = `Copy as ${format} refused: preserved source chemistry (${values.map(value => JSON.stringify(value)).join(", ")}) cannot be represented. Use native ChemDraft copy to keep it.`;
+  if (!warningsOut) throw new Error(message);
+  warningsOut.push(message);
+  return true;
+}
 
 function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, molecules: readonly MoleculeObject[], warningsOut?: string[]) {
   const messages = repeatUnitExportWarnings(document, format, { molecules }).map(warning => warning.message);
