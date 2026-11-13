@@ -48,6 +48,7 @@ export const NativeDocumentFeatureVersions: Readonly<Record<string, NativeDocume
   'value:compatibility.nativeExtensions.*.kind="enum"': { introducedIn: "1.2.0", kind: "internal", ignorable: false },
   "field:compatibility.nativeExtensions.*.originalValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
   "field:compatibility.nativeExtensions.*.fallbackValue": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
+  "field:compatibility.nativeExtensions.*.droppedArrayPathLength": { introducedIn: "1.2.0", kind: "internal", ignorable: false },
 
   // #339: the released page and superatom schemas are strict. Neither page print/source
   // setup nor live expansion membership survives that reader; both carry document meaning.

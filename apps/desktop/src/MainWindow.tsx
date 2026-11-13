@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.12.13.40-codex";
+const CURRENT_BUILD_STAMP = "11.12.18.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7674,7 +7674,7 @@ export function MainWindow({
     const current = documentWithTableDraft();
     const writeText = async (text: string | undefined, label: string, warnings: readonly string[] = []) => {
       if (!text) {
-        setStatus(`Nothing to copy as ${label}`);
+        setStatus(warnings.length ? warnings.join("; ") : `Nothing to copy as ${label}`);
         return;
       }
       const didWrite = await writeClipboardText(text);
@@ -7729,7 +7729,7 @@ export function MainWindow({
         const warnings: string[] = [];
         const molfile = copyAsMolfile(current, "v2000", warnings);
         if (!molfile) {
-          setStatus(`Nothing to copy as ${label}`);
+          setStatus(warnings.length ? warnings.join("; ") : `Nothing to copy as ${label}`);
           return;
         }
         setStatus(`Computing ${label}…`);
