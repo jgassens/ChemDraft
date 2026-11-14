@@ -8,6 +8,7 @@ import { setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { createNativeArtLineGraphicObject, nativeChargeMarkCenter } from "./documentWorkflow";
 import { dropMark, dropMolecule, electronMarkDropFixture } from "./testSupport/electronMarkDropFixture";
+import { saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const native = vi.hoisted(() => ({ writeFile: vi.fn<(path: string, contents: string) => Promise<void>>() }));
@@ -63,8 +64,10 @@ describe.each(["macos", "windows"] as const)("charge drag Save (%s)", platform =
     Object.defineProperties(event, { pointerId: { value: 7 }, isPrimary: { value: true }, pointerType: { value: "mouse" } });
     await act(async () => target.dispatchEvent(event));
   }
+  describe.each(["move", "resize"] as const)("%s gesture", gesture => {
   describe.each(["Escape", "pointercancel", "pointerup", "Escape during save"] as const)("%s", ending => {
     it.each([false, true])("saves pre-drag chemistry and finishes consistently (conditions: %s)", async withConditions => {
+      if (gesture === "resize") saveDirectElectronMarkEditing(true);
       let drawing = electronMarkDropFixture().document;
       if (withConditions) {
         const arrow = createNativeArtLineGraphicObject(drawing, { x: 100, y: 400 }, { x: 340, y: 400 }, "tool.art.reactionArrow")!;
@@ -75,20 +78,33 @@ describe.each(["macos", "windows"] as const)("charge drag Save (%s)", platform =
         initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette shortcutPlatform={platform} />));
       container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0,
         right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) });
+      if (gesture === "resize") {
+        const initialMark = dropMark(snapshot().document);
+        const visual = container.querySelector(`[data-page-svg-object-visual="${initialMark.id}"] circle`)!;
+        await pointer(visual, "pointerdown", nativeChargeMarkCenter(initialMark));
+        await pointer(visual, "pointerup", nativeChargeMarkCenter(initialMark));
+      }
       await key("s");
       expect(savedWrites()).toHaveLength(1);
       expect(snapshot().file.dirty).toBe(false);
       native.writeFile.mockClear();
       const mark = dropMark(snapshot().document);
-      const target = container.querySelector(`[data-page-svg-object-visual="${mark.id}"] circle`)!;
+      const target = gesture === "move"
+        ? container.querySelector(`[data-page-svg-object-visual="${mark.id}"] circle`)!
+        : container.querySelector('[data-object-resize-corner="bottom-right"]')!;
       expect(target).not.toBeNull();
-      await pointer(target, "pointerdown", nativeChargeMarkCenter(mark));
+      await pointer(target, "pointerdown", gesture === "move" ? nativeChargeMarkCenter(mark)
+        : { x: mark.x + mark.width, y: mark.y + mark.height });
       const before = snapshot().document;
       expect(dropMolecule(before).atoms[7].formalCharge).toBe(1);
       await pointer(target, "pointermove", { x: 600, y: 500 });
       expect.soft(dropMolecule(snapshot().document).atoms[7].formalCharge, "preview must keep live formal charge").toBe(1);
-      expect.soft(dropMark(snapshot().document), "preview must keep live charge association and position").toEqual(mark);
-      expect(snapshot().file.dirty, "preview alone does not dirty the document").toBe(false);
+      if (gesture === "move") {
+        expect.soft(dropMark(snapshot().document), "move preview must keep live charge association and position").toEqual(mark);
+        expect(snapshot().file.dirty, "move preview alone does not dirty the document").toBe(false);
+      } else {
+        expect(dropMark(snapshot().document).width, "test must exercise a visible resize preview").not.toBe(mark.width);
+      }
       let finishWrite: (() => void) | undefined;
       if (ending === "Escape during save") native.writeFile.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
       await key("s");
@@ -97,7 +113,7 @@ describe.each(["macos", "windows"] as const)("charge drag Save (%s)", platform =
       expect.soft(dropMolecule(saved).atoms[7].formalCharge, "Save while dragging must preserve +1").toBe(1);
       expect.soft(dropMark(saved), "Save must write the pre-drag mark").toEqual(mark);
       if (ending.startsWith("Escape")) await key("Escape");
-      else await pointer(container.querySelector(`[data-page-svg-object-visual="${mark.id}"] circle`)!, ending, { x: 600, y: 500 });
+      else await pointer(target, ending, { x: 600, y: 500 });
       if (finishWrite) await act(async () => finishWrite!());
       if (ending === "pointerup") {
         expect(dropMark(snapshot().document).anchor).toEqual(mark.anchor);
@@ -107,5 +123,6 @@ describe.each(["macos", "windows"] as const)("charge drag Save (%s)", platform =
       expect.soft(dropMolecule(saved), "clean restored canvas must match saved chemistry").toEqual(dropMolecule(snapshot().document));
       expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe(ending === "pointerup" ? "true" : "false");
     });
+  });
   });
 });

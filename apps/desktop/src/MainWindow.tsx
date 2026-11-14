@@ -1772,7 +1772,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.14.10.54-codex";
+const CURRENT_BUILD_STAMP = "11.14.11.06-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -7654,6 +7654,10 @@ export function MainWindow({
   // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
   // refs only, including private table and repeat-label drafts.
   const documentForFlush = useCallback((): ChemDraftDocument => {
+    // Resizing replaces the live page for preview, but only pointerup commits it.
+    // A Save/autosave/export during the held gesture must match what Escape restores.
+    const resize = objectResizeDragRef.current;
+    if (resize) return resize.startDocument;
     let current = documentWithTableDraft();
     const bracket = bracketLabelEditRef.current;
     const label = bracketLabelEditorRef.current?.draft();

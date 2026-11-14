@@ -15227,7 +15227,10 @@ function transformOtherObjectAroundPointPatches(
     rotation: normalizeDegrees(object.rotation + degrees)
   };
   if (object.type === "electron-mark") {
-    Object.assign(changes, electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation: "transform" }));
+    // Resizing about the mark's own centre changes appearance, not its atom.
+    const operation = degrees === 0 && (options.scaleX !== undefined || options.scaleY !== undefined) &&
+      oldCenter.x === newCenter.x && oldCenter.y === newCenter.y ? "frame" : "transform";
+    Object.assign(changes, electronMarkMoveAssociation(document, object, oldCenter, newCenter, { operation }));
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
