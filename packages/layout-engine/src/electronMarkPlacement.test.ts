@@ -122,3 +122,37 @@ describe.each(["growth slot", "open angle"])("electron-mark placement via %s", r
     }
   });
 });
+
+
+describe("mixed charge and radical placement", () => {
+  it.each([0, 65])("clears the existing mark in both creation orders at rotation %s", rotation => {
+    for (const firstKind of ["charge", "radical-dot"] as const) {
+      for (const coordinate of [9, 200]) for (const size of [18, 48]) {
+        const molecule: MoleculeObject = { id: "molecule", type: "molecule",
+          x: coordinate, y: coordinate, width: 0, height: 0, rotation, style: {},
+          structureFormat: "smiles", structure: "", atoms: [
+            { id: "nitrogen", element: "N", formalCharge: 1, x: coordinate, y: coordinate }
+          ], bonds: [], superatoms: [], rGroups: [] };
+        const firstPoint = nativeChargePlacementPointForAtom(molecule, "nitrogen", [molecule], 792, 612)!;
+        const half = size / 2;
+        const first: ElectronMarkObject = { id: "existing", type: "electron-mark", markKind: firstKind,
+          ...(firstKind === "charge" ? { charge: 1 } : {}),
+          x: Math.max(half, Math.min(firstPoint.x, 792 - half)) - half,
+          y: Math.max(half, Math.min(firstPoint.y, 612 - half)) - half,
+          width: size, height: size, rotation: 37, style: {},
+          anchor: { kind: "atom", objectId: molecule.id, atomId: "nitrogen" } };
+        const objects = [molecule, first];
+        const before = JSON.stringify(objects);
+        const place = firstKind === "charge" ? nativeRadicalPlacementPointForAtom : nativeChargePlacementPointForAtom;
+        const next = place(molecule, "nitrogen", objects, 792, 612)!;
+        expect(next).toBeDefined();
+        const center = { x: Math.max(9, Math.min(next.x, 783)), y: Math.max(9, Math.min(next.y, 603)) };
+        const rotatedHalf = half * (Math.abs(Math.cos(37 * Math.PI / 180)) + Math.abs(Math.sin(37 * Math.PI / 180)));
+        expect(Math.abs(center.x - first.x - half) >= 9 + rotatedHalf + 2 - 1e-8 ||
+          Math.abs(center.y - first.y - half) >= 9 + rotatedHalf + 2 - 1e-8,
+          `${firstKind} first, size ${size}, coordinate ${coordinate}`).toBe(true);
+        expect(JSON.stringify(objects)).toBe(before);
+      }
+    }
+  });
+});

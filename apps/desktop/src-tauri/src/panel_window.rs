@@ -615,6 +615,7 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
     let target = window.clone();
     let drag_target = window.clone();
     let data = Box::into_raw(Box::new(FocusObserver {
+        stable_nonclient_paint: window.label().starts_with("toolset-"),
         activation: std::rc::Rc::new(move |active| activation(&target, active)),
         drag_finished: std::rc::Rc::new(move || {
             // The palette's title/background press ended its lease without returning focus.
@@ -645,6 +646,7 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
 
 #[cfg(windows)]
 struct FocusObserver {
+    stable_nonclient_paint: bool,
     activation: std::rc::Rc<dyn Fn(bool)>,
     drag_finished: std::rc::Rc<dyn Fn()>,
 }
@@ -661,9 +663,21 @@ unsafe extern "system" fn focus_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_EXITSIZEMOVE, WM_NCDESTROY,
+            IsIconic, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_EXITSIZEMOVE, WM_NCACTIVATE,
+            WM_NCDESTROY,
         },
     };
+    // Toolsets draw their own frame. Keep native activation bookkeeping (including Tao's
+    // active-state tracking) but suppress DefWindowProc's transient nonclient repaint.
+    // WM_NCACTIVATE documents lParam=-1 for this purpose; do not fake wParam or skip the
+    // subclass chain, which would break focus/native choosers. Minimized windows retain
+    // the default path. Native Windows shadow behavior still requires the hand check.
+    if message == WM_NCACTIVATE
+        && (*(data as *const FocusObserver)).stable_nonclient_paint
+        && IsIconic(hwnd) == 0
+    {
+        return DefSubclassProc(hwnd, message, wparam, -1);
+    }
     // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
     // but WebView2 must be allowed to activate them for a native colour picker. Forcing
     // MA_NOACTIVATE here (newly installed on palettes) prevents that popup from opening.

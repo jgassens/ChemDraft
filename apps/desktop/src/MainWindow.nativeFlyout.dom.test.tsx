@@ -112,6 +112,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     const before = current();
     const content = await mouseOpen();
     const choices = content.flyout.commands.filter(command => command.enabled);
+    const hidesBeforeActivation = native.hide.mock.calls.length;
     expect(highlighted()).toBeNull();
     expect(native.show).toHaveBeenLastCalledWith("preserve", "flyout");
     expect(document.activeElement).toBe(canvas);
@@ -133,7 +134,7 @@ describe.each(["macos", "windows"] as const)("native flyout keyboard routing (%s
     expect((await key(activation, { repeat: true })).defaultPrevented).toBe(true);
     expect((await key(activation, {}, "keyup")).defaultPrevented).toBe(true);
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(choices[0].id);
-    expect(native.hide).toHaveBeenCalledTimes(1);
+    expect(native.hide).toHaveBeenCalledTimes(hidesBeforeActivation + 1);
     expect(current()).toBe(before);
     // A queued IPC activation and stale startup replay cannot invoke or reopen it.
     await act(async () => {

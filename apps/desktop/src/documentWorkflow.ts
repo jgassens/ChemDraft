@@ -14450,7 +14450,7 @@ export function duplicateSelectedDocumentObjects(
   const duplicateIdByOriginalId = new Map<string, string>();
   for (const object of selectedObjects) {
     const duplicate = structuredClone(object) as DocumentObject;
-    // Standalone marks use the normal policy; explicit pairs are remapped after all copies exist.
+    // Standalone marks use the normal policy; attached pairs are remapped after all copies exist.
     if (duplicate.type === "electron-mark") delete duplicate.atomAssociation;
     duplicate.id = allocateId(duplicateObjectIdPrefix(object));
     duplicates.push(duplicate);
@@ -14458,7 +14458,7 @@ export function duplicateSelectedDocumentObjects(
     duplicateIdByOriginalId.set(object.id, duplicate.id);
     patches.push({ op: "addObject", pageId: page.id, object: duplicate });
   }
-  remapCopiedExplicitElectronMarkAssociations(selectedObjects,
+  remapCopiedElectronMarkAssociations(selectedObjects,
     new Map(selectedObjects.map((object, index) => [object.id, duplicates[index]])), warningsOut);
 
   // Every group reachable inside a selected group, innermost first, so a nested group's copy exists
@@ -14888,7 +14888,7 @@ export function pasteSelectionClipboardPayload(
     pastedById.set(pasted.id, pasted);
     patches.push({ op: "addObject", pageId: page.id, object: pasted });
   }
-  remapCopiedExplicitElectronMarkAssociations(sourceChildren,
+  remapCopiedElectronMarkAssociations(sourceChildren,
     new Map(sourceChildren.map(object => [object.id, pastedById.get(idBySourceId.get(object.id)!)!])), warningsOut);
 
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
@@ -14953,13 +14953,13 @@ export function pasteSelectionClipboardPayload(
 }
 
 /** Copies retain local atom ids: remap the molecule id and validate the copied atom identity. */
-function remapCopiedExplicitElectronMarkAssociations(
+function remapCopiedElectronMarkAssociations(
   sources: readonly DocumentObject[],
   copiesBySourceId: ReadonlyMap<string, DocumentObject>,
   warningsOut?: string[]
 ): void {
   for (const source of sources) {
-    if (source.type !== "electron-mark" || source.atomAssociation !== "explicit" ||
+    if (source.type !== "electron-mark" ||
       source.anchor.kind !== "atom" || source.anchor.objectId === undefined) continue;
     const molecule = copiesBySourceId.get(source.anchor.objectId);
     // Copying just a mark retains the existing standalone association policy.
@@ -14967,12 +14967,15 @@ function remapCopiedExplicitElectronMarkAssociations(
     const copy = copiesBySourceId.get(source.id);
     if (copy?.type !== "electron-mark") continue;
     if (molecule.type !== "molecule" || !molecule.atoms.some(atom => atom.id === source.anchor.atomId)) {
+      // Legacy geometric anchors may be stale; retain their existing fallback policy.
+      if (source.atomAssociation !== "explicit") continue;
       const warning = `Cannot preserve explicit electron mark "${source.id}" association: copied atom "${source.anchor.atomId}" in molecule "${source.anchor.objectId}" is missing.`;
       if (!warningsOut) throw new Error(warning);
       warningsOut.push(warning);
       continue;
     }
     copy.anchor = { ...source.anchor, objectId: molecule.id };
+    // Preserve the copied pair even when its offset places it nearer an original atom.
     copy.atomAssociation = "explicit";
   }
 }

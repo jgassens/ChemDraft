@@ -955,9 +955,12 @@ export function PaletteWindow({
     return () => unlisten?.();
   }, [toolset.id]);
 
-  // A pointer-down anywhere in this palette that isn't a popover trigger dismisses any open popover
-  // ("click elsewhere closes it"). The colour swatch and flyout buttons are excluded so re-clicking
-  // one toggles/swaps its popover rather than close-then-reopen. The popover lives in its own
+  // A pointer-down anywhere in this palette that isn't a direct popover toggle dismisses any open
+  // popover ("click elsewhere closes it"). The colour swatch and distribute mode buttons are excluded
+  // so clicking them toggles/swaps their popovers directly. Command flyout buttons are NOT excluded:
+  // a short click executes their primary command rather than toggling a popover, so clicking them
+  // must dismiss any open stale flyout. If a user long-holds, the new popover's later opening
+  // timestamp and fresh generation protect it from this dismissal. The popover lives in its own
   // window, so its own clicks never reach this listener.
   useEffect(() => {
     const handlePointerDown = (event: globalThis.PointerEvent) => {
@@ -965,7 +968,7 @@ export function PaletteWindow({
         return;
       }
       const target = event.target;
-      if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
+      if (target instanceof Element && target.closest(".toolbar-color-trigger, .distribute-mode-button")) {
         return;
       }
       void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);

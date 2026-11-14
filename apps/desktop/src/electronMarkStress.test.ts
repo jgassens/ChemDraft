@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { electronMarkDropFixture, dropMark } from "./testSupport/electronMarkDropFixture";
 import { deserializeDocument, serializeDocument, type ElectronMarkObject, type MoleculeObject } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { planPageSvgRender, type PageSvgElementFragment } from "@chemdraft/layout-engine";
@@ -69,5 +70,27 @@ describe("electron mark appearance stress", () => {
       expect(planPageSvgRender(reopened.pages[0]).fragments.length).toBeGreaterThan(0);
       doc = reopened;
     }
+  });
+});
+
+
+describe("mixed marks on an amide nitrogen", () => {
+  it.each(["charge first", "radical first"] as const)("keeps both marks visible through save/reopen (%s)", order => {
+    const firstSpec: NativeElectronMarkSpec = order === "charge first" ? { kind: "charge", charge: 1 } : { kind: "radical-dot" };
+    const { document, nitrogen } = electronMarkDropFixture(firstSpec);
+    const originalMark = dropMark(document);
+    const secondSpec: NativeElectronMarkSpec = order === "charge first" ? { kind: "radical-dot" } : { kind: "charge", charge: 1 };
+    const placed = normalizeCommittedDocument(applyChargeToolAtNativeAtom(document, secondSpec,
+      { kind: "atom", objectId: "boc_glycine", atomId: nitrogen.id, distanceToPointer: 0 }));
+    const reopened = normalizeCommittedDocument(deserializeDocument(serializeDocument(placed)));
+    const marks = reopened.pages[0].objects.filter((o): o is ElectronMarkObject => o.type === "electron-mark");
+    expect(marks).toHaveLength(2);
+    expect(marks.find(mark => mark.id === originalMark.id)).toEqual(originalMark);
+    const [first, second] = marks;
+    expect(first.x + first.width <= second.x || second.x + second.width <= first.x ||
+      first.y + first.height <= second.y || second.y + second.height <= first.y).toBe(true);
+    for (const mark of marks) expect(mark.anchor).toEqual({ kind: "atom", objectId: "boc_glycine", atomId: nitrogen.id });
+    const molecule = reopened.pages[0].objects.find(o => o.id === "boc_glycine") as MoleculeObject;
+    expect(molecule.atoms.find(atom => atom.id === nitrogen.id)).toMatchObject({ formalCharge: 1, markRadicals: 1 });
   });
 });

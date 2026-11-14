@@ -4148,16 +4148,23 @@ export function nativeChargePlacementPointForAtom(
     pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
     objectBounds: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height }
   });
-  // Direct drops clear their whole frame from labels; new tool marks retain the original slot.
+  // A charge shares its original placement policy with existing charges (the tool updates
+  // their value), but a separate radical/lone pair must not be covered by the new charge.
+  // Exclude a mark being repositioned: its old frame must not obstruct its own drop.
+  const occupiedMarks = objects.filter((object): object is ElectronMarkObject =>
+    object.type === "electron-mark" && object.markKind !== "charge" && object.id !== mark?.id
+      && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId);
+  // Direct drops also clear their whole frame from labels.
   const localPoint = electronMarkPlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight, {
     growthPoint: growth && growth.sourceAtomId === atomId && !growth.targetAtomId ? growth.newAtomPoint : undefined,
     mark,
-    avoidLabelOverlap: mark !== undefined
+    avoidLabelOverlap: mark !== undefined,
+    occupiedMarks
   });
   return localPoint && transformPointForObject(molecule, localPoint);
 }
 
-/** A repeated radical keeps the open-angle preference, but must clear existing mark frames. */
+/** A radical keeps the open-angle preference, but must clear any existing mark on its atom. */
 export function nativeRadicalPlacementPointForAtom(
   molecule: MoleculeObject,
   atomId: string,
@@ -4165,7 +4172,7 @@ export function nativeRadicalPlacementPointForAtom(
   pageWidth: number,
   pageHeight: number
 ): LayoutPoint | undefined {
-  const occupied = objects.some(object => object.type === "electron-mark" && object.markKind === "radical-dot"
+  const occupied = objects.some(object => object.type === "electron-mark"
     && object.anchor.kind === "atom" && object.anchor.objectId === molecule.id && object.anchor.atomId === atomId);
   if (!occupied) return nativeChargePlacementPointForAtom(molecule, atomId, objects, pageWidth, pageHeight);
   // Retain the existing distance score as a preference among unoccupied candidates.
