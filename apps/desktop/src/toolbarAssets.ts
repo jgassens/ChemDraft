@@ -108,15 +108,20 @@ const toolbarAssetModules = import.meta.glob<string>("./assets/toolbar/*.png", {
 // Original parallel-stroke variants of the diagonal single-bond toolbar glyph.
 const multipleBondAsset = (offsets: readonly number[]): string =>
   `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><g fill="none" stroke="#000" stroke-width="2" stroke-linecap="round">${offsets.map(offset => `<path d="M ${6 + offset} ${26 + offset} L ${26 + offset} ${6 + offset}"/>`).join("")}</g></svg>`)}`;
-const multipleBondAssets: Partial<Record<ToolbarAssetName, string>> = {
+// Plain charge tools must remain visually distinct from their circled counterparts.
+const plainChargeAsset = (positive: boolean): string =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M 8 16 H 24${positive ? " M 16 8 V 24" : ""}" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"/></svg>`)}`;
+const generatedToolbarAssets: Partial<Record<ToolbarAssetName, string>> = {
   Custom_Bond_Double: multipleBondAsset([-2, 2]),
-  Custom_Bond_Triple: multipleBondAsset([-3, 0, 3])
+  Custom_Bond_Triple: multipleBondAsset([-3, 0, 3]),
+  Custom_Plus: plainChargeAsset(true),
+  Custom_Minus: plainChargeAsset(false)
 };
 
 export const toolbarAssets = Object.fromEntries(
   toolbarAssetNames.map((name) => {
     const path = `./assets/toolbar/${name}.png`;
-    const source = multipleBondAssets[name] ?? toolbarAssetModules[path];
+    const source = generatedToolbarAssets[name] ?? toolbarAssetModules[path];
 
     if (!source) {
       throw new Error(`Missing toolbar asset: ${path}`);
