@@ -93,4 +93,37 @@ describe.each(["macos", "windows"] as const)("palette cleanup during native open
       expect(contentCalls()).toHaveLength(warm ? 1 : 0);
     }
   );
+  it.each(["first opening", "warm opening"] as const)(
+    "cancels a %s still awaiting native open when a short tool click dismisses it", async opening => {
+      if (opening === "warm opening") await openFlyout();
+      const before = native.emit.mock.calls.filter(([event]) => event === "chemdraft://toolset-popover-content").length;
+      let finishOpen!: () => void;
+      native.open.mockImplementationOnce(() => new Promise<void>(resolve => { finishOpen = resolve; }));
+      await openFlyout();
+      const button = container.querySelector<HTMLButtonElement>(".command-flyout-button")!;
+      await act(async () => {
+        button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+        button.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      });
+      await act(async () => finishOpen());
+      await vi.waitFor(() => expect(native.visible).toBe(false));
+      expect(native.emit.mock.calls.filter(([event]) => event === "chemdraft://toolset-popover-content")).toHaveLength(before);
+    }
+  );
+
+  it("keeps a newer same-timestamp opening after canceling a pending one", async () => {
+    let finishOpen!: () => void;
+    native.open.mockImplementationOnce(() => new Promise<void>(resolve => { finishOpen = resolve; }));
+    await openFlyout();
+    const button = container.querySelector<HTMLButtonElement>(".command-flyout-button")!;
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      button.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+    });
+    await openFlyout();
+    await act(async () => finishOpen());
+    await vi.waitFor(() => expect(native.visible).toBe(true));
+    expect(native.emit.mock.calls.filter(([event]) => event === "chemdraft://toolset-popover-content")).toHaveLength(1);
+  });
+
 });

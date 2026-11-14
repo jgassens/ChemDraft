@@ -221,6 +221,24 @@ describe("ToolPalette schema-backed items", () => {
     await act(async () => root.unmount());
   });
 
+  it("cancels flyout hold timer on pointercancel without opening or invoking", async () => {
+    vi.useFakeTimers();
+    const onInvoke = vi.fn();
+    const { button, host, root } = await renderSchemaPalette(schemaBondItem, onInvoke);
+
+    await act(async () => {
+      dispatchPointerButton(button, "pointerdown");
+      vi.advanceTimersByTime(TOOLBAR_FLYOUT_HOLD_MS - 1);
+      dispatchPointerButton(button, "pointercancel");
+      vi.advanceTimersByTime(TOOLBAR_FLYOUT_HOLD_MS);
+    });
+
+    const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="bond-tools"]');
+    expect(menu?.hidden ?? true).toBe(true);
+    expect(onInvoke).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("exposes inline submenu menu semantics only while the DOM menu is open", async () => {
     vi.useFakeTimers();
     const { button, host, root } = await renderSchemaPalette(schemaBondItem);

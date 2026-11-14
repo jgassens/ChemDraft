@@ -696,13 +696,14 @@ describe("canvas ring-fill layers", () => {
     const mark = initial.pages[0].objects[0] as ElectronMarkObject;
     await renderDocument(initial, tool);
     const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
-    // This corner is outside the painted dot/sign/circle but inside the mark's frame.
-    const start = { x: mark.x + 1, y: mark.y + 1 };
+    // Grab outside even the saved frame, inside the larger canvas-only target.
+    const start = { x: mark.x - 2, y: mark.y - 2 };
     const end = { x: start.x + 45, y: start.y + 30 };
     const hit = objectVisual(mark.id)!.querySelector('rect[pointer-events="all"]')!;
     expect(hit).not.toBeNull();
     expect(hit.getAttribute("fill")).toBe("transparent");
-    expect(Number(hit.getAttribute("width"))).toBe(mark.width);
+    expect(Number(hit.getAttribute("width"))).toBe(24);
+    expect(Number(hit.getAttribute("x"))).toBeLessThan(start.x);
     await pointer(hit, "pointerdown", start);
     await pointer(hit, "pointermove", end);
     await pointer(hit, "pointerup", end);

@@ -182,7 +182,7 @@ export type ToolbarFlyoutRequest = {
 
 const GRADIENT_STOP_DIRECT_DRAG_GAP = 0.01;
 /** A deliberate hold opens a toolbar flyout; a normal click always selects its primary tool. */
-export const TOOLBAR_FLYOUT_HOLD_MS = 400;
+export const TOOLBAR_FLYOUT_HOLD_MS = 200;
 
 const ART_SHAPE_COMMAND_IDS = [
   "tool.art.rect",
@@ -438,7 +438,7 @@ export function ToolPalette({
 /**
  * A grid item rendered as a dnd-kit sortable in customize mode. Deliberately a SEPARATE component
  * from ToolbarPaletteItem: none of that component's interactive handlers (invoke-on-pointerdown,
- * setPointerCapture, 420ms hold-to-flyout timers, tooltips) are mounted here, which is what keeps a
+ * setPointerCapture, hold-to-flyout timers, tooltips) are mounted here, which is what keeps a
  * drag from firing the tool's command. Carries `data-palette-control` so PaletteWindow's shell-drag
  * and popover-dismiss `closest()` checks skip it (else pressing it would move the whole window).
  */

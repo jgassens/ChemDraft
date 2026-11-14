@@ -1311,7 +1311,9 @@ function isStandardAtomRadicalMark(
   // Legacy imports placed both triplet dots in the charge-tool slot. Keep those untouched
   // payloads warning-free too, but only while that slot still matches the atom's position.
   const point = isRecord(imported)
-    ? nativeChargePlacementPointForAtom(molecule, atom.id, page.objects, page.width, page.height)
+    ? nativeChargePlacementPointForAtom(molecule, atom.id,
+      // Reconstruct the legacy slot before mixed-mark collision avoidance existed.
+      page.objects.filter(object => object.type !== "electron-mark" || object.markKind === "charge"), page.width, page.height)
     : nativeRadicalPlacementPointForAtom(molecule, atom.id,
       page.objects.slice(0, page.objects.indexOf(mark)), page.width, page.height);
   if (!point) return false;
