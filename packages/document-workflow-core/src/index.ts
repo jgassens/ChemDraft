@@ -37,6 +37,7 @@ export * from "./sourceBondSemantics";
 export * from "./drawingDefaults";
 export * from "./nativeStylePresets";
 export * from "./electronMarks";
+export { nativeChargePlacementPointForAtom, nativeChargeMarkSizePx, nativeAtomHitRadiusPx } from "@chemdraft/layout-engine";
 export * from "./tables";
 
 export * from "./nameDictionary";

@@ -78,8 +78,8 @@ describe("arranging document selections", () => {
     expect(reopened.pages[0].objects).toEqual(after.pages[0].objects);
     expect(after.selection).toEqual(before.selection);
   });
-  // Charge stickiness for group drags and alignment is a separate change.
-  it.each(["group drag", "alignment"] as const)("keeps main's exact document behavior for %s", operation => {
+  // Alignment carries the unselected mark with its molecule; group dragging retains its existing policy.
+  it.each(["group drag", "alignment"] as const)("keeps the translation and association policy for %s", operation => {
     const before = stickyChargeFixture();
     const expected = applyPatches(before, before.pages[0].objects.flatMap<DocumentPatch>(object => {
       const dx = operation === "group drag" ? 50 : object.id === "second" ? 0 : 300;
@@ -90,19 +90,22 @@ describe("arranging document selections", () => {
         x, y, atoms: object.atoms.map(atom => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
       } }];
       if (object.type === "electron-mark") return [{ op: "updateObject", objectId: object.id, changes: {
-        x, y, anchor: { ...object.anchor, kind: "point", point: { x: x + object.width / 2, y: y + object.height / 2 } }
+        x, y, anchor: operation === "alignment" ? object.anchor :
+          { ...object.anchor, kind: "point", point: { x: x + object.width / 2, y: y + object.height / 2 } }
       } }];
       return [];
     }), { now: phase4Timestamp });
+    const warnings: string[] = [];
     const moved = operation === "group drag" ? moveDocumentObjects(before, before.selection.objectIds, 50, 40) :
-      alignSelectedDocumentObjects(before, "right");
+      alignSelectedDocumentObjects(before, "right", warnings);
+    expect(warnings).toEqual([]);
     expect(moved).toEqual(expected);
     const after = normalizeCommittedDocument(moved);
     expect(after).toEqual(normalizeCommittedDocument(expected));
     const molecule = after.pages[0].objects.find(object => object.id === "charged")! as MoleculeObject;
-    expect(molecule.atoms.map(atom => atom.formalCharge ?? 0)).toEqual([0, -1]);
+    expect(molecule.atoms.map(atom => atom.formalCharge ?? 0)).toEqual(operation === "alignment" ? [-1, 0] : [0, -1]);
     expect(after.pages[0].objects.find(object => object.id === "sticky-charge"))
-      .toMatchObject({ anchor: { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[1].id } });
+      .toMatchObject({ anchor: { kind: "atom", objectId: molecule.id, atomId: molecule.atoms[operation === "alignment" ? 0 : 1].id } });
   });
   it.each([...ArrangementLayouts, "spacing"] as const)("carries a selected mark with a stale atomId exactly once through %s", operation => {
     let before = stickyChargeFixture();

@@ -52,9 +52,18 @@ ignorable headers are omitted for plain 1.1.1 documents. See
 [the native compatibility contract](../../docs/architecture/native-document-compatibility.md).
 
 Preservation follows unique IDs. Identity-free arrays restore only while their known content is
-unchanged. Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
+unchanged. A mismatch permanently retires restoration even if matching content is later reinserted;
+the pending loss warning remains in the snapshot, and undo restores eligibility exactly.
+Edits drop their future data with logged `NATIVE_EXTENSION_DATA_DROPPED` warnings;
 `serializeDocumentWithWarnings` returns `{ contents, warnings }`, and the validated container API
 `prepareNativeDocumentForSerializationWithWarnings` returns `{ value, warnings }`.
+Object and nested atom/bond deletion retires the corresponding extension state in the patch result;
+undo and redo retain exact snapshots, including that state. `copyNativeObjectExtensions` transfers
+only copied objects' state to their new page/object IDs, retaining molecule-local atom/bond IDs and
+the source version/ignorable-field contract. Native clipboard serialization reconstructs source
+values and reads them through the normal native reader on paste; it never accepts a clipboard
+extension-state sidecar. Foreign chemistry copy refuses preserved values it cannot represent and
+returns a user-visible explanation.
 
 `DocumentPage` optionally carries `compatibility` using the same metadata schema as document objects.
 CDXML/CDX import uses it to retain source page and print settings, including page counts that have

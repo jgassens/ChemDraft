@@ -3,6 +3,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MechanismArrowObject, MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch } from "@chemdraft/chem-core";
+import { setReactionArrowConditions } from "@chemdraft/document-workflow-core";
 import * as layout from "@chemdraft/layout-engine";
 import type { PageSvgElementFragment, PageSvgFragment } from "@chemdraft/layout-engine";
 import { MainWindow, groupedDragObjectIdsForPointer } from "./MainWindow";
@@ -57,10 +59,10 @@ describe("object move retained SVG preview", () => {
     for (let i = 0; i < count; i++) doc = workflow.insertNativeTemplateMolecule(doc, { x: 300, y: 300 }, "benzene");
     return workflow.selectDocumentObjects(doc, doc.pages[0].id, doc.pages[0].objects.map(object => object.id));
   }
-  async function mount(doc: ChemDraftDocument) {
+  async function mount(doc: ChemDraftDocument, shortcutPlatform?: "macos" | "windows") {
     await act(async () => root.render(createElement(MainWindow, {
       initialDocument: doc, initialActiveToolCommandId: "tool.select", initialPaletteMode: "hidden",
-      initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false
+      initialRulersVisible: false, initialCrosshairsVisible: false, nativePalette: false, shortcutPlatform
     })));
     container.querySelector<HTMLElement>(".page")!.getBoundingClientRect = () => ({
       x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({})
@@ -146,6 +148,36 @@ describe("object move retained SVG preview", () => {
     return workflow.selectDocumentObjects(doc, doc.pages[0].id,
       allAnchorsMoved ? [left.id, right.id, arrow.id] : [right.id, arrow.id]);
   }
+
+  it.each(["macos", "windows"] as const)("moves the group frame with the display-only conditions-page preview (%s)", async platform => {
+    let doc = rings();
+    const arrow = workflow.createNativeArtLineGraphicObject(doc, { x: 100, y: 450 }, { x: 340, y: 450 }, "tool.art.reactionArrow")!;
+    doc = applyPatch(doc, { op: "addObject", pageId: doc.pages[0].id, object: arrow });
+    doc = setReactionArrowConditions(doc, arrow.id, { side: "above", spans: [{ text: "THF", script: "normal" }] });
+    doc = workflow.selectDocumentObjects(doc, doc.pages[0].id, doc.pages[0].objects.filter(object => object.type === "molecule").map(object => object.id));
+    await mount(doc, platform);
+    const drag = await start();
+    const frameBounds = () => {
+      const frame = container.querySelector<HTMLElement>("[data-group-selection]")!;
+      return [frame.style.left, frame.style.top, frame.style.width, frame.style.height]
+        .map(value => Number(value.match(/-?[\d.]+/)![0]));
+    };
+    const initialBounds = frameBounds(), initialPaint = paintedSvg();
+    for (const [dx, dy] of [[20, 15], [40, 30]]) {
+      await move(drag.target, { x: drag.point.x + dx, y: drag.point.y + dy });
+      expect(snapshot()).toEqual(drag.before);
+      expect(paintedSvg()).not.toEqual(initialPaint);
+      const bounds = frameBounds();
+      expect(bounds[0]).toBeCloseTo(initialBounds[0] + dx);
+      expect(bounds[1]).toBeCloseTo(initialBounds[1] + dy);
+      expect(bounds.slice(2)).toEqual(initialBounds.slice(2));
+    }
+    await act(async () => pointer(drag.target, "pointercancel", drag.point));
+    expect(frameBounds()).toEqual(initialBounds);
+    expect(snapshot()).toEqual(drag.before);
+    expect(paintedSvg()).toEqual(initialPaint);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+  });
 
   it.each([false, true])("clears tab-switch previews and uses connected targets on the next drag (arrow: %s)", async arrow => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);

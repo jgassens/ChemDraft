@@ -101,6 +101,10 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+`planObjectAlignment` and `planObjectDistribution` plan translations from unit bounds.
+The caller supplies each molecule and its selected explicit electron marks as one unit;
+`combinedLayoutBounds` includes their annotation offsets without changing molecular geometry.
+
 Reaction builders may store explicit editable NaOH, MgBr and H2O atom labels.
 The ordinary abbreviation/spelled-label grammar expands them for chemistry; a drawn label is
 one selectable atom, with no invisible atoms or bonds behind it. Only NaOH with explicit

@@ -435,24 +435,37 @@ it.each(associationSpecs)("keeps a distant explicit attachment through appearanc
   expect(dropMark(document).anchor).toEqual(anchor);
 });
 
-it.each(associationSpecs)("keeps normal copy/paste/group anchor policy after dropping %j", spec => {
+it.each(associationSpecs)("keeps standalone-copy policy and explicit carried associations after dropping %j", spec => {
   const fixture = electronMarkDropFixture(spec);
   const explicit = drop(fixture.document, { x: fixture.sourceAtom.x, y: fixture.sourceAtom.y - 8 }).document;
   const mark = dropMark(explicit), molecule = dropMolecule(explicit);
   const legacy = applyPatch(explicit, { op: "updateObject", objectId: mark.id, changes: { atomAssociation: undefined } }, { now: phase4Timestamp });
-  const selected = (document: ChemDraftDocument) => workflow.selectDocumentObjects(document, document.pages[0].id, [mark.id, molecule.id]);
   const chemistryAndAnchors = (document: ChemDraftDocument) => workflow.normalizeCommittedDocument(document).pages[0].objects.map(object =>
     object.type === "molecule" ? [object.id, object.atoms, object.chemistry] : object.type === "electron-mark" ? [object.id, object.anchor] : [object.id]);
   for (const operate of [
     (document: ChemDraftDocument) => workflow.duplicateSelectedDocumentObjects(document, { x: 0, y: 0 }),
-    (document: ChemDraftDocument) => workflow.duplicateSelectedDocumentObjects(document, { x: 4, y: 4 }),
-    (document: ChemDraftDocument) => workflow.moveDocumentObjects(selected(document), [molecule.id, mark.id], 80, 100),
-    (document: ChemDraftDocument) => {
-      const payload = workflow.createSelectionClipboardPayload(selected(document))!;
-      return workflow.pasteSelectionClipboardPayload(workflow.createPhase4Document("Paste dropped marks"), payload,
-        { x: payload.bounds.centerX + 4, y: payload.bounds.centerY + 4 });
-    }
+    (document: ChemDraftDocument) => workflow.duplicateSelectedDocumentObjects(document, { x: 4, y: 4 })
   ]) expect(chemistryAndAnchors(operate(explicit))).toEqual(chemistryAndAnchors(operate(legacy)));
+
+  const selected = workflow.selectDocumentObjects(explicit, explicit.pages[0].id, [mark.id, molecule.id]);
+  const payload = workflow.createSelectionClipboardPayload(selected)!;
+  // Carrying the whole structure preserves the chosen atom, even when a neighbor is closer.
+  for (const edited of [
+    workflow.moveDocumentObjects(selected, [molecule.id, mark.id], 80, 100),
+    workflow.duplicateSelectedDocumentObjects(selected, { x: 4, y: 4 }),
+    workflow.pasteSelectionClipboardPayload(workflow.createPhase4Document("Paste dropped marks"), payload,
+      { x: payload.bounds.centerX + 4, y: payload.bounds.centerY + 4 })
+  ]) {
+    const committed = workflow.normalizeCommittedDocument(edited);
+    for (const copied of committed.pages[0].objects.filter(object => object.type === "molecule")) {
+      const chemistry = (object: typeof molecule) => object.atoms.map(({ x: _x, y: _y, ...atom }) => atom);
+      expect(chemistry(copied)).toEqual(chemistry(molecule));
+      expect(copied.chemistry).toEqual(molecule.chemistry);
+      expect(committed.pages[0].objects.find(object => object.type === "electron-mark" &&
+        object.anchor.objectId === copied.id)).toMatchObject({ atomAssociation: "explicit",
+        anchor: { kind: "atom", objectId: copied.id, atomId: fixture.sourceAtom.id } });
+    }
+  }
 });
 
 it("calls the chemistry reporter only for the dropped mark and its two affected atoms", () => {
