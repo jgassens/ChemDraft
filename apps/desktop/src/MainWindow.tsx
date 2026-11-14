@@ -1,3 +1,4 @@
+import { electronMarkInteractionFrames } from "./electronMarkInteraction";
 import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { BracketLabelEditor, type BracketLabelEditorHandle } from "./BracketLabelEditor";
 import { createBracketCommands, selectedBracketPair, toggleBracketRepeatUnit, setBracketRepeatLabel, bracketRepeatUnitStatus } from "./bracketCommands";
@@ -1772,7 +1773,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.14.11.06-codex";
+const CURRENT_BUILD_STAMP = "11.14.11.40-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -22541,6 +22542,7 @@ export function MainWindow({
                 ) : null}
                 <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
+                  pageScale={viewport.scale}
                   directElectronMarkEditing={directElectronMarkEditing}
                   {...objectViewHandlers}
                   ariaLabel={document.title}
@@ -22764,9 +22766,9 @@ export function MainWindow({
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
-                      // Text editor allowance and the selected corner-radius handle use
+                      // Text, electron-mark targets and the selected corner-radius handle use
                       // screen-sized margins. Other object views stay memoized on zoom.
-                      pageScale={(object.type === "text" && activeTextEditObjectId === object.id) ||
+                      pageScale={object.type === "electron-mark" || (object.type === "text" && activeTextEditObjectId === object.id) ||
                         (object.type === "graphic" && selected && !inGroupSelection &&
                           !nativeArtToolIsOrbital(activeToolState.activeCommandId) &&
                           object.graphicKind === "rect")
@@ -28566,6 +28568,7 @@ function PageInteractionPortal({ target, children }: { target: HTMLDivElement | 
 const PageSvgSurface = memo(PageSvgSurfaceContent);
 
 function PageSvgSurfaceContent({
+  pageScale,
   directElectronMarkEditing = false,
   ariaLabel,
   pageHeight,
@@ -28579,6 +28582,7 @@ function PageSvgSurfaceContent({
   editingTableCell,
   ...handlers
 }: {
+  pageScale: number;
   directElectronMarkEditing?: boolean;
   ariaLabel: string;
   pageHeight: number;
@@ -28677,7 +28681,7 @@ function PageSvgSurfaceContent({
                   ) : (
                     <>
                       {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" || (directElectronMarkEditing && object.type === "electron-mark") ? (
-                        <rect {...(object.type === "electron-mark" ? electronMarkHitCatcherAttributes(object) : {
+                        <rect {...(object.type === "electron-mark" ? { ...electronMarkHitCatcherAttributes(object), ...electronMarkInteractionFrames(object, pageScale).move } : {
                           x: object.x, y: object.y,
                           width: tableLayout?.width ?? object.width,
                           height: tableLayout?.height ?? object.height,
@@ -29352,7 +29356,7 @@ function DocumentObjectViewContent({
     </div>, interactionLayer
   ) : <>{children}</>;
   const artObjectTransformFrameStyle = documentObjectSupportsArtTransform(object, directElectronMarkEditing)
-    ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview)
+    ? documentObjectArtTransformFrameStyle(object, artObjectProjection, objectTransformPreview, pageScale)
     : undefined;
   const graphicPathEditPoints = object.type === "graphic" ? nativeGraphicPathEditPoints(object) : undefined;
   const graphicPathNodeEditPoints = object.type === "graphic" ? nativeGraphicPathNodeEditPoints(object) : undefined;
@@ -32160,8 +32164,14 @@ function documentObjectProjectedPlaneProjection(object: DocumentObject): Documen
 function documentObjectArtTransformFrameStyle(
   object: DocumentObject,
   projection: DocumentObjectProjection | undefined,
-  preview: ObjectTransformPreviewState | undefined
+  preview: ObjectTransformPreviewState | undefined,
+  pageScale = 1
 ): CSSProperties | undefined {
+  if (object.type === "electron-mark") {
+    const frame = electronMarkInteractionFrames(object, pageScale).controls;
+    return { left: pageScaledCssPx(frame.x), top: pageScaledCssPx(frame.y),
+      width: pageScaledCssPx(frame.width), height: pageScaledCssPx(frame.height) };
+  }
   if (object.type !== "graphic") {
     return projection?.frameStyle;
   }

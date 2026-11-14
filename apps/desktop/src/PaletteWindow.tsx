@@ -971,6 +971,14 @@ export function PaletteWindow({
       if (target instanceof Element && target.closest(".toolbar-color-trigger, .distribute-mode-button")) {
         return;
       }
+      // A native open may still be queued when this click arrives. Invalidate it
+      // immediately and clear its mount replay; close only after that work settles.
+      ++popoverRequestRef.current;
+      const opening = lastPopoverPayloadRef.current?.content;
+      lastPopoverPayloadRef.current = undefined;
+      enqueuePopoverOperation(async () => {
+        await closeToolsetPopoverWindow(toolset.id, opening?.openedAt, opening?.generation);
+      });
       void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);
     };
     window.addEventListener("pointerdown", handlePointerDown, true);
