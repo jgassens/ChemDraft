@@ -133,7 +133,7 @@ x **182**. All three centers are **200**.
 - `git diff --check`: **passed**.
 
 Missing `node_modules` directories were symlinked from
-`/Users/jeremiahgassensmith/programming/chemdraw`; no install was run. The existing
+`<path-to-your-ChemDraft-checkout>`; no install was run. The existing
 example plugin's dependency directory also needed its source symlink for root
 lint. Default Vite configuration bundling attempted to write inside the shared
 root `node_modules` symlink and was rejected by the filesystem sandbox. The source

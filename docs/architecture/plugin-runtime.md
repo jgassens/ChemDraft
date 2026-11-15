@@ -18,14 +18,36 @@ into `plugin-api` / `plugin-host`.
 
 ## Persistent host
 
-`usePluginRuntime` creates exactly one `PluginHost` via a lazy `useRef`, and
-registers bundled plugins once inside that guard (StrictMode-safe). The active
-document and selection reach the host through **provider callbacks**
-(`() => documentRef.current`, a selection-snapshot builder), so the host is
-**never rebuilt** when the document, selection, page, viewport, or undo history
-changes. Core and plugin commands share one stable `CommandRegistry`; core
-bindings are synchronized in place as state changes. React re-renders on
-host/panel changes via subscriptions.
+The A5a broker and owner/view split are described in [runtime-broker.md](runtime-broker.md).
+Production desktop constructs one `createPluginRuntimeOwner` service only in the hidden `runtime`
+webview. `runtimeHostSession` awaits document core definitions before constructing it;
+`runtimeDocumentSession` / `usePluginRuntimeView` give MainWindow detached snapshots and explicit
+private-native-broker actions. Host startup failure leaves drawing usable and reports a specific
+plugin error, with no local replacement owner.
+Its host-shaped read facade is not a PluginHost and its controller-shaped sources contain only
+snapshot getters, subscriptions and action proxies. The compatibility `usePluginRuntime` hook
+uses the same owner factory for existing local embeddings/tests; the browser preview retains its
+explicit `localPluginRuntime` embedding.
+
+The owner creates the runtime and bundled workers once, and owns installed reload/update,
+recognition, naming, prompt, image, external-tool and assistant controllers. Production plugin
+commands capture their document target through `RuntimeBrokerDocument`; naming, layout, recognition
+preparation and table placement read that invocation's document/selection/viewport through messages.
+The owner registry keeps plugin handlers; the document registry keeps core handlers and contribution
+proxies. Core definitions and invocations cross the broker as data. Edits, selection, viewport, undo
+and view remounts never recreate the runtime. Assistant lifecycle, contexts, extra-tool invocations,
+history and gesture-gated write preparation now use captured-target broker messages. The source
+document retains its transaction manager and synchronous final commit; naming/external-tool
+dialogs open through that document's coordinator using data requests/replies. View/preview reads
+and core definitions use asynchronous initialization or received snapshots. A5a's data adapters
+and native routing/grants/hidden-host startup are complete. The host has narrowly scoped service
+grants; native file pickers and utility suspension remain document-owned.
+
+MainWindow retains the document-write port, history, gesture waiting, page-fit consent and
+synchronous commit. Proposal preparation stays local; asynchronous acceptance reserves the pending
+proposal, sends a one-use document commit receipt, then resolves it after the local final checks and
+history commit succeed. Failure leaves the proposal pending. See
+[the adapter review](runtime-broker-a5a3-review.md) for A5b per-document presentation seams and coordinator native verification.
 
 Plugin storage survives updates and bundled/installed id handovers; explicit Uninstall clears the
 stored file and session cache after teardown and catalog removal, reporting deletion failures after
@@ -70,7 +92,7 @@ the main drawing viewport. `PluginPanelWindow` is also the host for core-owned
 Molecular Inspector, validation result, bundled-plugin diagnostics, and plugin
 proposal review snapshots. They all reuse `openPluginPanelWindow` and the same
 request/replay event bridge; interactive actions travel back to the main window,
-where the document and plugin runtime live. The native windows are children of
+where the document lives; plugin actions then cross the private runtime broker. The native windows are children of
 the main document window, not global always-on-top panels, and retain their
 session position when hidden and reopened. The in-app `PluginPanelSurface` and
 proposal tray are web-build fallbacks only.

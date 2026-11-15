@@ -7,12 +7,19 @@ import {
   DocumentStyleScale,
   documentStylePointBounds,
   planPageSvgRender,
+  planNativeArtVisual,
+  isPatrickHandFont,
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
+import { ensureHandwritingFontLoaded, requireHandwritingFontFaceCss } from "./handwritingFont";
 
 export interface SvgExportOptions {
+  /** User-visible document title, when it differs from the stored model title. */
+  title?: string;
+  /** Match the editor's opt-in electron-mark rendering; custom stored styling always renders. */
+  directElectronMarkEditing?: boolean;
   pageIndex?: number;
   includePageGuides?: boolean;
   includeWarnings?: boolean;
@@ -32,6 +39,11 @@ export interface SvgExportResult {
   format: "svg";
   contents: string;
   warnings: ExportWarning[];
+}
+
+function svgTitle(title: string, isStoredTitle: boolean): string {
+  const clean = title.replace(/\.chemdraft$/i, "");
+  return !clean || (isStoredTitle && /^Imported CDX(?:ML)?$/i.test(clean)) ? "Untitled" : clean;
 }
 
 /** Give cropped native SVG geometry its natural physical size, with one user unit = one pt.
@@ -93,7 +105,9 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const pointsPerUnit = Math.min(svgLengthInPoints(outputWidth) / page.width, svgLengthInPoints(outputHeight) / page.height);
   const missingPictures = page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && !object.data.image && object.data.imageHref === undefined);
   const missingIds = new Set(missingPictures.map((object) => object.id));
-  const plan = planPageSvgRender({ ...page, objects: page.objects.filter((object) => !missingIds.has(object.id)) });
+  const plan = planPageSvgRender({ ...page, objects: page.objects.filter((object) => !missingIds.has(object.id)) }, {
+    directElectronMarkEditing: options.directElectronMarkEditing
+  });
   const images = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
     .map((object) => [object.id, object]));
   const renderedImages = new Set<string>();
@@ -105,13 +119,20 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     // Raster sampling and previews scale the whole page, including picture frames.
     const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
       : physicalPictureFrame(image, pointsPerUnit);
-    return serializeSvgFragment({ ...fragment, tag: "g", children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
+    const opacity = planNativeArtVisual(image).opacity;
+    return serializeSvgFragment({ ...fragment, tag: "g", attrs: {
+      ...fragment.attrs, opacity: opacity === 1 ? undefined : opacity
+    }, children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
       ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
       // Keep the native frame so later document-style conversion cannot rescale the picture twice.
       "data-chemdraft-picture-frame": `${image.x} ${image.y} ${image.width} ${image.height} ${image.rotation}`,
       preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
     }, children: [] }] }, 2);
   }).join("\n");
+  // Only rendered text on this page needs a font. Preserve all other SVG bytes.
+  const fontMarkup = needsHandwriting(plan.fragments)
+    ? `  <defs><style>${requireHandwritingFontFaceCss()}</style></defs>`
+    : "";
   const warnings = plan.warnings.filter((warning) => !(warning.code === "export.svg.graphic_fallback" && warning.objectId && images.has(warning.objectId))).map<ExportWarning>((warning) => ({
     code: warning.code,
     message: warning.message,
@@ -137,7 +158,8 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   return {
     format: "svg",
     contents: [
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(svgTitle(options.title ?? document.title, options.title === undefined))}">`,
+      fontMarkup,
       backgroundMarkup,
       pageGuideMarkup,
       body,
@@ -242,4 +264,15 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function needsHandwriting(fragments: readonly PageSvgFragment[]): boolean {
+  return fragments.some(fragment => fragment.kind === "element" &&
+    (isPatrickHandFont(String(fragment.attrs["font-family"] ?? "")) || needsHandwriting(fragment.children)));
+}
+
+/** Prepare only the exported page's rendered fonts before calling the synchronous writer. */
+export async function ensureSvgFontsLoaded(document: ChemDraftDocument, options: SvgExportOptions = {}): Promise<void> {
+  const page = document.pages[options.pageIndex ?? 0];
+  if (page && needsHandwriting(planPageSvgRender(page).fragments)) await ensureHandwritingFontLoaded();
 }

@@ -4,7 +4,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPhase4Document, insertNativeArtGraphicObject } from "./documentWorkflow";
+import { applyGraphicWaveSettingToSelection, createPhase4Document, applyChargeToolAtPoint, insertNativeArtGraphicObject, selectDocumentObjects } from "./documentWorkflow";
 import { createArtInspectorModel, selectedGraphicObjectsForArtInspector } from "./artInspectorModel";
 import { ToolPalette, titleMonogram } from "./ToolPalette";
 import { toolbarAsset } from "./toolbarAssets";
@@ -154,21 +154,25 @@ describe("ToolPalette art color popover", () => {
 
   function renderPalette({
     commandId = "tool.art.rect",
+    includeGrid = false,
     currentArtStyle = artInspectorModelFor(commandId),
     onCancel = vi.fn(),
-    onRequestColorPopover
+    onRequestColorPopover,
+    includeCommands = false
   }: {
     commandId?: string;
+    includeGrid?: boolean;
     currentArtStyle?: ReturnType<typeof createArtInspectorModel>;
     onCancel?: () => void;
     onRequestColorPopover?: (anchor: { left: number; top: number; right: number; bottom: number }) => void;
+    includeCommands?: boolean;
   } = {}) {
     const onInvoke = vi.fn();
     const onPreview = vi.fn();
     const onCommit = vi.fn();
     act(() => {
       root.render(createElement(ToolPalette, {
-        itemGroups: widgetOnlyItemGroups("core.art"),
+        itemGroups: includeGrid || includeCommands ? getToolsetItemGroups("core.art") : widgetOnlyItemGroups("core.art"),
         activeTool: "tool.select",
         orientation: "horizontal",
         onInvoke,
@@ -184,7 +188,7 @@ describe("ToolPalette art color popover", () => {
         }
       }));
     });
-    return { onCommit, onInvoke, onPreview };
+    return { onCommit, onInvoke, onPreview, onCancel };
   }
 
   function colorTrigger(): HTMLButtonElement {
@@ -229,6 +233,121 @@ describe("ToolPalette art color popover", () => {
       })
     });
   }
+
+  it("previews wave sliders, commits once on release, and supports keyboard bounds", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    for (const [setting, max] of [["smoothness", "100"], ["height", "48"], ["width", "120"]]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Wave ${setting}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.type).toBe("range");
+      expect(slider.max).toBe(max);
+      act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      expect(onCommit).toHaveBeenLastCalledWith(`object.wave.${setting}:${max}`);
+    }
+    onCommit.mockClear();
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(height);
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5");
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => { height.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5");
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+    });
+    expect(onCancel).toHaveBeenCalled();
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.rect") });
+    expect(container.querySelector('[aria-label="Wave height"]')).toBeNull();
+  });
+
+  it("shows mixed wave values with pixel units and counts only wavy art", () => {
+    let drawing = insertNativeArtGraphicObject(createPhase4Document(), { x: 220, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 12);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 320, y: 180 }, "tool.art.lineWavy");
+    drawing = applyGraphicWaveSettingToSelection(drawing, "height", 24);
+    drawing = insertNativeArtGraphicObject(drawing, { x: 420, y: 180 }, "tool.art.rect");
+    drawing = selectDocumentObjects(drawing, drawing.pages[0].id, drawing.pages[0].objects.map(object => object.id));
+    const currentArtStyle = createArtInspectorModel({ document: drawing,
+      selectedGraphicObjects: selectedGraphicObjectsForArtInspector(drawing), requestedPaintTarget: "stroke" });
+    expect(currentArtStyle.wavy).toMatchObject({ count: 2, height: { value: null, mixed: true } });
+    renderPalette({ currentArtStyle });
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    expect(height.closest("label")?.textContent).toContain("Mixed");
+    const heightTooltip = height.closest("[data-tooltip-owner-id]")?.querySelector('[role="tooltip"]')?.textContent;
+    expect(heightTooltip).toBe("Wave height applies to 2 of 3 selected graphics: Mixed");
+    expect(height.step).toBe("0.5");
+    const width = container.querySelector<HTMLInputElement>('[aria-label="Wave width"]')!;
+    const widthTooltip = width.closest("[data-tooltip-owner-id]")?.querySelector('[role="tooltip"]')?.textContent;
+    expect(widthTooltip).toContain("Wave width applies to 2 of 3 selected graphics:");
+    expect(widthTooltip).toContain(" px");
+    expect(widthTooltip).not.toContain("%");
+    expect(container.querySelector('[data-toolbar-style-controls="art"] [title]')).toBeNull();
+  });
+
+  it.each(["Escape", "blur"])("cancels an active wave drag on %s and ignores the later release", ending => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.focus(); slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    act(() => {
+      if (ending === "Escape") slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else slider.blur();
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 }));
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("closes an inline menu on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({
+      currentArtStyle: artInspectorModelFor("tool.art.lineWavy"), includeCommands: true
+    });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const menu = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    act(() => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("true");
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    expect(onCancel).not.toHaveBeenCalled();
+    const previews = onPreview.mock.calls.length;
+    act(() => { slider.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalledTimes(previews + 1);
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("lets a modal close on Escape before cancelling the armed wave drag", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(slider);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 })); });
+    expect(onPreview).toHaveBeenCalled();
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    container.append(modal);
+    const close = vi.fn((event: KeyboardEvent) => { event.preventDefault(); modal.hidden = true; });
+    modal.addEventListener("keydown", close);
+    act(() => { modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(close).toHaveBeenCalledOnce();
+    expect(modal.hidden).toBe(true);
+    expect(onCancel).not.toHaveBeenCalled();
+    act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    act(() => { slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
 
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
     const onCancel = vi.fn();
@@ -308,6 +427,51 @@ describe("ToolPalette art color popover", () => {
     expect(onRequestColorPopover).toHaveBeenCalledWith({ left: 12, top: 34, right: 60, bottom: 58 });
     // …and the inline (clipped) popover must NOT render — the window hosts it instead.
     expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it.each(["fill", "stroke"] as const)("toggles the inline %s picker with a full pointer and click sequence", target => {
+    renderPalette({ currentArtStyle: { ...artInspectorModelFor("tool.art.rect"), activePaintTarget: target } });
+    const click = () => act(() => {
+      colorTrigger().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      colorTrigger().dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      colorTrigger().dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    click();
+    expect(container.querySelector(".art-color-popover")).not.toBeNull();
+    click();
+    expect(container.querySelector(".art-color-popover")).toBeNull();
+  });
+
+  it("uses the app tooltip on Art stroke width and paint controls, with no native titles", async () => {
+    vi.useFakeTimers();
+    const relays: Array<{ visible: boolean; title?: string }> = [];
+    const relay = (event: Event) => relays.push((event as CustomEvent).detail);
+    document.body.classList.add("palette-window-body");
+    window.addEventListener("chemdraft:palette-tooltip", relay);
+    try {
+      renderPalette({ includeGrid: true });
+      expect(container.querySelector('[data-toolbar-style-controls="art"] [title]')).toBeNull();
+      const icon = container.querySelector<HTMLElement>(".icon-button-shell[data-tooltip-owner-id]")!;
+      await act(async () => icon.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })));
+      await act(async () => { vi.advanceTimersByTime(500); });
+      expect(icon.dataset.tooltipVisible).toBe("true");
+      const width = container.querySelector('[aria-label="Stroke width"]')!.closest<HTMLElement>("[data-tooltip-owner-id]")!;
+      await act(async () => {
+        icon.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: width }));
+        width.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: icon }));
+      });
+      expect(relays.at(-1)).toMatchObject({ visible: true, title: "Stroke width" });
+      const paint = container.querySelector('[aria-label="Fill paint type"]')!.closest<HTMLElement>("[data-tooltip-owner-id]")!;
+      await act(async () => {
+        width.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: paint }));
+        paint.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: width }));
+      });
+      expect(relays.at(-1)).toMatchObject({ visible: true, title: "Fill paint type" });
+    } finally {
+      document.body.classList.remove("palette-window-body");
+      window.removeEventListener("chemdraft:palette-tooltip", relay);
+      vi.useRealTimers();
+    }
   });
 
   it("uses shared color picker palettes for art colors", () => {
@@ -494,6 +658,36 @@ describe("ToolPalette art color popover", () => {
       throw new Error("Expected restored fill paint type selector.");
     }
     expect([...restoredFillSelect.options].map((option) => option.value)).toContain("object.paint.type.gloss");
+  });
+
+  it("previews and commits electron mark size and thickness sliders", () => {
+    const doc = applyChargeToolAtPoint(createPhase4Document("Mark sliders"), { kind: "lone-pair" }, { x: 200, y: 200 });
+    const model = createArtInspectorModel({ document: doc, selectedGraphicObjects: [] });
+    const onCancel = vi.fn();
+    const { onCommit, onPreview } = renderPalette({ currentArtStyle: model, onCancel });
+    for (const property of ["size", "thickness"]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Electron mark ${property}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.disabled).toBe(false);
+      setSliderRect(slider);
+      act(() => {
+        slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+        slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 60, buttons: 0 }));
+      });
+      expect(onPreview).toHaveBeenCalledWith(`object.electronMark.${property}:50`);
+      expect(onCommit).toHaveBeenCalledWith(`object.electronMark.${property}:50`);
+      act(() => slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+      expect(onCommit).toHaveBeenLastCalledWith(`object.electronMark.${property}:100`);
+      act(() => slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
+      expect(onCommit).toHaveBeenLastCalledWith(`object.electronMark.${property}:0`);
+      const committedCount = onCommit.mock.calls.length;
+      act(() => {
+        slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 90, buttons: 1 }));
+        slider.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+      });
+      expect(onCancel).toHaveBeenCalled();
+      expect(onCommit).toHaveBeenCalledTimes(committedCount);
+    }
   });
 
   it("invokes native effect commands from buttons and visible effect controls", () => {

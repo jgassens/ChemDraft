@@ -114,7 +114,7 @@ describe("ChemDraw .cds style-sheet import", () => {
 
   it("rejects inputs without the ChemDraw style-sheet header", () => {
     expect(() => importChemDrawStyleSheet("not a cds file")).toThrow(
-      "Unsupported style sheet: expected a ChemDraw .cds header."
+      "Unsupported style sheet: expected a .cds header."
     );
   });
 });

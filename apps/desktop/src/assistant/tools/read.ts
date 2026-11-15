@@ -42,7 +42,7 @@ export async function render(context: AssistantToolContext, input: ToolInput<"re
   if (objectIds && objects.length === 0) throw new Error("There are no selected objects to render.");
   const scoped = { ...document, pages: [{ ...page, objects }], selection: { objectIds: [] } };
   const { exportPhase4Svg } = await import("../../documentWorkflow");
-  let svg = exportPhase4Svg(scoped, { includePageGuides: false, includeWarnings: false, background: input.background }).contents;
+  let svg = (await exportPhase4Svg(scoped, { includePageGuides: false, includeWarnings: false, background: input.background })).contents;
   if (objectIds) {
     const bounds = unionRects(objects.map(objectRect));
     const width = Math.max(bounds.width, 1) + 24;

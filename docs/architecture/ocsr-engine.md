@@ -23,7 +23,7 @@ plugin id. For such an entry the single **Install** button does both installs:
    installed or the computer is unsupported.
 2. Confirming installs the plugin, then immediately starts the engine install in the plugin's row,
    with the same progress display as the first-use dialog.
-3. If the engine install fails or is cancelled, the plugin stays installed. The row names the error in
+3. If the engine install fails or is canceled, the plugin stays installed. The row names the error in
    plain words and offers **Install engine again** as a full-size button. The engine row never uses a
    text link: **Install engine**, **Cancel install** and **Remove engine** are all ordinary buttons.
 
@@ -126,7 +126,7 @@ waits for the sweep: all three take one staging lock before touching these direc
    absolute interpreter paths embedded in `python.exe` and `pythonw.exe` (see Adding Windows).
 9. **Prove it.** `python -c "import cv2, molscribe, numpy, torch, torchvision"` runs from the final
    location. This is the only check that the relocation worked, so it runs after the swap, not before.
-   If the launcher rewrite or probe fails or is cancelled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
+   If the launcher rewrite or probe fails or is canceled, the new tree is deleted and `ocsr-engine.previous/` is renamed back —
    a failed reinstall never costs the user a working engine. On success the previous tree is removed.
 
 Every child process runs with inherited `UV_*`, `PIP_*`, `PYTHON*`, `VIRTUAL_ENV*` and `CONDA*`
@@ -185,7 +185,7 @@ cancels it, and the startup sweep leaves the tree alone. Nothing is downloaded; 
 the venv launchers, and the only other write is the new receipt. In order, cheapest first (`upgrade.rs`):
 
 1. The old receipt's uv, Python, MolScribe and model pins equal the current ones.
-2. The bundled requirements file is the reviewed lock (`REQUIREMENTS_LOCK_SHA256`).
+2. The bundled requirements file is the reviewed lock for the build target's requirements profile.
 3. The installed `uv --version` is the pinned version.
 4. Windows first refreshes the venv launchers using the final managed Python path (see Adding
    Windows). The platform's venv Python then runs `-I -B -c …` and imports `cv2, molscribe, numpy,
@@ -222,16 +222,20 @@ CHEMDRAFT_OCSR_ENGINE_DIR="$HOME/Library/Application Support/<bundle id>/ocsr-en
 ## Pins
 
 All pins live in `src/ocsr_engine/pins.rs` / `src/local_engine/pins.rs`. Changing any of them is a deliberate, reviewed
-supply-chain change that must update `resources/ocsr/requirements.txt`, NOTICE, the dependency
-inventory, and this document together. Tests assert that the requirements file's SHA-256 is
-`REQUIREMENTS_LOCK_SHA256`, that every entry in it is an exact pin followed by hashes, and that it
-pins the torch, torchvision and numpy versions in `pins.rs`.
+supply-chain change that must update the affected lock under `resources/ocsr/`, NOTICE when
+applicable, the dependency inventory, and this document together. The typed `RequirementsProfile`
+(`src/ocsr_engine/requirements.rs`) selects the lock path, SHA-256 and package expectations from
+`EngineTarget`, the Rust build target. Install resource lookup, lock verification, current receipts,
+rollback health checks and legacy verification all use that profile. Tests check both locks for their
+profile's SHA-256, exact pins followed by hashes, and torch, torchvision, NumPy, RDKit and both OpenCV
+versions. Both generated locks and their reviewed SHA-256 pins are present.
 
 | What | Pin |
 | --- | --- |
 | uv | 0.12.18, per-platform archive SHA-256 |
 | Python | 3.10 (uv-managed) |
-| Python packages | `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, numpy 1.26.4, and the rest of MolScribe's dependency tree); the file itself is pinned by SHA-256 |
+| Python packages, Apple silicon and Windows | Unchanged `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, NumPy 1.26.4, RDKit 2026.3.6, both OpenCV packages 4.11.0.86); `REQUIREMENTS_LOCK_SHA256` stays unchanged |
+| Python packages, Intel Mac | `resources/ocsr/requirements-macos-x86_64.txt`, generated from its own `.in`: 88 exact pins with SHA-256 hashes, including torch 2.2.2, torchvision 0.17.2, RDKit 2023.9.6, both OpenCV packages 4.9.0.80; NumPy remains 1.26.4 and all other pins stay unchanged; separate `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` |
 | MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162`, 5,727,892 bytes, SHA-256 `8e323f47…e2d6` |
 | Model | `yujieq/MolScribe` revision `a0189776…`, `swin_base_char_aux_1m.pth`, 1,134,940,406 bytes, SHA-256 `6f0df56f…ea1d` |
 | Free disk | 3.0 GB |
@@ -259,18 +263,49 @@ endings normalized to LF, so a CRLF checkout on Windows still matches).
 A tarball cannot be hash-locked by URL, which is why MolScribe is not in the lock: Rust verifies the
 archive and uv installs the local file with `--no-deps`.
 
-**Intel Macs are not installable at these pins.** PyTorch publishes no macOS x86_64 wheel for 2.14.0
-(its last Intel-Mac release was 2.2), so `--require-hashes` finds nothing to install and the packages
-step fails with uv's resolution error. This was already true of the earlier `~=2.14.0` constraint; the
-lock only makes it explicit. Rather than let an Intel Mac download uv and Python only to fail at the
-packages step, `platform::current()` reports `unsupported` up front, before anything downloads (see
-[Platform seam](#platform-seam)). Genuinely supporting Intel Macs needs a deliberate decision — pinning
-an older torch build for that platform — not a silent fallback.
+### Intel Mac requirements profile
 
-The receipt records the lock's SHA-256, the exact torch/torchvision/numpy versions and the MolScribe
-archive's SHA-256. An install from before the lock is checked against the lock in place and keeps
-working if it matches; only one that differs has to be installed again (see
-[Receipt versions](#receipt-versions-and-in-place-upgrade)).
+macOS x86_64 selects `requirements-macos-x86_64.txt` and its own SHA-256 pin; Apple silicon and
+Windows continue using exactly the existing `requirements.txt` and hash. Python stays 3.10 and
+NumPy stays 1.26.4. Five package pins differ:
+
+- `torch==2.2.2` is the last PyTorch release with Intel Mac wheels; `torchvision==0.17.2` is
+  its matching release.
+- `rdkit==2023.9.6` supplies the compatible Python 3.10 Intel Mac wheel.
+- `opencv-python==4.9.0.80` and `opencv-python-headless==4.9.0.80` support ChemDraft's macOS 11
+  floor. The 4.11 Intel wheels require macOS 13.
+
+`requirements-macos-x86_64.in` copies the original input with those changes and adds the remaining
+exact pins from the existing lock, including transitive dependencies, to prevent unrelated upgrades.
+The generated lock is committed. Re-lock from `apps/desktop/src-tauri/resources/ocsr/` with exactly:
+
+```text
+uv pip compile requirements-macos-x86_64.in --python-version 3.10 --python-platform x86_64-apple-darwin --generate-hashes -o requirements-macos-x86_64.txt
+```
+
+After any re-lock, review the lock and set `REQUIREMENTS_LOCK_SHA256_MACOS_X86_64` in
+`ocsr_engine/pins.rs` to its SHA-256 with line endings normalized to LF. The current pin is
+`28413a92463e53747917d84d7c469fb59b44ddcd637bb382b82f70d15e643b20`.
+The lock-hash test checks that the committed file matches, and the installer never bypasses hash
+verification. Checked against PyPI on 2026-11-09: every one of the 88 locked packages has an
+x86_64 macOS or pure-Python wheel for Python 3.10, and the highest macOS floor is 10.16 (macOS 11).
+
+The receipt records the selected lock's SHA-256, exact torch/torchvision/NumPy versions and the
+MolScribe archive's SHA-256. Only Intel receipts also record the exact RDKit and both OpenCV
+versions; Intel validation requires all three fields. On Apple silicon and Windows these optional
+fields remain absent, keeping fresh and legacy-upgraded receipts byte-identical to the previous
+format and existing version-2 receipts valid without a re-download. A receipt from either
+requirements profile is rejected under the other, even if its uv fields are changed to match. A
+legacy install is checked against the selected profile's complete lock before its receipt can be
+upgraded.
+
+**Intel recognition must be proven on a real Intel Mac.** A compatible wheel set and mocked Rust
+tests do not prove model loading or image recognition. Before release, complete a clean install on
+real Intel hardware (including the macOS 11 compatibility floor), load the model and recognize a
+real image through the normal proposal-review flow. Also exercise
+cancellation, reinstall/rollback and uninstall there. Apple silicon and Windows install and
+recognition regression checks remain required; the wheel checks do not replace live platform
+validation.
 
 ## Sidecar protocol (version 2)
 
@@ -488,7 +523,7 @@ no focus, traps nothing, and covers only its corner, so the user keeps drawing. 
 that asked, the stage in plain words, a bar and the elapsed time, and offers **Cancel**. Only the
 stage line is a live region (`role="status"`, `aria-live="polite"`); the clock ticks every second and
 is kept out of it. It is shown from the moment a plugin hands an image to recognition until the
-result is ready, the recognition fails, or it is cancelled — except while the install dialog is open,
+result is ready, the recognition fails, or it is canceled — except while the install dialog is open,
 which is the feedback then.
 
 | Stage | Text | Bar |
@@ -512,7 +547,7 @@ result, which the next recognition uses.
 silent on it) and hides the card; if the engine was already recognizing, the controller also calls
 `cancelRecognition`, which kills the sidecar through `ocsr_recognize_cancel`. An abandoned plugin
 invocation cancels the same way. A recognition started right after a cancel waits (up to 10 s) for
-the cancelled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
+the canceled engine call to settle, so it is not refused as `busy`. One recognition runs at a time:
 a second request while one is shown is answered `busy` without disturbing the first.
 
 **Engine-neutral.** Stages travel through `StructureRecognitionEngine` —
@@ -529,7 +564,8 @@ indicator's own subscription (`subscribeActivity`), so a reading never re-render
 ## Platform seam
 
 `EnginePlatform` (`src/local_engine/platform.rs`) owns everything that differs by OS: the uv asset and checksum, the uv
-and venv interpreter paths, and child-process flags. `platform::current()` picks one with `#[cfg]`;
+and venv interpreter paths, and child-process flags. `EngineTarget::current()` reads the Rust build's
+OS and architecture; `platform::current()` selects that target's platform and requirements profile;
 the installer's junction relocation and venv launcher refresh are the other OS-specific steps. Free-disk queries and
 `kill_process_tree` are the other per-OS functions (`statvfs` and `killpg` on Unix,
 `GetDiskFreeSpaceExW` and `taskkill /T /F` on Windows).
@@ -537,7 +573,7 @@ the installer's junction relocation and venv launcher refresh are the other OS-s
 | Target | uv asset | venv Python | Child processes | Status |
 | --- | --- | --- | --- | --- |
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
-| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
+| macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | enabled with the separate Intel requirements profile and committed lock/hash; real Intel recognition validation still required (see above) |
 | Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | junction relocation and final-tree launcher refresh implemented; automated Windows validation pending |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
@@ -585,10 +621,10 @@ handling as all other uv runs. Failure or cancellation rolls the swap back just 
 Restoring `previous` during rollback or interrupted-install reconciliation refreshes the launchers
 again at the final path; a failed startup reconciliation retains the previous tree for a later retry.
 The startup sweep uses local process IO without constructing an HTTP client. During reinstall,
-a non-cancelled recovery failure is logged with its stderr tail and the unusable old trees are
+a non-canceled recovery failure is logged with its stderr tail and the unusable old trees are
 discarded so the fresh install can proceed. If that new install fails, no broken rollback is restored.
 Cancellation still aborts reinstall and preserves the previous tree.
-Rollback always renames the old engine back. If already cancelled, it skips the refresh because the
+Rollback always renames the old engine back. If already canceled, it skips the refresh because the
 old launchers already name the final path; no new child starts after cancellation or app exit.
 The legacy-receipt check also refreshes Windows launchers before its Python probe. Unix does nothing
 extra: symlink relocation already repairs its venv interpreter.

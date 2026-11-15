@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "runtime-broker",
+  "description": "Private broker channels for the runtime host and live registered documents; native caller, connection and direction checks remain mandatory.",
+  "windows": ["runtime", "main", "doc-*"],
+  "permissions": [
+    "allow-runtime-broker-connect",
+    "allow-runtime-broker-send",
+    "allow-runtime-broker-disconnect"
+  ]
+}

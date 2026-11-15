@@ -22,6 +22,7 @@ export interface OpenImagePermissionPanel {
 }
 
 export interface OpenPluginImageRequest {
+  windowId?: string;
   id: number;
   pluginId: string;
   pluginName: string;
@@ -54,7 +55,8 @@ export class PluginImageRequestController {
   async requestImage(
     plugin: { id: string; name: string },
     request: NormalizedPluginImageRequest,
-    signal: AbortSignal
+    signal: AbortSignal,
+    windowId = "main"
   ): Promise<PluginImageRequestResult> {
     if (signal.aborted) return { status: "cancelled" };
     const providers = await this.registry.available(request.sources);
@@ -62,6 +64,7 @@ export class PluginImageRequestController {
     return new Promise<PluginImageRequestResult>((resolve) => {
       const pending: PendingPluginImageRequest = {
         id: this.nextId++,
+        ...(windowId === "main" ? {} : { windowId }),
         pluginId: plugin.id,
         pluginName: plugin.name,
         request,
@@ -81,6 +84,10 @@ export class PluginImageRequestController {
     });
   }
 
+  closeWindow(windowId: string): void {
+    for (const request of [...this.pending]) if ((request.windowId ?? "main") === windowId) this.settle(request, { status: "cancelled" });
+  }
+
   getOpenRequest(): OpenPluginImageRequest | undefined {
     const request = this.pending[0];
     if (!request) return undefined;
@@ -98,7 +105,7 @@ export class PluginImageRequestController {
     this.notify();
     try {
       if (!(await this.preparePermission(request, provider))) return;
-      const image = await provider.acquire(request.signal);
+      const image = await provider.acquire(request.signal, request.windowId ?? "main");
       if (request.signal.aborted) {
         this.settle(request, { status: "cancelled" });
       } else if (image === "cancelled") {

@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 // @vitest-environment jsdom
 
 // Phase 4 seam: PaletteWindow enters/exits in-place customize mode off the customize-mode broadcast
@@ -93,8 +94,8 @@ describe("PaletteWindow customize mode bridge", () => {
     });
 
     expect(edits).toEqual([
-      { toolsetId: "core.main", edit: { kind: "resetToolset" } },
-      { toolsetId: "core.main", edit: { kind: "exitCustomize" } }
+      { target: currentPaletteTarget(), toolsetId: "core.main", edit: { kind: "resetToolset" } },
+      { target: currentPaletteTarget(), toolsetId: "core.main", edit: { kind: "exitCustomize" } }
     ]);
   });
 

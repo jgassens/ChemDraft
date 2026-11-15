@@ -552,13 +552,18 @@ fn hide_each_after_restore<W>(
 /// that one. It is the window that was key before the capture, or the main document if nothing
 /// hidden was key. Restoring in map order used to leave whichever came last — often a report
 /// window — key instead of the document.
-fn restore_order(labels: &[&str], key: Option<&str>) -> (Vec<usize>, Option<usize>) {
+fn restore_order(
+    documents: &crate::document_windows::DocumentWindowRegistry,
+    labels: &[&str],
+    key: Option<&str>,
+) -> (Vec<usize>, Option<usize>) {
     let key = key
         .and_then(|key| labels.iter().position(|label| *label == key))
         .or_else(|| {
+            let document = documents.active_document_window()?;
             labels
                 .iter()
-                .position(|label| *label == crate::MAIN_WINDOW_LABEL)
+                .position(|label| *label == document.native_label)
         });
     let others = (0..labels.len())
         .filter(|&index| Some(index) != key)
@@ -568,7 +573,14 @@ fn restore_order(labels: &[&str], key: Option<&str>) -> (Vec<usize>, Option<usiz
 
 fn restore_hidden_windows<R: Runtime>(windows: &[tauri::WebviewWindow<R>], key: Option<&str>) {
     let labels: Vec<&str> = windows.iter().map(|window| window.label()).collect();
-    let (others, key) = restore_order(&labels, key);
+    let Some(window) = windows.first() else {
+        return;
+    };
+    let (others, key) = restore_order(
+        &window.state::<crate::document_windows::DocumentWindowRegistry>(),
+        &labels,
+        key,
+    );
     for index in others {
         restore_without_focus(&windows[index]);
     }
@@ -995,24 +1007,45 @@ mod tests {
     #[test]
     fn restores_the_previously_key_window_last() {
         let labels = ["plugin-panel-v1x61", "main", "toolset-core-main"];
-        assert_eq!(restore_order(&labels, Some("main")), (vec![0, 2], Some(1)));
+        assert_eq!(
+            restore_order(&crate::ready_document_registry(), &labels, Some("main")),
+            (vec![0, 2], Some(1))
+        );
         // A report window that was key keeps focus; main is restored without it.
         assert_eq!(
-            restore_order(&labels, Some("plugin-panel-v1x61")),
+            restore_order(
+                &crate::ready_document_registry(),
+                &labels,
+                Some("plugin-panel-v1x61")
+            ),
             (vec![1, 2], Some(0))
         );
         // Nothing hidden was key: the document takes focus back, never whatever came last.
-        assert_eq!(restore_order(&labels, None), (vec![0, 2], Some(1)));
         assert_eq!(
-            restore_order(&labels, Some("preferences")),
+            restore_order(&crate::ready_document_registry(), &labels, None),
+            (vec![0, 2], Some(1))
+        );
+        assert_eq!(
+            restore_order(
+                &crate::ready_document_registry(),
+                &labels,
+                Some("preferences")
+            ),
             (vec![0, 2], Some(1))
         );
         // Without the document among them, nothing is made key.
         assert_eq!(
-            restore_order(&["plugin-panel-v1x61", "toolset-core-main"], None),
+            restore_order(
+                &crate::ready_document_registry(),
+                &["plugin-panel-v1x61", "toolset-core-main"],
+                None
+            ),
             (vec![0, 1], None)
         );
-        assert_eq!(restore_order(&[], Some("main")), (vec![], None));
+        assert_eq!(
+            restore_order(&crate::ready_document_registry(), &[], Some("main")),
+            (vec![], None)
+        );
     }
 
     #[test]

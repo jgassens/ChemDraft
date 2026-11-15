@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { CommandSpec } from "../commands";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
 import type {
@@ -20,6 +21,7 @@ import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
  * renderer looks each one up in its registry rather than reading a hardcoded `show*Controls` boolean.
  */
 export interface ToolbarWidgetState {
+  commandSpecs?: readonly CommandSpec[];
   /** Selection/document/history boundary for transient native chooser values. */
   colorContextKey?: string;
   currentTextStyle?: NativeTextStyle;
@@ -77,6 +79,10 @@ export const WIDGET_CONTROL_ID_PREFIX = "widget.";
 
 /** Canonical widget ids, used both as manifest `controlId`s and registry keys. */
 export const TOOLBAR_WIDGET_IDS = {
+  customColorSwatch1: "widget.core.customColorSwatch1",
+  customColorSwatch2: "widget.core.customColorSwatch2",
+  customColorSwatch3: "widget.core.customColorSwatch3",
+  customColorSwatch4: "widget.core.customColorSwatch4",
   mainStyleControls: "widget.core.mainStyleControls",
   textStyleControls: "widget.core.textStyleControls",
   artStyleControls: "widget.core.artStyleControls",
@@ -120,5 +126,6 @@ export function isGridWidgetItem(item: ToolbarPaletteItemModel): boolean {
  *  (24px + gap) to fit each widget's intrinsic content. Widgets not listed here re-add as appended
  *  sections (legacy behavior). */
 export const TOOLBAR_WIDGET_GRID_SPANS: Readonly<Record<string, { colSpan: number; rowSpan: number }>> = {
+  ...Object.fromEntries(([1, 2, 3, 4] as const).map(swatch => [`widget.core.customColorSwatch${swatch}`, { colSpan: 2, rowSpan: 1 }])),
   [TOOLBAR_WIDGET_IDS.mainStyleControls]: { colSpan: 12, rowSpan: 2 }
 };

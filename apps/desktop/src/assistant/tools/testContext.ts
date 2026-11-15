@@ -3,6 +3,7 @@ import { applyPatch, createEmptyDocument, type ChemDraftDocument, type DocumentP
 import { createNativeTextObject, createSmilesMolecule } from "@chemdraft/document-workflow-core";
 import { pluginPermissions } from "@chemdraft/plugin-api";
 import type { AssistantToolContext } from "../AssistantToolContext";
+import { planDocumentPageFit } from "../../pageEnlargement";
 
 export function moleculeFixture(document: ChemDraftDocument): MoleculeObject {
   const molecule = createSmilesMolecule(document, { x: 250, y: 250 }, {
@@ -23,6 +24,7 @@ export function testContext(selected = true) {
     tabId: "tab_pinned", getDocument: () => document, getSelectionAtSend: () => selection,
     getViewportRect: vi.fn(() => ({ x: 0, y: 0, width: 600, height: 600 })),
     confirmPageGrowth: vi.fn(async () => false),
+    planPageGrowth: (before, proposed) => planDocumentPageFit(before, proposed).growth,
     now: () => "2026-10-22T00:00:00Z",
     write: vi.fn(async (patch: DocumentPatch) => {
       document = applyPatch(document!, patch);

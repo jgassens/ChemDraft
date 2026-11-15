@@ -152,7 +152,7 @@ impl EngineSpec for NamingSpec {
     fn cancelled() -> InstallError {
         InstallError {
             code: InstallErrorCode::Cancelled,
-            message: "Naming engine installation cancelled.".into(),
+            message: "Naming engine installation canceled.".into(),
         }
     }
     fn failed_io(error: std::io::Error) -> InstallError {

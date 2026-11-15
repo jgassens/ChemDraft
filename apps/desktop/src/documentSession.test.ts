@@ -8,6 +8,8 @@ import {
   documentIsBlank,
   documentSessionRestoreCandidates,
   parseDocumentSessionEnvelope,
+  preserveDocumentSessionTabMetadata,
+  rawDocumentSessionTab,
   restoredDocumentFileState,
   restoredSavePathNotice,
   unrestoredTabContents,
@@ -77,6 +79,21 @@ describe("parseDocumentSessionEnvelope", () => {
     expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(valid)))).toEqual(valid);
   });
 
+  it.each([
+    { formatVersion: "1.3.0" },
+    { minAppVersion: "1.3.0" },
+    { formatVersion: "1.3.0", minAppVersion: "1.1.1" }
+  ])("retains original file headers independently of serialized contents: %j", nativeDocumentVersions => {
+    const envelope = { ...valid, nativeDocumentVersions };
+    expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(envelope)), true)).toEqual(envelope);
+  });
+
+  it.each([null, [], "1.3.0", { formatVersion: 13 }, { minAppVersion: "new" },
+    { formatVersion: "1.3.0-beta" }, { formatVersion: "1.3.0", injected: true }])(
+    "ignores malformed optional file headers without losing the drawing: %j", nativeDocumentVersions => {
+      expect(parseDocumentSessionEnvelope({ ...valid, nativeDocumentVersions }, true)).toEqual(valid);
+    });
+
   const openWarnings = { displayName: "import.cdxml", sourceLabel: "CDXML",
     warnings: [{ code: "import", message: "Imported a subset.", atomIds: ["a1"], bondIds: ["b1"] }] };
   const saveWarnings = { ...openWarnings, operation: "save" as const, displayName: "drawing.chemdraft" };
@@ -116,9 +133,11 @@ describe("parseDocumentSessionEnvelope", () => {
     expect(parseDocumentSessionEnvelope(missingSavedAt)).toBeUndefined();
   });
 
-  it("drops unknown extra fields rather than carrying them forward", () => {
-    const parsed = parseDocumentSessionEnvelope({ ...valid, futureField: true });
+  it("normalizes the display view while retaining raw future metadata for autosave", () => {
+    const raw = { ...valid, futureField: true };
+    const parsed = parseDocumentSessionEnvelope(raw)!;
     expect(parsed).toEqual(valid);
+    expect(rawDocumentSessionTab(parsed as DocumentSessionEnvelope)).toBe(raw);
   });
 });
 
@@ -193,6 +212,17 @@ describe("multi-document session extension", () => {
     expect(shouldRestoreDocumentSession(buildDocumentTabsSession([blank, blank], 0))).toBe(true);
   });
 
+  it("keeps unknown tab fields out of the window compatibility snapshot", () => {
+    const restoredTab = { ...blank, pristine: true, extensionData: { scope: "tab" } };
+    const window = { extensionData: { scope: "window" }, tabs: [restoredTab], activeTabIndex: 0 };
+    const snapshot = buildDocumentTabsSession(window.tabs, 0);
+    expect(snapshot).not.toHaveProperty("extensionData");
+    expect(snapshot.tabs![0]).toHaveProperty("extensionData", { scope: "tab" });
+    expect({ ...window, ...snapshot }).toMatchObject({
+      extensionData: { scope: "window" }, tabs: [{ extensionData: { scope: "tab" } }]
+    });
+  });
+
   it("defaults malformed cosmetic metadata and clamps scale and negative scroll without losing tabs", () => {
     const viewport = createViewportState();
     const parsed = parseDocumentSessionEnvelope(buildDocumentTabsSession([
@@ -262,6 +292,17 @@ describe("multi-document session extension", () => {
       expect(documentSessionRestoreCandidates(parsed)).toEqual([unsupported]);
     });
 
+    it("restores the recovery-only entry retained after a native window close", () => {
+      const raw = { version: 1, tabs: [], activeTabIndex: 0, unrestoredTabs: [unsupported, previouslyKept] };
+      const parsed = parseDocumentSessionEnvelope(raw)!;
+      expect(parsed).toEqual(raw);
+      expect(shouldRestoreDocumentSession(parsed)).toBe(true);
+      expect(documentSessionRestoreCandidates(parsed)).toEqual([unsupported, previouslyKept]);
+      expect(unrestoredTabContents(documentSessionRestoreCandidates(parsed)[0])).toBe(originalContents);
+      expect(parseDocumentSessionEnvelope({ ...raw, activeTabIndex: 1 })).toBeUndefined();
+      expect(parseDocumentSessionEnvelope({ ...raw, unrestoredTabs: [] })).toBeUndefined();
+    });
+
     it("still rejects an unreadable outer session even when it carries recoverable children", () => {
       expect(parseDocumentSessionEnvelope({ ...session, version: 99, tabs: [unsupported], activeTabIndex: 0,
         unrestoredTabs: [previouslyKept] })).toBeUndefined();
@@ -291,5 +332,25 @@ describe("strict session flush (before the updater's installer ends the process)
     expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, blank: true, fileState: { dirty: false } })).toBeUndefined();
     expect(strictSessionFlushRefusal({ ...open, saveEnabled: false, fileState: { path: "C:/a.cdxml", dirty: false } }))
       .toBeUndefined();
+  });
+});
+
+
+describe("session tab metadata carry-forward", () => {
+  it("preserves future fields beside and inside regenerated metadata and clears known optional fields", () => {
+    const current = buildDocumentSessionEnvelope({ contents: "new", payloadHash: "new", filename: "new" },
+      { dirty: true }, "new", false);
+    const original = { ...current, contents: "old", path: "/old.chemdraft",
+      future: { opaque: ["unchanged"] }, nativeDocumentVersions: { formatVersion: "unknown" },
+      openWarnings: { futureReport: { preserve: true }, displayName: "old", sourceLabel: "source", warnings: [] } };
+    const result = preserveDocumentSessionTabMetadata(original, { ...current,
+      openWarnings: { displayName: "new", sourceLabel: "source", warnings: [] } });
+    expect(result.contents).toBe("new");
+    expect(result).toHaveProperty("future", original.future);
+    expect(result.openWarnings).toHaveProperty("futureReport", { preserve: true });
+    expect(result.openWarnings?.displayName).toBe("new");
+    expect(result).not.toHaveProperty("path");
+    expect(result).not.toHaveProperty("nativeDocumentVersions");
+    expect(original.contents).toBe("old");
   });
 });

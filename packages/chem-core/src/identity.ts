@@ -35,9 +35,9 @@
 import type { MoleculeObject, MoleculeAtom, MoleculeBond } from "./schemas";
 
 /** Bond display styles that encode stereochemistry (vs. `bold`/`dashed` cosmetics). */
-export type StereoMarkerStyle = "wedge" | "hashed";
+export type StereoMarkerStyle = "wedge" | "hashed" | "wavy";
 
-/** A wedge/hash marker, keyed by the WL invariants of its endpoints (id-independent). */
+/** A directed stereo-intent marker (including explicit unknown), keyed by endpoint WL invariants. */
 export interface StereoMarkerFingerprint {
   /** Invariant of the narrow-end (origin) atom — molfile wedge convention. */
   fromInvariant: string;
@@ -170,7 +170,7 @@ function weisfeilerLehmanColors(
 }
 
 function isStereoStyle(style: string | undefined): style is StereoMarkerStyle {
-  return style === "wedge" || style === "hashed";
+  return style === "wedge" || style === "hashed" || style === "wavy";
 }
 
 function compareMarkers(left: StereoMarkerFingerprint, right: StereoMarkerFingerprint): number {
@@ -255,8 +255,8 @@ function diffStereoMarkers(
   before: readonly StereoMarkerFingerprint[],
   after: readonly StereoMarkerFingerprint[]
 ): StereoMarkerDiff {
-  const beforeByKey = markerStyleByKey(before);
-  const afterByKey = markerStyleByKey(after);
+  const beforeByKey = markerStyleByKey(before.filter(marker => marker.style !== "wavy"));
+  const afterByKey = markerStyleByKey(after.filter(marker => marker.style !== "wavy"));
   let becameSpecified = 0;
   let becameUnspecified = 0;
   let directionOrStyleFlipped = 0;
@@ -328,6 +328,14 @@ export function diffChemicalIdentity(
   if (stereoMarkers.directionOrStyleFlipped > 0)
     reasons.push(`${stereoMarkers.directionOrStyleFlipped} stereo marker(s) flipped`);
 
+  // Keep directed explicit-unknown intent in the fingerprint without counting it as
+  // specified R/S. Losing, adding or redirecting a wave still changes that intent.
+  const beforeUnknown = markerStyleByKey(before.graph.stereoMarkers.filter(marker => marker.style === "wavy"));
+  const afterUnknown = markerStyleByKey(after.graph.stereoMarkers.filter(marker => marker.style === "wavy"));
+  const unknownMarkersChanged = beforeUnknown.size !== afterUnknown.size ||
+    [...beforeUnknown].some(([key, style]) => afterUnknown.get(key) !== style);
+  if (unknownMarkersChanged) reasons.push("explicit unknown stereo markers changed");
+
   const graphChanged =
     atomCountDelta !== 0 ||
     bondCountDelta !== 0 ||
@@ -338,6 +346,7 @@ export function diffChemicalIdentity(
     isotopeLabelsChanged ||
     radicalCountDelta !== 0;
   const stereoMarkersChanged =
+    unknownMarkersChanged ||
     stereoMarkers.becameSpecified > 0 ||
     stereoMarkers.becameUnspecified > 0 ||
     stereoMarkers.directionOrStyleFlipped > 0;
@@ -350,7 +359,8 @@ export function diffChemicalIdentity(
   if (canonicalChanged) reasons.push("canonical representation changed");
 
   const hasSpecifiedStereo =
-    before.graph.stereoMarkers.length > 0 || after.graph.stereoMarkers.length > 0;
+    before.graph.stereoMarkers.some(marker => marker.style !== "wavy") ||
+    after.graph.stereoMarkers.some(marker => marker.style !== "wavy");
 
   let verdict: IdentityVerdict;
   if (graphChanged || stereoMarkersChanged || canonicalChanged === true) {

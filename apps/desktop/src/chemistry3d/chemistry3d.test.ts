@@ -367,7 +367,7 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
       const changed = invert(single.model, kind);
       input.model.coords.splice(component.atomStart * 3, component.atomCount * 3, ...changed);
       await expect(providers.minimize3d({ model: input.model, interfragment: false }, stop())).rejects.toThrow(
-        kind === "tetrahedral" ? "Component 2: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry." : "Component 2: minimize3d input would change specified E/Z stereo at bond 2-3; restore the input geometry.");
+        kind === "tetrahedral" ? "Component 2: minimize3d input would change specified tetrahedral stereo at center 2; restore the input geometry." : "Component 2: minimize3d input would change specified E/Z stereo at bond 2-3; restore the input geometry.");
     }
   );
 
@@ -386,7 +386,7 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
       });
       try {
         await expect(providers.minimize3d({ model: input.model, interfragment: false }, stop())).rejects.toThrow(
-          kind === "tetrahedral" ? "Component 1: minimize3d result would change specified tetrahedral stereo at centre 2; restore the input geometry." : "Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.");
+          kind === "tetrahedral" ? "Component 1: minimize3d result would change specified tetrahedral stereo at center 2; restore the input geometry." : "Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.");
       } finally { spy.mockRestore(); }
     }
   );
@@ -432,7 +432,7 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
       const start = await providers.embed3d({ components: [{ smiles }] }, stop());
       start.model.coords = invert(start.model, kind);
       await expect(providers.flatten3d({ model: start.model, view: "auto" }, stop())).rejects.toThrow(kind === "tetrahedral" ?
-        "Component 1: flatten3d input would change specified tetrahedral stereo at centre 2; restore the input geometry." :
+        "Component 1: flatten3d input would change specified tetrahedral stereo at center 2; restore the input geometry." :
         "Component 1: flatten3d input would change specified E/Z stereo at bond 2-3; restore the input geometry.");
     }
   );

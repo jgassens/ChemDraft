@@ -93,7 +93,7 @@ trust-file allow-list, imports and validates `src/manifest.ts`, then imports
 Old checkouts without the grouping/disclosure capabilities are refused, but
 the entry has already executed by then. The allow-list bounds which code
 can run; this plugin runs with the CLI process's privileges, not in a sandbox.
-See [NMR](nmr.md) for scientific and licence constraints.
+See [NMR](nmr.md) for scientific and license constraints.
 
 ## Register MCP
 

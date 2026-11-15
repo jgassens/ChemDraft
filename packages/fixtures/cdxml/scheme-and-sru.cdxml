@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML BondLength="14.4"><page id="1" BoundingBox="0 0 540 720" Width="540" Height="720">
+<fragment id="f1">
+ <n id="11" p="60 100"/><n id="12" p="72.5 92.8"/><n id="13" p="85 100" Element="8"/>
+ <b id="14" B="11" E="12"/><b id="15" B="12" E="13"/>
+</fragment>
+<arrow id="arr1" BoundingBox="100 96 150 104" Head3D="150 100 0" Tail3D="100 100 0" ArrowheadHead="Full" ArrowheadType="Solid"/>
+<fragment id="f2">
+ <n id="21" p="170 100"/><n id="22" p="182.5 92.8"/><n id="23" p="195 100" Element="8"/>
+ <b id="24" B="21" E="22"/><b id="25" B="22" E="23" Order="2"/>
+</fragment>
+<arrow id="arr2" BoundingBox="210 96 260 104" Head3D="260 100 0" Tail3D="210 100 0" ArrowheadHead="Full" ArrowheadType="Solid"/>
+<fragment id="f3">
+ <n id="31" p="280 100"/><n id="32" p="292.5 92.8"/><n id="33" p="305 100" Element="8"/><n id="34" p="292.5 78.4" Element="8"/>
+ <b id="35" B="31" E="32"/><b id="36" B="32" E="33"/><b id="37" B="32" E="34" Order="2"/>
+</fragment>
+<scheme id="sch1">
+ <step id="st1" ReactionStepReactants="f1" ReactionStepProducts="f2" ReactionStepArrows="arr1"/>
+ <step id="st2" ReactionStepReactants="f2" ReactionStepProducts="f3" ReactionStepArrows="arr2"/>
+</scheme>
+<fragment id="f4">
+ <n id="41" p="80 220"/><n id="42" p="92.5 212.8"/><n id="43" p="105 220"/><n id="44" p="117.5 212.8"/>
+ <b id="45" B="41" E="42"/><b id="46" B="42" E="43"/><b id="47" B="43" E="44"/>
+</fragment>
+<graphic id="g1" BoundingBox="86 204 86 228" GraphicType="Bracket" BracketType="Square"/>
+<graphic id="g2" BoundingBox="111 204 111 228" GraphicType="Bracket" BracketType="Square"/>
+<bracketedgroup id="bg1" BracketedObjectIDs="42 43" BracketUsage="SRU" PolymerRepeatPattern="HeadToTail" SRULabel="n">
+ <bracketattachment id="ba1" GraphicID="g1"><crossingbond id="cb1" BondID="45" InnerAtomID="42"/></bracketattachment>
+ <bracketattachment id="ba2" GraphicID="g2"><crossingbond id="cb2" BondID="47" InnerAtomID="43"/></bracketattachment>
+</bracketedgroup>
+</page></CDXML>

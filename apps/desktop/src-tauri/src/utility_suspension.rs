@@ -117,6 +117,19 @@ impl UtilitySuspension {
         self.deferred_panels.remove(label);
     }
 
+    pub(crate) fn close_panels_for_owner(&mut self, owner: &str) {
+        let labels: Vec<_> = self
+            .restore
+            .iter()
+            .chain(self.deferred_panels.keys())
+            .filter(|label| super::panel_ownership::owner_id(label).as_deref() == Some(owner))
+            .cloned()
+            .collect();
+        for label in labels {
+            self.closed(&label);
+        }
+    }
+
     /// Keep restoration active after the last prompt ends, including while the owner is minimized.
     pub(crate) fn release(&mut self, quitting: bool) -> Option<Vec<String>> {
         if quitting {

@@ -38,7 +38,7 @@ import {
   type MolecularInterpretation
 } from "@chemdraft/analysis-core";
 
-import { compositionFromRdkitJson, elementSymbol, type DerivedComposition, type RdkitJson } from "./composition";
+import { compositionFromRdkitJson, elementSymbol, rdkitHasIndeterminateBonds, type DerivedComposition, type RdkitJson } from "./composition";
 import { ensureRdkit, type RdkitJsMol, type RdkitMinimalModule } from "./conformer";
 import {
   deriveInterpretation,
@@ -404,7 +404,7 @@ function chargedInputDecline(base: ReturnType<typeof resultBase>, message: strin
 }
 
 /** Shared fields every result carries, so a variant only spells out what makes it that variant. */
-function resultBase(context: ResultContext) {
+function resultBase(context: Omit<ResultContext, "composition"> & { composition?: DerivedComposition }) {
   return {
     id: resultId(context.contract.id, context.interpretation.id),
     label:
@@ -423,6 +423,30 @@ function resultBase(context: ResultContext) {
     datasets: context.contract.datasets,
     rawArtifacts: []
   };
+}
+
+function declineIndeterminateBonds(contract: MethodContract, interpretation: MolecularInterpretation, message: string): AnalysisResult {
+  const base = resultBase({ contract, interpretation });
+  const shared = {
+    ...base, status: "unsupported" as const,
+    applicability: { status: "out-of-domain" as const, reasons: [message], unsupportedFeatures: ["unknown bond order"] },
+    warnings: [warning("structure.unknown_bond_order", message, "warning", [base.id])]
+  };
+  switch (contract.resultKind) {
+    case "composition":
+      return { ...shared, kind: "composition", formula: null, formalCharge: null, elements: [], components: [],
+        hasExplicitIsotopes: false, radicalElectronCount: 0 };
+    case "identifier":
+      return { ...shared, kind: "identifier", value: null,
+        identifierType: contract.id === "rdkit.inchi" ? "inchi" : contract.id === "rdkit.inchikey" ? "inchikey" : "canonical-smiles" };
+    case "ionization":
+      return { ...shared, kind: "ionization", sites: [], unassessed: [] };
+    case "distribution":
+      return { ...shared, kind: "distribution", positions: new Float64Array(), intensities: new Float64Array(),
+        positionUnit: "dalton", intensityUnit: "relative-abundance", truncation: { policy: "none", threshold: 0 } };
+    default:
+      return { ...shared, kind: "scalar", value: null, unit: contract.unit ?? "dimensionless" };
+  }
 }
 
 /**
@@ -594,7 +618,7 @@ export function stereochemistryLabels(stereoTagsJson: string, unspecifiedCentres
       .map(([begin, end, descriptor]) => `bond ${begin}-${end} ${descriptor}`)
   ];
   if (unspecifiedCentres > 0) {
-    labels.push(`${unspecifiedCentres} unspecified stereocentre${unspecifiedCentres === 1 ? "" : "s"}`);
+    labels.push(`${unspecifiedCentres} unspecified stereocenter${unspecifiedCentres === 1 ? "" : "s"}`);
   }
   return labels;
 }
@@ -762,7 +786,17 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       );
     }
 
-    if (request.maxHeavyAtoms !== undefined && mol.get_num_atoms() > request.maxHeavyAtoms) {
+    const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
+    if (rdkitHasIndeterminateBonds(sourceJson)) {
+      const message = "The structure has an unknown or query bond order; formula, masses, identifiers and predictions are unsupported until its order is resolved.";
+      const selected = contracts.filter(contract => !request.methodIds || request.methodIds.includes(contract.id));
+      return finish("unsupported", selected.map(contract => declineIndeterminateBonds(contract, interpretation, message)),
+        [warning("structure.unknown_bond_order", message, "warning")]);
+    }
+    const composition = compositionFromRdkitJson(sourceJson);
+    const heavyAtoms = composition.elements.reduce((count, element) =>
+      count + (element.symbol === "H" ? 0 : element.count), 0);
+    if (request.maxHeavyAtoms !== undefined && heavyAtoms > request.maxHeavyAtoms) {
       // Refused before any descriptor runs. `unsupported` rather than `failed`: nothing went wrong,
       // the structure is outside what this call agreed to compute.
       return finish(
@@ -771,20 +805,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         [
           warning(
             "structure.too_many_atoms",
-            // "atoms", not "heavy atoms". `get_num_atoms()` counts EXPLICIT hydrogens too, so a
-            // molfile that writes its hydrogens out is measured on a different scale from the SMILES
-            // for the same molecule — and the message named the scale it was not using. The guard is a
-            // work budget, so counting what the engine will actually process is right; only the word
-            // was wrong.
-            `The structure has ${mol.get_num_atoms()} atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
+            `The structure has ${heavyAtoms} heavy atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
             "warning"
           )
         ]
       );
     }
 
-    const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
-    const composition = compositionFromRdkitJson(sourceJson);
     const descriptors = readDescriptors(mol, descriptorDetails);
     const sourceContext: DerivedContext = { interpretation, mol, composition, descriptors };
     const ionMasses = resolveIonComponentMasses(module);

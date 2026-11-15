@@ -2,15 +2,17 @@ import { useEffect, useState } from "react";
 import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { listenForCompoundLayoutSettings } from "./window-manager";
 
-export function useCompoundLayoutTools(): boolean {
-  const [enabled, setEnabled] = useState(() => loadCompoundLayoutSettings().enabled);
+export function useCompoundLayoutSettings() {
+  const [settings, setSettings] = useState(loadCompoundLayoutSettings);
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listenForCompoundLayoutSettings(settings => setEnabled(settings.enabled)).then(listener => {
+    void listenForCompoundLayoutSettings(setSettings).then(listener => {
       if (disposed) listener(); else unlisten = listener;
     });
     return () => { disposed = true; unlisten?.(); };
   }, []);
-  return enabled;
+  return settings;
 }
+
+export function useCompoundLayoutTools(): boolean { return useCompoundLayoutSettings().enabled; }

@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import type { Event, EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { listenCurrentWindowEvent, safeTauriListen, UNLISTEN_ATTEMPTS } from "./tauriEvents";
+import { listenCurrentWindowEvent, safeTauriListen, safeTauriWindowListen, UNLISTEN_ATTEMPTS } from "./tauriEvents";
 
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: vi.fn() }));
 
@@ -38,6 +38,30 @@ describe("current-window listener host boundary", () => {
     stop();
     stop();
     expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("mutes a specific window listener stopped before attachment finishes", async () => {
+    const unlisten = vi.fn();
+    let finishAttach!: (unlisten: UnlistenFn) => void;
+    let receive!: EventCallback<string>;
+    const target = {
+      listen: vi.fn(function (this: unknown, name: string, handler: EventCallback<string>) {
+        expect(this).toBe(target);
+        expect(name).toBe("tauri://destroyed");
+        receive = handler;
+        return new Promise<UnlistenFn>(resolve => { finishAttach = resolve; });
+      })
+    };
+    const handler = vi.fn();
+    const listener = safeTauriWindowListen<string>(target as unknown as ReturnType<typeof getCurrentWebviewWindow>, "tauri://destroyed", handler);
+    listener.stop();
+    receive({ event: "tauri://destroyed", id: 1, payload: "late" });
+    expect(handler).not.toHaveBeenCalled();
+    finishAttach(unlisten);
+    expect(await listener.attached).toBe(listener.stop);
+    listener.stop();
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(getCurrentWebviewWindow).not.toHaveBeenCalled();
   });
 });
 

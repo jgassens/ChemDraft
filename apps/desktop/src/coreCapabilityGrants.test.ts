@@ -20,6 +20,28 @@ import { describe, expect, it } from "vitest";
  * requirement, but keeping the feature without the grant fails here.
  */
 describe("core capability grants", () => {
+  it("admits the migrated and future document labels without extending document grants to utilities", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const utilities = ["toolset-core-main", "toolset-popover-core-main", "toolset-tooltip",
+      "dialog-main-export-1", "plugin-panel-example", "preferences", "spin3d-debugger", "runtime"];
+    const matches = (patterns: string[], label: string) => patterns.some(pattern =>
+      pattern.endsWith("*") ? label.startsWith(pattern.slice(0, -1)) : label === pattern);
+    let documentOnly = 0;
+    for (const name of readdirSync(directory).filter(name => name.endsWith(".json"))) {
+      const capability = JSON.parse(readFileSync(new URL(name, directory), "utf8")) as { windows: string[] };
+      if (!capability.windows.includes("main")) continue;
+      expect(capability.windows, name).toContain("doc-*");
+      const documentPatterns = capability.windows.filter(pattern => pattern === "main" || pattern.startsWith("doc-"));
+      expect(matches(documentPatterns, "main"), name).toBe(true);
+      expect(matches(documentPatterns, "doc-example"), name).toBe(true);
+      for (const utility of utilities) expect(matches(documentPatterns, utility), `${name}: ${utility}`).toBe(false);
+      if (capability.windows.length === documentPatterns.length) {
+        documentOnly++;
+        for (const utility of utilities) expect(matches(capability.windows, utility), `${name}: ${utility}`).toBe(false);
+      }
+    }
+    expect(documentOnly).toBe(15);
+  });
   it("pins perf recording grants and restricts completion forwarding to main and shared dialogs", () => {
     const directory = new URL("../src-tauri/capabilities/", import.meta.url);
     const grants = readdirSync(directory).filter(name => name.endsWith(".json")).map(name => ({
@@ -30,16 +52,16 @@ describe("core capability grants", () => {
     const owners = (permission: string) => grants.filter(({ capability }) => capability.permissions.some(p =>
       (typeof p === "string" ? p : p.identifier) === permission));
     expect(owners("allow-perf-log-complete").map(g => [g.name, g.capability.windows])).toEqual([
-      ["perf-probe.json", ["main", "dialog-main-*"]]
+      ["perf-probe.json", ["main", "doc-*", "dialog-main-*"]]
     ]);
     expect(owners("allow-perf-log-window-state").map(g => [g.name, g.capability.windows])).toEqual([
-      ["perf-probe-main.json", ["main"]]
+      ["perf-probe-main.json", ["main", "doc-*"]]
     ]);
     expect(grants.find(g => g.name === "perf-probe-main.json")!.capability.permissions).toEqual(["allow-perf-log-window-state"]);
     expect(grants.find(g => g.name === "perf-probe.json")!.capability.permissions).toEqual(["allow-perf-log-complete"]);
     for (const permission of ["allow-perf-log-clock", "allow-perf-log-append"]) {
       expect(owners(permission).map(g => [g.name, g.capability.windows])).toEqual([
-        ["perf-probe-recording.json", ["main", "toolset-*", "plugin-panel-*", "dialog-main-*", "preferences", "spin3d-debugger"]]
+        ["perf-probe-recording.json", ["main", "doc-*", "toolset-*", "plugin-panel-*", "dialog-main-*", "preferences", "spin3d-debugger"]]
       ]);
     }
     expect(grants.find(g => g.name === "perf-probe-recording.json")!.capability.permissions)
@@ -163,7 +185,7 @@ describe("core capability grants", () => {
         (typeof permission === "string" ? permission : permission.identifier) === "allow-suspend-toolset-windows"));
 
     expect(grants.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
-    expect(grants[0]!.capability.windows).toEqual(["main"]);
+    expect(grants[0]!.capability.windows).toEqual(["main", "doc-*"]);
   });
 
   it("lets only the document window hide panels on their behalf, and only panels hide themselves", () => {
@@ -179,7 +201,7 @@ describe("core capability grants", () => {
     const owners = (permission: string) => grants.filter(({ capability }) => capability.permissions
       .some((entry) => (typeof entry === "string" ? entry : entry.identifier) === permission));
     expect(owners("allow-hide-plugin-panel-from-main").map(({ name, capability }) => [name, capability.windows]))
-      .toEqual([["plugin-panel-hide.json", ["main"]]]);
+      .toEqual([["plugin-panel-hide.json", ["main", "doc-*"]]]);
     expect(grants.find(({ name }) => name === "plugin-panel-hide.json")!.capability.permissions)
       .toEqual(["allow-hide-plugin-panel-from-main"]);
     expect(owners("allow-hide-plugin-panel-window").map(({ name }) => name)).toEqual(["plugin-panel.json"]);

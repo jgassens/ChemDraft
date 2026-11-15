@@ -41,7 +41,7 @@
     <link rel="preconnect" href="https://p.typekit.net">
     <link rel="stylesheet" href="https://use.typekit.net/yrs0uxx.css">
     <link rel="stylesheet" href="style.css">
-    <script src="app.js" defer></script>
+    <script type="module" src="app.js"></script>
   </head>
   <body>
     <header class="site-header">
@@ -70,9 +70,14 @@
         <p class="report-bugs">Found a bug? Report it from inside the app: <strong>Help ▸ Report a Bug…</strong></p>
         <div class="download-buttons">
           <div class="download-option">
-            <a id="download-mac" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for macOS</a>
-            <p class="download-sub">Apple Silicon Macs</p>
-            <p id="release-meta-mac" class="release-meta" hidden aria-live="polite"></p>
+            <a id="download-mac-apple" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for macOS · Apple silicon</a>
+            <p class="download-sub">Mac with Apple silicon</p>
+            <p id="release-meta-mac-apple" class="release-meta" hidden aria-live="polite"></p>
+          </div>
+          <div class="download-option">
+            <a id="download-mac-intel" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for macOS · Intel</a>
+            <p class="download-sub">Mac with Intel processor · macOS 11 or later</p>
+            <p id="release-meta-mac-intel" class="release-meta" hidden aria-live="polite"></p>
           </div>
           <div class="download-option">
             <a id="download-windows" class="download-box" href="https://github.com/jgassens/ChemDraft/releases/latest">Download for Windows</a>
@@ -267,7 +272,7 @@
 
       <section class="spec-grid" aria-label="ChemDraft download details">
         <dl>
-          <div><dt>Platform</dt><dd>Apple Silicon Macs (arm64) and 64-bit Windows (x64).</dd></div>
+          <div><dt>Platform</dt><dd>Mac with Apple silicon (arm64), Mac with Intel processor (macOS 11 or later), and 64-bit Windows (x64).</dd></div>
           <div><dt>Package</dt><dd>DMG for macOS and a setup .exe installer for Windows, both from the latest GitHub release.</dd></div>
           <div><dt>Trust</dt><dd>macOS builds are Developer ID signed and notarized by Apple, so they open without Gatekeeper warnings. The Windows installer is not code-signed yet, so Windows SmartScreen may show “Windows protected your PC”: choose “More info”, then “Run anyway”.</dd></div>
           <div><dt>Updates</dt><dd>Updates are offered inside the app. On macOS, built-in Sparkle updates check the signed appcast. On Windows, the built-in updater downloads signed update packages.</dd></div>

@@ -7,7 +7,7 @@ export interface RdkitDepiction2D {
   molfile: string;
   atoms: { element: string; isotope?: number; charge: number; x: number; y: number }[];
   bonds: { from: number; to: number; order: "single" | "double" | "triple" | "aromatic" | "unknown";
-    stereo?: "either"; wedge: "wedge" | "hashed" | null }[];
+    stereo?: "either"; wedge: "wedge" | "hashed" | "wavy" | null }[];
 }
 
 export class RdkitRelayoutIdentityError extends Error {
@@ -60,6 +60,7 @@ export function relayoutMolfile2DWithRdkit(
   }
   const inputBonds = molfileBonds(molfile, inputAtoms.length);
   const either = new Set(inputBonds.filter(b => b.type === 2 && b.stereo === 3).map(b => pairKey(b.from, b.to)));
+  const waves = new Map(inputBonds.filter(b => b.type === 1 && b.stereo === 4).map(b => [pairKey(b.from, b.to), b]));
   const source = rdkit.get_mol(molfile, parseOptions);
   if (!source) throw new Error("RDKit could not parse the structure for 2D re-layout.");
   try {
@@ -79,6 +80,14 @@ export function relayoutMolfile2DWithRdkit(
     if (connectivity(bonds) !== connectivity(inputBonds)) throw new RdkitRelayoutIdentityError("coordinate generation changed atom connectivity/order.");
     const lines = output.split(/\r?\n/);
     bonds.forEach((bond, i) => {
+      const wave = waves.get(pairKey(bond.from, bond.to));
+      if (wave) {
+        if (bond.type !== 1) throw new RdkitRelayoutIdentityError("a wavy single bond changed order.");
+        bond.from = wave.from; bond.to = wave.to; bond.stereo = 4;
+        const index = 4 + atoms.length + i;
+        lines[index] = `${String(bond.from + 1).padStart(3)}${String(bond.to + 1).padStart(3)}  1  4${lines[index].slice(12)}`;
+        return;
+      }
       if (!either.has(pairKey(bond.from, bond.to))) return;
       if (bond.type !== 2) throw new RdkitRelayoutIdentityError("an open double bond changed order.");
       bond.stereo = 3;
@@ -105,7 +114,8 @@ export function relayoutMolfile2DWithRdkit(
         bonds: bonds.map(bond => ({ from: bond.from, to: bond.to,
           order: bond.type === 1 ? "single" : bond.type === 2 ? "double" : bond.type === 3 ? "triple" : bond.type === 4 ? "aromatic" : "unknown",
           ...(bond.type === 2 && bond.stereo === 3 ? { stereo: "either" as const } : {}),
-          wedge: bond.type === 1 && bond.stereo === 1 ? "wedge" : bond.type === 1 && bond.stereo === 6 ? "hashed" : null }))
+          wedge: bond.type === 1 && bond.stereo === 1 ? "wedge" : bond.type === 1 && bond.stereo === 6 ? "hashed"
+            : bond.type === 1 && bond.stereo === 4 ? "wavy" : null }))
       };
     } finally { readBack.delete(); }
   } finally { source.delete(); }

@@ -5,6 +5,7 @@ import {
   createToolsetToggleCommandDefinitions,
   mergeToolsetItemAdditions,
   normalizeToolsetDefinition,
+  parseToolsetLayoutState,
   parseToolsetManifest,
   toolsetItemCustomizationId,
   type NormalizedToolsetItem,
@@ -16,9 +17,10 @@ import {
   type ToolsetItemDefinition
 } from "@chemdraft/toolset-registry";
 import { detectShortcutPlatform, parseShortcutDisplay, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { isCompoundLayoutCommand, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { isCompoundLayoutCommand, isCompoundLayoutCommandHidden, type CompoundLayoutSettings, loadCompoundLayoutSettings } from "./compoundLayoutSettings";
 import manifest from "./toolsets/desktop-toolsets.json";
 import { isGridWidgetItem, isToolbarWidgetItem } from "./toolbars/toolbarWidgets";
+import { MAIN_TOOLBAR_DEFAULTS_REVISION, withCurrentMainToolbarDefaults } from "./toolbars/toolbarLayoutState";
 import type { CommandSpec } from "./commands";
 import { renamedCommandId } from "./renamedCommands";
 import type { IconName } from "./icons";
@@ -68,17 +70,21 @@ export const desktopToolsetRegistry = createDesktopToolsetRegistry();
 export const defaultVisibleToolsetIds = createDefaultVisibleToolsetIds(desktopToolsetRegistry);
 
 /** Filter only the displayed catalog; saved customization keeps disabled feature entries intact. */
-export function compoundLayoutRegistry(registry: DesktopToolsetRegistry, enabled: boolean): DesktopToolsetRegistry {
-  if (enabled) return registry;
+export function compoundLayoutRegistry(registry: DesktopToolsetRegistry, enabled: boolean, settings: CompoundLayoutSettings = loadCompoundLayoutSettings(), desktop = true): DesktopToolsetRegistry {
+  const hidden = (id: string) => isCompoundLayoutCommandHidden(id, { ...settings, enabled }, desktop);
+  if (enabled && !registry.listToolsets().some(toolset => toolset.groups.some(group => group.items.some(item => {
+    const id = item.primary?.type === "command" ? item.primary.commandId : item.commandId ?? item.id;
+    return !!id && hidden(id) || item.submenu?.items.some(entry => hidden(entry.commandId));
+  })))) return registry;
   return new ToolsetRegistry<IconName, ToolbarAssetName>(registry.listToolsets().map((toolset): DesktopToolsetDefinition => ({
     ...toolset,
     groups: toolset.groups.map(group => ({
       ...group,
       items: group.items.filter(item => {
         const id = item.primary?.type === "command" ? item.primary.commandId : item.commandId ?? item.id;
-        return !id || !isCompoundLayoutCommand(id);
+        return !id || !hidden(id);
       }).map(item => {
-        const items = item.submenu?.items.filter(entry => !isCompoundLayoutCommand(entry.commandId));
+        const items = item.submenu?.items.filter(entry => !hidden(entry.commandId));
         return { ...item, submenu: item.submenu && items?.length ? { ...item.submenu, items } : null };
       })
     }))
@@ -102,7 +108,7 @@ export function createDesktopToolsetRegistry(
     // shell commands (e.g. edit.undo) count as valid targets so they aren't pruned as "unknown".
     : applyToolsetLayoutState<IconName, ToolbarAssetName>(
         base,
-        migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(layoutState)),
+        migrateMainToolbarDefaultsLayoutState(layoutState),
         {
           additionalCommandIds,
           onUnknownCommand: "prune"
@@ -128,12 +134,77 @@ const MAIN_ITEMS_GROUP_ID = "core.main.items";
 
 const LEGACY_MAIN_DIVIDER_IDS = LEGACY_MAIN_GROUP_IDS.map((_, index) => `core.main.divider.${index + 1}`);
 
+const MULTIPLE_BOND_IDS = ["tool.doubleBond", "tool.tripleBond"];
+
+/** The previous Main defaults, including Chain's full flyout/presentation from Structure. */
+function previousMainToolbarGroups(): ToolsetGroupDefinition<IconName, ToolbarAssetName>[] {
+  const groups = desktopToolsets.find(toolset => toolset.id === "core.main")!.groups;
+  const chain = desktopToolsets.flatMap(toolset => toolset.groups.flatMap(group => group.items))
+    .find(item => item.commandId === "tool.chain")!;
+  return groups.map(group => {
+    const items = group.items.filter(item => !MULTIPLE_BOND_IDS.includes(item.commandId ?? ""));
+    items.splice(items.findIndex(item => item.commandId === "tool.benzene"), 0, chain);
+    return { ...group, items };
+  });
+}
+
+/** Preserve customized layouts against the old defaults once; other overrides use the new defaults.
+ * Complete the old order before adding Chain back, since addition indices precede reorder/hide and
+ * were measured against the old manifest. Keep a top-level marker even when no Main override exists.
+ */
+export function migrateMainToolbarDefaultsLayoutState(state: unknown): unknown {
+  if (typeof state === "object" && state !== null &&
+      (state as { mainToolbarDefaultsMetadataUnavailable?: unknown }).mainToolbarDefaultsMetadataUnavailable === true) {
+    const { mainToolbarDefaultsMetadataUnavailable: _, ...loaded } = state as Record<string, unknown>;
+    // Native found a side file but could not recover a revision. Do not guess this is unmigrated:
+    // adding Chain/hiding multiple bonds here would be persisted by startup's visibility save.
+    // A genuine pre-#340 1.2 file carries its revision inline, so native honours it and never
+    // sets this hint. A v1.1.1 file with no side file has no hint and gets the original migration
+    // below. Consume the IPC-only hint before parsing/broadcasting/saving.
+    return withCurrentMainToolbarDefaults(parseToolsetLayoutState(
+      migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(loaded))
+    ));
+  }
+  const legacy = migrateLegacyMainToolbarLayoutState(migrateRenamedCommandIdsInLayoutState(state));
+  if (typeof legacy !== "object" || legacy === null) return legacy;
+  const revision = (legacy as { mainToolbarDefaultsRevision?: unknown }).mainToolbarDefaultsRevision;
+  if (typeof revision === "number" && revision >= MAIN_TOOLBAR_DEFAULTS_REVISION) {
+    return legacy;
+  }
+  const parsed = parseToolsetLayoutState(legacy);
+  const previousGroups = previousMainToolbarGroups();
+  const chainIndex = previousGroups[0].items.findIndex(item => item.commandId === "tool.chain");
+  return withCurrentMainToolbarDefaults({
+    ...parsed,
+    toolsetOverrides: parsed.toolsetOverrides.map(override => {
+      if (override.toolsetId !== "core.main" || !(
+        override.groupOrder !== undefined || override.itemOrder !== undefined ||
+        override.hiddenCommandIds !== undefined || override.itemOverrides !== undefined ||
+        override.itemAdditions !== undefined
+      )) return override;
+      const groups = mergeToolsetItemAdditions(previousGroups, override.itemAdditions);
+      const ids = groups[0].items.map(item => toolsetItemCustomizationId(item)!);
+      const newlyIntroducedIds = MULTIPLE_BOND_IDS.filter(id => !ids.includes(id));
+      return {
+        ...override,
+        itemOrder: { ...override.itemOrder, [MAIN_ITEMS_GROUP_ID]: reorderToolbarIds(ids, override.itemOrder?.[MAIN_ITEMS_GROUP_ID]) },
+        itemAdditions: [
+          { groupId: MAIN_ITEMS_GROUP_ID, index: chainIndex, item: previousGroups[0].items[chainIndex] },
+          ...(override.itemAdditions ?? [])
+        ],
+        hiddenCommandIds: [...new Set([...(override.hiddenCommandIds ?? []), ...newlyIntroducedIds])],
+        // An old explicit unhide must not reveal a command that wasn't previously in the bar.
+        itemOverrides: override.itemOverrides?.filter(item => !newlyIntroducedIds.includes(item.commandId))
+      };
+    })
+  });
+}
+
 /** Reconstruct the old seven manifest groups from the flattened manifest's explicit divider
  *  boundaries. This keeps the migration aligned if a base item is added inside one section later. */
 function legacyMainGroupsFromFlattenedManifest(): ToolsetGroupDefinition<IconName, ToolbarAssetName>[] {
-  const mainItems = desktopToolsets
-    .find((toolset) => toolset.id === "core.main")
-    ?.groups.find((group) => group.id === MAIN_ITEMS_GROUP_ID)
+  const mainItems = previousMainToolbarGroups()
+    .find((group) => group.id === MAIN_ITEMS_GROUP_ID)
     ?.items ?? [];
   // Opt-in controls were never part of the historical seven-group defaults. Excluding them
   // preserves saved section order and addition indices; unlisted new tools append normally.
@@ -195,6 +266,7 @@ function legacyMainAddition(value: unknown): value is ToolsetItemAddition<string
  * idempotent — safe to run on every load.
  */
 export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
+  state = migrateBracketToolbarOrder(state);
   if (typeof state !== "object" || state === null) {
     return state;
   }
@@ -268,6 +340,29 @@ export function migrateLegacyMainToolbarLayoutState(state: unknown): unknown {
     next.itemOrder = { ...remainingItemOrder, [MAIN_ITEMS_GROUP_ID]: flattenedOrder };
     delete next.groupOrder;
     return next;
+  });
+  return changed ? { ...record, toolsetOverrides } : state;
+}
+
+/** New tools otherwise append after every saved item. Keep the new bracket by its sibling. */
+export function migrateBracketToolbarOrder(state: unknown): unknown {
+  if (typeof state !== "object" || state === null) return state;
+  const record = state as { toolsetOverrides?: unknown };
+  if (!Array.isArray(record.toolsetOverrides)) return state;
+  let changed = false;
+  const toolsetOverrides = record.toolsetOverrides.map(entry => {
+    if (typeof entry !== "object" || entry === null) return entry;
+    const override = entry as { toolsetId?: unknown; itemOrder?: Record<string, unknown> };
+    if (override.toolsetId !== "core.main" || !override.itemOrder) return entry;
+    let orderChanged = false;
+    const itemOrder = Object.fromEntries(Object.entries(override.itemOrder).map(([group, value]) => {
+      if (!Array.isArray(value) || value.includes("tool.roundBracket") || !value.includes("tool.squareBracket")) return [group, value];
+      const order = [...value];
+      order.splice(order.indexOf("tool.squareBracket") + 1, 0, "tool.roundBracket");
+      orderChanged = changed = true;
+      return [group, order];
+    }));
+    return orderChanged ? { ...override, itemOrder } : entry;
   });
   return changed ? { ...record, toolsetOverrides } : state;
 }
@@ -391,7 +486,8 @@ export function getToolsetPaletteGroups(
   toolsetId: string,
   registry: DesktopToolsetRegistry = desktopToolsetRegistry,
   commandOverrides: ReadonlyMap<string, CommandSpec> = new Map(),
-  layoutsEnabled = loadCompoundLayoutSettings().enabled
+  layoutsEnabled = loadCompoundLayoutSettings().enabled,
+  settings: CompoundLayoutSettings = loadCompoundLayoutSettings()
 ): ToolbarPaletteGroupModel[] {
   // Items absent from this core toolset's shipped definition are persisted custom additions. Their
   // stored item shell is placement only; visual/interactive command semantics must follow the live
@@ -405,7 +501,7 @@ export function getToolsetPaletteGroups(
   );
   return normalizeToolsetDefinition(registry.require(toolsetId)).groups.map((group) => ({
     id: group.id,
-    items: group.items.filter(item => layoutsEnabled || (item.primary.type !== "command" || !isCompoundLayoutCommand(item.primary.commandId))).map((item) => {
+    items: group.items.filter(item => item.primary.type !== "command" || !isCompoundLayoutCommandHidden(item.primary.commandId, { ...settings, enabled: layoutsEnabled })).map((item) => {
       const commandId = item.primary.type === "command" ? item.primary.commandId : undefined;
       const isGeneratedLauncher = commandId?.startsWith("view.toolset.toggle.") === true;
       const isCustomCoreAddition = Boolean(shippedToolset) && !shippedItemIds.has(item.id);
@@ -414,7 +510,7 @@ export function getToolsetPaletteGroups(
         commandOverrides,
         isGeneratedLauncher || isCustomCoreAddition
       );
-      if (!layoutsEnabled && model.submenu) model.submenu.items = model.submenu.items.filter(command => !isCompoundLayoutCommand(command.id));
+      if (model.submenu) model.submenu.items = model.submenu.items.filter(command => !isCompoundLayoutCommandHidden(command.id, { ...settings, enabled: layoutsEnabled }));
       return model;
     })
   }));

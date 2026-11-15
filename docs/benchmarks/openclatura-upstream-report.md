@@ -73,7 +73,7 @@ The second reports no error at all.
 Triarylmethane dyes lose N-substituents the same way (ethyl, benzyl), so this is not arsenic-specific —
 it is *any* feature the substituent namer cannot express.
 
-**Expected behaviour:** decline, exactly as the parent-level case already does. A name that omits part
+**Expected behavior:** decline, exactly as the parent-level case already does. A name that omits part
 of the molecule is worse than no name, because nothing downstream can detect it.
 
 ## OPSIN cross-check
@@ -141,7 +141,7 @@ structures.
 The decision trace does not record the omission. For the arsenic case the ASSEMBLY phase reports
 "assembled component name" with no indication that atoms were dropped. Since the trace is one of the
 project's stated advantages, recording a coverage shortfall there would be valuable even before the
-naming behaviour changes.
+naming behavior changes.
 
 ## Version note
 

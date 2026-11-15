@@ -11,7 +11,9 @@ import {
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
 import { measureNativeTextSpanLineWidth, textObjectSpanLines } from "@chemdraft/layout-engine";
+import { nativeTextObjectLineMetrics, nativeTextSpanMetrics } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
+import { documentDrawingDefaults } from "./drawingDefaults";
 
 export const nativeTextObjectDimensions = {
   width: 240,
@@ -73,6 +75,21 @@ export function nativeTextObjectSizeForText(
   };
 }
 
+/** Measure formatted conditions with the same character metrics as native text sizing.
+ * SVG text breaks only at authored newlines; never claim a long line wrapped inside a capped box. */
+export function nativeFormattedTextObjectSize(object: Pick<TextObject, "text" | "spans" | "style">): { width: number; height: number } {
+  const widths=[0];
+  const spans=object.spans.map(s=>s.text).join('')===object.text ? object.spans : [{text:object.text,script:'normal' as const,style:{}}];
+  for(const span of spans) {
+    const style=nativeTextStyleFromObjectStyle({...object.style,...span.style});
+    const font=nativeTextSpanMetrics(span,object.style).fontSize;
+    const lines=normalizeTextLines(span.text);
+    lines.forEach((line,i)=>{if(i)widths.push(0);widths[widths.length-1]+=estimateNativeTextLineWidth(line,{...style,fontSizePx:font});});
+  }
+  return {width:roundToTextBoxPixel(Math.max(nativeTextObjectMinimumDimensions.width,Math.max(...widths)+nativeTextBoxHorizontalPadding)),
+    height:Math.ceil(Math.max(nativeTextObjectMinimumDimensions.height,nativeTextObjectLineMetrics(object).height)*100)/100};
+}
+
 export function createNativeTextObject(
   document: ChemDraftDocument,
   point: PagePoint,
@@ -81,7 +98,11 @@ export function createNativeTextObject(
 ): TextObject {
   const page = firstPage(document);
   const resolvedText = text.length > 0 ? text : "Text";
-  const objectStyle = textStyleToObjectStyle(style);
+  const objectStyle = textStyleToObjectStyle({
+    ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+      ? documentDrawingDefaults(document).textStyle : {}),
+    ...style
+  });
   const size = nativeTextObjectSizeForText(resolvedText, objectStyle, {
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - point.x)
   });

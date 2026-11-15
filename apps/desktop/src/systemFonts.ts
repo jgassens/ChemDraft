@@ -41,7 +41,7 @@ function normalizeSystemFonts(value: unknown): SystemFontFamily[] {
     }
     const candidate = entry as Partial<SystemFontFamily>;
     const family = normalizeFamily(candidate.family);
-    if (!family || !Array.isArray(candidate.faces)) {
+    if (!family || family.startsWith(".") || !Array.isArray(candidate.faces)) {
       return [];
     }
     const faces = normalizeFaces(candidate.faces);

@@ -1,19 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
+import { applyPatch, createCustomPageLayout, createEmptyDocument, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo, type ReactionObject } from "@chemdraft/chem-core";
+import { AssistantCapabilityPermissions, ProposedDocumentPatchSchema, runPluginWorker, parsePluginManifest, type PluginWorkerHandle,
+  type PluginCommandContext, type PluginAssistantToolHandler } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
 import { AssistantTransactions } from "./assistantTransaction";
 import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
-import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
+import { applyPluginDocumentPatch, createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
 import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { commitWithPageFit } from "../pageEnlargement";
 import { objectRect } from "./placement";
-import { buildMoveObjects } from "./writeBuilder";
+import { buildMoveObjects, translateObject } from "./writeBuilder";
 import { applyChargeToolAtPoint } from "../documentWorkflow";
+import { PluginWorkerBridge } from "../plugins/PluginWorkerBridge";
+import { createWorkerRoutedOptions } from "../plugins/registerBundledPlugins";
 
-function setup() {
+function setup(onAssistantToolCall?: PluginAssistantToolHandler, directWrites = false, workerRouted = false, platform?: "macos" | "windows") {
   const fixture = testContext();
   const { context, replace } = fixture;
   replace(toEngineDocument(context.getDocument()!));
@@ -33,6 +37,7 @@ function setup() {
     onUserEdit: listener => { userEdits.add(listener); return () => { userEdits.delete(listener); }; }, undo: () => false
   };
   const transactions = new AssistantTransactions(port);
+  const writeSignals: AbortSignal[] = [];
   const listeners = new Map<string, (message: McpBridgeRequest) => void>();
   const engine = {
     open: vi.fn(async (_plugin, listener: (message: McpBridgeRequest) => void) => {
@@ -42,16 +47,48 @@ function setup() {
     close: vi.fn(async (_sessionId: string) => {}), respond: vi.fn(async (_sessionId: string, _requestId: string, _response: McpBridgeResponse) => {}),
     status: vi.fn(async () => ({ listening: true, sessionCount: listeners.size }))
   };
-  const controller = new AssistantToolsController({ host: (): PluginHost => host, engine,
+  const controller = new AssistantToolsController({ platform, host: (): PluginHost => host, engine,
     getActiveTabId: () => activeTabId, getSelectionIds, runWrite: apply => gate.run(apply),
     readDocument: port.read, transactions: () => transactions, createContext: () => context });
-  const host = new PluginHost({ assistant: controller, getSelection: () => ({ objectIds: [], molecules: [] }) });
+  const host = new PluginHost({ assistant: controller, getActiveDocument: () => port.read(activeTabId), getSelection: () => ({ objectIds: [], molecules: [] }),
+    ...(directWrites ? { getActiveDocument: context.getDocument, applyDocumentPatch: (application: import("@chemdraft/plugin-host").PluginPatchApplicationRequest) => gate.run(() => {
+      writeSignals.push(application.signal!);
+      application.signal?.throwIfAborted();
+      const applied = applyPluginDocumentPatch(context.getDocument()!, application.patch);
+      const tx = transactions.activeTransactionForPlugin(context.plugin.id, context.tabId)!;
+      transactions.writeAssistantTransaction(tx, applied.document, applied.receipt.objectIds);
+      return applied.receipt;
+    }) } : {})
+  });
   const plugin = { id: context.plugin.id, name: context.plugin.name };
   let commandContext!: PluginCommandContext;
   let release!: () => void;
-  host.registerPlugin({ ...plugin, version: "0", apiVersion: "^0.1.9", entry: "worker.js",
+  const manifest = parsePluginManifest({ ...plugin, version: "0", apiVersion: "^0.1.21", entry: "worker.js",
     permissions: [...AssistantCapabilityPermissions], contributes: { commands: [{ id: "plugin.assistant.submit", title: "Submit" }] }
-  }, { commandHandlers: { "plugin.assistant.submit": ctx => { commandContext = ctx; return new Promise<void>(resolve => { release = resolve; }); } } });
+  });
+  const registration = { manifest, onAssistantToolCall, commandHandlers: {
+    "plugin.assistant.submit": (ctx: PluginCommandContext) => { commandContext = ctx; return new Promise<void>(resolve => { release = resolve; }); }
+  } };
+  const workerBridge = workerRouted ? new PluginWorkerBridge({ pluginId: plugin.id, createWorker: () => {
+    // Clone and deliver asynchronously in both directions, like a browser Worker.
+    let mainListener: (event: { data: unknown }) => void;
+    let workerListener: (event: { data: unknown }) => void;
+    let terminated = false;
+    const deliver = (listener: () => (event: { data: unknown }) => void, message: unknown) => {
+      const data = structuredClone(message);
+      queueMicrotask(() => { if (!terminated) listener()({ data }); });
+    };
+    runPluginWorker(registration, {
+      postMessage: message => deliver(() => mainListener, message),
+      addEventListener: (_type, listener) => { workerListener = listener; }
+    });
+    return {
+      postMessage: message => deliver(() => workerListener, message),
+      addEventListener: (type, listener) => { if (type === "message") mainListener = listener; },
+      terminate: () => { terminated = true; }
+    } as PluginWorkerHandle;
+  } }) : undefined;
+  host.registerPlugin(manifest, workerBridge ? createWorkerRoutedOptions(manifest, workerBridge) : registration);
   const command = host.invokeCommand("plugin.assistant.submit");
   let sequence = 0;
   const bridge = async (sessionId: string, name: string, input: unknown) => {
@@ -61,10 +98,11 @@ function setup() {
     return engine.respond.mock.calls.find(call => call[0] === sessionId && call[1] === requestId)![2];
   };
   return { ...fixture, host, controller, engine, plugin, context, listeners, history, port, commandContext, bridge,
-    gesture, gate, getSelectionIds, userEdits,
+    gesture, gate, getSelectionIds, userEdits, transactions, workerBridge, writeSignals,
     select: (ids: string[]) => { selection = ids; }, activate: (tabId: string) => { activeTabId = tabId; },
     finishCommand: async () => { release(); await command; },
-    finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command; transactions.dispose(); } };
+    finish: async () => { controller.closeAllForPlugin(plugin.id); gate.dispose(); release(); await command;
+      workerBridge?.terminate(); transactions.dispose(); } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -142,8 +180,8 @@ describe("assistant write structural sharing", () => {
   });
 });
 
-function placementSetup() {
-  const s = setup();
+function placementSetup(platform?: "macos" | "windows") {
+  const s = setup(undefined, false, false, platform);
   const document = s.context.getDocument()!;
   const page = document.pages[0]!;
   s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [] }] }, {
@@ -162,13 +200,48 @@ function placementSetup() {
   return s;
 }
 
-describe("assistant host page enlargement", () => {
+describe.each(["macos", "windows"] as const)("assistant host page enlargement on %s", platform => {
+  it("shifts unselected content with the page after scoped verification, keeping only request insertions selected", async () => {
+    const s = setup(undefined, false, false, platform);
+    const document = s.context.getDocument()!, page = document.pages[0]!;
+    const molecule = translateObject(s.molecule, -24 - s.molecule.x, -32 - s.molecule.y);
+    s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [molecule, s.text] },
+      { ...page, id: "unaffected", objects: [{ ...s.text, id: "other-text" }] }] }, {
+      op: "updatePageLayout", pageId: page.id, layout: createCustomPageLayout(400, 300, "css-px", page.margin)
+    }));
+    s.select([]);
+    const before = s.context.getDocument()!;
+    const prompt = vi.fn(async () => "enlarge"), restore = setNativePromptProvider(prompt);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Long caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption\n".repeat(100) } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const inserted = result.structuredContent!.objectIds as string[];
+      const after = s.context.getDocument()!;
+      expect(after.selection.objectIds).toEqual(inserted);
+      expect(after.pages[1]).toEqual(before.pages[1]);
+      const moved = after.pages[0]!.objects.find(object => object.id === molecule.id)!;
+      expect(moved).toMatchObject({ x: 0, y: 0, atoms: molecule.atoms.map(atom => ({ ...atom, x: atom.x + 24, y: atom.y + 32 })),
+        bonds: molecule.bonds, chemistry: molecule.chemistry });
+      const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Second caption" } });
+      expect(caption.isError, JSON.stringify(caption)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      const final = s.context.getDocument()!;
+      expect(final.selection.objectIds).not.toContain(molecule.id);
+      expect(final.selection.objectIds).not.toContain(s.text.id);
+      expect(s.history).toHaveLength(1);
+      const history = { past: [s.history[0]!.before], present: final, future: [] as typeof final[] };
+      expect(undo(history).present).toEqual(before); expect(redo(undo(history)).present).toEqual(final);
+    } finally { restore(); await s.finish(); }
+  });
+
   it.each([false, true])("applies the same page-growth decision to native group labels (accepted: %s)", async accepted => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const document = s.context.getDocument()!;
     s.replace(applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0]!.id,
       layout: createCustomPageLayout(200, 160, "css-px", { top: 36, right: 36, bottom: 36, left: 36 }) }));
-    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
     const restore = setNativePromptProvider(prompt);
     try {
       const before = structuredClone(s.context.getDocument()!.pages[0]!);
@@ -185,14 +258,16 @@ describe("assistant host page enlargement", () => {
       } else {
         expect(page.width).toBe(before.width); expect(page.height).toBe(before.height);
         expect(page.objects.length).toBeGreaterThan(0);
-        expect(page.objects.length).toBeLessThan(24);
-        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page", declined: expect.any(Array) });
+        expect(page.objects).toHaveLength(24);
+        expect(result.structuredContent?.reason).toBeUndefined();
       }
       for (const object of page.objects) {
         expect(object).toMatchObject({ type: "molecule", atoms: [expect.objectContaining({ labelLiteral: true })], bonds: [] });
         const rect = objectRect(object);
-        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
-        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+        if (accepted) {
+          expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+          expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+        }
       }
       // The answer has returned control to the request; Stop can immediately cancel it again.
       await s.controller.endRequest(s.plugin, { requestId });
@@ -200,8 +275,33 @@ describe("assistant host page enlargement", () => {
     } finally { restore(); await s.finish(); }
   });
 
+  it.each([false, true])("shares the answer across tool calls and direct writes for one request (%s)", async accepted => {
+    const s = placementSetup(platform);
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Large structure and a long caption" });
+      const structure = await s.controller.callTool(s.plugin, { name: "insert_structures", input: { items: [{ kind: "molecule", smiles: "CC" }] } });
+      const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption line\n".repeat(100) } });
+      expect(structure.isError).not.toBe(true); expect(caption.isError).not.toBe(true);
+      // documents.applyPatch in MainWindow reads this same transaction-owned consent.
+      expect(await s.transactions.pageEnlargementConsent(requestId, platform).confirm()).toBe(accepted ? "enlarge" : "keep");
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      expect(s.history).toHaveLength(1);
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toHaveLength(2);
+      if (accepted) expect(after.pages[0]!.height).toBeGreaterThan(before.pages[0]!.height);
+      else expect(after.pages[0]!.layout).toEqual(before.pages[0]!.layout);
+      const history = { past: [s.history[0]!.before], present: after, future: [] as typeof after[] };
+      expect(undo(history).present).toEqual(before);
+      expect(redo(undo(history)).present).toEqual(after);
+    } finally { restore(); await s.finish(); }
+  });
+
   it("does not prompt for a fitting insertion", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const prompt = vi.fn(async () => "enlarge");
     const restore = setNativePromptProvider(prompt);
     try {
@@ -214,7 +314,7 @@ describe("assistant host page enlargement", () => {
   });
 
   it("grows through the host with empty Send scope; one undo/redo restores page and all request objects", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const prompt = vi.fn(async (_prompt: NativePromptOptions) => "enlarge");
     const restore = setNativePromptProvider(prompt);
     const scopedWrite = vi.spyOn(s.host, "applyPatchForPlugin");
@@ -231,8 +331,8 @@ describe("assistant host page enlargement", () => {
       expect(page.height).toBe(before.pages[0]!.height);
       expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
       expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
-        message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
-        choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
+        message: "This doesn't fit on the page. Enlarge the page to fit? Content on the page may shift to make room.",
+        choices: [{ id: "enlarge", label: "Enlarge" }, { id: "keep", label: "Keep Page Size", cancel: true }]
       });
       const molecule = page.objects.find(object => object.type === "molecule")!;
       if (molecule.type !== "molecule") throw new Error("Expected molecule");
@@ -261,9 +361,9 @@ describe("assistant host page enlargement", () => {
     } finally { restore(); await s.finish(); }
   });
 
-  it.each([false, true].flatMap(mixed => ["decline", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
-    "$answer omits the oversized item and its label, retaining fitting items ($mixed)", async ({ mixed, answer }) => {
-    const s = placementSetup();
+  it.each([false, true].flatMap(mixed => ["keep", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
+    "$answer keeps every item and its placement on the original page ($mixed)", async ({ mixed, answer }) => {
+    const s = placementSetup(platform);
     const prompt = vi.fn(async (options: NativePromptOptions, fallback: (options: NativePromptOptions) => Promise<string>) =>
       answer === "fallback" ? fallback(options) : answer);
     const restore = setNativePromptProvider(prompt);
@@ -275,30 +375,28 @@ describe("assistant host page enlargement", () => {
           ...(mixed ? [{ kind: "molecule", smiles: "CC", label: "Ethane" }] : [])]
       } });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(result.structuredContent).toMatchObject({ declined: ["Olympiadane"],
-        reason: "declined: the user chose not to enlarge the page", warnings: [] });
-      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("declined: the user chose not to enlarge the page") })]);
+      expect(result.structuredContent?.reason).toBeUndefined();
       expect(prompt).toHaveBeenCalledOnce();
       const page = s.context.getDocument()!.pages[0]!;
       expect({ ...page, objects: [] }).toEqual(before);
-      expect(page.objects).toHaveLength(mixed ? 2 : 0);
-      expect(page.objects.some(object => object.type === "text" && object.text === "Olympiadane")).toBe(false);
+      expect(page.objects).toHaveLength(mixed ? 4 : 2);
+      expect(page.objects.some(object => object.type === "text" && object.text === "Olympiadane")).toBe(true);
       if (mixed) expect(page.objects.some(object => object.type === "text" && object.text === "Ethane")).toBe(true);
-      expect(s.history).toHaveLength(mixed ? 1 : 0);
+      expect(s.history).toHaveLength(1);
     } finally { restore(); await s.finish(); }
   });
 
   it.each(["insert_reaction", "insert_text"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
     "asks once for non-fitting $name (accepted: $accepted)", async ({ name, accepted }) => {
-    const s = placementSetup();
-    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const s = placementSetup(platform);
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "keep");
     const restore = setNativePromptProvider(prompt);
     try {
       await s.controller.beginRequest(s.plugin, { prompt: "insert" });
       const input = name === "insert_text" ? { text: "A line\n".repeat(100) } : { reactants: ["CC"], products: ["CC"] };
       const result = await s.controller.callTool(s.plugin, { name, input });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(result.structuredContent?.reason).toBe(accepted ? undefined : "declined: the user chose not to enlarge the page");
+      expect(result.structuredContent?.reason).toBeUndefined();
       expect(prompt).toHaveBeenCalledOnce();
       const page = s.context.getDocument()!.pages[0]!;
       if (accepted) {
@@ -308,13 +406,16 @@ describe("assistant host page enlargement", () => {
           expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
           expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
         }
-      } else expect(page.objects).toHaveLength(0);
-      expect(s.history).toHaveLength(accepted ? 1 : 0);
+      } else {
+        expect(page.objects.length).toBeGreaterThan(0);
+        expect(page.width).toBe(400); expect(page.height).toBe(300);
+      }
+      expect(s.history).toHaveLength(1);
     } finally { restore(); await s.finish(); }
   });
 
   it("wraps real widths first, then asks once to grow the height for the whole set", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true, object: s.molecule });
     const prompt = vi.fn(async () => "enlarge");
     const restore = setNativePromptProvider(prompt);
@@ -339,7 +440,7 @@ describe("assistant host page enlargement", () => {
 
   it("waits for a human answer beyond the tool deadlines", async () => {
     vi.useFakeTimers();
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -360,7 +461,7 @@ describe("assistant host page enlargement", () => {
 
   it.each([false, true])("declines through the MCP bridge after five minutes and ignores a late Yes (fitting item: %s)", async includeFitting => {
     vi.useFakeTimers();
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -392,12 +493,67 @@ describe("assistant host page enlargement", () => {
       expect(s.context.getDocument()).toEqual(after);
       expect(s.history).toHaveLength(includeFitting ? 1 : 0);
       expect(s.engine.respond).toHaveBeenCalledTimes(1);
+      // Another tool in the same request must not reinterpret the timeout as explicit Keep.
+      const second = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      expect(second.structuredContent?.reason).toBe(reason);
+      expect(second.structuredContent?.objectIds).toEqual([]);
+      // MainWindow uses this same preflight for direct documents.applyPatch writes.
+      const proposed = applyPluginDocumentPatch(after, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: after.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-overflow", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      await expect(commitWithPageFit(after, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).rejects.toThrow("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toEqual(after);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      expect(prompt).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     } finally { answer?.("decline"); restore(); await s.finish(); }
   });
 
+  it("honours the tool's five-minute deadline when a direct plugin write opened the shared prompt first", async () => {
+    vi.useFakeTimers();
+    const s = placementSetup(platform);
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Mixed writes" });
+      const before = s.context.getDocument()!;
+      const proposed = applyPluginDocumentPatch(before, ProposedDocumentPatchSchema.parse({ reason: "Direct plugin write", patch: {
+        op: "addObject", pageId: before.pages[0]!.id,
+        object: DocumentObjectSchema.parse({ id: "direct-first", type: "plus", x: 0, y: 0, width: 1000, height: 1000 })
+      } })).document;
+      const commit = vi.fn();
+      // This caller has no human-decision deadline. The later tool still has its own.
+      const direct = Promise.resolve(commitWithPageFit(before, proposed, commit, {
+        consent: s.transactions.pageEnlargementConsent(requestId, platform)
+      })).then(() => "committed", error => (error as Error).message);
+      const pending = s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Long caption\n".repeat(100) } });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect((await pending).structuredContent?.reason).toBe("declined: no answer to the enlarge-page question within 5 minutes");
+      expect(await direct).toContain("No answer to the enlarge-page question");
+      expect(commit).not.toHaveBeenCalled();
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+      answer("enlarge");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(s.context.getDocument()).toBe(before);
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("keep"); restore(); await s.finish(); }
+  });
+
   it("ignores a late Enlarge answer after host cancellation and draws none of the pending call's items", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     let answer!: (choice: string) => void;
     const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
     const restore = setNativePromptProvider(prompt);
@@ -419,7 +575,7 @@ describe("assistant host page enlargement", () => {
   });
 
   it("rejects a stale plan if the document changes while confirmation is open", async () => {
-    const s = placementSetup();
+    const s = placementSetup(platform);
     const restore = setNativePromptProvider(async () => {
       const before = s.context.getDocument()!;
       s.replace(applyPatch(before, { op: "updatePageLayout", pageId: before.pages[0]!.id,
@@ -658,6 +814,56 @@ describe("assistant requests and MCP bridge", () => {
         reason: "outside assistant request", requiresUserApproval: true })).rejects.toThrow("not selected");
     } finally { await s.finish(); }
   });
+  it.each([false, true])("checks removal cascades in the request tab after switching tabs (reaction in scope = %s)", async inScope => {
+    const s = setup();
+    try {
+      const step: ReactionObject = {
+        id: "step", type: "reaction", x: 0, y: 0, width: 100, height: 30, rotation: 0, style: {},
+        mappingState: "absent", components: [], conditionsTextObjectIds: [], arrowObjectIds: [], plusObjectIds: []
+      };
+      s.replace(applyPatch(s.context.getDocument()!, {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: step
+      }));
+      s.select(inScope ? [s.text.id, step.id] : [s.text.id]);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "delete selected text" });
+      const foreground = createEmptyDocument();
+      const read = s.port.read;
+      vi.spyOn(s.port, "read").mockImplementation(tab => tab === "another-tab" ? foreground : read(tab));
+      s.activate("another-tab");
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "delete_objects", input: { objectIds: [s.text.id] } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      // A reaction now references the text while the write waits for the drawing gesture.
+      // This reaches the host's removal check after preparation's normalization check.
+      s.replace(applyPatch(s.context.getDocument()!, {
+        op: "updateObject", objectId: step.id, changes: { conditionsTextObjectIds: [s.text.id] }
+      }));
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      const before = s.context.getDocument()!;
+      const scopedWrite = vi.spyOn(s.host, "applyPatchForPlugin");
+      s.gesture.active = false;
+      s.gate.flush();
+      const result = await pending;
+      expect(scopedWrite).toHaveBeenCalledOnce();
+      if (inScope) {
+        expect(result).toMatchObject({ structuredContent: { objectIds: [s.text.id] } });
+        expect(s.history).toHaveLength(1);
+        expect(s.history[0]!.before).toBe(before);
+        const objects = s.context.getDocument()!.pages[0]!.objects;
+        expect(objects.some(object => object.id === s.text.id)).toBe(false);
+        expect(objects.find(object => object.id === step.id)).toMatchObject({ conditionsTextObjectIds: [] });
+      } else {
+        expect(result).toMatchObject({ isError: true, content: [{ text:
+          `Plugin patch refused: removing ${s.text.id} would change reaction step, which this command may not modify.`
+        }] });
+        expect(s.history).toHaveLength(0);
+        expect(s.context.getDocument()).toBe(before);
+      }
+      expect(s.port.read("another-tab")).toBe(foreground);
+      expect(foreground.pages[0]!.objects).toEqual([]);
+      await s.controller.endRequest(s.plugin, { requestId });
+    } finally { await s.finish(); }
+  });
   it("refuses out-of-scope edits, empty-selection edits, writes without an own command, and calls on a closed tab", async () => {
     const s = setup();
     try {
@@ -665,7 +871,7 @@ describe("assistant requests and MCP bridge", () => {
       const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "add" });
       expect(await s.controller.callTool(s.plugin, { name: "delete_objects", input: { objectIds: [s.text.id] } })).toMatchObject({ structuredContent: { refused: true } });
       // Check the host gate independently of the tool's own scope check.
-      await expect(s.host.applyPatchForPlugin(s.plugin.id, undefined, { patch: { op: "removeObject", pageId: s.context.getDocument()!.pages[0]!.id, objectId: s.text.id }, reason: "test", requiresUserApproval: true }, { objectIds: [], apply: () => ({ applied: true, objectIds: [] }) })).rejects.toThrow("not selected");
+      await expect(s.host.applyPatchForPlugin(s.plugin.id, undefined, { patch: { op: "removeObject", pageId: s.context.getDocument()!.pages[0]!.id, objectId: s.text.id }, reason: "test", requiresUserApproval: true }, { objectIds: [], getDocument: s.context.getDocument, apply: () => ({ applied: true, objectIds: [] }) })).rejects.toThrow("not selected");
       await s.controller.endRequest(s.plugin, { requestId });
       s.close();
       await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("No assistant request");
@@ -743,5 +949,298 @@ describe("assistant requests and MCP bridge", () => {
       expect(s.history).toHaveLength(0);
       await s.controller.endRequest(s.plugin, { requestId });
     } finally { await s.finish(); }
+  });
+});
+
+
+const EXTRA_TOOL = { name: "plugin_lookup", description: "Look up a plugin-owned record", inputSchema: { type: "object", properties: { key: { type: "string" } } } };
+const TOOL_OK = { content: [{ type: "text" as const, text: "plugin result" }] };
+
+describe("session-scoped plugin assistant tools", () => {
+  it.each(["settle", "cancel", "unregister"])("keeps one write lifetime per assistant tool and aborts it on %s", async action => {
+    let release!: () => void;
+    const s = setup(async context => {
+      for (const id of ["first-note", "second-note"]) {
+        await context.documents.applyPatch!({ reason: "Insert record", patch: {
+          op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: { ...s.text, id }
+        } });
+      }
+      await new Promise<void>(resolve => { release = resolve; });
+      return TOOL_OK;
+    }, true);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const pending = s.bridge(session.sessionId, EXTRA_TOOL.name, {});
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(s.writeSignals).toHaveLength(2);
+      expect(s.writeSignals[0]).toBe(s.writeSignals[1]);
+      expect(s.writeSignals[0]!.aborted).toBe(false);
+      if (action === "cancel") await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      else if (action === "unregister") s.host.unregisterPlugin(s.plugin.id);
+      else release();
+      await pending;
+      expect(s.writeSignals[0]!.aborted).toBe(true);
+    } finally { release?.(); await s.finish(); }
+  });
+
+  it("lists the session's tools and routes calls to its owning handler with declared capabilities", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>(async (context, call) => {
+      expect(context.plugin.id).toBe(s.plugin.id);
+      expect(context.chemistry).toBeDefined();
+      expect(context.storage).toBeUndefined(); // no plugin.storage permission
+      expect(call.input).toEqual({ key: "record" });
+      return TOOL_OK;
+    });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "look up a record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(session.tools).toContain(EXTRA_TOOL.name);
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "list", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "list",
+        { result: { tools: expect.arrayContaining([EXTRA_TOOL, expect.objectContaining({ name: "get_document" })]) } }));
+      expect(await s.controller.listTools(s.plugin)).not.toContainEqual(EXTRA_TOOL);
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, { key: "record" })).toEqual({ result: TOOL_OK });
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0]![1]).toEqual({ sessionId: session.sessionId, name: EXTRA_TOOL.name, input: { key: "record" } });
+      expect(await s.bridge(session.sessionId, "get_document", {})).toHaveProperty("result");
+    } finally { await s.finish(); }
+  });
+
+  it("keeps direct handler patches in the request scope and history for later host tools", async () => {
+    const s = setup(async context => {
+      const receipt = await context.documents.applyPatch!({ reason: "Insert record", patch: {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id,
+        object: { ...s.text, id: "plugin-note", text: "Record" }
+      } });
+      return { content: [{ type: "text", text: "Inserted" }], structuredContent: receipt };
+    }, true);
+    try {
+      s.select([]);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { structuredContent: { applied: true } } });
+      expect(await s.bridge(session.sessionId, "style_objects", { objectIds: ["plugin-note"], style: { color: "#123456" } }))
+        .toMatchObject({ result: { structuredContent: { objectIds: ["plugin-note"] } } });
+      expect(s.history).toHaveLength(1);
+      expect(await s.controller.endRequest(s.plugin, { requestId })).toMatchObject({ touchedIds: ["plugin-note"], summary: "1 object(s) changed." });
+    } finally { await s.finish(); }
+  });
+
+  it("refuses a deferred handler patch after its session closes", async () => {
+    const s = setup(async context => {
+      await context.documents.applyPatch!({ reason: "Insert record", patch: {
+        op: "addObject", pageId: s.context.getDocument()!.pages[0]!.id, object: { ...s.text, id: "cancelled-note" }
+      } });
+      return TOOL_OK;
+    }, true);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "record" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.gesture.active = true;
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "deferred", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      s.gesture.active = false; s.gate.flush();
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "deferred", expect.objectContaining({ result: expect.objectContaining({ isError: true }) })));
+      expect(s.history).toHaveLength(0);
+      expect(s.context.getDocument()!.pages[0]!.objects.some(object => object.id === "cancelled-note")).toBe(false);
+    } finally { await s.finish(); }
+  });
+
+  it.each([
+    [{ ...EXTRA_TOOL, name: "BadName" }, "name"],
+    [{ ...EXTRA_TOOL, name: "a".repeat(49) }, "name"],
+    [{ ...EXTRA_TOOL, description: "a".repeat(1001) }, "description"],
+    [{ ...EXTRA_TOOL, inputSchema: [] }, "inputSchema"],
+    [{ ...EXTRA_TOOL, inputSchema: { description: "x".repeat(16_384) } }, "inputSchema"],
+    [{ ...EXTRA_TOOL, inputSchema: { description: "é".repeat(8192) } }, "inputSchema"],
+    [{ ...EXTRA_TOOL, name: "get_document" }, "collides"]
+  ])("refuses the whole session for invalid extra tool %#", async (tool, message) => {
+    const s = setup(async () => TOOL_OK);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [tool] } as never)).rejects.toThrow(message);
+      expect(s.engine.open).not.toHaveBeenCalled();
+    } finally { await s.finish(); }
+  });
+
+  it("refuses more than eight tools, duplicates, and a missing handler", async () => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: Array.from({ length: 9 }, (_, i) => ({ ...EXTRA_TOOL, name: `extra_${i}` })) })).rejects.toThrow("8");
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL, EXTRA_TOOL] })).rejects.toThrow("collides");
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] })).rejects.toThrow("no assistant tool handler");
+      expect(s.engine.open).not.toHaveBeenCalled();
+    } finally { await s.finish(); }
+  });
+
+  it("refuses extra tools up front when the worker registered no handler", async () => {
+    const s = setup(undefined, false, true);
+    try {
+      await s.workerBridge!.whenReady();
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(s.host.hasAssistantToolHandler(s.plugin.id)).toBe(false);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      await expect(s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] }))
+        .rejects.toThrow("no assistant tool handler");
+      expect(s.engine.open).not.toHaveBeenCalled();
+      // A worker without an extra-tool handler can still use the host's tools.
+      await expect(s.controller.createToolSession(s.plugin, { requestId })).resolves.toHaveProperty("sessionId");
+    } finally { await s.finish(); }
+  });
+
+  it("allows eight tools and snapshots their schemas before asynchronous session opening", async () => {
+    const s = setup(async () => TOOL_OK);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "test" });
+      const tools = Array.from({ length: 8 }, (_, i) => ({ ...EXTRA_TOOL, name: `extra_${i}`, inputSchema: { type: "object" } }));
+      const opening = s.controller.createToolSession(s.plugin, { requestId, extraTools: tools });
+      tools[0]!.inputSchema.type = "changed";
+      const session = await opening;
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "list", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "list",
+        { result: { tools: expect.arrayContaining([expect.objectContaining({ name: "extra_0", inputSchema: { type: "object" } })]) } }));
+    } finally { await s.finish(); }
+  });
+
+  it("turns thrown errors, invalid results, and oversized results into model-visible tool errors", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>()
+      .mockRejectedValueOnce(new Error("lookup failed"))
+      .mockResolvedValueOnce({ noContent: true } as never)
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true, content: [{ text: "lookup failed" }] } });
+      for (let i = 0; i < 2; i++) expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true } });
+    } finally { await s.finish(); }
+  });
+
+  it("times out after 120 seconds and aborts the handler", async () => {
+    vi.useFakeTimers();
+    let signal!: AbortSignal;
+    const s = setup((_ctx, _call, abort) => { signal = abort; return new Promise(() => {}); });
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "timeout", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(signal.aborted).toBe(true);
+      expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "timeout",
+        { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("deadline") }] } });
+    } finally { await s.finish(); }
+  });
+
+  it.each([false, true])("holds slots across repeated timeouts until abort-ignoring handlers settle (worker: %s)", async worker => {
+    vi.useFakeTimers();
+    let running = 0;
+    let maximumRunning = 0;
+    const pending: { resolve(): void; reject(): void; signal: AbortSignal }[] = [];
+    const handler = vi.fn<PluginAssistantToolHandler>(async (_context, _call, signal) => {
+      maximumRunning = Math.max(maximumRunning, ++running);
+      try {
+        await new Promise<void>((resolve, reject) => pending.push({ resolve,
+          reject: () => reject(new Error("late failure")), signal }));
+        return TOOL_OK;
+      } finally { running--; }
+    });
+    const s = setup(handler, false, worker);
+    try {
+      await s.workerBridge?.whenReady();
+      await vi.advanceTimersByTimeAsync(0);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const send = (requestId: string) => s.listeners.get(session.sessionId)!({ sessionId: session.sessionId,
+        requestId, method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      for (let i = 0; i < 4; i++) {
+        send(`timeout${i}`);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, `timeout${i}`,
+          { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("deadline") }] } });
+        expect(pending[i]!.signal.aborted).toBe(true);
+        expect(running).toBe(i + 1);
+      }
+      for (let i = 0; i < 3; i++) {
+        send(`blocked${i}`);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, `blocked${i}`,
+          { result: { isError: true, content: [{ type: "text", text: expect.stringContaining("four") }] } });
+      }
+      expect(handler).toHaveBeenCalledTimes(4);
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("four");
+      // Both fulfillment and rejection of abandoned work must release the slot.
+      pending[0]!.resolve();
+      pending[1]!.reject();
+      await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 2; i++) send(`replacement${i}`);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handler).toHaveBeenCalledTimes(6);
+      expect(running).toBe(4);
+      expect(maximumRunning).toBe(4);
+      pending.slice(2).forEach(call => call.resolve());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(running).toBe(0);
+      expect(s.engine.respond.mock.calls.filter(([, id]) => id.startsWith("timeout"))).toHaveLength(4);
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).resolves.toHaveProperty("content");
+    } finally {
+      pending.forEach(call => call.resolve());
+      await vi.advanceTimersByTimeAsync(0);
+      await s.finish();
+    }
+  });
+
+  it.each(["close", "unregister", "end"] as const)("%s cancels pending calls and refuses late calls", async action => {
+    let signal!: AbortSignal;
+    const handler = vi.fn<PluginAssistantToolHandler>((_ctx, _call, abort) => { signal = abort; return new Promise(() => {}); });
+    const s = setup(handler);
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: "pending", method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      if (action === "close") await s.controller.closeToolSession(s.plugin, { sessionId: session.sessionId });
+      else if (action === "end") await s.controller.endRequest(s.plugin, { requestId });
+      else s.host.unregisterPlugin(s.plugin.id);
+      expect(signal.aborted).toBe(true);
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(session.sessionId, "pending", expect.objectContaining({ result: expect.objectContaining({ isError: true }) })));
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toHaveProperty("error");
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally { await s.finish(); }
+  });
+
+  it("shares the four-call limit with host tools", async () => {
+    const s = setup(() => new Promise(() => {}));
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const session = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      for (let i = 0; i < 4; i++) s.listeners.get(session.sessionId)!({ sessionId: session.sessionId, requestId: `busy${i}`, method: "tools/call", params: { name: EXTRA_TOOL.name } });
+      expect(await s.bridge(session.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("four") }] } });
+      await expect(s.controller.callTool(s.plugin, { name: "get_document", input: {} })).rejects.toThrow("four");
+    } finally { await s.finish(); }
+  });
+
+  it("isolates tool lists and calls by session and plugin", async () => {
+    const handler = vi.fn<PluginAssistantToolHandler>(async () => TOOL_OK);
+    const s = setup(handler);
+    const other = { id: "org.test.other", name: "Other" };
+    s.host.registerPlugin({ ...other, version: "0", apiVersion: "^0.1.21", entry: "worker.js", permissions: [...AssistantCapabilityPermissions] },
+      { onAssistantToolCall: handler });
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "lookup" });
+      const own = await s.controller.createToolSession(s.plugin, { requestId, extraTools: [EXTRA_TOOL] });
+      const plain = await s.controller.createToolSession(s.plugin, { requestId });
+      expect(plain.tools).not.toContain(EXTRA_TOOL.name);
+      expect(await s.bridge(plain.sessionId, EXTRA_TOOL.name, {})).toMatchObject({ result: { isError: true } });
+      await expect(s.controller.closeToolSession(other, { sessionId: own.sessionId })).rejects.toThrow("does not belong");
+      await expect(s.controller.createToolSession(other, { requestId, extraTools: [EXTRA_TOOL] })).rejects.toThrow("does not belong");
+      // A native message injected into another session's listener cannot cross session ownership.
+      s.listeners.get(own.sessionId)!({ sessionId: plain.sessionId, requestId: "plain", method: "tools/list", params: {} });
+      await vi.waitFor(() => expect(s.engine.respond).toHaveBeenCalledWith(plain.sessionId, "plain",
+        { result: { tools: expect.not.arrayContaining([EXTRA_TOOL]) } }));
+      expect(handler).not.toHaveBeenCalled();
+    } finally { await s.finish(); s.host.unregisterPlugin(other.id); }
   });
 });

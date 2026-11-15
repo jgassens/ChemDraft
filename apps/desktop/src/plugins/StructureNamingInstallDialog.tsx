@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { PhaseInfo } from "./structureRecognitionInstallProgress";
 import type { StructureNamingInstallProgress } from "./structureNamingEngine";
-import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
+import type { RuntimeDialogPort } from "./runtimeDialogs";
+import type { RuntimeDialogTarget } from "./runtimeDialogProtocol";
 import type { EngineInstallSnapshot } from "../dialogs/dialogProtocol";
 import { engineNetworkErrorMessage, installSpaceStatement } from "../dialogs/engineInstallText";
 import type { StructureNamingController, OpenStructureNamingInstall } from "./StructureNamingController";
@@ -51,15 +52,15 @@ export function namingInstallSnapshot(controller: StructureNamingController, req
 }
 
 export interface NamingDialogContext {
-  coordinator(): DialogCoordinator | undefined;
+  coordinator(target?: RuntimeDialogTarget): RuntimeDialogPort | undefined;
   documentTabId(): string | undefined;
 }
 
 /** Native coordinator presenter. Captures the originating tab before status awaits. */
 export function presentStructureNamingInstall(controller: StructureNamingController, context: NamingDialogContext): () => void {
-  let active: { id: number; tabId: string; coordinator: DialogCoordinator; request: OpenStructureNamingInstall; terminal?: boolean } | undefined;
+  let active: { id: number; tabId: string; coordinator: RuntimeDialogPort; request: OpenStructureNamingInstall; terminal?: boolean } | undefined;
   let updates = Promise.resolve();
-  const reportError = (coordinator: DialogCoordinator, error: unknown) => coordinator.reportError("Naming engine installation could not open: " + String(error));
+  const reportError = (coordinator: RuntimeDialogPort, error: unknown) => coordinator.reportError("Naming engine installation could not open: " + String(error));
   const update = () => {
     const request = controller.getOpenInstall();
     if (!request) {
@@ -85,7 +86,7 @@ export function presentStructureNamingInstall(controller: StructureNamingControl
       });
       return;
     }
-    const coordinator = context.coordinator();
+    const coordinator = context.coordinator(controller.getInstallTarget());
     const tabId = controller.getInstallDocumentTabId();
     if (!coordinator || !tabId) {
       coordinator?.reportError("Naming engine installation could not open: the originating drawing is unavailable.");
@@ -121,7 +122,8 @@ export function presentStructureNamingInstall(controller: StructureNamingControl
   };
 }
 
-function StructureNamingHostView({ controller }: { controller: StructureNamingController }) {
+type NamingActivitySource = Pick<StructureNamingController, "subscribe" | "getActivity" | "cancelNaming">;
+function StructureNamingHostView({ controller }: { controller: NamingActivitySource }) {
   const [, setVersion] = useState(0);
   useEffect(() => controller.subscribe(() => setVersion(version => version + 1)), [controller]);
   const activity = controller.getActivity();
@@ -136,11 +138,16 @@ function StructureNamingHostView({ controller }: { controller: StructureNamingCo
 
 /** Only the activity indicator is mounted in the document DOM. */
 export function mountStructureNamingHost(controller: StructureNamingController, context?: NamingDialogContext): () => void {
+  const stopActivity = mountStructureNamingActivity(controller);
+  const detach = context ? presentStructureNamingInstall(controller, context) : () => {};
+  return () => { detach(); stopActivity(); };
+}
+
+export function mountStructureNamingActivity(controller: NamingActivitySource): () => void {
   const container = document.createElement("div");
   container.className = "structure-naming-host";
   document.body.append(container);
   const root = createRoot(container);
   root.render(<StructureNamingHostView controller={controller} />);
-  const detach = context ? presentStructureNamingInstall(controller, context) : () => {};
-  return () => { detach(); queueMicrotask(() => { root.unmount(); container.remove(); }); };
+  return () => { queueMicrotask(() => { root.unmount(); container.remove(); }); };
 }

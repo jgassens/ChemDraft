@@ -292,10 +292,16 @@ describe("unsupported and malformed input", () => {
     expect(run.status).toBe("unsupported");
     expect(run.results).toHaveLength(0);
     expect(run.warnings[0]?.code).toBe("structure.too_many_atoms");
-    expect(run.warnings[0]?.message).toMatch(// "atoms", not "heavy atoms": `get_num_atoms()` counts explicit hydrogens too, so a molfile that
-      // writes them out is measured on a different scale from the SMILES for the same molecule. The
-      // guard is a work budget and counting what the engine processes is right; the word was wrong.
-      /40 atoms, over the 20 limit/);
+    expect(run.warnings[0]?.message).toMatch(/40 heavy atoms, over the 20 limit/);
+  });
+
+  it("counts heavy atoms independently of explicit isotope-labelled hydrogens", async () => {
+    const run = await analyzeStructure({
+      format: "smiles", value: "[2H]C([2H])([2H])[2H]", runId: "limit-explicit-h",
+      startedAt: "2026-11-08T12:00:00.000Z", maxHeavyAtoms: 1, methodIds: ["rdkit.composition"]
+    });
+    expect(run.status).toBe("ok");
+    expect(run.results[0]).toMatchObject({ kind: "composition", formula: "CD4", hasExplicitIsotopes: true });
   });
 
   it("lets a structure at the limit through", async () => {
@@ -435,7 +441,7 @@ describe("stereochemistry", () => {
       runId: "stereo-2",
       startedAt: "2026-07-30T12:00:00.000Z"
     });
-    expect(detailed.stereochemistry).toEqual(["1 unspecified stereocentre"]);
+    expect(detailed.stereochemistry).toEqual(["1 unspecified stereocenter"]);
   });
 });
 

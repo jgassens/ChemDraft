@@ -136,7 +136,7 @@ describe("StructureRecognitionInstallDialog", () => {
     ["insufficientDisk", "2 GB is needed; 3 GB is free."],
     ["network", "could not be downloaded"],
     ["checksumMismatch", "did not pass its integrity check"],
-    ["cancelled", "Installation was cancelled"],
+    ["cancelled", "Installation was canceled"],
     ["unsupported", "isn’t supported"],
     ["failed", "could not be installed: native setup failed"]
   ] as const)("explains the %s install error in plain words", (code, expected) => {

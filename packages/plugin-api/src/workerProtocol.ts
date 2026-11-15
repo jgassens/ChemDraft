@@ -74,7 +74,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable"],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
-  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"],
+  chemistry: ["properties", "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"],
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"],
@@ -100,7 +100,7 @@ export interface PluginWorkerErrorPayload {
 
 /** worker → host messages. */
 export type WorkerToHostMessage =
-  | { kind: "ready"; protocolVersion: number; apiVersion: string }
+  | { kind: "ready"; protocolVersion: number; apiVersion: string; hasAssistantToolHandler?: boolean }
   | {
       kind: "capabilityRequest";
       requestId: number;
@@ -116,12 +116,14 @@ export type WorkerToHostMessage =
 
 /** host → worker messages. */
 export type HostToWorkerMessage =
+  | { kind: "invokeAssistantTool"; commandRequestId: number; sessionId: string; name: string; input: unknown }
   | { kind: "invokeCommand"; commandRequestId: number; commandId: string; input?: PluginCommandInput }
   | { kind: "capabilityResult"; requestId: number; ok: true; value: unknown }
   | { kind: "capabilityResult"; requestId: number; ok: false; error: PluginWorkerErrorPayload }
   /** Reverse signal: a contributed panel closed (ADR-0012) so the plugin can cancel in-flight work. */
   | { kind: "panelClosed"; panelId: string }
-  /** Reverse signal: drop a specific in-flight command; a late settlement for it is suppressed. */
+  /** Reverse signal: cancel an invocation's capabilities and signal its handler. Normal commands
+   * suppress late settlement; assistant tools still acknowledge when the handler finishes. */
   | { kind: "abort"; commandRequestId: number };
 
 /** Stable error codes emitted by the boundary itself (as opposed to a plugin's own error payloads). */
@@ -178,6 +180,9 @@ export function asHostToWorkerMessage(data: unknown): HostToWorkerMessage | unde
   const message = data as { kind?: unknown; [key: string]: unknown };
   const isIndex = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
   switch (message.kind) {
+    case "invokeAssistantTool":
+      return isIndex(message.commandRequestId) && typeof message.sessionId === "string" && typeof message.name === "string"
+        ? message as unknown as HostToWorkerMessage : undefined;
     case "invokeCommand":
       return isIndex(message.commandRequestId) && typeof message.commandId === "string"
         && (message.input === undefined || PluginCommandInputSchema.safeParse(message.input).success)

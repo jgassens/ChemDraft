@@ -3,7 +3,9 @@ import type { PluginManifest } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 
 import { createZipFixture, tamperByte } from "../testSupport/zipFixture";
+import { MemoryStorage } from "../testSupport/memoryStorage";
 import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
+import { createPluginUpdateChecker } from "./pluginUpdateAutoCheck";
 import { DEFAULT_PLUGIN_PACKAGE_ARCHIVE_LIMITS, sha256Hex } from "./pluginPackageArchive";
 import {
   checkForPluginUpdates,
@@ -12,6 +14,7 @@ import {
   isNetworkDownloadFailure,
   isOfficialPluginExperimental,
   OFFICIAL_PLUGIN_CATALOG,
+  parsePluginReleaseRequirements,
   prepareOfficialPluginInstall,
   preparePluginUpdate,
   redactUrl,
@@ -21,6 +24,7 @@ import {
 
 const PLUGIN_ID = "org.chemdraft.nmr.predictor";
 const API_URL = "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases/latest";
+const RELEASES_LIST_URL = "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases?per_page=20";
 
 function manifest(version: string, id = PLUGIN_ID): PluginManifest {
   return {
@@ -123,6 +127,42 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("host-managed plugin update catalog", () => {
+  it.each([
+    "ChemDraft-Plugin-API: not-semver",
+    "ChemDraft-Plugin-API: ^0.01.99",
+    "ChemDraft-Plugin-API: ^0.1.99 trailing prose",
+    "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Plugin-API: ^0.1.0",
+    "ChemDraft-Plugin-API:\n^0.1.99",
+    "ChemDraft-Plugin-API:^0.1.99",
+    " ChemDraft-Plugin-API: ^0.1.99",
+    "chemdraft-plugin-api: ^0.1.99",
+    "Release notes: ChemDraft-Plugin-API: ^0.1.99"
+  ])("treats malformed or ambiguous API markers as unknown: %s", async body => {
+    expect(parsePluginReleaseRequirements(body).apiVersion).toBeUndefined();
+    const zip = await pluginPackage("0.2.0");
+    const results = await checkForPluginUpdates([installedEntry("0.1.0")], {
+      fetch: async () => jsonResponse(await releaseDocument("0.2.0", zip, { body }))
+    });
+    expect(results[0]?.status).toBe("available");
+  });
+
+  it.each(["^0.1.25", "~0.1.25", "0.1.25", "0.1.25-rc.1+build.2"])(
+    "reads exact release markers with CRLF and a valid range/version: %s", apiVersion => {
+      expect(parsePluginReleaseRequirements(`Notes\r\nChemDraft-Plugin-API: ${apiVersion}\r\nChemDraft-Min-App: 1.2.0\r\n`))
+        .toEqual({ apiVersion, minAppVersion: "1.2.0" });
+    }
+  );
+
+  it("ignores a malformed minimum app version without losing the API requirement", async () => {
+    const zip = await pluginPackage("0.2.0");
+    const results = await checkForPluginUpdates([installedEntry("0.1.0")], {
+      fetch: async (url) => jsonResponse(url === RELEASES_LIST_URL ? [] : await releaseDocument("0.2.0", zip, {
+        body: "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Min-App: ^1.9.0"
+      }))
+    });
+    expect(results[0]).toMatchObject({ status: "incompatible", message: "Needs a newer ChemDraft" });
+  });
+
   const signedUrl = "https://release-assets.githubusercontent.com/github-production-release-asset/1/package?sig=secret-signature&jwt=secret-token#fragment";
   const rawFailure = `error sending request for url (${signedUrl})`;
 
@@ -154,7 +194,7 @@ describe("host-managed plugin update catalog", () => {
     } finally { warn.mockRestore(); }
   });
 
-  it("diagnoses update-check transport failures without exposing the rejected error", async () => {
+  it("logs update-check transport failures without exposing the rejected error", async () => {
     const message = "Couldn't reach api.github.com: the name could not be found.";
     const invoke = vi.fn(async () => ({ category: "dns", message, logDetail: rawFailure }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -162,9 +202,10 @@ describe("host-managed plugin update catalog", () => {
       const result = await checkForPluginUpdates([installedEntry("0.0.9")], {
         fetch: async () => { throw new Error(rawFailure); }, invoke
       });
-      expect(result[0]).toMatchObject({ status: "failed", message });
-      expect(invoke).toHaveBeenCalledExactlyOnceWith("diagnose_download_host", { host: "api.github.com" });
-      expect(warn.mock.calls.flat().join(" ")).not.toMatch(/\?|sig=|jwt=|secret-token|secret-signature/);
+      expect(result[0]).toMatchObject({ status: "unavailable" });
+      expect(invoke).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Plugin release metadata failure for api.github.com"));
+      expect(warn.mock.calls.flat().join(" ")).not.toContain(rawFailure);
     } finally { warn.mockRestore(); }
   });
 
@@ -235,20 +276,24 @@ describe("host-managed plugin update catalog", () => {
     } finally { vi.useRealTimers(); warn.mockRestore(); }
   });
 
-  it.each([true, false])("uses a safe fallback if diagnosis fails (reachable=%s)", async (reachable) => {
+  it.each([true, false])("uses a safe download fallback if diagnosis fails (reachable=%s)", async (reachable) => {
+    const zip = await pluginPackage("0.1.0");
+    const release = await releaseDocument("0.1.0", zip);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const result = await checkForPluginUpdates([installedEntry("0.0.9")], {
-        fetch: async () => { throw new Error(rawFailure); },
-        invoke: async () => {
-          if (!reachable) throw new Error(rawFailure);
-          return { category: "reachable", message: null, logDetail: "" };
-        }
+      const invoke = vi.fn(async () => {
+        if (!reachable) throw new Error(rawFailure);
+        return { category: "reachable", message: null, logDetail: "" };
       });
-      expect(result[0]).toMatchObject({ status: "failed", message: reachable
-        ? "Couldn't reach api.github.com: the connection was dropped or interrupted; try again."
-        : "Couldn't reach api.github.com: the connection failed." });
-      expect(JSON.stringify(result)).not.toMatch(/\?|sig=|jwt=|secret-token/);
+      await expect(prepareOfficialPluginInstall(PLUGIN_ID, {
+        fetch: async (url) => {
+          if (url === API_URL) return jsonResponse(release);
+          throw new Error(rawFailure);
+        }, invoke
+      })).rejects.toThrow(reachable
+        ? "Couldn't reach github.com: the connection was dropped or interrupted; try again."
+        : "Couldn't reach github.com: the connection failed.");
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("diagnose_download_host", { host: "github.com" });
       expect(warn.mock.calls.flat().join(" ")).not.toMatch(/\?|sig=|jwt=|secret-token/);
     } finally { warn.mockRestore(); }
   });
@@ -262,7 +307,7 @@ describe("host-managed plugin update catalog", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("preserves our abort timeout message without running diagnosis", async () => {
+  it("keeps metadata timeouts quiet without running diagnosis", async () => {
     vi.useFakeTimers();
     const invoke = vi.fn();
     try {
@@ -272,7 +317,7 @@ describe("host-managed plugin update catalog", () => {
         }), invoke
       });
       await vi.advanceTimersByTimeAsync(20_000);
-      expect((await pending)[0]).toMatchObject({ status: "failed", message: "Checking NMR Shift Predictor releases timed out after 20 seconds." });
+      expect((await pending)[0]).toMatchObject({ status: "unavailable" });
       expect(invoke).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
@@ -422,6 +467,80 @@ describe("host-managed plugin update catalog", () => {
     expect(refused[0]?.status === "failed" ? refused[0].message : "").toMatch(/trusted.*release path/i);
   });
 
+  it.each([
+    {
+      body: "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Min-App: 1.9.0",
+      message: "Needs ChemDraft 1.9.0 or later"
+    },
+    {
+      body: "ChemDraft-Plugin-API: ^0.1.99",
+      message: "Needs a newer ChemDraft"
+    }
+  ])("withholds an incompatible update before download: $message", async ({ body, message }) => {
+    const zip = await pluginPackage("0.2.0");
+    const release = await releaseDocument("0.2.0", zip, { body });
+    const fetch = vi.fn(async (url: string) => jsonResponse(url === RELEASES_LIST_URL ? [] : release));
+    const entry = installedEntry("0.1.0");
+    const before = structuredClone(entry);
+
+    const results = await checkForPluginUpdates([entry], { fetch });
+
+    expect.soft(results[0]?.status).not.toBe("available");
+    expect.soft(results[0]).not.toHaveProperty("offer");
+    expect.soft(results[0]).toMatchObject({ pluginId: PLUGIN_ID, message });
+    // Check for a compatible fallback, without requesting any archive or checksum.
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([API_URL, RELEASES_LIST_URL]);
+    expect(entry).toEqual(before);
+  });
+
+  it.each([
+    { label: "without compatibility markers", body: "Release notes for this older plugin." },
+    { label: "with a compatible API marker", body: "ChemDraft-Plugin-API: ^0.1.0\nChemDraft-Min-App: 1.2.0" }
+  ])("preserves the existing update offer $label", async ({ body }) => {
+    const zip = await pluginPackage("0.2.0");
+    const release = await releaseDocument("0.2.0", zip, { body });
+    const fetch = vi.fn(async (_url: string) => jsonResponse(release));
+
+    const results = await checkForPluginUpdates([installedEntry("0.1.0")], { fetch });
+
+    expect(results[0]).toMatchObject({
+      status: "available",
+      pluginId: PLUGIN_ID,
+      installedVersion: "0.1.0",
+      latestVersion: "0.2.0",
+      offer: {
+        pluginId: PLUGIN_ID,
+        version: "0.2.0",
+        installedVersion: "0.1.0",
+        sourceChecksum: await sha256Hex(zip),
+        packageName: "nmr-predictor-0.2.0.zip"
+      }
+    });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([API_URL]);
+  });
+
+  it("does not announce an incompatible release during the automatic check", async () => {
+    const zip = await pluginPackage("0.2.0");
+    const release = await releaseDocument("0.2.0", zip, {
+      body: "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Min-App: 1.9.0"
+    });
+    const fetch = vi.fn(async (url: string) => jsonResponse(url === RELEASES_LIST_URL ? [] : release));
+    const setStatus = vi.fn();
+    const checker = createPluginUpdateChecker({
+      storage: new MemoryStorage(),
+      check: (installed) => checkForPluginUpdates(installed, { fetch }),
+      onResults: vi.fn(),
+      setStatus
+    });
+
+    await checker.automatic({
+      isDesktop: true, enabled: true, catalogReady: true, installed: [installedEntry("0.1.0")]
+    });
+
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([API_URL, RELEASES_LIST_URL]);
+  });
+
   it("accepts stable build metadata but does not offer prerelease tags", async () => {
     const stableZip = await pluginPackage("0.1.0+mac-arm64");
     const stable = await checkForPluginUpdates([installedEntry("0.0.9")], {
@@ -497,6 +616,96 @@ describe("host-managed plugin update catalog", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
+  it("prepares the newest marked compatible release when latest requires a newer ChemDraft", async () => {
+    const zip = await pluginPackage("0.2.0");
+    const latestZip = await pluginPackage("0.4.0");
+    const body = "ChemDraft-Plugin-API: ^0.1.0";
+    const latest = await releaseDocument("0.4.0", latestZip, {
+      body: "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Min-App: 1.9.0"
+    });
+    const compatible = await releaseDocument("0.2.0", zip, { body });
+    const releases = [
+      latest,
+      await releaseDocument("0.6.0", zip, { body, draft: true }),
+      await releaseDocument("0.5.0-rc.1", zip, { body, prerelease: true }),
+      await releaseDocument("0.3.0", zip), // Unknown loses to a marked compatible release.
+      await releaseDocument("0.1.0", zip, { body }),
+      compatible // Deliberately unsorted: choose the newest compatible version.
+    ];
+    const packageUrl = "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.2.0/nmr-predictor-0.2.0.zip";
+    const latestPackageUrl = "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.4.0/nmr-predictor-0.4.0.zip";
+    const fetch = vi.fn(async (url: string) => {
+      if (url === API_URL) return jsonResponse(latest);
+      if (url === RELEASES_LIST_URL) return jsonResponse(releases);
+      if (url === `${packageUrl}.sha256`) return new Response(`${await sha256Hex(zip)}  nmr-predictor-0.2.0.zip\n`);
+      if (url === packageUrl) return new Response(zip.slice().buffer);
+      // Serve valid latest assets too, so ignoring compatibility fails on the chosen version.
+      if (url === `${latestPackageUrl}.sha256`) return new Response(`${await sha256Hex(latestZip)}  nmr-predictor-0.4.0.zip\n`);
+      if (url === latestPackageUrl) return new Response(latestZip.slice().buffer);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const prepared = await prepareOfficialPluginInstall(PLUGIN_ID, { fetch });
+
+    expect.soft(prepared).toMatchObject({
+      sourcePath: packageUrl,
+      selectionMessage: "Selected version 0.2.0, the newest release compatible with this ChemDraft. The latest release is not compatible with this ChemDraft version.",
+      checksumVerified: true,
+      inspection: { manifest: { id: PLUGIN_ID, version: "0.2.0" } }
+    });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      API_URL, RELEASES_LIST_URL, packageUrl, `${packageUrl}.sha256`
+    ]);
+  });
+
+  it("refuses a fresh install without downloading when no compatible release exists", async () => {
+    const zip = await pluginPackage("0.4.0");
+    const body = "ChemDraft-Plugin-API: ^0.1.99\nChemDraft-Min-App: 1.9.0";
+    const latest = await releaseDocument("0.4.0", zip, { body });
+    const releases = [
+      latest,
+      await releaseDocument("0.3.0", zip, { body }),
+      await releaseDocument("0.5.0", zip, { body: "ChemDraft-Plugin-API: ^0.1.0", draft: true }),
+      await releaseDocument("0.5.0-rc.1", zip, { body: "ChemDraft-Plugin-API: ^0.1.0", prerelease: true })
+    ];
+    const fetch = vi.fn(async (url: string) => {
+      if (url === API_URL) return jsonResponse(latest);
+      if (url === RELEASES_LIST_URL) return jsonResponse(releases);
+      if (url.endsWith(".sha256")) return new Response(`${await sha256Hex(zip)}  nmr-predictor-0.4.0.zip\n`);
+      return new Response(zip.slice().buffer);
+    });
+
+    const failure = await prepareOfficialPluginInstall(PLUGIN_ID, { fetch }).then(
+      () => undefined,
+      (cause: unknown) => cause
+    );
+    expect.soft(failure).toBeInstanceOf(Error);
+    expect.soft(failure instanceof Error ? failure.message : "").toBe("Needs ChemDraft 1.9.0 or later");
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([API_URL, RELEASES_LIST_URL]);
+  });
+
+  it("uses the newest unknown release only when there is no marked compatible release and explains why", async () => {
+    const zip = await pluginPackage("0.3.0");
+    const latest = await releaseDocument("0.4.0", zip, { body: "ChemDraft-Plugin-API: ^0.1.99" });
+    const packageUrl = "https://github.com/jgassens/ChemDraft-NMR-Plugin/releases/download/v0.3.0/nmr-predictor-0.3.0.zip";
+    const fetch = vi.fn(async (url: string) => {
+      if (url === API_URL) return jsonResponse(latest);
+      if (url === RELEASES_LIST_URL) return jsonResponse([
+        await releaseDocument("0.1.0", zip), latest, await releaseDocument("0.3.0", zip)
+      ]);
+      if (url === packageUrl) return new Response(zip.slice().buffer);
+      if (url === `${packageUrl}.sha256`) return new Response(`${await sha256Hex(zip)}  nmr-predictor-0.3.0.zip\n`);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const prepared = await prepareOfficialPluginInstall(PLUGIN_ID, { fetch });
+    expect(prepared).toMatchObject({
+      sourcePath: packageUrl,
+      selectionMessage: "Selected version 0.3.0 with unknown API compatibility because no marked compatible release was found. The package must still pass the install-time compatibility check.",
+      inspection: { manifest: { version: "0.3.0" } }
+    });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([API_URL, RELEASES_LIST_URL, packageUrl, `${packageUrl}.sha256`]);
+  });
+
   it.each(["org.chemdraft.opsin.nameToStructure", "org.chemdraft.ocsr.molscribe"])(
     "reports an official catalog entry with no release explicitly (%s)",
     async (pluginId) => {
@@ -533,10 +742,15 @@ describe("host-managed plugin update catalog", () => {
 
     for (const entry of OFFICIAL_PLUGIN_CATALOG) {
       const apiUrl = `https://api.github.com/repos/${entry.repository}/releases/latest`;
+      const releasesListUrl = `https://api.github.com/repos/${entry.repository}/releases?per_page=20`;
       const packageUrl =
         `https://github.com/${entry.repository}/releases/download/v0.1.0/` +
         `${entry.assetStem}-0.1.0.zip`;
       expect(isAllowed(apiUrl), `${entry.pluginId} release API`).toBe(true);
+      expect.soft(allowed, `${entry.pluginId} exact release-list scope`).toContain(releasesListUrl);
+      expect.soft(isAllowed(releasesListUrl), `${entry.pluginId} release-list API`).toBe(true);
+      expect.soft(isAllowed(`https://api.github.com/repos/${entry.repository}/issues`)).toBe(false);
+      expect.soft(isAllowed(`https://api.github.com/repos/${entry.repository}/releases?per_page=100`)).toBe(false);
       expect(isAllowed(packageUrl), `${entry.pluginId} package`).toBe(true);
       expect(isAllowed(`${packageUrl}.sha256`), `${entry.pluginId} checksum`).toBe(true);
     }

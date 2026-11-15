@@ -1,3 +1,5 @@
+import { VisualEffectSchema, type VisualEffect } from "./schemas";
+
 export type NativeBondLineCap = "butt" | "round" | "square";
 export type NativeBondSpacingMode = "absolute" | "percent";
 export type NativeTextAlignment = "left" | "center" | "right" | "justify";
@@ -8,6 +10,7 @@ export type NativeAtomLabelPlacement = "automatic" | "above" | "below";
 
 export interface NativeDrawingStyle {
   stylePresetId: string;
+  visualEffects?: readonly VisualEffect[];
   chainAngleDegrees: number;
   bondLengthPx: number;
   bondStrokeWidthPx: number;
@@ -115,6 +118,8 @@ export const DOCUMENT_STYLE_UNITS_PER_PT = 22 / 14.4;
 
 // Preserve the native values established before this preset moved from layout-engine.
 const documentStyleUnits = (points: number) => points / (1 / DOCUMENT_STYLE_UNITS_PER_PT);
+// Multiply before dividing so transcribed dimensions reproduce the stated pt * 22 / 14.4 values.
+const publisherStyleUnits = (points: number) => points * 22 / 14.4;
 
 /** Fixed physical-document drawing data, expressed in native drawing units. */
 export const DocumentStylePreset = {
@@ -137,6 +142,85 @@ export const DocumentStylePreset = {
     atomLabelFontSizePx: documentStyleUnits(10)
   }
 } as const satisfies ChemDraftStylePreset;
+
+/**
+ * ACS Chemical Reviews author guidelines: https://researcher-resources.acs.org/publish/author_guidelines?coden=chreay
+ * ACS journals' published structure-drawing settings:
+ * bond length 14.4 pt (0.2 in), line width 0.6 pt, bold width 2.0 pt,
+ * double-bond spacing 18% of bond length, hash spacing 2.5 pt, label margin 1.6 pt,
+ * Arial/Helvetica (sans-serif fallback) labels 10 pt, regular weight 400.
+ * All unspecified fields retain Document style values, including chain angle, colours,
+ * line cap, inset, overlap clearance, label padding/placement and indicator toggles.
+ * values transcribed from the publisher's public author guidelines; not an endorsement or compliance certificate
+ */
+export const Acs1996StylePreset = {
+  id: "chemdraft.acs1996",
+  name: "ACS 1996-style",
+  source: "core",
+  drawing: {
+    ...DocumentStylePreset.drawing,
+    stylePresetId: "chemdraft.acs1996",
+    bondLengthPx: publisherStyleUnits(14.4),
+    bondStrokeWidthPx: publisherStyleUnits(0.6),
+    bondBoldWidthPx: publisherStyleUnits(2.0),
+    bondSpacingMode: "percent",
+    bondSpacingPercent: 18,
+    multipleBondGapPx: publisherStyleUnits(14.4) * 0.18,
+    bondHashSpacingPx: publisherStyleUnits(2.5),
+    bondMarginWidthPx: publisherStyleUnits(1.6),
+    atomLabelFontFamily: "Arial, Helvetica, sans-serif",
+    atomLabelFontSizePx: publisherStyleUnits(10),
+    atomLabelFontWeight: 400
+  }
+} as const satisfies ChemDraftStylePreset;
+
+/**
+ * RSC author guidelines: https://www.rsc.org/publishing/publish-with-us/publish-a-journal-article/rsc-advances
+ * Chemical structures: Arial/Helvetica (sans-serif fallback) labels 7 pt, bond length 12.2 pt,
+ * line width 0.5 pt, bold width 1.6 pt, hash spacing 1.8 pt, double-bond spacing 20%.
+ * The public values transcribed in PR #191 agree for Analytical Methods and RSC Advances.
+ * All unspecified fields retain Document style values, including label margin (1.6 pt),
+ * regular weight (400), chain angle, colours, line cap, inset, overlap clearance,
+ * label padding/placement and indicator toggles.
+ * values transcribed from the publisher's public author guidelines; not an endorsement or compliance certificate
+ */
+export const RscJournalStylePreset = {
+  id: "chemdraft.rscjournal",
+  name: "RSC journal-style",
+  source: "core",
+  drawing: {
+    ...DocumentStylePreset.drawing,
+    stylePresetId: "chemdraft.rscjournal",
+    bondLengthPx: publisherStyleUnits(12.2),
+    bondStrokeWidthPx: publisherStyleUnits(0.5),
+    bondBoldWidthPx: publisherStyleUnits(1.6),
+    bondSpacingMode: "percent",
+    bondSpacingPercent: 20,
+    multipleBondGapPx: publisherStyleUnits(12.2) * 0.20,
+    bondHashSpacingPx: publisherStyleUnits(1.8),
+    atomLabelFontFamily: "Arial, Helvetica, sans-serif",
+    atomLabelFontSizePx: publisherStyleUnits(7)
+  }
+} as const satisfies ChemDraftStylePreset;
+
+/** Original pen drawing: the established art effect, with locally bundled handwriting. */
+export const SketchStylePreset = {
+  id: "chemdraft.sketch",
+  name: "Sketch",
+  source: "core",
+  drawing: {
+    ...ChemDraftSyntheticStylePreset.drawing,
+    stylePresetId: "chemdraft.sketch",
+    atomLabelFontFamily: "'Patrick Hand', Arial, Helvetica, sans-serif",
+    visualEffects: [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7 }]
+  }
+} as const satisfies ChemDraftStylePreset;
+
+/** Native presets shared by drawing workflows and command/menu surfaces. */
+export const NativeStylePresets = [
+  ChemDraftSyntheticStylePreset, DocumentStylePreset, Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset
+] as const;
+export type NativeStylePresetId = typeof NativeStylePresets[number]["id"];
 
 /** Whole-molecule dimensions selected by the document preset. */
 export const DocumentMoleculeSizeStyle = Object.fromEntries(([
@@ -178,8 +262,10 @@ export function stylePresetToObjectStyle(
 
 export function nativeDrawingStyleFromObjectStyle(style: Record<string, unknown> = {}): NativeDrawingStyle {
   const fallback = DefaultNativeDrawingStyle;
+  const effects = VisualEffectSchema.array().safeParse(style.visualEffects);
 
   return {
+    ...(effects.success && effects.data.length ? { visualEffects: effects.data } : {}),
     stylePresetId: stringValue(style.stylePresetId, fallback.stylePresetId),
     chainAngleDegrees: positiveNumber(style.chainAngleDegrees, fallback.chainAngleDegrees),
     bondLengthPx: positiveNumber(style.bondLengthPx, fallback.bondLengthPx),

@@ -47,6 +47,37 @@ function capturedIo(): { stdout: string[]; stderr: string[]; io: { stdout: (line
 }
 
 describe("headless ChemDraft name conversion", () => {
+  it.each(["Prozac", "64-17-5"])("reports dictionary provenance in CLI JSON for %s", async query => {
+    const capture = capturedIo();
+    expect(await runNameCommand(["--name", query], capture.io, {
+      convertName: async () => ({ warnings: [], failureReason: "OPSIN parse miss" })
+    })).toBe(0);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ ok: true, source: "dictionary",
+      ...(query === "Prozac" ? { matchedName: query } : { matchedCas: query }) });
+  });
+
+  it("reports OPSIN provenance and both sources on a miss", async () => {
+    const success = capturedIo();
+    await runNameCommand(["--name", "ethanol"], success.io, {
+      convertName: async () => ({ smiles: "CCO", warnings: [] })
+    });
+    expect(JSON.parse(success.stdout[0]!)).toMatchObject({ ok: true, source: "opsin" });
+    const failure = capturedIo();
+    expect(await runNameCommand(["--name", "no-such-chemical-name-xyz"], failure.io, {
+      convertName: async () => ({ warnings: [], failureReason: "OPSIN parse miss" })
+    })).toBe(1);
+    expect(JSON.parse(failure.stdout[0]!)).toMatchObject({ ok: false,
+      error: expect.stringContaining("OPSIN and the offline Wikidata dictionary") });
+  });
+  it("attributes a render failure to the dictionary that supplied the structure", async () => {
+    const capture = capturedIo();
+    expect(await runNameCommand(["--name", "Prozac", "--render", join(outputDirectory, "failure.png")], capture.io, {
+      convertName: async () => ({ warnings: [], failureReason: "OPSIN parse miss" }),
+      renderSmiles: async () => { throw new Error("render failed"); }
+    })).toBe(1);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ source: "dictionary",
+      error: expect.stringContaining("Unable to render Wikidata dictionary result") });
+  });
   it.each(["beta-cyclodextrin", "β-CD", "cucurbit[7]uril", "18-crown-6"])("resolves %s without an OPSIN runtime", async name => {
     const capture = capturedIo();
     expect(await runNameCommand(["--name", name], capture.io, { opsinPaths: {

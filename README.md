@@ -13,11 +13,17 @@ Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDr
 - Copy structures and editable tables for use in Office applications.
 - Add editable tables and pictures, and use structure templates.
 - Inspect molecular properties and analysis results, and explore structures with Spin 3D.
-- Convert chemical names to structures with OPSIN.
+- Convert chemical names to structures with OPSIN, or with an offline dictionary of common and trade names and CAS registry numbers.
+- Search a selected structure in PubChem or Reaxys through your browser, with first-use consent per site; turn it off under Preferences ▸ Online structure search.
 - Extend the app with plugins, including the optional official NMR predictor and MolScribe structure-recognition plugins.
 - Use the headless CLI, MCP server and [agent skill](skills/chemdraft/SKILL.md) from scripts or coding assistants.
 
 Spin 3D may not start on macOS 15 or earlier in version 1.1.0; a fix is planned for 1.1.1.
+
+The Structure menu offers ChemDraft Synthetic, Document style, ACS 1996-style, RSC
+journal-style and Sketch. Sketch uses uneven pen strokes and bundled Patrick Hand handwriting.
+Apply a preset to selected molecules/text, or clear the selection to style the
+whole document and its new-object defaults. See [native preset values and sources](packages/chem-core/README.md#native-drawing-presets).
 
 ## Plugins
 

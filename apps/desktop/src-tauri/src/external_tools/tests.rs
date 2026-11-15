@@ -2066,12 +2066,12 @@ fn request(tool: ToolId, conversation: &str) -> ExternalToolRunRequest {
 }
 
 #[test]
-fn capability_is_main_only_and_exactly_matches_registered_commands() {
+fn capability_is_document_and_runtime_only_and_exactly_matches_registered_commands() {
     use std::collections::BTreeSet;
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../../capabilities/external-tools.json")).unwrap();
     assert_eq!(capability["identifier"], "external-tools");
-    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
     assert!(capability.get("webviews").is_none());
     assert!(capability.get("remote").is_none());
     let source = include_str!("../lib.rs");
@@ -2106,6 +2106,26 @@ fn capability_is_main_only_and_exactly_matches_registered_commands() {
         actual.len(),
         capability["permissions"].as_array().unwrap().len()
     );
+    // The sole runtime owns the controllers; both grants must match the registered command set.
+    let runtime: serde_json::Value = serde_json::from_str(include_str!(
+        "../../capabilities/runtime-host-services.json"
+    ))
+    .unwrap();
+    assert_eq!(runtime["identifier"], "runtime-host-services");
+    assert_eq!(runtime["windows"], serde_json::json!(["runtime"]));
+    assert!(runtime.get("webviews").is_none());
+    assert!(runtime.get("remote").is_none());
+    let runtime_permissions: Vec<_> = runtime["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|permission| permission.starts_with("allow-external-tool-"))
+        .map(str::to_owned)
+        .collect();
+    let runtime_actual: BTreeSet<_> = runtime_permissions.iter().cloned().collect();
+    assert_eq!(expected, runtime_actual);
+    assert_eq!(runtime_actual.len(), runtime_permissions.len());
     for command in commands {
         let permission = fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2115,11 +2135,12 @@ fn capability_is_main_only_and_exactly_matches_registered_commands() {
         .unwrap();
         assert!(permission.contains(&format!("commands.allow = [\"{command}\"]")));
     }
-    // A second grant must not expose these commands to a utility window.
+    // No other capability may expose these commands to a utility window.
     for file in fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities")).unwrap() {
         let path = file.unwrap().path();
         if path.extension().is_some_and(|e| e == "json")
             && path.file_name().unwrap() != "external-tools.json"
+            && path.file_name().unwrap() != "runtime-host-services.json"
         {
             assert!(!fs::read_to_string(path)
                 .unwrap()

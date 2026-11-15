@@ -78,6 +78,41 @@ const matchingCanonicalizer = (value: string) => (): CanonicalChemicalIdentity =
 });
 
 describe("snapshotChemicalIdentity (graph layer)", () => {
+  it("compares unchanged wavy-only intent as identical without a stereo engine", () => {
+    const mol = chiralCenter();
+    mol.bonds[0]!.display = { bondStyle: "wavy" };
+    const before = snapshotChemicalIdentity(mol);
+    expect(before.graph.stereoMarkers[0]?.style).toBe("wavy");
+    const diff = diffChemicalIdentity(before, snapshotChemicalIdentity(mol));
+    expect(diff.verdict).toBe("identical");
+    expect(diff.stereoMarkers).toEqual({ becameSpecified: 0, becameUnspecified: 0, directionOrStyleFlipped: 0 });
+  });
+
+  it("tracks adding, losing and redirecting waves without treating them as specified stereo", () => {
+    const mol = chiralCenter();
+    const plain = snapshotChemicalIdentity(mol);
+    mol.bonds[0]!.display = { bondStyle: "wavy" };
+    const wave = snapshotChemicalIdentity(mol);
+    for (const [before, after] of [[plain, wave], [wave, plain]]) {
+      const diff = diffChemicalIdentity(before!, after!);
+      expect(diff.verdict).toBe("changed");
+      expect(diff.stereoMarkers.becameSpecified).toBe(0);
+      expect(diff.stereoMarkers.becameUnspecified).toBe(0);
+      expect(diff.reasons).toContain("explicit unknown stereo markers changed");
+    }
+    [mol.bonds[0]!.fromAtomId, mol.bonds[0]!.toAtomId] = [mol.bonds[0]!.toAtomId, mol.bonds[0]!.fromAtomId];
+    expect(diffChemicalIdentity(wave, snapshotChemicalIdentity(mol)).verdict).toBe("changed");
+  });
+
+  it("counts wavy-to-wedge as specifying stereo and wedge-to-wavy as making it unspecified", () => {
+    const mol = chiralCenter("wedge");
+    const wedge = snapshotChemicalIdentity(mol);
+    mol.bonds[0]!.display = { bondStyle: "wavy" };
+    const wave = snapshotChemicalIdentity(mol);
+    expect(diffChemicalIdentity(wave, wedge).stereoMarkers.becameSpecified).toBe(1);
+    expect(diffChemicalIdentity(wedge, wave).stereoMarkers.becameUnspecified).toBe(1);
+  });
+
   it("captures coordinate-independent graph invariants", () => {
     const snap = snapshotChemicalIdentity(chiralCenter("wedge"));
     expect(snap.graph.atomCount).toBe(5);

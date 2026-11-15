@@ -1,9 +1,10 @@
-import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { adoptDerivedDocument, applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeAtom, type MoleculeObject } from "@chemdraft/chem-core";
 import * as OCL from "openchemlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { unresolvableAromaticRing } from "@chemdraft/layout-engine/testing";
 import { createStructureSourceFingerprint } from "@chemdraft/plugin-api";
+import * as pluginApi from "@chemdraft/plugin-api";
 
 import { buildPluginSelectionSnapshot, computeObjectFingerprint, pluginFacingStructure } from "./selectionSnapshot";
 
@@ -37,6 +38,58 @@ function documentWithUnknownOrderBond(selection: string[]): ChemDraftDocument {
     bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "unknown" }]
   });
   return document;
+}
+
+function moleculeWithHydrogen(): MoleculeObject {
+  return {
+    id: "m1", type: "molecule", structureFormat: "smiles", structure: "[H]C",
+    atoms: [
+      { id: "a1", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a2", element: "H", x: 14, y: 0, formalCharge: 0 }
+    ],
+    bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
+  } as MoleculeObject;
+}
+
+function engineDocumentWith(molecule = moleculeWithHydrogen()): ChemDraftDocument {
+  return applyPatch(createEmptyDocument({ id: "doc1", pageId: "p1" }), {
+    op: "batch",
+    patches: [
+      { op: "addObject", pageId: "p1", object: { ...molecule, x: 0, y: 0, width: 14, height: 1 } },
+      { op: "setSelection", objectIds: [molecule.id] }
+    ]
+  });
+}
+
+function stereoFixture(kind: "E/Z" | "R/S"): MoleculeObject {
+  const molecule = moleculeWithHydrogen();
+  if (kind === "E/Z") {
+    molecule.atoms = ([[0, 30], [30, 0], [60, 0], [90, -30]] as const).map(([x, y], i) => ({
+      id: `a${i}`, element: "C", x, y, formalCharge: 0
+    }));
+    molecule.bonds = (["single", "double", "single"] as const).map((order, i) => ({
+      id: `b${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order
+    }));
+  } else {
+    // Three distinct substituents and an implicit H; the wedge stays fixed during the edit.
+    molecule.atoms = [
+      { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+      { id: "a1", element: "F", x: 0, y: -30, formalCharge: 0 },
+      { id: "a2", element: "Cl", x: -30, y: 30, formalCharge: 0 },
+      { id: "a3", element: "Br", x: 30, y: 30, formalCharge: 0 }
+    ];
+    molecule.bonds = [
+      { id: "b0", fromAtomId: "a0", toAtomId: "a1", order: "single", display: { bondStyle: "wedge" } },
+      { id: "b1", fromAtomId: "a0", toAtomId: "a2", order: "single" },
+      { id: "b2", fromAtomId: "a0", toAtomId: "a3", order: "single" }
+    ];
+  }
+  molecule.structure = canonicalPluginSmiles(molecule);
+  return molecule;
+}
+
+function canonicalPluginSmiles(molecule: MoleculeObject): string {
+  return OCL.Molecule.fromMolfile(pluginFacingStructure(molecule).structure).toIsomericSmiles();
 }
 
 describe("buildPluginSelectionSnapshot", () => {
@@ -74,6 +127,45 @@ describe("buildPluginSelectionSnapshot", () => {
 });
 
 describe("pluginFacingStructure", () => {
+  describe.each([
+    { name: "D", atom: { element: "D" }, symbol: "D", mass: 2 },
+    { name: "H with isotope 2", atom: { element: "H", isotope: 2 }, symbol: "H", mass: 2 },
+    { name: "T", atom: { element: "T" }, symbol: "T", mass: 3 }
+  ])("$name", ({ atom, symbol, mass }) => {
+    it.each([false, true])("preserves the isotope and its bond with abbreviation expansion %s", (expand) => {
+      const molecule = moleculeWithHydrogen();
+      Object.assign(molecule.atoms[1]!, atom);
+      if (expand) {
+        molecule.atoms.push({ id: "a3", element: "OMe", x: -14, y: 0, formalCharge: 0 });
+        molecule.bonds.push({ id: "b2", fromAtomId: "a1", toAtomId: "a3", order: "single" });
+      }
+      const document = documentWith([molecule.id]);
+      document.pages[0]!.objects[0] = molecule;
+      const warnings: string[] = [];
+      const facing = pluginFacingStructure(molecule, warnings);
+      expect(buildPluginSelectionSnapshot(document).molecules[0]!.structure).toBe(facing.structure);
+      expect(facing.structureFormat).toBe("molfile-v2000");
+      const lines = facing.structure.split("\n");
+      const atomCount = expand ? 4 : 2;
+      const bondCount = expand ? 3 : 1;
+      expect(Number(lines[3]!.slice(0, 3))).toBe(atomCount);
+      expect(Number(lines[3]!.slice(3, 6))).toBe(bondCount);
+      expect(lines.slice(4, 4 + atomCount).map((line) => line.slice(31, 34).trim()))
+        .toEqual(expand ? ["C", symbol, "O", "C"] : ["C", symbol]);
+      if (symbol === "H") expect(facing.structure).toContain("M  ISO  1   2   2");
+      expect(lines.slice(4 + atomCount, 4 + atomCount + bondCount).map((line) => [
+        Number(line.slice(0, 3)), Number(line.slice(3, 6)), Number(line.slice(6, 9))
+      ])).toEqual(expand ? [[1, 2, 1], [1, 3, 1], [3, 4, 1]] : [[1, 2, 1]]);
+      // Read exactly what the plugin receives: the explicit hydrogen remains bonded and heavy.
+      const parsed = OCL.Molecule.fromMolfile(facing.structure);
+      expect(parsed.getAllAtoms()).toBe(atomCount);
+      expect(parsed.getAllBonds()).toBe(bondCount);
+      expect(parsed.getAtomicNo(1)).toBe(1);
+      expect(parsed.getAtomMass(1)).toBe(mass);
+      expect(warnings).toEqual([]);
+    });
+  });
+
   it("preserves unresolved type-4 bonds and surfaces one ring warning to the host", () => {
     const source = documentWith(["m1"]);
     const molecule = source.pages[0]!.objects[0];
@@ -192,6 +284,210 @@ describe("pluginFacingStructure", () => {
 });
 
 describe("computeObjectFingerprint", () => {
+  it.each(["E/Z", "R/S"] as const)("stales a report when an immutable coordinate edit flips %s", kind => {
+    const document = engineDocumentWith(stereoFixture(kind));
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    const before = computeObjectFingerprint(document, molecule.id); // Warm the immutable-object cache.
+    const atoms = molecule.atoms.map(atom => atom.id === "a3"
+      ? { ...atom, ...(kind === "E/Z" ? { y: 30 } : { x: -30, y: -30 }) }
+      : atom);
+    const structure = canonicalPluginSmiles({ ...molecule, atoms });
+    // Establish a real stereo inversion in the exact molfile a plugin receives, not just a move.
+    expect(molecule.structure).toMatch(kind === "E/Z" ? /[/\\]/ : /@/);
+    expect(structure).toMatch(kind === "E/Z" ? /[/\\]/ : /@/);
+    expect(structure).not.toBe(molecule.structure);
+    const edited = applyPatch(document, {
+      op: "updateObject", objectId: molecule.id, changes: { atoms, structure }
+    });
+    const editedMolecule = edited.pages[0]!.objects[0] as MoleculeObject;
+    expect(editedMolecule).not.toBe(molecule);
+    expect(editedMolecule.bonds).toEqual(molecule.bonds);
+    expect(canonicalPluginSmiles(editedMolecule)).toBe(structure);
+    expect(computeObjectFingerprint(document, molecule.id)).toBe(before);
+    expect(computeObjectFingerprint(edited, molecule.id)).not.toBe(before);
+  });
+
+  it.each(["E/Z", "R/S"] as const)("keeps the fingerprint after rigid translation and rotation of a %s molecule", kind => {
+    const document = engineDocumentWith(stereoFixture(kind));
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    const before = computeObjectFingerprint(document, molecule.id);
+    for (const transform of [
+      (atom: MoleculeAtom) => ({ ...atom, x: atom.x + 100, y: atom.y - 50 }),
+      (atom: MoleculeAtom) => ({ ...atom, x: -atom.y, y: atom.x }),
+      (atom: MoleculeAtom) => ({
+        ...atom,
+        x: atom.x * Math.cos(0.73) - atom.y * Math.sin(0.73) + 100,
+        y: atom.x * Math.sin(0.73) + atom.y * Math.cos(0.73) - 50
+      })
+    ]) {
+      const atoms = molecule.atoms.map(transform);
+      const structure = canonicalPluginSmiles({ ...molecule, atoms });
+      expect(structure).toBe(molecule.structure);
+      const moved = applyPatch(document, {
+        op: "updateObject", objectId: molecule.id, changes: { atoms, structure }
+      });
+      expect(moved.pages[0]!.objects[0]).not.toBe(molecule);
+      expect(computeObjectFingerprint(moved, molecule.id)).toBe(before);
+    }
+    // A non-rigid atom move that preserves every stereo descriptor need not change the
+    // fingerprint either; deliberately leave that case unconstrained by an assertion.
+  });
+
+  it.each(["E/Z", "wedge", "hashed", "four ligands"] as const)(
+    "detects a %s inversion even when stored structure text is unchanged", kind => {
+      const fixture = stereoFixture(kind === "E/Z" ? "E/Z" : "R/S");
+      if (kind === "hashed") fixture.bonds[0]!.display = { bondStyle: "hashed" };
+      if (kind === "four ligands") {
+        fixture.atoms.push({ id: "a4", element: "H", x: 0, y: 45, formalCharge: 0 });
+        fixture.bonds.push({ id: "b3", fromAtomId: "a0", toAtomId: "a4", order: "single" });
+      }
+      fixture.structure = canonicalPluginSmiles(fixture);
+      const document = engineDocumentWith(fixture);
+      const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+      const before = computeObjectFingerprint(document, molecule.id);
+      const atoms = molecule.atoms.map(atom => kind === "E/Z"
+        ? { ...atom, y: atom.id === "a3" ? 30 : atom.y }
+        : { ...atom, x: -atom.x });
+      const actual = canonicalPluginSmiles({ ...molecule, atoms });
+      expect(actual).toMatch(kind === "E/Z" ? /[/\\]/ : /@/);
+      expect(actual).not.toBe(molecule.structure);
+      const edited = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: { atoms } });
+      expect((edited.pages[0]!.objects[0] as MoleculeObject).structure).toBe(molecule.structure);
+      expect(computeObjectFingerprint(edited, molecule.id)).not.toBe(before);
+      // Four ligands include opposite/collinear rays; arbitrary rotation must tolerate roundoff.
+      const angle = 0.73;
+      const rotated = molecule.atoms.map(atom => ({
+        ...atom,
+        x: atom.x * Math.cos(angle) - atom.y * Math.sin(angle) + 100,
+        y: atom.x * Math.sin(angle) + atom.y * Math.cos(angle) - 50
+      }));
+      expect(canonicalPluginSmiles({ ...molecule, atoms: rotated })).toBe(molecule.structure);
+      const moved = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: { atoms: rotated } });
+      expect(computeObjectFingerprint(moved, molecule.id)).toBe(before);
+    }
+  );
+
+  it("ignores double-bond geometry when E/Z is explicitly unspecified", () => {
+    const fixture = stereoFixture("E/Z");
+    fixture.bonds[1]!.stereo = "either";
+    const document = engineDocumentWith(fixture);
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    const atoms = molecule.atoms.map(atom => atom.id === "a3" ? { ...atom, y: 30 } : atom);
+    const edited = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: { atoms } });
+    expect(computeObjectFingerprint(edited, molecule.id)).toBe(computeObjectFingerprint(document, molecule.id));
+  });
+
+  it.each([2, 5000])("hashes an unchanged %i-atom molecule once across repeated renders and selection changes", (size) => {
+    const molecule = moleculeWithHydrogen();
+    molecule.atoms = Array.from({ length: size }, (_, i) => ({ id: `a${i}`, element: "C", x: i, y: 0, formalCharge: 0 }));
+    molecule.bonds = Array.from({ length: size - 1 }, (_, i) => ({
+      id: `b${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order: "single"
+    }));
+    const document = engineDocumentWith(molecule);
+    const hash = vi.spyOn(pluginApi, "createStructureSourceFingerprint");
+    try {
+      const before = computeObjectFingerprint(document, molecule.id);
+      expect(hash).toHaveBeenCalledTimes(1);
+      for (let render = 0; render < 100; render++) {
+        expect(computeObjectFingerprint(document, molecule.id)).toBe(before);
+      }
+      const deselected = applyPatch(document, { op: "setSelection", objectIds: [] });
+      expect(deselected.pages[0]!.objects[0]).toBe(document.pages[0]!.objects[0]);
+      expect(computeObjectFingerprint(deselected, molecule.id)).toBe(before);
+      // Deterministic work assertion for the large graph; no wall-clock threshold.
+      expect(hash).toHaveBeenCalledTimes(1);
+      if (size === 2) {
+        expect(buildPluginSelectionSnapshot(document).molecules[0]!.sourceFingerprint).toBe(before);
+        expect(hash).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      hash.mockRestore();
+    }
+  });
+
+  it.each<[string, (molecule: MoleculeObject) => Partial<MoleculeObject>]>([
+    ["isotope", m => ({ atoms: m.atoms.map((a, i) => i === 0 ? { ...a, isotope: 13 } : a) })],
+    ["charge", m => ({ atoms: m.atoms.map((a, i) => i === 0 ? { ...a, formalCharge: 1 } : a) })],
+    ["radical", m => ({ atoms: m.atoms.map((a, i) => i === 0 ? { ...a, markRadicals: 1 } : a) })],
+    ["bond", m => ({ bonds: m.bonds.map(b => ({ ...b, order: "double" })) })],
+    ["superatom", () => ({ superatoms: [{ label: "Ph", expandedStructureFormat: "smiles", expandedStructure: "c1ccccc1", attachmentPoints: [], warnings: [] }] })],
+    ["R-group", () => ({ rGroups: [{ label: "R1", querySemantics: "query", attachmentPoints: [], warnings: [] }] })],
+    ["label", m => ({ atoms: m.atoms.map(a => ({ ...a, element: "OMe" })) })],
+    ["label bond side", m => ({ atoms: m.atoms.map(a => ({ ...a, labelBondSide: { side: "right", atomId: "a1" } })) })],
+    ["chemistry", () => ({ chemistry: { formula: "CH4", isotopeLabels: [], stereochemistry: [], warnings: [] } })]
+  ])("invalidates the cache after an immutable %s patch", (_name, changes) => {
+    const document = engineDocumentWith();
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    const before = computeObjectFingerprint(document, molecule.id);
+    const edited = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: changes(molecule) });
+    expect(edited.pages[0]!.objects[0]).not.toBe(molecule);
+    expect(Object.isFrozen(molecule.atoms[0])).toBe(true);
+    expect(computeObjectFingerprint(edited, molecule.id)).not.toBe(before);
+    expect(computeObjectFingerprint(document, molecule.id)).toBe(before);
+  });
+
+  it("keeps coordinate-only and no-op patches equal after warming the cache", () => {
+    const document = engineDocumentWith();
+    const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+    const before = computeObjectFingerprint(document, molecule.id);
+    for (const changes of [{}, {
+      atoms: molecule.atoms.map(a => ({ ...a, x: a.x + 100, y: a.y - 50, z: 10, labelOffset: { x: 3, y: 4 } }))
+    }]) {
+      const edited = applyPatch(document, { op: "updateObject", objectId: molecule.id, changes });
+      expect(edited.pages[0]!.objects[0]).not.toBe(molecule);
+      expect(computeObjectFingerprint(edited, molecule.id)).toBe(before);
+    }
+  });
+
+  it("includes document and page identity when a molecule object is shared", () => {
+    const document = engineDocumentWith();
+    const before = computeObjectFingerprint(document, "m1");
+    const otherDocument = adoptDerivedDocument(document, { ...document, id: "other" });
+    const otherPage = adoptDerivedDocument(document, {
+      ...document,
+      pages: document.pages.map(page => ({ ...page, id: "other" })),
+      selection: { ...document.selection, pageId: "other" }
+    });
+    for (const moved of [otherDocument, otherPage]) {
+      expect(moved.pages[0]!.objects[0]).toBe(document.pages[0]!.objects[0]);
+      expect(computeObjectFingerprint(moved, "m1")).not.toBe(before);
+      expect(computeObjectFingerprint(moved, "m1")).toBe(computeObjectFingerprint({ ...moved }, "m1"));
+    }
+    expect(computeObjectFingerprint(document, "m1")).toBe(before);
+  });
+
+  it.each<[string, number, Partial<MoleculeAtom>]>([
+    ["H to D", 1, { element: "D" }],
+    ["carbon isotope 13", 0, { isotope: 13 }],
+    ["charge only", 0, { formalCharge: 1 }],
+    ["radical only", 0, { markRadicals: 1 }]
+  ])("stales a report after a %s edit even when stored text is unchanged", (_name, atomIndex, edit) => {
+    const document = documentWith(["m1"]);
+    const molecule = moleculeWithHydrogen();
+    document.pages[0]!.objects[0] = molecule;
+    const before = buildPluginSelectionSnapshot(document).molecules[0]!;
+    expect(computeObjectFingerprint(document, "m1")).toBe(before.sourceFingerprint);
+    expect(buildPluginSelectionSnapshot(structuredClone(document)).molecules[0]!.sourceFingerprint)
+      .toBe(before.sourceFingerprint);
+
+    Object.assign(molecule.atoms[atomIndex]!, edit);
+    expect(molecule.structure).toBe("[H]C");
+    const after = buildPluginSelectionSnapshot(document).molecules[0]!;
+    expect(after.structure).not.toBe(before.structure);
+    expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
+    expect(computeObjectFingerprint(document, "m1")).toBe(after.sourceFingerprint);
+  });
+
+  it("keeps a live-graph fingerprint stable when only coordinates change", () => {
+    const document = documentWith(["m1"]);
+    const molecule = moleculeWithHydrogen();
+    document.pages[0]!.objects[0] = molecule;
+    const before = computeObjectFingerprint(document, "m1");
+    molecule.atoms.forEach((atom) => { atom.x += 100; atom.y -= 50; });
+    expect(computeObjectFingerprint(document, "m1")).toBe(before);
+    expect(buildPluginSelectionSnapshot(document).molecules[0]!.sourceFingerprint).toBe(before);
+  });
+
   it("matches the selection snapshot fingerprint for the same object (regardless of selection)", () => {
     const selected = buildPluginSelectionSnapshot(documentWith(["m1"])).molecules[0];
     expect(computeObjectFingerprint(documentWith([]), "m1")).toBe(selected.sourceFingerprint);
@@ -251,7 +547,7 @@ describe("computeObjectFingerprint", () => {
 
   it("keys a recorded label bond side alongside a non-empty stored structure", () => {
     // The stored SMILES need not show which side a cyano label was written with, so the record is
-    // keyed beside it; a molecule without one keeps its byte-for-byte fingerprint (below).
+    // included in the live graph key.
     const withAtoms = () => {
       const document = documentWith(["m1"]);
       Object.assign(document.pages[0]!.objects[0]!, {
@@ -264,8 +560,6 @@ describe("computeObjectFingerprint", () => {
       return document;
     };
     const before = computeObjectFingerprint(withAtoms(), "m1");
-    // With no record, the stored structure alone is keyed, exactly as before.
-    expect(before).toBe(computeObjectFingerprint(documentWith(["m1"]), "m1"));
     const recorded = withAtoms();
     const atoms = (recorded.pages[0]!.objects[0] as { atoms: Array<{ id: string; labelBondSide?: unknown }> }).atoms;
     atoms[0]!.labelBondSide = { side: "left", atomId: atoms[1]!.id };

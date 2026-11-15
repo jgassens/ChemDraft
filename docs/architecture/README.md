@@ -14,6 +14,8 @@ Key architecture notes:
 - `over-under-crossing-model.md`
 - `export-engines-build-plan.md`
 - `save-open-and-file-format.md`
+- [document-session.md](document-session.md) — Revisioned native session coordinator, v1 migration, recovery and queued OS opens.
+- [native-document-compatibility.md](native-document-compatibility.md) — Feature-based native versions, strict legacy compatibility, preservation and safe forward-reading fallbacks.
 - `design-language.md`
 - `editor-adapter-hardening.md`
 - `grouped-object-transform-entry.md`

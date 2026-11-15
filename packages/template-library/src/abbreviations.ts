@@ -376,6 +376,96 @@ export const abbreviationDefinitions: readonly AbbreviationDefinition[] = [
     bonds: [[0, 1, 1], [0, 2, 1], [0, 3, 1], [3, 4, 1], [3, 5, 1], [3, 6, 1]]
   },
   {
+    label: "TBDPS", aliases: [], name: "tert-butyldiphenylsilyl", smiles: "*[Si](c1ccccc1)(c1ccccc1)C(C)(C)C", formula: "C16H19Si", attachmentCount: 1,
+    atoms: [
+      { element: "Si", hydrogens: 0, x: 0, y: 0 },
+      { element: "C", hydrogens: 0, x: 0, y: 1 },
+      { element: "C", hydrogens: 1, x: 0.866, y: 1.5 },
+      { element: "C", hydrogens: 1, x: 0.866, y: 2.5 },
+      { element: "C", hydrogens: 1, x: 0, y: 3 },
+      { element: "C", hydrogens: 1, x: -0.866, y: 2.5 },
+      { element: "C", hydrogens: 1, x: -0.866, y: 1.5 },
+      { element: "C", hydrogens: 0, x: 0, y: -1 },
+      { element: "C", hydrogens: 1, x: 0.866, y: -1.5 },
+      { element: "C", hydrogens: 1, x: 0.866, y: -2.5 },
+      { element: "C", hydrogens: 1, x: 0, y: -3 },
+      { element: "C", hydrogens: 1, x: -0.866, y: -2.5 },
+      { element: "C", hydrogens: 1, x: -0.866, y: -1.5 },
+      { element: "C", hydrogens: 0, x: 1, y: 0 },
+      { element: "C", hydrogens: 3, x: 2, y: 0 },
+      { element: "C", hydrogens: 3, x: 1.5, y: 0.866 },
+      { element: "C", hydrogens: 3, x: 1.5, y: -0.866 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 2], [2, 3, 1], [3, 4, 2], [4, 5, 1], [5, 6, 2], [1, 6, 1], [0, 7, 1], [7, 8, 2], [8, 9, 1], [9, 10, 2], [10, 11, 1], [11, 12, 2], [7, 12, 1], [0, 13, 1], [13, 14, 1], [13, 15, 1], [13, 16, 1]]
+  },
+  {
+    label: "TIPS", aliases: [], name: "triisopropylsilyl", smiles: "*[Si](C(C)C)(C(C)C)C(C)C", formula: "C9H21Si", attachmentCount: 1,
+    atoms: [
+      { element: "Si", hydrogens: 0, x: 0, y: 0 },
+      { element: "C", hydrogens: 1, x: 1, y: 0 },
+      { element: "C", hydrogens: 3, x: 1.5, y: 0.866 },
+      { element: "C", hydrogens: 3, x: 1.5, y: -0.866 },
+      { element: "C", hydrogens: 1, x: 0.5, y: 0.866 },
+      { element: "C", hydrogens: 3, x: 0.5, y: 1.866 },
+      { element: "C", hydrogens: 3, x: -0.366, y: 1.366 },
+      { element: "C", hydrogens: 1, x: 0.5, y: -0.866 },
+      { element: "C", hydrogens: 3, x: 0.5, y: -1.866 },
+      { element: "C", hydrogens: 3, x: -0.366, y: -1.366 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 1], [1, 3, 1], [0, 4, 1], [4, 5, 1], [4, 6, 1], [0, 7, 1], [7, 8, 1], [7, 9, 1]]
+  },
+  {
+    label: "TES", aliases: [], name: "triethylsilyl", smiles: "*[Si](CC)(CC)CC", formula: "C6H15Si", attachmentCount: 1,
+    atoms: [
+      { element: "Si", hydrogens: 0, x: 0, y: 0 },
+      { element: "C", hydrogens: 2, x: -0.5, y: 0.866 },
+      { element: "C", hydrogens: 3, x: -1.5, y: 0.866 },
+      { element: "C", hydrogens: 2, x: -0.5, y: -0.866 },
+      { element: "C", hydrogens: 3, x: 0, y: -1.732 },
+      { element: "C", hydrogens: 2, x: 1, y: 0 },
+      { element: "C", hydrogens: 3, x: 1.5, y: -0.866 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 1], [0, 3, 1], [3, 4, 1], [0, 5, 1], [5, 6, 1]]
+  },
+  {
+    label: "PMB", aliases: [], name: "p-methoxybenzyl", smiles: "*Cc1ccc(OC)cc1", formula: "C8H9O", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 2, x: 0, y: 0 },
+      { element: "C", hydrogens: 0, x: 0.5, y: -0.866 },
+      { element: "C", hydrogens: 1, x: 1.5, y: -0.866 },
+      { element: "C", hydrogens: 1, x: 2, y: -1.732 },
+      { element: "C", hydrogens: 0, x: 1.5, y: -2.598 },
+      { element: "O", hydrogens: 0, x: 2, y: -3.464 },
+      { element: "C", hydrogens: 3, x: 1.5, y: -4.33 },
+      { element: "C", hydrogens: 1, x: 0.5, y: -2.598 },
+      { element: "C", hydrogens: 1, x: 0, y: -1.732 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 2], [2, 3, 1], [3, 4, 2], [4, 5, 1], [5, 6, 1], [4, 7, 1], [7, 8, 2], [1, 8, 1]]
+  },
+  {
+    label: "MOM", aliases: [], name: "methoxymethyl", smiles: "*COC", formula: "C2H5O", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 2, x: 0, y: 0 },
+      { element: "O", hydrogens: 0, x: 0.5, y: 0.866 },
+      { element: "C", hydrogens: 3, x: 1.5, y: 0.866 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 1]]
+  },
+  {
+    label: "SEM", aliases: [], name: "2-(trimethylsilyl)ethoxymethyl", smiles: "*COCC[Si](C)(C)C", formula: "C6H15OSi", attachmentCount: 1,
+    atoms: [
+      { element: "C", hydrogens: 2, x: 0, y: 0 },
+      { element: "O", hydrogens: 0, x: 0.5, y: 0.866 },
+      { element: "C", hydrogens: 2, x: 1.5, y: 0.866 },
+      { element: "C", hydrogens: 2, x: 2, y: 1.732 },
+      { element: "Si", hydrogens: 0, x: 3, y: 1.732 },
+      { element: "C", hydrogens: 3, x: 3, y: 0.732 },
+      { element: "C", hydrogens: 3, x: 4, y: 1.732 },
+      { element: "C", hydrogens: 3, x: 3, y: 2.732 }
+    ],
+    bonds: [[0, 1, 1], [1, 2, 1], [2, 3, 1], [3, 4, 1], [4, 5, 1], [4, 6, 1], [4, 7, 1]]
+  },
+  {
     label: "Ms", aliases: ["SO2Me", "MeSO2"], name: "methanesulfonyl", smiles: "*S(=O)(=O)C", formula: "CH3O2S", attachmentCount: 1,
     atoms: [
       { element: "S", hydrogens: 0, x: 0, y: 0 },
@@ -473,3 +563,13 @@ export function abbreviationElementCounts(definition: AbbreviationDefinition): M
   }
   return counts;
 }
+
+/** Explicit editable label expanded by the ordinary abbreviation machinery.
+ * A renderer alias must never conceal atoms remaining in the drawn graph. */
+export const schemeSodiumHydroxideAbbreviation: AbbreviationDefinition = {
+  label: "NaOH", aliases: [], name: "sodium hydroxide", smiles: "[Na+].[OH-]",
+  formula: "HNaO", attachmentCount: 0,
+  atoms: [{ element: "Na", charge: 1, hydrogens: 0, x: 0, y: 0 },
+    { element: "O", charge: -1, hydrogens: 1, x: 1.5, y: 0 }],
+  bonds: []
+};

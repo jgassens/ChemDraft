@@ -6,6 +6,8 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { saveAutomaticPluginUpdates } from "./pluginUpdateSettings";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
+import { saveDrawingSettings } from "./drawingSettings";
+import { ELECTRON_MARK_EDITING_STORAGE_KEY, loadDirectElectronMarkEditing, saveDirectElectronMarkEditing } from "./electronMarkEditingSettings";
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
 const KEYBINDINGS_STORAGE_KEY = "chemdraft.keybindings.v1";
@@ -31,6 +33,21 @@ const checkboxLabel = (markup: string, text: string) =>
   markup.match(/<label\b[^>]*>[\s\S]*?<\/label>/g)?.find(label => label.includes(text)) ?? "";
 
 describe("PreferencesWindow", () => {
+  it("offers direct electron-mark editing off by default and persists only a boolean opt-in", () => {
+    expect(loadDirectElectronMarkEditing()).toBe(false);
+    let markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(checkboxLabel(markup, "Direct electron-mark editing")).not.toMatch(/type="checkbox"[^>]*checked/);
+    for (const invalid of ["null", "{}", "1", "\"true\"", "broken"]) {
+      storage.setItem(ELECTRON_MARK_EDITING_STORAGE_KEY, invalid);
+      expect(loadDirectElectronMarkEditing()).toBe(false);
+    }
+    saveDirectElectronMarkEditing(true);
+    expect(loadDirectElectronMarkEditing()).toBe(true);
+    markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    expect(checkboxLabel(markup, "Direct electron-mark editing")).toMatch(/type="checkbox"[^>]*checked/);
+    saveDirectElectronMarkEditing(false);
+    expect(loadDirectElectronMarkEditing()).toBe(false);
+  });
   it("offers automatic plugin checks on by default and reflects opt-out", () => {
     let markup = renderToStaticMarkup(createElement(PreferencesWindow));
     expect(checkboxLabel(markup, "Check for plugin updates automatically")).toMatch(/type="checkbox"[^>]*checked/);
@@ -62,31 +79,43 @@ describe("PreferencesWindow", () => {
     for (const heading of ["Keyboard shortcuts", "3D refinement", "Embedding engine", "Force field"]) {
       expect(markup).toContain(heading);
     }
-    for (const title of ["ChemDraft", "ChemDraw-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
+    for (const title of ["ChemDraft", "Classic desktop-compatible", "Fast", "Balanced", "Quality", "Automatic", "RDKit ETKDG", "OpenChemLib (legacy)", "MMFF94s", "MMFF94", "UFF"]) {
       expect(markup).toContain(title);
     }
     expect(markup).toContain("Requires the RDKit engine");
-    // The ChemDraw scheme description quotes ambiguous key names (React SSR escapes them as
+    // The classic scheme description quotes ambiguous key names (React SSR escapes them as
     // &quot;) and calls out case sensitivity.
     expect(markup).toContain("&quot;l&quot; for Cl");
     expect(markup).toContain("Case matters for element keys: B = boron, b = Br");
   });
 
   it("reflects persisted settings as one selected option per group", () => {
+    saveDrawingSettings({ defaultDoubleBond: "centred" });
     storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "balanced", enginePreference: "openchemlib", forceField: "uff" }));
     storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw" }));
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    // One selection per radio group (four groups total).
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
+    // One selection per radio group (five groups total).
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    expect(markup).toMatch(selected("default-double-bond", "centred"));
     expect(markup).toMatch(selected("keybinding-scheme", "chemdraw"));
+    expect(checkboxLabel(markup, "Classic desktop-compatible")).toMatch(selected("keybinding-scheme", "chemdraw"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "balanced"));
     expect(markup).toMatch(selected("spin3d-engine", "openchemlib"));
     expect(markup).toMatch(selected("spin3d-force-field", "uff"));
   });
 
+  it("keeps shortcut scheme titles and descriptions neutral", () => {
+    const markup = renderToStaticMarkup(createElement(PreferencesWindow));
+    const section = markup.match(/<section[^>]*aria-labelledby="pref-keybinding-scheme"[\s\S]*?<\/section>/)?.[0];
+    expect(section).toBeDefined();
+    const visibleText = section!.replace(/<[^>]*>/g, " ");
+    expect(visibleText).not.toMatch(/chemdraw/i);
+  });
+
   it("defaults to chemdraft / quality / auto / mmff94s when nothing is stored", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    expect(markup).toMatch(selected("default-double-bond", "offset"));
     expect(markup).toMatch(selected("keybinding-scheme", "chemdraft"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "quality"));
     expect(markup).toMatch(selected("spin3d-engine", "auto"));

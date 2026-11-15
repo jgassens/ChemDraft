@@ -1,4 +1,5 @@
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { moleculeBracketWarningMessages } from "@chemdraft/chem-core";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { assistantScope, requireDocument, type AssistantToolContext } from "./AssistantToolContext";
 
@@ -58,7 +59,9 @@ export async function documentSummary(context: AssistantToolContext, options: {
         if (labels.length) entry.atomLabels = labels.slice(0, 100).map(atom => ({ atomId: atom.id, label: atom.element, literal: true }));
         if (labels.length > 100) summary.truncated = true;
         entry.ringKeys = nativeMoleculeRings(object).slice(0, 100).map(ring => ring.ringKey);
-        if (options.includeSmiles !== false) {
+        const bracketWarnings = moleculeBracketWarningMessages(object, document);
+        if (bracketWarnings.length) entry.warnings = bracketWarnings;
+        if (options.includeSmiles !== false && !bracketWarnings.length) {
           try {
             const warnings: string[] = [];
             const molfile = stereoPerceptionMolfile(object, warnings);

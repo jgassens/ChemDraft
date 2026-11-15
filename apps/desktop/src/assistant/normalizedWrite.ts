@@ -63,6 +63,14 @@ export async function verifyNormalizedAssistantWrite(context: AssistantToolConte
       if (!equal(meaning(source), meaning(molecule))) throw new Error(`refused: desktop normalization would change the literal group ${id}.`);
       continue;
     }
+    // Restyling an invalid graph must not require parseable SMILES. Only exact native
+    // equality can bypass the engine: atom coordinates, labels, charges, isotopes, radicals,
+    // bonds and every other source field must match. Normalization may refresh metadata.
+    const styleOnlyMeaning = ({ style: _style, chemistry: _chemistry, ...object }: MoleculeObject) =>
+      JSON.stringify(object, (_key, value: unknown) => value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+    if (!expectedSmiles.has(id) && previous.get(id)?.object.type === "molecule" &&
+        styleOnlyMeaning(source) === styleOnlyMeaning(molecule)) continue;
     const expected = expectedSmiles.get(id);
     if (expected !== undefined) {
       try { await assertCanonical(context, molecule, expected); }

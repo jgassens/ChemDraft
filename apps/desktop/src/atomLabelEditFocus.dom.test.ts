@@ -560,8 +560,7 @@ describe("atom label editor focus", () => {
   });
 
   it("reports a spiro cyclohexane template through the real placement handler", async () => {
-    // Spiro benzene on a ring carbon would leave it five-valent, so the guard places it
-    // separately; a saturated spiro ring is the legal case.
+    // A saturated spiro ring preserves valid carbon valence on this two-bond ring atom.
     const initial = ringDocument();
     await renderMainWindow(initial);
     const ring = molecule();
@@ -571,7 +570,7 @@ describe("atom label editor focus", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Made spiro cyclohexane template");
   });
 
-  it("reports a separately placed benzene fallback through the real placement handler", async () => {
+  it("places spiro benzene at a full-valence atom with a warning and one Undo entry", async () => {
     const initial = ringDocument();
     const ring = initial.pages[0].objects[0] as MoleculeObject;
     const atom = ring.atoms[0]!;
@@ -589,10 +588,19 @@ describe("atom label editor focus", () => {
       ]
     };
     await renderMainWindow(applyPatches(initial, [{ op: "updateObject", objectId: ring.id, changes: saturated }]));
+    const before = bridge().snapshot().document.pages[0].objects;
     await paletteCommand("tool.benzene");
     await pointerPress(container.querySelector(`[data-object-id="${ring.id}"]`)! , atom);
     expect(container.querySelector('[role="status"]')?.textContent)
-      .toContain("Placed benzene separately: that atom has no free valence");
+      .toContain("Made spiro benzene template");
+    expect(bridge().snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(molecule().atoms).toHaveLength(saturated.atoms.length + 5);
+    expect(molecule().bonds).toHaveLength(saturated.bonds.length + 6);
+    expect(container.querySelector(`[data-invalid-atom-id="${atom.id}"]`)).not.toBeNull();
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+    await paletteCommand("edit.undo");
+    expect(bridge().snapshot().document.pages[0].objects).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   });
 
   it.each([

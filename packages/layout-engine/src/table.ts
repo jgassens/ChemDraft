@@ -9,7 +9,7 @@ import {
   elementFragment, objectAttributes, rotationTransform, textSpanLineFragments, transformPointForObject,
   type LayoutBounds, type PageSvgElementFragment
 } from "./index";
-import { measureTextRun } from "./textMetrics";
+import { measureTextRun, nativeTextMetrics } from "./textMetrics";
 
 interface TableLine {
   baselineY: number;
@@ -74,6 +74,21 @@ function runWidth(runs: TextSpan[], style: NativeTextStyle): number {
   }, 0);
 }
 
+function lineGrowth(runs: TextSpan[], style: NativeTextStyle): { ascent: number; height: number } {
+  // Script spans render at the parent size's script scale, ignoring their size override,
+  // just as runWidth/textSpanLineFragments do. Smaller runs never shrink the legacy line box.
+  const size = Math.max(style.fontSizePx, ...runs.map(run =>
+    run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : style.fontSizePx));
+  const extraSize = size - style.fontSizePx;
+  const extraAscent = extraSize * nativeTextMetrics.capHeightEm;
+  const extraDescent = extraSize * nativeTextMetrics.descentEm;
+  return {
+    // Keep the original top ink inset while reserving the larger run's ascent.
+    ascent: extraAscent,
+    height: Math.max(extraSize * style.lineHeight, extraAscent + extraDescent)
+  };
+}
+
 function splitDecimal(runs: TextSpan[]): [TextSpan[], TextSpan[]] {
   const text = runs.map(run => run.text).join("");
   const index = [...text.matchAll(/\./g)].find(match => /\d/.test(text[match.index - 1] ?? "") || /\d/.test(text[match.index + 1] ?? ""))?.index;
@@ -134,8 +149,24 @@ export function planTableLayout(table: TableObject): TableLayout {
     x += width;
     return result;
   });
-  const rows = cellLines.map(row => {
-    const height = Math.max(...row.map(lines => lines.length)) * style.fontSizePx * style.lineHeight + 2 * padding.y;
+  // Each explicit line has one shared baseline across the row, even when different
+  // cells have their largest runs on different lines.
+  const rowLines = cellLines.map(row => {
+    const count = Math.max(...row.map(lines => lines.length));
+    let extraTop = 0;
+    return Array.from({ length: count }, (_, index) => {
+      const growth = row.map(lines => lineGrowth(lines[index] ?? [], style));
+      const ascent = Math.max(...growth.map(line => line.ascent));
+      const height = Math.max(...growth.map(line => line.height));
+      const result = { baselineOffset: extraTop + ascent, height };
+      extraTop += height;
+      return result;
+    });
+  });
+  const rows = rowLines.map(lines => {
+    // Retain the legacy arithmetic exactly when there are no size overrides.
+    const height = lines.length * style.fontSizePx * style.lineHeight
+      + lines.reduce((sum, line) => sum + line.height, 0) + 2 * padding.y;
     const result = { y, height };
     y += height;
     return result;
@@ -146,7 +177,8 @@ export function planTableLayout(table: TableObject): TableLayout {
     const align = table.columns[columnIndex].align;
     const box = { x: column.x, y: rows[rowIndex].y, width: column.width, height: rows[rowIndex].height };
     return { rowIndex, columnIndex, box, lines: lines.map((runs, lineIndex): TableLine => {
-      const baselineY = box.y + padding.y + style.fontSizePx + lineIndex * style.fontSizePx * style.lineHeight;
+      const baselineY = box.y + padding.y + style.fontSizePx + lineIndex * style.fontSizePx * style.lineHeight
+        + rowLines[rowIndex][lineIndex].baselineOffset;
       if (align === "decimal" && rowIndex >= table.headerRowCount) {
         const [before, after] = splitDecimal(runs);
         const pieces: TableLine["pieces"] = [{ runs: before, x: column.decimalAnchorX!, anchor: "end" }];

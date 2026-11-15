@@ -13,7 +13,8 @@ import type { OpenPluginPanel, PluginDiagnostic } from "./types";
  * for a panel the host does not know about, so an unexpected id can't crash the desktop.
  */
 export class PluginPanelController {
-  private open: OpenPluginPanel | undefined;
+  private readonly open = new Map<string, OpenPluginPanel>();
+  private readonly closedWindows = new Set<string>();
   private readonly detached = new Map<string, OpenPluginPanel>();
   private diagnostics: readonly PluginDiagnostic[] = [];
   private readonly listeners = new Set<() => void>();
@@ -29,7 +30,8 @@ export class PluginPanelController {
   }
 
   /** Entry point wired to `PluginHostOptions.showPanelReport`. Also safe to call from desktop code. */
-  showReport(pluginId: string, panelId: string, report: PluginPanelReport): void {
+  showReport(pluginId: string, panelId: string, report: PluginPanelReport, windowId = "main"): void {
+    if (this.closedWindows.has(windowId)) return;
     const plugin = this.host.getPlugin(pluginId);
     const panel = plugin?.manifest.contributes.panels.find((candidate) => candidate.id === panelId);
     if (!panel) {
@@ -43,7 +45,7 @@ export class PluginPanelController {
     // A panel the user popped out into its own window (ADR-0030) is updated in place, per owner:
     // detached panels are outside the single in-app slot, so a report for one neither replaces nor
     // closes whatever is open in-app.
-    const detachedKey = pluginPanelIdentityKey(pluginId, panelId);
+    const detachedKey = pluginPanelIdentityKey(pluginId, panelId, windowId);
     const detachedPanel = this.detached.get(detachedKey);
     if (detachedPanel) {
       this.detached.set(detachedKey, {
@@ -59,6 +61,7 @@ export class PluginPanelController {
       this.detached.set(detachedKey, {
         pluginId,
         panelId,
+        ...(windowId === "main" ? {} : { windowId }),
         title: panel.title,
         preferredWindowSize: panel.preferredWindowSize,
         report,
@@ -69,7 +72,7 @@ export class PluginPanelController {
       return;
     }
 
-    const previous = this.open;
+    const previous = this.open.get(windowId);
     const updatesOpenPanel = previous?.pluginId === pluginId && previous.panelId === panelId;
     if (previous && !updatesOpenPanel) {
       // The surface supports one contributed panel at a time. Replacing it is therefore a real
@@ -78,7 +81,8 @@ export class PluginPanelController {
       this.host.notifyPanelClosed(previous.pluginId, previous.panelId);
     }
 
-    this.open = {
+    this.open.set(windowId, {
+      ...(windowId === "main" ? {} : { windowId }),
       pluginId,
       panelId,
       title: panel.title,
@@ -89,18 +93,18 @@ export class PluginPanelController {
       commandId: report.rerunCommandId ?? panel.commandId,
       // Pending -> result reports for the same panel are updates, not close/reopen cycles.
       openedAt: updatesOpenPanel ? previous.openedAt : this.nowIso()
-    };
+    });
     this.notify();
   }
 
-  getOpenPanel(): OpenPluginPanel | undefined {
-    return this.open;
+  getOpenPanel(windowId = "main"): OpenPluginPanel | undefined {
+    return this.open.get(windowId);
   }
 
-  closePanel(): void {
-    if (this.open) {
-      const closed = this.open;
-      this.open = undefined;
+  closePanel(windowId = "main"): void {
+    const closed = this.open.get(windowId);
+    if (closed) {
+      this.open.delete(windowId);
       // Tell the plugin its panel closed so it can cancel in-flight work (ADR-0012).
       this.host.notifyPanelClosed(closed.pluginId, closed.panelId);
       this.notify();
@@ -112,12 +116,13 @@ export class PluginPanelController {
    * is still open, just rendered by a floating window instead of the in-app surface (ADR-0030).
    * The in-app slot frees up, so another analyzer can open in-app while this one floats.
    */
-  detachPanel(pluginId: string, panelId: string): void {
-    if (this.open?.pluginId !== pluginId || this.open.panelId !== panelId) {
+  detachPanel(pluginId: string, panelId: string, windowId = "main"): void {
+    const panel = this.open.get(windowId);
+    if (panel?.pluginId !== pluginId || panel.panelId !== panelId) {
       return;
     }
-    this.detached.set(pluginPanelIdentityKey(pluginId, panelId), this.open);
-    this.open = undefined;
+    this.detached.set(pluginPanelIdentityKey(pluginId, panelId, windowId), panel);
+    this.open.delete(windowId);
     this.notify();
   }
 
@@ -129,30 +134,30 @@ export class PluginPanelController {
    * Returns false when the in-app slot has since been taken by another panel — the caller must then
    * close this one properly rather than leave an entry nothing can display.
    */
-  reattachPanel(pluginId: string, panelId: string): boolean {
-    const key = pluginPanelIdentityKey(pluginId, panelId);
+  reattachPanel(pluginId: string, panelId: string, windowId = "main"): boolean {
+    const key = pluginPanelIdentityKey(pluginId, panelId, windowId);
     const panel = this.detached.get(key);
-    if (!panel || this.open) {
+    if (!panel || this.open.has(windowId)) {
       return false;
     }
     this.detached.delete(key);
     // A surface change, like detachPanel: the panel never closed, so the plugin gets no signal.
-    this.open = panel;
+    this.open.set(windowId, panel);
     this.notify();
     return true;
   }
 
   /** Detached panels, keyed by plugin + panel — several may float at once (ADR-0030 policy). */
-  getDetachedPanels(): readonly OpenPluginPanel[] {
-    return [...this.detached.values()];
+  getDetachedPanels(windowId?: string): readonly OpenPluginPanel[] {
+    return [...this.detached.values()].filter(panel => windowId === undefined || (panel.windowId ?? "main") === windowId);
   }
 
   /**
    * Close a detached panel: dismissal of its window is a real panel close, so the plugin gets its
    * ADR-0012 cancellation signal exactly as if the in-app Close were clicked.
    */
-  closeDetachedPanel(pluginId: string, panelId: string): void {
-    const key = pluginPanelIdentityKey(pluginId, panelId);
+  closeDetachedPanel(pluginId: string, panelId: string, windowId = "main"): void {
+    const key = pluginPanelIdentityKey(pluginId, panelId, windowId);
     const panel = this.detached.get(key);
     if (!panel) {
       return;
@@ -160,6 +165,17 @@ export class PluginPanelController {
     this.detached.delete(key);
     this.host.notifyPanelClosed(panel.pluginId, panel.panelId);
     this.notify();
+  }
+
+  /** Late reports from retained plugin callbacks must never resurrect a closed owner's panels. */
+  openWindow(windowId: string): void { this.closedWindows.delete(windowId); }
+
+  closeWindow(windowId: string): void {
+    this.closedWindows.add(windowId);
+    this.closePanel(windowId);
+    for (const panel of this.getDetachedPanels(windowId)) {
+      this.closeDetachedPanel(panel.pluginId, panel.panelId, windowId);
+    }
   }
 
   getDiagnostics(): readonly PluginDiagnostic[] {
@@ -191,9 +207,8 @@ export class PluginPanelController {
 
   private clearUnregisteredPluginReports(): void {
     let changed = false;
-    if (this.open && !this.host.getPlugin(this.open.pluginId)) {
-      this.open = undefined;
-      changed = true;
+    for (const [windowId, panel] of this.open) {
+      if (!this.host.getPlugin(panel.pluginId)) { this.open.delete(windowId); changed = true; }
     }
     for (const [key, panel] of this.detached) {
       if (!this.host.getPlugin(panel.pluginId)) {

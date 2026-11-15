@@ -83,14 +83,14 @@ describe("host 3D chemistry command gate", () => {
     } } });
     await host.invokeCommand(command);
     expect(signal.aborted).toBe(true);
-    await expect(pending).rejects.toThrow("chemistry.embed3d cancelled because the plugin command ended.");
+    await expect(pending).rejects.toThrow("chemistry.embed3d canceled because the plugin command ended.");
   });
   it("aborts work when a plugin unregisters", async () => {
     let signal!: AbortSignal;
     const host = new PluginHost({ embed3d: (_request, stop) => { signal = stop; return new Promise(() => undefined); } });
     host.registerPlugin(manifest(true), { commandHandlers: { [command]: ctx => ctx.chemistry!.embed3d!(input) } });
     const running = host.invokeCommand(command);
-    const assertion = expect(running).rejects.toThrow("cancelled because the plugin command ended");
+    const assertion = expect(running).rejects.toThrow("canceled because the plugin command ended");
     await vi.waitFor(() => expect(signal).toBeDefined());
     host.unregisterPlugin("org.test.threeD");
     await assertion;
@@ -104,7 +104,7 @@ describe("host 3D chemistry command gate", () => {
     });
     register();
     const first = host.invokeCommand(command);
-    const cancelled = expect(first).rejects.toThrow("cancelled because the plugin command ended");
+    const cancelled = expect(first).rejects.toThrow("canceled because the plugin command ended");
     await vi.waitFor(() => expect(completions).toHaveLength(1));
     host.unregisterPlugin("org.test.threeD");
     await cancelled;
@@ -164,7 +164,7 @@ describe("host 3D chemistry command gate", () => {
     expect(signals[0].aborted).toBe(true);
     for (const result of await settled) {
       expect(result.status).toBe("rejected");
-      if (result.status === "rejected") expect(result.reason.message).toBe("chemistry.embed3d cancelled because the plugin command ended.");
+      if (result.status === "rejected") expect(result.reason.message).toBe("chemistry.embed3d canceled because the plugin command ended.");
     }
   });
   it("counts plugin queue time in the flatten deadline", async () => {

@@ -184,22 +184,26 @@ describe("hover label typing over a long chain (stress)", () => {
     { label: "NMe", atomIndex: 1 },
     { label: "OM", atomIndex: 1 },
     { label: "NMe", atomIndex: 0 }
-  ])("Escape cancels hover $label on chain atom $atomIndex without Undo or Redo", async ({ label, atomIndex }) => {
+  ])("Escape cancels hover $label on chain atom $atomIndex while keeping the committed first key", async ({ label, atomIndex }) => {
     const before = snapshot().document;
     expect(await pointAt(molecule().atoms[atomIndex]!)).toMatchObject({ kind: "atom" });
-    for (const key of label) await press(key);
+    await press(label[0]!);
+    const committed = snapshot().document;
+    for (const key of label.slice(1)) await press(key);
     expect(container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]')?.value).toBe(label);
     await press("Escape");
     expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
-    expect(snapshot().document).toEqual(before);
+    expect(snapshot().document).toEqual(committed);
     expect(snapshot().selectedNativeMoleculePart).toBeUndefined();
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Atom label unchanged");
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
-    expect(snapshot().document).toEqual(before);
+    expect(snapshot().document).toEqual(committed);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to redo");
     expect(await pointAt({ x: 40, y: 40 })).toBeUndefined();
     await press("c");
+    expect(snapshot().document).toEqual(committed);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     expect(snapshot().document).toEqual(before);
   });
 
@@ -235,7 +239,7 @@ describe("hover label typing over a long chain (stress)", () => {
     expect(molecule()).toEqual(after);
   });
 
-  it("Escape restores charged literal-label data and first-key cleanup next to another label", async () => {
+  it("Escape keeps the committed first-key cleanup; Undo restores the charged literal label", async () => {
     const original = snapshot().document;
     const object = molecule();
     const imported: MoleculeObject = { ...object, atoms: object.atoms.map((atom, index) => ({
@@ -253,23 +257,31 @@ describe("hover label typing over a long chain (stress)", () => {
     const before = snapshot().document;
     expect(molecule().atoms[1]).toMatchObject({ element: "O", formalCharge: -1, hydrogenCount: 0 });
     await pointAt(molecule().atoms[1]!);
-    for (const key of "NMe") await press(key);
+    await press("N");
+    const committed = snapshot().document;
+    for (const key of "Me") await press(key);
     expect(molecule().atoms.every(atom => atom.hydrogenCount === undefined)).toBe(true);
     await press("Escape");
+    expect(snapshot().document).toEqual(committed);
+    expect(snapshot().file.dirty).toBe(true);
+    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     expect(snapshot().document).toEqual(before);
-    expect(snapshot().file.dirty).toBe(false);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
   });
 
-  it("Escape removes only the cancelled hover hotkey from existing history", async () => {
+  it("Escape keeps the first hover key separate from earlier history", async () => {
     const original = molecule();
     await pointAt(original.atoms[3]!);
     await press("O");
     const before = snapshot().document;
     await pointAt(molecule().atoms[1]!);
-    for (const key of "NMe") await press(key);
+    await press("N");
+    const committed = snapshot().document;
+    for (const key of "Me") await press(key);
     await press("Escape");
-    expect(snapshot().document).toEqual(before);
+    expect(snapshot().document).toEqual(committed);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(before.pages[0].objects[0]);
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     expect(molecule()).toEqual(original);
     expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
@@ -277,19 +289,24 @@ describe("hover label typing over a long chain (stress)", () => {
     expect(molecule()).toEqual(before.pages[0].objects[0]);
   });
 
-  it("Escape preserves Redo that existed before the first hover letter", async () => {
+  it("Escape keeps the new hover commit that replaced the older Redo branch", async () => {
     const original = molecule();
     await pointAt(original.atoms[3]!);
     await press("N");
-    const priorCommit = molecule();
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     await pointAt(molecule().atoms[1]!);
-    for (const key of "OM") await press(key);
+    await press("O");
+    const committed = molecule();
+    await press("M");
     await press("Escape");
-    expect(molecule()).toEqual(original);
-    expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    expect(molecule()).toEqual(committed);
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
-    expect(molecule()).toEqual(priorCommit);
+    expect(molecule()).toEqual(committed);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to redo");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(original);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(molecule()).toEqual(committed);
   });
 
   it.each([
@@ -323,7 +340,9 @@ describe("hover label typing over a long chain (stress)", () => {
     expect(partBefore).toEqual({ objectId: before.id, kind: "atom", atomId: selectedAtom.id });
 
     expect(await pointAt(labelledAtom)).toMatchObject({ kind: "atom", atomId: labelledAtom.id });
-    for (const key of "NMe") await press(key);
+    await press("N");
+    const committed = molecule();
+    for (const key of "Me") await press(key);
     expect(snapshot().selectedNativeMoleculePart).toEqual({ objectId: before.id, kind: "atom", atomId: labelledAtom.id });
     await press(closeKey);
 
@@ -334,8 +353,8 @@ describe("hover label typing over a long chain (stress)", () => {
     if (closeKey === "Enter") {
       expect(molecule().atoms.find(atom => atom.id === labelledAtom.id)).toMatchObject({ element: "NMe", labelLiteral: true });
     } else {
-      expect(molecule()).toEqual(before);
-      expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+      expect(molecule()).toEqual(committed);
+      expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("true");
     }
   });
 

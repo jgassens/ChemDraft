@@ -16,12 +16,19 @@ describe("Export form preserves the existing export pipeline", () => {
     const state = createDefaultExportDialogState(createPhase4Document("Drawing"));
     expect(state).toEqual({ ...exportFixture(), filename: "Drawing.pdf", destinationPath: undefined, busy: false });
   });
+  it.each([
+    "/Users/me/Projects/Reaction scheme.chemdraft",
+    "C:\\Users\\me\\Projects\\Reaction scheme.chemdraft"
+  ])("suggests the saved document basename for export (%s)", path => {
+    const state = createDefaultExportDialogState(createPhase4Document("Untitled"), undefined, path);
+    expect(state.filename).toBe("Reaction-scheme.pdf");
+  });
   it.each([false, true])("returns identical SVG and CDXML bytes with page guides=%s", async guides => {
     const document = applyNativeChainTool(createPhase4Document("Parity"), { x: 100, y: 100 }, { x: 200, y: 130 });
     const svg = { includeWarnings: !guides, includePageGuides: guides };
     const state = { ...exportFixture(), format: "svg" as const, busy: false, svg };
     const result = await createDialogExportResult(document, state);
-    expect(result.kind === "text" && result.contents).toBe(exportPhase4Svg(document, svg).contents);
+    expect(result.kind === "text" && result.contents).toBe((await exportPhase4Svg(document, svg)).contents);
     const cdxml = { creationProgram: "  ChemDraft parity  " };
     const xml = await createDialogExportResult(document, { ...state, format: "cdxml", cdxml });
     expect(xml).toEqual(exportPhase4Cdxml(document, { creationProgram: "ChemDraft parity" }));
@@ -46,7 +53,7 @@ describe("Export form preserves the existing export pipeline", () => {
     const raster = { scale: 3, background: "transparent" as const, jpegQuality: 83, maxDimensionPx: 4096 };
     const result = await createDialogExportResult(document, { ...exportFixture(), format, busy: false, raster });
     const transparent = format === "png";
-    const svg = exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" });
+    const svg = (await exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" }));
     expect(rasterizeSvgNative).toHaveBeenLastCalledWith(svg.contents, format, { scale: 3, cssPxPerInch: 96, background: transparent ? "transparent" : "#ffffff", jpegQuality: 83, maxDimensionPx: 4096 });
     expect(result.kind === "binary" && result.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.warnings).toEqual([...svg.warnings, { message: "Raster warning" }]);
@@ -64,9 +71,9 @@ it.each(["a", "\\\"\n", "🧪", "\u0001"])("bounds the full warning receipt incl
   expect(new TextEncoder().encode(JSON.stringify(delivery)).length).toBeLessThanOrEqual(4096);
 });
 
-it("retains an accepted, abbreviated success notice for six curly brackets exported to CDXML", async () => {
+it("retains an accepted, abbreviated success notice for six polymer brackets exported to CDXML", async () => {
   let document = createPhase4Document("Warning receipt");
-  for (let i = 0; i < 6; i++) document = insertNativeBracket(document, { x: 100 + i * 50, y: 100 }, "curly");
+  for (let i = 0; i < 6; i++) document = insertNativeBracket(document, { x: 100 + i * 50, y: 100 }, "polymer");
   const result = await createDialogExportResult(document, { ...exportFixture(), format: "cdxml", busy: false });
   expect(result.warnings.length).toBeGreaterThanOrEqual(6);
   const details = [formatExportStatus("CDXML", result.format, result.warnings), ...result.warnings.map(warning => warning.message)].join("\n");

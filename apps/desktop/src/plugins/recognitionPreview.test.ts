@@ -45,7 +45,7 @@ async function proposal() {
 
 describe("recognitionStructurePreview", () => {
   it("draws the proposed molecule with the host exporter, cropped to the molecule", async () => {
-    const preview = recognitionStructurePreview(await proposal());
+    const preview = (await recognitionStructurePreview(await proposal()));
     expect(preview).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
     const svg = decodeURIComponent(preview!.slice(preview!.indexOf(",") + 1));
     expect(svg).toMatch(/^<svg /);
@@ -55,12 +55,12 @@ describe("recognitionStructurePreview", () => {
 
   it("draws nothing for proposals that are not recognitions or not a molecule insertion", async () => {
     const recognized = await proposal();
-    expect(recognitionStructurePreview({ ...recognized, recognition: undefined })).toBeUndefined();
+    expect((await recognitionStructurePreview({ ...recognized, recognition: undefined }))).toBeUndefined();
     expect(
-      recognitionStructurePreview({
+      (await recognitionStructurePreview({
         ...recognized,
         patch: { op: "removeObject", pageId: "page_001", objectId: "mol_001" } as typeof recognized.patch
-      })
+      }))
     ).toBeUndefined();
   });
 });

@@ -90,7 +90,7 @@ A candidate rule passes only if **all four** hold on the sealed set, evaluated o
 
 **Coverage of the corpus is a reported outcome, not a target.** A rule that labels three sites `supported`
 would pass T1–T4 trivially and be worthless. So the primary result is reported as the pair
-*(fraction of sites labelled supported, whether T1–T4 hold)*, and a rule labelling **fewer than 40%** of
+*(fraction of sites labeled supported, whether T1–T4 hold)*, and a rule labeling **fewer than 40%** of
 sites supported is recorded as passing-but-not-useful rather than as a success. 40% is set here, in advance,
 and is not derived from any measurement.
 
@@ -112,7 +112,7 @@ Permitted:
 - the matched site type, and its training-row count in the corpus
 - whether an interpretation fired, and which — `reference-protomer`, `reference-tautomer`, or neither
 - whether the site type has fewer than a declared number of corpus rows
-- nearest-neighbour similarity to the training corpus (QupKake reported *no* correlation between Tanimoto
+- nearest-neighbor similarity to the training corpus (QupKake reported *no* correlation between Tanimoto
   similarity and error, so this is a genuine test, not a foregone conclusion)
 - the predicted value's position relative to the training range (−9.02 to 30.90)
 - the number of ionizable sites in the molecule
@@ -138,7 +138,7 @@ Requirements:
 
 1. **Family-disjoint** from all of: the 12,096-row training corpus, the interval calibration corpus, the
    398-row external development set, and every molecule in the frozen error audit. Disjointness is by
-   normalised molecular family — the InChIKey skeleton block with charges stripped and scaffolds unioned,
+   normalized molecular family — the InChIKey skeleton block with charges stripped and scaffolds unioned,
    as `pka_folds.py` already does — **not** by raw SMILES. Two protomers of one substance are the same
    molecule for this purpose.
 2. **Sourced so that non-overlap is structural, not merely checked.** Preference order:
@@ -146,7 +146,7 @@ Requirements:
    (b) a source held out in its entirety;
    (c) SAMPL/euroSAMPL, and only after exhaustive family removal — several public compilations contain
    these molecules, so "we did not load the SAMPL file" is not sufficient.
-3. **Licence recorded per source before assembly**, and any CC BY-NC material marked research-only so it
+3. **License recorded per source before assembly**, and any CC BY-NC material marked research-only so it
    cannot silently back a commercial claim. See `docs/benchmarks/pka/pka-provenance.md`.
 4. **Site assignment must be experimental or diffed from an acid/base pair, not inherited from a
    predictor.** 4,022 corpus rows carry a ChemAxon Marvin site index, and the frozen audit's assignment
@@ -185,7 +185,7 @@ recorded as its own commit per §9 before anything is scored.)*
 **Analysis.** Computed once, on the sealed set, in this order:
 
 1. Assign a tier to every site using the primary rule.
-2. Report the fraction labelled supported.
+2. Report the fraction labeled supported.
 3. Evaluate T1–T4 over the supported sites only, with 95% intervals from a **molecular-family-clustered**
    bootstrap — per-row resampling treats protonation relatives as independent and overstates certainty.
 4. Report, without a pass/fail attached: per-stratum outcomes, the tier breakdown, and the same statistics

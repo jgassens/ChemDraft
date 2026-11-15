@@ -42,7 +42,7 @@ export const ASSISTANT_TOOLS: readonly AssistantToolDefinition[] = [
   define("insert_reaction", "Insert a reaction scheme with up to six reactants and products. Put reagents and catalysts above, one per line; solvent, temperature and time below; number steps as 1. ..., 2. ...; use caption for notes under the scheme. Write formulas plainly (CH2Cl2): subscripts are automatic; no footnote stars.", CHEM_WRITE, false, write.insertReaction, 60_000),
   define("insert_text", "Insert up to 2000 characters, optionally beside a document object. The host chooses coordinates.", WRITE, false, write.insertText),
   define("insert_table", "Insert a native editable table, optionally beside besideObjectId; the host chooses placement. Formulas typed as plain strings in text columns get subscripts automatically. Put numbers in decimal columns and units in the header. The table never computes values.", WRITE, false, write.insertTable),
-  define("edit_structure", "Replace an in-scope molecule with verified SMILES, preserving its centre by default.", CHEM_WRITE, false, write.editStructure, 60_000),
+  define("edit_structure", "Replace an in-scope molecule with verified SMILES, preserving its center by default.", CHEM_WRITE, false, write.editStructure, 60_000),
   define("delete_objects", "Delete up to 100 in-scope objects. Any out-of-scope id refuses the entire call.", WRITE, false, write.deleteObjects),
   define("style_objects", "Change only style on up to 100 in-scope objects; atoms and bonds stay unchanged.", WRITE, false, write.styleObjects),
   define("move_objects", "Move up to 100 in-scope objects beside another object or into a row/grid, using host coordinates.", WRITE, false, write.moveObjects)

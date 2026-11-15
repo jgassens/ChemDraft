@@ -1,3 +1,5 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -10,6 +12,7 @@ import { beginAssistantTransaction, endAssistantTransaction, writeAssistantTrans
 import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
 import { DOM_COMMAND_EVENT, PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
 import { moleculeStructureBondColorCommandId } from "./commands";
+import { setNativePromptProvider } from "./nativePrompt";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,7 +53,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
   });
 
   async function command(commandId: string) {
-    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { target: currentPaletteTarget(), commandId } })));
   }
   async function pagePress(x = 100, y = 500) {
     await act(async () => {
@@ -88,7 +91,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await act(async () => vi.advanceTimersByTimeAsync(100));
   }
   async function palette(event: string, color: string) {
-    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { commandId: moleculeStructureBondColorCommandId(color) } })));
+    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { target: currentPaletteTarget(), commandId: moleculeStructureBondColorCommandId(color) } })));
   }
   async function dragRight(id: string, dx: number) {
     const typed = texts().find(object => object.id === id)!;
@@ -151,7 +154,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
       expect(texts()[0].width).toBe(106.44);
       if (sizingMode === "fixed-width" || sizingMode === "fixed-size") {
         const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
-        expect(frame.style.width).toBe(`${106.44 / drawing.pages[0]!.width * 100}%`);
+        expect(frame.style.width).toBe("106.44px");
       } else assertAutomaticEditorWidth(texts()[0]);
       await type("CCCCCCCCCC"); await pagePress(); await undo();
       expect(texts()[0].width).toBe(106.44);
@@ -248,7 +251,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(left).toBeCloseTo(200 - anchor * 15.186, 8);
     expect(left + originX!).toBeCloseTo(253.22, 8); // original stored rotation pivot
     expect(originY).toBeCloseTo(object.height / 2, 8);
-    expect(frame.style.top).toBe(`${200 / snapshot().document.pages[0].height * 100}%`);
+    expect(frame.style.top).toBe("200px");
     expect(frame.style.transform).toBe("rotate(30deg)");
     // Evaluate the actual CSS anchor after rotation against the old frame's anchor.
     const localAnchor = anchor * parseFloat(frame.style.width) - originX!;
@@ -357,7 +360,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await act(async () => {
       const current = snapshot().document;
       const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "text-edit",
-        tabId: "initial", label: "Insert caption", sendSelection: current.selection });
+        tabId: initialDocumentTabId(), label: "Insert caption", sendSelection: current.selection });
       try { writeAssistantTransaction(tx, insertNativeTextObject(current, { x: 500, y: 350 }, "Gamma")); }
       finally { endAssistantTransaction(tx, { touchedIds: [] }); }
     });
@@ -445,6 +448,27 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await redo(); expect(texts()[0]).toMatchObject({ text: "Alpha", style: { fontWeight: 700 } });
   });
 
+  it("keeps overflowing first typing, text edits and font changes on the original page without asking", async () => {
+    const prompt = vi.fn(async () => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = snapshot().document;
+      const id = await place("Caption line\n".repeat(120), 200);
+      const placed = snapshot().document;
+      expect(placed.pages[0].layout).toEqual(before.pages[0].layout);
+      await undo(); expect(snapshot().document).toEqual(before);
+      await redo(); expect(snapshot().document).toEqual(placed);
+      await open(id);
+      await type("Longer caption line\n".repeat(140));
+      await command("text.size.24");
+      await pagePress();
+      const edited = snapshot().document;
+      expect(edited.pages[0].layout).toEqual(before.pages[0].layout);
+      expect(edited).not.toEqual(placed);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restore(); }
+  });
+
   it("finishes before the close prompt, preserves undo on Cancel and drops the snapshot on Discard", async () => {
     const alpha = await place("Alpha", 200); await place("Beta", 400);
     const close = () => act(async () => container.querySelector<HTMLButtonElement>(".document-tab-close")!.click());
@@ -509,7 +533,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await open(alpha); await type("Alpha123");
     await act(async () => {
       const current = snapshot().document;
-      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "noop", tabId: "initial", label: "No change",
+      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "noop", tabId: initialDocumentTabId(), label: "No change",
         sendSelection: current.selection });
       try { writeAssistantTransaction(tx, current); } finally { endAssistantTransaction(tx, { touchedIds: [] }); }
     });

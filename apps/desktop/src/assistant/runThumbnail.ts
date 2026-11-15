@@ -5,14 +5,16 @@ import {
   type LayoutBounds
 } from "@chemdraft/layout-engine";
 import { rotatedGraphicLocalBounds } from "../graphicHandleGeometry";
+import { canvasFontFallback } from "../canvasHandwritingFont";
 
 /** Maximum encoded SVG data URI length; omit oversized previews rather than truncate SVG. */
 export const ASSISTANT_PREVIEW_MAX_LENGTH = 256 * 1024;
 
 /** Transcript preview only: never changes coordinates or chemistry in the source document. */
-export function runThumbnail(document: ChemDraftDocument, touchedIds: readonly string[]): string | undefined {
+export async function runThumbnail(document: ChemDraftDocument, touchedIds: readonly string[]): Promise<string | undefined> {
+  const previewDocument = canvasFontFallback(document);
   const touched = new Set(touchedIds);
-  const regions = document.pages.flatMap((page, pageIndex) => {
+  const regions = previewDocument.pages.flatMap((page, pageIndex) => {
     const bounds = page.objects.filter(object => touched.has(object.id)).map(objectBounds);
     if (!bounds.length) return [];
     const x = Math.min(...bounds.map(bound => bound.x)) - 12;
@@ -20,7 +22,7 @@ export function runThumbnail(document: ChemDraftDocument, touchedIds: readonly s
     const width = Math.max(...bounds.map(bound => bound.x + bound.width)) + 12 - x;
     const height = Math.max(...bounds.map(bound => bound.y + bound.height)) + 12 - y;
     if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return [];
-    const exported = exportDocumentToSvg(document, { pageIndex, background: "transparent" }).contents;
+    const exported = exportDocumentToSvg(previewDocument, { pageIndex, background: "transparent" }).contents;
     const body = exported.slice(exported.indexOf(">") + 1, exported.lastIndexOf("</svg>"));
     return [{ x, y, width, height, body }];
   });

@@ -12,7 +12,8 @@ const native = vi.hoisted(() => ({
   drag: vi.fn(),
   move: vi.fn()
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: native.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ startDragging: native.drag, setPosition: native.move })
 }));

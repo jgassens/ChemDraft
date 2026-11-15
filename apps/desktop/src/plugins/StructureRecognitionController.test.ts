@@ -387,7 +387,7 @@ describe("StructureRecognitionController", () => {
     expect(controller.getStatus()).toEqual(notInstalled);
 
     // The host's own rejection ends the run, and the status is refreshed through status().
-    fail({ code: "cancelled", message: "Installation was cancelled." });
+    fail({ code: "cancelled", message: "Installation was canceled." });
     await vi.waitFor(() => expect(controller.getInstallRun()?.running).toBe(false));
     expect(controller.getInstallRun()?.error?.code).toBe("cancelled");
     expect(controller.getStatus()).toEqual(notInstalled);
@@ -891,7 +891,7 @@ describe("a followed host operation that ends without installing", () => {
       await vi.advanceTimersByTimeAsync(500);
       expect(controller.getInstallRun()).toMatchObject({
         running: false,
-        error: { code: "cancelled", message: "Installation was cancelled." }
+        error: { code: "cancelled", message: "Installation was canceled." }
       });
     } finally {
       vi.useRealTimers();

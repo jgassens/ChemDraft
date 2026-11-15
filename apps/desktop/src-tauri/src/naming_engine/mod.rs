@@ -78,7 +78,7 @@ impl From<ProcessError> for NamingError {
                 "timeout",
                 "The naming engine exceeded its 60 second startup or 30 second request limit.",
             ),
-            ProcessError::Cancelled => failure("cancelled", "Naming cancelled."),
+            ProcessError::Cancelled => failure("cancelled", "Naming canceled."),
         }
     }
 }
@@ -399,7 +399,7 @@ fn stop_naming_blocking(state: &SharedState) {
 
 fn request_error(state: &SharedState, cancels: u64, stops: u64) -> Option<NamingError> {
     if state.cancels.load(Ordering::SeqCst) != cancels {
-        Some(failure("cancelled", "Naming cancelled."))
+        Some(failure("cancelled", "Naming canceled."))
     } else if state.stops.load(Ordering::SeqCst) != stops || state.shut_down.load(Ordering::SeqCst)
     {
         Some(failure(

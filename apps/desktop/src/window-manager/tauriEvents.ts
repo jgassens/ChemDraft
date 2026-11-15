@@ -1,4 +1,6 @@
 import type { Event, EventCallback, UnlistenFn } from "@tauri-apps/api/event";
+import type { Window } from "@tauri-apps/api/window";
+import { acceptsPaletteEvent } from "./paletteTarget";
 
 /** Stops a listener. Safe to call any number of times, and at any moment. */
 export type SafeUnlisten = () => void;
@@ -90,7 +92,14 @@ export function safeTauriListen<T>(eventName: string, attach: TauriAttach<T>, ha
 /** `listen` from `@tauri-apps/api/event` (events to any target), with a stop that cannot fail. */
 export async function listenTauriEvent<T>(eventName: string, handler: EventCallback<T>): Promise<SafeUnlisten> {
   const { listen } = await import("@tauri-apps/api/event");
-  return safeTauriListen<T>(eventName, (wrapped) => listen<T>(eventName, wrapped), handler).attached;
+  return safeTauriListen<T>(eventName, (wrapped) => listen<T>(eventName, wrapped), (event) => {
+    if (acceptsPaletteEvent(eventName, event.payload)) handler(event);
+  }).attached;
+}
+
+/** A specific native window's events, retaining immediate stop during asynchronous attachment. */
+export function safeTauriWindowListen<T>(target: Pick<Window, "listen">, eventName: string, handler: EventCallback<T>): SafeTauriListener {
+  return safeTauriListen<T>(eventName, (wrapped) => target.listen<T>(eventName, wrapped), handler);
 }
 
 /** The current webview window's own `listen` (events targeted at this window), with a stop that cannot fail. */
@@ -100,5 +109,5 @@ export async function listenCurrentWindowEvent<T>(eventName: string, handler: Ev
   if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return () => undefined;
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   const currentWindow = getCurrentWebviewWindow();
-  return safeTauriListen<T>(eventName, (wrapped) => currentWindow.listen<T>(eventName, wrapped), handler).attached;
+  return safeTauriWindowListen<T>(currentWindow, eventName, handler).attached;
 }

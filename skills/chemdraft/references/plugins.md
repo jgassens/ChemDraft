@@ -16,7 +16,7 @@ user action from configuring a headless tool.
 
 MolScribe runs locally, with a host-managed engine installed only on
 explicit user action. It works best on clean computer-drawn structures;
-hand-drawn, sketch-style or colour-filled drawings and grid lines are
+hand-drawn, sketch-style or color-filled drawings and grid lines are
 often misread. Check every atom and bond before insertion. Its proposed
 structure, candidates and warnings are uncertain inferred output, never
 presented as certain. The source image stays unless the user deletes it.
@@ -65,7 +65,7 @@ A manifest declares `id`, `name`, `version`, `apiVersion`, `entry`,
 `permissions`, and any `contributes` entries. Current API is `0.1.10`;
 declare the caret version needed. Additive API changes bump patch, breaking
 changes bump minor. Code `license` and dataset `dataLicenses` are separate
-claims; a code licence alone does not cover bundled data.
+claims; a code license alone does not cover bundled data.
 
 API 0.1.10 adds panel input sections and canvas overlays for declared plugin UI.
 
@@ -82,7 +82,7 @@ and `analyzer.<pluginName>.<name>` analyzers. Register through the runtime;
 commands share the host registry, and panels are declarative reports.
 Do not access React state, the DOM or private host functions.
 
-Document writes are patches with one labelled undo entry and changed
+Document writes are patches with one labeled undo entry and changed
 objects selected. `documents.applyPatch` requires declared `document.write`
 and one of that plugin's own commands running. It only inserts `addObject`
 or `addAnnotation`, for deterministic conversion of user-supplied input.
@@ -95,7 +95,7 @@ licensed plugin using `pnpm plugin:package -- <plugin-directory>`, with
 `--out <scratch-directory>` to keep ZIP/checksum outputs outside the repo.
 The SDK build writes package `dist` directories, so run it only in a
 developer checkout where those writes are authorized. An installable plugin
-owns `src/workerEntry.ts`; packaging enforces licence, boundary and provenance
+owns `src/workerEntry.ts`; packaging enforces license, boundary and provenance
 gates. Integrity checksums are not publisher signatures or trust decisions.
 
 The in-app automation bridge (`window.__CHEMDRAFT_AGENT__`) is ChemDraft's

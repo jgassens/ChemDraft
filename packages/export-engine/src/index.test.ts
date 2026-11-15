@@ -11,12 +11,73 @@ import {
   type MoleculeObject,
   type TextObject
 } from "@chemdraft/chem-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 import { exportDocumentToSvg } from "./index";
 import { scriptedTextDocument } from "./scriptedText.fixture";
+import { planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
+import { presetRenderingCases, presetRenderingMolecule } from "../../layout-engine/src/presetRendering.fixture";
+import { patrickHandInkBounds } from "../../layout-engine/src/patrickHandMetrics.generated";
+import { sfntTable, unicodeCmap } from "./pdf.testUtils";
+import { ensureSvgFontsLoaded } from "./svg";
+import { exportDocumentToPdf } from "./pdf";
+import { readFileSync } from "node:fs";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
+
+describe("preset canvas/export parity", () => {
+  it.each(presetRenderingCases)("$name preserves every coloured canvas stroke and atom label in SVG and PDF", async ({ style }) => {
+    const document = createEmptyDocument({ now: timestamp });
+    document.pages[0]!.objects = [presetRenderingMolecule(style, undefined, "double")];
+    await ensureSvgFontsLoaded(document);
+    const svg = exportDocumentToSvg(document).contents;
+    const dom = new JSDOM(svg, { pretendToBeVisual: true });
+    const plan = planPageSvgRender(document.pages[0]!).fragments.flatMap(elementFragments);
+    try {
+      for (const fragment of plan.filter(f => String(f.attrs.class).includes("native-bond-line") ||
+        f.attrs.class === "native-molecule-sketch" || f.attrs.class === "native-atom-label")) {
+        const candidates = [...dom.window.document.querySelectorAll(fragment.tag)];
+        const exported = candidates.find(node => ["d", "data-bond-id", "data-bond-segment", "data-atom-label"]
+          .every(key => fragment.attrs[key] === undefined || node.getAttribute(key) === String(fragment.attrs[key])));
+        expect(exported, fragment.key).toBeDefined();
+        for (const key of ["stroke", "fill", "stroke-width", "font-family", "font-size"] as const) {
+          const value = fragment.attrs[key];
+          if (typeof value === "number") expect(Number(exported!.getAttribute(key))).toBeCloseTo(value, 2);
+          else if (value !== undefined) expect(exported!.getAttribute(key)).toBe(String(value));
+        }
+      }
+      // PDF consumes this same SVG; inspect real PDF paint operators as well.
+      for (const key of ["window", "document", "Node", "Element", "SVGElement", "HTMLElement", "XMLSerializer", "navigator"] as const) {
+        vi.stubGlobal(key, key === "window" ? dom.window : dom.window[key]);
+      }
+      vi.stubGlobal("getComputedStyle", dom.window.getComputedStyle.bind(dom.window));
+      Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", { configurable: true,
+        value: () => ({ x: 0, y: 0, width: 40, height: 16 }) });
+      Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => null });
+      const pdf = await exportDocumentToPdf(document, { domParser: new dom.window.DOMParser(), compress: false });
+      const operators = [...Buffer.from(pdf.bytes).toString("latin1").matchAll(/([\d.]+) ([\d.]+) ([\d.]+) (RG|rg)\b/g)];
+      for (const [color, operator] of [["#c03080", "RG"], ["#126082", "RG"], ["#267a38", "rg"]]) {
+        const rgb = color!.slice(1).match(/../g)!.map(channel => parseInt(channel, 16) / 255);
+        expect(operators.some(match => match[4] === operator && rgb.every((value, index) =>
+          Math.abs(value - Number(match[index + 1])) < 0.01)), `${color} ${operator}`).toBe(true);
+      }
+    } finally { vi.unstubAllGlobals(); dom.window.close(); }
+  });
+
+  it("sources handwriting ink boxes from the actual bundled font, including composite glyphs", () => {
+    const font = readFileSync(new URL("../../../apps/desktop/src/assets/fonts/PatrickHand-Regular.ttf", import.meta.url));
+    const head = sfntTable(font, "head"), loca = sfntTable(font, "loca"), glyf = sfntTable(font, "glyf");
+    const em = head.readUInt16BE(18);
+    const offset = (glyph: number) => head.readInt16BE(50) === 0 ? loca.readUInt16BE(glyph * 2) * 2 : loca.readUInt32BE(glyph * 4);
+    for (const [code, glyph] of unicodeCmap(font)) {
+      const start = offset(glyph);
+      const expected = start === offset(glyph + 1) ? [0, 0, 0, 0]
+        : [2, 4, 6, 8].map(field => glyf.readInt16BE(start + field) / em);
+      expect(patrickHandInkBounds[code], `U+${code.toString(16)}`).toEqual(expected);
+    }
+  });
+});
 
 function moleculeObject(): MoleculeObject {
   return {

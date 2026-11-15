@@ -52,7 +52,7 @@ const nativeMoleculePadding = 8;
  *  engine (which stays behind a dynamic import to keep it out of the static graph). */
 export interface PastedStructureDepiction {
   atoms: ReadonlyArray<{ element: string; isotope?: number; x: number; y: number; charge: number }>;
-  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; stereo?: "either"; wedge: "wedge" | "hashed" | null }>;
+  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; stereo?: "either"; wedge: "wedge" | "hashed" | "wavy" | null }>;
 }
 
 /**
@@ -84,9 +84,8 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
         // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
         order: bond.order,
         ...(bond.stereo === "either" ? { stereo: "either" as const } : {}),
-        // Dative (dashed) bonds parse with a display style, not a wedge — they fall to null here
-        // and keep their style through the structural insert path.
-        wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" ? bond.bondStyle : null
+        // This directed display contract includes explicitly unknown single-bond stereo.
+        wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" || bond.bondStyle === "wavy" ? bond.bondStyle : null
       }];
     })
   };
@@ -325,36 +324,44 @@ export function applyMoleculeTargetBondLength(
         return [];
       }
 
-      const representative = representativeNativeMoleculeBondLength(object);
-      const nextStyle = {
-        ...object.style,
-        bondLengthPx: targetBondLengthPx,
-        // The CLI builds templates at its default length before applying --bond-length.
-        // Follow that final length only for the automatic template width; retain custom widths.
-        ...(object.style.projection === "perspective"
-          && typeof object.style.source === "string" && object.style.source.startsWith("structure-template:")
-          && representative && object.style.bondBoldWidthPx === perspectiveTemplateBoldWidthRatio * representative
-          && object.bonds.some(bond => bond.display?.bondStyle === "bold")
-          ? { bondBoldWidthPx: perspectiveTemplateBoldWidthRatio * targetBondLengthPx } : {})
-      };
-      const scaled = representative
-        ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
-        : normalizeNativeMoleculeGeometry({ ...object, style: nextStyle });
-      const changes = moleculeObjectChanges(object, scaled);
+      const changes = moleculeTargetBondLengthChanges(object, targetBondLengthPx);
       return Object.keys(changes).length === 0
         ? []
-        : [{
-            op: "updateObject" as const,
-            objectId: object.id,
-            changes
-          }];
+        : [{ op: "updateObject" as const, objectId: object.id, changes }];
     })
   );
 
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
-function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
+/** Plan the existing centre-preserving resize without applying a document patch. */
+export function moleculeTargetBondLengthChanges(
+  object: MoleculeObject, targetBondLengthPx: number
+): Partial<MoleculeObject> {
+  if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0) return {};
+  const representative = representativeNativeMoleculeBondLength(object);
+  const nextStyle = {
+    ...object.style,
+    bondLengthPx: targetBondLengthPx,
+    // The CLI builds templates at its default length before applying --bond-length.
+    // Follow that final length only for the automatic template width; retain custom widths.
+    ...(object.style.projection === "perspective"
+      && typeof object.style.source === "string" && object.style.source.startsWith("structure-template:")
+      && representative && object.style.bondBoldWidthPx === perspectiveTemplateBoldWidthRatio * representative
+      && object.bonds.some(bond => bond.display?.bondStyle === "bold")
+      ? { bondBoldWidthPx: perspectiveTemplateBoldWidthRatio * targetBondLengthPx } : {})
+  };
+  // Avoid round-off drift and preserve coordinates exactly when the target already matches.
+  if (representative && Math.abs(representative - targetBondLengthPx) <= targetBondLengthPx * 1e-12) {
+    return moleculeObjectChanges(object, { ...object, style: nextStyle });
+  }
+  const scaled = representative
+    ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
+    : normalizeNativeMoleculeGeometry({ ...object, style: nextStyle });
+  return moleculeObjectChanges(object, scaled);
+}
+
+export function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
   // Projected distances are foreshortened; their stored length is the nominal scale.
   if (molecule.style.projection === "perspective") {
     return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original synthetic fixture: a multiple group means three copies, without expanding atoms. -->
+<CDXML CreationProgram="ChemDraft Synthetic Fixture">
+  <page id="1" BoundingBox="0 0 612 792">
+    <fragment id="10">
+      <n id="11" Element="6" p="110 110"/>
+      <n id="12" Element="8" p="140 110"/>
+      <b id="13" B="11" E="12" Order="1"/>
+    </fragment>
+    <graphic id="20" GraphicType="Bracket" BracketType="Square" BoundingBox="87 138 75 90" LipSize="60" Z="4" IgnoreWarnings="yes"/>
+    <graphic id="21" GraphicType="Bracket" BracketType="Square" BoundingBox="183 90 195 138" LipSize="60" Z="5" BracketUsage="MultipleGroup"/>
+    <bracketedgroup id="30" BracketedObjectIDs="10" BracketUsage="MultipleGroup" RepeatCount="3">
+      <bracketattachment id="31" GraphicID="20"><crossingbond id="32" BondID="13" InnerAtomID="11"/></bracketattachment>
+      <bracketattachment id="33" GraphicID="21"/>
+    </bracketedgroup>
+  </page>
+</CDXML>

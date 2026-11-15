@@ -65,7 +65,7 @@ mod tests {
     fn capability_is_limited_to_main_window() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/plugin-starter.json")).unwrap();
-        assert_eq!(capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
         assert_eq!(
             capability["permissions"],
             serde_json::json!(["allow-plugin-starter-computer"])

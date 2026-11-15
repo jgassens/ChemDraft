@@ -6,6 +6,10 @@ or molfile into a native molecule object, scaling a molecule to a target bond le
 inserting text objects and reaction arrows, atom validation and valence rules, and the native SMILES
 writer.
 
+`nativeSingleBondGraphMetadata` declines formula and average/exact mass on unknown-order bonds,
+returning `native.unknown_bond_order` with the bond IDs. SMILES export refuses these bonds even when
+a stored SMILES string is present; MOL export can retain query type 8 with warnings.
+
 It exists because the CLI used to import `apps/desktop/src/documentWorkflow.ts` by relative path.
 That file is ~20,000 lines and also carries desktop-only code, so any desktop-only import added to it
 broke every headless command. The code here was **moved** out of `documentWorkflow.ts` and
@@ -14,10 +18,15 @@ desktop importers did not change.
 
 | File | Holds |
 |---|---|
+| `atomProblems.ts` | Read-only explanations and explicit H/charge/Ignore/Restore suggestions, accepted only by the existing atom validator |
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
+| `nativeStylePresets.ts` | Pure `applyNativeStylePreset(document, presetId, scope, warnings?)` planner for one batched edit of selected molecules/text, or every page plus drawing/text insertion defaults |
+| `electronMarks.ts` | One electron-mark association for presets and desktop commit reconciliation: explicit anchors at any distance, sticky legacy anchors and nearest atoms in radius, floating-drop suppression, no valence gate; shared charge/radical contributions and anchor helpers |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
+| `cleanupSelection.ts` | Constrained partial-molecule 2D cleanup using injected layout and identity engines; fixed native atom coordinates are retained exactly |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
+| `nativeDocument.ts` | Shared app/agent native opening with an injected JSON/envelope decoder; preserves its warnings, version envelope and unknown-content bookkeeping while recording label bond sides |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
 | `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and label blocks |
@@ -28,10 +37,17 @@ desktop importers did not change.
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
+| `exportWarnings.ts` | Raw atom diagnostics for export callers, with consistent one-based drawn atom names; independent of badge suppression and cached metadata |
 | `structureTemplates.ts` | Exact normalized name lookup, injected canonical isomeric identity lookup, and authored template layout → native molecule at document bond length |
 | `graph.ts` | Graph walks over native atoms and bonds, including the longest path the SMILES writer and 2D cleanup lay a component along |
 | `shared.ts` | Ids, page access, numeric helpers |
 | `testing.ts` | Test-only hooks, served as `@chemdraft/document-workflow-core/testing` and kept out of the barrel: the longest-path work counter |
+
+`documentReactionSummary` reads native reaction steps in page order, including component roles,
+arrow/plus links, condition text and mapping state. `documentInventory().reactions` exposes the same
+summary to headless document consumers. Shared intermediates retain their object ids. The summary
+reads recorded roles rather than guessing chemistry from placement; `layoutReactionScheme` remains
+a visual layout builder and does not synthesize reaction semantics from drawings.
 
 ## What belongs here
 
@@ -41,6 +57,20 @@ desktop importers did not change.
 - Dependencies limited to `chem-core`, `layout-engine`, `clipboard-adapter` (molfile parsing),
   `template-library` (the abbreviation table: data only), and type-only use of `export-engine`
   and `rdkit-adapter`.
+
+`cleanUpMoleculeSelection2d` expands selected bonds to both endpoints and lays out only selected
+connected parts. Unselected atoms (including metals and centres with more than four bonds) retain
+their exact coordinates and metadata. Bond lengths, including fixed-to-selected attachments, must
+match the molecule's drawing style within 1%, while selected bond angles stay within five degrees of
+the engine's ideal layout. Affected angles at ordinary fixed centres must match within one degree;
+selected fragments sharing a fixed centre use a common orientation. Incompatible fixed attachments
+are refused. Rotated partial edits retain the stored rotation frame so fixed atoms also retain their
+exact rendered positions. Atom-anchored electron marks move by their atom's offset. Isolated selected atoms are
+deliberately left unchanged. Empty/full selections retain the caller's existing command behaviour.
+The caller injects the marked-atom layout engine and final molfile
+identity check; wedges/hashes and bonds stay native, and a stereo change refuses the operation.
+The desktop additionally checks chemical identity after commit normalization, before writing history.
+`cleanUpMoleculeSelections2d` prepares all partial targets atomically for one caller-owned undo entry.
 
 ## What does not
 
@@ -65,6 +95,21 @@ desktop importers did not change.
 3D runtimes. `packages/chemdraft-cli/src/importBoundary.test.ts` fails if the CLI or MCP server
 imports from `apps/` again.
 
+`applyNativeStylePreset` returns `{ op: "batch", patches }`; an empty `patches` array signals no
+change. Native callers use `applyPatches(document, batch.patches)` to apply the leaves atomically,
+including edits larger than the external batch envelope's 256-operation limit. Selection scope
+visits selected groups' molecule/text descendants on the selected page. Document scope visits
+every page, updates insertion defaults, and selects changed objects on the active page (selection
+is page-local). Other object kinds, including reactions and mechanism arrows, retain their data.
+Rich-text spans keep their text and scripts while receiving the preset font family, size and weight.
+
+The presets are ChemDraft Synthetic (`chemdraft.synthetic`, unchanged), Document style,
+ACS 1996-style, RSC journal-style and Sketch (`chemdraft.sketch`). Sketch retains Synthetic's
+dimensions, adds the existing art sketch effect at roughness 1.25, bowing 1 and seed 7,
+and uses locally bundled Patrick Hand Regular for labels and text. Applying a plain preset
+removes the sketch effect and restores that preset's font, preserving other authored effects.
+Sketch uses existing style metadata; no document-schema field or migration was added.
+
 `applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
 bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming
@@ -80,11 +125,31 @@ and an optional `textStyle` override. Document style applies `DocumentTextStyle`
 reaction conditions and plus signs; measurements and placement use the same resolved text style.
 Grid cells in document style accommodate the wider of the molecule or label, and the custom page
 fits all rows and columns with margins given by the anchor. Reaction pages fit the complete scheme;
-above/below block width sets arrow length and plus-sign width sets component spacing.
+above/below block width sets arrow length. The renderer's actual bond/atom-label bounds set
+component spacing, excluding padded storage frames. Gaps on either side of a plus or arrow are
+1.25 actual bond lengths. Molecule bounding-box centres and plus signs share the arrow line.
+Plus size and stroke come from the molecule's resolved label font and bond stroke.
 Callers supply pre-depicted molecules at the intended bond length. Reaction schemes preserve the
 anchor when it leaves room for page padding, otherwise translating the whole scheme together.
 These layout functions translate molecules without
 rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
+Async hosts call layoutReactionSchemeAsync; synchronous layoutReactionScheme only places components.
+Hosts may inject `createReactionProductAligner` from rdkit-adapter. The shared planner uses its
+FMCS and `generate_aligned_coords` result to orient each product against the largest reactant
+core (a complete ring or six heavy atoms), retaining directed stereo and canonical identity.
+All searches share a 1.5 s scheme budget and yield between one-second FMCS searches.
+A timed-out later pair retains an earlier completed match. `alignmentWarnings` reports structured
+`reaction.alignment_timeout` (FMCS cancellation or insufficient remaining budget) and
+`reaction.alignment_skipped` (completed search without a complete ring or six-heavy-atom core,
+failed alignment, or refusal). Each names the product by its zero-based input `component.index`
+and `component.role`; human-readable messages also appear in `warnings`. Small or unrelated
+products therefore report skipped alignment, even when no shared ring is expected. Without an
+injected aligner or without reactants no alignment is requested and no alignment warning is emitted.
+Original depictions are retained when alignment cannot be applied.
+
+Scheme-created NaOH atoms carry explicit `schemeAbbreviation: "NaOH"` metadata and expand to
+`[Na+].[OH-]` for chemistry. A typed NaOH label retains the release formula-placeholder meaning.
+Only R–Mg–Br with one carbon substituent condenses to MgBr; magnesium salts retain their atoms.
 
 Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
@@ -95,7 +160,7 @@ Entirely numbered authored blocks
 align left with their visible text centred on the arrow, including wrapped steps; other blocks and captions align centre.
 
 Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond
-lengths**, minimum arrow **2.5 bond lengths**, arrow padding beyond the widest estimated content
+lengths**, minimum arrow **3 bond lengths**, arrow padding beyond the widest estimated content
 width **2 × (actual head/chevron depth + 0.25 em)**, label ink clearance from the outer shaft stroke **0.3 em**, caption top clearance
 **0.8 em**, caption wrap width at least **8 bond lengths**, and default label font **14 px** centred.
 Spaces and tabs are the only wrap points; NBSP/narrow NBSP and oversized tokens stay whole. Captions wrap to the greater of
@@ -146,3 +211,14 @@ bond length. The requested atom-bounds centre is retained,
 including near page edges. The function returns a molecule without mutating the document or template;
 callers insert it through their normal patch/undo path. Provenance uses existing style/source and
 compatibility metadata.
+
+`nameDictionary.ts` owns the shared OPSIN-first fallback policy and exact name/CAS dictionary
+lookup. Callers inject OPSIN and decompressed text loading, so the module has no filesystem,
+DOM or engine-loading dependency. The app uses DecompressionStream; Node uses node:zlib.
+See data/names/README.md for the data contract and bundling.
+
+Reaction conditions use the pure reactionArrowAttachments module: reactionConditionsDraft reads
+the existing label, setReactionArrowConditions creates/updates/removes formatted native text on an
+ordinary arrow, and reconcileReactionArrowAttachments follows geometry changes. Callers own the
+authoring preference and history transaction. nativeFormattedTextObjectSize measures the explicit
+formatted lines using layout-engine metrics; no chemistry is changed.

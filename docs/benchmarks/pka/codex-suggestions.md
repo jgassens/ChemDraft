@@ -67,11 +67,11 @@ The tails are genuinely difficult: 95 observations below pKa 0 and 105 above 14 
 
 ## Review of Claude's six proposals
 
-### 1. Pretrain on 1.55 million ChemAxon-labelled ChEMBL/QupKake structures
+### 1. Pretrain on 1.55 million ChemAxon-labeled ChEMBL/QupKake structures
 
 **Verdict: plausible research A/B, but not the first or cleanest experiment. The claimed 20-40% gain is unsupported.**
 
-Large teacher-labelled pretraining has precedent. For example, pkasolver reported improvement after pretraining on hundreds of thousands of Epik-generated values and fine-tuning on experimental data. That establishes plausibility, not a transferable effect size, and the authors could not distribute the Epik-trained model because of licensing. See the [pkasolver study](https://www.frontiersin.org/journals/chemistry/articles/10.3389/fchem.2022.866585/full).
+Large teacher-labeled pretraining has precedent. For example, pkasolver reported improvement after pretraining on hundreds of thousands of Epik-generated values and fine-tuning on experimental data. That establishes plausibility, not a transferable effect size, and the authors could not distribute the Epik-trained model because of licensing. See the [pkasolver study](https://www.frontiersin.org/journals/chemistry/articles/10.3389/fchem.2022.866585/full).
 
 QupKake's large corpus contains ChemAxon-predicted strongest-acid/strongest-base values over ChEMBL structures. Fine-tuning does not erase the teacher's systematic bias or the provenance of the learned signal. ChEMBL itself is [CC BY-SA 3.0](https://www.ebi.ac.uk/chembl/), while ChemAxon's terms separately govern bulk calculated output; the QupKake software's BSD license is not evidence that those calculated labels are freely redistributable. The official [ChemAxon licensing material](https://docs.chemaxon.com/lts-krypton/reactor-licensing.html) is restrictive enough that redistributed weights should not be assumed clear without written permission.
 
@@ -211,7 +211,7 @@ Before commercial teacher labels, pretrain on structures or clearly licensed phy
 - deterministic RDKit descriptor auxiliary tasks; and
 - quantum auxiliary targets such as partial charges, bond orders, or orbital/energy descriptors from an openly reusable corpus.
 
-[Uni-pKa](https://pubs.acs.org/doi/10.1021/jacsau.4c00271) is a useful reference for microstate-free-energy learning and self-supervised atom/charge/3D tasks. Borrow the self-supervised ideas without importing its weak teacher-labelled target as experimental truth.
+[Uni-pKa](https://pubs.acs.org/doi/10.1021/jacsau.4c00271) is a useful reference for microstate-free-energy learning and self-supervised atom/charge/3D tasks. Borrow the self-supervised ideas without importing its weak teacher-labeled target as experimental truth.
 
 [QMugs](https://pmc.ncbi.nlm.nih.gov/articles/PMC9174255/) provides quantum-mechanical properties for roughly 665,000 drug-like molecules and about two million conformers under a CC BY 4.0 release. It is a defensible candidate for representation pretraining or auxiliary supervision, followed by experimental pKa fine-tuning. A practical goal is to distill any 3D/QM benefit into the existing 2D runtime representation rather than shipping a quantum engine.
 
@@ -301,7 +301,7 @@ Do not ship a new “more accurate” model unless it achieves all applicable ga
 | [G-pKa](https://zenodo.org/records/15257975) | Tautomer-aware pairs and QM features | Contact the authors; the public record does not appear to contain all advertised artifacts. High value if complete and clearly licensed. |
 | [QMugs](https://pmc.ncbi.nlm.nih.gov/articles/PMC9174255/) | Large open QM auxiliary corpus | Strong clean-pretraining candidate; CC BY 4.0. |
 | [IUPAC Dissociation Constants](https://github.com/IUPAC/Dissociation-Constants) | Broad, condition-rich research evaluation | CC BY-NC: use for research analysis unless separate permission covers redistributed commercial-compatible weights. |
-| QupKake 1.55M ChemAxon-labelled corpus | Broad pseudo-labelled chemical space | Last research arm only. Obtain written clearance before distributing weights and disclose teacher provenance. |
+| QupKake 1.55M ChemAxon-labeled corpus | Broad pseudo-labeled chemical space | Last research arm only. Obtain written clearance before distributing weights and disclose teacher provenance. |
 | SAMPL/euroSAMPL | High-quality challenge measurements | Reserve as never-train tests after exhaustive family-overlap removal. |
 
 The root `NOTICE` and method contract currently need a data-license correction for the 4,022 QupKake experimental rows: the upstream dataset is CC BY 4.0; QupKake's BSD grant is a software license. Dwar-iBond remains unresolved. These are provenance corrections, not merely paperwork—the license and experimental/computational origin must follow the model artifact.
@@ -357,4 +357,4 @@ Green tests show that the in-progress implementation is internally consistent wi
 
 ## Bottom line
 
-The branch can still gain predictive power. The best near-term chance is **paired acid/base learning plus explicit site-relative chemistry**, evaluated on frozen molecular-family splits and followed by modest regularization, class balancing, and a genuinely diverse ensemble. Clean self-supervised or QM-auxiliary pretraining is the next escalation. ChemAxon-labelled pretraining is a potentially informative but legally and scientifically encumbered last experiment—not the foundation of an open first-in-class predictor.
+The branch can still gain predictive power. The best near-term chance is **paired acid/base learning plus explicit site-relative chemistry**, evaluated on frozen molecular-family splits and followed by modest regularization, class balancing, and a genuinely diverse ensemble. Clean self-supervised or QM-auxiliary pretraining is the next escalation. ChemAxon-labeled pretraining is a potentially informative but legally and scientifically encumbered last experiment—not the foundation of an open first-in-class predictor.

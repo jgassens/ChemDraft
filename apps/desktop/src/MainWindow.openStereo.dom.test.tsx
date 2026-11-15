@@ -100,7 +100,7 @@ describe("editor open E/Z", () => {
     const before = snapshot().document;
     act(() => { badge.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 })); });
     expect(snapshot().document).toEqual(before);
-    const svg = exportPhase4Svg(doc).contents, cdxml = exportPhase4Cdxml(doc).contents;
+    const svg = (await exportPhase4Svg(doc)).contents, cdxml = exportPhase4Cdxml(doc).contents;
     vi.stubGlobal("getComputedStyle", window.getComputedStyle.bind(window));
     const pdf = await exportPhase4Pdf(doc, { compress: false });
     for (const output of [svg, cdxml, new TextDecoder().decode(pdf.bytes)]) {

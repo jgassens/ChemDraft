@@ -1,3 +1,4 @@
+import { isDocumentWindowId } from "../documentIdentity";
 import { detectShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { perfProbeRequestedFromWindow } from "./gate";
 import { createPerfProbe, type DoneSignal, type PerfRecord, type PerfProbe } from "./probe";
@@ -278,12 +279,12 @@ async function initializePerfProbe(sourceStamp?: string): Promise<void> {
     if (["popover-shown", "no-op", "failed"].includes(detail.signal) && ["toolset", "settings", "inspector"].includes(windowRole(window.location.search))) {
       const shown = detail as typeof detail & { flyoutId: string };
       return perfProbe?.popoverShown(shown.flyoutId, shown.at, shown.frameAt ?? undefined, shown.window, shown.signal as "popover-shown" | "no-op" | "failed", shown.rafAt ?? undefined);
-    } else if (detail.window === "main" && windowRole(window.location.search) === "dialog" && detail.signal === "dialog-open") {
+    } else if (isDocumentWindowId(detail.window) && windowRole(window.location.search) === "dialog" && detail.signal === "dialog-open") {
       window.requestAnimationFrame(() => perfHook(() => perfProbe?.guard(() => {
         const rafAt = perfHook(() => perfProbe?.timestamp());
         afterPaint(() => perfHook(() => perfProbe?.guard(() => {
           const paintedAt = perfHook(() => perfProbe?.timestamp());
-          sendPerfCompletion("main", detail.requestKey, detail.signal, paintedAt, paintedAt, rafAt, detail.at);
+          sendPerfCompletion(detail.window, detail.requestKey, detail.signal, paintedAt, paintedAt, rafAt, detail.at);
         })));
       })));
     } else return perfProbe?.remoteCompletion(detail.requestKey, detail.signal, detail.at, detail.frameAt ?? undefined, detail.window, detail.rafAt ?? undefined, detail.shownAt ?? undefined);

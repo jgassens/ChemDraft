@@ -382,7 +382,7 @@ pub(super) fn execute_in_home(
             CaptureError::OutputLimit => {
                 "External tool probe exceeded its output limit.".to_owned()
             }
-            CaptureError::Cancelled => "External tool probe was cancelled.".to_owned(),
+            CaptureError::Cancelled => "External tool probe was canceled.".to_owned(),
         })?;
     match output.status {
         RunStatus::Exited { code, .. } => Ok(ProbeOutput {

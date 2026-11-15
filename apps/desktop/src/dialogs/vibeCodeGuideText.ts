@@ -1,8 +1,8 @@
 export const VIBE_CODE_GUIDE = {
   title: "Vibe Code Your Own Plugin",
   steps: [
-    "Save the starter file.",
-    "Open your coding agent (Codex, Claude Code or similar) in an empty folder and give it the file.",
+    "Save the starter file into a new, empty folder.",
+    "Open your coding agent (Codex, Claude Code or similar) in that folder and ask it to read the starter file (or drag the file into its chat).",
     "Describe what your plugin should do.",
     "Let the agent build and package it (it follows the file's steps).",
     "Install it: Plugins ▸ Add or Remove Plugins… ▸ Add plugin from package…"

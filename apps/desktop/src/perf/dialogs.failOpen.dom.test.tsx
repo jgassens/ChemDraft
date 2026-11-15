@@ -40,7 +40,7 @@ it.each(hooks.flatMap(hook => ["throw", "reject"].map(failure => ({ hook, failur
     const apply = vi.fn((_tab: string, size: { width: number; height: number; unit: "inch" | "mm" }) => {
       documentState = setDocumentCustomPageSize(documentState, size);
     });
-    const exporter = vi.fn(async () => { written.push(exportPhase4Svg(documentState).contents); return { status: "exported" as const }; });
+    const exporter = vi.fn(async () => { written.push((await exportPhase4Svg(documentState)).contents); return { status: "exported" as const }; });
     const close = vi.fn().mockResolvedValue(undefined);
     let snapshot!: Extract<DialogMessage, { type: "snapshot" }>;
     const label = "dialog-main-pageSize-1";

@@ -26,7 +26,7 @@ export function sourceInterpretation(format: string, value: string): MolecularIn
     // may run (§1). "as-drawn" is the honest description: no tautomer standardisation is applied, so
     // the keto and enol forms of acetylacetone are analysed as the two different molecules they are.
     // Declaring it does not weaken the guarantee — it is the guarantee, made checkable.
-    tautomerPolicy: "as-drawn — no tautomer standardisation; the drawn form is the analysed form",
+    tautomerPolicy: "as-drawn — no tautomer standardization; the drawn form is the analyzed form",
     aromaticityModel: "rdkit-default",
     transformations: []
   };

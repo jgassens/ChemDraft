@@ -1,3 +1,4 @@
+import type { RuntimeDialogTarget } from "./runtimeDialogProtocol";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import type { PluginStructureToNameResult } from "@chemdraft/plugin-api";
 import { nameStructureForPlugin, type NamingCanonicalizer } from "./pluginStructureNaming";
@@ -36,6 +37,8 @@ export class StructureNamingController {
   private documentTabId?: () => string | undefined;
   private revealInstall?: () => void;
   private installDocumentTabId?: string;
+  private installTarget?: RuntimeDialogTarget;
+  getInstallTarget = () => this.installTarget;
   /** A status read that began before an install must not restore its transient `installing` state
    * after that install has already ended. The catalog review deliberately refreshes status without
    * blocking its Install button, so this race is ordinary rather than exceptional. */
@@ -82,7 +85,7 @@ export class StructureNamingController {
     }).catch((error: unknown) => {
       const normalized = isStructureRecognitionInstallError(error)
         ? error.code === "cancelled"
-          ? { code: "cancelled" as const, message: "Installation was cancelled." }
+          ? { code: "cancelled" as const, message: "Installation was canceled." }
           : error
         : { code: "failed" as const, message: messageOf(error) };
       this.run = { ...(this.run ?? run), running: false, error: normalized };
@@ -121,13 +124,14 @@ export class StructureNamingController {
     pending?.resolve(outcome);
     this.notify();
   }
-  async name(plugin: { id: string; name: string }, molecule: MoleculeObject, signal: AbortSignal): Promise<PluginStructureToNameResult> {
+  async name(plugin: { id: string; name: string }, molecule: MoleculeObject, signal: AbortSignal, target?: RuntimeDialogTarget): Promise<PluginStructureToNameResult> {
     if (signal.aborted) return { status: "cancelled" };
     if (this.active) {
       if (this.pending) this.revealInstall?.();
       return { status: "failed", code: "busy", message: "Another structure is already being named." };
     }
-    this.installDocumentTabId = this.documentTabId?.();
+    this.installTarget = target;
+    this.installDocumentTabId = target?.tabId ?? this.documentTabId?.();
     const active = { id: this.nextId++, stop: new AbortController(), engineRunning: false };
     this.active = active;
     let work: Promise<PluginStructureToNameResult> | undefined;
@@ -191,7 +195,7 @@ export class StructureNamingController {
     active.engineRunning = true;
     const engine = Object.create(this.engine) as StructureNamingEngine;
     engine.name = smiles => {
-      if (active.stop.signal.aborted) return Promise.reject({ code: "cancelled", message: "Naming cancelled." });
+      if (active.stop.signal.aborted) return Promise.reject({ code: "cancelled", message: "Naming canceled." });
       return this.engine.name(smiles);
     };
     try { return await nameStructureForPlugin(molecule, engine, status, this.canonicalizer); }

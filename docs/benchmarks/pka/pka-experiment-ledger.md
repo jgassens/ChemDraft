@@ -166,7 +166,7 @@ conclusion is drawn:
 
 1. The externally-tested artifact was the **untested** adamw+sqrtbal config, not plain shells. Plain
    shells is the configuration with four cross-validation replicates behind it, so it is the one whose
-   external behaviour actually bears on the proven claim.
+   external behavior actually bears on the proven claim.
 2. Replicates of **both** arms through the same harness — 3 × shells and 3 × acid-only, distinct seed
    offsets, each externally scored. The shipped artifact is also a single draw, and from a different
    training era, so comparing against it alone is not a controlled A/B.
@@ -250,12 +250,12 @@ Both arms trained through the same harness, three replicates each, all scored on
 | acid-only | 1.1624, 1.1223, 1.1685 | 1.1511 | 0.0251 |
 | shells | 1.1400, 1.1466, 1.1059 | **1.1308** | 0.0218 |
 
-Difference **−0.0203** in shells' favour, SE 0.0192 — **1.05 SE, not resolvable at 3 v 3**. Pooling
+Difference **−0.0203** in shells' favor, SE 0.0192 — **1.05 SE, not resolvable at 3 v 3**. Pooling
 replicates into 12-member ensembles and pairing row by row agrees: 1.1377 vs 1.1141, paired −0.0236, CI
 [−0.0841, +0.0372], spans zero.
 
 **So §1e's "+0.0089 worse" was an artefact of the control.** It compared against the *shipped* artifact at
-1.1311, which sits at z = −0.80 of acid-only's own external distribution — a favourable draw. Every past
+1.1311, which sits at z = −0.80 of acid-only's own external distribution — a favorable draw. Every past
 comparison against that number inherited the same bias.
 
 **The external set cannot resolve 0.02, and no amount of retraining fixes that.** Its paired SE across 390
@@ -277,7 +277,7 @@ Codex. The conclusion may still be right; the evidence never supported it.
 **Why this became the priority.** Every figure above assumes the correct ionizing atom was supplied. A user
 supplies a drawing. Codex said so plainly — "the product must locate the site first" — and it had never
 been measured. A missed site is not a 2% error; it is a pKa that never appears. It also needs no new data:
-12,096 labelled sites already exist.
+12,096 labeled sites already exist.
 
 Measured through `analyzeStructure`, the real entry point, so the domain guards and the default
 `reference-protomer` interpretation are in play. Index alignment is verified per molecule from the result's
@@ -331,12 +331,12 @@ main thing that could have made this measurement worthless.
 **The scope hypothesis in §2a was wrong, and the full data refutes it.** 97% of misses fall INSIDE the
 aqueous window, not outside it. The carbonyl-table gap explained a biased sample and nothing more.
 
-The app is not being cautious to compensate: it reports **2.29 sites per molecule** against 1.00 labelled.
+The app is not being cautious to compensate: it reports **2.29 sites per molecule** against 1.00 labeled.
 It reports plenty; it reports the wrong ones.
 
-**One correction in the locator's favour.** 40 of 313 in-window misses on a randomised 2,500-molecule
+**One correction in the locator's favor.** 40 of 313 in-window misses on a randomised 2,500-molecule
 sample (12.8%) are the app reporting an *equivalent* atom — the other oxygen of the same carboxyl, one
-resonance structure apart. Counting those as misses measures a labelling convention, not a failure any user
+resonance structure apart. Counting those as misses measures a labeling convention, not a failure any user
 sees. Corrected: **89.0% inside the window, 87.9% overall.**
 
 ### 2c. Two functional groups account for 40% of it, and one is a total blind spot
@@ -415,7 +415,7 @@ INDEX UNSTABLE                    0
 | 5 | 91.2% | full pass on the six-bucket harness, strict definition (found + equivalent atom only) |
 | 6 | **91.6%** | 75 rows whose site index came from ChemAxon Marvin left the denominator: 12,096 → **12,021** |
 
-The strict definition credits **only** `found` and `equivalent-atom`. `equivalent-atom` requires the same element sharing a neighbour with the labelled atom — any same-element atom anywhere would credit a phenol for a missed carboxyl.
+The strict definition credits **only** `found` and `equivalent-atom`. `equivalent-atom` requires the same element sharing a neighbor with the labeled atom — any same-element atom anywhere would credit a phenol for a missed carboxyl.
 
 **`same-event-relocated` (482 rows, 4.0 points) IS NOT ADJUDICATED.** Two attempts to verify it failed, both mine: deprotonating the reported atom in the drawn frame removes a second proton from the wrong position, and hand-moving a proton without adjusting bond orders produces radicals. The re-run now dumps the derived structure so the audit can work in the frame the app actually scored. Until then the honest figure is the strict 91.6%.
 

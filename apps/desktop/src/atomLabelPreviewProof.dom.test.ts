@@ -187,7 +187,7 @@ describe.each(["macos", "windows"] as const)("label preview proofs (%s)", platfo
     expect(clipboard.write).toHaveBeenCalledOnce();
     const svg = clipboard.write.mock.calls[0]![0].find(item => item.type === "image/svg+xml")!.text;
     expect(svg).toContain("<svg");
-    expect(svg).toBe(exportPhase4Svg(copyAsScopedDocument(real), { includeWarnings: false }).contents);
+    expect(svg).toBe((await exportPhase4Svg(copyAsScopedDocument(real), { includeWarnings: false })).contents);
     expect(svg).not.toContain(preview.id);
     expect(container.querySelector('[data-atom-count="7"]')).not.toBeNull();
     expect(current().pages[0].objects[0]).toEqual(real.pages[0].objects[0]);

@@ -94,7 +94,7 @@ impl DownloadClient {
 pub(crate) fn cancelled() -> InstallError {
     InstallError {
         code: InstallErrorCode::Cancelled,
-        message: "Installation cancelled.".into(),
+        message: "Installation canceled.".into(),
     }
 }
 

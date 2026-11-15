@@ -56,7 +56,7 @@ Many suite methods appear only in `run.results`, not in the summary.
 | `unsupported` | Outside method support; not computed |
 | `not-applicable` | Method does not apply; not computed |
 | `failed` | Runtime/computation failure; not computed |
-| `cancelled` | Cancelled; not computed |
+| `cancelled` | Canceled; not computed |
 | `timed-out` | Time limit reached; not computed |
 | `not-requested` | Summary only: method was not run |
 
@@ -118,8 +118,8 @@ on each result, including the ring and rotatable-bond definitions.
 | `rdkit.aliphatic-heterocycle-count` | Aliphatic heterocycles |
 | `rdkit.spiro-atom-count` | Atoms joining rings at one shared atom |
 | `rdkit.bridgehead-atom-count` | Bridgehead atom count |
-| `rdkit.atom-stereocentre-count` | Potential atom stereocentres |
-| `rdkit.unspecified-atom-stereocentre-count` | Atom stereocentres without specified configuration |
+| `rdkit.atom-stereocentre-count` | Potential atom stereocenters |
+| `rdkit.unspecified-atom-stereocentre-count` | Atom stereocenters without specified configuration |
 | `rdkit.labute-asa` | Labute approximate surface area |
 | `rdkit.hall-kier-alpha` | Hall–Kier atom correction index |
 | `rdkit.kappa1` | First Kier shape index |

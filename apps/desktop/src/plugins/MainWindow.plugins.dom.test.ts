@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "../testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 
 import { massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
@@ -227,7 +228,7 @@ describe("MainWindow bundled plugin integration", () => {
     window.history.replaceState(null, "", "/?agentBridge=1");
     await renderMainWindow();
     const port = getAssistantHistoryPort();
-    const before = port.read("initial")!;
+    const before = port.read(initialDocumentTabId())!;
     const page = before.pages[0];
     // Visible page-space region is x=120..520, y=160..460 at scale 1.
     const canvas = container!.querySelector<HTMLElement>(".canvas-region")!;
@@ -254,7 +255,7 @@ describe("MainWindow bundled plugin integration", () => {
       await act(async () => { await bundled.runtime!.host.invokeCommand(id); });
       // Let post-insert effects and frames settle; there must be no later recenter commit.
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
-      const after = port.read("initial")!;
+      const after = port.read(initialDocumentTabId())!;
       expect(after.pages[0].objects).toHaveLength(before.pages[0].objects.length + (run + 1) * 2);
       expect(after.selection.objectIds).toHaveLength(2);
       const bounds = selectionBounds(after.pages[0].objects, after.selection.objectIds)!;
@@ -278,12 +279,12 @@ describe("MainWindow bundled plugin integration", () => {
     for (let run = 1; run >= 0; run--) {
       await act(async () => { await bridge.command("edit.undo"); });
       expect(statusText()).toBe("Undid Batch test: Insert complex");
-      expect(port.read("initial")!.pages).toEqual(afterRuns[run].pages);
-      expect(port.read("initial")!.selection).toEqual(afterRuns[run].selection);
+      expect(port.read(initialDocumentTabId())!.pages).toEqual(afterRuns[run].pages);
+      expect(port.read(initialDocumentTabId())!.selection).toEqual(afterRuns[run].selection);
     }
     await act(async () => { await bridge.command("edit.redo"); });
     expect(statusText()).toBe("Redid Batch test: Insert complex");
-    expect(port.read("initial")!.pages).toEqual(afterRuns[1].pages);
+    expect(port.read(initialDocumentTabId())!.pages).toEqual(afterRuns[1].pages);
   });
 
   it("drops a detached report across uninstall, reinstall and closing Plugin Manager", async () => {
@@ -411,7 +412,7 @@ describe("MainWindow bundled plugin integration", () => {
 
     const invocation = runtime!.invokeCommand("plugin.namingTest.run");
     await vi.waitFor(() => expect(nativeDialog.snapshot?.dialogKind).toBe("engineInstall"));
-    expect(nativeDialog.snapshot?.documentTabId).toBe("initial");
+    expect(nativeDialog.snapshot?.documentTabId).toBe(initialDocumentTabId());
     expect(document.querySelector(".structure-naming-host section")).toBeNull();
     expect(bundled.namingResult).toBeUndefined();
 
@@ -749,7 +750,7 @@ describe("MainWindow bundled plugin integration", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       await renderMainWindow();
       nativeDialog.desktop = true;
-      const before = getAssistantHistoryPort().read("initial")!;
+      const before = getAssistantHistoryPort().read(initialDocumentTabId())!;
       const host = bundled.runtime!.host;
       let proposalId!: string;
       await act(async () => {
@@ -769,7 +770,7 @@ describe("MainWindow bundled plugin integration", () => {
         receive({ kind: "close", windowId: review.panelId }, other);
       });
       expect(host.listProposedPatches("pending")).toHaveLength(1);
-      expect(getAssistantHistoryPort().read("initial")!.pages).toEqual(before.pages);
+      expect(getAssistantHistoryPort().read(initialDocumentTabId())!.pages).toEqual(before.pages);
       expect(respond).not.toHaveBeenCalled();
       expect(container!.querySelector("[data-pending-proposals-badge]")).toBeNull();
       expect(warn).toHaveBeenCalledTimes(4);
@@ -783,7 +784,7 @@ describe("MainWindow bundled plugin integration", () => {
       await act(async () => { receive(action, label); });
       expect(host.listProposedPatches("pending")).toHaveLength(0);
       expect(respond).toHaveBeenCalledWith("decision", expect.objectContaining({ ok: true }), label);
-      const inserted = getAssistantHistoryPort().read("initial")!.pages[0]!.objects.some(object => object.id === "reviewed-molecule");
+      const inserted = getAssistantHistoryPort().read(initialDocumentTabId())!.pages[0]!.objects.some(object => object.id === "reviewed-molecule");
       expect(inserted).toBe(kind === "acceptPluginProposal");
     }
   );

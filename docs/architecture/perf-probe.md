@@ -187,7 +187,7 @@ command arguments, return values, rejections and invocation count. Completion bo
   Paint Timing support report their actual first-contentful-paint entry as `doneMs`, then a
   destination post-frame observation as `firstFrameMs`. A retained window reports a fresh content
   frame after reveal; platforms without Paint Timing use that same post-paint method, explicitly
-  labelled by `extra.paintMethod`. The destination emits its own `window-shown` row (or `dialog-open`
+  labeled by `extra.paintMethod`. The destination emits its own `window-shown` row (or `dialog-open`
   for Settings), with its real role, originating input ID and timestamp. Native show return remains
   `windowShownMs`. Closing a toggle finishes with `command-finished`, without an open row. Preferences and
   3D Debugger register an open intent through the probe's own fire-and-forget `perf_log_clock`
@@ -240,7 +240,7 @@ command arguments, return values, rejections and invocation count. Completion bo
 - `command-finished`: the registry promise settled, or a command handled directly by the main
   dispatcher returned, without a stronger registered completion. Window-close toggles use this signal.
 - `frame`: input with no command or stronger state signal, observed at the next frame.
-- `gesture-ended`: a canvas pointer gesture ended or was cancelled without a document commit;
+- `gesture-ended`: a canvas pointer gesture ended or was canceled without a document commit;
   pointerup/cancel settle its existing pointerdown row. Palette pointerup is also captured to
   attribute primary flyout-button commands, without starting another input row.
 - `canvas-ready`: the main canvas is mounted and session hydration finishes. `doneMs` uses that
@@ -306,7 +306,7 @@ Durations before the input are clamped to zero and adjusted rows carry `extra.cl
 This bound is a tolerance, not a claim that every calibration has at most 10 ms of error.
 
 `extra.frameSource` identifies `dom-commit`, `input-task`, `document-open`,
-`window-shown`, `no-op`, `gesture-end`, or `destination-window`. Concurrent commands with ambiguous commit attribution are labelled
+`window-shown`, `no-op`, `gesture-end`, or `destination-window`. Concurrent commands with ambiguous commit attribution are labeled
 `extra.ambiguousCompletion`; compare serial operations and exclude those rows. The probe does not
 claim command-specific completion for arbitrary plugin background work after its command returns.
 `input-task` means the frame was scheduled from the input's microtask and no DOM observation
@@ -379,7 +379,7 @@ fake time, and assert the probe disables (no subsequent fault calls or rows):
 This matrix tests those hooks, not every internal method or native OS operation. Window effects
 and files are mocked at transport boundaries; real focus/z-order and compositor timing still need
 the packaged macOS/Windows hands-on pass above.
-The independent AST backstop scans every non-test source file under `apps/desktop/src`, recognises
+The independent AST backstop scans every non-test source file under `apps/desktop/src`, recognizes
 optional/non-null calls and aliases/destructuring, and reports unisolated or awaited diagnostics with
 file and line. Paths are separator-agnostic, tested with explicit macOS/Windows path selection.
 Deferred callbacks, object/class methods, accessors, constructors and class field initializers

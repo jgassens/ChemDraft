@@ -132,6 +132,40 @@ describe("ToolPalette schema-backed items", () => {
     document.body.innerHTML = "";
   });
 
+  it.each(["ArrowDown", "ArrowRight"])("navigates a mouse-opened flyout with %s and chooses once", async (arrow) => {
+    vi.useFakeTimers();
+    const item = {
+      ...schemaBondItem,
+      submenu: { ...schemaBondItem.submenu!, items: [bondCommand,
+        { ...bondCommand, id: "disabled", enabled: false },
+        { ...bondCommand, id: "third", title: "Third" }] }
+    };
+    const { button, host, root, onInvoke } = await renderSchemaPalette(item);
+    try {
+      await act(async () => {
+        dispatchPointerButton(button, "pointerdown");
+        vi.advanceTimersByTime(TOOLBAR_FLYOUT_HOLD_MS);
+        dispatchPointerButton(button, "pointerup");
+      });
+      const choices = host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+      const key = async (value: string) => act(async () => {
+        document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
+      });
+      await key(arrow);
+      expect(document.activeElement).toBe(choices[0]);
+      await key(arrow);
+      expect(document.activeElement).toBe(choices[2]);
+      await key(arrow === "ArrowDown" ? "ArrowUp" : "ArrowLeft");
+      expect(document.activeElement).toBe(choices[0]);
+      await key(arrow);
+      await key(arrow === "ArrowDown" ? "Enter" : " ");
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith("third");
+      expect(host.querySelector<HTMLElement>('[role="menu"]')?.hidden).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it.each(["cyclopropane", "cyclobutane", "cyclopentane", "cyclohexane", "cycloheptane", "cyclooctane"])("opens the ring dropdown and invokes %s exactly once", async name => {
     vi.useFakeTimers();
     const ring = getToolsetItemGroups("core.main").flat().find(item => item.id === "tool.benzene")!;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import { adjustArrangementSpacing, arrangementSpacingRange, arrangementSpacingPreviewBounds } from "./documentWorkflow";
 import { ArrangementSpacingForm } from "./dialogs/ArrangementSpacingForm";
 
@@ -20,7 +20,7 @@ export function frameArrangementSpacingPreviewSvg(svg: string, pageWidth: number
 }
 
 /** Runs only in the document owner; native forms receive previews, never documents. */
-export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent: number): string {
+export async function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent: number): Promise<string> {
   const result = adjustArrangementSpacing(source, percent / 100);
   if (!result.ok) throw new Error(result.status);
   if (!arrangementSpacingPreviewBounds(source)) throw new Error("Select at least two compounds or groups.");
@@ -29,6 +29,7 @@ export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent:
   const page = source.pages[pageIndex];
   // Keep the whole page and its scale fixed while the compounds move. These decorations belong
   // only to the preview: document geometry and ordinary exports remain untouched.
+  await ensureSvgFontsLoaded(result.document, { pageIndex });
   return frameArrangementSpacingPreviewSvg(
     exportDocumentToSvg(result.document, { pageIndex, includePageGuides: false, includeWarnings: false }).contents,
     page.width, page.height
@@ -42,9 +43,13 @@ export function ArrangementSpacingDialog({ document: source, onSave, onCancel }:
   const [percent, setPercent] = useState(100);
   const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
   const range = useMemo(() => arrangementSpacingRange(source), [source]);
-  const preview = useMemo(() => {
-    try { return { image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(arrangementSpacingPreviewSvg(source, percent))}` }; }
-    catch (error) { return { error: String(error) }; }
+  const [preview, setPreview] = useState<{ image?: string; error?: string }>({});
+  useEffect(() => {
+    let cancelled = false;
+    void arrangementSpacingPreviewSvg(source, percent).then(svg => {
+      if (!cancelled) setPreview({ image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` });
+    }).catch(error => { if (!cancelled) setPreview({ error: String(error) }); });
+    return () => { cancelled = true; };
   }, [source, percent]);
   useEffect(() => {
     return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };

@@ -495,7 +495,7 @@ describe("createPluginRuntime recognition review", () => {
     expect(JSON.stringify(outcome)).not.toContain("hostReview");
 
     const [queued] = runtime.host.listProposedPatches("pending");
-    const item = proposalReviewItem(runtime.host, queued!);
+    const item = (await proposalReviewItem(runtime.host, queued!));
     expect(item.recognition).toMatchObject({
       confidenceTier: "low",
       sourceImageRef: "data:image/png;base64,AQID",

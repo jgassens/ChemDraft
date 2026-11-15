@@ -118,6 +118,38 @@ const stereoBondCodes = (molfile: string): Array<{ from: number; to: number; ste
 };
 
 describe("reconcileFlattenedStereo — repair algorithm", () => {
+  it.each([false, true])("preserves an adjacent directed wave through reconciliation (repeated markers: %s)", repeated => {
+    const { template, atoms, bonds } = stubMolecule("wedge");
+    // a0 is specified, adjacent a1 explicitly unknown. The connecting wave points
+    // from a1 to a0, making a stolen relocation also reverse the unknown end.
+    atoms[1]!.element = "C";
+    bonds[0]!.toAtomId = "a2";
+    bonds[1] = { ...bonds[1]!, fromAtomId: "a1", toAtomId: "a0", display: { bondStyle: "wavy" } };
+    if (repeated) bonds[2]!.display = { bondStyle: "wedge" };
+    atoms.push({ id: "a4", element: "Cl", x: 0, y: -1, formalCharge: 0 });
+    bonds.push({ id: "b3", fromAtomId: "a0", toAtomId: "a4", order: "single" });
+    for (const [index, element] of ["F", "Cl", "Br"].entries()) {
+      atoms.push({ id: `u${index}`, element, x: 2, y: index - 1, formalCharge: 0 });
+      bonds.push({ id: `ub${index}`, fromAtomId: "a1", toAtomId: `u${index}`, order: "single" });
+    }
+    const wave = structuredClone(bonds[1]!);
+    let calls = 0;
+    const perceive: StereoPerceiver = () => {
+      calls++;
+      return atoms.map((_, index): PerceivedAtom => ({
+        isStereoCenter: index < 2, descriptor: index === 0 ? "R" : "unspecified"
+      }));
+    };
+    const result = reconcileFlattenedStereo(template, atoms, bonds, new Map([[0, "R"]]), perceive, {
+      // The unknown centre would be the overwhelmingly preferred depth candidate.
+      depthByAtomId: new Map(atoms.map(atom => [atom.id, atom.id === "a1" ? 10 : 0]))
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBeGreaterThan(1);
+    expect(result.bonds.find(bond => bond.id === wave.id)).toEqual(wave);
+    expect(result.bonds.filter(bond => bond.display?.bondStyle === "wavy")).toHaveLength(1);
+  });
+
   it("leaves a depiction that already reads correctly untouched", () => {
     const { template, atoms, bonds } = stubMolecule("wedge");
     const reader = scriptedReader([center("R")]);
@@ -373,6 +405,41 @@ function randomQuat(): Quaternion {
 describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)", () => {
   beforeAll(async () => {
     await ensureOclResources();
+  }, 120_000);
+
+  it("keeps a wave's unknown end next to a specified centre through flatten reconciliation and reopen", async () => {
+    const placed = placeSmiles("F[C@H](Cl)C(Br)I");
+    const document = structuredClone(placed.document);
+    const molId = placed.molId;
+    const start = molOf(document, molId);
+    const initial = perceiveStereoCentersFromMolfile(mf(start));
+    const specified = start.atoms.find((_, i) => initial[i]?.descriptor === "R" || initial[i]?.descriptor === "S")!;
+    const unknown = start.atoms.find((atom, i) => atom.element === "C" && atom.id !== specified.id && initial[i]?.descriptor === "unspecified")!;
+    const wave = start.bonds.find(bond =>
+      [bond.fromAtomId, bond.toAtomId].includes(specified.id) && [bond.fromAtomId, bond.toAtomId].includes(unknown.id))!;
+    wave.fromAtomId = unknown.id;
+    wave.toAtomId = specified.id;
+    wave.display = { bondStyle: "wavy" };
+    const intent = perceiveStereoCentersFromMolfile(mf(start));
+    expect(intent.filter(atom => atom.descriptor === "R" || atom.descriptor === "S")).toHaveLength(1);
+    const coords = (await oclConformerGenerator.generate3DConformer({ molfile: mf(start) }, { optimize: "auto" }))
+      .mapping.coords3dByOriginalAtom;
+    let committed = 0;
+    for (let attempt = 0; attempt < 30 && committed < 4; attempt++) {
+      const outcome = flattenSpunMolecule(document, molId, coords,
+        quatToViewMatrix(quatFromAxisAngle([1, 2, 3], 0.3 + attempt * 0.1)), {
+          perceiveStereo: perceiveStereoCentersFromMolfile, perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile
+        });
+      if (outcome.status !== "committed") continue;
+      committed++;
+      const flat = molOf(deserializeDocument(serializeDocument(outcome.document)), molId);
+      expect(flat.bonds.find(bond => bond.id === wave.id)).toMatchObject({
+        fromAtomId: unknown.id, toAtomId: specified.id, display: { bondStyle: "wavy" }
+      });
+      expect(perceiveStereoCentersFromMolfile(mf(flat))).toEqual(intent);
+      expect(isoSmiles(flat)).toBe(isoSmiles(start));
+    }
+    expect(committed).toBe(4);
   }, 120_000);
 
   it.each(["CC(O)CC", "C[C@H](O)C(O)CC"])(

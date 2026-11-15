@@ -137,7 +137,8 @@ describe("document-window spectrum actions", () => {
       expect(encode).not.toHaveBeenCalled();
       expect(decode).not.toHaveBeenCalled();
       expect(dependencies.writeClipboard).not.toHaveBeenCalled();
-    }
+    },
+    30_000 // Validating the full transfer-size UTF-8 payload is the subject of this test.
   );
 
   it.each([
@@ -191,7 +192,7 @@ describe("document-window spectrum actions", () => {
       expect(isolated.writeClipboard).not.toHaveBeenCalled();
       expect(isolated.respondCopy).toHaveBeenCalledWith("copy-1", false);
     }
-  });
+  }, 30_000); // The oversized 16 MiB profile must really be encoded and validated.
 
   it("retains realistic upper PNG dimensions, inflate output, profiles, EXIF and full density values", async () => {
     const width = 4096, height = 2048; // 8 MP / 32 MiB RGBA, larger than a 4x spectrum.
@@ -344,7 +345,7 @@ describe("document-window spectrum actions", () => {
     expect(dependencies.saveBinary).toHaveBeenCalledWith("spectrum.png", bytes, expect.any(Object));
     expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
     expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");
-  });
+  }, 30_000); // Real rasterization and PNG validation can be slow on loaded CI.
 
   it.each([
     '<script>alert(1)</script><foreignObject/><image href="https://attacker.invalid/x"/>',

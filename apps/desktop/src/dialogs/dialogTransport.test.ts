@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../window-manager/tauriEvents", () => ({ listenCurrentWindowEvent: async (name: string, handler: (e: { payload: DialogDelivery }) => void) => {
   native.events.set(name, handler); return () => native.events.delete(name);
 } }));
-import { nativeDialogTransport, subscribeDialogHost } from "./dialogTransport";
+import { nativeDialogTransport, sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
 import { DialogCoordinator } from "./DialogCoordinator";
 import type { DialogMessage } from "./dialogProtocol";
 const snapshot: DialogMessage = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab", dialogKind: "pageSize", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8, height: 11, unit: "inch" } };
@@ -23,6 +23,34 @@ const delivery = (message: DialogMessage, senderWindowId = "main"): DialogDelive
   ({ senderWindowId, windowLabel: "dialog-main-pageSize-1", message });
 afterEach(() => { vi.clearAllMocks(); native.channels.length = 0; native.events.clear(); });
 describe("authenticated native dialog channels", () => {
+  it("receives and sends either real owner and refuses mismatched labels or senders", async () => {
+    for (const ownerWindowId of ["main", "doc-a", "doc-b"]) {
+      const message = { ...snapshot, ownerWindowId };
+      const windowLabel = `dialog-${ownerWindowId}-pageSize-1`;
+      const receive = vi.fn();
+      native.invoke.mockResolvedValue(undefined);
+      const stop = await subscribeDialogHost(`host-${ownerWindowId}`, receive);
+      const channel = native.channels.at(-1)!;
+      channel.onmessage({ message, windowLabel, senderWindowId: ownerWindowId });
+      expect(receive).toHaveBeenCalledExactlyOnceWith(message);
+      for (const forged of [
+        { message, windowLabel, senderWindowId: "toolset-core-main" },
+        { message, windowLabel: "dialog-doc-foreign-pageSize-1", senderWindowId: ownerWindowId },
+        { message: { ...message, ownerWindowId: "doc-foreign" }, windowLabel: "dialog-doc-foreign-pageSize-1", senderWindowId: "doc-foreign" },
+        { message, windowLabel: `dialog-${ownerWindowId}-export-1`, senderWindowId: ownerWindowId },
+        { message, windowLabel: "dialog-main-pageSize-../main", senderWindowId: ownerWindowId }
+      ]) channel.onmessage(forged);
+      expect(receive).toHaveBeenCalledTimes(1);
+      const ready: DialogMessage = { ...message, type: "ready", data: {} };
+      await sendDialogMessage(`host-${ownerWindowId}`, ready);
+      expect(native.invoke).toHaveBeenLastCalledWith("dialog_send", { hostId: `host-${ownerWindowId}`, message: ready });
+      const calls = native.invoke.mock.calls.length;
+      await expect(sendDialogMessage(`host-${ownerWindowId}`, { ...ready, ownerWindowId: "doc-foreign" })).rejects.toThrow("Invalid dialog message");
+      expect(native.invoke).toHaveBeenCalledTimes(calls);
+      stop();
+      await expect(sendDialogMessage(`host-${ownerWindowId}`, ready)).rejects.toThrow("Invalid dialog message");
+    }
+  });
   it("ignores forged owner actions and closed events even with the observed session and exact sender fields", async () => {
     const applyPageSize = vi.fn(); const onSettled = vi.fn();
     let opened!: DialogMessage;

@@ -389,8 +389,10 @@ export function flattenPerspectiveFrom3D(
   // check can only become more conservative (a real contradiction still refuses),
   // and all original markers are stripped before re-encoding regardless.
   const originalMarkerByCenter = new Map<string, { neighborId: string; style: StereoMarkerStyle }>();
+  const unknownCenters = new Set(bonds.filter(bond => bond.display?.bondStyle === "wavy").map(bond => bond.fromAtomId));
   for (const bond of bonds) {
     if (isStereoStyle(bond.display?.bondStyle)) {
+      if (unknownCenters.has(bond.fromAtomId)) continue;
       // narrow end (stereocenter) is fromAtomId by ChemDraft convention.
       // A wedge/hash only encodes stereo at an ACTUAL stereocenter. When the caller supplies the
       // perceived stereocenter set, ignore markers on non-centers: they are graphic "toward/away"
@@ -467,7 +469,7 @@ export function flattenPerspectiveFrom3D(
     const centerProj = projected.get(centerId) as Projected;
 
     for (const neighbor of neighbors) {
-      if (neighbor.bond.order !== "single") continue; // never wedge a non-single bond
+      if (neighbor.bond.order !== "single" || neighbor.bond.display?.bondStyle === "wavy") continue;
       const neighborProj = projected.get(neighbor.atomId) as Projected;
       const projLength = Math.hypot(neighborProj.x - centerProj.x, neighborProj.y - centerProj.y);
       if (projLength < minWedgeLength) continue; // too foreshortened to read

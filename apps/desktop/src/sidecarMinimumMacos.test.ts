@@ -55,12 +55,16 @@ describe("sidecar minimum macOS", () => {
     expect(versionString(minimumMacos(buffer))).toBe("11.2.3");
   });
 
-  it("does not exceed the app's declared minimum", () => {
+  it.each([
+    ["aarch64-apple-darwin", 0x0100000c],
+    ["x86_64-apple-darwin", 0x01000007]
+  ])("%s does not exceed the app's declared minimum", (target, cpu) => {
     const config = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
     const declared = config.bundle.macOS.minimumSystemVersion as string;
     expect(declared).toBe("11.0");
-    const binary = readFileSync(new URL("../src-tauri/binaries/avogadro3d-sidecar-aarch64-apple-darwin", import.meta.url));
+    const binary = readFileSync(new URL(`../src-tauri/binaries/avogadro3d-sidecar-${target}`, import.meta.url));
     const actual = minimumMacos(binary);
+    expect(binary.readUInt32LE(4)).toBe(cpu);
     expect(actual, `Sidecar requires macOS ${versionString(actual)}; app declares ${declared}`).toBeLessThanOrEqual(packedVersion(declared));
   });
 });

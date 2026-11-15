@@ -6,6 +6,7 @@
 import {
   drawnLabelBondSide,
   normalizeAtomIsotope,
+  UnknownBondOrderError,
   type ChemDraftDocument,
   type ChemicalMetadata,
   type CompatibilityWarning,
@@ -74,6 +75,8 @@ export interface NativeAtomValidationState {
   formalCharge: number;
   expectedFormalCharge?: number;
   valid: boolean;
+  /** User acknowledgement hides only the canvas badge, never the diagnostic. */
+  warningSuppressed?: true;
   /** Why the badge shows, short enough for the status line ("OMe attaches by 1 bond; this atom has 2."). */
   invalidReason?: string;
   /**
@@ -293,21 +296,20 @@ export function nativeAtomValidationState(
   atoms: readonly MoleculeAtom[] = [atom],
   resolution: NativeBondOrderResolution = nativeBondOrderResolution(atoms, bonds)
 ): NativeAtomValidationState {
+  const state = nativeAtomDiagnostic(atom, bonds, effectiveFormalCharge, atoms, resolution);
+  return atom.warningSuppressed === true ? { ...state, warningSuppressed: true } : state;
+}
+
+function nativeAtomDiagnostic(
+  atom: MoleculeAtom,
+  bonds: readonly MoleculeBond[],
+  effectiveFormalCharge: number,
+  atoms: readonly MoleculeAtom[],
+  resolution: NativeBondOrderResolution
+): NativeAtomValidationState {
   const element = nativeElementFromAtomLabel(atom.element);
   // Unpaired electrons from associated radical marks occupy bonding slots like bonds do.
   const valenceUsed = (resolution.bondOrderUsage.get(atom.id) ?? 0) + (atom.markRadicals ?? 0);
-
-  // The user dismissed this atom's warning from the context menu — report it valid so no
-  // badge renders and no warning is stored, whatever the arithmetic says.
-  if (atom.warningSuppressed === true) {
-    return {
-      atomId: atom.id,
-      element: element ?? (atom.element.trim() || "(blank)"),
-      valenceUsed,
-      formalCharge: effectiveFormalCharge,
-      valid: true
-    };
-  }
 
   // Aromatic bonds with no Kekulé pattern were counted as single so the formula and label still
   // have a number, but that number is a guess: say so on the atom rather than let it pass.
@@ -334,7 +336,7 @@ export function nativeAtomValidationState(
         valid: false,
         ...(resolution.unresolvedAtomIds.has(atom.id) ? { unresolvedAromatic: true as const } : {}),
         invalidReason: `${element} states ${hint} H, but its bonds and charge give ${resolvedHydrogens}.`,
-        invalidDetail: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honoured.`
+        invalidDetail: `${element} atom ${atom.id} states ${hint} hydrogens (NumHydrogens), but its bonds and charge resolve to ${resolvedHydrogens}; the stated count could not be honored.`
       };
     }
   }
@@ -385,7 +387,8 @@ export function nativeAtomValidationState(
     const symbol = atom.element.trim() || "(blank)";
     // A cyano label with its bond on the right is the other isomer, so it reads as a bare formula.
     const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], atoms);
-    const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
+    const reading = nativeAtomLabelReading(atom.element, { bondSide, typed: atom.labelLiteral === true,
+      schemeAbbreviation: atom.schemeAbbreviation });
     // An abbreviation ("OMe", "Ph") or a composite of one ("NMe2") spells its whole group,
     // hydrogens included, so the label's bonds must fill exactly the group's free valence —
     // whether the label was typed or placed by a hotkey. "OMe" on a ring carbon is an O with
@@ -586,6 +589,7 @@ export function nativeAtomLabelContext(
   return {
     bonded,
     typed: atom.labelLiteral === true,
+    schemeAbbreviation: atom.schemeAbbreviation,
     ...(bondSide ? { bondSide } : {})
   };
 }
@@ -956,6 +960,21 @@ export function nativeSingleBondGraphMetadata(
   atoms: readonly MoleculeAtom[],
   bonds: readonly MoleculeBond[]
 ): ChemicalMetadata {
+  const unknownIds = bonds.filter(bond => bond.order === "unknown").map(bond => bond.id);
+  if (unknownIds.length) {
+    // An unknown bond has no valence contribution from which to infer H, formula or mass.
+    // Decline before the label/valence walk instead of publishing a guessed single-bond number.
+    return {
+      atomCount: atoms.length, bondCount: bonds.length,
+      totalCharge: atoms.reduce((sum, atom) => sum + atom.formalCharge, 0),
+      radicalCount: atoms.reduce((sum, atom) => sum + (atom.markRadicals ?? 0), 0),
+      isotopeLabels: [...new Set(atoms.flatMap(atom => atom.element === "D" ? ["2H"] :
+        atom.element === "T" ? ["3H"] : atom.isotope === undefined ? [] : [`${atom.isotope}${atom.element}`]))].sort(),
+      stereochemistry: [],
+      warnings: [{ code: "native.unknown_bond_order",
+        message: `${new UnknownBondOrderError(unknownIds).message} Formula, average mass and exact mass were not calculated.` }]
+    };
+  }
   const elementCounts = new Map<string, number>();
   // Aromatic bonds count at their Kekulé orders — the same bonds `atomDisplayLabel` counts, so the
   // formula's hydrogens are the ones the drawing shows.
@@ -995,7 +1014,8 @@ export function nativeSingleBondGraphMetadata(
       // Placeholders, unrecognized text and flagged groups count nothing. Read with the same bond
       // side as the expansion, so a cyano label it declined is counted here as the formula it is.
       const bondSide = nativeLabelBondSide(atom, resolution.bondsByAtom.get(atom.id) ?? [], countedAtoms);
-      const reading = nativeAtomLabelReading(atom.element, bondSide ? { bondSide } : {});
+      const reading = nativeAtomLabelReading(atom.element, { bondSide, typed: atom.labelLiteral === true,
+        schemeAbbreviation: atom.schemeAbbreviation });
       const counts = reading.kind === "formula"
         ? reading.counts
         : reading.kind === "spelled" ? parseCondensedLabelFormula(atom.element) : undefined;

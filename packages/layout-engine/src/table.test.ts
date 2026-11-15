@@ -5,7 +5,7 @@ import { planPageSvgRender, type PageSvgElementFragment } from "./index";
 import {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement
 } from "./table";
-import { measureTextRun } from "./textMetrics";
+import { measureTextRun, nativeTextMetrics } from "./textMetrics";
 import { elementFragments } from "./testing";
 
 const document = parseDocument(JSON.parse(readFileSync(new URL("../../fixtures/tables/sharpless-reagent-table.json", import.meta.url), "utf8")));
@@ -19,6 +19,65 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
+  it("grows a row for a double-size run and shares its baseline with other cells", () => {
+    const input = smallTable("left", ["large small", "next"]);
+    input.columns.push({ ...input.columns[0], id: "second" });
+    input.rows[0].cells[0].spans = [
+      { text: "large", script: "normal", style: { fontSizePx: 36 } },
+      { text: " small", script: "normal", style: {} }
+    ];
+    input.rows.forEach(row => row.cells.push({ text: "peer", spans: [] }));
+    const layout = planTableLayout(input);
+    expect(layout.rows[0].height).toBeCloseTo(47.2);
+    expect(layout.rows[1].height).toBe(25.599999999999998);
+    expect(layout.rows[1].y).toBeCloseTo(127.2);
+    const baseline = layout.cells[0].lines[0].baselineY;
+    expect(baseline).toBeCloseTo(100 + 18 * nativeTextMetrics.capHeightEm);
+    expect(layout.cells[1].lines[0].baselineY).toBe(baseline);
+    expect(baseline + 36 * nativeTextMetrics.descentEm).toBeLessThan(layout.rows[0].y + layout.rows[0].height);
+    const svgTexts = elementFragments(planTableObjectSvg(input, 0)).filter(element => element.tag === "text");
+    expect(svgTexts[0].attrs.y).toBe(baseline);
+    expect(svgTexts[1].attrs.y).toBe(baseline);
+    expect(svgTexts[0].children[0]).toMatchObject({ attrs: { "font-size": 36 } });
+  });
+
+  it("measures separate line sizes and aligns corresponding lines across a row", () => {
+    const input = smallTable("left", ["normal\nlarge\nsmall"]);
+    input.rows[0].cells[0].spans = [
+      { text: "normal\n", script: "normal", style: {} },
+      { text: "large\n", script: "normal", style: { fontSizePx: 36 } },
+      { text: "small", script: "normal", style: { fontSizePx: 9 } }
+    ];
+    input.columns.push({ ...input.columns[0], id: "second" });
+    input.rows[0].cells.push({ text: "peer\npeer\npeer", spans: [] });
+    const layout = planTableLayout(input);
+    expect(layout.rows[0].height).toBeCloseTo(90.4);
+    expect(layout.cells[0].lines.map(line => line.baselineY)).toEqual(layout.cells[1].lines.map(line => line.baselineY));
+    expect(layout.cells[0].lines[0].baselineY).toBe(100);
+    expect(layout.cells[0].lines[1].baselineY).toBeCloseTo(134.488);
+    expect(layout.cells[0].lines[2].baselineY).toBeCloseTo(164.8);
+    // A large first line in a peer must also move later lines in this cell.
+    const peer = structuredClone(input);
+    peer.rows[0].cells[1].spans = [{ text: "peer", script: "normal", style: { fontSizePx: 54 } },
+      { text: "\npeer\npeer", script: "normal", style: {} }];
+    const peerLayout = planTableLayout(peer);
+    expect(peerLayout.rows[0].height).toBeCloseTo(133.6);
+    expect(peerLayout.cells[0].lines.map(line => line.baselineY)).toEqual(peerLayout.cells[1].lines.map(line => line.baselineY));
+    expect(peerLayout.cells[0].lines[1].baselineY).toBeCloseTo(177.688);
+  });
+
+  it("pins the legacy line boxes without overrides, and does not shrink smaller runs", () => {
+    const input = smallTable("left", ["first\nsecond", "last"]);
+    const layout = planTableLayout(input);
+    expect(layout.rows.map(row => row.height)).toEqual([47.199999999999996, 25.599999999999998]);
+    expect(layout.cells.map(cell => cell.lines.map(line => line.baselineY))).toEqual([[100, 121.6], [147.2]]);
+    const smaller = structuredClone(input);
+    smaller.rows[0].cells[0].spans = [{ text: "first\nsecond", script: "normal", style: { fontSizePx: 9 } }];
+    expect(planTableLayout(smaller).rows).toEqual(layout.rows);
+    expect(planTableLayout(smaller).cells.map(cell => cell.lines.map(line => line.baselineY)))
+      .toEqual(layout.cells.map(cell => cell.lines.map(line => line.baselineY)));
+  });
+
   it("applies an explicit minimum to auto columns without changing fixed or natural content widths", () => {
     const withMinimum = (input: TableObject) => ({ ...input, tableStyle: { ...input.tableStyle, autoColumnMinEm: 3 } });
     const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
@@ -119,6 +178,10 @@ describe("table layout and SVG", () => {
     `);
     expect(layout.columns.every(column => column.width > 0)).toBe(true);
     expect(layout.rows.every(row => row.height === style.fontSizePx * style.lineHeight + 4)).toBe(true);
+    expect(layout.rows.map(row => row.height)).toEqual(Array(6).fill(25.599999999999998));
+    expect(layout.bodyBox.y).toBeCloseTo(103.44);
+    expect(layout.bodyBox.height).toBeCloseTo(153.6);
+    expect(layout.cells.every(cell => cell.lines[0].baselineY === layout.rows[cell.rowIndex].y + 20)).toBe(true);
     expect(planTableLayout(structuredClone(table))).toEqual(layout);
     expect(JSON.stringify(table)).toBe(before);
     expect(layout.origin).toEqual({ x: table.x, y: table.y });

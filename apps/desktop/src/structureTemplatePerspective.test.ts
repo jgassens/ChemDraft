@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { createElement, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -218,7 +219,7 @@ describe("Clean Up of an inserted perspective template", () => {
       initialDocument: createEmptyDocument(), initialActiveToolCommandId: "tool.select",
       initialPaletteMode: "hidden", initialRulersVisible: false, nativePalette: false
     })));
-    const current = () => getAssistantHistoryPort().read("initial")!;
+    const current = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
     const status = () => container.querySelector("[role=status]")?.textContent;
     await command(`template.insert.${template.id}`);
     const before = molecule(current()), beforeIdentity = identity(before);

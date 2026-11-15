@@ -12,11 +12,12 @@ function graph(count = 2, charge = 0, radicals = 0): MoleculeObject {
   };
 }
 describe("labelOnBondedAtom", () => {
-  it.each(["OMe", "OH", "Me", "Ph", "Et", "CF3", "NO2", "D", "T", "R", "X", "?", "Ar", "NMe2"])("attaches %s on a two-bond carbon", label => {
+  // Normally monovalent elements follow the same attachment rule as one-bond groups.
+  it.each(["Cl", "Br", "F", "I", "OMe", "OH", "Me", "Ph", "Et", "CF3", "NO2", "D", "T", "R", "X", "?", "Ar", "NMe2"])("attaches %s on a two-bond carbon", label => {
     const m = graph();
     expect(labelOnBondedAtom(label, m.atoms[0]!, m)).toMatchObject({ kind: "substituent", external: 2, bondCount: 2 });
   });
-  it.each(["NMe", "CMe2", "NMe3", "N", "O", "Cl", "Ome", "CONH2"])("relabels %s on a two-bond carbon", label => {
+  it.each(["NMe", "CMe2", "NMe3", "N", "O", "Ome", "CONH2"])("relabels %s on a two-bond carbon", label => {
     const m = graph();
     expect(labelOnBondedAtom(label, m.atoms[0]!, m).kind).toBe("relabel");
   });

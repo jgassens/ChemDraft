@@ -1,5 +1,5 @@
 import { ToolsetRegistry, applyToolsetLayoutState } from "@chemdraft/toolset-registry";
-import { desktopToolsets, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
+import { desktopToolsets, migrateBracketToolbarOrder, type DesktopToolsetDefinition, type DesktopToolsetRegistry } from "../toolsets";
 import { SHELL_COMMAND_IDS } from "../shellCommandIds";
 import type { IconName } from "../icons";
 import type { ToolbarAssetName } from "../toolbarAssets";
@@ -39,7 +39,7 @@ export function createToolbarCatalog(): ToolbarCatalog {
     }
 
     const warnings: string[] = [];
-    const applied = applyToolsetLayoutState<IconName, ToolbarAssetName>(combined, layoutState, {
+    const applied = applyToolsetLayoutState<IconName, ToolbarAssetName>(combined, migrateBracketToolbarOrder(layoutState), {
       // In-place customize can add any shell command, not just manifest ones — treat the whole
       // catalog as valid so those additions aren't pruned as "unknown" on render.
       additionalCommandIds: SHELL_COMMAND_IDS,

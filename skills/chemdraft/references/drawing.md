@@ -48,9 +48,9 @@ one-off `--style fit` image requested at a particular size.
 Use `--background transparent` for slide backgrounds; view on the actual
 slide background to check contrast. `both` writes `.svg` and `.png`.
 Check label masks too: a transparent canvas does not ensure that atom-label
-backgrounds blend with a coloured slide. Known limitation: `render` paints
+backgrounds blend with a colored slide. Known limitation: `render` paints
 an opaque white patch behind every atom label even with
-`--background transparent`. For a figure on a coloured background, use
+`--background transparent`. For a figure on a colored background, use
 `document` and `render-document` with the molecule's
 `atomLabelBackgroundColor` set to `"transparent"` ([art](art.md)).
 Render results include specified and unspecified stereo counts and warnings.
@@ -85,6 +85,13 @@ with guessed drawings. MCP `render_grid` takes the array as `items` rather
 than a batch filename and selects `format` separately.
 
 ## Reaction
+
+Reaction JSON exposes `alignmentWarnings` with `reaction.alignment_skipped` (no qualifying shared
+core or refused alignment) or `reaction.alignment_timeout` (search canceled or budget exhausted).
+`component.role` is `product`; `component.index` is its zero-based input index. Small or unrelated
+products also report skipped alignment. With no reactants no alignment warning is emitted.
+Timeouts may retain an earlier completed alignment. The assistant's insertion tool returns the
+same structured diagnostics; messages also appear in `warnings`.
 
 Provide one input mode: `--rxn`, repeated role flags, or `--batch`.
 Reaction SMILES has exactly two `>` separators: reactants, agents, products.
@@ -131,10 +138,11 @@ For example: `pnpm -s chemdraft reaction --reactant 'CCO' --product 'CCO' --abov
 Use above for reagents and catalysts, below for solvent, temperature and time; formula subscripts are automatic. MCP `render_reaction` accepts `above` and `below` string arrays and a `caption` string.
 Captions are not formula-formatted; mechanism names such as SN2 are never subscripted.
 Reaction labels (CLI, batch and MCP) allow at most 6 above and 6 below entries, a non-empty caption of at most 300 characters, and 2000 characters combined across above, below, caption and legacy conditions.
+The formatted reaction-conditions dialog and its editing preference are app-only.
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants
-left and products right. Species, plus signs and arrows use 24 px gutters.
+left and products right. Species, plus signs and arrows use equal gaps of 1.25 bond lengths, measured between drawn ink bounds.
 
 Reaction batch shape:
 
@@ -174,13 +182,15 @@ ordering-dependent and must not be read as R/S.
 
 ## Styled figures and the desktop app
 
-`render`, `grid` and `reaction` take no styling options, but styling is
-available headlessly. `document` (MCP `build_document`) writes the native
+`render`, `grid` and `reaction` accept `fit`/`document` sizing, but no named
+native preset or detailed art options. Styling is available headlessly.
+`document` (MCP `build_document`) writes the native
 document with atom, bond and ring ids; edit its JSON and render it with
 `render-document` (MCP `render_document`). That covers ring fills and
-gradients, ring letters, bond and atom-label colours and weights, bold or
-hashed bonds, explicit H and Me, the sketch, shadow and glow effects,
-text, lines, curved arrows, mechanism arrows and fishhooks, and brackets.
+gradients, ring letters, bond and atom-label colors and weights, bold or
+hashed bonds, wavy single bonds, explicit H and Me, the Sketch handwriting,
+shadow and glow effects, text, lines, curved arrows, mechanism arrows and
+fishhooks, electron marks, and paired round brackets with repeat labels.
 Read [art](art.md) before answering any appearance or "in the style of"
 request, and never call a visual style impossible without trying it there.
 

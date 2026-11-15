@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 import {
-  createPhase4Document, insertNativeSingleBondMolecule,
+  nativeMoleculeInvalidAtomStates, createPhase4Document, insertNativeSingleBondMolecule,
   nativeAtomSproutHotkeyTarget, nativeCarbonylHotkeyAtAtomTarget, nativeSingleBondHotkeyAtAtomTarget,
   type NativeAtomSproutHotkeyResult, type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
@@ -100,7 +100,7 @@ describe("sprout refusal diagnostics", () => {
     } }]);
     const target = { objectId: molecule.id, kind: "atom" as const, atomId: "source", distanceToPointer: 0 };
     // An explicit arrow supplies the first plan. After it is applied internally, the
-    // second plan hits a full group; neither methyl may be committed.
+    // second plan has no non-overlapping direction; neither methyl may be committed.
     const result = nativeAtomSproutHotkeyTarget(crowded, target, "gemDimethyl", {
       newAtomPoint: atoms[1], direction: { x: 0.5, y: -Math.sqrt(3) / 2 }
     });
@@ -119,7 +119,7 @@ describe("sprout refusal diagnostics", () => {
       .toBe("Cannot add a single bond to hovered atom: those atoms are already connected");
   });
 
-  it.each([true, false])("a single-bond connection names a full target atom (ring closure: %s) without changing the document", (ringClosure) => {
+  it.each([true, false])("a single-bond connection lands at a full target and warns (ring closure: %s)", (ringClosure) => {
     const { document, molecule, target } = seed();
     const blocked = applyPatches(document, [{ op: "updateObject", objectId: molecule.id, changes: {
       atoms: [...molecule.atoms, { id: "block", element: "OMe", formalCharge: 0, x: 300, y: 250 },
@@ -129,9 +129,9 @@ describe("sprout refusal diagnostics", () => {
     const result = nativeSingleBondHotkeyAtAtomTarget(blocked, target, {
       newAtomPoint: { x: 300, y: 250 }, direction: { x: 0, y: -1 }, targetAtomId: "block"
     });
-    expect(result).toEqual({ document: blocked, refusal: ringClosure ? "closure-atom-no-free-valence" : "connection-atom-no-free-valence" });
-    expect(nativeTemplateFallbackReasonText(result.refusal!)).toBe(ringClosure
-      ? "the ring would close onto an atom with no free valence"
-      : "the atom it would connect to has no free valence");
+    expect(result.refusal).toBeUndefined();
+    const after = result.document.pages[0].objects.find(object => object.id === molecule.id) as MoleculeObject;
+    expect(after.bonds).toHaveLength(molecule.bonds.length + 2);
+    expect(nativeMoleculeInvalidAtomStates(after).map(state => state.atomId)).toContain("block");
   });
 });

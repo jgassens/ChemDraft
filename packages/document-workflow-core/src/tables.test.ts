@@ -120,6 +120,11 @@ function sharplessSpec() {
 }
 
 describe("buildTableObject", () => {
+  it.each(["TS1/TS2", "TS1,TS2", "toluene/H2O", "CH2Cl2/Et2O", "H2O,Et2O"])("keeps baseline joined table cell %s plain", text => {
+    const { object } = buildTableObject({ columns: [{ formula: "auto" }], rows: [[text]] }, buildOptions);
+    expect(object.rows[0]!.cells[0]!.text).toBe(text);
+    expect(object.rows[0]!.cells[0]!.spans).toEqual([]);
+  });
   it("enforces content and font limits at their boundaries", () => {
     const spec = { columns: [{}], rows: [[{ text: "x".repeat(200),
       spans: Array(200).fill({ text: "x" }) }]], style: { fontFamily: "x".repeat(200), fontSizePx: 400 } };

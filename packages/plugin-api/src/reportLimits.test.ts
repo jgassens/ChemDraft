@@ -45,7 +45,7 @@ const syntheticReport = () => ({
 describe("bounded panel reports (API 0.1.19)", () => {
   it("advertises a patch-compatible API and accepts a synthetic report of realistic size", () => {
     const synthetic = syntheticReport();
-    expect(PluginApiVersion).toBe("0.1.20");
+    expect(PluginApiVersion).toBe("0.1.25");
     expect(isPluginApiVersionCompatible("^0.1.19", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
     expect(bytes(synthetic)).toBeGreaterThan(25_448);
@@ -113,11 +113,11 @@ describe("bounded panel reports (API 0.1.19)", () => {
         const parsed = PluginPanelReportSchema.parse(raw);
         const section = parsed.sections[0]!;
         expect(JSON.stringify(section.kind === "actions" && section.buttons[0]!.payload)).toBe(JSON.stringify(payload));
-      } else rejected(raw, "Panel payload must be JSON-serialisable, at most 4000 characters");
+      } else rejected(raw, "Panel payload must be JSON-serializable, at most 4000 characters");
     }
     rejected(report({ kind: "actions", id: "actions", buttons: [
       { id: "run", label: "Run", commandId: "plugin.test.run", payload: "x".repeat(4_000) }
-    ] }), "Panel payload must be JSON-serialisable, at most 4000 characters");
+    ] }), "Panel payload must be JSON-serializable, at most 4000 characters");
   });
 
   it("preserves a 300-field action payload within the 4,000-character cap", () => {

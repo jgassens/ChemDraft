@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
-import { type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-core";
-import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
+import { NativeDocumentBaselineAppVersion, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { assertMolfileHasKnownBondOrders, nativeMoleculeExportWarnings, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
+import { ensureSvgFontsLoaded, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
@@ -34,7 +34,8 @@ ${figureStyleHelp}
   --padding <px>                     SVG/PNG crop padding (default 24)
 SVG/PNG/PDF render the first page. PDF retains native page size. ChemDraft retains every page.
 Input limit: 5 MB, 100 pages, 2000 objects/page, 500 heavy atoms/molecule, 2000 atoms/molecule, 4000 bonds/molecule.
-Result: canonical SMILES and stereo counts per molecule, plus every export warning.
+Result: canonical SMILES and stereo counts per molecule, minAppVersion, documentWarnings and every export warning.
+Unparseable invalid drawings still write; chemistryStatus is unverified and SMILES/stereo counts are null.
 Exit 0 success, 1 export/chemistry failure (ok:false), 2 invalid input or arguments.`;
 
 async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarning[]) {
@@ -43,6 +44,25 @@ async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarn
     (object): object is MoleculeObject => object.type === "molecule"));
   const results = [];
   for (const molecule of molecules) {
+    const diagnostics = nativeMoleculeExportWarnings(molecule);
+    if (diagnostics.length > 0) {
+      // Rendering and native saves preserve the authored graph, including invalid drawings.
+      // Never claim canonical identity or stereo counts for a graph we have not verified.
+      // Keep the existing unknown-order refusal rather than guessing its chemistry.
+      const molfile = stereoPerceptionMolfile(molecule);
+      assertMolfileHasKnownBondOrders(molfile);
+      let parseable = true;
+      try { await canonicalSmiles(molfile, `molecule ${molecule.id}`); }
+      catch { parseable = false; }
+      if (!parseable) {
+        warnings.push(...diagnostics);
+        results.push({ objectId: molecule.id, canonicalSmiles: null, chemistryStatus: "unverified" as const,
+          stereoCenters: null, unspecifiedStereoCenters: null, unspecifiedDoubleBonds: null });
+        continue;
+      }
+    }
+    // Parseable graphs use the identity pass's diagnostics, including its applied nitro
+    // charge-separation note, before deciding whether a raw valence warning is still needed.
     const writerWarnings: string[] = [];
     const molfile = (await currentMoleculeIdentityMolfile(molecule, writerWarnings, warnings)).contents;
     warnings.push(...writerWarnings.map((message) => ({ code: "export.molfile_loss", message,
@@ -96,6 +116,10 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     const paddingValue = stringOption(parsed, "--padding");
     const padding = paddingValue === undefined ? renderDefaults.padding : numericOption(paddingValue, "--padding", true);
     const opened = await loadAgentDocument(file);
+    const compatibility = {
+      minAppVersion: opened.nativeDocumentVersions?.minAppVersion ?? NativeDocumentBaselineAppVersion,
+      documentWarnings: opened.warnings
+    };
     let document = opened.document!;
     const name = basename(out);
     writeProgress(io, `Rendering document ${file}…`);
@@ -122,6 +146,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
         warnings.push(...pdf.warnings);
         await save(extension === format ? out : `${out}.${format}`, pdf.bytes);
       } else {
+        await ensureSvgFontsLoaded(document);
         const exported = exportDocumentToSvg(document, { background: background === "white" ? "#ffffff" : "transparent" });
         warnings.push(...exported.warnings);
         const cropped = document.pages[0]!.objects.length === 0 && figure.style !== "document" ? undefined
@@ -135,7 +160,7 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
       if (format !== "chemdraft" && document.pages.length > 1) warnings.push({
         code: "export.first_page_only", severity: "warning", message: "Only the first page was rendered; other pages remain in the source document."
       });
-      writeJsonLine(io, { name, ok: true, document: file, files, format,
+      writeJsonLine(io, { name, ok: true, document: file, files, format, ...compatibility,
         ...figureStyleResult(figure, physicalSize, format === "png" || format === "both"),
         molecules: molecules.map((molecule) => ({ ...molecule,
           exportWarnings: warnings.filter((warning) => warning.objectId === undefined || warning.objectId === molecule.objectId) })),
@@ -143,7 +168,8 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
       writeProgress(io, `Wrote ${files.join(", ")}`);
       return cliExitCode.ok;
     } catch (error) {
-      writeJsonLine(io, { name, document: file, ok: false, ...figureStyleResult(figure), error: error instanceof Error ? error.message : String(error) });
+      writeJsonLine(io, { name, document: file, ok: false, ...compatibility, ...figureStyleResult(figure),
+        error: error instanceof Error ? error.message : String(error) });
       return cliExitCode.failed;
     }
   } catch (error) { return handleCliError(error, io, "render-document"); }

@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isStableBuild, labelFromEnv, worktreeIdentity, worktreeLabelFor } from "./worktree-identity.mjs";
 
@@ -16,9 +16,24 @@ describe("shared dev identity", () => {
 // launched, or stopped. These macOS shell checks are skipped on Windows, where Node launches Tauri.
 describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", () => {
   const source = readFileSync(new URL("../run-app", import.meta.url), "utf8");
-  const definitions = source.split('\ncd "$ROOT_DIR"\n')[0]
-    .replace(/^ROOT_DIR=.*$/m, 'ROOT_DIR="/test/current checkout"');
+  let definitions: string;
+  let moduleFixture: string;
   const temporaryDirectories: string[] = [];
+
+  beforeAll(() => {
+    moduleFixture = mkdtempSync(join(process.cwd(), ".run-app-modules-test-"));
+    for (const file of ["scripts/macos-build-target.mjs", "tools/release/macos-mach-o.mjs"]) {
+      const destination = join(moduleFixture, file);
+      mkdirSync(join(destination, ".."), { recursive: true });
+      copyFileSync(new URL(`../${file}`, import.meta.url), destination);
+    }
+    const targetModule = join(moduleFixture, "scripts/macos-build-target.mjs").replace(/'/g, "'\\''");
+    definitions = source.split('\ncd "$ROOT_DIR"\n')[0]
+      .replace(/^ROOT_DIR=.*$/m, 'ROOT_DIR="/test/current checkout"')
+      .replace('"$ROOT_DIR/scripts/macos-build-target.mjs"', `'${targetModule}'`);
+  });
+
+  afterAll(() => rmSync(moduleFixture, { recursive: true, force: true }));
 
   afterEach(() => {
     for (const directory of temporaryDirectories.splice(0)) {

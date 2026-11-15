@@ -6,7 +6,8 @@ import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
 import {
   closeToolsetPopoverWindow, currentWindowLogicalPosition, listenForBondStereoPopoverActions,
   listenForToolsetPopoverContentRequests, listenForToolsetPopoverDismiss, openToolsetPopoverWindow,
-  sendBondStereoPopoverAction, setToolsetPopoverContent, toolsetPopoverTimestamp, type ToolsetPopoverAnchor, type ToolsetPopoverContent
+  sendBondStereoPopoverAction, setToolsetPopoverContent, newToolsetPopoverOpening, compareToolsetPopoverOpenings,
+  type ToolsetPopoverAnchor, type ToolsetPopoverContent
 } from "./window-manager";
 
 export const BOND_STEREO_POPOVER_ID = "core.bondStereo";
@@ -33,9 +34,11 @@ export function useBondStereoPopover(options: {
   const close = () => {
     if (!session.current) return;
     const id = session.current.id;
+    const openedAt = session.current.openedAt;
+    const generation = session.current.content.generation;
     session.current = undefined;
     void sendBondStereoPopoverAction({ sessionId: id, action: "close" }).catch(() => undefined);
-    enqueue(() => closeToolsetPopoverWindow(BOND_STEREO_POPOVER_ID));
+    enqueue(() => closeToolsetPopoverWindow(BOND_STEREO_POPOVER_ID, openedAt, generation));
     latest.current.focusCanvas();
   };
   const push = async (opened: Session) => {
@@ -51,6 +54,8 @@ export function useBondStereoPopover(options: {
       if (id === BOND_STEREO_POPOVER_ID && session.current) void push(session.current);
     }));
     subscribe(listenForToolsetPopoverDismiss(payload => {
+      if (payload?.openings && (!session.current || !payload.openings.some(opening => opening.toolsetId === BOND_STEREO_POPOVER_ID &&
+        compareToolsetPopoverOpenings(opening, session.current!.content) === 0))) return;
       // The opening press broadcasts before click, but its IPC may arrive after
       // this session opens. Only a press at or after this open may dismiss it.
       if (session.current && payload?.requestedAt !== undefined && payload.requestedAt < session.current.openedAt) return;
@@ -86,13 +91,16 @@ export function useBondStereoPopover(options: {
     const stage = globalThis.document.querySelector(".page-stage");
     const observer = stage ? new MutationObserver(() => close()) : undefined;
     if (stage) observer?.observe(stage, { attributes: true, attributeFilter: ["style"] });
-    return () => { disposed = true; cleanups.forEach(cleanup => cleanup()); session.current = undefined;
+    return () => { disposed = true; cleanups.forEach(cleanup => cleanup());
+      const openedAt = session.current?.openedAt;
+      const generation = session.current?.content.generation;
+      session.current = undefined;
       observer?.disconnect();
       window.removeEventListener("scroll", close, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("pointerdown", pointerAway, true);
       window.removeEventListener("keydown", escape, true);
-      enqueue(() => closeToolsetPopoverWindow(BOND_STEREO_POPOVER_ID)); };
+      enqueue(() => closeToolsetPopoverWindow(BOND_STEREO_POPOVER_ID, openedAt, generation)); };
   }, []);
 
   useEffect(() => {
@@ -102,7 +110,7 @@ export function useBondStereoPopover(options: {
   }, [options.document, options.targets]);
 
   return (request: BondStereoBadgeRequest) => {
-    const openedAt = toolsetPopoverTimestamp();
+    const { openedAt, generation } = newToolsetPopoverOpening();
     close();
     const { document, reader } = latest.current;
     const target = { objectId: request.objectId, bondId: request.bondId };
@@ -113,7 +121,7 @@ export function useBondStereoPopover(options: {
     const actions = [createBondStereoActions(state)[1], createFlippedBondStereoAction(state,
       nativeBondStereoFlipDisabledReason(document, [target], reader))];
     const id = `bond-stereo-${Date.now()}-${++serial.current}`;
-    const opened: Session = { id, openedAt, document, target, content: { kind: "flyout", openedAt, flyout: {
+    const opened: Session = { id, openedAt, document, target, content: { kind: "flyout", openedAt, generation, flyout: {
       id, flyoutId: BOND_STEREO_POPOVER_ID, title: "E/Z not specified", variant: "bondStereo", keyboardOpen: request.keyboard,
       commands: actions.map(action => ({ id: action.id, title: action.title, enabled: action.enabled !== false,
         active: false, disabledReason: action.disabledReason }))

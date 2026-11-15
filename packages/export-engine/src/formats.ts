@@ -73,7 +73,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "Vector PDF export uses the SVG export path and propagates SVG compatibility warnings.",
+    warningSummary: "PDF exports the drawing at the selected page size. Review compatibility warnings.",
     dependency: "svg2pdf.js + jspdf"
   },
   {
@@ -87,7 +87,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "Desktop raster export renders the SVG page through the native resvg pipeline.",
+    warningSummary: "PNG preserves transparency when a transparent background is selected.",
     dependency: "resvg + image"
   },
   {
@@ -129,7 +129,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: false,
-    warningSummary: "GIF export flattens transparency onto a white background before palette encoding.",
+    warningSummary: "GIF uses a limited color palette and flattens transparency onto a white background.",
     dependency: "resvg + image"
   },
   {
@@ -195,7 +195,7 @@ export const exportFormatDescriptors = [
     targetScope: "multiRecord",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right)."
+    warningSummary: "Exports selected editable molecules, or all editable molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right)."
   },
   {
     id: "sdf-v2000",
@@ -257,7 +257,7 @@ export const exportFormatDescriptors = [
     targetScope: "multiRecord",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "Exports selected editable native molecules, or all editable native molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right), one SMILES per line."
+    warningSummary: "Exports selected editable molecules, or all editable molecules on the page when nothing is selected, in reading order (rows top to bottom, left to right), one SMILES per line."
   },
   {
     id: "connection-table",
@@ -300,7 +300,7 @@ export const exportFormatDescriptors = [
   },
   {
     id: "cdxml",
-    label: "ChemDraw XML (CDXML)",
+    label: "CDXML",
     menuLabel: "CDXML",
     group: "compatibility",
     extensions: ["cdxml"],
@@ -309,11 +309,11 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "text",
     chemicallyMeaningful: true,
-    warningSummary: "CDXML export delegates through cdx-compat and may include compatibility warnings for unsupported visible objects."
+    warningSummary: "CDXML exports supported visible objects with embedded ChemDraft data. Review compatibility warnings."
   },
   {
     id: "cdx",
-    label: "ChemDraw Binary (CDX)",
+    label: "CDX binary",
     menuLabel: "CDX",
     group: "compatibility",
     extensions: ["cdx"],
@@ -326,8 +326,8 @@ export const exportFormatDescriptors = [
   },
   {
     id: "chemdraw-stationery",
-    label: "ChemDraw Stationery",
-    menuLabel: "ChemDraw Stationery",
+    label: "Stationery (.cds)",
+    menuLabel: "Stationery (.cds)",
     group: "legacy",
     extensions: ["cds"],
     mimeType: "application/octet-stream",
@@ -339,8 +339,8 @@ export const exportFormatDescriptors = [
   },
   {
     id: "chemdraw-3x",
-    label: "ChemDraw 3.x",
-    menuLabel: "ChemDraw 3.x",
+    label: "Legacy 3.x (.chm)",
+    menuLabel: "Legacy 3.x (.chm)",
     group: "legacy",
     extensions: ["chm"],
     mimeType: "application/octet-stream",
@@ -348,7 +348,7 @@ export const exportFormatDescriptors = [
     targetScope: "page",
     textOrBinary: "binary",
     chemicallyMeaningful: true,
-    warningSummary: "Legacy ChemDraw 3.x export needs clean-room format research before implementation."
+    warningSummary: "Legacy 3.x (.chm) export needs clean-room format research before implementation."
   },
   {
     id: "tgf",

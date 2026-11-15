@@ -8,19 +8,26 @@ file as UTF-8 (`Set-Content -Encoding UTF8` in PowerShell).
 ## Chemical name to structure
 
 `name` and MCP `name_to_structure` check ChemDraft built-in structure templates
-first, then the bundled OPSIN 2.9.0 runtime. Use a template name such as
+first, then the bundled OPSIN 2.9.0 runtime, then the offline Wikidata dictionary
+after an OPSIN parse miss. No online lookup is used. Use a template name such as
 `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril` or `18-crown-6` rather than
 writing SMILES for these hosts. Template names work without Java. Matching is
 exact after case/Greek/synonym normalization, never fuzzy. Results report
-`source: "template" | "opsin"` and templates add `templateId` and `templateName`.
+`source: "template" | "opsin" | "dictionary"`. Templates add `templateId` and
+`templateName`; dictionary matches add `matchedName` or `matchedCas`.
 `--render` uses their original layout at default document size. Coordinate-less
 SMILES drawing/export paths use that layout only for an exact canonical isomeric
 SMILES match, with stereo and charge included, reporting `layout: "template:<id>"`
 (per cell/component for grids/reactions). Different or missing stereo never
 substitutes. Native/MOL/CDXML coordinates are preserved.
-OPSIN parses chemical names; it is not a universal synonym database.
-When only a name is known, run it before drawing. When it fails on a
-common, trivial or trade name, do one of these, never a guess:
+The dictionary handles known trivial/trade names and checksum-valid CAS registry
+numbers, such as `50-78-2`. It loads on the first parse miss. It does not replace
+a missing, failed or timed-out OPSIN engine. Dictionary queries over 200 characters
+do not match. Name keys ignore case, spaces and hyphens, normalize prime typography,
+and retain primed locants. Lookup is exact after normalization, never fuzzy;
+conflicting normalized name identities are excluded. Neither source covers every name.
+When only a name is known, run `name` before drawing. When the full lookup fails,
+do one of these, never a guess:
 
 - Look the compound up in PubChem and cite the CID with the figure or
   number. The PUG REST property URL
@@ -33,7 +40,7 @@ common, trivial or trade name, do one of these, never a guess:
   convert it with `name`.
 
 Then confirm the formula with `analyze` (method `rdkit.composition`)
-against the database or expected formula, and the stereocentres with
+against the database or expected formula, and the stereocenters with
 `stereo`. Otherwise request a systematic name or confirmed SMILES.
 
 | CLI flag | Meaning / default |
@@ -46,6 +53,7 @@ against the database or expected formula, and the stereocentres with
 
 ```sh
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft name --name '2-acetoxybenzoic acid' --render "$scratch/aspirin.png"
+pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft name --name '50-78-2'
 ```
 
 An ambiguous result is refused by default. `--allow-ambiguous` is for a
@@ -118,14 +126,31 @@ PDF before delivering it, and prefer SVG or PNG figures until this is fixed.
 
 ## Hand-edit loop and compatibility
 
-Export CDXML. Tell the human to save the current drawing first, because
-File > Open replaces the open document without asking. Then have them open
+`render-document` / MCP `render_document` read native JSON and `.chemdraft`
+envelopes through the app's tolerant native reader. The result reports `minAppVersion`
+(legacy baseline `1.1.1`) and structured `documentWarnings`, even if output later fails.
+Warnings have `code` and `message`; native compatibility warnings retain `path` and
+`originalValue`. Unknown fields and visual fallbacks are preserved when saving with
+`format: "chemdraft"`. Preserve the source file and inspect the warnings; a preview
+fallback is not full feature support. Unsupported chemical identity still fails.
+These are machine-readable notices, with no interactive compatibility question.
+
+Native drawings with chemistry problems can still render and save through `render-document`
+(MCP `render_document`). Always report the returned per-atom `export.invalid_structure`
+warnings, such as `C1 has unsupported valence 5.`, including when the user hid the canvas badge.
+For an unparseable molecule, `chemistryStatus` is `"unverified"`, and `canonicalSmiles`,
+`stereoCenters`, `unspecifiedStereoCenters` and `unspecifiedDoubleBonds` are `null`.
+Do not treat a null count as zero or claim its identity was verified. SMILES-input exports
+still refuse when identity cannot be preserved; do not remove chemistry to force success.
+
+Export CDXML. Tell the human to save the current drawing first. Then have them open
 the file through ChemDraft **File > Open** and edit the actual structure.
 A styled `.chemdraft` file from `render-document` opens the same way
 ([art](art.md)). On Windows use File > Open or Open with;
 ChemDraft registers `.chemdraft` only, not `.cdxml`. Save the edited native
 document; regenerate the final figure from the confirmed edited chemistry.
 The headless tools do not read back a user's edited CDXML as a new CLI input.
+Binary CDX import and browser structure search are app-only; neither has a CLI command or MCP tool.
 If the next agent operation needs SMILES, obtain the confirmed edited SMILES
 from the user/app instead of using the stale pre-edit string.
 
@@ -138,3 +163,21 @@ fixtures; complex graphics/images/fonts may need preservation or warnings.
 Never claim perfect CDXML compatibility or broad CDX writing. Inspect the
 actual export warnings and reopened file. See
 [AGENTS.md §11](../../../AGENTS.md#11-file-format-compatibility).
+
+## Repeat-unit exports
+
+Headless callers can add paired round or square brackets and a repeat label to native
+JSON, then render SVG/PNG/PDF or save `.chemdraft` with `render-document` / `render_document`
+([art](art.md)). The atoms still describe one drawn copy; no polymer formula is computed.
+
+The app's MOL V2000/V3000 copy and MOL export paths encode representable repeat units
+as SRU SGroups with atom membership, crossing bonds and the repeat label. Incomplete
+membership, rotated/projected brackets or an unrepresentable label warn and write the
+bare structure. SMILES cannot encode SRU groups: app copy/export reports
+`export.repeat_unit_not_represented` and writes the bare structure. It never expands `n`
+into extra atoms. A multiple group (`bracketUsage: "multiple"`, `repeatCount`) is also
+not an SRU and warns when its semantics cannot be represented.
+
+CLI `export` and MCP `export_structure` accept SMILES, not an edited native document.
+They cannot export those authored brackets to MOL/SDF/SMILES. Do not offer that as a
+headless conversion or treat the bare-graph SMILES as a complete polymer representation.

@@ -30,13 +30,13 @@ export interface PickedPluginPackage {
  *
  * @returns `undefined` when the user cancelled — which is not an error and must not be reported as one.
  */
-export async function pickPluginPackage(options: { hostApiVersion?: string } = {}): Promise<PickedPluginPackage | undefined> {
-  const selection = await open({
+export async function pickPluginPackage(options: { hostApiVersion?: string; chooseFile?: () => Promise<string | null> } = {}): Promise<PickedPluginPackage | undefined> {
+  const selection = await (options.chooseFile ? options.chooseFile() : open({
     multiple: false,
     directory: false,
     title: "Install ChemDraft plugin package",
     filters: [{ name: "ChemDraft plugin package", extensions: ["zip"] }]
-  });
+  }));
   if (typeof selection !== "string") {
     return undefined;
   }

@@ -176,7 +176,7 @@ export function recognitionInstallErrorMessage(
     case "checksumMismatch":
       return "The downloaded recognition engine did not pass its integrity check. Nothing was installed.";
     case "cancelled":
-      return "Installation was cancelled.";
+      return "Installation was canceled.";
     case "unsupported":
       return "This computer isn’t supported by the MolScribe recognition engine yet.";
     case "failed":

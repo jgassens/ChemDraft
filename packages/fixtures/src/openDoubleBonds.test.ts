@@ -5,7 +5,7 @@ import {
   type MoleculeObject
 } from "../../chem-core/src/index";
 import { parseMolfileGraph } from "../../clipboard-adapter/src/index";
-import { openChemDraftPayload, exportDocumentToCdxml } from "../../cdx-compat/src/index";
+import { canonicalVisibleCdxml, openChemDraftPayload, exportDocumentToCdxml } from "../../cdx-compat/src/index";
 import { depictSmiles2D, relayoutMolfile2D, perceiveStereoCentersFromMolfile } from "../../ocl-adapter/src/index";
 import {
   createSmilesMolecule, insertSmilesMolecule, pastedStructureDepictionFromMolfile,
@@ -119,14 +119,15 @@ describe.each(cases)("$id interchange", (entry) => {
     });
   });
 
-  it("preserves either bonds in the native CDXML payload and warns for each bond", () => {
+  it("writes either bonds as visible Wavy doubles without a native-only warning", () => {
     const document = deserializeDocument(read(`${entry.id}.json`));
     const molecule = native(entry.id);
     const exported = exportDocumentToCdxml(document);
-    const warnings = exported.warnings.filter((warning) => warning.code === "cdxml.open_double_bond_native_only");
-    expect(warnings.map((warning) => warning.message)).toEqual(entry.eitherBondIndices.map((i) =>
-      `E/Z-unspecified double bond ${molecule.bonds[i]!.id} is kept for ChemDraft only; other apps will see a plain double bond.`));
-    const roundtrip = openChemDraftPayload(exported.contents).document!.pages[0]!.objects[0] as MoleculeObject;
+    expect(exported.warnings.map((warning) => warning.code)).not.toContain("cdxml.open_double_bond_native_only");
+    const visible = canonicalVisibleCdxml(exported.contents);
+    const visibleDoubleBonds = [...visible.matchAll(/<b\b[^>]*Order="2"[^>]*\/>/g)].map(([bond]) => bond);
+    expect(visibleDoubleBonds.filter((bond) => bond.includes('Display="Wavy"'))).toHaveLength(entry.eitherBondIndices.length);
+    const roundtrip = openChemDraftPayload(visible).document!.pages[0]!.objects[0] as MoleculeObject;
     expect(eitherIndices(roundtrip.bonds)).toEqual(entry.eitherBondIndices);
   });
 
@@ -187,7 +188,9 @@ it("CDXML Wavy is order-sensitive and does not turn a single bond into an open d
   const result = openChemDraftPayload(source);
   const mol = result.document!.pages[0]!.objects[0] as MoleculeObject;
   expect(eitherIndices(mol.bonds)).toEqual([]);
-  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(true);
+  expect(mol.bonds).toHaveLength(3);
+  expect(mol.bonds[1]).toMatchObject({ order: "single", display: { bondStyle: "wavy" } });
+  expect(result.warnings.some((w) => w.code === "cdxml.bond_display_unsupported")).toBe(false);
 });
 
 it("SMILES-to-native is geometry-defined by default and explicitly opts into perceived open bonds", async () => {
@@ -251,4 +254,50 @@ it("CLI reports explicit either double bonds as unspecified, preserving specifie
   expect(await perceiveDoubleBondStereo(read("open.v2000.mol"))).toEqual([{ bondIndex: 1, descriptor: "unspecified" }]);
   expect(await perceiveDoubleBondStereo(read("e.v2000.mol"))).toEqual([{ bondIndex: 1, descriptor: "E" }]);
   expect(await perceiveDoubleBondStereo(read("z.v2000.mol"))).toEqual([{ bondIndex: 1, descriptor: "Z" }]);
+});
+
+// A fixed seed makes failures repeatable while changing graph order enough to expose
+// serializers that accidentally depend on the fixture's original atom/bond order.
+function shuffled<T>(values: readonly T[], seed: number): T[] {
+  const output = [...values];
+  let state = seed >>> 0;
+  for (let index = output.length - 1; index > 0; index--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const other = state % (index + 1);
+    [output[index], output[other]] = [output[other]!, output[index]!];
+  }
+  return output;
+}
+
+it.each(cases)("keeps $id identity when atom and bond order changes across native, CDXML, V2000 and V3000", entry => {
+  const source = deserializeDocument(read(`${entry.id}.json`));
+  const original = source.pages[0]!.objects[0] as MoleculeObject;
+  const expected = (({ canonical, formula, charge, atomCount, bondCount }) =>
+    ({ canonical, formula, charge, atomCount, bondCount }))(chemistry(molfile(original)));
+  for (const seed of [1, 7, 31]) {
+    const molecule = { ...original,
+      atoms: shuffled(original.atoms, seed),
+      bonds: shuffled(original.bonds, seed * 97)
+    };
+    const document = { ...source, pages: source.pages.map((page, index) => index === 0
+      ? { ...page, objects: [molecule] } : page) };
+    const nativeRoundTrip = deserializeDocument(serializeDocument(document));
+    const nativeMolecule = nativeRoundTrip.pages[0]!.objects[0] as MoleculeObject;
+    expect(nativeMolecule.atoms.map(atom => atom.id)).toEqual(molecule.atoms.map(atom => atom.id));
+    expect(nativeMolecule.bonds.map(bond => bond.id)).toEqual(molecule.bonds.map(bond => bond.id));
+    const cdxml = exportDocumentToCdxml(nativeRoundTrip);
+    const reopened = openChemDraftPayload(cdxml.contents);
+    expect(reopened.document, `${entry.id} seed ${seed} CDXML`).toBeDefined();
+    const restored = reopened.document!.pages[0]!.objects[0] as MoleculeObject;
+    expect(restored.atoms.map(atom => atom.id)).toEqual(molecule.atoms.map(atom => atom.id));
+    expect(restored.bonds.map(bond => bond.id)).toEqual(molecule.bonds.map(bond => bond.id));
+    for (const [format, contents] of [
+      ["V2000", molfile(restored)],
+      ["V3000", moleculeToMolfileV3000(restored, options).contents]
+    ] as const) {
+      const { canonical, formula, charge, atomCount, bondCount } = chemistry(contents);
+      expect({ canonical, formula, charge, atomCount, bondCount }, `${entry.id} seed ${seed} ${format}`)
+        .toEqual(expected);
+    }
+  }
 });

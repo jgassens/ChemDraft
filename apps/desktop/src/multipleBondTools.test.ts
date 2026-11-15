@@ -74,16 +74,26 @@ describe.each(["double", "triple"] as const)("%s bond drawing", order => {
     expect(after.atoms.slice(0, 2)).toEqual(before.atoms);
     expect(after.bonds[1].order).toBe(order);
   });
-  it("refuses growth that would exceed carbon valence", () => {
+  it("allows growth past carbon valence and diagnoses the edited atom", () => {
     const document = applySingleBondToolAtPoint(createPhase4Document("Valence"), { x: 300, y: 300 }, { bondOrder: "triple" });
     const molecule = getSelectedMolecule(document)!;
     const atom = molecule.atoms[1];
-    expect(applyFreeformSingleBondToolAtPoint(document, molecule.id, atom.id, { x: atom.x + 40, y: atom.y }, { bondOrder: order })).toBe(document);
-    expect(applySingleBondToolAtPoint(document, atom, { bondOrder: order })).toBe(document);
+    const results = [
+      applyFreeformSingleBondToolAtPoint(document, molecule.id, atom.id, { x: atom.x + 40, y: atom.y }, { bondOrder: order }),
+      applySingleBondToolAtPoint(document, atom, { bondOrder: order })
+    ];
+    for (const next of results) {
+      expect(next).not.toBe(document);
+      const after = getSelectedMolecule(next)!;
+      expect(after.atoms).toHaveLength(3);
+      expect(after.bonds.map(bond => bond.order)).toEqual(["triple", order]);
+      expect(nativeAtomValidationState(after.atoms.find(candidate => candidate.id === atom.id)!, after.bonds, 0, after.atoms))
+        .toMatchObject({ valid: false, valenceUsed: order === "double" ? 5 : 6 });
+    }
   });
 });
 
-describe("multiple bond tool refusals", () => {
+describe("multiple bond tool warnings and format guards", () => {
   it("stores the substituent-facing double bond side on a drawn chain, as order cycling does", () => {
     const single = applySingleBondToolAtPoint(createPhase4Document("Side"), { x: 300, y: 300 });
     const base = getSelectedMolecule(single)!;
@@ -99,7 +109,7 @@ describe("multiple bond tool refusals", () => {
     expect(drawn.bonds[1].display?.doubleBondSide).toBe(cycled.bonds[1].display?.doubleBondSide);
   });
 
-  it("names the reason when a drag onto a full-valence atom is refused, and leaves the document alone", () => {
+  it("grows a multiple bond from a full-valence atom with a warning and no refusal", () => {
     const { document, objectId, centerId } = branchedSeed();
     const molecule = getSelectedMolecule(document)!;
     const center = molecule.atoms.find(atom => atom.id === centerId)!;
@@ -107,15 +117,19 @@ describe("multiple bond tool refusals", () => {
     const next = applyFreeformSingleBondToolAtPoint(document, objectId, centerId, { x: center.x - 40, y: center.y + 5 }, {
       bondOrder: "double", onRefusal: reason => reasons.push(reason)
     });
-    expect(next).toBe(document);
-    expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+    expect(next).not.toBe(document);
+    const after = getSelectedMolecule(next)!;
+    expect(after.atoms).toHaveLength(molecule.atoms.length + 1);
+    expect(after.bonds.at(-1)?.order).toBe("double");
+    expect(nativeAtomValidationState(center, after.bonds, 0, after.atoms)).toMatchObject({ valid: false, valenceUsed: 6 });
+    expect(reasons).toEqual([]);
   });
 
-  it("names the reason when connecting two existing atoms would exceed valence", () => {
+  it("connects two existing atoms past valence with a warning and no refusal", () => {
     const { document, objectId, centerId } = branchedSeed();
     const molecule = getSelectedMolecule(document)!;
     const center = molecule.atoms.find(atom => atom.id === centerId)!;
-    // A tail hangs off the first atom; closing it back onto the full centre with a double bond must be refused.
+    // A tail hangs off the first atom; closing it onto the full centre lands and warns.
     const origin = molecule.atoms[0];
     const withTail = applyFreeformSingleBondToolAtPoint(document, objectId, origin.id, { x: origin.x - 40, y: origin.y });
     const tail = getSelectedMolecule(withTail)!.atoms.at(-1)!;
@@ -123,17 +137,26 @@ describe("multiple bond tool refusals", () => {
     const next = applyFreeformSingleBondToolAtPoint(withTail, objectId, tail.id, { x: center.x, y: center.y }, {
       bondOrder: "double", onRefusal: reason => reasons.push(reason)
     });
-    expect(next).toBe(withTail);
-    expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+    expect(next).not.toBe(withTail);
+    const after = getSelectedMolecule(next)!;
+    expect(after.atoms).toEqual(getSelectedMolecule(withTail)!.atoms);
+    expect(after.bonds.at(-1)).toMatchObject({ fromAtomId: tail.id, toAtomId: centerId, order: "double" });
+    expect(nativeAtomValidationState(center, after.bonds, 0, after.atoms)).toMatchObject({ valid: false, valenceUsed: 6 });
+    expect(reasons).toEqual([]);
   });
 
-  it("refuses to raise a bond at a full-valence atom with a specific reason", () => {
+  it("raises a bond at a full-valence atom and diagnoses the result", () => {
     const { document, objectId, centerId } = branchedSeed();
     const molecule = getSelectedMolecule(document)!;
     const bond = molecule.bonds.find(candidate => candidate.fromAtomId === centerId || candidate.toAtomId === centerId)!;
     const target = bondTarget(objectId, bond);
-    expect(applyNativeMoleculeBondOrderValueTarget(document, target, "double")).toBe(document);
-    expect(nativeBondOrderTargetRefusal(document, target, "double")).toMatch(/not changed.*valence/);
+    const next = applyNativeMoleculeBondOrderValueTarget(document, target, "double");
+    expect(next).not.toBe(document);
+    const after = getSelectedMolecule(next)!;
+    expect(after.bonds.find(candidate => candidate.id === bond.id)?.order).toBe("double");
+    expect(nativeAtomValidationState(after.atoms.find(atom => atom.id === centerId)!, after.bonds, 0, after.atoms))
+      .toMatchObject({ valid: false, valenceUsed: 5 });
+    expect(nativeBondOrderTargetRefusal(document, target, "double")).toBeUndefined();
   });
 
   it("tells an unchanged bond from a refused one, and refuses a dashed (dative) bond like order cycling", () => {
@@ -150,7 +173,7 @@ describe("multiple bond tool refusals", () => {
     expect(nativeBondOrderTargetRefusal(dashed, dashedTarget, "double")).toMatch(/dashed \(dative\) bond stays single/);
   });
 
-  it("refuses a multiple bond that would exceed valence at a hypovalent literal atom, leaving the document alone", () => {
+  it("grows multiple bonds past valence at a hypovalent literal atom and keeps its warning", () => {
     // A typed C with three single bonds is already flagged (3 of 4), but a double bond would make it five.
     const { document, objectId, centerId } = literalCenterSeed(2);
     const molecule = getSelectedMolecule(document)!;
@@ -162,8 +185,13 @@ describe("multiple bond tool refusals", () => {
       const next = applyFreeformSingleBondToolAtPoint(document, objectId, centerId, { x: center.x - 40, y: center.y + 5 }, {
         bondOrder, onRefusal: reason => reasons.push(reason)
       });
-      expect(next).toBe(document);
-      expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+      expect(next).not.toBe(document);
+      const after = getSelectedMolecule(next)!;
+      expect(after.bonds).toHaveLength(4);
+      expect(after.bonds.at(-1)?.order).toBe(bondOrder);
+      expect(nativeAtomValidationState(center, after.bonds, 0, after.atoms))
+        .toMatchObject({ valid: false, valenceUsed: bondOrder === "double" ? 5 : 6 });
+      expect(reasons).toEqual([]);
     }
   });
 
@@ -198,23 +226,31 @@ describe("multiple bond tool refusals", () => {
       };
     }
 
-    it("refuses to raise a bond at a hypovalent literal atom past its valence, and names the reason", () => {
-      const { document, objectId } = literalCenterSeed(2);
+    it("raises a bond at a hypovalent literal atom past its valence and warns", () => {
+      const { document, objectId, centerId } = literalCenterSeed(2);
       const molecule = getSelectedMolecule(document)!;
       const target = bondTarget(objectId, molecule.bonds[1]);
-      expect(applyNativeMoleculeBondOrderValueTarget(document, target, "triple")).toBe(document);
-      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
+      const next = applyNativeMoleculeBondOrderValueTarget(document, target, "triple");
+      const after = getSelectedMolecule(next)!;
+      expect(after.bonds[1].order).toBe("triple");
+      expect(nativeAtomValidationState(after.atoms.find(atom => atom.id === centerId)!, after.bonds, 0, after.atoms))
+        .toMatchObject({ valid: false, valenceUsed: 5 });
+      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toBeUndefined();
       // A double bond fills the valence exactly, so it is still offered.
       expect(nativeBondOrderTargetRefusal(document, target, "double")).toBeUndefined();
     });
 
-    it("refuses the same raise through order cycling, even on an atom that is already over valence", () => {
-      const { document, objectId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
+    it("cycles bond order on an already over-valent atom and keeps its warning", () => {
+      const { document, objectId, centerId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
       const molecule = getSelectedMolecule(document)!;
       expect(molecule.bonds.map(bond => bond.order)).toEqual(["single", "double", "double"]);
       const target = bondTarget(objectId, molecule.bonds[1]);
-      expect(applyNativeMoleculeBondOrderTarget(document, target)).toBe(document);
-      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
+      const next = applyNativeMoleculeBondOrderTarget(document, target);
+      const after = getSelectedMolecule(next)!;
+      expect(after.bonds.map(bond => bond.order)).toEqual(["single", "triple", "double"]);
+      expect(nativeAtomValidationState(after.atoms.find(atom => atom.id === centerId)!, after.bonds, 0, after.atoms))
+        .toMatchObject({ valid: false, valenceUsed: 6 });
+      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toBeUndefined();
     });
 
     it("still lets an over-valent atom have a bond lowered", () => {
@@ -227,13 +263,15 @@ describe("multiple bond tool refusals", () => {
       expect(getSelectedMolecule(next)!.bonds[1].order).toBe("single");
     });
 
-    it("words a lowering that leaves a typed atom short as a shortfall, not an excess", () => {
-      const { document, objectId } = withBondOrders(literalCenterSeed(1), ["single", "triple"]);
+    it("allows lowering that leaves a typed atom short and diagnoses the shortfall", () => {
+      const { document, objectId, centerId } = withBondOrders(literalCenterSeed(1), ["single", "triple"]);
       const molecule = getSelectedMolecule(document)!;
       const target = bondTarget(objectId, molecule.bonds[1]);
-      const reason = nativeBondOrderTargetRefusal(document, target, "double");
-      expect(reason).toMatch(/would leave C invalid.*3 of 4 bonds/);
-      expect(reason).not.toMatch(/exceed/);
+      expect(nativeBondOrderTargetRefusal(document, target, "double")).toBeUndefined();
+      const after = getSelectedMolecule(applyNativeMoleculeBondOrderValueTarget(document, target, "double"))!;
+      expect(after.bonds[1].order).toBe("double");
+      expect(nativeAtomValidationState(after.atoms.find(atom => atom.id === centerId)!, after.bonds, 0, after.atoms))
+        .toMatchObject({ valid: false, valenceUsed: 3, invalidReason: "C has 3 of 4 bonds." });
     });
 
     it("still raises a double bond to triple on valid atoms", () => {

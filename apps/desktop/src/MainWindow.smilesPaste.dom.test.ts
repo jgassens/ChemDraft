@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 
 import { act, createElement } from "react";
@@ -99,7 +100,7 @@ describe("MainWindow SMILES paste", () => {
 
   it("pastes beta-cyclodextrin once with the active document's style and bond length without coordinate generation", async () => {
     const template = workflow.resolveStructureTemplateName("beta-cyclodextrin")!;
-    const before = getAssistantHistoryPort().read("initial")!;
+    const before = getAssistantHistoryPort().read(initialDocumentTabId())!;
     const defaults = workflow.documentDrawingDefaults(before);
     expect(defaults.bondLengthPx).toBe(34);
     expect(defaults.objectStyle.bondStrokeWidthPx).toBe(2.4);
@@ -111,7 +112,7 @@ describe("MainWindow SMILES paste", () => {
 
     await paste(template.smiles, "text/plain", "Used the β-Cyclodextrin template layout");
 
-    const after = getAssistantHistoryPort().read("initial")!;
+    const after = getAssistantHistoryPort().read(initialDocumentTabId())!;
     expect(after.pages[0]!.objects).toHaveLength(1);
     const molecule = after.pages[0]!.objects[0]!;
     if (molecule.type !== "molecule") throw new Error("Expected template molecule");

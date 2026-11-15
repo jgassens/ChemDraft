@@ -208,10 +208,10 @@ describe("MethodRegistry", () => {
           flags: {
             conventionDependent: false,
             experimentallyCalibrated: false,
-            trainedOnExperimentalData: true
+            trainedOnExperimentalData: false
           }
         },
-        citations: [{ id: "nmrshiftdb2", kind: "dataset", title: "nmrshiftdb2 experimental assignments" }]
+        citations: [{ id: "nmrshiftdb2", kind: "dataset", title: "nmrshiftdb2 assignments (the database does not mark which are experimental)" }]
       })
     );
 

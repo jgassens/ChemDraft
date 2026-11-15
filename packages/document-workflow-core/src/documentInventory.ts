@@ -1,5 +1,6 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { documentReactionSummary } from "./reactionScheme";
 
 /** Describe native ids and geometry without introducing another ring or depiction algorithm. */
 export function documentInventory(
@@ -7,6 +8,7 @@ export function documentInventory(
   inputAtomIndices: ReadonlyMap<string, readonly (number | null)[]> = new Map()
 ) {
   return {
+    reactions: documentReactionSummary(document),
     pages: document.pages.map((page) => ({ id: page.id, width: page.width, height: page.height })),
     molecules: document.pages.flatMap((page) => page.objects.flatMap((object) =>
       object.type !== "molecule" ? [] : [{

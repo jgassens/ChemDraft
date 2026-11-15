@@ -211,21 +211,19 @@ describe.each(["macos", "windows"] as const)("inline editor app shortcuts (%s)",
       // must stay unbound; exercise its native Exit request explicitly instead.
       expect(pendingPrompt).toBeUndefined();
       await act(async () => { await native.promptQuit!(1); });
-      if (kind === "atom label") {
-        // Existing atom-label finalization can update dirty state after the native quit guard
-        // reads it. Its non-prompted quit must still retain the draft through the #273 flush.
-        expect(native.saveSession).toHaveBeenCalledTimes(1);
-        expect(contents(openChemDraftPayload(native.saveSession.mock.calls[0][0].contents).document!)).toBe(draft);
-        expect(native.quit).toHaveBeenCalledTimes(1);
-        expect(native.saveSession.mock.invocationCallOrder[0]).toBeLessThan(native.quit.mock.invocationCallOrder[0]);
-        return;
-      }
+      // Atom-label finalization now reconciles dirty state before the quit guard reads it,
+      // so every changing editor draft must wait for the save choice.
       expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+      expect(native.writeFile).not.toHaveBeenCalled();
+      expect(native.quit).not.toHaveBeenCalled();
       await act(async () => { pendingPrompt!.resolve("save"); });
       expect(native.writeFile).toHaveBeenCalledTimes(1);
       expect(contents(persisted())).toBe(draft);
+      expect(native.saveSession).toHaveBeenCalledTimes(1);
+      expect(contents(openChemDraftPayload(native.saveSession.mock.calls[0][0].contents).document!)).toBe(draft);
       expect(native.quit).toHaveBeenCalledTimes(1);
       expect(native.writeFile.mock.invocationCallOrder[0]).toBeLessThan(native.quit.mock.invocationCallOrder[0]);
+      expect(native.saveSession.mock.invocationCallOrder[0]).toBeLessThan(native.quit.mock.invocationCallOrder[0]);
     });
   });
 });

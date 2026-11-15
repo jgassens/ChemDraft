@@ -103,7 +103,7 @@ const DEFINITIONS = [
     dimension: "abundance",
     symbol: "%",
     label: "relative abundance",
-    note: "Isotope-envelope intensities normalised to the base peak. Not a measured ion current."
+    note: "Isotope-envelope intensities normalized to the base peak. Not a measured ion current."
   }
 ] as const satisfies readonly { id: string; dimension: UnitDimension; symbol: string; label: string; note?: string }[];
 

@@ -30,7 +30,7 @@ export interface ImageSourceProvider {
   label: string;
   isAvailable(): Promise<boolean>;
   permission?: ImageSourcePermission;
-  acquire(signal: AbortSignal): Promise<ProvidedImage | "cancelled">;
+  acquire(signal: AbortSignal, windowId?: string): Promise<ProvidedImage | "cancelled">;
 }
 
 export class ImageSourceError extends Error {
@@ -99,37 +99,46 @@ export const fileImageSourceProvider: ImageSourceProvider = {
     return isTauriHost();
   },
   async acquire(signal) {
-    throwIfAborted(signal);
-    const selection = await open({
-      multiple: false,
-      directory: false,
-      title: "Choose an image",
-      filters: [
-        {
-          name: "Image",
-          extensions: ["png", "jpg", "jpeg", "tif", "tiff", "webp"]
-        }
-      ]
-    });
-    if (typeof selection !== "string") return "cancelled";
-    throwIfAborted(signal);
-    // Size first: a multi-gigabyte pick must be refused before it is read into memory, not after.
-    rejectOversizedFile(await fileSizeIfKnown(selection));
-    throwIfAborted(signal);
-    const bytes = await readFile(selection);
-    throwIfAborted(signal);
-    // The file may have grown since it was measured, or could not be measured at all.
-    rejectOversizedFile(bytes.byteLength);
-    const metadata = inspectSupportedImage(bytes);
-    rejectUnusableDimensions(metadata.width, metadata.height, "The selected image");
-    return {
-      ...metadata,
-      bytes: new Uint8Array(bytes),
-      source: "file",
-      fileName: selection.split(/[\\/]/).at(-1) ?? selection
-    };
+    return acquireFileImage(signal);
   }
 };
+
+/** Keep the native picker in the document; the runtime still reads and validates the image. */
+export function fileImageSourceWithPicker(chooseFile: (windowId?: string) => Promise<string | null>): ImageSourceProvider {
+  return { ...fileImageSourceProvider, acquire: (signal, windowId) => acquireFileImage(signal, () => chooseFile(windowId)) };
+}
+
+async function acquireFileImage(signal: AbortSignal, chooseFile?: () => Promise<string | null>): Promise<ProvidedImage | "cancelled"> {
+  throwIfAborted(signal);
+  const selection = await (chooseFile ? chooseFile() : open({
+    multiple: false,
+    directory: false,
+    title: "Choose an image",
+    filters: [
+      {
+        name: "Image",
+        extensions: ["png", "jpg", "jpeg", "tif", "tiff", "webp"]
+      }
+    ]
+  }));
+  if (typeof selection !== "string") return "cancelled";
+  throwIfAborted(signal);
+  // Size first: a multi-gigabyte pick must be refused before it is read into memory, not after.
+  rejectOversizedFile(await fileSizeIfKnown(selection));
+  throwIfAborted(signal);
+  const bytes = await readFile(selection);
+  throwIfAborted(signal);
+  // The file may have grown since it was measured, or could not be measured at all.
+  rejectOversizedFile(bytes.byteLength);
+  const metadata = inspectSupportedImage(bytes);
+  rejectUnusableDimensions(metadata.width, metadata.height, "The selected image");
+  return {
+    ...metadata,
+    bytes: new Uint8Array(bytes),
+    source: "file",
+    fileName: selection.split(/[\\/]/).at(-1) ?? selection
+  };
+}
 
 export const screenRegionImageSourceProvider: ImageSourceProvider = {
   id: "screenRegion",
@@ -208,7 +217,7 @@ function rejectUnusableDimensions(width: number, height: number, subject: string
 }
 
 function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw new DOMException("Image acquisition was cancelled.", "AbortError");
+  if (signal.aborted) throw new DOMException("Image acquisition was canceled.", "AbortError");
 }
 
 function normalizeScreenCaptureError(error: unknown): ImageSourceError {

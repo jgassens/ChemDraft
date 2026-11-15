@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { open, save } from "./nativeFileDialog";
 import { nativePrompt } from "./nativePrompt";
@@ -80,9 +81,21 @@ describe("native file panels", () => {
         const path = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
         if (entry.isDirectory()) visit(path);
         else if (/\.tsx?$/.test(entry.name) && !entry.name.includes(".test.") && entry.name !== "nativeFileDialog.ts") {
-          // Only nativePrompt may use the dialog plugin directly, for message boxes.
-          const source = readFileSync(path, "utf8");
-          if (source.includes('"@tauri-apps/plugin-dialog"')) expect(entry.name).toBe("nativePrompt.ts");
+          // Type imports do not open panels (exportDirectory uses SaveDialogOptions).
+          // Only nativePrompt may import the runtime directly, for message boxes.
+          const text = readFileSync(path, "utf8");
+          if (!text.includes("@tauri-apps/plugin-dialog")) continue;
+          const source = ts.createSourceFile(path.pathname, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+          const visitImports = (node: ts.Node): void => {
+            if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly || ts.isImportTypeNode(node) ||
+              ts.isExportDeclaration(node) && node.isTypeOnly) return;
+            // Also catch re-exports, require() and indirect dynamic imports, with either quote style.
+            if (ts.isStringLiteral(node) && node.text === "@tauri-apps/plugin-dialog") {
+              expect(entry.name).toBe("nativePrompt.ts");
+            }
+            ts.forEachChild(node, visitImports);
+          };
+          visitImports(source);
         }
       }
     };

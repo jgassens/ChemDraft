@@ -1,0 +1,1594 @@
+//! The sole session-file writer. Documents submit revisioned snapshots, never file writes.
+//! Opaque JSON is intentional: newer metadata and unreadable drawings must survive this host.
+use serde_json::{json, Value};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
+const WRITE_INTERVAL: Duration = Duration::from_millis(800);
+
+/// Disk I/O cannot be cancelled safely mid-replacement. Let the writer finish on its own thread,
+/// but never make quit or update installation wait indefinitely for it (or its mutex).
+pub(crate) fn with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(task());
+    });
+    receiver.recv_timeout(timeout).map_err(|error| match error {
+        std::sync::mpsc::RecvTimeoutError::Timeout => format!(
+            "Saving the document session timed out after {} seconds; the operation was cancelled. Save your document and try again.",
+            timeout.as_secs()
+        ),
+        std::sync::mpsc::RecvTimeoutError::Disconnected =>
+            "The document session writer stopped before saving completed".into(),
+    })?
+}
+
+#[derive(Default)]
+pub(crate) struct SessionCoordinator {
+    state: Mutex<SessionState>,
+}
+
+#[derive(Default)]
+struct SessionState {
+    path: Option<PathBuf>,
+    error: Option<String>,
+    envelope: Option<Value>,
+    original_v1: Option<String>,
+    restores: HashMap<String, Value>,
+    hydrated: HashMap<String, u64>,
+    revisions: HashMap<(String, u64), u64>,
+    frames: HashMap<String, Value>,
+    closed: HashSet<String>,
+    close_backups: HashMap<String, (Value, usize, bool)>,
+    fresh_start_guard: bool,
+    dirty: bool,
+    last_write: Option<Instant>,
+    timer_pending: bool,
+    next_offer: u64,
+    offers: HashMap<u64, HandoffOffer>,
+}
+
+// A10b consumes these hooks later; no renderer command or tab movement is enabled by A6.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HandoffOffer {
+    pub id: u64,
+    pub from: String,
+    pub to: String,
+    pub tab_id: String,
+    pub state: Value,
+    installed: bool,
+}
+
+fn valid_tabs(window: &Value) -> bool {
+    window
+        .get("tabs")
+        .and_then(Value::as_array)
+        .is_some_and(|tabs| {
+            window
+                .get("activeTabIndex")
+                .and_then(Value::as_u64)
+                .is_some_and(|index| index < tabs.len() as u64 || (tabs.is_empty() && index == 0))
+        })
+        && window.get("unrestoredTabs").is_none_or(Value::is_array)
+}
+
+fn migrate(raw: Value, first_id: &str) -> Result<Value, String> {
+    match raw.get("version").and_then(Value::as_u64) {
+        Some(1) => {
+            // Validate the outer structure only. Individual tabs (including future versions) are
+            // never parsed, normalized, reordered, or discarded by the coordinator.
+            let mut window = raw.clone();
+            if raw.get("tabs").is_some() {
+                if !valid_tabs(&raw) || raw["tabs"].as_array().is_none_or(Vec::is_empty) {
+                    return Err("Document session has invalid tabs or active tab index".into());
+                }
+            } else {
+                if !super::document_session::readable_tab(&raw) {
+                    return Err("Document session has an unreadable outer envelope".into());
+                }
+                window["tabs"] = json!([raw]);
+                window["activeTabIndex"] = json!(0);
+            }
+            window.as_object_mut().unwrap().remove("version");
+            window["id"] = json!(first_id);
+            if window.get("frame").is_none() {
+                window["frame"] = Value::Null;
+            }
+            Ok(json!({ "version": 2, "windows": [window], "activeWindowId": first_id }))
+        }
+        Some(2) => {
+            let windows = raw
+                .get("windows")
+                .and_then(Value::as_array)
+                .ok_or("Document session has no windows array")?;
+            let mut ids = HashSet::new();
+            for window in windows {
+                let id = window
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or("Document session has an invalid window id")?;
+                if !ids.insert(id) || !valid_tabs(window) {
+                    return Err("Document session has duplicate windows or invalid tabs".into());
+                }
+            }
+            if !raw
+                .get("activeWindowId")
+                .is_some_and(|id| id.is_null() || id.as_str().is_some_and(|id| ids.contains(id)))
+            {
+                return Err("Document session has an invalid active window id".into());
+            }
+            Ok(raw)
+        }
+        _ => {
+            Err("Document session version is unsupported; the file will not be overwritten".into())
+        }
+    }
+}
+
+/// A6 fallback until A10 creates restored native windows. Keep all tabs in file window order;
+/// select the saved active window's active tab. Other windows' opaque metadata is retained too.
+fn collapse_into_first(envelope: &mut Value, first_id: &str) {
+    let windows = envelope["windows"].as_array().unwrap();
+    if windows.is_empty() {
+        return;
+    }
+    let mut first = windows[0].clone();
+    if windows.len() > 1 {
+        let mut tabs = Vec::new();
+        let mut kept = Vec::new();
+        let mut active = 0;
+        for window in windows {
+            if window["id"] == envelope["activeWindowId"] {
+                active = tabs.len() + window["activeTabIndex"].as_u64().unwrap() as usize;
+            }
+            tabs.extend(window["tabs"].as_array().unwrap().iter().cloned());
+            if let Some(raw) = window.get("unrestoredTabs").and_then(Value::as_array) {
+                kept.extend(raw.iter().cloned());
+            }
+        }
+        first["tabs"] = json!(tabs);
+        first["activeTabIndex"] = json!(if active < tabs.len() { active } else { 0 });
+        first["unrestoredTabs"] = json!(kept);
+        // Preserve the complete source windows, including unknown fields with conflicting names.
+        // This is provenance only and is never interpreted as additional restore candidates.
+        first["collapsedSessionWindows"] = json!(windows);
+    }
+    if first["id"] != first_id {
+        first["restoredWindowId"] = first["id"].clone();
+    }
+    first["id"] = json!(first_id);
+    envelope["windows"] = json!([first]);
+    envelope["activeWindowId"] = json!(first_id);
+}
+
+fn window_restore(window: &Value) -> Value {
+    // The document's existing v1 parser and recovery UI remain the chemistry boundary.
+    let mut restore = window.clone();
+    restore["version"] = json!(1);
+    restore
+}
+
+impl SessionCoordinator {
+    /// Consult the live registry at commit time, after an A10b destination has installed the tab.
+    /// Session entries are not a window count: they can include preserved, unhydrated recovery data.
+    pub(crate) fn close_quits(
+        &self,
+        documents: &super::document_windows::DocumentWindowRegistry,
+        is_macos: bool,
+    ) -> bool {
+        !is_macos
+            && documents
+                .all_document_windows()
+                .iter()
+                .filter(|window| {
+                    window.lifecycle != super::document_windows::DocumentWindowLifecycle::Closing
+                })
+                .count()
+                == 1
+    }
+
+    /// Held A10b hook: only an installed destination permits closing the empty source without
+    /// another save choice. This validates the receipt; it neither moves nor serializes a tab.
+    #[allow(dead_code)]
+    pub(crate) fn can_close_after_handoff(
+        &self,
+        from: &str,
+        receipt: u64,
+        documents: &super::document_windows::DocumentWindowRegistry,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.offers.get(&receipt).is_some_and(|offer| {
+            offer.from == from
+                && offer.installed
+                && documents.document_window(&offer.to).is_some()
+                && documents.document_window(from).is_some()
+        })
+    }
+
+    /// Called once in setup. Read errors are sticky: even another renderer cannot reopen writes.
+    pub(crate) fn initialize(&self, path: PathBuf, first_id: &str, collapse: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.path.is_some() {
+            return;
+        }
+        state.path = Some(path.clone());
+        let read = (|| {
+            let bytes = match fs::read_to_string(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(format!("Could not read document session: {error}")),
+            };
+            let raw: Value = serde_json::from_str(&bytes)
+                .map_err(|error| format!("Document session is invalid: {error}"))?;
+            let v1 = raw["version"] == 1;
+            let mut envelope = migrate(raw, first_id)?;
+            if collapse {
+                collapse_into_first(&mut envelope, first_id);
+            }
+            if v1 {
+                state.original_v1 = Some(bytes);
+            }
+            Ok(Some(envelope))
+        })();
+        match read {
+            Ok(envelope) => {
+                if let Some(envelope) = &envelope {
+                    for window in envelope["windows"].as_array().unwrap() {
+                        state.restores.insert(
+                            window["id"].as_str().unwrap().into(),
+                            window_restore(window),
+                        );
+                    }
+                }
+                state.envelope = envelope;
+            }
+            Err(error) => state.error = Some(error),
+        }
+    }
+
+    pub(crate) fn restore_window(
+        &self,
+        id: &str,
+        incarnation: u64,
+        fresh_start: bool,
+    ) -> Result<Option<Value>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.check_read()?;
+        if state.hydrated.get(id).is_some_and(|current| {
+            incarnation < *current || (incarnation == *current && state.closed.contains(id))
+        }) {
+            return Err("Document session belongs to a closed window incarnation".into());
+        }
+        // A7 reuses only the first native label until A10. A closed window never resurrects tabs,
+        // and its new webview starts a new revision sequence.
+        if state.closed.remove(id) {
+            state.close_backups.remove(id);
+            state.revisions.retain(|(window, _), _| window != id);
+            state.frames.remove(id);
+            // Retained recovery drawings remain available on reopen as well as next launch.
+            if let Some(window) = state.envelope.as_ref().and_then(|envelope| {
+                envelope["windows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|window| window["id"] == id)
+            }) {
+                let restore = window_restore(window);
+                state.restores.insert(id.into(), restore);
+            } else {
+                state.restores.remove(id);
+            }
+        }
+        // Only the first startup read establishes the whole-session fresh-start preference.
+        if state.hydrated.is_empty() {
+            state.fresh_start_guard = fresh_start;
+        }
+        state.hydrated.insert(id.into(), incarnation);
+        Ok(state.restores.get(id).cloned())
+    }
+
+    /// `replace_preserved` means the frontend's sticky fresh-start guard observed real new work.
+    /// `flush` bypasses the rate limit and reports disk failure to quit/update callers.
+    pub(crate) fn submit(
+        &self,
+        window: (&str, u64),
+        revision: u64,
+        snapshot: Value,
+        replace_preserved: bool,
+        flush: bool,
+        now: Instant,
+    ) -> Result<Option<Duration>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.check_read()?;
+        let (id, incarnation) = window;
+        if !state.hydrated.contains_key(id) {
+            return Err("Document session restore has not completed for this window".into());
+        }
+        if state.hydrated.get(id) != Some(&incarnation)
+            || state.closed.contains(id)
+            || state
+                .revisions
+                .get(&(id.into(), incarnation))
+                .is_some_and(|latest| revision <= *latest)
+        {
+            return if flush {
+                state.persist(now, true)
+            } else {
+                Ok(None)
+            };
+        }
+        if !valid_tabs(&snapshot) {
+            return Err("Document session snapshot has invalid tabs or active tab index".into());
+        }
+        if state.fresh_start_guard && !replace_preserved {
+            return Ok(None);
+        }
+        state.fresh_start_guard = false;
+        let frame = state.frames.get(id).cloned().unwrap_or(Value::Null);
+        let envelope = state.envelope.get_or_insert_with(|| {
+            json!({
+                "version": 2, "windows": [], "activeWindowId": id
+            })
+        });
+        if envelope["activeWindowId"].is_null() {
+            envelope["activeWindowId"] = json!(id);
+        }
+        let windows = envelope["windows"].as_array_mut().unwrap();
+        let index = windows.iter().position(|window| window["id"] == id);
+        let mut window = index
+            .map(|index| windows[index].clone())
+            .unwrap_or_else(|| json!({ "frame": frame }));
+        for (key, value) in snapshot.as_object().unwrap() {
+            if key != "version" && key != "id" && key != "frame" {
+                window[key] = value.clone();
+            }
+        }
+        // An absent known optional field clears it; unknown fields remain opaque and intact.
+        for key in [
+            "unrestoredTabs",
+            "path",
+            "restoreSavePathError",
+            "openWarnings",
+            "saveWarnings",
+            "nativeDocumentVersions",
+            "view",
+            "pristine",
+        ] {
+            if snapshot.get(key).is_none() {
+                window.as_object_mut().unwrap().remove(key);
+            }
+        }
+        window["id"] = json!(id);
+        if let Some(index) = index {
+            windows[index] = window;
+        } else {
+            windows.push(window);
+        }
+        state.revisions.insert((id.into(), incarnation), revision);
+        state.dirty = true;
+        state.persist(now, flush)
+    }
+
+    pub(crate) fn tick(&self, now: Instant) -> Result<Option<Duration>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.timer_pending = false;
+        state.persist(now, false)
+    }
+
+    pub(crate) fn flush(&self) -> Result<(), String> {
+        self.state
+            .lock()
+            .map_err(|e| e.to_string())?
+            .persist(Instant::now(), true)
+            .map(|_| ())
+    }
+
+    pub(crate) fn set_active(&self, id: &str) -> Result<Option<Duration>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if let Some(envelope) = &mut state.envelope {
+            if envelope["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|window| window["id"] == id)
+                && envelope["activeWindowId"] != id
+            {
+                envelope["activeWindowId"] = json!(id);
+                if !state.fresh_start_guard && !state.hydrated.is_empty() {
+                    state.dirty = true;
+                }
+            }
+        }
+        state.persist(Instant::now(), false)
+    }
+
+    pub(crate) fn set_frame(&self, id: &str, frame: Value) -> Result<Option<Duration>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.frames.insert(id.into(), frame.clone());
+        if let Some(window) = state
+            .envelope
+            .as_mut()
+            .and_then(|envelope| envelope["windows"].as_array_mut())
+            .and_then(|windows| windows.iter_mut().find(|window| window["id"] == id))
+        {
+            if let (Some(previous), Some(next)) =
+                (window["frame"].as_object_mut(), frame.as_object())
+            {
+                previous.extend(next.clone());
+            } else {
+                window["frame"] = frame;
+            }
+            if !state.fresh_start_guard && !state.hydrated.is_empty() {
+                state.dirty = true;
+            }
+        }
+        state.persist(Instant::now(), false)
+    }
+
+    /// Actual close, not hide or process teardown. Tombstone the id to refuse late snapshots.
+    pub(crate) fn close_window(&self, id: &str) -> Result<Option<Duration>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        state.check_read()?;
+        let previous = state.envelope.clone();
+        let previous_offers = state.offers.clone();
+        let was_dirty = state.dirty;
+        state.closed.insert(id.into());
+        state
+            .offers
+            .retain(|_, offer| offer.from != id && offer.to != id);
+        if let Some(envelope) = &mut state.envelope {
+            let windows = envelope["windows"].as_array_mut().unwrap();
+            let before = windows.len();
+            windows.retain_mut(|window| {
+                if window["id"] != id {
+                    return true;
+                }
+                if window
+                    .get("unrestoredTabs")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tabs| !tabs.is_empty())
+                {
+                    // Closing the readable drawings is not permission to discard recovery data.
+                    window["tabs"] = json!([]);
+                    window["activeTabIndex"] = json!(0);
+                    return true;
+                }
+                false
+            });
+            let next = windows
+                .first()
+                .map(|window| window["id"].clone())
+                .unwrap_or(Value::Null);
+            let changed =
+                before != windows.len() || windows.iter().any(|window| window["id"] == id);
+            if envelope["activeWindowId"] == id {
+                envelope["activeWindowId"] = next;
+            }
+            if changed && !state.fresh_start_guard {
+                state.dirty = true;
+            }
+        }
+        // A close must be on disk before native destruction, including during the debounce.
+        match state.persist(Instant::now(), true) {
+            Ok(result) => {
+                if let Some(envelope) = previous {
+                    if let Some((index, window)) = envelope["windows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, window)| window["id"] == id)
+                    {
+                        state.close_backups.insert(
+                            id.into(),
+                            (window.clone(), index, envelope["activeWindowId"] == id),
+                        );
+                    }
+                }
+                state.restores.remove(id);
+                Ok(result)
+            }
+            Err(error) => {
+                state.envelope = previous;
+                state.dirty = was_dirty;
+                state.closed.remove(id);
+                state.offers = previous_offers;
+                Err(error)
+            }
+        }
+    }
+
+    /// A bounded close may time out while disk I/O finishes on its worker. The native window
+    /// stays alive; restore its accepted snapshot and revision authority before editing resumes.
+    pub(crate) fn cancel_window_close(&self, id: &str) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|error| error.to_string())?;
+        state.closed.remove(id);
+        if let Some((window, index, was_active)) = state.close_backups.remove(id) {
+            let envelope = state.envelope.as_mut().unwrap();
+            let windows = envelope["windows"].as_array_mut().unwrap();
+            // A retained recovery-only entry replaces the closing window until rollback.
+            windows.retain(|window| window["id"] != id);
+            let index = index.min(windows.len());
+            windows.insert(index, window);
+            if was_active {
+                envelope["activeWindowId"] = json!(id);
+            }
+            state.dirty = true;
+        }
+        state.persist(Instant::now(), true).map(|_| ())
+    }
+
+    pub(crate) fn finish_window_close(&self, id: &str) {
+        self.state.lock().unwrap().close_backups.remove(id);
+    }
+
+    // Held A10b: transport-neutral, one-use hand-off receipts. They deliberately do not edit tabs.
+    #[allow(dead_code)]
+    pub(crate) fn offer(
+        &self,
+        from: &str,
+        to: &str,
+        tab_id: &str,
+        data: Value,
+    ) -> Result<HandoffOffer, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if from == to
+            || !state.hydrated.contains_key(from)
+            || !state.hydrated.contains_key(to)
+            || state.closed.contains(from)
+            || state.closed.contains(to)
+            || state.offers.values().any(|offer| offer.tab_id == tab_id)
+        {
+            return Err("Tab hand-off requires two live windows and no existing offer".into());
+        }
+        state.next_offer += 1;
+        let offer = HandoffOffer {
+            id: state.next_offer,
+            from: from.into(),
+            to: to.into(),
+            tab_id: tab_id.into(),
+            state: data,
+            installed: false,
+        };
+        state.offers.insert(offer.id, offer.clone());
+        Ok(offer)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn installed(&self, to: &str, receipt: u64) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        let offer = state
+            .offers
+            .get_mut(&receipt)
+            .filter(|offer| offer.to == to && !offer.installed)
+            .ok_or("Unknown, foreign, or already installed tab hand-off")?;
+        offer.installed = true;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn release(&self, from: &str, receipt: u64) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if !state
+            .offers
+            .get(&receipt)
+            .is_some_and(|offer| offer.from == from && offer.installed)
+        {
+            return Err("Tab hand-off has not been installed, or belongs to another source".into());
+        }
+        state.offers.remove(&receipt);
+        Ok(())
+    }
+}
+
+impl SessionState {
+    fn check_read(&self) -> Result<(), String> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        if self.path.is_none() {
+            return Err("Document session coordinator has not started".into());
+        }
+        Ok(())
+    }
+
+    fn persist(&mut self, now: Instant, flush: bool) -> Result<Option<Duration>, String> {
+        if !self.dirty || self.fresh_start_guard {
+            return Ok(None);
+        }
+        self.check_read()?;
+        if !flush {
+            if let Some(remaining) = self
+                .last_write
+                .and_then(|last| WRITE_INTERVAL.checked_sub(now.saturating_duration_since(last)))
+                .filter(|remaining| !remaining.is_zero())
+            {
+                if self.timer_pending {
+                    return Ok(None);
+                }
+                self.timer_pending = true;
+                return Ok(Some(remaining));
+            }
+        }
+        let path = self.path.as_ref().unwrap();
+        // A failed backup MUST stop replacement. The original bytes (including whitespace) are
+        // retained until both atomic writes succeed. Existing backups are never overwritten.
+        if let Some(original) = &self.original_v1 {
+            let backup = backup_path(path);
+            match fs::symlink_metadata(&backup) {
+                Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {}
+                Ok(_) => return Err("Document session v1 backup is not a regular file".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    super::write_file_atomic(&backup, original)?;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Could not inspect document session backup: {error}"
+                    ))
+                }
+            }
+        }
+        let contents = serde_json::to_string_pretty(self.envelope.as_ref().unwrap())
+            .map_err(|e| e.to_string())?;
+        // The mutex stays held through replacement: an older writer can never publish last.
+        super::write_file_atomic(path, &contents)?;
+        self.original_v1 = None;
+        self.last_write = Some(now);
+        self.dirty = false;
+        Ok(None)
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".v1.bak");
+    PathBuf::from(backup)
+}
+
+/// One timer per coordinator, including metadata-only updates. No renderer is needed to finish a
+/// delayed write; a strict flush takes the same mutex and completes immediately.
+pub(crate) fn schedule<R: tauri::Runtime>(app: &tauri::AppHandle<R>, delay: Option<Duration>) {
+    let Some(mut delay) = delay else { return };
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(delay);
+        use tauri::Manager;
+        match app.state::<SessionCoordinator>().tick(Instant::now()) {
+            Ok(Some(next)) => delay = next,
+            Ok(None) => break,
+            Err(error) => {
+                eprintln!("Could not autosave document session: {error}");
+                break;
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Files(PathBuf);
+    impl Files {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "chemdraft-session-coordinator-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> PathBuf {
+            self.0.join("document-session.json")
+        }
+        fn start(&self, session: &Value, collapse: bool) -> SessionCoordinator {
+            fs::write(self.path(), serde_json::to_string_pretty(session).unwrap()).unwrap();
+            let coordinator = SessionCoordinator::default();
+            coordinator.initialize(self.path(), "main", collapse);
+            coordinator
+        }
+        fn read(&self) -> Value {
+            serde_json::from_str(&fs::read_to_string(self.path()).unwrap()).unwrap()
+        }
+    }
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tab(name: &str) -> Value {
+        json!({ "version": 1, "contents": format!("drawing {name}"), "payloadHash": name,
+            "blank": false, "path": format!("{name}.chemdraft"), "displayName": name,
+            "dirty": true, "savedAt": "unchanged", "futureTab": { "doNotDrop": [1, 2] } })
+    }
+    fn snapshot(name: &str) -> Value {
+        let mut value = tab(name);
+        value["tabs"] = json!([tab(name)]);
+        value["activeTabIndex"] = json!(0);
+        value
+    }
+    fn window(id: &str, names: &[&str], active: usize) -> Value {
+        json!({ "id": id, "frame": { "x": 4, "futureFrame": "keep" },
+            "activeTabIndex": active, "tabs": names.iter().map(|name| tab(name)).collect::<Vec<_>>(),
+            "futureWindow": id })
+    }
+
+    #[test]
+    fn update_drain_is_bounded_while_the_coordinator_mutex_is_held() {
+        let coordinator = std::sync::Arc::new(SessionCoordinator::default());
+        let held = coordinator.state.lock().unwrap();
+        let writer = coordinator.clone();
+        let result = with_timeout(Duration::from_millis(20), move || writer.flush());
+        assert!(result.unwrap_err().contains("timed out"));
+        // The caller returned before the writer could acquire the mutex.
+        drop(held);
+        let writer = coordinator.clone();
+        assert!(with_timeout(Duration::from_secs(2), move || writer.flush()).is_ok());
+        assert_eq!(
+            with_timeout(Duration::from_secs(2), || Err::<(), _>("disk full".into())),
+            Err("disk full".into())
+        );
+    }
+
+    #[test]
+    fn watchdog_termination_does_not_wait_for_the_coordinator_mutex() {
+        use crate::{QuitFlow, QuitHost, QuitReason};
+        #[derive(Clone)]
+        struct Watchdog(std::sync::mpsc::Sender<()>);
+        impl QuitHost for Watchdog {
+            fn ask_document_to_flush(&self) -> bool {
+                true
+            }
+            fn exit(&self) {}
+            fn drain_appkit_session(&self) -> Result<(), String> {
+                panic!("watchdog must not persist")
+            }
+            fn force_exit(&self, _: Duration, _: QuitReason) {
+                self.0.send(()).unwrap();
+            }
+        }
+        let coordinator = SessionCoordinator::default();
+        let held = coordinator.state.lock().unwrap();
+        let quitting = Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+        let flow = Box::leak(Box::new(QuitFlow::new(
+            quitting,
+            Duration::from_secs(3),
+            Duration::from_millis(20),
+        )));
+        let (terminated, receiver) = std::sync::mpsc::channel();
+        crate::quit_now_with(flow, &Watchdog(terminated), QuitReason::GraceExpired);
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(held);
+        // Also guard the Windows host implementation, which cannot execute on this test host.
+        let source = include_str!("lib.rs");
+        let windows_force_exit = source
+            .split("#[cfg(windows)]\n    fn force_exit")
+            .nth(1)
+            .unwrap()
+            .split("#[cfg(not(windows))]")
+            .next()
+            .unwrap();
+        assert!(!windows_force_exit.contains("flush_session"));
+        assert!(!windows_force_exit.contains("SessionCoordinator"));
+    }
+
+    #[test]
+    fn blank_tab_and_window_extension_data_remain_separate_after_a_flush() {
+        let files = Files::new();
+        let mut blank = tab("blank");
+        blank["blank"] = json!(true);
+        blank["dirty"] = json!(false);
+        blank["pristine"] = json!(true);
+        blank.as_object_mut().unwrap().remove("path");
+        blank["extensionData"] = json!({ "scope": "tab" });
+        let session = json!({ "version": 2, "activeWindowId": "main", "windows": [{
+            "id": "main", "frame": null, "extensionData": { "scope": "window" },
+            "tabs": [blank], "activeTabIndex": 0
+        }] });
+        let coordinator = files.start(&session, false);
+        let restored = coordinator
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        let mut snapshot = restored.clone();
+        // The renderer submits only known compatibility fields and retains opaque tab data in tabs.
+        snapshot.as_object_mut().unwrap().remove("extensionData");
+        coordinator
+            .submit(("main", 1), 1, snapshot, true, true, Instant::now())
+            .unwrap();
+        let saved = files.read();
+        assert_eq!(
+            saved["windows"][0]["extensionData"],
+            json!({ "scope": "window" })
+        );
+        assert_eq!(
+            saved["windows"][0]["tabs"][0]["extensionData"],
+            json!({ "scope": "tab" })
+        );
+    }
+
+    #[test]
+    fn migrates_v1_verbatim_and_backs_up_original_bytes_exactly_once() {
+        let files = Files::new();
+        let unreadable =
+            json!({ "version": 99, "contents": "do not decode", "unknown": [false, null] });
+        let mut old = snapshot("first");
+        old["tabs"] = json!([tab("first"), unreadable, tab("third")]);
+        old["activeTabIndex"] = json!(2);
+        old["unrestoredTabs"] = json!([{"raw": "kept"}, 42]);
+        old["futureOuter"] = json!({ "keep": true });
+        let original = format!(" \n{}\n  ", serde_json::to_string(&old).unwrap());
+        fs::write(files.path(), &original).unwrap();
+        let coordinator = SessionCoordinator::default();
+        coordinator.initialize(files.path(), "main", true);
+        let restored = coordinator
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        for key in ["tabs", "activeTabIndex", "unrestoredTabs", "futureOuter"] {
+            assert_eq!(restored[key], old[key]);
+        }
+        assert!(!backup_path(&files.path()).exists()); // read alone never rewrites user data
+        coordinator
+            .submit(("main", 1), 1, restored.clone(), true, true, Instant::now())
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup_path(&files.path())).unwrap(),
+            original
+        );
+        assert_eq!(files.read()["windows"][0]["tabs"], old["tabs"]);
+        coordinator
+            .submit(("main", 1), 2, restored, true, true, Instant::now())
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup_path(&files.path())).unwrap(),
+            original
+        );
+        // A later launch over another v1 file must not overwrite the existing backup either.
+        let next = files.start(&snapshot("later"), true);
+        next.restore_window("main", 1, false).unwrap();
+        next.submit(
+            ("main", 1),
+            1,
+            snapshot("later"),
+            true,
+            true,
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup_path(&files.path())).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn legacy_single_document_and_one_window_content_have_parity() {
+        let files = Files::new();
+        let old = tab("single");
+        let coordinator = files.start(&old, true);
+        let restore = coordinator
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restore["tabs"], json!([old]));
+        coordinator
+            .submit(("main", 1), 1, restore, true, true, Instant::now())
+            .unwrap();
+        let actual = files.read();
+        assert_eq!(actual["version"], 2);
+        assert_eq!(actual["activeWindowId"], "main");
+        for (key, value) in old.as_object().unwrap() {
+            if key != "version" {
+                assert_eq!(&actual["windows"][0][key], value);
+            }
+        }
+        assert_eq!(actual["windows"][0]["tabs"][0], old);
+    }
+
+    #[test]
+    fn interleaved_windows_keep_latest_revisions_and_rate_limit_the_merged_file() {
+        let files = Files::new();
+        let session = json!({ "version": 2, "windows": [window("a", &["a0"], 0), window("b", &["b0"], 0)],
+            "activeWindowId": "a", "futureEnvelope": { "exact": true } });
+        let coordinator = files.start(&session, false);
+        coordinator.restore_window("a", 1, false).unwrap();
+        coordinator.restore_window("b", 1, false).unwrap();
+        let now = Instant::now();
+        coordinator
+            .submit(("a", 1), 2, snapshot("a2"), true, false, now)
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("a2"));
+        let delay = coordinator
+            .submit(
+                ("b", 1),
+                5,
+                snapshot("b5"),
+                true,
+                false,
+                now + Duration::from_millis(10),
+            )
+            .unwrap();
+        assert_eq!(delay, Some(Duration::from_millis(790)));
+        coordinator
+            .submit(
+                ("a", 1),
+                4,
+                snapshot("a4"),
+                true,
+                false,
+                now + Duration::from_millis(20),
+            )
+            .unwrap();
+        coordinator
+            .submit(
+                ("a", 1),
+                3,
+                snapshot("STALE"),
+                true,
+                false,
+                now + Duration::from_millis(30),
+            )
+            .unwrap();
+        coordinator
+            .submit(
+                ("b", 1),
+                5,
+                snapshot("DUPLICATE"),
+                true,
+                false,
+                now + Duration::from_millis(40),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][1]["tabs"][0], tab("b0"));
+        assert_eq!(
+            coordinator.tick(now + Duration::from_millis(799)).unwrap(),
+            Some(Duration::from_millis(1))
+        );
+        coordinator.tick(now + Duration::from_millis(800)).unwrap();
+        let actual = files.read();
+        assert_eq!(actual["windows"][0]["tabs"][0], tab("a4"));
+        assert_eq!(actual["windows"][1]["tabs"][0], tab("b5"));
+        assert_eq!(actual["futureEnvelope"], session["futureEnvelope"]);
+        assert_eq!(actual["windows"][0]["futureWindow"], "a");
+        assert_eq!(
+            actual["windows"][0]["frame"],
+            session["windows"][0]["frame"]
+        );
+    }
+
+    #[test]
+    fn quit_and_update_flush_bypass_the_timer_and_stale_flush_does_not_replace_newer_data() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("old"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        let now = Instant::now();
+        coordinator
+            .submit(("main", 1), 1, snapshot("first"), true, false, now)
+            .unwrap();
+        coordinator
+            .submit(("main", 1), 3, snapshot("latest"), true, false, now)
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("first"));
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+        coordinator
+            .submit(("main", 1), 2, snapshot("late-quit"), true, true, now)
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+    }
+
+    #[test]
+    fn every_native_exit_and_update_route_drains_a_deferred_snapshot_once() {
+        // Pair each real entry point with its flush wiring. These checks catch bypasses of the
+        // coordinator, while the disk assertions below exercise the shared drain on every route.
+        let lib = include_str!("lib.rs");
+        let appkit = include_str!("macos_quit.rs");
+        let windows_update = include_str!("../../src/appUpdates.ts");
+        for (route, source, start, end, flush) in [
+            (
+                "quit decision / Windows last-window close",
+                lib,
+                "    fn prepare_exit(&self) {",
+                "    /// Windows:",
+                "flush_session_before_exit(self)",
+            ),
+            (
+                "ExitRequested",
+                lib,
+                "            RunEvent::ExitRequested { code, api, .. } => {",
+                "            RunEvent::Exit => {",
+                "flush_session_before_exit(app)",
+            ),
+            (
+                "Exit",
+                lib,
+                "            RunEvent::Exit => {",
+                "            // Dock-icon click",
+                "flush_session_before_exit(app)",
+            ),
+            (
+                "AppKit / Sparkle termination",
+                appkit,
+                "unsafe extern \"C\" fn should_terminate(",
+                "    NSApplicationTerminateReply::TerminateNow",
+                "super::request_appkit_quit_with",
+            ),
+            (
+                "AppKit coordinator worker",
+                lib,
+                "fn quit_now_with<H: QuitHost>",
+                "/// The document window's answer",
+                "host.drain_appkit_session()",
+            ),
+            (
+                "Windows update install",
+                windows_update,
+                "export function tauriUpdateFlowDeps(",
+                "    check: async () => {",
+                "await invoke(\"flush_document_session\")",
+            ),
+        ] {
+            let body = source
+                .split_once(start)
+                .unwrap()
+                .1
+                .split_once(end)
+                .unwrap()
+                .0;
+            assert!(body.contains(flush), "{route} must drain the coordinator");
+            let files = Files::new();
+            let coordinator = files.start(&snapshot("old"), true);
+            coordinator.restore_window("main", 1, false).unwrap();
+            let now = Instant::now();
+            // Reproduce a metadata write followed by an accepted renderer edit inside 800 ms.
+            coordinator.set_frame("main", json!({"x": 42})).unwrap();
+            assert!(coordinator
+                .submit(("main", 1), 1, snapshot("deferred"), true, false, now)
+                .unwrap()
+                .is_some());
+            assert_eq!(files.read()["windows"][0]["tabs"][0], tab("old"), "{route}");
+            coordinator.flush().unwrap();
+            assert_eq!(
+                files.read()["windows"][0]["tabs"][0],
+                tab("deferred"),
+                "{route}"
+            );
+            let written_at = coordinator.state.lock().unwrap().last_write;
+            // ExitRequested, Exit and AppKit may follow a decided quit, and the old timer may
+            // still fire. None may write the same snapshot a second time.
+            coordinator.flush().unwrap();
+            coordinator.tick(now + WRITE_INTERVAL).unwrap();
+            assert_eq!(
+                coordinator.state.lock().unwrap().last_write,
+                written_at,
+                "{route}"
+            );
+            assert_eq!(
+                files.read()["windows"][0]["tabs"][0],
+                tab("deferred"),
+                "{route}"
+            );
+        }
+        // A7 routes close through the platform decision, retaining the same A6 quit drain.
+        let windows_close = lib
+            .split_once("fn request_close_window<R: Runtime>")
+            .unwrap()
+            .1
+            .split_once("async fn finish_close_window")
+            .unwrap()
+            .0;
+        assert!(windows_close.contains(".close_quits(&registry, cfg!(target_os = \"macos\"))"));
+        assert!(windows_close.contains("request_prompted_quit_with(&QUIT, app)"));
+        let update_command = lib
+            .split_once("fn flush_document_session(")
+            .unwrap()
+            .1
+            .split_once("/// JS pushes")
+            .unwrap()
+            .0;
+        assert!(update_command.contains("flush_session(&app)"));
+    }
+
+    #[test]
+    fn a_failed_terminal_flush_preserves_the_pending_snapshot_for_retry() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("old"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator.set_frame("main", json!({"x": 42})).unwrap();
+        coordinator
+            .submit(
+                ("main", 1),
+                1,
+                snapshot("deferred"),
+                true,
+                false,
+                Instant::now(),
+            )
+            .unwrap();
+        fs::remove_file(files.path()).unwrap();
+        fs::create_dir(files.path()).unwrap();
+        assert!(coordinator.flush().is_err());
+        assert!(coordinator.state.lock().unwrap().dirty);
+        fs::remove_dir(files.path()).unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("deferred"));
+        coordinator.flush().unwrap();
+    }
+
+    #[test]
+    fn restore_is_read_once_and_distributes_only_each_windows_own_tabs() {
+        let files = Files::new();
+        let session = json!({ "version": 2, "windows": [window("a", &["a1", "a2"], 1), window("b", &["b"], 0)],
+            "activeWindowId": "a" });
+        let coordinator = files.start(&session, false);
+        fs::write(files.path(), "changed after startup").unwrap();
+        for (index, id) in ["a", "b"].iter().enumerate() {
+            let own = coordinator.restore_window(id, 1, false).unwrap().unwrap();
+            assert_eq!(own["tabs"], session["windows"][index]["tabs"]);
+            assert_eq!(
+                own["activeTabIndex"],
+                session["windows"][index]["activeTabIndex"]
+            );
+            assert_eq!(coordinator.restore_window(id, 1, false).unwrap(), Some(own));
+        }
+        assert_eq!(coordinator.restore_window("new", 1, false).unwrap(), None);
+    }
+
+    #[test]
+    fn a6_collapses_all_saved_windows_in_order_and_retains_unreadable_entries_and_metadata() {
+        let files = Files::new();
+        let mut a = window("old-a", &["a1", "a2"], 0);
+        let raw = json!({ "version": 22, "mystery": [1, false, "drawing"] });
+        a["tabs"][1] = raw.clone();
+        a["unrestoredTabs"] = json!([null]);
+        let mut b = window("old-b", &["b1", "b2"], 1);
+        b["unrestoredTabs"] = json!([raw]);
+        let session =
+            json!({ "version": 2, "windows": [a, b], "activeWindowId": "old-b", "extra": "keep" });
+        let coordinator = files.start(&session, true);
+        let restore = coordinator
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restore["tabs"],
+            json!([tab("a1"), raw, tab("b1"), tab("b2")])
+        );
+        assert_eq!(restore["activeTabIndex"], 3);
+        assert_eq!(restore["unrestoredTabs"], json!([null, raw]));
+        coordinator
+            .submit(("main", 1), 1, restore, true, true, Instant::now())
+            .unwrap();
+        let actual = files.read();
+        assert_eq!(actual["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            actual["windows"][0]["collapsedSessionWindows"],
+            session["windows"]
+        );
+        assert_eq!(actual["extra"], "keep");
+        assert_eq!(actual["activeWindowId"], "main");
+    }
+
+    #[test]
+    fn fresh_start_guards_the_whole_session_including_frames_focus_and_quit() {
+        let files = Files::new();
+        let old = snapshot("unsaved");
+        let coordinator = files.start(&old, true);
+        let original = fs::read_to_string(files.path()).unwrap();
+        coordinator.set_frame("main", json!({ "x": 9 })).unwrap();
+        coordinator.restore_window("main", 1, true).unwrap();
+        coordinator.restore_window("second", 1, false).unwrap(); // cannot change the session preference
+        coordinator.set_active("main").unwrap();
+        coordinator.set_frame("main", json!({ "x": 10 })).unwrap();
+        coordinator
+            .submit(
+                ("main", 1),
+                1,
+                snapshot("blank"),
+                false,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(fs::read_to_string(files.path()).unwrap(), original);
+        assert!(!backup_path(&files.path()).exists());
+        coordinator
+            .submit(
+                ("second", 1),
+                1,
+                snapshot("new work"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"], old["tabs"]);
+        assert_eq!(files.read()["windows"][1]["tabs"][0], tab("new work"));
+    }
+
+    #[test]
+    fn unreadable_outer_envelopes_block_all_writes_and_backup_failure_keeps_v1() {
+        for invalid in [
+            json!({ "version": 99, "future": "data" }),
+            json!({ "version": 1, "tabs": [tab("a")], "activeTabIndex": 4 }),
+            json!({ "version": 2, "windows": [window("a", &["a"], 0)], "activeWindowId": "missing" }),
+        ] {
+            let files = Files::new();
+            let coordinator = files.start(&invalid, true);
+            assert!(coordinator.restore_window("main", 1, true).is_err());
+            assert!(coordinator
+                .submit(
+                    ("main", 1),
+                    1,
+                    snapshot("blank"),
+                    true,
+                    true,
+                    Instant::now()
+                )
+                .is_err());
+            coordinator.flush().unwrap();
+            assert_eq!(files.read(), invalid);
+        }
+        let files = Files::new();
+        let old = snapshot("important");
+        let coordinator = files.start(&old, true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        fs::create_dir(backup_path(&files.path())).unwrap();
+        assert!(coordinator
+            .submit(("main", 1), 1, snapshot("new"), true, true, Instant::now())
+            .is_err());
+        assert_eq!(files.read(), old);
+        fs::remove_dir(backup_path(&files.path())).unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("new"));
+    }
+
+    #[test]
+    fn close_removes_only_that_window_and_refuses_late_snapshots() {
+        let files = Files::new();
+        let coordinator = files.start(
+            &json!({ "version": 2, "windows": [window("a", &["a"], 0), window("b", &["b"], 0)],
+            "activeWindowId": "b" }),
+            false,
+        );
+        coordinator.restore_window("a", 1, false).unwrap();
+        coordinator.restore_window("b", 1, false).unwrap();
+        coordinator.close_window("b").unwrap();
+        // A7 close is immediate; do not rely on a later snapshot to drain the debounce.
+        assert_eq!(files.read()["windows"].as_array().unwrap().len(), 1);
+        coordinator
+            .submit(("b", 1), 999, snapshot("late"), true, true, Instant::now())
+            .unwrap();
+        assert_eq!(files.read()["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(files.read()["windows"][0]["id"], "a");
+        assert_eq!(files.read()["activeWindowId"], "a");
+    }
+
+    #[test]
+    fn close_bypasses_the_debounce_and_reopen_does_not_resurrect_tabs_or_reject_new_revisions() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("closed drawing"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator
+            .submit(
+                ("main", 1),
+                42,
+                snapshot("last edit"),
+                true,
+                false,
+                Instant::now(),
+            )
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+        assert!(files.read()["activeWindowId"].is_null());
+        assert_eq!(coordinator.restore_window("main", 2, false).unwrap(), None);
+        coordinator
+            .submit(
+                ("main", 2),
+                1,
+                snapshot("new empty window"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(
+            files.read()["windows"][0]["tabs"][0],
+            tab("new empty window")
+        );
+        // An old webview's delayed revision 41 must neither replace revision 1 nor block revision 2.
+        assert!(coordinator.restore_window("main", 1, false).is_err());
+        coordinator
+            .submit(
+                ("main", 1),
+                41,
+                snapshot("old worker"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(
+            files.read()["windows"][0]["tabs"][0],
+            tab("new empty window")
+        );
+        coordinator
+            .submit(
+                ("main", 2),
+                2,
+                snapshot("new edit"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("new edit"));
+    }
+
+    #[test]
+    fn closing_keeps_cancelled_recovery_drawings_on_disk_for_reopen_and_next_launch() {
+        let files = Files::new();
+        let mut saved = snapshot("clean drawing");
+        saved["dirty"] = json!(false);
+        saved["tabs"][0]["dirty"] = json!(false);
+        let retained =
+            json!([{ "version": 99, "contents": "unreadable drawing", "future": [1, 2] }]);
+        saved["unrestoredTabs"] = retained.clone();
+        let coordinator = files.start(&saved, true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator
+            .submit(("main", 1), 1, saved, true, true, Instant::now())
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        coordinator.finish_window_close("main");
+        let closed = files.read();
+        assert_eq!(closed["windows"][0]["unrestoredTabs"], retained);
+        assert_eq!(closed["windows"][0]["tabs"], json!([]));
+        assert_eq!(closed["windows"][0]["activeTabIndex"], 0);
+        assert!(valid_tabs(&closed["windows"][0]));
+        let reopened = coordinator
+            .restore_window("main", 2, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened["unrestoredTabs"], retained);
+        assert_eq!(reopened["tabs"], json!([]));
+        let next_launch = files.start(&closed, true);
+        assert_eq!(
+            next_launch
+                .restore_window("main", 1, false)
+                .unwrap()
+                .unwrap()["unrestoredTabs"],
+            retained
+        );
+    }
+
+    #[test]
+    fn fresh_start_work_then_close_and_relaunch_renews_kept_drawings_file_scope() {
+        let files = Files::new();
+        let path = files.0.join("external-drive-drawing.chemdraft");
+        fs::write(&path, "saved drawing").unwrap();
+        let path = path.canonicalize().unwrap();
+        let mut kept = tab("kept drawing");
+        kept["path"] = json!(path);
+        let mut saved = snapshot("previous work");
+        saved["unrestoredTabs"] = json!([kept]);
+        let coordinator = files.start(&saved, true);
+        // Fresh startup keeps the now-readable recovery drawing instead of opening it.
+        coordinator.restore_window("main", 1, true).unwrap();
+        let mut work = snapshot("new work");
+        work["unrestoredTabs"] = saved["unrestoredTabs"].clone();
+        coordinator
+            .submit(("main", 1), 1, work, true, true, Instant::now())
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        coordinator.finish_window_close("main");
+        let closed = files.read();
+        assert_eq!(closed["windows"][0]["tabs"], json!([]));
+        let next_launch = files.start(&closed, true);
+        let mut restored = next_launch
+            .restore_window("main", 1, false)
+            .unwrap()
+            .unwrap();
+        let mut grants = Vec::new();
+        crate::document_session::restore_file_scopes(&mut restored, |path| {
+            grants.push(path.to_path_buf());
+            Ok(())
+        });
+        assert_eq!(grants, vec![path]);
+        assert_eq!(restored["unrestoredTabs"][0], kept);
+    }
+
+    #[test]
+    fn failed_close_restores_recovery_entry_without_duplicating_the_window() {
+        let files = Files::new();
+        let mut saved = snapshot("keep");
+        saved["unrestoredTabs"] = json!([{ "contents": "unreadable" }]);
+        let coordinator = files.start(&saved, true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator.close_window("main").unwrap();
+        coordinator.cancel_window_close("main").unwrap();
+        assert_eq!(files.read()["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(files.read()["windows"][0]["tabs"], saved["tabs"]);
+        assert_eq!(
+            files.read()["windows"][0]["unrestoredTabs"],
+            saved["unrestoredTabs"]
+        );
+    }
+
+    #[test]
+    fn a_failed_close_keeps_the_window_writable_for_retry() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("keep"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        fs::remove_file(files.path()).unwrap();
+        fs::create_dir(files.path()).unwrap();
+        assert!(coordinator.close_window("main").is_err());
+        fs::remove_dir(files.path()).unwrap();
+        coordinator
+            .submit(
+                ("main", 1),
+                1,
+                snapshot("still editing"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("still editing"));
+    }
+
+    #[test]
+    fn macos_zero_window_update_drains_the_coordinator_after_the_last_close() {
+        use super::super::window_lifecycle::{DocumentLifecycle, FlushPurpose};
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("last drawing"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator.close_window("main").unwrap();
+        let lifecycle = DocumentLifecycle::default();
+        let id = lifecycle.begin_flush(FlushPurpose::Update, vec![]);
+        lifecycle.wait_for_update(id, Duration::ZERO).unwrap();
+        coordinator.flush().unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+    }
+
+    #[test]
+    fn a_late_close_write_can_be_rolled_back_without_resetting_a_live_windows_revision() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("keep"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator
+            .submit(
+                ("main", 1),
+                42,
+                snapshot("latest"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        coordinator.close_window("main").unwrap();
+        assert_eq!(files.read()["windows"], json!([]));
+        coordinator.cancel_window_close("main").unwrap();
+        coordinator.cancel_window_close("main").unwrap(); // timeout worker/caller can both retire it
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+        coordinator
+            .submit(
+                ("main", 1),
+                41,
+                snapshot("stale"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("latest"));
+        coordinator
+            .submit(
+                ("main", 1),
+                43,
+                snapshot("editing"),
+                true,
+                true,
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(files.read()["windows"][0]["tabs"][0], tab("editing"));
+        coordinator.close_window("main").unwrap();
+        coordinator.finish_window_close("main");
+        assert!(coordinator.state.lock().unwrap().close_backups.is_empty());
+    }
+
+    #[test]
+    fn platform_close_counts_only_live_documents_after_the_handoff_destination_exists() {
+        use super::super::document_windows::DocumentWindowRegistry;
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("source"), true);
+        let documents = DocumentWindowRegistry::with_main();
+        documents.set_ready("main");
+        for is_macos in [true, false] {
+            assert_eq!(coordinator.close_quits(&documents, is_macos), !is_macos);
+        }
+        for utility in [
+            "runtime",
+            "toolset-main",
+            "preferences",
+            "dialog-main-pageSize-1",
+            "plugin-panel-example",
+        ] {
+            assert!(documents.register(utility, utility).is_err());
+        }
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator
+            .restore_window("doc-destination", 1, false)
+            .unwrap();
+        let receipt = coordinator
+            .offer(
+                "main",
+                "doc-destination",
+                "stable-tab",
+                json!({"history": "opaque"}),
+            )
+            .unwrap();
+        assert!(!coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        documents
+            .register("doc-destination", "doc-destination")
+            .unwrap();
+        documents.set_ready("doc-destination");
+        coordinator
+            .installed("doc-destination", receipt.id)
+            .unwrap();
+        assert!(coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        for is_macos in [true, false] {
+            assert!(!coordinator.close_quits(&documents, is_macos));
+        }
+        coordinator.release("main", receipt.id).unwrap();
+        assert!(!coordinator.can_close_after_handoff("main", receipt.id, &documents));
+        documents.remove("main");
+        assert!(coordinator.close_quits(&documents, false));
+        assert!(!coordinator.close_quits(&documents, true));
+    }
+
+    #[test]
+    fn handoff_stub_client_dry_run_transfers_opaque_state_only_after_installation() {
+        let files = Files::new();
+        let coordinator = files.start(&snapshot("source"), true);
+        coordinator.restore_window("main", 1, false).unwrap();
+        coordinator.restore_window("destination", 1, false).unwrap();
+        let history = json!({ "past": [{ "drawing": "before" }], "present": { "drawing": "now" },
+            "future": [{ "drawing": "redo" }], "undoLabels": ["label"], "dirty": true,
+            "tabId": "stable-tab", "savedBaseline": { "raw": "exact" } });
+        let offer = coordinator
+            .offer("main", "destination", "stable-tab", history.clone())
+            .unwrap();
+        assert_eq!(offer.state, history); // the stub destination installs exactly these bytes
+        assert_eq!(offer.tab_id, "stable-tab");
+        assert!(coordinator.release("main", offer.id).is_err());
+        assert!(coordinator.installed("foreign", offer.id).is_err());
+        assert!(coordinator
+            .offer("main", "destination", "stable-tab", Value::Null)
+            .is_err());
+        coordinator.installed("destination", offer.id).unwrap();
+        assert!(coordinator.installed("destination", offer.id).is_err());
+        assert!(coordinator.release("foreign", offer.id).is_err());
+        coordinator.release("main", offer.id).unwrap();
+        assert!(coordinator.release("main", offer.id).is_err());
+        // A6 exposes hooks only: neither the saved session nor live tabs are moved.
+        assert_eq!(files.read(), snapshot("source"));
+    }
+}

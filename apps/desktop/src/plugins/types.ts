@@ -7,6 +7,9 @@ import type { PluginCanvasOverlayContribution, PluginPanelReport } from "@chemdr
  * "Run again") without the plugin describing chrome.
  */
 export interface OpenPluginPanel {
+  documentName?: string;
+  /** Omitted for the migrated first window. */
+  windowId?: string;
   pluginId: string;
   panelId: string;
   title: string;

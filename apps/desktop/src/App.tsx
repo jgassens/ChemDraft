@@ -6,6 +6,7 @@ import {
   TOOLSET_TOOLTIP_WINDOW_KIND
 } from "./window-manager";
 import { installSecondaryWindowEditHistory } from "./editHistoryRouting";
+import { isTauriHost } from "./plugins/pluginStagingFs";
 
 const MainWindow = lazy(() => import("./MainWindow").then(m => ({ default: m.MainWindow })));
 const PaletteWindow = lazy(() => import("./PaletteWindow").then(m => ({ default: m.PaletteWindow })));
@@ -15,8 +16,11 @@ const PluginPanelWindow = lazy(() => import("./plugins/PluginPanelWindow").then(
 const Spin3dDebuggerWindow = lazy(() => import("./Spin3dDebuggerWindow").then(m => ({ default: m.Spin3dDebuggerWindow })));
 const PreferencesWindow = lazy(() => import("./PreferencesWindow").then(m => ({ default: m.PreferencesWindow })));
 const DialogWindow = lazy(() => import("./dialogs/DialogWindow").then(m => ({ default: m.DialogWindow })));
+const RuntimeHostWindow = lazy(() => import("./plugins/RuntimeHostWindow").then(m => ({ default: m.RuntimeHostWindow })));
 
 export function App() {
+  // The host never mounts document/session/history/focus hooks. A URL alone grants no native host.
+  if (isRuntimeHostRoute()) return isTauriHost() ? <Suspense fallback={null}><RuntimeHostWindow /></Suspense> : null;
   const dialog = dialogRoute();
   if (dialog !== undefined) {
     return <Suspense fallback={<p role="status">Opening dialog…</p>}>
@@ -35,6 +39,11 @@ export function App() {
   }
 
   return <Suspense fallback={null}><MainWindow /></Suspense>;
+}
+
+export function isRuntimeHostRoute(): boolean {
+  return typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("window") === "runtime";
 }
 
 /**

@@ -1,7 +1,7 @@
-import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { createNameDictionary, nameDictionaryUrl, resolveChemicalName, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,11 @@ import {
   type CliExitCode,
   type CliIo
 } from "../output";
+
+const dictionary = createNameDictionary(async () => {
+  const { gunzipSync } = await import("node:zlib");
+  return gunzipSync(await readFile(nameDictionaryUrl)).toString("utf8");
+});
 
 const OPSIN_VERSION = "opsin-2.9.0";
 const MAX_NAME_LENGTH = 2000;
@@ -55,6 +60,7 @@ interface ParsedArguments {
 
 export interface NameCommandDependencies {
   opsinPaths?: OpsinPaths;
+  convertName?: typeof convertNameWithOpsin;
   renderSmiles?: typeof renderSmilesToAssets;
 }
 
@@ -294,32 +300,39 @@ async function runJob(
 ): Promise<boolean> {
   writeProgress(io, `Converting ${job.name}…`);
   const template = resolveStructureTemplateName(job.query);
-  const provenance = template
+  let provenance: Record<string, unknown> = template
     ? { source: "template", templateId: template.id, templateName: template.name, engine: "chemdraft-templates" }
     : { source: "opsin", engine: OPSIN_VERSION };
+  let operation = "convert";
   try {
     const converted = template ? { smiles: template.smiles, warnings: [] as string[], failureReason: undefined }
-      : await convertNameWithOpsin(job.query, dependencies.opsinPaths);
+      : await resolveChemicalName(job.query, query => (dependencies.convertName ?? convertNameWithOpsin)(query, dependencies.opsinPaths), dictionary);
+    if ("source" in converted) provenance = { source: converted.source,
+      engine: converted.source === "dictionary" ? "wikidata-2026-10-27" : OPSIN_VERSION,
+      ...("matchedName" in converted ? { matchedName: converted.matchedName } : {}),
+      ...("matchedCas" in converted ? { matchedCas: converted.matchedCas } : {}) };
+    const warnings = converted.warnings ?? [];
     if (!converted.smiles) {
       const error = `Could not interpret chemical name "${job.query}": ${converted.failureReason}`;
       writeJsonLine(io, {
-        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings: converted.warnings
+        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings
       });
       writeProgress(io, `Failed ${job.name}: ${error}`);
       return false;
     }
 
-    const reason = ambiguityReason(converted.warnings);
+    const reason = ambiguityReason(warnings);
     if (reason !== undefined && !allowAmbiguous) {
       const error = `ambiguous name: ${reason}; give a locant or full name`;
       writeJsonLine(io, {
-        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings: converted.warnings
+        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings
       });
       writeProgress(io, `Failed ${job.name}: ${error}`);
       return false;
     }
 
     if (renderPath !== undefined) {
+      operation = "render";
       const renderSmiles = dependencies.renderSmiles ?? (await import("../document")).renderSmilesToAssets;
       const rendered = await renderSmiles(
         converted.smiles,
@@ -335,7 +348,7 @@ async function runJob(
         ...provenance,
         png: renderPath,
         layout: rendered.layout,
-        warnings: [...converted.warnings, ...rendered.warnings]
+        warnings: [...warnings, ...rendered.warnings]
       });
       writeProgress(io, `Wrote ${renderPath}`);
       return true;
@@ -347,7 +360,7 @@ async function runJob(
       ok: true,
       smiles: converted.smiles,
       ...provenance,
-      warnings: converted.warnings
+      warnings
     });
     writeProgress(io, `Converted ${job.name}`);
     return true;
@@ -355,7 +368,7 @@ async function runJob(
     const message = error instanceof Error ? error.message : String(error);
     const namedMessage = error instanceof OpsinEngineError
       ? message
-      : `Unable to render ${template ? "template" : "OPSIN"} result for chemical name "${job.query}": ${message}`;
+      : `Unable to ${operation} ${provenance.source === "dictionary" ? "Wikidata dictionary" : provenance.source === "template" ? "template" : "OPSIN"} result for chemical name "${job.query}": ${message}`;
     writeJsonLine(io, { name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error: namedMessage });
     writeProgress(io, `Failed ${job.name}: ${namedMessage}`);
     return false;

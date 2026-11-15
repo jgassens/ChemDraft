@@ -1,6 +1,9 @@
+import type { DocumentMenuWindow } from "./window-manager/documentMenus";
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
-import { convertTextToAtomLabelCommandId } from "./commands";
+import { structureSearchCommands } from "./structureSearch";
+import { STRUCTURE_SEARCH_DEFAULT_ENABLED } from "./structureSearchSettings";
+import { activateDocumentWindowCommandId, NEW_WINDOW_COMMAND_ID, CLOSE_WINDOW_COMMAND_ID, convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 
@@ -18,10 +21,11 @@ import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands
  * be reflected in the other.
  *
  * Deliberately omitted from the web bar (they are OS-level, not in-document actions):
- * About/Services/Hide/Quit, the Window menu (minimize/maximize), and File ▸
+ * About/Services/Hide/Quit, Window's native minimize/maximize actions, and File ▸
  * Close Window / Quit. File ▸ Check for Updates is also native-only because Sparkle owns its UI and
  * lifecycle rather than the frontend command registry. Help ▸ About is OS-level too; Help ▸ Report a
- * Bug… is routed like any other command.
+ * Bug… is routed like any other command. Supplying documentWindows adds the registered
+ * Window actions to a document's native snapshot.
  */
 
 /** A leaf item that invokes a registry command when clicked. */
@@ -90,7 +94,24 @@ export interface PluginAppMenuItem {
   command: AppMenuCommand;
 }
 
+/** Drawing styles use the existing dynamic native-menu bridge on both desktop platforms. */
+export function nativeStylePresetMenuItems(): PluginAppMenuItem[] {
+  return nativeStylePresetActions.map(action => ({
+    location: "structure",
+    command: {
+      kind: "command", id: `menu.${action.id}`, commandId: action.id,
+      label: `Drawing style: ${action.title}`, enabled: true, coreRouted: true
+    }
+  }));
+}
+
 export interface AppMenuContext {
+  /** Desktop window list; omitted in browser previews until a native snapshot is available. */
+  documentWindows?: readonly DocumentMenuWindow[];
+  hasDocumentWindow?: boolean;
+
+  structureSearchEnabled?: boolean;
+  hasSearchableStructure?: boolean;
   /** Explicit in tests so both desktop conventions can be checked from one host. */
   platform?: ShortcutPlatform;
   /** Number of installed plugins with a cached update offer. */
@@ -250,6 +271,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       label: "File",
       items: [
         command("document.new", "New", { accelerator: "Cmd+N" }),
+        ...(context.hasDocumentWindow === false ? [command(NEW_WINDOW_COMMAND_ID, "New Window", { accelerator: "Shift+Cmd+N" })] : []),
         command("document.open", "Open…", { accelerator: "Cmd+O" }),
         command("document.save", "Save", { accelerator: "Cmd+S" }),
         command("document.saveAs", "Save As…", { accelerator: "Shift+Cmd+S" }),
@@ -333,6 +355,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         command("structure.openInteractive3d", "Interactive 3D Workspace…")
       ]
     },
+    { id: "tools", label: "Tools", items: [] },
     {
       id: "analyze",
       label: "Analyze",
@@ -364,6 +387,19 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     }
   ];
 
+  if (context.documentWindows) {
+    const index = sections.findIndex(section => section.id === "help");
+    sections.splice(index, 0, {
+      id: "window", label: "Window", items: [
+        { ...command(CLOSE_WINDOW_COMMAND_ID, "Close Window", { accelerator: "Shift+Cmd+W" }), coreRouted: true },
+        ...(context.documentWindows.length ? [separator()] : []),
+        ...context.documentWindows.map(window => ({
+          ...command(activateDocumentWindowCommandId(window.windowId), window.title, { checked: window.active }),
+          coreRouted: true
+        }))
+      ]
+    });
+  }
   if (platform === "macos") {
     sections.unshift({ id: "app", label: "ChemDraft", items: [
       command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," })
@@ -372,12 +408,33 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
   for (const item of flattenAppMenuCommands(sections)) {
     item.shortcut = formatMenuShortcut(item.accelerator, platform);
   }
+  // Presets are core styles; keep the contributed block separated from them.
+  appendPluginMenuItems(sections, nativeStylePresetMenuItems());
   appendPluginMenuItems(sections, [
+    ...structureSearchMenuItems(
+      context.structureSearchEnabled ?? STRUCTURE_SEARCH_DEFAULT_ENABLED,
+      context.hasSearchableStructure ?? context.hasSelectedMolecule
+    ),
     ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
     ...(context.pluginMenuItems ?? [])
   ]);
 
+  if (context.hasDocumentWindow === false) {
+    for (const item of flattenAppMenuCommands(sections)) {
+      item.enabled = ["document.new", "document.open", NEW_WINDOW_COMMAND_ID].includes(item.commandId);
+    }
+  }
   return sections;
+}
+
+/** Shared dynamic native/web items: the preference controls visibility, selection controls enablement. */
+export function structureSearchMenuItems(enabled: boolean, searchable: boolean): PluginAppMenuItem[] {
+  if (!enabled) return [];
+  return structureSearchCommands(enabled, searchable).map(spec => ({
+    location: "tools",
+    command: { kind: "command", id: spec.id, commandId: spec.id, label: spec.title,
+      enabled: spec.enabled !== false, coreRouted: true }
+  }));
 }
 
 const SECTION_LABELS: Readonly<Record<string, string>> = {
@@ -401,6 +458,7 @@ function sectionLabelFor(location: string): string {
  * section. No-op when there are no plugin items, keeping the pure core menu identical.
  */
 function appendPluginMenuItems(sections: AppMenuSection[], items: readonly PluginAppMenuItem[]): void {
+  const appendedLocations = new Set<string>();
   for (const { location, command: pluginCommand } of items) {
     let section = sections.find((candidate) => candidate.id === location);
     if (!section) {
@@ -408,12 +466,10 @@ function appendPluginMenuItems(sections: AppMenuSection[], items: readonly Plugi
       sections.push(section);
     }
 
-    const alreadyHasPluginItem = section.items.some(
-      (item) => item.kind === "command" && (item.pluginContributed || item.coreRouted)
-    );
-    if (section.items.length > 0 && !alreadyHasPluginItem) {
+    if (section.items.length > 0 && !appendedLocations.has(location)) {
       section.items.push(separator());
     }
+    appendedLocations.add(location);
     section.items.push(pluginCommand.coreRouted ? pluginCommand : { ...pluginCommand, pluginContributed: true });
   }
 }
@@ -446,7 +502,8 @@ export function nativeRoutedCommandIds(sections: readonly AppMenuSection[]): str
         !item.nativePredefined &&
         !item.pluginContributed &&
         !item.coreRouted &&
-        !item.commandId.startsWith(TOOLSET_TOGGLE_COMMAND_PREFIX)
+        !item.commandId.startsWith(TOOLSET_TOGGLE_COMMAND_PREFIX) &&
+        item.commandId !== NEW_WINDOW_COMMAND_ID
     )
     .map((item) => item.commandId);
 }

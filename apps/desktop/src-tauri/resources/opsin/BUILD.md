@@ -119,6 +119,44 @@ runtime built on that OS: `scripts/build-opsin-runtime.mjs` (the `.sh` delegates
 `bin/java` on macOS/Linux and `bin/java.exe` on Windows. First Windows build: Temurin 21.0.12 →
 48 MB, smoke-tested `benzene → C1=CC=CC=C1`.
 
+### Intel macOS runtime
+
+Each thin macOS app keeps the existing `resources/opsin/jre` layout and carries
+only its matching runtime. `node scripts/build-opsin-runtime.mjs` retains the
+host-native default and JDK discovery order. For explicit macOS selection use
+`--arch arm64` or `--arch x86_64` (equivalently `OPSIN_TARGET_ARCH`); the option
+wins over the environment. JDK 21 or later is required by the compression flags.
+
+On the Apple-silicon release Mac, install an **x86_64 JDK** separately and enable
+Rosetta, then run from the repository root:
+
+```bash
+JAVA_HOME=/absolute/path/to/x86_64-jdk/Contents/Home \
+  node scripts/build-opsin-runtime.mjs --arch x86_64
+```
+
+For a target different from the host, `JAVA_HOME` is mandatory and there is no
+PATH/Homebrew fallback. Before deleting the previous image, the script checks
+the selected JDK's `bin/java` and `lib/server/libjvm.dylib` Mach-O CPU types.
+It runs both jlink and the generated Java launcher via `arch -x86_64` on arm64.
+It checks those two files again in the generated runtime and fails on a wrong
+architecture, universal image, missing file or non-Mach-O. The existing benzene
+smoke runs automatically. The signed release gate additionally inspects every
+native library and its minimum OS version; the JDK must support the app's
+declared minimum macOS, currently 11.0.
+
+The output directory is shared between architectures: **build, sign and package
+one app completely before rebuilding this directory for the other architecture**.
+Never commit either runtime. Rebuild arm64 with its matching JDK before the next
+arm64 package build. Windows and Linux still build host-native images on those
+hosts; no macOS runtime belongs in a Windows installer.
+
+Run the lightweight architecture tests without Java:
+
+```bash
+node --test scripts/opsin-runtime-architecture.test.mjs tools/release/macos-release.test.mjs
+```
+
 ## The CLI protocol, measured
 
 Names on stdin, newline-delimited; one output line per input line. `-n` makes it correlatable:

@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { readFileSync } from "node:fs";
@@ -87,7 +88,7 @@ async function mount(platform: ShortcutPlatform, { gradient = false, selected = 
   expect(window.__CHEMDRAFT_AGENT__).toBeUndefined();
   return molecule;
 }
-const currentDocument = () => getAssistantHistoryPort().read("initial")!;
+const currentDocument = () => getAssistantHistoryPort().read(initialDocumentTabId())!;
 const object = () => container.querySelector<HTMLElement>(".native-molecule-object")!;
 const selection = () => ({
   objectIds: currentDocument().selection.objectIds,

@@ -156,6 +156,7 @@ export function expandNativeLabelGroupsInGraph(
  */
 function groupAttachmentAtom(atom: MoleculeAtom, attachment: NativeLabelGroupAttachment): MoleculeAtom {
   const {
+    schemeAbbreviation: _schemeAbbreviation,
     labelLiteral: _labelLiteral,
     labelVisible: _labelVisible,
     hydrogenCount: _hydrogenCount,

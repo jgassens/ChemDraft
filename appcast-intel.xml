@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>ChemDraft Updates (Intel)</title>
+        <link>https://github.com/jgassens/ChemDraft</link>
+        <description>Signed ChemDraft updates for macOS Intel.</description>
+        <language>en</language>
+    </channel>
+</rss>

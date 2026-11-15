@@ -1,13 +1,15 @@
+import { useDialogContentReady } from "./dialogContentFit";
 import { useId, useRef, type KeyboardEvent } from "react";
 import { detectDialogPlatform, type DialogPlatform, type SpacingSnapshot } from "./dialogProtocol";
 
 /** Draft-only body shared by the native host and browser fallback. */
 export function ArrangementSpacingForm({ title, minPercent, maxPercent, percent, preview, error, busy = false, modal = false,
-  onChange, onSave, onCancel, platform = detectDialogPlatform() }: SpacingSnapshot & {
+  onReady, onChange, onSave, onCancel, platform = detectDialogPlatform() }: SpacingSnapshot & {
+  onReady?(element: HTMLFormElement): void;
   percent: number; preview?: string; error?: string; busy?: boolean; modal?: boolean;
   onChange(percent: number): void; onSave(): void; onCancel(): void; platform?: DialogPlatform;
 }) {
-  const id = useId(), composing = useRef(false), form = useRef<HTMLFormElement>(null);
+  const id = useId(), composing = useRef(false), form = useDialogContentReady<HTMLFormElement>(onReady);
   const keyDown = (event: KeyboardEvent<HTMLFormElement>) => {
     event.stopPropagation();
     if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -22,10 +24,10 @@ export function ArrangementSpacingForm({ title, minPercent, maxPercent, percent,
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }
   };
-  return <form ref={form} className="arrangement-spacing-dialog" role="dialog" aria-modal={modal || undefined} aria-labelledby={id} aria-busy={busy}
+  return <form ref={form} className="arrangement-spacing-dialog cd-dialog-fit" role="dialog" aria-modal={modal || undefined} aria-labelledby={id} aria-busy={busy}
     onSubmit={event => { event.preventDefault(); if (preview && !busy && !composing.current) onSave(); }}
     onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>
-    <h2 id={id}>Adjust arrangement spacing</h2>
+    <div className="cd-dialog-fit-body"><h2 id={id}>Adjust arrangement spacing</h2>
     <p>Drawing: <strong>{title}</strong></p>
     {preview ? <img className="arrangement-spacing-preview" src={preview} alt="Arrangement spacing preview" />
       : <div className="arrangement-spacing-preview" role="status">{error ? "Preview unavailable" : "Updating preview…"}</div>}
@@ -36,7 +38,8 @@ export function ArrangementSpacingForm({ title, minPercent, maxPercent, percent,
     <p>Molecule sizes stay fixed. Only the spacing between selected compounds changes.</p>
     <p>The outlined white area is the page. Spacing stops at the page edge or 150%, whichever comes first.</p>
     <p role="status">{error}</p>
-    <footer className="arrangement-spacing-actions">
+    </div>
+    <footer className="arrangement-spacing-actions cd-dialog-fit-footer">
       <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
       <button type="submit" disabled={!preview || busy}>Save</button>
     </footer>

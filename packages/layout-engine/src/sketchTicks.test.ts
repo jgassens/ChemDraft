@@ -38,6 +38,7 @@ describe("seeded sketch hash/dash ink", () => {
       expect(render(object)).toEqual(render(structuredClone(object)));
       expect(marks(object)).not.toEqual(marks(tickMolecule(style, 8)));
       expect(marks(object).length).toBeGreaterThan(1);
+      // Default Sketch ink retains its original appearance under the Synthetic preset.
       expect(marks(object).every((f) => f.attrs.stroke === "none" && f.attrs.fill === "#111111")).toBe(true);
       expect(fragments(object).some((f) => f.attrs.class === "native-bond-hash" || f.attrs["stroke-dasharray"])).toBe(false);
       expect(JSON.stringify(object)).toBe(before);
@@ -95,6 +96,26 @@ describe("seeded sketch hash/dash ink", () => {
       }
     });
   }
+
+  it("recolours hash/dash ink and atom labels while retaining default ink and seeded geometry elsewhere", () => {
+    const object = sketchRegressionMolecule(true);
+    const before = marks(object);
+    const recoloured = { ...object, style: { ...object.style,
+      bondColors: { hash: "#ab1234", dash: "#000000" }, atomLabelColors: { c: "#267a38" }
+    } };
+    const after = marks(recoloured);
+    expect(after.map(mark => mark.attrs.d)).toEqual(before.map(mark => mark.attrs.d));
+    const inks = after.map(mark => {
+      const hull = points(mark.attrs.d);
+      const expected = Math.min(...hull.map(point => point.y)) >= 100 ? "#111111"
+        : Math.max(...hull.map(point => point.x)) <= 100 ? "#ab1234" : "#000000";
+      const ink = mark.attrs.stroke === "none" ? mark.attrs.fill : mark.attrs.stroke;
+      expect(ink).toBe(expected);
+      return ink;
+    });
+    expect(new Set(inks)).toEqual(new Set(["#111111", "#ab1234", "#000000"]));
+    expect(fragments(recoloured).find(fragment => fragment.key === "label-sketch-regression-c")?.attrs.fill).toBe("#267a38");
+  });
 
   it("keeps disjoint ink cells on rotated and reversed bonds", () => {
     for (const style of ["hashed", "dashed"] as const) {
@@ -256,9 +277,10 @@ describe("seeded sketch hash/dash ink", () => {
     } }));
   });
 
-  it("matches byte digests captured from the renderer BEFORE this change", () => {
+  it("matches render digests with original default Sketch ink and preserves seeded stroke geometry", () => {
     expect(digest(render(sketchRegressionMolecule(false)))).toBe("dee8f9e869c7490ada2efce7ae5ae3fec5d374da30ac8662b5c0d67a9ee8311a");
     const noTicks = sketchRegressionMolecule(true); noTicks.bonds = noTicks.bonds.slice(2);
+    // With no per-bond recolouring, retain the original #111111 Sketch render byte for byte.
     expect(digest(render(noTicks))).toBe("ba947d3584eb14f936251da4b6b661c93d6eb69e9e680dbbec2a7d77a52d9aa4");
     // Ordinary/wedge/double/triple/ring strokes AFTER hashes/dashes retain their random stream.
     const mixed = marks(sketchRegressionMolecule(true)).flatMap((f) => String(f.attrs.d).split("M")

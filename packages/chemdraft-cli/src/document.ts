@@ -13,7 +13,7 @@ import {
   type MoleculeBond,
   type MoleculeObject
 } from "@chemdraft/chem-core";
-import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
 import type { DepictionEngineAvailability } from "@chemdraft/rdkit-adapter/depiction";
 import {
@@ -414,7 +414,8 @@ export async function currentMoleculeIdentityMolfile(
   if (loss) throw new Error(`Cannot verify chemical identity: ${loss.message}`);
   // This pass verifies atom states. General serialization notices (such as expanded labels)
   // belong to the writer, not to an extra SMILES export performed only for validation.
-  exportWarnings.push(...atomWarnings.filter((warning) => warning.code === "export.smiles_charge_separated"));
+  exportWarnings.push(...atomWarnings.filter((warning) =>
+    warning.code === "export.smiles_charge_separated" || warning.code === "export.invalid_structure"));
   return result;
 }
 
@@ -979,6 +980,7 @@ export async function renderSmilesToAssets(
   });
   const { document, molecule } = built;
 
+  await ensureSvgFontsLoaded(document);
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
   });

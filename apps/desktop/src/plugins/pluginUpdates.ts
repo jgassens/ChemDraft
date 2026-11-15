@@ -8,6 +8,7 @@
 
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { isPluginApiVersionCompatible, PluginApiVersion } from "@chemdraft/plugin-api";
 
 import {
   inspectPluginPackage,
@@ -85,7 +86,7 @@ const OFFICIAL_PLUGIN_SOURCES = new Map(
  *  output is surfaced to the user. Kept here so every surface quotes the same wording. */
 export const EXPERIMENTAL_PLUGIN_NOTICE =
   "Experimental: works best on clean, computer-drawn structures; hand-drawn, sketch-style or " +
-  "colour-filled drawings and images with grid lines are often misread. Check every result " +
+  "color-filled drawings and images with grid lines are often misread. Check every result " +
   "before inserting.";
 
 /** Compact form of the notice for space-constrained surfaces such as a proposal review row. */
@@ -148,7 +149,7 @@ function diagnosedFetch(options: DownloadOptions): HostFetch {
       return await fetch(url, init);
     } catch (cause: unknown) {
       // withUpdateTimeout owns cancellation and its existing, specific timeout wording.
-      if (init?.signal?.aborted) throw new Error("Download cancelled.");
+      if (init?.signal?.aborted) throw new Error("Download canceled.");
       const host = new URL(url).hostname;
       console.warn(`Download transport failure for ${host}: ${messageOf(cause)}`);
       let diagnosis: NetworkDiagnosis;
@@ -200,6 +201,12 @@ type OfficialPluginReleaseOffer = Omit<PluginUpdateOffer, "installedVersion">;
 
 export type PluginUpdateCheckResult =
   | {
+      /** No metadata was available. Keep any previous offer; this is not an error dialog. */
+      status: "unavailable";
+      pluginId: string;
+      installedVersion: string;
+    }
+  | {
       status: "unsupported";
       pluginId: string;
       installedVersion: string;
@@ -216,6 +223,15 @@ export type PluginUpdateCheckResult =
       installedVersion: string;
       latestVersion: string;
       offer: PluginUpdateOffer;
+      /** The releases-list fallback succeeded, but manual callers should report the outage. */
+      metadataUnavailable?: true;
+    }
+  | {
+      status: "incompatible";
+      pluginId: string;
+      installedVersion: string;
+      latestVersion: string;
+      message: string;
     }
   | {
       status: "failed";
@@ -235,6 +251,8 @@ export interface PreparedPluginUpdate {
 
 export interface PreparedOfficialPluginInstall {
   pluginId: string;
+  /** Explain a fallback selection in the package review, before the user installs it. */
+  selectionMessage?: string;
   inspection: PluginPackageInspection;
   /** HTTPS source shown in the existing package-review disclosure. */
   sourcePath: string;
@@ -247,7 +265,7 @@ export async function checkForPluginUpdates(
   installedPlugins: readonly InstalledPluginCatalogEntry[],
   options: DownloadOptions = {}
 ): Promise<readonly PluginUpdateCheckResult[]> {
-  const fetch = diagnosedFetch(options);
+  const fetch = options.fetch ?? (tauriFetch as HostFetch);
   return Promise.all(
     installedPlugins.map(async (entry): Promise<PluginUpdateCheckResult> => {
       const source = OFFICIAL_PLUGIN_SOURCES.get(entry.record.id);
@@ -260,28 +278,41 @@ export async function checkForPluginUpdates(
       }
 
       try {
-        const release = await fetchLatestReleaseOffer(source, fetch);
-        const offer: PluginUpdateOffer = {
-          ...release,
-          installedVersion: entry.record.version
-        };
-        const comparison = comparePluginVersions(offer.version, entry.record.version);
-        if (comparison <= 0) {
+        const release = asRecord(await fetchReleaseMetadata(source, fetch), "latest release");
+        const version = stableReleaseVersion(source, release);
+        if (comparePluginVersions(version, entry.record.version) <= 0) {
           return {
-            status: "upToDate",
-            pluginId: entry.record.id,
-            installedVersion: entry.record.version,
-            latestVersion: offer.version
+            status: "upToDate", pluginId: entry.record.id,
+            installedVersion: entry.record.version, latestVersion: version
           };
         }
+        const message = incompatibleReleaseMessage(release);
+        let selected: SelectedRelease | undefined;
+        if (message) {
+          selected = await selectCompatibleRelease(source, fetch, entry.record.version);
+          if (selected === undefined) {
+            return {
+              status: "incompatible", pluginId: entry.record.id,
+              installedVersion: entry.record.version, latestVersion: version, message
+            };
+          }
+        }
+        const offer: PluginUpdateOffer = {
+          ...(selected?.offer ?? releaseOfferFromMetadata(source, release)),
+          installedVersion: entry.record.version
+        };
         return {
           status: "available",
           pluginId: entry.record.id,
           installedVersion: entry.record.version,
           latestVersion: offer.version,
-          offer
+          offer,
+          ...(selected?.metadataUnavailable ? { metadataUnavailable: true as const } : {})
         };
       } catch (cause: unknown) {
+        if (cause instanceof PluginReleaseMetadataUnavailableError) {
+          return { status: "unavailable", pluginId: entry.record.id, installedVersion: entry.record.version };
+        }
         return {
           status: "failed",
           pluginId: entry.record.id,
@@ -315,7 +346,7 @@ export async function preparePluginUpdate(
   };
 }
 
-/** Fetch, verify, and inspect the latest package for one compiled-in official plugin. */
+/** Fetch, verify, and inspect a compatible package for one compiled-in official plugin. */
 export async function prepareOfficialPluginInstall(
   pluginId: string,
   options: DownloadOptions = {}
@@ -325,22 +356,132 @@ export async function prepareOfficialPluginInstall(
     throw new Error(`Plugin "${pluginId}" is not in ChemDraft's official plugin catalog.`);
   }
   const fetch = diagnosedFetch(options);
-  const offer = await fetchLatestReleaseOffer(source, fetch);
+  const metadataFetch = options.fetch ?? (tauriFetch as HostFetch);
+  let metadata: unknown;
+  try {
+    metadata = await fetchReleaseMetadata(source, metadataFetch);
+  } catch (error) {
+    if (error instanceof PluginReleaseMetadataUnavailableError) {
+      throw new PluginReleaseMetadataUnavailableError(PLUGIN_INSTALL_METADATA_UNAVAILABLE_MESSAGE, error.kind);
+    }
+    throw error;
+  }
+  const release = asRecord(metadata, "latest release");
+  stableReleaseVersion(source, release);
+  const requirement = incompatibleReleaseMessage(release);
+  let selectionMessage: string | undefined;
+  let selected: SelectedRelease | undefined;
+  if (requirement) {
+    selected = await selectCompatibleRelease(source, metadataFetch);
+    if (selected === undefined) throw new Error(requirement);
+    if (selected.offer) {
+      selectionMessage = selected.marked
+        ? `Selected version ${selected.offer.version}, the newest release compatible with this ChemDraft. The latest release is not compatible with this ChemDraft version.`
+        : `Selected version ${selected.offer.version} with unknown API compatibility because no marked compatible release was found. The package must still pass the install-time compatibility check.`;
+    }
+    if (selected.metadataUnavailable) selectionMessage = PLUGIN_INSTALL_METADATA_UNAVAILABLE_MESSAGE;
+  }
+  const offer = selected?.offer ?? releaseOfferFromMetadata(source, release);
   const inspection = await prepareTrustedReleasePackage(offer, fetch);
   return {
     pluginId,
+    selectionMessage,
     inspection,
     sourcePath: offer.packageUrl,
     checksumVerified: true
   };
 }
 
-async function fetchLatestReleaseOffer(
+/** Only the exact, single-line markers and the range forms supported by the install gate count.
+ * Duplicate declarations are ambiguous and therefore unknown. Validation reuses the strict release
+ * version parser; compatibility itself always goes through the install gate's shared function. */
+export function parsePluginReleaseRequirements(body: unknown): { apiVersion?: string; minAppVersion?: string } {
+  if (typeof body !== "string") return {};
+  const lines = body.split(/\r?\n/);
+  const marker = (key: string, range: boolean): string | undefined => {
+    const declarations = lines.filter(line => line.startsWith(`${key}:`));
+    if (declarations.length !== 1) return undefined;
+    const value = declarations[0]!.slice(key.length + 2);
+    if (declarations[0] !== `${key}: ${value}`) return undefined;
+    if (value.length > 64 || (!range && !/^\d+\.\d+\.\d+$/.test(value))) return undefined;
+    try {
+      pluginVersionFromReleaseTag(`v${range ? value.replace(/^[~^]/, "") : value}`);
+      return value;
+    } catch { return undefined; }
+  };
+  return { apiVersion: marker("ChemDraft-Plugin-API", true), minAppVersion: marker("ChemDraft-Min-App", false) };
+}
+
+export function incompatibleReleaseMessage(
+  release: Record<string, unknown>, hostApiVersion: string = PluginApiVersion
+): string | undefined {
+  const { apiVersion, minAppVersion } = parsePluginReleaseRequirements(release.body);
+  if (apiVersion === undefined || isPluginApiVersionCompatible(apiVersion, hostApiVersion)) return undefined;
+  if (comparePluginVersions(hostApiVersion, apiVersion.replace(/^[~^]/, "")) > 0) {
+    return "Not yet available for this ChemDraft version";
+  }
+  return minAppVersion ? `Needs ChemDraft ${minAppVersion} or later` : "Needs a newer ChemDraft";
+}
+
+/** Optional GitHub metadata must never block the established version/install-gate flow. */
+export const PLUGIN_METADATA_UNAVAILABLE_MESSAGE =
+  "Couldn't reach GitHub to check for plugin updates. Try again later.";
+export const PLUGIN_INSTALL_METADATA_UNAVAILABLE_MESSAGE =
+  "Couldn't reach GitHub to download the plugin. Try again later.";
+
+export class PluginReleaseMetadataUnavailableError extends Error {
+  constructor(message = PLUGIN_METADATA_UNAVAILABLE_MESSAGE, readonly kind = "unavailable") {
+    super(message);
+  }
+}
+
+interface SelectedRelease {
+  /** Absent only when metadata was unavailable: use the already validated latest release. */
+  offer?: OfficialPluginReleaseOffer;
+  marked?: boolean;
+  metadataUnavailable?: true;
+}
+
+async function selectCompatibleRelease(
+  source: OfficialPluginCatalogEntry, fetch: HostFetch, installedVersion?: string
+): Promise<SelectedRelease | undefined> {
+  let releases: unknown;
+  try {
+    releases = await fetchReleaseMetadata(source, fetch, true);
+  } catch (cause) {
+    if (cause instanceof PluginReleaseMetadataUnavailableError) return { metadataUnavailable: true };
+    throw cause;
+  }
+  if (!Array.isArray(releases)) throw new Error("The plugin releases response is not a release list.");
+  const candidates: Array<{ release: Record<string, unknown>; version: string; marked: boolean }> = [];
+  for (const value of releases.slice(0, 20)) {
+    try {
+      const release = asRecord(value, "release");
+      const version = stableReleaseVersion(source, release);
+      if (installedVersion !== undefined && comparePluginVersions(version, installedVersion) <= 0) continue;
+      if (incompatibleReleaseMessage(release)) continue;
+      candidates.push({ release, version, marked: parsePluginReleaseRequirements(release.body).apiVersion !== undefined });
+    } catch { /* An invalid release entry does not hide the remaining candidates. */ }
+  }
+  candidates.sort((left, right) => Number(right.marked) - Number(left.marked) || comparePluginVersions(right.version, left.version));
+  // Validate assets before choosing a candidate. Do not download unselected packages.
+  let assetError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return { offer: releaseOfferFromMetadata(source, candidate.release), marked: candidate.marked };
+    } catch (cause) { assetError ??= cause; }
+  }
+  if (assetError) throw assetError;
+  return undefined;
+}
+
+async function fetchReleaseMetadata(
   source: OfficialPluginCatalogEntry,
-  fetch: HostFetch
-): Promise<OfficialPluginReleaseOffer> {
-  const apiUrl = `https://api.github.com/repos/${source.repository}/releases/latest`;
-  const releasePayload = await withUpdateTimeout(
+  fetch: HostFetch,
+  list = false
+): Promise<unknown> {
+  const apiUrl = `https://api.github.com/repos/${source.repository}/releases${list ? "?per_page=20" : "/latest"}`;
+  return withUpdateTimeout(
     UPDATE_CHECK_TIMEOUT_MS,
     `Checking ${source.displayName} releases`,
     async (signal) => {
@@ -350,6 +491,10 @@ async function fetchLatestReleaseOffer(
         maxRedirections: 0,
         connectTimeout: UPDATE_CONNECT_TIMEOUT_MS,
         signal
+      }).catch((cause: unknown) => {
+        const kind = /allow|scope|forbidden/i.test(messageOf(cause)) ? "allowlist denial"
+          : cause instanceof Error ? cause.name : typeof cause;
+        throw new PluginReleaseMetadataUnavailableError(undefined, `fetch rejection (${kind})`);
       });
       await assertResponseStayedAt(response, apiUrl, "release metadata");
       if (REDIRECT_STATUSES.has(response.status)) {
@@ -358,6 +503,9 @@ async function fetchLatestReleaseOffer(
       }
       if (!response.ok) {
         await cancelResponseBody(response);
+        if (response.status === 429 || (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")) {
+          throw new PluginReleaseMetadataUnavailableError(undefined, `rate limit (HTTP ${response.status})`);
+        }
         if (response.status === 404) {
           throw new Error("No release published yet");
         }
@@ -370,17 +518,25 @@ async function fetchLatestReleaseOffer(
         RELEASE_METADATA_LIMIT_BYTES,
         `${source.displayName} release metadata`,
         apiUrl,
-        signal
+        signal,
+        true
       );
       try {
         return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
       } catch {
-        throw new Error(`The latest ${source.displayName} release response is not valid JSON.`);
+        throw new Error(`The ${list ? "" : "latest "}${source.displayName} release response is not valid JSON.`);
       }
-    }
-  );
+    },
+    true
+  ).catch((cause: unknown) => {
+    const kind = cause instanceof PluginReleaseMetadataUnavailableError ? cause.kind
+      : cause instanceof Error ? cause.name : typeof cause;
+    console.warn(`Plugin release metadata failure for ${new URL(apiUrl).hostname}: ${kind}`);
+    throw cause;
+  });
+}
 
-  const release = asRecord(releasePayload, "latest release");
+function stableReleaseVersion(source: OfficialPluginCatalogEntry, release: Record<string, unknown>): string {
   if (release.draft !== false || release.prerelease !== false) {
     throw new Error(`The latest ${source.displayName} release is not a published stable release.`);
   }
@@ -389,6 +545,15 @@ async function fetchLatestReleaseOffer(
   if (isPluginPrereleaseVersion(version)) {
     throw new Error(`Plugin release "${tag}" is a prerelease; only stable updates are offered.`);
   }
+  return version;
+}
+
+function releaseOfferFromMetadata(
+  source: OfficialPluginCatalogEntry,
+  release: Record<string, unknown>
+): OfficialPluginReleaseOffer {
+  const version = stableReleaseVersion(source, release);
+  const tag = requiredString(release.tag_name, "release tag");
 
   const expectedReleaseUrl = `https://github.com/${source.repository}/releases/tag/${tag}`;
   const releaseUrl = requiredString(release.html_url, "release page");
@@ -498,16 +663,29 @@ function assertTrustedOffer(offer: OfficialPluginReleaseOffer): OfficialPluginCa
 async function withUpdateTimeout<T>(
   timeoutMs: number,
   label: string,
-  operation: (signal: AbortSignal) => Promise<T>
+  operation: (signal: AbortSignal) => Promise<T>,
+  quietMetadata = false
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let metadataTimeout: ((cause: Error) => void) | undefined;
+  const timeout = setTimeout(() => {
+    controller.abort();
+    metadataTimeout?.(new PluginReleaseMetadataUnavailableError(undefined, "timeout"));
+  }, timeoutMs);
   try {
-    return await operation(controller.signal);
+    const pending = operation(controller.signal);
+    // Optional metadata must finish even if a transport ignores cancellation. The losing
+    // operation remains handled by the race and cannot start another attempt.
+    return quietMetadata ? await Promise.race([
+      pending,
+      new Promise<T>((_resolve, reject) => { metadataTimeout = reject; })
+    ]) : await pending;
   } catch (cause: unknown) {
     if (controller.signal.aborted) {
+      if (quietMetadata) throw new PluginReleaseMetadataUnavailableError(undefined, "timeout");
       throw new Error(`${label} timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`);
     }
+    if (cause instanceof PluginReleaseMetadataUnavailableError) throw cause;
     throw new Error(messageOf(cause));
   } finally {
     clearTimeout(timeout);
@@ -615,7 +793,8 @@ async function readBoundedResponseBytes(
   limit: number,
   label: string,
   responseUrl: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  quietMetadata = false
 ): Promise<Uint8Array> {
   const declaredBytes = parseContentLength(response.headers.get("content-length"));
   if (declaredBytes !== undefined && declaredBytes > limit) {
@@ -635,6 +814,7 @@ async function readBoundedResponseBytes(
         // Classify by the failed operation, never the engine's error wording. The caller owns
         // abort/timeout messages; our own size-limit errors below must also remain authoritative.
         if (signal.aborted) throw cause;
+        if (quietMetadata) throw new PluginReleaseMetadataUnavailableError(undefined, "body read rejection");
         const host = new URL(responseUrl).hostname;
         console.warn(`Download body failure for ${host}: ${messageOf(cause)}`);
         throw new Error(`Couldn't reach ${host}: the connection was interrupted during the download; try again.`);

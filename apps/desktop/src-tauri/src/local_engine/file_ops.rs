@@ -21,7 +21,7 @@ pub(crate) struct FileOps<'a> {
 struct Cancelled;
 impl std::fmt::Display for Cancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("installation cancelled between file operation attempts")
+        f.write_str("installation canceled between file operation attempts")
     }
 }
 impl std::error::Error for Cancelled {}

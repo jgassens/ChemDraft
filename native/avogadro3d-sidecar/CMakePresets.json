@@ -24,6 +24,20 @@
       }
     },
     {
+      "name": "protocol-scout-x86_64",
+      "displayName": "Protocol scout (Intel macOS)",
+      "inherits": "protocol-scout",
+      "binaryDir": "${sourceDir}/build/protocol-scout-x86_64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      }
+    },
+    {
       "name": "windows-msvc",
       "displayName": "Protocol scout (Windows, MSVC, static)",
       "inherits": "protocol-scout",
@@ -42,6 +56,10 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "protocol-scout-x86_64",
+      "configurePreset": "protocol-scout-x86_64"
+    },
     {
       "name": "protocol-scout",
       "configurePreset": "protocol-scout"

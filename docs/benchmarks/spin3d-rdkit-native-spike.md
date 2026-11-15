@@ -7,7 +7,7 @@ preserves specified stereochemistry. See the plan at
 `.claude/plans/we-are-going-to-mossy-charm.md`.
 
 ## Why
-Spin 3D's Fast/Balanced/Quality setting only gates the MMFF94 *minimise* stage. The real
+Spin 3D's Fast/Balanced/Quality setting only gates the MMFF94 *minimize* stage. The real
 cost is OpenChemLib's conformer **embed** (`ConformerGenerator.initializeConformers`,
 rigid-fragment self-organization), which is mode-independent and untunable. Measured OCL
 baseline for the molecule below: **~45 s** embed regardless of `maxTorsionSets` (10 vs

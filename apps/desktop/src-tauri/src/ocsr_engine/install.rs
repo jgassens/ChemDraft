@@ -2,6 +2,7 @@ use super::pins;
 use super::platform::EnginePlatform;
 use super::progress;
 use super::receipt::{read_current_receipt, write_receipt, InstallReceipt};
+use super::requirements::RequirementsProfile;
 use super::{InstallError, InstallErrorCode, InstallPhase, InstallProgress};
 use crate::local_engine::{self, EngineSpec};
 use local_engine::file_ops::{self, FileOps};
@@ -89,10 +90,10 @@ impl EngineSpec for MolScribeSpec {
         pins::REQUIRED_DISK_BYTES
     }
     fn requirements() -> (&'static str, &'static str) {
-        (
-            "resources/ocsr/requirements.txt",
-            pins::REQUIREMENTS_LOCK_SHA256,
-        )
+        RequirementsProfile::for_target(super::platform::EngineTarget::current()).lock()
+    }
+    fn requirements_for(platform: &dyn EnginePlatform) -> (&'static str, &'static str) {
+        RequirementsProfile::for_target(platform.target()).lock()
     }
     fn python_growth_bytes() -> u64 {
         progress::PYTHON_EXPECTED_GROWTH_BYTES
@@ -854,6 +855,115 @@ mod tests {
     }
 
     const BUNDLED_REQUIREMENTS: &str = include_str!("../../resources/ocsr/requirements.txt");
+
+    #[test]
+    fn apple_silicon_and_windows_keep_the_exact_existing_install_arguments() {
+        use crate::local_engine::platform::{for_target, EngineTarget};
+
+        for target in [EngineTarget::MacosAarch64, EngineTarget::WindowsX86_64] {
+            let platform = for_target(target).expect("platform");
+            assert_eq!(
+                MolScribeSpec::requirements_for(platform.as_ref()),
+                (
+                    "resources/ocsr/requirements.txt",
+                    pins::REQUIREMENTS_LOCK_SHA256
+                )
+            );
+            let root = temp_root("unchanged-arguments");
+            let paths = test_paths(&root);
+            let io = FakeIo::new(None);
+            install(
+                &paths,
+                platform.as_ref(),
+                &io,
+                &AtomicBool::new(false),
+                &|_| {},
+                pins::REQUIRED_DISK_BYTES,
+            )
+            .expect("fake original-profile install");
+            let runs = io.runs.lock().expect("runs");
+            let args = |step| {
+                runs.iter()
+                    .find(|(name, _)| *name == step)
+                    .expect("run")
+                    .1
+                    .clone()
+            };
+            assert_eq!(args("python"), os_args(["python", "install", "3.10"]));
+            assert_eq!(
+                args("venv"),
+                vec![
+                    "venv".into(),
+                    paths.partial_dir().join("venv").into_os_string(),
+                    "--python".into(),
+                    "3.10".into(),
+                    "--python-preference".into(),
+                    "only-managed".into(),
+                    "--relocatable".into(),
+                ]
+            );
+            assert_eq!(
+                args("packages"),
+                vec![
+                    "pip".into(),
+                    "install".into(),
+                    "--python".into(),
+                    platform.venv_python(&paths.partial_dir()).into_os_string(),
+                    "--require-hashes".into(),
+                    "--requirement".into(),
+                    paths.partial_dir().join(REQUIREMENTS_FILE).into_os_string(),
+                ]
+            );
+            assert_eq!(
+                args("molscribe"),
+                vec![
+                    "pip".into(),
+                    "install".into(),
+                    "--python".into(),
+                    platform.venv_python(&paths.partial_dir()).into_os_string(),
+                    "--no-deps".into(),
+                    "--no-index".into(),
+                    "--no-build-isolation".into(),
+                    paths
+                        .partial_dir()
+                        .join(pins::MOLSCRIBE_SOURCE_FILENAME)
+                        .into_os_string(),
+                ]
+            );
+            assert_eq!(
+                args("verify"),
+                os_args([
+                    "-c",
+                    "import cv2, molscribe, numpy, torch, torchvision; print(torch.__version__)"
+                ])
+            );
+            assert_eq!(
+                fs::read(paths.final_dir().join(REQUIREMENTS_FILE)).expect("installed lock"),
+                BUNDLED_REQUIREMENTS.as_bytes()
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn intel_install_rejects_the_original_profiles_lock_before_installing_packages() {
+        let root = temp_root("intel-wrong-lock");
+        let paths = test_paths(&root);
+        let io = FakeIo::new(None);
+        let error = install(
+            &paths,
+            &MacPlatform::new(MacArchitecture::X86_64),
+            &io,
+            &AtomicBool::new(false),
+            &|_| {},
+            pins::REQUIRED_DISK_BYTES,
+        )
+        .expect_err("the original lock is never accepted for Intel");
+        assert_eq!(error.code, InstallErrorCode::ChecksumMismatch);
+        assert!(!io.steps.lock().expect("steps").contains(&"packages"));
+        assert_no_staging(&paths);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn packages_install_hash_locked_and_molscribe_from_the_verified_archive_alone() {

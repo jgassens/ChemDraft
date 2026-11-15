@@ -37,7 +37,7 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, onReady, b
       <label>Rows<input autoFocus type="number" min={1} max={500} step={1} value={rows} onChange={e => setRows(e.target.value)} /></label>
       <label>Columns<input type="number" min={1} max={64} step={1} value={columns} onChange={e => setColumns(e.target.value)} /></label>
       <label>Header rows<input type="number" min={0} max={options.rows} step={1} value={headerRows} onChange={e => setHeaderRows(e.target.value)} /></label>
-      <label>Style<select value={preset} onChange={e => setPreset(e.target.value as InsertTableOptions["preset"])}>
+      <label>Style<select className="native-dialog-panel-select" value={preset} onChange={e => setPreset(e.target.value as InsertTableOptions["preset"])}>
         <option value="three-line">Three-line</option><option value="grid">Grid</option>
       </select></label>
     </div>

@@ -1,9 +1,21 @@
-(() => {
+export const findMacAsset = (assets, architecture) => {
+  const pattern = architecture === "apple-silicon" ? /(?:aarch64|arm64)/i : /(?:x86_64|x64|intel)/i;
+  return assets.find(({ name }) => typeof name === "string" && /\.dmg$/i.test(name) && pattern.test(name));
+};
+
+if (typeof document !== "undefined") (() => {
   const targets = [
     {
-      link: document.querySelector("#download-mac"),
-      meta: document.querySelector("#release-meta-mac"),
-      find: (assets) => assets.find(({ name }) => typeof name === "string" && name.endsWith(".dmg")),
+      link: document.querySelector("#download-mac-apple"),
+      meta: document.querySelector("#release-meta-mac-apple"),
+      find: (assets) => findMacAsset(assets, "apple-silicon"),
+      hideWhenMissing: true,
+    },
+    {
+      link: document.querySelector("#download-mac-intel"),
+      meta: document.querySelector("#release-meta-mac-intel"),
+      find: (assets) => findMacAsset(assets, "intel"),
+      hideWhenMissing: true,
     },
     {
       link: document.querySelector("#download-windows"),
@@ -55,9 +67,10 @@
     })
     .then((release) => {
       const assets = Array.isArray(release.assets) ? release.assets : [];
-      for (const { link, meta, find } of targets) {
+      for (const { link, meta, find, hideWhenMissing } of targets) {
         const asset = find(assets);
         if (!asset?.browser_download_url) {
+          if (hideWhenMissing) link.closest(".download-option").hidden = true;
           continue;
         }
 

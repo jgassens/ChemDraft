@@ -247,7 +247,7 @@ function StyleSelectCell({
     <label className={cell.labelClassName ?? "toolbar-control-label"} style={cell.labelClassName ? undefined : spanStyle(cell.cells)}>
       <span className="visually-hidden">{cell.ariaLabel}</span>
       <select
-        className={cell.selectClassName ?? "toolbar-select"}
+        className={`toolbar-select ${cell.selectClassName ?? ""}`}
         value={cell.value}
         aria-label={cell.ariaLabel}
         disabled={cell.disabled}

@@ -157,7 +157,7 @@ function isFormulaToken(token: string): boolean {
 }
 
 /** Formats formula-like tokens embedded in mixed text while preserving surrounding text and styles. */
-export function formulaSpansForMixedText(text: string, sourceSpans: readonly TextSpan[] = []): TextSpan[] | undefined {
+export function formulaSpansForMixedText(text: string, sourceSpans: readonly TextSpan[] = [], reactionCondition = false): TextSpan[] | undefined {
   const source = sourceSpans.length && sourceSpans.map(span => span.text).join("") === text
     ? sourceSpans : [{ text, script: "normal" as const, style: {} }];
   const slice = (start: number, end: number): TextSpan[] => {
@@ -170,7 +170,9 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
   };
   const result: TextSpan[] = [];
   let offset = 0, changed = false;
-  for (const match of text.matchAll(/\S+/g)) {
+  // A solvent mixture separates formula tokens too: toluene/H2O, CH2Cl2/Et2O.
+  // Keep separators in the source slices so their text and styling survive unchanged.
+  for (const match of text.matchAll(reactionCondition ? /[^\s/,;:]+/g : /\S+/g)) {
     const start = match.index;
     result.push(...slice(offset, start));
     const token = match[0].replace(/[,;:.!?*†‡]+$/, "");
@@ -183,7 +185,7 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
       while (bodyEnd > 0 && "⁰¹²³⁴⁵⁶⁷⁸⁹".includes(token[bodyEnd - 1])) bodyEnd -= 1;
     }
     const body = token.slice(0, bodyEnd);
-    if (!mechanismLabels.has(token) && isFormulaToken(body)) {
+    if (!mechanismLabels.has(token) && !(reactionCondition && /^(?:TS|E|SN)\d/.test(body)) && isFormulaToken(body)) {
       const formatted = [...formulaSpansFromText(body, slice(start, start + body.length)), ...slice(start + body.length, end)];
       const scripts = (spans: readonly TextSpan[]) => spans.flatMap(span => Array(span.text.length).fill(span.script));
       if (JSON.stringify(scripts(original)) !== JSON.stringify(scripts(formatted))) changed = true;
@@ -194,4 +196,9 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
   }
   result.push(...slice(offset, text.length));
   return changed ? result : undefined;
+}
+
+/** Only arrow conditions split solvent mixtures and comma-separated formulas. */
+export function formulaSpansForReactionCondition(text: string): TextSpan[] | undefined {
+  return formulaSpansForMixedText(text, [], true);
 }

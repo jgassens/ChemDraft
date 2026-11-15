@@ -1,6 +1,7 @@
 import { createMassRegistration, massFragmentManifest, massFragmentPluginId } from "@chemdraft/plugin-mass-fragment";
 import {
   PluginApiVersion,
+  type PluginAssistantToolHandler,
   type PluginCommandHandler,
   type PluginManifest,
   type PluginWorkerHandle
@@ -98,7 +99,12 @@ export function createWorkerRoutedOptions(manifest: PluginManifest, bridge: Plug
   }
   return {
     commandHandlers,
-    onPanelClosed: (panelId) => bridge.notifyPanelClosed(panelId)
+    onPanelClosed: (panelId) => bridge.notifyPanelClosed(panelId),
+    get onAssistantToolCall(): PluginAssistantToolHandler | undefined {
+      return bridge.hasAssistantToolHandler()
+        ? (context, call, signal) => bridge.invokeAssistantTool(context, call, signal)
+        : undefined;
+    }
   };
 }
 

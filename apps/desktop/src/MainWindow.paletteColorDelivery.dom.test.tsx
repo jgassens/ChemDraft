@@ -1,3 +1,4 @@
+import { currentPaletteTarget } from "./window-manager/paletteTarget";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -72,7 +73,7 @@ describe.each(["macos", "windows"] as const)("detached palette colour delivery (
       while (messages.length) {
         await new Promise<void>(resolve => setTimeout(resolve, 0));
         const { event, commandId } = messages.shift()!;
-        await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { commandId } })); });
+        await act(async () => { window.dispatchEvent(new CustomEvent(event, { detail: { target: currentPaletteTarget(), commandId } })); });
       }
     }
     async function command(id: string) {

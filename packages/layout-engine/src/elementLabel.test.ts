@@ -14,6 +14,56 @@ import { atomDisplayLabel, atomLabelLayout, planMoleculeAtomLabels, planPageSvgR
 import { atomLabelGlyphBoxes, elementFragments } from "./testing";
 import { nativeElementFromAtomLabel, nativeElementSymbols, normalizeNativeAtomElementLabel } from "./valence";
 
+describe("inorganic display typography", () => {
+  const molecule = (atoms: MoleculeAtom[], bonds: MoleculeBond[] = []): MoleculeObject => ({
+    id: "inorganic", type: "molecule", x: 0, y: 0, width: 80, height: 40,
+    rotation: 0, style: {}, structureFormat: "smiles", structure: "", atoms, bonds,
+    superatoms: [], rGroups: []
+  });
+  const atom = (id: string, element: string, x: number, formalCharge = 0): MoleculeAtom =>
+    ({ id, element, x, y: 0, formalCharge });
+
+  it("retains the baseline free-water spelling", () => {
+    const water = molecule([atom("o", "O", 0)]);
+    const before = JSON.stringify(water);
+    const plan = planMoleculeAtomLabels(water)[0]!;
+    expect(plan.label).toBe("OH2");
+    expect(JSON.stringify(water)).toBe(before);
+  });
+
+  it("retains the baseline separate ion-pair labels", () => {
+    const sodium = atom("na", "Na", 22, 1), hydroxide = atom("o", "O", 0, -1);
+    const salt = molecule([sodium, hydroxide]);
+    const before = JSON.stringify(salt);
+    expect(planMoleculeAtomLabels(salt).map(plan => plan.label)).toEqual(["Na+", "OH-"]);
+    expect(JSON.stringify(salt)).toBe(before);
+    expect(planMoleculeAtomLabels(molecule([sodium, { ...hydroxide, isotope: 18 }])).map(plan => plan.label))
+      .not.toContain("NaOH");
+    expect(planMoleculeAtomLabels(molecule([sodium, { ...hydroxide, formalCharge: -2 }])).map(plan => plan.label))
+      .not.toContain("NaOH");
+  });
+
+  it.each([1, -1])("spells a straight Mg-halide fragment toward its attachment (direction %s)", direction => {
+    const atoms = [atom("br", "Br", -22 * direction), atom("mg", "Mg", 0), atom("c", "C", 22 * direction)];
+    const bonds: MoleculeBond[] = [
+      { id: "b0", fromAtomId: "br", toAtomId: "mg", order: "single" },
+      { id: "b1", fromAtomId: "mg", toAtomId: "c", order: "single" }
+    ];
+    const fragment = molecule(atoms, bonds);
+    const before = JSON.stringify(fragment);
+    const plans = planMoleculeAtomLabels(fragment);
+    expect(plans.map(plan => plan.label)).toEqual(expect.arrayContaining(["Br", "Mg"]));
+    expect(plans.some(plan => plan.atom.id === "br")).toBe(true);
+    const page = { ...createEmptyDocument().pages[0]!, objects: [fragment] };
+    const segments = planPageSvgRender(page).fragments.flatMap(elementFragments)
+      .filter(part => part.attrs["data-bond-id"] === "b0");
+    expect(segments.length).toBeGreaterThan(0);
+    expect(JSON.stringify(fragment)).toBe(before);
+    const labelled = planMoleculeAtomLabels(molecule([{ ...atoms[0]!, isotope: 81 }, ...atoms.slice(1)], bonds));
+    expect(labelled.some(plan => plan.atom.id === "br")).toBe(true);
+  });
+});
+
 const oneLetterSymbols = nativeElementSymbols.filter((symbol) => symbol.length === 1);
 
 /**

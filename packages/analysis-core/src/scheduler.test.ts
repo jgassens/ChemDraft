@@ -170,7 +170,7 @@ describe("supersession", () => {
     scheduler.cancel("selection");
     const run = await pending;
     expect(run.status).toBe("cancelled");
-    expect(run.warnings[0]?.message).toMatch(/cancelled/);
+    expect(run.warnings[0]?.message).toMatch(/canceled/);
     expect(scheduler.activeSlots()).toEqual([]);
 
     await vi.advanceTimersByTimeAsync(200);

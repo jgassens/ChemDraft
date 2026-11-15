@@ -32,7 +32,8 @@ const native = vi.hoisted(() => ({
   pointerNotify: undefined as ((event: { payload: PaletteClickPendingEvent }) => void) | undefined,
   notify: undefined as ((event: { payload: NativePanelFocusEvent }) => void) | undefined
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(), invoke: native.invoke }));
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
   isDesktopRuntime: () => true,

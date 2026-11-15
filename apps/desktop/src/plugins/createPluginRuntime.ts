@@ -1,3 +1,4 @@
+import { computePropertiesForPlugin } from "./pluginProperties";
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
 import { inspectStructureOffThread } from "../depiction2d/identityClient";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
@@ -33,6 +34,7 @@ import {
   validateTrustedPluginManifest,
   type CommandRegistry,
   type PluginPatchApplicationRequest,
+  type PluginInvocationDocumentProvider,
   type RegisterPluginOptions
 } from "@chemdraft/plugin-host";
 
@@ -147,6 +149,8 @@ export interface DesktopPluginRuntimeOptions {
   /** Native external-tools boundary; injectable so runtime tests do not require Tauri IPC. */
   externalToolsEngine?: ExternalToolsEngine;
   assistantMcpEngine?: AssistantMcpEngine;
+  forwardUnboundCommand?: DesktopPluginRuntime["invokeCommand"];
+  captureAssistantRequest?: AssistantToolsControllerOptions["captureRequest"];
   assistantContext?: AssistantToolsControllerOptions["createContext"];
   assistantTransactions?: AssistantToolsControllerOptions["transactions"];
   runAssistantWrite?: AssistantToolsControllerOptions["runWrite"];
@@ -207,9 +211,12 @@ export interface DesktopPluginRuntime {
   naming: StructureNamingController;
   externalTools: ExternalToolsController;
   assistant: AssistantToolsController;
+  updateDocumentTabTitles(titles: readonly { id: string; title: string }[], windowId?: string): void;
   proposalDocumentTab(proposalId: string): ProposalDocumentTab | undefined;
+  /** Captured authority is independent of presentation metadata such as the tab's current title. */
+  proposalWindowId(proposalId: string): string | undefined;
   /** Retain the final title while pending proposals or running commands reference a closed tab. */
-  closeProposalDocumentTab(tabId: string, title: string): void;
+  closeProposalDocumentTab(tabId: string, title: string, windowId?: string): void;
   /**
    * Register a plugin and stage its toolset contributions: `ui.toolbar` is enforced before any
    * toolbar surface exists, duplicate toolset ids across plugins are rejected, and any failure
@@ -226,19 +233,22 @@ export interface DesktopPluginRuntime {
    * the selection meanwhile, or this one reading it after its own patch changed the document, can
    * neither add to it nor take from it.
    */
-  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput }): Promise<unknown>;
+  invokeCommand(commandId: string, options?: { selectionWarnings?: string[]; input?: PluginCommandInput;
+    documentProvider?: PluginInvocationDocumentProvider; writeSelection?: PluginSelectionSnapshot }): Promise<unknown>;
+  openDocumentWindow(windowId: string): void;
+  closeDocumentWindow(windowId: string): void;
   listCanvasOverlays(): RegisteredCanvasOverlay[];
-  getCanvasOverlayStatuses(): ReadonlyMap<string, string>;
+  getCanvasOverlayStatuses(windowId?: string): ReadonlyMap<string, string>;
   /** Subscribe to status-only overlay updates without invalidating plugin contributions/toolsets. */
   subscribeCanvasOverlayStatus(listener: () => void): () => void;
-  getCanvasOverlayTranscripts(): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
+  getCanvasOverlayTranscripts(windowId?: string): ReadonlyMap<string, readonly PluginOverlayTranscriptEntry[]>;
   subscribeCanvasOverlayTranscript(listener: () => void): () => void;
-  getCanvasOverlayContents(): ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
-  getCanvasOverlayDraftRestore(overlayId: string): CanvasOverlayDraftRestore | undefined;
+  getCanvasOverlayContents(windowId?: string): ReadonlyMap<string, readonly CanvasOverlayContentSection[]>;
+  getCanvasOverlayDraftRestore(overlayId: string, windowId?: string): CanvasOverlayDraftRestore | undefined;
   /** Consume a specific restore, or drop any pending restore on user input. */
-  clearCanvasOverlayDraftRestore(overlayId: string, expected?: CanvasOverlayDraftRestore): boolean;
+  clearCanvasOverlayDraftRestore(overlayId: string, expected?: CanvasOverlayDraftRestore, windowId?: string): boolean;
   subscribeCanvasOverlayContent(listener: () => void): () => void;
-  getCanvasOverlayOpenRequests(): ReadonlyMap<string, { readonly focus: boolean }>;
+  getCanvasOverlayOpenRequests(windowId?: string): ReadonlyMap<string, { readonly focus: boolean }>;
   subscribeCanvasOverlayOpen(listener: () => void): () => void;
   listPluginToolsets(): DesktopToolsetDefinition[];
   pluginIdForToolset(toolsetId: string): string | undefined;
@@ -249,6 +259,7 @@ export interface DesktopPluginRuntime {
 export interface ProposalDocumentTab {
   id: string;
   title: string;
+  windowId?: string;
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
@@ -266,8 +277,13 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let structureSignal: AbortSignal | undefined;
   const structureProvider =
     options.buildStructureFromSmiles === undefined
-      ? (request: PluginStructureFromSmilesRequest) =>
-          structureFromSmilesForPlugin(request, options.getActiveDocument, structureSignal)
+      ? async (request: PluginStructureFromSmilesRequest, provider?: PluginInvocationDocumentProvider) => {
+          const signal = structureSignal;
+          // Read through the captured invocation. Engine work receives only detached document data.
+          const document = provider ? await provider.getDocument() : options.getActiveDocument();
+          signal?.throwIfAborted();
+          return structureFromSmilesForPlugin(request, () => document, signal);
+        }
       : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
@@ -306,6 +322,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const naming = new StructureNamingController(options.structureNamingEngine ?? new TauriStructureNamingEngine(), options.namingCanonicalizer);
   const externalTools = new ExternalToolsController(options.externalToolsEngine ?? (isTauriHost() ? new TauriExternalToolsEngine() : new UnsupportedExternalToolsEngine()));
   const assistant = new AssistantToolsController({
+    captureRequest: options.captureAssistantRequest,
     host: (): PluginHost => host,
     engine: options.assistantMcpEngine ?? (isTauriHost() ? new TauriAssistantMcpEngine() : new UnsupportedAssistantMcpEngine()),
     getActiveTabId: () => options.getActiveDocumentTab?.().id,
@@ -346,33 +363,51 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
+  const documentTitles = new Map<string, Map<string, string>>();
   const proposalTabs = new Map<string, string>();
+  const proposalWindows = new Map<string, string>();
   const closedTabTitles = new Map<string, string>();
   const runningTabCommands = new Map<string, number>();
   const pruneClosedTabTitles = () => {
-    const pendingTabs = new Set(proposalTabs.values());
+    const pendingTabs = new Set([...proposalTabs].map(([proposalId, tabId]) => JSON.stringify([proposalWindows.get(proposalId) ?? "", tabId])));
     for (const id of closedTabTitles.keys()) {
       if (!pendingTabs.has(id) && !runningTabCommands.has(id)) closedTabTitles.delete(id);
     }
   };
   let proposingTabId: string | undefined;
+  let proposingWindowId: string | undefined;
   class DesktopPluginHost extends PluginHost {
     override async invokeCommand<Result = unknown>(commandId: string, invokeOptions?: Parameters<PluginHost["invokeCommand"]>[1]): Promise<Result> {
-      const tabId = options.getActiveDocumentTab?.().id;
-      if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
+      if (!invokeOptions?.documentProvider && options.forwardUnboundCommand && this.commands.get(commandId)?.pluginId) {
+        return await options.forwardUnboundCommand(commandId, invokeOptions) as Result;
+      }
+      return this.withInvocationFrame(() => super.invokeCommand<Result>(commandId, invokeOptions), undefined, invokeOptions?.documentProvider?.target);
+    }
+
+    override async invokeAssistantTool(...args: Parameters<PluginHost["invokeAssistantTool"]>) {
+      return this.withInvocationFrame(() => super.invokeAssistantTool(...args), args[2]);
+    }
+
+    private async withInvocationFrame<Result>(run: () => Promise<Result>, signal?: AbortSignal, target?: PluginInvocationDocumentProvider["target"]): Promise<Result> {
+      const tabId = target?.tabId ?? options.getActiveDocumentTab?.().id;
+      const tabKey = tabId ? JSON.stringify([target?.windowId ?? "", tabId]) : undefined;
+      if (tabKey) runningTabCommands.set(tabKey, (runningTabCommands.get(tabKey) ?? 0) + 1);
       const tokens: symbol[] = [];
       const previousFrame = commandFrame;
       commandFrame = tokens;
+      const cancel = () => { for (const token of tokens) commandInvocations.get(token)?.stop.abort(); };
+      signal?.addEventListener("abort", cancel, { once: true });
       try {
-        const call = super.invokeCommand<Result>(commandId, invokeOptions);
-        commandFrame = previousFrame;
+        let call: Promise<Result>;
+        try { call = run(); } finally { commandFrame = previousFrame; }
         return await call;
       } finally {
+        signal?.removeEventListener("abort", cancel);
         for (const token of tokens) { commandInvocations.get(token)?.stop.abort(); commandInvocations.delete(token); }
-        if (tabId) {
-          const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
-          if (remaining > 0) runningTabCommands.set(tabId, remaining);
-          else runningTabCommands.delete(tabId);
+        if (tabKey) {
+          const remaining = (runningTabCommands.get(tabKey) ?? 1) - 1;
+          if (remaining > 0) runningTabCommands.set(tabKey, remaining);
+          else runningTabCommands.delete(tabKey);
         }
         pruneClosedTabTitles();
       }
@@ -387,6 +422,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
 
     override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken, input);
+      const provider = this.invocationDocumentProvider(invocationToken);
       if (invocationToken && commandFrame) {
         commandFrame.push(invocationToken);
         commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
@@ -405,29 +441,37 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
+        const getKey = provider?.getDocumentKey ?? options.getActiveDocumentKey ?? (() => documentIdentityKey(options.getActiveDocument()));
+        const documentKey = getKey();
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
           const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
-          if (documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
-          const molecule = scopedNamingMolecule(options.getActiveDocument(), options.getSelection?.(), parsed.objectId);
+          if (documentKey !== getKey()) throw new Error("The active document changed during the naming command.");
+          const [document, selection] = provider
+            ? await Promise.all([provider.getDocument(), provider.getSelection({ collectWarnings: false })])
+            : [options.getActiveDocument(), options.getSelection?.()];
+          invocation.stop.signal.throwIfAborted();
+          const molecule = scopedNamingMolecule(document, selection, parsed.objectId);
           const manifest = this.listPlugins().find(plugin => plugin.id === pluginId)!;
-          return naming.name(manifest, molecule, invocation.stop.signal);
+          return naming.name(manifest, molecule, invocation.stop.signal, provider?.target && documentKey ? { ...provider.target, documentKey } : undefined);
         };
       }
-      const tabId = options.getActiveDocumentTab?.().id;
+      const tabId = provider?.target?.tabId ?? options.getActiveDocumentTab?.().id;
       const proposePatch = context.documents.proposePatch;
       context.documents.proposePatch = (proposal) => {
         // The host enqueues synchronously before returning its promise. Scope the queue notification
         // to this context, so concurrent commands and late results retain their own source tab.
         const previous = proposingTabId;
+        const previousWindow = proposingWindowId;
         proposingTabId = tabId;
+        proposingWindowId = provider?.target?.windowId;
         try {
           return proposePatch(proposal);
         } finally {
           proposingTabId = previous;
+          proposingWindowId = previousWindow;
         }
       };
       const collector = armedSelectionWarnings;
@@ -449,13 +493,24 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       };
     }
   }
-  const canvasOverlayStatuses = new Map<string, string>();
-  const canvasOverlayTranscripts = new Map<string, readonly PluginOverlayTranscriptEntry[]>();
-  const canvasOverlayContents = new Map<string, readonly CanvasOverlayContentSection[]>();
-  const canvasOverlayDraftRestores = new Map<string, CanvasOverlayDraftRestore>();
+  const closedWindows = new Set<string>();
+  const overlayStates = new Map<string, ReturnType<typeof newOverlayState>>();
+  function newOverlayState() {
+    return {
+      canvasOverlayStatuses: new Map<string, string>(),
+      canvasOverlayTranscripts: new Map<string, readonly PluginOverlayTranscriptEntry[]>(),
+      canvasOverlayContents: new Map<string, readonly CanvasOverlayContentSection[]>(),
+      canvasOverlayDraftRestores: new Map<string, CanvasOverlayDraftRestore>(),
+      canvasOverlayOpenRequests: new Map<string, { readonly focus: boolean }>()
+    };
+  }
+  const overlayState = (windowId = "main") => {
+    let state = overlayStates.get(windowId);
+    if (!state) { state = newOverlayState(); overlayStates.set(windowId, state); }
+    return state;
+  };
   const canvasOverlayContentListeners = new Set<() => void>();
   const notifyCanvasOverlayContent = () => canvasOverlayContentListeners.forEach(listener => listener());
-  const canvasOverlayOpenRequests = new Map<string, { readonly focus: boolean }>();
   const canvasOverlayOpenListeners = new Set<() => void>();
   const notifyCanvasOverlayOpen = () => canvasOverlayOpenListeners.forEach(listener => listener());
   const canvasOverlayTranscriptListeners = new Set<() => void>();
@@ -469,7 +524,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     ...chemistry3d,
     commandRegistry: options.commandRegistry,
     overlays: {
-      setContent: (pluginId, overlayId, sections, prompt) => {
+      setContent: (pluginId, overlayId, sections, prompt, provider) => {
+        const windowId = provider?.target?.windowId ?? "main";
+        if (closedWindows.has(windowId)) return;
+        const { canvasOverlayContents, canvasOverlayDraftRestores } = overlayState(windowId);
         const declared = host.getPlugin(pluginId)!.manifest.contributes.canvasOverlays!.find(overlay => overlay.id === overlayId)!.prompt;
         const disabled = prompt?.disabled ?? false;
         // The internal prompt section feeds the existing composer and command-dispatch guard.
@@ -487,12 +545,18 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         }
         notifyCanvasOverlayContent();
       },
-      open: (_pluginId, overlayId, focus) => {
+      open: (_pluginId, overlayId, focus, provider) => {
+        const windowId = provider?.target?.windowId ?? "main";
+        if (closedWindows.has(windowId)) return;
+        const { canvasOverlayOpenRequests } = overlayState(windowId);
         // A new identity for each request also makes repeated focus:true observable.
         canvasOverlayOpenRequests.set(overlayId, Object.freeze({ focus }));
         notifyCanvasOverlayOpen();
       },
-      setTranscript: (_pluginId, overlayId, entries) => {
+      setTranscript: (_pluginId, overlayId, entries, provider) => {
+        const windowId = provider?.target?.windowId ?? "main";
+        if (closedWindows.has(windowId)) return;
+        const { canvasOverlayTranscripts } = overlayState(windowId);
         if (entries.length === 0) {
           if (!canvasOverlayTranscripts.delete(overlayId)) return;
         } else {
@@ -500,7 +564,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         }
         notifyCanvasOverlayTranscript();
       },
-      setStatus: (_pluginId, overlayId, text) => {
+      setStatus: (_pluginId, overlayId, text, provider) => {
+        const windowId = provider?.target?.windowId ?? "main";
+        if (closedWindows.has(windowId)) return;
+        const { canvasOverlayStatuses } = overlayState(windowId);
         if (text === "") {
           if (!canvasOverlayStatuses.delete(overlayId)) return;
         } else {
@@ -519,31 +586,41 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const pending = host.listProposedPatches("pending");
       const pendingIds = new Set(pending.map((proposal) => proposal.id));
       for (const id of proposalTabs.keys()) {
-        if (!pendingIds.has(id)) proposalTabs.delete(id);
+        if (!pendingIds.has(id)) { proposalTabs.delete(id); proposalWindows.delete(id); }
       }
       for (const proposal of pending) {
         if (proposalTabs.has(proposal.id)) continue;
         // Trusted desktop callers of host.proposePatch have no invocation context.
         const tabId = proposingTabId ?? options.getActiveDocumentTab?.().id;
-        if (tabId) proposalTabs.set(proposal.id, tabId);
+        if (tabId) {
+          proposalTabs.set(proposal.id, tabId);
+          if (proposingWindowId) proposalWindows.set(proposal.id, proposingWindowId);
+        }
       }
       pruneClosedTabTitles();
       options.onProposedPatchesChanged?.();
     },
     applyDocumentPatch: options.applyDocumentPatch,
-    buildTablePatch: (spec, document, selection) => {
+    buildTablePatch: async (spec, document, selection, _viewport, provider) => {
+      if (provider) return buildPluginTablePatch(spec, document, selection, await provider.getViewportRect?.());
       const tabId = options.getActiveDocumentTab?.().id;
       const viewport = tabId ? (options.getAssistantViewportRect ?? (id => getAssistantHistoryPort().getViewportRect?.(id)))(tabId) : undefined;
       return buildPluginTablePatch(spec, document, selection, viewport);
     },
-    showPanelReport: (pluginId, panelId, report) => {
-      controller?.showReport(pluginId, panelId, report);
+    showPanelReport: (pluginId, panelId, report, provider) => {
+      controller?.showReport(pluginId, panelId, report, provider?.target?.windowId);
     },
-    promptText: (plugin, request, signal) => prompts.promptText(plugin, request, signal),
-    requestImage: (plugin, request, signal) => images.requestImage(plugin, request, signal),
-    recognizeStructure: (plugin, image, signal) => recognition.recognize(plugin, image, signal),
+    promptText: (plugin, request, signal, provider) => prompts.promptText(plugin, request, signal, provider?.target?.windowId),
+    requestImage: (plugin, request, signal, provider) => images.requestImage(plugin, request, signal, provider?.target?.windowId),
+    recognizeStructure: (plugin, image, signal, provider) => recognition.recognize(plugin, image, signal, provider
+      ? async (outcome, source) => {
+          const document = await provider.getDocument();
+          signal.throwIfAborted();
+          return preparePluginStructureRecognition(outcome, source, document, options.recognitionStructureValidator);
+        } : undefined, provider?.target?.windowId),
     externalTools,
     assistant,
+    computeProperties: computePropertiesForPlugin,
     ...(envelopeProvider ? { computeIsotopeEnvelope: envelopeProvider } : {}),
     ...(nameProvider ? { convertNameToStructure: nameProvider } : {}),
     ...(structureProvider ? { buildStructureFromSmiles: structureProvider } : {}),
@@ -564,15 +641,20 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     naming,
     externalTools,
     assistant,
+    updateDocumentTabTitles(titles, windowId = "") { documentTitles.set(windowId, new Map(titles.map(({ id, title }) => [id, title]))); },
+    proposalWindowId(proposalId) {
+      return proposalTabs.has(proposalId) ? proposalWindows.get(proposalId) ?? "main" : undefined;
+    },
     proposalDocumentTab(proposalId) {
       const id = proposalTabs.get(proposalId);
       if (id === undefined) return undefined;
-      const title = options.getDocumentTabTitle?.(id) ?? closedTabTitles.get(id);
-      return title === undefined ? undefined : { id, title };
+      const windowId = proposalWindows.get(proposalId);
+      const title = documentTitles.get(windowId ?? "")?.get(id) ?? options.getDocumentTabTitle?.(id) ?? closedTabTitles.get(JSON.stringify([windowId ?? "", id]));
+      return title === undefined ? undefined : { id, title, ...(windowId ? { windowId } : {}) };
     },
-    closeProposalDocumentTab(tabId, title) {
-      assistant.closeAllForTab(tabId);
-      closedTabTitles.set(tabId, title);
+    closeProposalDocumentTab(tabId, title, windowId = "") {
+      assistant.closeAllForTab(tabId, windowId || "main");
+      closedTabTitles.set(JSON.stringify([windowId, tabId]), title);
       pruneClosedTabTitles();
     },
     registerPlugin(candidate, registerOptions = {}) {
@@ -625,42 +707,22 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       (toolsetsByPluginId.get(pluginId) ?? []).forEach((toolset) => pluginIdByToolsetId.delete(toolset.id));
       toolsetsByPluginId.delete(pluginId);
       registrations.delete(pluginId);
-      let overlayStatusesChanged = false;
-      for (const overlayId of canvasOverlayStatuses.keys()) {
-        const overlayStillRegistered = host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId);
-        if (!overlayStillRegistered) {
-          overlayStatusesChanged = true;
-          canvasOverlayStatuses.delete(overlayId);
-        }
-      }
-      if (overlayStatusesChanged) notifyCanvasOverlayStatus();
-      let transcriptsChanged = false;
-      for (const overlayId of canvasOverlayTranscripts.keys()) {
-        if (!host.listCanvasOverlays().some(entry => entry.overlay.id === overlayId)) {
-          canvasOverlayTranscripts.delete(overlayId);
-          transcriptsChanged = true;
-        }
-      }
-      if (transcriptsChanged) notifyCanvasOverlayTranscript();
       const owned = new Set(host.listCanvasOverlays().map(entry => entry.overlay.id));
-      let contentChanged = false;
-      let openChanged = false;
-      for (const id of canvasOverlayContents.keys()) if (!owned.has(id)) {
-        canvasOverlayContents.delete(id); contentChanged = true;
+      for (const state of overlayStates.values()) {
+        for (const values of Object.values(state)) for (const id of values.keys()) if (!owned.has(id)) values.delete(id);
       }
-      for (const id of canvasOverlayDraftRestores.keys()) if (!owned.has(id)) {
-        canvasOverlayDraftRestores.delete(id); contentChanged = true;
-      }
-      for (const id of canvasOverlayOpenRequests.keys()) if (!owned.has(id)) {
-        canvasOverlayOpenRequests.delete(id); openChanged = true;
-      }
-      if (contentChanged) notifyCanvasOverlayContent();
-      if (openChanged) notifyCanvasOverlayOpen();
+      notifyCanvasOverlayStatus();
+      notifyCanvasOverlayTranscript();
+      notifyCanvasOverlayContent();
+      notifyCanvasOverlayOpen();
       notify();
     },
     invokeCommand(commandId, invokeOptions = {}) {
+      if (!invokeOptions.documentProvider && options.forwardUnboundCommand && host.commands.get(commandId)?.pluginId) return options.forwardUnboundCommand(commandId, invokeOptions);
       armedSelectionWarnings = invokeOptions.selectionWarnings;
       try {
+        if (invokeOptions.documentProvider) return host.invokeCommand(commandId, { input: invokeOptions.input,
+          documentProvider: invokeOptions.documentProvider, writeSelection: invokeOptions.writeSelection });
         return invokeOptions.input === undefined
           ? host.invokeCommand(commandId)
           : host.invokeCommand(commandId, { input: invokeOptions.input });
@@ -669,18 +731,28 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         armedSelectionWarnings = undefined;
       }
     },
+    openDocumentWindow(windowId) { closedWindows.delete(windowId); controller?.openWindow(windowId); },
+    closeDocumentWindow(windowId) {
+      closedWindows.add(windowId);
+      controller?.closeWindow(windowId);
+      assistant.closeAllForWindow(windowId);
+      prompts.closeWindow(windowId); images.closeWindow(windowId);
+      overlayStates.delete(windowId);
+      notifyCanvasOverlayStatus(); notifyCanvasOverlayTranscript(); notifyCanvasOverlayContent(); notifyCanvasOverlayOpen();
+    },
     listCanvasOverlays: () => host.listCanvasOverlays(),
-    getCanvasOverlayStatuses: () => new Map(canvasOverlayStatuses),
-    getCanvasOverlayTranscripts: () => new Map(canvasOverlayTranscripts),
-    getCanvasOverlayContents: () => new Map(canvasOverlayContents),
-    getCanvasOverlayDraftRestore: overlayId => canvasOverlayDraftRestores.get(overlayId),
-    clearCanvasOverlayDraftRestore(overlayId, expected) {
+    getCanvasOverlayStatuses: windowId => new Map(overlayState(windowId).canvasOverlayStatuses),
+    getCanvasOverlayTranscripts: windowId => new Map(overlayState(windowId).canvasOverlayTranscripts),
+    getCanvasOverlayContents: windowId => new Map(overlayState(windowId).canvasOverlayContents),
+    getCanvasOverlayDraftRestore: (overlayId, windowId) => overlayState(windowId).canvasOverlayDraftRestores.get(overlayId),
+    clearCanvasOverlayDraftRestore(overlayId, expected, windowId) {
+      const { canvasOverlayDraftRestores } = overlayState(windowId);
       if (expected && canvasOverlayDraftRestores.get(overlayId) !== expected) return false;
       if (!canvasOverlayDraftRestores.delete(overlayId)) return false;
       notifyCanvasOverlayContent();
       return true;
     },
-    getCanvasOverlayOpenRequests: () => new Map(canvasOverlayOpenRequests),
+    getCanvasOverlayOpenRequests: windowId => new Map(overlayState(windowId).canvasOverlayOpenRequests),
     subscribeCanvasOverlayContent(listener) {
       canvasOverlayContentListeners.add(listener);
       return () => { canvasOverlayContentListeners.delete(listener); };

@@ -1,4 +1,4 @@
-import type { PluginCommandContext, PluginPermission } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, type PluginCommandContext, type PluginPermission } from "@chemdraft/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 import { createPhase4Document } from "../documentWorkflow";
 import { createPluginRuntime } from "./createPluginRuntime";
@@ -35,6 +35,40 @@ describe("desktop structureToName", () => {
     await expect(saved.chemistry!.structureToName!({ objectId: "m1" })).rejects.toThrow(/invocation/);
     await expect(runtime.host.createCommandContext(namingManifest.id).chemistry!.structureToName!({ objectId: "m1" })).rejects.toThrow(/invocation/);
   });
+  it("gives plugin assistant handlers the same native capability lifetime as commands", async () => {
+    const { runtime } = setup();
+    let saved!: PluginCommandContext;
+    runtime.registerPlugin({ ...namingManifest, apiVersion: "^0.1.21", permissions: [...new Set([...namingManifest.permissions, ...AssistantCapabilityPermissions])] },
+      { onAssistantToolCall: async context => {
+        saved = context;
+        const result = await context.chemistry!.structureToName!({ objectId: "m1" });
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      } });
+    const result = await runtime.host.invokeAssistantTool(namingManifest.id,
+      { sessionId: "own-session", name: "lookup_name", input: {} }, new AbortController().signal, ["m1"]);
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({ status: "named", name: "ethanol" });
+    await expect(saved.chemistry!.structureToName!({ objectId: "m1" })).rejects.toThrow(/invocation/);
+    runtime.unregisterPlugin(namingManifest.id);
+  });
+
+  it("cancels native capability work when an assistant handler is aborted", async () => {
+    const { runtime, engine } = setup();
+    vi.mocked(engine.name).mockImplementation(() => new Promise(() => undefined));
+    runtime.registerPlugin({ ...namingManifest, apiVersion: "^0.1.21", permissions: [...new Set([...namingManifest.permissions, ...AssistantCapabilityPermissions])] },
+      { onAssistantToolCall: async context => {
+        const result = await context.chemistry!.structureToName!({ objectId: "m1" });
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      } });
+    const abort = new AbortController();
+    const pending = runtime.host.invokeAssistantTool(namingManifest.id,
+      { sessionId: "own-session", name: "lookup_name", input: {} }, abort.signal, ["m1"]);
+    await vi.waitFor(() => expect(engine.name).toHaveBeenCalled());
+    abort.abort();
+    expect(await pending).toMatchObject({ content: [{ text: JSON.stringify({ status: "cancelled" }) }] });
+    expect(engine.cancel).toHaveBeenCalledOnce();
+    runtime.unregisterPlugin(namingManifest.id);
+  });
+
   it("refuses an out-of-scope object before engine access", async () => {
     const { runtime, document, engine } = setup();
     document.pages[0]!.objects.push({ ...namingMolecule, id: "m2" });

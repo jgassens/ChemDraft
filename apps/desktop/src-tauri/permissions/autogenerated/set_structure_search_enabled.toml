@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-structure-search-enabled"
+description = "Enables the set_structure_search_enabled command without any pre-configured scope."
+commands.allow = ["set_structure_search_enabled"]
+
+[[permission]]
+identifier = "deny-set-structure-search-enabled"
+description = "Denies the set_structure_search_enabled command without any pre-configured scope."
+commands.deny = ["set_structure_search_enabled"]

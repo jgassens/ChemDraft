@@ -152,6 +152,25 @@ describe.each(["macos", "windows"] as const)("Text tool on shapes (%s)", platfor
     { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "test", warning: "Test fixture" }
   ];
 
+  it.each([
+    { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "graphic", warning: "Test" },
+    { type: "electron-mark", markKind: "unknown", anchor },
+    { type: "annotation", message: "Note" },
+    { type: "superatom", label: "Me", metadata: { label: "Me" } },
+    { type: "r-group-label", label: "R", display: { label: "R" } },
+    { type: "generic-atom-label", label: "X" }
+  ])("shows a human label for the $type fallback", async fields => {
+    const initial = createPhase4Document("Fallback");
+    initial.pages[0].objects = [DocumentObjectSchema.parse({
+      id: "fallback-target", x: 300, y: 280, width: 100, height: 40, ...fields
+    })];
+    await render(initial);
+    const renderedText = Array.from(container.querySelectorAll('[data-page-svg-object-visual="fallback-target"] text'))
+      .map(element => element.textContent).join("");
+    expect(renderedText).toBe("Unsupported object");
+    expect(renderedText).not.toContain(fields.type);
+  });
+
   function overlappingTextDocument(kind: string) {
     const initial = structuredClone(shapeDocument(true));
     if (kind !== "filled rectangle") {

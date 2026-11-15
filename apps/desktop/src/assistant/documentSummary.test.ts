@@ -2,8 +2,20 @@ import { describe, expect, it } from "vitest";
 import { documentSummary, SUMMARY_MAX_BYTES } from "./documentSummary";
 import { recordAssistantInsertions } from "./AssistantToolContext";
 import { testContext } from "./tools/testContext";
+import type { BracketObject } from "@chemdraft/chem-core";
 
 describe("assistant summary", () => {
+  it.each(["multiple", "sru"] as const)("declines formula and SMILES for %s groups with a named warning", async bracketUsage => {
+    const { context, molecule } = testContext();
+    const bracket: BracketObject = { id: "open", type: "bracket", bracketKind: "square", side: "open", pairId: "p", bracketUsage,
+      repeatCount: bracketUsage === "multiple" ? 3 : undefined, x: 10, y: 10, width: 10, height: 100, rotation: 0, style: {}, containedObjectIds: [molecule.id] };
+    context.getDocument()!.pages[0].objects.push(bracket, { ...bracket, id: "close", side: "close", label: "n", x: 200 });
+    const entry = (await documentSummary(context)).objects.find(object => object.id === molecule.id)!;
+    expect(entry.warnings).toEqual([expect.stringContaining(bracketUsage === "multiple" ? "multiple group x3" : "repeat unit n")]);
+    expect(entry).not.toHaveProperty("formula");
+    expect(entry).not.toHaveProperty("smiles");
+    expect(context.chemistry.inspectStructure).not.toHaveBeenCalled();
+  });
   it("marks scope from Send plus inserted ids, never the live selection", async () => {
     const { context, molecule, text } = testContext();
     context.getDocument()!.selection.objectIds = [text.id];

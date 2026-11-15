@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-runtime-broker-send"
+description = "Enables the runtime_broker_send command without any pre-configured scope."
+commands.allow = ["runtime_broker_send"]
+
+[[permission]]
+identifier = "deny-runtime-broker-send"
+description = "Denies the runtime_broker_send command without any pre-configured scope."
+commands.deny = ["runtime_broker_send"]

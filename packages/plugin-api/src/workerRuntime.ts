@@ -16,7 +16,7 @@
  * unit-tests without a real Worker (a linked in-memory endpoint pair stands in).
  */
 
-import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "./index";
+import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolHandler, type PluginAssistantToolCall } from "./index";
 import type {
   PluginAnalysisAPI,
   PluginChemistryAPI,
@@ -56,6 +56,7 @@ export interface PluginWorkerRegistration {
   manifest: PluginManifest;
   commandHandlers: Record<string, PluginCommandHandler>;
   onPanelClosed?: (panelId: string) => void;
+  onAssistantToolCall?: PluginAssistantToolHandler;
 }
 
 /** An error that carries a stable code across the boundary, so a rejected capability call surfaces to
@@ -116,8 +117,9 @@ export function runPluginWorker(
     number,
     { commandRequestId: number; resolve: (value: unknown) => void; reject: (error: unknown) => void }
   >();
-  /** Commands the host aborted/terminated: their eventual settlement is suppressed, and their pending
-   *  capability calls are rejected so a handler cannot hang forever.
+  /** Commands the host aborted/terminated: their pending capability calls are rejected so a handler
+   *  can unwind. Normal command settlements are suppressed; assistant tools acknowledge settlement
+   *  so the host can keep their concurrency slots until the handler actually finishes.
    *
    *  Entries are normally removed when the aborted handler finally settles, but a handler that
    *  swallows its rejection and never settles would leak its id forever. The set is therefore bounded
@@ -282,6 +284,7 @@ export function runPluginWorker(
     // `available: false` rather than the plugin having to guess from the capability's presence.
     const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
       ? {
+          properties: request => call("chemistry", "properties", [request]) as ReturnType<NonNullable<PluginChemistryAPI["properties"]>>,
           embed3d: request => call("chemistry", "embed3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["embed3d"]>>,
           minimize3d: request => call("chemistry", "minimize3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["minimize3d"]>>,
           flatten3d: request => call("chemistry", "flatten3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["flatten3d"]>>,
@@ -360,14 +363,25 @@ export function runPluginWorker(
     };
   };
 
-  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput): void => {
-    const handler = registration.commandHandlers[commandId];
+  const toolAborts = new Map<number, AbortController>();
+  const invoke = (commandRequestId: number, commandId: string, input?: PluginCommandInput, tool?: PluginAssistantToolCall): void => {
+    const controller = new AbortController();
+    if (tool) toolAborts.set(commandRequestId, controller);
+    const handler = tool ? registration.onAssistantToolCall &&
+      ((context: PluginCommandContext) => {
+        controller.signal.throwIfAborted();
+        return registration.onAssistantToolCall!(context, tool, controller.signal);
+      })
+      : registration.commandHandlers[commandId];
     if (!handler) {
+      toolAborts.delete(commandRequestId);
       post({
         kind: "commandSettled",
         commandRequestId,
         ok: false,
-        error: { code: PluginWorkerErrorCodes.UnknownCommand, message: `Command "${commandId}" has no handler in this plugin worker.` }
+        error: { code: PluginWorkerErrorCodes.UnknownCommand, message: tool
+          ? "This plugin worker registered no assistant tool handler."
+          : `Command "${commandId}" has no handler in this plugin worker.` }
       });
       return;
     }
@@ -376,9 +390,15 @@ export function runPluginWorker(
       .then(() => handler(buildContext(commandRequestId, input)))
       .then(
         (value) => {
+          toolAborts.delete(commandRequestId);
           if (abortedCommands.has(commandRequestId)) {
             abortedCommands.delete(commandRequestId);
-            return; // host already settled this command (abort/terminate); suppress the late result
+            if (!tool) return; // normal commands already settled locally on abort
+          }
+          if (tool && controller.signal.aborted) {
+            post({ kind: "commandSettled", commandRequestId, ok: false,
+              error: { code: PluginWorkerErrorCodes.Terminated, message: "Assistant tool was aborted." } });
+            return;
           }
           try {
             post({ kind: "commandSettled", commandRequestId, ok: true, value });
@@ -401,9 +421,10 @@ export function runPluginWorker(
           }
         },
         (error: unknown) => {
+          toolAborts.delete(commandRequestId);
           if (abortedCommands.has(commandRequestId)) {
             abortedCommands.delete(commandRequestId);
-            return;
+            if (!tool) return;
           }
           post({ kind: "commandSettled", commandRequestId, ok: false, error: toErrorPayload(error) });
         }
@@ -412,6 +433,10 @@ export function runPluginWorker(
 
   const handle = (message: HostToWorkerMessage): void => {
     switch (message.kind) {
+      case "invokeAssistantTool":
+        invoke(message.commandRequestId, message.name, undefined,
+          { sessionId: message.sessionId, name: message.name, input: message.input });
+        return;
       case "invokeCommand":
         invoke(message.commandRequestId, message.commandId, message.input);
         return;
@@ -432,6 +457,8 @@ export function runPluginWorker(
         registration.onPanelClosed?.(message.panelId);
         return;
       case "abort":
+        toolAborts.get(message.commandRequestId)?.abort();
+        toolAborts.delete(message.commandRequestId);
         rememberAbortedCommand(message.commandRequestId);
         // Reject any capability calls still in flight for this command so the handler unwinds.
         for (const [requestId, pending] of pendingCapabilities) {
@@ -454,5 +481,6 @@ export function runPluginWorker(
   });
 
   // Announce readiness last, so the listener is attached before the host can send an invocation.
-  post({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: registration.manifest.apiVersion });
+  post({ kind: "ready", protocolVersion: PLUGIN_WORKER_PROTOCOL_VERSION, apiVersion: registration.manifest.apiVersion,
+    hasAssistantToolHandler: typeof registration.onAssistantToolCall === "function" });
 }

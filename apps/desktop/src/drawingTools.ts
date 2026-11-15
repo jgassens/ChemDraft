@@ -119,6 +119,14 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click canvas or atom", "click atom to extend", "Esc exits")
   },
   {
+    commandId: "tool.wavyBond",
+    title: "Wavy bond",
+    kind: "bond",
+    category: "structure",
+    icon: "wavyBond",
+    usageHint: usageHint("click canvas or atom", "click bond to apply, again to reverse", "Esc exits")
+  },
+  {
     commandId: "tool.dashedBond",
     title: "Dashed Bond",
     kind: "bond",
@@ -345,7 +353,15 @@ export const coreDrawingToolDefinitions = [
     kind: "bracket",
     category: "annotation",
     icon: "bracket",
-    usageHint: usageHint("click canvas to place", "resize with the transform handles", "Esc exits")
+    usageHint: usageHint("drag around a repeat unit", "click to place a default pair", "Esc exits")
+  },
+  {
+    commandId: "tool.roundBracket",
+    title: "Round Bracket Tool",
+    kind: "bracket",
+    category: "annotation",
+    icon: "roundBracket",
+    usageHint: usageHint("drag around a repeat unit", "click to place a default pair", "Esc exits")
   },
   {
     commandId: "tool.dagger",

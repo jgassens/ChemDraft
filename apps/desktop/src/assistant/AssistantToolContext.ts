@@ -1,5 +1,5 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
-import type { ChemicalIdentityFacts } from "@chemdraft/document-workflow-core";
+import type { ChemicalIdentityFacts, ReactionSchemeLayoutOptions } from "@chemdraft/document-workflow-core";
 import type {
   PluginManifest, PluginNameToStructureRequest, PluginNameToStructureResult,
   PluginStructureFromSmilesRequest, PluginStructureFromSmilesResult,
@@ -7,7 +7,10 @@ import type {
 } from "@chemdraft/plugin-api";
 
 export interface AssistantRect { x: number; y: number; width: number; height: number }
-export interface AssistantPageGrowth { pageId: string; width: number; height: number; description: string; itemCount: number }
+export interface AssistantPageGrowth {
+  pageId: string; width: number; height: number; description: string; itemCount: number;
+  pages?: { pageId: string; width: number; height: number; objectIds?: string[] }[];
+}
 export type AssistantStructureInspection =
   | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
       formula: string; heavyAtoms: number; warnings: string[] }
@@ -24,6 +27,8 @@ export interface AssistantToolContext {
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
   signal?: AbortSignal;
+  /** Host-injected shared page-fit planner, including non-insertion writes. */
+  planPageGrowth(before: ChemDraftDocument, proposed: ChemDraftDocument): NonNullable<AssistantPageGrowth["pages"]>;
   /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
   confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.
@@ -33,6 +38,8 @@ export interface AssistantToolContext {
   write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void,
     expectedSmiles?: ReadonlyMap<string, string>): Promise<{ objectIds: string[] }>;
   chemistry: {
+    /** Host loads the existing chemistry adapter; tool builders remain engine-independent. */
+    reactionProductAligner?(): Promise<NonNullable<ReactionSchemeLayoutOptions["alignProduct"]>>;
     nameToStructure(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
     /** Host's RDKit -> OCL -> createSmilesMolecule path, bound to the pinned document. */
     structureFromSmiles(request: PluginStructureFromSmilesRequest): Promise<PluginStructureFromSmilesResult>;

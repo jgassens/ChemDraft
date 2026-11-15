@@ -1,7 +1,7 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useToolbarWidgetState, type ToolbarWidgetState } from "../toolbarWidgets";
 import { toolbarVariantForKind, type ToolbarStyleVariant } from "../toolbarSelectionKind";
-import { usePaletteTooltipState } from "../toolbarTooltip";
+import { PaletteControlTooltipContext, usePaletteTooltipState } from "../toolbarTooltip";
 import { StyleCellView, WidgetTooltipContext, type MainStyleRows, type StyleCell } from "./cells";
 import { textVariantRows } from "./TextVariant";
 import { moleculeVariantRows } from "./MoleculeVariant";
@@ -91,8 +91,9 @@ export function MainStyleWidget() {
 
   const { effectiveVariant, rows } = mainStyleRowsForVariant(renderedVariant, widgetState);
 
-  // One tooltip visible at a time across all cells, on the same delay as the grid icons.
-  const { visibleTooltipId, requestTooltip, clearTooltip } = usePaletteTooltipState();
+  // Share the grid's warm handoff when hosted in a palette; standalone widgets own their state.
+  const localTooltipState = usePaletteTooltipState();
+  const { visibleTooltipId, requestTooltip, clearTooltip } = useContext(PaletteControlTooltipContext) ?? localTooltipState;
   const tooltipContext = useMemo(
     () => ({ visibleTooltipId, requestTooltip, clearTooltip }),
     [clearTooltip, requestTooltip, visibleTooltipId]

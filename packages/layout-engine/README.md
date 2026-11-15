@@ -2,6 +2,11 @@
 
 Owns page and object layout operations such as align, distribute, group, rotate, flip, z-order, guides, and page sizing.
 
+`textVisualBoundsForPageFit` measures both a text object's stored frame and the explicit lines SVG
+paints beyond that frame, using the shared font/script metrics, alignment and original rotation
+pivot. The desktop uses it before a page-enlargement question. The existing arrangement helper
+continues to measure the stored frame; neither helper changes text or document geometry.
+
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
 
 `src/labelGrammar.ts` is the one atom-label grammar: what a label's text means (an element, one heavy
@@ -10,6 +15,12 @@ placeholder, a bare formula, or unrecognized text), which atom of a group its bo
 valence tables the reading needs. It is pure text in, reading out, so the drawn label can place a
 group by the same reading the chemistry uses. `@chemdraft/document-workflow-core` re-exports it and
 keeps what is built on it (valence verdicts, validation, expansion); it must not carry a copy.
+
+Hover typing uses `nativeHoverAtomLabelCompletion` and `nativeHoverAtomLabelCanContinue` against
+the same grammar and abbreviation table. Lowercase keys can finish known labels such as NO2,
+OMe and OBn. An implicit first capital never makes `n,o` the element No: that pending text is
+invalid until completed. The ordinary label grammar still accepts explicitly entered element
+symbols, and the hover helpers do not change imported labels.
 
 A group label is drawn the way round its bond reads, with the atom it bonds to on the atom
 (`nativeGroupLabelDisplay`, `atomDisplayLabelPlacement`): "OMe" with its O on the atom, drawn "MeO"
@@ -89,6 +100,21 @@ plus `testMoleculeFromSmiles` (a test-only reader whose bare lowercase `n` does 
 type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
+
+Reaction builders may store explicit editable NaOH, MgBr and H2O atom labels.
+The ordinary abbreviation/spelled-label grammar expands them for chemistry; a drawn label is
+one selectable atom, with no invisible atoms or bonds behind it. Only NaOH with explicit
+`schemeAbbreviation: "NaOH"` metadata expands to [Na+].[OH-]; typed NaOH stays a formula placeholder.
+Ordinary expanded molecules keep their individual atom and bond rendering.
+
+Wavy single bonds use a tapered sinusoidal cubic path, with amplitude and wavelength tied to the
+stroke width and bond length. The shared SVG plan owns label trimming and crossing gaps, including
+effect/sketch paths; canvas, SVG, PDF and resvg PNG all consume that geometry.
+
+Unknown-order bonds render as separated round dots in the shared canvas/SVG plan (also used by
+PDF), using only the bond's stroke colour. This mandatory display takes precedence over retained
+bond display styles and remains visible with query indicators off or sketch effects on. It does
+not resolve the order or change the stored chemistry.
 
 `DocumentStylePreset` and `DocumentTextStyle` are native style data in `@chemdraft/chem-core`.
 `DocumentStyleScale` and point conversion stay here in `src/documentStyle.ts`. Native coordinates
@@ -206,3 +232,11 @@ Fixed-width/fixed-size boxes retain their authored editor width. Growing chrome 
 left/centre/right alignment anchor: move its left edge by 0/half/all of the growth and move the
 rotation origin inside the frame by the same amount. The original rotation pivot therefore stays
 fixed in page space, including on rotated old boxes. The document frame is untouched.
+
+Reaction conditions attach to ordinary arrow shafts through arrowAttachmentFrame and
+reactionConditionsFrame. Top follows the inside of curves and page top for straight arrows
+(left for vertical arrows). reactionConditionsPlacement searches for clear space using actual
+arrow ink and molecule outlines. resolveArrowAttachments keeps labels attached and retains manual
+offsets after drags. withArrowAttachmentIds includes a parent arrow's conditions in lifecycle
+operations. Canvas and exports share the resolved render plan; measured script baselines apply
+only to attached conditions text, preserving the ordinary-text and table rendering path.

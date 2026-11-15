@@ -1530,13 +1530,13 @@ export function ionizationContract(): MethodContract {
       "aqueous, room temperature, and drug-like organic chemistry. The training set contains no metals " +
         "at all, which is why a metal-adjacent site is reported without a value.",
       "THE SITE TABLE ITSELF REPORTS NO pKa, by design and on evidence: " +
-        "scored against 1,750 experimentally labelled sites, the tabulated averages give a mean " +
+        "scored against 1,750 experimentally labeled sites, the tabulated averages give a mean " +
         "absolute error of 2.8 log units where exactly one site type matches, against 2.3 for simply " +
         "predicting the dataset mean. They are not fit to estimate a molecule's pKa.",
       "restricting values to unambiguous sites does not rescue it — a lone matching type scores WORSE " +
         "(2.8) than several matching types read at their best case (1.1). Unambiguity is not a proxy " +
         "for reliability here.",
-      "46% of labelled sites match more than one type, and the types describe different TRANSITIONS " +
+      "46% of labeled sites match more than one type, and the types describe different TRANSITIONS " +
         "on the same atom: the Alcohol entry is R-OH losing a proton (~15), while the same oxygen in " +
         "R-OH2+ loses one near -7. Every candidate class is listed rather than one being chosen.",
       `each interval is per-site, from how much the ${PKA_GNN_TRAINING.ensemble} independently ` +
@@ -1588,7 +1588,7 @@ export function ionizationContract(): MethodContract {
       // The other half of the same honesty: where it is not behind. Omitting this would be its own
       // distortion, and each item is a measurement rather than a sales point.
       `WHAT IT DOES THAT THE MORE ACCURATE METHODS DO NOT. It runs in-process in the drawing application ` +
-        `with no second runtime, no Python and no licence, at single-digit milliseconds per site — QupKake, ` +
+        `with no second runtime, no Python and no license, at single-digit milliseconds per site — QupKake, ` +
         `the most accurate of them, needs GFN2-xTB and reports 2.36 s per molecule on one core of a 32-core ` +
         `server. That contrast is about COMPUTE, not about what hardware either will run on: nothing ` +
         `here establishes how any of these tools is deployed or licensed. It locates ` +
@@ -1613,7 +1613,7 @@ export function ionizationContract(): MethodContract {
       `a SECOND, INDEPENDENT method scores the sites it reaches: a Hammett relationship whose ` +
         `substituent and reaction constants come from the physical-organic literature, not from this ` +
         `project's training data. It applies to substituted benzoic acids and phenols with no ortho ` +
-        `substituent and an unfused ring — ${CONSENSUS_CALIBRATION.samples} of the labelled sites — ` +
+        `substituent and an unfused ring — ${CONSENSUS_CALIBRATION.samples} of the labeled sites — ` +
         `and declines everywhere else with a reason. Four series ship: benzoic acids, phenols, ` +
         `anilines and pyridines, the last two reporting their conjugate acid's pKa.`,
       `where both methods fire the value is WEIGHTED BY THEIR MEASURED ACCURACY, not averaged. ` +
@@ -1686,7 +1686,7 @@ export function ionizationContract(): MethodContract {
         "and a thermodynamic cycle that missed by 3.07.",
       "the fold also reports WHICH SPECIES the molecule is in at pH 7.4, as the fraction carrying each " +
         "net charge. It costs nothing extra — the fold already solves every microstate's free energy, " +
-        "and mass action gives the population as 10^(L - n*pH), normalised and summed by charge — and it " +
+        "and mass action gives the population as 10^(L - n*pH), normalized and summed by charge — and it " +
         "is the question a macroscopic pKa is usually a proxy for. TWO quantities are reported where a " +
         "zwitterion makes them differ, because conflating them is a five-order-of-magnitude error: " +
         "glycine at pH 7.4 is 99.5% NET-neutral and 0.0004% UNCHARGED, since the net-zero population " +
@@ -1707,7 +1707,7 @@ export function ionizationContract(): MethodContract {
         "any mixed solvent.",
       "sites are found by substructure match, so a genuinely ionizable group the table has no pattern " +
         "for is not reported. Absence of a site is not evidence that there is none.",
-      "a site the table recognises but which never titrates in an accessible range is listed with no " +
+      "a site the table recognizes but which never titrates in an accessible range is listed with no " +
         "value rather than with its sentinel figure"
     ],
     classification: CLASSIFICATION,
@@ -1747,7 +1747,7 @@ export function ionizationContract(): MethodContract {
       "a site offers NEITHER transition — no hydrogen to lose and no lone pair free to accept one",
       "the ACIDIC half of a plain amine, whose N-H pKa near 35 is beyond water and beyond the training " +
         "range (-9.02 to 30.90); its basic half is still reported",
-      "a matching site is adjacent to a metal centre — reported as unassessed, with the reason",
+      "a matching site is adjacent to a metal center — reported as unassessed, with the reason",
       "the Hammett method alone declines on an ortho substituent, a fused ring, a non-benzene ring, " +
         "or a substituent with no tabulated constant; the model still scores those sites"
     ],
@@ -1783,7 +1783,7 @@ export function ionizationContract(): MethodContract {
         value: CONSENSUS_CALIBRATION.hammettMae,
         unit: "log10-unit",
         basis:
-          `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} labelled sites it ` +
+          `The Hammett relationship over the ${CONSENSUS_CALIBRATION.samples} labeled sites it ` +
           `applies to, across four series. Its constants were not fitted to this ` +
           "dataset, so this is a held-out figure for the phenols; for the benzoic acids it is partly " +
           "circular, sigma having been defined by benzoic acid ionisation in the first place.",
@@ -1830,7 +1830,7 @@ export function ionizationContract(): MethodContract {
           `OPERA at 2.18. An MAE of ` +
           `${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.mae ?? 0).toFixed(2)} beside an RMSE of ` +
           `${(EXTERNAL_VALIDATION.perSet[LITERATURE]?.rmse ?? 0).toFixed(2)} is a heavy tail, not a shifted ` +
-          `centre: typical answers are respectable and the hard cases are far worse than the competition's. ` +
+          `center: typical answers are respectable and the hard cases are far worse than the competition's. ` +
           `Marvin's ratio on the same set is 0.566 to 0.865.`,
         citationId: "qupkake-2024"
       }
@@ -1908,7 +1908,7 @@ export function ionizationContract(): MethodContract {
             "and on nothing derived from another predictor.",
           "The DataWarrior author has stated that the original literature references for part of " +
             "this set were lost, so these rows cannot all be audited back to a measurement. A " +
-            "software licence is also not automatically a licence for an associated dataset."
+            "software license is also not automatically a license for an associated dataset."
         ]
       },
       {
@@ -1981,7 +1981,7 @@ export function ionizationContract(): MethodContract {
         recordCount: 4022,
         obligations: [
           "Originally Baltruschat & Czodrowski (Machine-learning-meets-pKa), whose upstream release is " +
-            "CC BY 4.0. This row previously recorded QupKake's BSD-3-Clause, which is the licence on " +
+            "CC BY 4.0. This row previously recorded QupKake's BSD-3-Clause, which is the license on " +
             "QupKake's CODE and not a grant over the dataset it redistributes.",
           "The VALUES are measurements; the SITE INDEX is " +
             "ChemAxon Marvin's assignment, which is a predictor annotation sitting inside the label " +

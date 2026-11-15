@@ -172,7 +172,7 @@ export const generator = {
     family: "cucurbiturils", category: "supramolecular",
     smiles: entry.smiles, formula: entry.formula, charge: 0,
     source: { database: "PubChem", cid: entry.cid },
-    note: [entry.note, "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity."].filter(Boolean).join(" "),
+    note: [entry.note, "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighboring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity."].filter(Boolean).join(" "),
     layout: portalLayout(entry.n)
   }))
 };

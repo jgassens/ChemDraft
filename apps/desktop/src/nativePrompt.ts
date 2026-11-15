@@ -1,3 +1,4 @@
+import { documentWindowId, isDocumentWindowId } from "./documentIdentity";
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -8,8 +9,9 @@ import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./n
 
 /**
  * AppKit maps Escape only to an alert button literally titled "Cancel" (rfd adds custom buttons by
- * title, without key equivalents), so a prompt with a choice to make shows its cancel choice as
- * "Cancel". A notice with nothing to choose has one "OK" button, which Return dismisses.
+ * title, without key equivalents), so prompts normally label their cancel choice "Cancel".
+ * Page enlargement uses the owner-required "Keep Page Size" instead; on macOS that choice is
+ * clicked explicitly (AppKit cannot bind Escape by that title). A notice has one "OK" button.
  */
 export const NATIVE_PROMPT_CANCEL_LABEL = "Cancel";
 export const NATIVE_PROMPT_ACKNOWLEDGE_LABEL = "OK";
@@ -17,7 +19,7 @@ export type NativePromptChoice =
   | { id: string; label: string; cancel?: false; destructive?: boolean }
   | {
       id: string;
-      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL;
+      label: typeof NATIVE_PROMPT_CANCEL_LABEL | typeof NATIVE_PROMPT_ACKNOWLEDGE_LABEL | "Keep Page Size";
       cancel: true;
       destructive?: false;
     };
@@ -49,14 +51,14 @@ export function nativePromptButtons(prompt: NativePromptOptions,
       choices.filter((choice) => choice.destructive).length > 1 ||
       new Set(choices.map((choice) => choice.id)).size !== choices.length ||
       new Set(choices.map((choice) => choice.label)).size !== choices.length) {
-    throw new Error("A prompt needs one safe cancel choice and one to three distinct labelled choices.");
+    throw new Error("A prompt needs one safe cancel choice and one to three distinct labeled choices.");
   }
   const actions = choices.filter((choice) => !choice.cancel);
   if (!actions.length) {
-    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labelled OK.");
+    if (cancel.label !== NATIVE_PROMPT_ACKNOWLEDGE_LABEL) throw new Error("A notice's only button is labeled OK.");
     return { ok: cancel.label };
   }
-  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
+  if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL && cancel.label !== "Keep Page Size") {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
   // The first button (ok/yes) is the Return default. AppKit finds Escape's button by its literal
@@ -116,8 +118,8 @@ async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePro
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
-    if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
-      throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    if (prompt.owner === "document" && (!isDocumentWindowId(getCurrentWindow().label) || getCurrentWindow().label !== documentWindowId())) {
+      throw new Error(`A document-owned prompt must be invoked from its document window on ${platform}.`);
     }
     result = await withNativeUtilitySuspension(async () => {
       if (signal?.aborted) return cancel.label;

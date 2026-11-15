@@ -40,6 +40,8 @@ export const toolbarAssetNames = [
   "Custom_Benzene",
   "Custom_Bond",
   "Custom_Bond_Bold",
+  "Custom_Bond_Double",
+  "Custom_Bond_Triple",
   "Custom_Bond_Dashed",
   "Custom_Bond_Hashed",
   "Custom_Bond_Wedge",
@@ -103,10 +105,18 @@ const toolbarAssetModules = import.meta.glob<string>("./assets/toolbar/*.png", {
   import: "default"
 });
 
+// Original parallel-stroke variants of the diagonal single-bond toolbar glyph.
+const multipleBondAsset = (offsets: readonly number[]): string =>
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><g fill="none" stroke="#000" stroke-width="2" stroke-linecap="round">${offsets.map(offset => `<path d="M ${6 + offset} ${26 + offset} L ${26 + offset} ${6 + offset}"/>`).join("")}</g></svg>`)}`;
+const multipleBondAssets: Partial<Record<ToolbarAssetName, string>> = {
+  Custom_Bond_Double: multipleBondAsset([-2, 2]),
+  Custom_Bond_Triple: multipleBondAsset([-3, 0, 3])
+};
+
 export const toolbarAssets = Object.fromEntries(
   toolbarAssetNames.map((name) => {
     const path = `./assets/toolbar/${name}.png`;
-    const source = toolbarAssetModules[path];
+    const source = multipleBondAssets[name] ?? toolbarAssetModules[path];
 
     if (!source) {
       throw new Error(`Missing toolbar asset: ${path}`);

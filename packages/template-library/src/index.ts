@@ -16,6 +16,7 @@ export {
   abbreviationElementCounts,
   abbreviationForBondedElementLabel,
   abbreviationForLabel,
+  schemeSodiumHydroxideAbbreviation,
   abbreviationSpellings,
   abbreviationSpellingSuggestion
 } from "./abbreviations";

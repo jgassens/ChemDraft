@@ -1,0 +1,140 @@
+{
+  "schema": "chemdraft.document.v1",
+  "id": "doc_001",
+  "title": "Untitled",
+  "createdAt": "2026-11-09T00:00:00.000Z",
+  "updatedAt": "2026-11-09T00:00:00.000Z",
+  "pages": [
+    {
+      "id": "page_001",
+      "width": 816,
+      "height": 1056,
+      "margin": {
+        "top": 72,
+        "right": 72,
+        "bottom": 72,
+        "left": 72
+      },
+      "layout": {
+        "presetId": "letter",
+        "orientation": "portrait",
+        "widthPx": 816,
+        "heightPx": 1056,
+        "marginTopPx": 72,
+        "marginRightPx": 72,
+        "marginBottomPx": 72,
+        "marginLeftPx": 72,
+        "sourceUnit": "inch",
+        "sourceWidth": 8.5,
+        "sourceHeight": 11
+      },
+      "objects": [
+        {
+          "id": "benzene",
+          "x": 100,
+          "y": 100,
+          "width": 80,
+          "height": 70,
+          "rotation": 0,
+          "style": {},
+          "type": "molecule",
+          "structureFormat": "smiles",
+          "structure": "c1ccccc1",
+          "atoms": [
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 20,
+              "y": 0,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "C",
+              "x": 60,
+              "y": 0,
+              "formalCharge": 0
+            },
+            {
+              "id": "a3",
+              "element": "C",
+              "x": 80,
+              "y": 35,
+              "formalCharge": 0
+            },
+            {
+              "id": "a4",
+              "element": "C",
+              "x": 60,
+              "y": 70,
+              "formalCharge": 0
+            },
+            {
+              "id": "a5",
+              "element": "C",
+              "x": 20,
+              "y": 70,
+              "formalCharge": 0
+            },
+            {
+              "id": "a6",
+              "element": "C",
+              "x": 0,
+              "y": 35,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "double"
+            },
+            {
+              "id": "b2",
+              "fromAtomId": "a2",
+              "toAtomId": "a3",
+              "order": "single"
+            },
+            {
+              "id": "b3",
+              "fromAtomId": "a3",
+              "toAtomId": "a4",
+              "order": "double"
+            },
+            {
+              "id": "b4",
+              "fromAtomId": "a4",
+              "toAtomId": "a5",
+              "order": "single"
+            },
+            {
+              "id": "b5",
+              "fromAtomId": "a5",
+              "toAtomId": "a6",
+              "order": "double"
+            },
+            {
+              "id": "b6",
+              "fromAtomId": "a6",
+              "toAtomId": "a1",
+              "order": "single"
+            }
+          ],
+          "superatoms": [],
+          "rGroups": []
+        }
+      ],
+      "crossings": []
+    }
+  ],
+  "selection": {
+    "objectIds": []
+  },
+  "styles": {},
+  "plugins": {},
+  "compatibility": {
+    "warnings": []
+  }
+}

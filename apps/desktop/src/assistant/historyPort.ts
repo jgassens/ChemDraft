@@ -28,15 +28,17 @@ export interface AssistantHistoryPort {
   undo(tabId: string, expected: ChemDraftDocument): boolean;
 }
 
-let mountedPort: AssistantHistoryPort | undefined;
+const mountedPorts = new Map<string, AssistantHistoryPort>();
 
-/** MainWindow binds this once; this is a host interface, never a window/DOM API. */
-export function registerAssistantHistoryPort(port: AssistantHistoryPort): () => void {
-  mountedPort = port;
-  return () => { if (mountedPort === port) mountedPort = undefined; };
+/** Local compatibility registry. Production assistant requests reach the captured window's port
+ * through RuntimeAssistantDocument; mounting another window cannot replace this one's history. */
+export function registerAssistantHistoryPort(port: AssistantHistoryPort, windowId = "main"): () => void {
+  mountedPorts.set(windowId, port);
+  return () => { if (mountedPorts.get(windowId) === port) mountedPorts.delete(windowId); };
 }
 
-export function getAssistantHistoryPort(): AssistantHistoryPort {
-  if (!mountedPort) throw new Error("The document window is closed; assistant writes were refused.");
-  return mountedPort;
+export function getAssistantHistoryPort(windowId = "main"): AssistantHistoryPort {
+  const port = mountedPorts.get(windowId);
+  if (!port) throw new Error("The document window is closed; assistant writes were refused.");
+  return port;
 }

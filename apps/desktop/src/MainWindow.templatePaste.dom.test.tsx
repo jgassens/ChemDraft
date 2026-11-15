@@ -1,3 +1,4 @@
+import { initialDocumentTabId } from "./testSupport/documentTabIdentity";
 // @vitest-environment jsdom
 import { act } from "react";
 import { readFileSync } from "node:fs";
@@ -60,7 +61,7 @@ describe("template SMILES paste", () => {
       window.dispatchEvent(event);
       // Paste now includes identity verification.
       await vi.waitFor(() => {
-        expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ type: "text", text }]);
+        expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toMatchObject([{ type: "text", text }]);
       }, { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent).toBe("Pasted editable text");
@@ -78,7 +79,7 @@ describe("template SMILES paste", () => {
     await act(async () => {
       window.dispatchEvent(event);
       await vi.waitFor(() => {
-        expect(port.read("initial")!.pages[0]!.objects).toMatchObject([
+        expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toMatchObject([
           { type: "molecule", compatibility: { unknown: { smiles: "CCO" } } },
           { type: "molecule", compatibility: { unknown: { smiles: "CCC" } } }
         ]);
@@ -89,7 +90,7 @@ describe("template SMILES paste", () => {
       .toContain("1 item failed: CCN: The 2D depiction engine returned no atoms.");
     expect(depiction.mock.calls.map(([smiles]) => smiles)).toEqual(["CCO", "CCN", "CCC"]);
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(0);
   });
   it("draws the Windows stereo-free beta-CD input using ordinary depiction", async () => {
     expect(noStereoBetaCd).toHaveLength(242);
@@ -102,9 +103,9 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? noStereoBetaCd : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 30_000 });
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(1), { timeout: 30_000 });
     });
-    const object = port.read("initial")!.pages[0]!.objects[0]!;
+    const object = port.read(initialDocumentTabId())!.pages[0]!.objects[0]!;
     expect(object.type).toBe("molecule");
     expect(object.style.source).not.toMatch(/^structure-template:/);
     if (object.type !== "molecule") throw new Error("Expected ordinary molecule");
@@ -127,7 +128,7 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? smiles : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 5_000 });
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(1), { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent).toContain(`Pasted SMILES structure — ${expected}`);
   });
@@ -139,7 +140,7 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? text : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2), { timeout: 5_000 });
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(2), { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent)
       .toContain("grid; skipped line 2: 'C1CC(' (not valid SMILES)");
@@ -157,7 +158,7 @@ describe("template SMILES paste", () => {
       expect(container.querySelector("[role=status]")?.textContent)
         .toContain(`Clipboard SMILES could not be placed: ${reason}`);
     }, { timeout: 10_000 });
-    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(0);
   });
   it("reports an empty depiction instead of silently dropping a SMILES paste", async () => {
     await mount(createEmptyDocument());
@@ -200,15 +201,15 @@ describe("template SMILES paste", () => {
         getData: (type: string) => type === "text/plain" ? template.smiles : "" } });
       await act(async () => {
         window.dispatchEvent(event);
-        await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(count), { timeout: 5_000 });
+        await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(count), { timeout: 5_000 });
       });
     }
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     const objects = after.pages[0]!.objects;
     expect(new Set(objects.map(object => object.id)).size).toBe(2);
     expect(after.selection.objectIds).toEqual([objects[1]!.id]);
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toEqual([objects[0]]);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toEqual([objects[0]]);
   });
   it.each([1, 2])("constructs each of %i template entries once without generic depiction, with selection and one undo", async count => {
     const { port } = await mount(createEmptyDocument());
@@ -223,10 +224,10 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? Array(count).fill(template.smiles).join("\n") : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects,
+      await vi.waitFor(() => expect(port.read(initialDocumentTabId())!.pages[0]!.objects,
         container.querySelector("[role=status]")?.textContent ?? "missing status").toHaveLength(count), { timeout: 10_000 });
     });
-    const after = port.read("initial")!;
+    const after = port.read(initialDocumentTabId())!;
     expect(new Set(after.selection.objectIds).size).toBe(count);
     expect(after.selection.objectIds).toEqual(after.pages[0]!.objects.map(object => object.id));
     expect(after.pages[0]!.objects.every(object => object.style.source === `structure-template:${template.id}`)).toBe(true);
@@ -255,9 +256,9 @@ describe("template SMILES paste", () => {
       }
     }
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toHaveLength(0);
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.redo" } })); });
-    expect(port.read("initial")!.pages[0]!.objects).toEqual(after.pages[0]!.objects);
+    expect(port.read(initialDocumentTabId())!.pages[0]!.objects).toEqual(after.pages[0]!.objects);
     expect(construction).toHaveBeenCalledTimes(count);
   }, 60_000);
 

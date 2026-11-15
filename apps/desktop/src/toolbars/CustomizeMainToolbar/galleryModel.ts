@@ -1,4 +1,5 @@
 import { parseToolsetToggleCommandId } from "@chemdraft/toolset-registry";
+import { parseCustomSwatchCommandId } from "../../customColorSwatches";
 import type { CommandSpec } from "../../commands";
 import { isRenamedCommandId } from "../../renamedCommands";
 import type { IconName } from "../../icons";
@@ -61,8 +62,9 @@ function matchesSearch(query: string, ...fields: (string | undefined)[]): boolea
 /**
  * Build the gallery entries for the tray: the two structural tiles (Space, Divider) first, then any
  * section widgets (style controls) offered, then the FULL command catalog deduped by id (first spec
- * wins, matching the Customize dialog) and filtered by the search box. Not capped — the toolbar must
- * be able to host every tool, and the tray scrolls. `presentItemIds` are the customization ids already
+ * wins, matching the Customize dialog) and filtered by the search box. Exhaustive wave slider steps
+ * stay in Object Settings; the remaining catalog is not capped and the tray scrolls.
+ * `presentItemIds` are the customization ids already
  * in the toolbar — present command/widget tiles render grayed and inert so an item can't be added twice.
  */
 export function buildGalleryModel(
@@ -97,10 +99,15 @@ export function buildGalleryModel(
   const seen = new Set<string>();
   const commandEntries: GalleryEntry[] = [];
   for (const command of commands) {
-    if (seen.has(command.id)) {
+    if (seen.has(command.id) || parseCustomSwatchCommandId(command.id)) {
       continue;
     }
     seen.add(command.id);
+    // Like arbitrary size/thickness values, wave slider steps belong in their existing controls,
+    // rather than 315 individual tiles. This filters presentation only; all commands stay registered.
+    if (command.id.startsWith("object.wave.")) {
+      continue;
+    }
     // A retired alias is not a separate tool. Both ids pass the catalog's tool.* filter, so the
     // gallery listed two identically-titled "Reaction Arrow" tiles — and the legacy one built the
     // retired object type.
@@ -173,7 +180,7 @@ const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }>
   { pattern: /^view\.toolset\.toggle\./, section: "toolbars" },
   { pattern: /^view\.toggle(MoleculeInspector|RingInspector|ToolPalette)$/, section: "toolbars" },
   { pattern: /^tool\.(select|lasso|eraser)$/, section: "selection" },
-  { pattern: /^tool\.(bond|wedgeBond|hashedBond|dashedBond|boldBond|chain)$/, section: "bonds" },
+  { pattern: /^tool\.(bond|doubleBond|tripleBond|wedgeBond|hashedBond|wavyBond|dashedBond|boldBond|chain|chainFlexible)$/, section: "bonds" },
   { pattern: /^bond\./, section: "bonds" },
   { pattern: /^tool\.(cyclopentane|cyclohexane|benzene|chairCyclohexane)/, section: "rings" },
   { pattern: /^atom\./, section: "atoms" },
@@ -284,7 +291,7 @@ export function buildGallerySections(
       entry.kind === "spacer" || entry.kind === "separator"
         ? "layout"
         : entry.kind === "widget"
-          ? "widgets"
+          ? entry.widgetId?.startsWith("widget.core.customColorSwatch") ? "objectStyle" : "widgets"
           : commandSectionId(entry.commandId ?? "");
     const bucket = bySection.get(section) ?? [];
     bucket.push({ ...entry, title: sectionDisplayTitle(section, entry) });

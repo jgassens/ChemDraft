@@ -1,16 +1,47 @@
+import { attachedConditionsDocument } from "./attachedConditions.fixture";
 import {
   applyPatch,
   createEmptyDocument,
+  DocumentObjectSchema,
   type GraphicObject,
+  type ElectronMarkObject,
   type MoleculeObject,
   type TextObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
-import { planNativeArtVisual } from "@chemdraft/layout-engine";
+import { nativeTextObjectLineMetrics, planNativeArtVisual } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from "./svg";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
+
+it("uses a clean document title for the SVG accessible name", () => {
+  const imported = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: timestamp });
+  expect(exportDocumentToSvg(imported, { title: "scheme" }).contents).toContain('aria-label="scheme"');
+  expect(exportDocumentToSvg(imported).contents).toContain('aria-label="Untitled"');
+  expect(exportDocumentToSvg({ ...imported, title: "Saved.chemdraft" }).contents).toContain('aria-label="Saved"');
+  expect(exportDocumentToSvg({ ...imported, title: "Untitled" }).contents).toContain('aria-label="Untitled"');
+});
+
+it("matches electron-mark rendering options and keeps authored styling across opt-out", () => {
+  const document = createEmptyDocument({ title: "Electron mark SVG", now: timestamp });
+  const mark: ElectronMarkObject = { id: "mark", type: "electron-mark", x: 100, y: 100,
+    width: 18, height: 18, rotation: 0, style: {}, markKind: "charge", charge: 1, radical: true,
+    anchor: { kind: "point", point: { x: 109, y: 109 } } };
+  document.pages[0].objects.push(mark);
+  const legacy = exportDocumentToSvg(document).contents;
+  expect(exportDocumentToSvg(document, { directElectronMarkEditing: false }).contents).toBe(legacy);
+  expect(legacy).toContain(`cx="${109 - 18 * 0.32 * 0.75}"`);
+  expect(exportDocumentToSvg(document, { directElectronMarkEditing: true }).contents).not.toBe(legacy);
+  for (const charge of [-9, -2, -1, 1, 2, 9]) {
+    Object.assign(mark, { charge, width: 72, height: 72, rotation: 37, style: { strokeWidth: 4.5 } });
+    const authored = exportDocumentToSvg(document).contents;
+    expect(exportDocumentToSvg(document, { directElectronMarkEditing: true }).contents).toBe(authored);
+    expect(authored).toContain("rotate(37 136 136)");
+    if (Math.abs(charge) === 1) expect(authored).toContain('stroke-width="4.5"');
+    else expect(authored).toContain('stroke-width="1.2"');
+  }
+});
 
 it("writes explicitly requested physical units without changing viewBox geometry", () => {
   const document = createEmptyDocument({ title: "Physical SVG", now: timestamp });
@@ -345,9 +376,35 @@ describe("SVG export serialization", () => {
       }
     ]);
     expect(result.contents).toContain('data-object-id="unknown_svg_001"');
+    expect(result.contents).toContain(">Unsupported object</text>");
     expect(result.contents).toContain('data-chemdraft-warnings="');
     expect(result.contents).toContain("export.svg.object_fallback");
     expect(result.contents).toContain("&quot;objectId&quot;:&quot;unknown_svg_001&quot;");
+  });
+
+  it("renders human labels instead of native type names for fallbacks", () => {
+    const cases = [
+      { type: "unknown-compatibility-object", sourceFormat: "test", sourceObjectType: "graphic", warning: "Test" },
+      { type: "electron-mark", markKind: "unknown", anchor: { kind: "point", point: { x: 20, y: 20 } } },
+      { type: "graphic", graphicKind: "unknown", data: {} },
+      { type: "annotation", message: "Note" },
+      { type: "superatom", label: "Me", metadata: { label: "Me" } },
+      { type: "r-group-label", label: "R", display: { label: "R" } },
+      { type: "generic-atom-label", label: "X" }
+    ];
+    let document = createEmptyDocument({ title: "Fallback labels", now: timestamp });
+    for (const [index, fields] of cases.entries()) {
+      const object = DocumentObjectSchema.parse({
+        id: `fallback_${index}`, x: 10, y: 10, width: 100, height: 40, ...fields
+      });
+      document = applyPatch(document, { op: "addObject", pageId: "page_001", object }, { now: timestamp });
+    }
+    const result = exportDocumentToSvg(document);
+    const text = [...result.contents.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map(match => match[1]);
+    expect(text).toEqual(cases.map(() => "Unsupported object"));
+    for (const { type } of cases) expect(text.join(" ")).not.toContain(type);
+    expect(result.warnings.filter(warning => warning.code === "export.svg.object_fallback")).toHaveLength(6);
+    expect(result.warnings.filter(warning => warning.code === "export.svg.graphic_fallback")).toHaveLength(1);
   });
 
   it("exports supported native graphic gloss, tilt, and shadow while warning for unsupported effects", () => {
@@ -627,4 +684,24 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('fill="#1d7f68"');
     expect(result.contents).toContain('stroke="none"');
   });
+});
+
+it("keeps formatted text runs contiguous without adding pretty-print spaces", () => {
+  const document=attachedConditionsDocument();
+  const svg=exportDocumentToSvg(document).contents;
+  const text=svg.match(/<text[^>]*>[\s\S]*?<\/text>/)?.[0];
+  expect(text).toBeDefined();
+  expect(text!.replace(/<[^>]*>/g,"")).toBe("H2OZn2+");
+  expect(text).not.toContain('baseline-shift=');expect(text).toContain('y="');
+  expect([...text!.matchAll(/<tspan x="[^"]+" y="([^"]+)">/g)]).toHaveLength(2);
+  expect(text).toMatch(/dy="[0-9.]+"/);expect(text).toMatch(/dy="-[0-9.]+"/);
+});
+
+it("uses the attached canvas label baselines in SVG",()=>{
+  const document=attachedConditionsDocument();
+  const object=document.pages[0].objects.find((o):o is TextObject=>o.type==="text")!;
+  const metrics=nativeTextObjectLineMetrics(object),svg=exportDocumentToSvg(document).contents;
+  const baselines=[...svg.matchAll(/<tspan x="[^"]+" y="([^"]+)"/g)].map(match=>Number(match[1]));
+  expect(baselines).toHaveLength(metrics.lines.length);
+  metrics.lines.forEach((line,i)=>expect(baselines[i]).toBeCloseTo(object.y+line.baseline,3));
 });

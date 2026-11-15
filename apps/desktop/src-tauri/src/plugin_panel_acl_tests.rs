@@ -37,6 +37,11 @@ fn main_can_emit_panel_snapshots_and_replies() {
     // Tauri 2.11.2 applies denies by origin, ignoring their capability's window patterns.
     // A panel-only deny therefore breaks main too; checking strings or window globs misses it.
     assert_shipped_access("main", &["plugin:event|emit", "plugin:event|emit_to"], true);
+    assert_shipped_access(
+        "doc-example",
+        &["plugin:event|emit", "plugin:event|emit_to"],
+        true,
+    );
 }
 
 #[test]
@@ -66,6 +71,7 @@ fn panels_can_forward_requests_and_subscribe_to_replies() {
 fn only_the_document_window_can_hide_panels_on_their_behalf() {
     let command = ["hide_plugin_panel_from_main"];
     assert_shipped_access("main", &command, true);
+    assert_shipped_access("doc-example", &command, true);
     for label in [
         "plugin-panel-x",
         "preferences",
@@ -74,12 +80,13 @@ fn only_the_document_window_can_hide_panels_on_their_behalf() {
         "toolset-popover-core-art",
         "toolset-tooltip",
         "spin3d-debugger",
+        "runtime",
     ] {
         assert_shipped_access(label, &command, false);
     }
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/plugin-panel-hide.json")).unwrap();
-    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(capability["windows"], serde_json::json!(["main", "doc-*"]));
     assert_eq!(
         capability["permissions"],
         serde_json::json!(["allow-hide-plugin-panel-from-main"])
@@ -92,6 +99,7 @@ fn only_panels_can_control_their_native_window_state() {
     assert_shipped_access("plugin-panel-x", &controls, true);
     for label in [
         "main",
+        "doc-example",
         "preferences",
         "toolset-core-main",
         "dialog-export",

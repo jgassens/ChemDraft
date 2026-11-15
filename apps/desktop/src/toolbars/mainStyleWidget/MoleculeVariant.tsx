@@ -85,7 +85,7 @@ export function moleculeVariantRows(state: ToolbarWidgetState): MainStyleRows {
           label: "Show Implicit Hydrogens",
           tooltip: implicitHydrogensApply
             ? "Show Implicit Hydrogens"
-            : "Show Implicit Hydrogens — the selection has no labelled atom to put them on; show terminal carbons or select a heteroatom",
+            : "Show Implicit Hydrogens — the selection has no labeled atom to put them on; show terminal carbons or select a heteroatom",
           active: showImplicitHydrogens,
           disabled: atomLabelsDisabled || !implicitHydrogensApply,
           content: "H"

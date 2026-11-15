@@ -1,4 +1,5 @@
 import type { ExportFormatId } from "./formats";
+export { repeatUnits, repeatUnitExportWarnings, repeatUnitMolfileGroups } from "./repeatUnits";
 
 export { exportDocumentToCdxml, type CdxmlTextExportOptions } from "./cdxml";
 export {
@@ -24,7 +25,8 @@ export type {
   TextExportResult
 } from "./results";
 export type { PdfExportOptions } from "./pdf";
-export { documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
+export { ensureHandwritingFontLoaded, HandwritingFontNotLoadedError } from "./handwritingFont";
+export { ensureSvgFontsLoaded, documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
 export {
   exportTableClipboardPayloads,
   exportTableToHtml,

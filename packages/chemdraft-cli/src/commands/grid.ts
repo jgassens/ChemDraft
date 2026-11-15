@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 
 import { createEmptyDocument } from "@chemdraft/chem-core";
-import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { ensureSvgFontsLoaded, exportDocumentToSvg } from "@chemdraft/export-engine";
 import {
   layoutGrid
 } from "@chemdraft/document-workflow-core";
@@ -235,6 +235,7 @@ export async function renderGrid(
     return { name: entry.name, smiles: entry.smiles, label: entry.label, column, row, layout: entry.built.layout };
   });
 
+  await ensureSvgFontsLoaded(document);
   const exported = exportDocumentToSvg(document, {
     background: args.background === "white" ? "#ffffff" : "transparent"
   });

@@ -3,7 +3,7 @@
   "identifier": "perf-probe-main",
   "description": "Main-window-only diagnostic state query; bridge-gated, with no app window control.",
   "windows": [
-    "main"
+    "main", "doc-*"
   ],
   "permissions": [
     "allow-perf-log-window-state"

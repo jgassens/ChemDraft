@@ -4,6 +4,12 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import {
+  BracketObjectSchema, MoleculeBondSchema, MoleculeObjectSchema, NativeStylePresets,
+  SketchStylePreset, bracketPairs, createEmptyDocument, moleculeToMolfileV2000,
+  moleculeToMolfileV3000, nativeDrawingStyleFromObjectStyle
+} from "@chemdraft/chem-core";
+import { createNameDictionary, resolveChemicalName } from "../../packages/document-workflow-core/src/nameDictionary";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const skillRoot = join(root, "skills", "chemdraft");
@@ -423,6 +429,100 @@ describe("ChemDraft agent skill drift guard", () => {
       join(root, "packages", "chemdraft-mcp", "README.md")];
     const unread = textStyleDocs.filter((path) => /\bfontSize(?!Px)\s*:/.test(read(path)));
     expect(unread).toEqual([]);
+  });
+
+  // 1.2 adds native objects and presets, not new CLI/MCP operations. Validate
+  // the documented fragments against the model instead of inventing flags.
+  it("keeps the documented preset ids and Sketch recipe aligned with native presets", () => {
+    const art = read(join(skillRoot, "references", "art.md"));
+    const presetSection = art.split("## Native style presets")[1]!.split("## Find the ids")[0]!;
+    const rows = [...presetSection.matchAll(/\| ([^|\n]+) \| `(chemdraft\.[a-z0-9]+)` \|/g)];
+    expect(rows.map(row => ({ name: row[1], id: row[2] }))).toEqual(
+      NativeStylePresets.map(({ name, id }) => ({ name, id }))
+    );
+    expect(presetSection).toContain("Setting only\n`stylePresetId` does not apply its values");
+    const acs = NativeStylePresets.find(preset => preset.id === "chemdraft.acs1996")!;
+    expect(nativeDrawingStyleFromObjectStyle({ stylePresetId: acs.id }).bondStrokeWidthPx)
+      .not.toBe(acs.drawing.bondStrokeWidthPx);
+
+    const recipe = codeBlocks(art.split("### 5. Hand-sketched look")[1]!.split("### 6.")[0]!)[0]!;
+    const molecule = { style: {} as Record<string, unknown> };
+    const page = { objects: [] };
+    // This is the skill's native JSON edit, with no shell or engine calls.
+    new Function("mol", "page", recipe)(molecule, page);
+    expect(molecule.style.atomLabelFontFamily).toBe(SketchStylePreset.drawing.atomLabelFontFamily);
+    expect(molecule.style.visualEffects).toEqual([
+      expect.objectContaining(SketchStylePreset.drawing.visualEffects[0])
+    ]);
+  });
+
+  it("validates the documented wavy bond and its unknown-stereo MOL encoding", () => {
+    const art = read(join(skillRoot, "references", "art.md"));
+    const section = art.split("### Wavy single bonds")[1]!.split("Gradients are")[0]!;
+    const bond = MoleculeBondSchema.parse(JSON.parse(codeBlocks(section)[0]!));
+    expect(bond.display?.bondStyle).toBe("wavy");
+    expect(MoleculeBondSchema.safeParse({ ...bond, order: "double" }).success).toBe(false);
+    const molecule = MoleculeObjectSchema.parse({
+      id: "m", type: "molecule", x: 0, y: 0, width: 22, height: 22,
+      structure: "", structureFormat: "unknown",
+      atoms: [bond.fromAtomId, bond.toAtomId].map((id, index) => ({ id, element: "C", x: index * 22, y: 0 })),
+      bonds: [bond]
+    });
+    const options = { kekuleBondOrders: new Map<string, number>() };
+    const v2000 = moleculeToMolfileV2000(molecule, options).contents.split("\n");
+    expect(Number(v2000[6]!.slice(9, 12))).toBe(4);
+    expect(moleculeToMolfileV3000(molecule, options).contents).toContain("CFG=2");
+    expect(section).toContain("unknown center at `fromAtomId`");
+    expect(entrypoint).toContain("not a cosmetic effect");
+  });
+
+  it("validates the documented repeat pair and distinguishes native rendering from graph export", async () => {
+    const art = read(join(skillRoot, "references", "art.md"));
+    const section = art.split("#### Round brackets and repeat labels")[1]!.split("#### Electron marks")[0]!;
+    const pair = BracketObjectSchema.array().parse(JSON.parse(codeBlocks(section)[0]!));
+    expect(bracketPairs(pair).size).toBe(1);
+    expect(pair.map(bracket => bracket.side)).toEqual(["open", "close"]);
+    expect(pair.find(bracket => bracket.side === "close")?.label).toBe("n");
+
+    const document = createEmptyDocument();
+    const molecule = MoleculeObjectSchema.parse({
+      id: "m", type: "molecule", x: 120, y: 120, width: 22, height: 22,
+      structure: "", structureFormat: "unknown", atoms: [{ id: "a", element: "C", x: 0, y: 0 }]
+    });
+    document.pages[0]!.objects = [molecule, ...pair];
+    const { repeatUnitMolfileGroups, repeatUnitExportWarnings } = await import("../../packages/export-engine/src/repeatUnits");
+    const { bracketLabelPlan } = await import("@chemdraft/layout-engine");
+    expect(pair.map(bracketLabelPlan)).toEqual([undefined, expect.objectContaining({ text: "n" })]);
+    const groups = repeatUnitMolfileGroups(document, [molecule], []);
+    expect(groups).toEqual([{ objectId: "close", label: "n", atomIds: ["a"] }]);
+    const mol = moleculeToMolfileV3000(molecule, { kekuleBondOrders: new Map(), repeatUnitGroups: groups });
+    expect(mol.contents).toContain(" SRU ");
+    expect(mol.contents).toContain("LABEL=n");
+    expect(repeatUnitExportWarnings(document, "SMILES")).toEqual([
+      expect.objectContaining({ code: "export.repeat_unit_not_represented", message: expect.stringContaining("only the bare structure is written") })
+    ]);
+    const files = read(join(skillRoot, "references", "files.md"));
+    expect(files).toContain("accept SMILES, not an edited native document");
+    expect(flags.get("export")).not.toContain("--document");
+    expect(files).toContain("Binary CDX import and browser structure search are app-only");
+  });
+
+  it("documents dictionary provenance without treating an engine failure as a parse miss", async () => {
+    // Synthetic dictionary data tests routing; corpus identity coverage lives in the CLI suite.
+    const lookup = createNameDictionary(async () => "CO\tSynthetic name\t\tfixture-identity");
+    let fallbacks = 0;
+    const dictionary = async (query: string) => { fallbacks++; return lookup(query); };
+    const result = await resolveChemicalName("Synthetic name", async () => ({ failureReason: "Synthetic parse miss" }), dictionary);
+    expect(result).toMatchObject({ source: "dictionary", matchedName: "Synthetic name", smiles: "CO" });
+    expect(await resolveChemicalName("Synthetic name", async () => ({ smiles: "CO" }), dictionary))
+      .toMatchObject({ source: "opsin" });
+    await expect(resolveChemicalName("Synthetic name", async () => { throw new Error("Engine unavailable"); }, dictionary))
+      .rejects.toThrow("Engine unavailable");
+    expect(fallbacks).toBe(1);
+    const files = read(join(skillRoot, "references", "files.md"));
+    expect(files).toContain('`source: "template" | "opsin" | "dictionary"`');
+    expect(files).toContain("`matchedName` or `matchedCas`");
+    expect(files).toMatch(/does not replace\s+a missing, failed or timed-out OPSIN engine/);
   });
 
   it("keeps the skill description discoverable for representative requests", () => {

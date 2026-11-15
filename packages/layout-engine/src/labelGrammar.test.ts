@@ -7,11 +7,21 @@ import { describe, expect, it } from "vitest";
 
 import {
   nativeAtomLabelReading,
+  nativeHoverAtomLabelCanContinue,
+  nativeHoverAtomLabelCompletion,
   nativeLabelGroupAttachment,
   nativeLabelReadingDependsOnBondSide,
   nativeSingleHeavyElementLabelValence,
   parseCondensedLabelFormula
 } from "./index";
+
+it("requires explicit scheme metadata to read NaOH as an ion-pair group", () => {
+  expect(nativeAtomLabelReading("NaOH").kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaOH", { typed: true }).kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaOH", { schemeAbbreviation: "NaOH" }).kind).toBe("group");
+  expect(nativeAtomLabelReading("NaOH", { typed: true, schemeAbbreviation: "NaOH" }).kind).toBe("formula");
+  expect(nativeAtomLabelReading("NaCl", { schemeAbbreviation: "NaOH" }).kind).toBe("formula");
+});
 
 const groupOf = (label: string, context: Parameters<typeof nativeAtomLabelReading>[1] = {}) => {
   const reading = nativeAtomLabelReading(label, context);
@@ -20,6 +30,46 @@ const groupOf = (label: string, context: Parameters<typeof nativeAtomLabelReadin
 };
 
 describe("the atom-label grammar", () => {
+  it.each(["OTBDPS", "OTIPS", "OTES", "OPMB", "OMOM", "OSEM", "OTBS", "OTf"])("reads %s as a composite group", label => {
+    expect(groupOf(label)).toMatchObject({ kind: "composite", head: "O" });
+  });
+
+  it.each(["No", "Co", "Nh", "Cf"])("declines the implicit hover capital in %s", label => {
+    expect(nativeHoverAtomLabelCompletion(label)).toBeUndefined();
+    expect(nativeAtomLabelReading(label).kind).toBe("element");
+    expect(nativeHoverAtomLabelCanContinue(label)).toBe(true);
+  });
+
+  it.each([
+    ["No2", "NO2"], ["Ome", "OMe"], ["Obn", "OBn"], ["Nme2", "NMe2"],
+    ["Co2me", "CO2Me"], ["Si", "Si"], ["Cl", "Cl"], ["NO", "NO"], ["CONH2", "CONH2"]
+  ])("completes hover %s as %s through the existing grammar", (typed, expected) => {
+    expect(nativeHoverAtomLabelCompletion(typed)).toBe(expected);
+    expect(nativeHoverAtomLabelCanContinue(typed)).toBe(true);
+  });
+
+  it.each(["Om", "Ob", "Nm", "Co2m"])("keeps the known hover prefix %s pending", label => {
+    expect(nativeHoverAtomLabelCompletion(label)).toBeUndefined();
+    expect(nativeHoverAtomLabelCanContinue(label)).toBe(true);
+  });
+
+  it.each(["Nq", "OMeq", "NMe0", "not-a-label"])("ends the exhausted hover prefix %s", label => {
+    expect(nativeHoverAtomLabelCompletion(label)).toBeUndefined();
+    expect(nativeHoverAtomLabelCanContinue(label)).toBe(false);
+  });
+
+  it("keeps long complete formulas and their final incomplete token within the same grammar", () => {
+    const formula = "CH2".repeat(50);
+    expect(nativeHoverAtomLabelCompletion(formula)).toBe(formula);
+    expect(nativeHoverAtomLabelCanContinue(formula + "M")).toBe(true);
+    expect(nativeHoverAtomLabelCanContinue(formula + "q")).toBe(false);
+  });
+
+  it("keeps an emptied editor open for a new label", () => {
+    expect(nativeHoverAtomLabelCompletion("")).toBeUndefined();
+    expect(nativeHoverAtomLabelCanContinue("")).toBe(true);
+  });
+
   it("reads each kind of label", () => {
     expect(nativeAtomLabelReading("Cl")).toEqual({ kind: "element", element: "Cl" });
     expect(nativeAtomLabelReading("D")).toEqual({ kind: "heavy-hydrogen", element: "D" });

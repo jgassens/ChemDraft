@@ -54,6 +54,18 @@ export interface RdkitJson {
   molecules: RdkitMoleculeJson[];
 }
 
+/** Read the engine's query/unspecified-order evidence before computing chemical properties. */
+export function rdkitHasIndeterminateBonds(json: RdkitJson): boolean {
+  return json.molecules.some(molecule =>
+    molecule.bonds.some(bond => (bond.bo ?? json.defaults?.bond?.bo) === 0)
+    || (molecule.extensions ?? []).some(extension => {
+      if (typeof extension !== "object" || extension === null) return false;
+      const query = extension as { name?: unknown; bondQueries?: unknown };
+      return query.name === "rdkitQueries" && Array.isArray(query.bondQueries)
+        && query.bondQueries.some(bond => bond !== null);
+    }));
+}
+
 /**
  * Symbol by atomic number. Element symbols are IUPAC nomenclature, not a licensed data set — this is
  * deliberately *not* an atomic-mass table, because masses come from RDKit's own `amw`/`exactmw` and

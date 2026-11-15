@@ -51,7 +51,7 @@ describe("assistant page-aware arrangement", () => {
       margin: { top: 72, right: 72, bottom: 72, left: 72 }, objects: [] });
     Object.assign(page.layout, { widthPx: page.width, heightPx: page.height,
       marginTopPx: 72, marginRightPx: 72, marginBottomPx: 72, marginLeftPx: 72 });
-    const text = "A descriptive caption ".repeat(30);
+    const text = Array.from({ length: 6 }, () => "A descriptive caption ".repeat(5)).join("\n");
     const result = await callAssistantTool(context, "insert_text", { text });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(context.confirmPageGrowth).not.toHaveBeenCalled();
@@ -87,13 +87,13 @@ describe("assistant page-aware arrangement", () => {
     expect(overlaps(objectRect(objects[0]!), objectRect(objects[1]!))).toBe(false);
   });
 
-  it("wraps a long caption inside the page without changing its text or molecule size", async () => {
+  it("asks once for caption ink beyond its stored frame without changing its text or molecule size", async () => {
     const { context } = setup();
     const label = "A descriptive macrocycle caption ".repeat(8);
     const result = await callAssistantTool(context, "insert_structures", { items: [{ kind: "molecule", smiles: "CC", label }] });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(result.structuredContent?.warnings).toEqual([]);
-    expect(context.confirmPageGrowth).not.toHaveBeenCalled();
+    expect(context.confirmPageGrowth).toHaveBeenCalledOnce();
     const objects = context.getDocument()!.pages[0]!.objects;
     assertInsideAndClear(objects);
     expect(objects[2]).toMatchObject({ type: "text", text: label });
@@ -117,7 +117,7 @@ describe("assistant page-aware arrangement", () => {
     }
   });
 
-  it("asks once for a wrapped set running off the bottom and retains only fitting cells on refusal", async () => {
+  it("asks once for a wrapped set running off the bottom and keeps all cells on Keep Page Size", async () => {
     const { context } = setup();
     const result = await callAssistantTool(context, "insert_structures", { arrangement: "grid", items: [
       ...Array.from({ length: 16 }, (_, i) => ({ kind: "molecule", smiles: "CC", label: `Component ${i + 1}` })),
@@ -127,12 +127,10 @@ describe("assistant page-aware arrangement", () => {
     const objects = context.getDocument()!.pages[0]!.objects.slice(1);
     expect(context.confirmPageGrowth).toHaveBeenCalledTimes(1);
     expect(context.confirmPageGrowth).toHaveBeenCalledWith(expect.objectContaining({ height: expect.any(Number) }), expect.any(AbortSignal));
-    expect(result.structuredContent).toMatchObject({ declined: expect.arrayContaining([expect.stringMatching(/^Component /)]),
-      reason: "declined: the user chose not to enlarge the page", warnings: [] });
-    expect(objects.length).toBeGreaterThan(0);
-    expect(objects.length).toBeLessThan(34);
+    expect(result.structuredContent?.reason).toBeUndefined();
+    expect(objects).toHaveLength(34);
     expect(context.getDocument()!.pages[0]!.height).toBe(792);
-    assertInsideAndClear(context.getDocument()!.pages[0]!.objects);
+    expect(objects.some(object => objectRect(object).y + objectRect(object).height > 792)).toBe(true);
   });
 
   it("keeps labels with molecules when arranging an existing insertion again", async () => {

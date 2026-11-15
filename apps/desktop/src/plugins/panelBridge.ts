@@ -5,6 +5,7 @@ import { listenTauriEvent } from "../window-manager/tauriEvents";
 import type { PluginPanelActionRequest } from "./pluginPanelActionTypes";
 import type { SpectrumSaveFormat, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
+import { documentWindowId, isDocumentWindowId } from "../documentIdentity";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
 export const PLUGIN_PANEL_REPORT_CLEARED_EVENT = "chemdraft://plugin-panel-report-cleared";
@@ -33,6 +34,7 @@ export const PLUGIN_DIAGNOSTICS_WINDOW_ID = "plugin-diagnostics";
 export const PATCH_REVIEW_WINDOW_ID = "plugin-proposals";
 
 export interface PluginPanelIdentity {
+  windowId?: string;
   panelId: string;
   pluginId: string;
 }
@@ -59,6 +61,7 @@ export interface PanelBridgeListener {
 }
 
 export interface PluginPanelReportPayload extends PluginPanelIdentity {
+  documentName?: string;
   report: PluginPanelReport;
   /** Monotonic per-main-window counter so a late/stale broadcast never regresses a panel. */
   revision: number;
@@ -73,6 +76,8 @@ export interface PluginPanelReportClearedPayload extends PluginPanelIdentity {
 }
 
 export async function broadcastPluginPanelReportCleared(payload: PluginPanelReportClearedPayload): Promise<void> {
+  if (payload.windowId === undefined && documentWindowId() !== "main") payload = { ...payload, windowId: documentWindowId() };
+
   window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_REPORT_CLEARED_EVENT, { detail: payload }));
   if (isDesktopRuntime()) {
     await publishPanelWindowEvent(pluginPanelWindowLabel(payload), PLUGIN_PANEL_REPORT_CLEARED_EVENT, payload);
@@ -292,7 +297,7 @@ export async function openPluginPanelWindow(request: OpenPluginPanelRequest): Pr
   // without sharing a window. Hex encoding also avoids the old lossy dots-to-dashes transform.
   await invoke("open_plugin_panel_window", {
     request: {
-      panelId: pluginPanelWindowId(request.pluginId, request.panelId),
+      panelId: pluginPanelWindowId(request.pluginId, request.panelId, request.windowId ?? documentWindowId()),
       title: request.title,
       width: request.width,
       height: request.height
@@ -519,6 +524,8 @@ export async function respondToCopyMolecularInspector(requestId: string, ok: boo
 }
 
 export async function broadcastPluginPanelReport(payload: PluginPanelReportPayload): Promise<void> {
+  if (payload.windowId === undefined && documentWindowId() !== "main") payload = { ...payload, windowId: documentWindowId() };
+
   window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_REPORT_EVENT, { detail: payload }));
   if (!isDesktopRuntime()) {
     return;
@@ -528,6 +535,8 @@ export async function broadcastPluginPanelReport(payload: PluginPanelReportPaylo
 }
 
 export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSnapshotPayload): Promise<void> {
+  if (payload.windowId === undefined && documentWindowId() !== "main") payload = { ...payload, windowId: documentWindowId() };
+
   window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_SNAPSHOT_EVENT, { detail: payload }));
   if (!isDesktopRuntime()) {
     return;
@@ -609,18 +618,20 @@ export function listenForPluginPanelRequests(handler: (identity: PluginPanelIden
  *  programmatically). Mirrors the Rust `plugin-panel-<request.panelId>` label scheme. The native
  *  command restores an enlarged panel's normal frame on the main thread before hiding it; a raw
  *  `WebviewWindow.hide()` would skip that. */
-export async function hidePluginPanelWindow(pluginId: string, panelId: string): Promise<void> {
+export async function hidePluginPanelWindow(pluginId: string, panelId: string, windowId = documentWindowId()): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("hide_plugin_panel_from_main", {
-    label: `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId)}`
+    label: `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId, windowId)}`
   });
 }
 
 export async function broadcastPluginPanelStaleness(payload: PluginPanelStalenessPayload): Promise<void> {
+  if (payload.windowId === undefined && documentWindowId() !== "main") payload = { ...payload, windowId: documentWindowId() };
+
   window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_STALENESS_EVENT, { detail: payload }));
   if (!isDesktopRuntime()) {
     return;
@@ -678,7 +689,7 @@ export function listenForPluginPanelCloses(handler: (identity: PluginPanelIdenti
 export function listenForNativePanelWindowCloses(handler: (identity: PluginPanelIdentity) => void): () => void {
   const deliver = (label: string): void => {
     const identity = pluginPanelIdentityFromWindowLabel(label);
-    if (identity) handler(identity);
+    if (identity && (identity.windowId ?? "main") === documentWindowId()) handler(identity);
   };
   const domListener = (event: Event) => {
     const label = (event as CustomEvent<unknown>).detail;
@@ -707,12 +718,14 @@ function listenForPanelIdentityEvent(
 ): () => void {
   const domListener = (event: Event) => {
     const payload = (event as CustomEvent<unknown>).detail;
-    if (isPanelIdentity(payload)) {
+    if (isPanelIdentity(payload) && (payload.windowId ?? "main") === documentWindowId()) {
       handler(payload);
     }
   };
   window.addEventListener(eventName, domListener);
-  return attachTauriListener(eventName, domListener, isPanelIdentity, handler);
+  return attachTauriListener(eventName, domListener, isPanelIdentity, payload => {
+    if ((payload.windowId ?? "main") === documentWindowId()) handler(payload);
+  });
 }
 
 /**
@@ -765,18 +778,21 @@ function attachTauriListener<T>(
 }
 
 /** Stable in-memory key for a panel owned by one plugin. */
-export function pluginPanelIdentityKey(pluginId: string, panelId: string): string {
-  return `${pluginId.length}:${pluginId}${panelId}`;
+export function pluginPanelIdentityKey(pluginId: string, panelId: string, windowId = "main"): string {
+  const key = `${pluginId.length}:${pluginId}${panelId}`;
+  return windowId === "main" ? key : `${windowId.length}:${windowId}${key}`;
 }
 
 /** Reversible, native-label-safe identity passed through Rust's existing `panelId` field. */
-export function pluginPanelWindowId(pluginId: string, panelId: string): string {
-  return `v1x${encodeHex(pluginId)}x${encodeHex(panelId)}`;
+export function pluginPanelWindowId(pluginId: string, panelId: string, windowId = "main"): string {
+  if (!isDocumentWindowId(windowId) || windowId.length > 128) throw new Error("Invalid panel document owner.");
+  return windowId === "main" ? `v1x${encodeHex(pluginId)}x${encodeHex(panelId)}`
+    : `v2x${encodeHex(windowId)}x${encodeHex(pluginId)}x${encodeHex(panelId)}`;
 }
 
 /** The exact native destination shared by reports, snapshots, and action authorization. */
 export function pluginPanelWindowLabel(identity: PluginPanelIdentity): string {
-  return `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(identity.pluginId, identity.panelId)}`;
+  return `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(identity.pluginId, identity.panelId, identity.windowId ?? documentWindowId())}`;
 }
 
 /** Decode only the native panel label scheme used by openPluginPanelWindow and lib.rs. */
@@ -787,6 +803,14 @@ export function parsePluginPanelWindowLabel(label: string): PluginPanelIdentity 
 
 /** Decode the opaque query value supplied to a detached plugin-panel webview. */
 export function parsePluginPanelWindowId(windowId: string): PluginPanelIdentity | undefined {
+  const owned = /^v2x([0-9a-f]+)x([0-9a-f]+)x([0-9a-f]+)$/.exec(windowId);
+  if (owned) {
+    try {
+      const owner = decodeHex(owned[1]!);
+      if (!isDocumentWindowId(owner) || owner === "main" || owner.length > 128) return undefined;
+      return { windowId: owner, pluginId: decodeHex(owned[2]!), panelId: decodeHex(owned[3]!) };
+    } catch { return undefined; }
+  }
   const match = /^v1x([0-9a-f]+)x([0-9a-f]+)$/.exec(windowId);
   if (!match?.[1] || !match[2]) {
     return undefined;
@@ -818,7 +842,8 @@ function isPanelIdentity(payload: unknown): payload is PluginPanelIdentity {
     return false;
   }
   const candidate = payload as Partial<PluginPanelIdentity>;
-  return typeof candidate.pluginId === "string" && typeof candidate.panelId === "string";
+  return typeof candidate.pluginId === "string" && typeof candidate.panelId === "string"
+    && (candidate.windowId === undefined || (isDocumentWindowId(candidate.windowId) && candidate.windowId.length <= 128));
 }
 
 function isPluginPanelActionEnvelope(payload: unknown): payload is PluginPanelActionEnvelope {

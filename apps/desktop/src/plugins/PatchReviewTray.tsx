@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { PluginHost, QueuedProposedPatch } from "@chemdraft/plugin-host";
 import type { PluginProposalReviewItem } from "./panelBridge";
 import { EXPERIMENTAL_RECOGNITION_REVIEW_NOTICE } from "./pluginUpdates";
@@ -17,7 +17,7 @@ export function PatchReviewTray({
   onAccept,
   onReject
 }: {
-  host: PluginHost;
+  host: Pick<PluginHost, "listProposedPatches"> & { getPlugin(id: string): { manifest: import("@chemdraft/plugin-api").PluginManifest } | undefined };
   /** Bumped by the host's onProposedPatchesChanged callback so the pending list recomputes. */
   queueVersion: number;
   getDocumentName?(proposal: QueuedProposedPatch): string | undefined;
@@ -32,11 +32,17 @@ export function PatchReviewTray({
     [host, queueVersion]
   );
 
+  const [items, setItems] = useState<PluginProposalReviewItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(pending.map(proposal => proposalReviewItem(host, proposal, getDocumentName?.(proposal))))
+      .then(items => { if (!cancelled) setItems(items); });
+    return () => { cancelled = true; };
+  }, [pending, host, getDocumentName]);
+
   if (pending.length === 0) {
     return null;
   }
-
-  const items = pending.map((proposal) => proposalReviewItem(host, proposal, getDocumentName?.(proposal)));
 
   return (
     <div className="patch-review-tray" data-patch-review-tray="true">
@@ -179,9 +185,9 @@ export function PatchReviewList({
   );
 }
 
-export function proposalReviewItem(
-  host: PluginHost, proposal: QueuedProposedPatch, documentName?: string
-): PluginProposalReviewItem {
+export async function proposalReviewItem(
+  host: { getPlugin(id: string): { manifest: import("@chemdraft/plugin-api").PluginManifest } | undefined }, proposal: QueuedProposedPatch, documentName?: string
+): Promise<PluginProposalReviewItem> {
   // The plugin host already attached its own record of a recognition (tier, image, warnings) on queueing.
   const { recognition, warnings } = reviewedRecognition(proposal.proposal.recognition, proposal.proposal.warnings);
   return {
@@ -192,7 +198,7 @@ export function proposalReviewItem(
     documentName,
     warnings,
     recognition,
-    structurePreview: recognitionStructurePreview(proposal.proposal)
+    structurePreview: await recognitionStructurePreview(proposal.proposal)
   };
 }
 
