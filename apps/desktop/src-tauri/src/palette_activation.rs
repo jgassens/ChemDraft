@@ -51,6 +51,13 @@ impl Policy {
         self.command_press = None;
     }
 
+    pub fn ends_input_focus(&self, command_hit: bool) -> bool {
+        // NOACTIVATE describes activation, not editing intent. In particular a
+        // second/third field press may send an activation message while its
+        // lease is already held. Only actual commands may revoke that lease.
+        self.command_surface && (self.command_popover || command_hit)
+    }
+
     pub fn activate(
         &mut self,
         press: Press,
@@ -164,6 +171,26 @@ mod tests {
         assert!(!policy.permits_input_focus(now + Duration::from_millis(499)));
         assert!(policy.permits_input_focus(now + Duration::from_millis(500)));
         assert!(policy.command_press.is_none());
+    }
+
+    #[test]
+    fn repeated_field_activation_does_not_end_a_held_or_pending_lease() {
+        for press in [Press::Mouse, Press::Pointer] {
+            let mut policy = Policy::new("toolset-popover-core-text");
+            policy.set_content("textColor");
+            let start = Instant::now();
+            policy.activate(press, true, false, start);
+            assert!(policy.ends_input_focus(true));
+            for delay in [50, 100, 150, 499, 501] {
+                let now = start + Duration::from_millis(delay);
+                assert_eq!(policy.activate(press, false, false, now), Some(3));
+                assert!(!policy.ends_input_focus(false));
+                assert!(policy.permits_input_focus(now));
+            }
+            policy.set_content("flyout");
+            assert!(policy.ends_input_focus(false));
+            assert!(!policy.permits_input_focus(start + Duration::from_secs(1)));
+        }
     }
 
     #[test]

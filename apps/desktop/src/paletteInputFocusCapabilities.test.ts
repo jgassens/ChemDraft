@@ -67,7 +67,8 @@ it("allows Windows palette colour popups to activate without a second WebView2 f
   expect(observer).toContain("let decision = policy.activate(");
   expect(observer).toContain("WM_POINTERACTIVATE");
   expect(observer).toContain("GetCursorPos(&mut cursor)");
-  expect(observer).toMatch(/if let Some\(result\) = decision \{\s*command_pressed\(primary\);\s*result\s*\} else \{\s*DefSubclassProc\(hwnd, message, wparam, lparam\)/);
+  expect(observer).toMatch(/if let Some\(result\) = decision \{\s*command_pressed\(primary, policy.ends_input_focus\(command_hit\)\);\s*result\s*\} else \{\s*DefSubclassProc\(hwnd, message, wparam, lparam\)/);
+  expect(panel).toMatch(/if ends_input_focus \{\s*activation_with_reason\(&press_target, false, "command"\);/);
   expect(observer).not.toContain("app_was_active");
   // Custom and plugin palettes use the same renderer/native command classification.
   for (const prefix of ["toolset-core-", "toolset-plugin-", "toolset-user-", "toolset-popover-"])

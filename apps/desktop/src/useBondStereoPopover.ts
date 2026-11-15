@@ -13,7 +13,7 @@ import {
 } from "./window-manager";
 
 export const BOND_STEREO_POPOVER_ID = "core.bondStereo";
-export type BondStereoBadgeRequest = { objectId: string; bondId: string; rect: Pick<DOMRect, "left" | "bottom">; keyboard: boolean };
+export type BondStereoBadgeRequest = { objectId: string; bondId: string; rect: Pick<DOMRect, "left" | "top" | "bottom">; keyboard: boolean };
 type Target = { objectId: string; bondId: string };
 type Reader = Parameters<typeof nativeBondStereoAvailability>[2];
 type Session = { id: string; openedAt: number; document: ChemDraftDocument; target: Target; content: ToolsetPopoverContent; anchor?: ToolsetPopoverAnchor };
@@ -163,7 +163,8 @@ export function useBondStereoPopover(options: {
       const position = await currentWindowLogicalPosition("inner");
       if (session.current !== opened) return;
       if (!position) { close(); return; }
-      opened.anchor = { x: position.x + request.rect.left, y: position.y + request.rect.bottom + 4 };
+      opened.anchor = { x: position.x + request.rect.left, y: position.y + request.rect.bottom + 4,
+        aboveY: position.y + request.rect.top - 4 };
       await openToolsetPopoverWindow(BOND_STEREO_POPOVER_ID, "flyout", opened.anchor.x, opened.anchor.y,
         request.keyboard && platform !== "windows" ? "focus" : "preserve");
       if (session.current !== opened) return;

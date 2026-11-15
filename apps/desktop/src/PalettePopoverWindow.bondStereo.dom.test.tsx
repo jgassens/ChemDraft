@@ -6,7 +6,7 @@ import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { sendBondStereoPopoverAction, sendPaletteCommand, sendToolsetFlyoutKey, type ToolsetFlyoutKey, type ToolsetPopoverDismissPayload, type ToolsetPopoverContentPayload } from "./window-manager";
 import { useBondStereoPopover } from "./useBondStereoPopover";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import { closeToolsetPopoverWindow, currentWindowLogicalPosition, openToolsetPopoverWindow, setCurrentWindowLogicalPosition, setToolsetPopoverContent } from "./window-manager";
+import { closeToolsetPopoverWindow, currentWindowLogicalPosition, openToolsetPopoverWindow, setCurrentWindowLogicalPosition, setCurrentWindowLogicalSize, setToolsetPopoverContent } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 
 const native = vi.hoisted(() => ({
@@ -78,7 +78,7 @@ describe("document-owned bond stereo popover", () => {
   function Owner({ keyboard = false }: { keyboard?: boolean }) {
     const openPopover = useBondStereoPopover({ document: doc, targets: [{ objectId: "m", bondId: "b" }], reader: undefined,
       select: () => {}, invoke: () => {}, focusCanvas: () => {} });
-    return <><div className="page-stage" /><button onClick={() => openPopover({ objectId: "m", bondId: "b", rect: { left: 30, bottom: 50 }, keyboard })}>Open</button></>;
+    return <><div className="page-stage" /><button onClick={() => openPopover({ objectId: "m", bondId: "b", rect: { left: 30, top: 30, bottom: 50 }, keyboard })}>Open</button></>;
   }
   it.each([["macos", false], ["macos", true], ["windows", false], ["windows", true]] as const)("sends the native creation and content focus mode for %s keyboard=%s", async (platform, keyboard) => {
     native.platform = platform;
@@ -87,7 +87,7 @@ describe("document-owned bond stereo popover", () => {
     expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", 130, 254, keyboard && platform !== "windows" ? "focus" : "preserve");
     expect(setToolsetPopoverContent).toHaveBeenCalledWith("core.bondStereo", expect.objectContaining({
       kind: "flyout", flyout: expect.objectContaining({ variant: "bondStereo", keyboardOpen: keyboard })
-    }), { x: 130, y: 254 });
+    }), { x: 130, y: 254, aboveY: 226 });
   });
   it("keeps Windows E/Z Tab, arrows and activation in the document and consumes held-key repeats", async () => {
     native.platform = "windows";
@@ -221,7 +221,7 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 async function open(keyboardOpen = false) {
   await act(async () => root.render(<PalettePopoverWindow toolsetId="core.bondStereo" kind="flyout" prewarm />));
   expect(native.show).not.toHaveBeenCalled();
-  await act(async () => native.content?.({ toolsetId: "core.bondStereo", anchor: { x: 130, y: 254 }, kind: "flyout",
+  await act(async () => native.content?.({ toolsetId: "core.bondStereo", anchor: { x: 130, y: 254, aboveY: 226 }, kind: "flyout",
     flyout: { id: "session-1", flyoutId: "core.bondStereo", title: "E/Z not specified", variant: "bondStereo", keyboardOpen,
       commands: [
         { id: "molecule.bondStereo:geometry", title: "Use drawn geometry (Z)", enabled: true, active: false },
@@ -235,6 +235,21 @@ async function open(keyboardOpen = false) {
 }
 
 describe("open-bond native popover body", () => {
+  it.each(["macos", "windows"] as const)("positions E/Z with its flip anchor after content sizing on %s", async platform => {
+    native.platform = platform;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 240, bottom: 120, width: 240, height: 120,
+      toJSON: () => ({})
+    });
+    await open();
+    expect(setCurrentWindowLogicalSize).toHaveBeenLastCalledWith({ width: 240, height: 120 });
+    expect(setCurrentWindowLogicalPosition).toHaveBeenLastCalledWith({ x: 130, y: 254, aboveY: 226 });
+    const sizeOrder = vi.mocked(setCurrentWindowLogicalSize).mock.invocationCallOrder.at(-1)!;
+    const positionOrder = vi.mocked(setCurrentWindowLogicalPosition).mock.invocationCallOrder.at(-1)!;
+    expect(positionOrder).toBeGreaterThan(sizeOrder);
+    expect(native.show.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(positionOrder);
+  });
+
   function snapshot(variant: "artColor" | "menu" | "bondStereo", openedAt: number): ToolsetPopoverContentPayload {
     const timing = { openedAt };
     return variant === "artColor" ? { toolsetId: "core.art", kind: "artColor", ...timing } : {

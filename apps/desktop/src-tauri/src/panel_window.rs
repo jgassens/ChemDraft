@@ -763,11 +763,13 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
     let data = Box::into_raw(Box::new(FocusObserver {
         label: window.label().to_owned(),
         policy: std::cell::Cell::new(palette_activation::Policy::new(window.label())),
-        command_pressed: std::rc::Rc::new(move |primary| {
+        command_pressed: std::rc::Rc::new(move |primary, ends_input_focus| {
             // Cancel a queued editing acquisition synchronously, before WebView2 sees
             // this command press. Preserve the pending-key observer that the early
             // MA_NOACTIVATE return deliberately bypasses in the subclass chain.
-            activation_with_reason(&press_target, false, "command");
+            if ends_input_focus {
+                activation_with_reason(&press_target, false, "command");
+            }
             key_guard::pointer(
                 press_target.app_handle(),
                 primary.then_some(press_target.label()),
@@ -861,7 +863,7 @@ unsafe fn focus_observer<'a>(
 struct FocusObserver {
     label: String,
     policy: std::cell::Cell<palette_activation::Policy>,
-    command_pressed: std::rc::Rc<dyn Fn(bool)>,
+    command_pressed: std::rc::Rc<dyn Fn(bool, bool)>,
     stable_nonclient_paint: bool,
     pin_inactive: bool,
     activation: std::rc::Rc<dyn Fn(bool)>,
@@ -943,7 +945,7 @@ unsafe extern "system" fn focus_subclass(
         let label = observer.label.clone();
         let command_pressed = observer.command_pressed.clone();
         let result = if let Some(result) = decision {
-            command_pressed(primary);
+            command_pressed(primary, policy.ends_input_focus(command_hit));
             result
         } else {
             DefSubclassProc(hwnd, message, wparam, lparam)

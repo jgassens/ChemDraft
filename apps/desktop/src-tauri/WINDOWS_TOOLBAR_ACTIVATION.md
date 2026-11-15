@@ -1,5 +1,45 @@
 # Windows toolbar activation investigation
 
+## HEX multi-click, popover placement and Snap follow-up — 2026-11-15
+
+Build stamp: `11.15.15.40-codex`. Runtime acceptance on Windows remains unverified.
+
+- The no-activate response used to call the command-press cancellation callback
+  even when neither a command nor a command flyout was hit. A second/third HEX
+  press could therefore revoke its existing lease before the renderer's pointer
+  handler reused it. Non-activating field presses now preserve that lease;
+  actual commands still revoke it synchronously. The 500 ms command guard only
+  bounds delayed acquisitions; it does not expire a held editing lease.
+- E/Z content carries both the below-badge anchor and its top edge minus the gap.
+  After content sizing, native placement chooses the destination display using
+  that top edge, converts with its DPI, flips above when necessary, and clamps
+  to its work area. The document's scale resolves overlapping logical monitor
+  frames, rather than the hidden popover's old scale. This placement is shared
+  with macOS and reapplied after its bottom-anchored resize.
+- Windows command palettes are created non-resizable and non-maximizable through
+  Tauri's supported creation traits, removing their Snap eligibility while keeping
+  Tao's state consistent. Content-fit sizing, native dragging and position saving
+  retain their existing paths. Other Windows utility windows also disable
+  maximizing; macOS palette creation traits are retained.
+
+Real-event checks still required: double/triple-click HEX, replace the selected
+text and continue typing; open E/Z at every work-area edge on 100/150/200% displays;
+drag Main by its title/grip to side/top edges and across displays, then reopen it
+and check its saved position and content size. Repeat palette field, sizing and
+drag checks on macOS Apple silicon and Intel. DOM selection defaults and native
+Snap behavior cannot be established by the automated policy tests.
+
+Verification on macOS Apple silicon: 339 Vitest tests across the input-focus,
+E/Z popover, input-focus capabilities, palette sizing and drag suites passed.
+The isolated checkout needed a temporary dependency-alias config, removed after
+the run; no install was performed. Rust filters `panel_window::` (49 tests),
+`popover_placement` (2), `toolset_window_config` (1), `window_drag::` (4), and
+`global_logical` (1) passed, as did Rust formatting and `git diff --check`.
+The existing local Sparkle framework was copied into the ignored build-support
+location. No app was launched; Windows compilation, Windows runtime, macOS
+hands-on behavior and macOS Intel compilation remain unverified. Recommended
+next task: run the real-event checks above on Windows 11/WebView2.
+
 ## Inactive-frame pin and default no-activate policy — 2026-11-15
 
 This section supersedes the activation policy described in the historical handoffs below.

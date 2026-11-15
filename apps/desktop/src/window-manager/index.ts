@@ -492,6 +492,8 @@ export type ToolsetPopoverContent = ToolsetPopoverOpening & (
 export interface ToolsetPopoverAnchor {
   x: number;
   y: number;
+  /** Global logical top of the owner minus the gap, for flipping above it. */
+  aboveY?: number;
 }
 
 export type ToolsetPopoverContentPayload = { toolsetId: string; anchor?: ToolsetPopoverAnchor } & ToolsetPopoverContent;
@@ -1066,13 +1068,15 @@ export async function currentWindowLogicalPosition(origin: "outer" | "inner" = "
  *  the scale of the monitor containing the point: `setPosition(new LogicalPosition(...))` converts
  *  with the moving window's own scale, which on mixed-DPI setups put popovers and tooltips on the
  *  wrong monitor. */
-export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition): Promise<void> {
+export async function setCurrentWindowLogicalPosition(position: ToolsetWindowPosition & { aboveY?: number }): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_current_window_global_position", { x: position.x, y: position.y });
+  await invoke("set_current_window_global_position", {
+    x: position.x, y: position.y, ...(position.aboveY === undefined ? {} : { aboveY: position.aboveY })
+  });
 }
 
 export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Promise<void> {

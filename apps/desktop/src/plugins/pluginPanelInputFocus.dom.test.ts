@@ -978,6 +978,34 @@ describe.each(["macos", "windows"] as const)("palette control focus settling (%s
 
 // The #244 generation regressions also exercise the palette installer after the panel split.
 describe("palette lease generations", () => {
+  it.each(["macos", "windows"] as const)("keeps HEX selection and typing through double/triple clicks (%s)", async platform => {
+    vi.useFakeTimers();
+    const { shell, request } = mountPalette('<input type="text" value="#112233">', platform);
+    const input = shell.querySelector("input")!;
+    for (let detail = 1; detail <= 3; detail++) {
+      pointerDown(input);
+      input.focus();
+      await flush();
+      pointerUp(input, false);
+      click(input, detail);
+      // jsdom has no multi-click selection default; apply the browser selection
+      // explicitly and verify lease settlement never refocuses/blurs it away.
+      if (detail > 1) input.setSelectionRange(0, input.value.length);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(document.activeElement).toBe(input);
+      expect(shell.dataset.paletteInputFocus).toBe("held");
+      if (detail > 1) expect([input.selectionStart, input.selectionEnd]).toEqual([0, 7]);
+    }
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+    expect(key(input, "a").defaultPrevented).toBe(false);
+    input.setRangeText("a", input.selectionStart!, input.selectionEnd!, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(input.value).toBe("a");
+    await vi.advanceTimersByTimeAsync(600); // No timer expires a held edit lease.
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("attaches the native listener before requesting a lease", async () => {
     let attach!: () => void;
     const ready = new Promise<void>((resolve) => { attach = resolve; });

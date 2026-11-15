@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { currentWindowLogicalWorkArea, fitCurrentPaletteWindow } from "./index";
+import { currentWindowLogicalWorkArea, fitCurrentPaletteWindow, setCurrentWindowLogicalPosition } from "./index";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -74,5 +74,12 @@ describe("palette work-area sizing", () => {
     expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
       "window_logical_position", "window_logical_position"
     ]);
+  });
+
+  it("passes both sides of the popover anchor to native destination-monitor placement", async () => {
+    await setCurrentWindowLogicalPosition({ x: -40, y: 700, aboveY: 672 });
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("set_current_window_global_position", {
+      x: -40, y: 700, aboveY: 672
+    });
   });
 });

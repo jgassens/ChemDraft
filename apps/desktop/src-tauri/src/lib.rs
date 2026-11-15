@@ -5661,6 +5661,7 @@ fn toolset_popover_window_config(
         // Also selects SW_SHOWNOACTIVATE for Tao's Windows show path.
         focus: false,
         resizable: false,
+        maximizable: !cfg!(windows),
         decorations: false,
         skip_taskbar: true,
         // Both cold and prewarmed windows reveal only after their content is ready.
@@ -6054,8 +6055,117 @@ fn set_current_window_global_position(
     window: tauri::WebviewWindow,
     x: f64,
     y: f64,
+    above_y: Option<f64>,
 ) -> Result<(), String> {
+    if !x.is_finite() || !y.is_finite() || above_y.is_some_and(|value| !value.is_finite()) {
+        return Err("Window position must be finite.".into());
+    }
+    if window.label().starts_with("toolset-popover-") {
+        // The renderer calls AFTER measuring/resizing, including on macOS where
+        // resizing preserves the bottom edge. Resolve the destination display
+        // before clamping: the hidden/reused window may still have another DPI.
+        let monitors = window
+            .available_monitors()
+            .map_err(|error| error.to_string())?;
+        let frames = monitors
+            .iter()
+            .map(|monitor| MonitorFrame {
+                x: monitor.position().x as f64,
+                y: monitor.position().y as f64,
+                width: monitor.size().width as f64,
+                height: monitor.size().height as f64,
+                scale: monitor.scale_factor(),
+            })
+            .collect::<Vec<_>>();
+        let current_scale = window.scale_factor().map_err(|error| error.to_string())?;
+        // E/Z is anchored by the document, not by this reused utility window.
+        // Global logical monitor frames can overlap at mixed DPI; prefer the
+        // owner's scale rather than the hidden popover's previous display.
+        let anchor_scale = if window.label() == toolset_popover_window_label("core.bondStereo") {
+            window
+                .app_handle()
+                .get_webview_window(MAIN_WINDOW_LABEL)
+                .and_then(|owner| owner.scale_factor().ok())
+                .unwrap_or(current_scale)
+        } else {
+            current_scale
+        };
+        // The below-anchor point may already be beyond the monitor's bottom.
+        // Pick the display using the owner's top edge before applying the gap.
+        let monitor_point =
+            global_logical_to_physical(&frames, x, above_y.unwrap_or(y), anchor_scale);
+        let monitor = window
+            .monitor_from_point(monitor_point.0, monitor_point.1)
+            .map_err(|error| error.to_string())?
+            .or(window
+                .current_monitor()
+                .map_err(|error| error.to_string())?);
+        if let Some(monitor) = monitor {
+            let scale = monitor.scale_factor();
+            let area = monitor.work_area();
+            let size = window
+                .inner_size()
+                .map_err(|error| error.to_string())?
+                .to_logical::<f64>(current_scale);
+            let frame = popover_placement(
+                (x * scale, y * scale),
+                above_y.map(|top| top * scale),
+                (size.width * scale, size.height * scale),
+                ScreenRect::new(
+                    area.position.x as f64,
+                    area.position.y as f64,
+                    area.size.width as f64,
+                    area.size.height as f64,
+                ),
+            );
+            // Moving first lets WM_DPICHANGED settle before the physical size
+            // write. Reassert after size for AppKit's bottom-anchored resize.
+            window
+                .set_position(tauri::PhysicalPosition::new(
+                    frame.x.round() as i32,
+                    frame.y.round() as i32,
+                ))
+                .map_err(|error| error.to_string())?;
+            window
+                .set_size(tauri::PhysicalSize::new(
+                    frame.width.round() as u32,
+                    frame.height.round() as u32,
+                ))
+                .map_err(|error| error.to_string())?;
+            return window
+                .set_position(tauri::PhysicalPosition::new(
+                    frame.x.round() as i32,
+                    frame.y.round() as i32,
+                ))
+                .map_err(|error| error.to_string());
+        }
+    }
     set_window_global_logical_position(&window, x, y)
+}
+
+/// Physical coordinates throughout: taskbar/Dock exclusions and negative monitor
+/// origins survive the clamp. `above` is the top of the owner minus the gap.
+fn popover_placement(
+    point: (f64, f64),
+    above: Option<f64>,
+    size: (f64, f64),
+    area: ScreenRect,
+) -> ScreenRect {
+    // Clamp the final integer pixel size; rounding size and position separately
+    // can otherwise push the far edge a pixel outside a 150% display.
+    let width = size.0.ceil().min(area.width);
+    let height = size.1.ceil().min(area.height);
+    let y = if point.1 + height > area.y + area.height {
+        above.map_or(point.1, |top| top - height)
+    } else {
+        point.1
+    };
+    ScreenRect::new(
+        point.0.clamp(area.x, area.x + area.width - width),
+        y.clamp(area.y, area.y + area.height - height),
+        width,
+        height,
+    )
 }
 
 /// Pre-build the single shared floating tooltip window, hidden. Palettes can't paint a tooltip
@@ -8883,6 +8993,39 @@ fn create_toolbars_menu<R: Runtime>(
     Ok(menu)
 }
 
+/// Creation traits, rather than raw HWND style edits, keep Tao in sync across
+/// focus and DPI changes. Windows palettes cannot resize/maximize through Snap;
+/// content-fit set_size still works. AppKit retains its creation resize trait.
+fn toolset_window_config(
+    label: &str,
+    toolset_id: &str,
+    title: String,
+    frame: ScreenRect,
+    windows: bool,
+) -> tauri::utils::config::WindowConfig {
+    tauri::utils::config::WindowConfig {
+        label: label.into(),
+        url: WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
+        title,
+        width: frame.width,
+        height: frame.height,
+        x: Some(frame.x),
+        y: Some(frame.y),
+        // Manifest minima belonged to the old docked UI. Content-fit palettes
+        // need only a small floor, including when the renderer changes the size.
+        min_width: Some(96.0),
+        min_height: Some(56.0),
+        accept_first_mouse: true,
+        focusable: toolset_window_focusable(),
+        resizable: !windows,
+        maximizable: !windows,
+        decorations: false,
+        shadow: true,
+        skip_taskbar: true,
+        ..Default::default()
+    }
+}
+
 fn ensure_toolset_window<R: Runtime>(
     app: &tauri::AppHandle<R>,
     toolset_id: &str,
@@ -8936,30 +9079,15 @@ fn ensure_toolset_window<R: Runtime>(
         labels.insert(label.clone(), toolset_id.to_string());
     }
 
-    let window = match utility_window_builder(
-        WebviewWindowBuilder::new(
-            app,
-            label.clone(),
-            WebviewUrl::App(format!("/?window=toolset&toolsetId={toolset_id}").into()),
-        ),
-        app,
-    )
-    .title(title)
-    .inner_size(width, height)
-    // The window is sized to its actual palette content by the JS side (PaletteWindow
-    // applySize). The manifest's min sizes were tuned for the old docked/web layout and are far too
-    // large for a content-fit floating window (e.g. Art's 760), which left a big blank area beside
-    // the tools — so keep only a tiny hard floor here.
-    .min_inner_size(96.0, 56.0)
-    .accept_first_mouse(true)
-    .focusable(toolset_window_focusable())
-    .resizable(true)
-    .decorations(false)
-    // Overlapping palettes need a visible edge, matching the popover's native shadow.
-    .shadow(true)
-    .skip_taskbar(true)
-    .position(position.x, position.y)
-    .build()
+    let config = toolset_window_config(
+        &label,
+        toolset_id,
+        title,
+        ScreenRect::new(position.x, position.y, width, height),
+        cfg!(windows),
+    );
+    let window = match WebviewWindowBuilder::from_config(app, &config)
+        .and_then(|builder| utility_window_builder(builder, app).build())
     {
         Ok(window) => window,
         Err(error) => {
@@ -9267,7 +9395,7 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
 ) -> WebviewWindowBuilder<'a, R, M> {
     #[cfg(windows)]
     {
-        let builder = builder.focused(false);
+        let builder = builder.focused(false).maximizable(false);
         match app
             .get_webview_window(MAIN_WINDOW_LABEL)
             .and_then(|main| main.hwnd().ok())
@@ -11774,6 +11902,108 @@ mod tests {
         assert!(!config.focus); // Tao's Windows SW_SHOWNOACTIVATE path.
         assert!(!config.visible);
         assert!(config.skip_taskbar);
+    }
+
+    #[test]
+    fn toolset_window_config_prevents_windows_snap_without_changing_saved_geometry() {
+        for windows in [false, true] {
+            for toolset in ["core.main", "core.text", "plugin.demo", "user.custom"] {
+                let frame = ScreenRect::new(-1200.0, 450.0, 320.0, 96.0);
+                let config = toolset_window_config(
+                    "toolset-test",
+                    toolset,
+                    "ChemDraft toolbar".into(),
+                    frame,
+                    windows,
+                );
+                assert_eq!(config.resizable, !windows);
+                assert_eq!(config.maximizable, !windows);
+                assert_eq!((config.x, config.y), (Some(frame.x), Some(frame.y)));
+                assert_eq!((config.width, config.height), (frame.width, frame.height));
+                assert!(!config.decorations);
+                assert!(config.skip_taskbar);
+                assert!(config.accept_first_mouse);
+                // Content-fit sizing is not locked with matching min/max bounds.
+                assert_eq!((config.max_width, config.max_height), (None, None));
+            }
+        }
+    }
+
+    #[test]
+    fn popover_placement_flips_and_clamps_at_each_destination_dpi() {
+        for scale in [1.0, 1.5, 2.0] {
+            // Includes negative origin, taskbar/Dock exclusion and a differently
+            // scaled source display. Placement is independent of the source DPI.
+            let area =
+                ScreenRect::new(-1280.0 * scale, 24.0 * scale, 1280.0 * scale, 696.0 * scale);
+            let size = (240.0 * scale, 120.0 * scale);
+            let result = popover_placement(
+                (-40.0 * scale, 700.0 * scale),
+                Some(672.0 * scale),
+                size,
+                area,
+            );
+            assert_eq!(
+                result,
+                ScreenRect::new(-240.0 * scale, 552.0 * scale, size.0, size.1)
+            );
+            let below = popover_placement(
+                (-400.0 * scale, 200.0 * scale),
+                Some(172.0 * scale),
+                size,
+                area,
+            );
+            assert_eq!(below.y, 200.0 * scale);
+            let top = popover_placement(
+                (-1400.0 * scale, -20.0 * scale),
+                Some(-48.0 * scale),
+                size,
+                area,
+            );
+            assert_eq!((top.x, top.y), (area.x, area.y));
+            let huge = popover_placement(
+                (0.0, 700.0 * scale),
+                Some(672.0 * scale),
+                (2000.0 * scale, 1000.0 * scale),
+                area,
+            );
+            assert_eq!(huge, area);
+        }
+    }
+
+    #[test]
+    fn popover_placement_uses_owner_dpi_in_overlapping_logical_frames() {
+        let displays = [
+            MonitorFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale: 1.0,
+            },
+            MonitorFrame {
+                x: 1920.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+                scale: 1.5,
+            },
+        ];
+        // Prewarmed popover is on 100%, document/badge is on 150%. Its top
+        // resolves the destination even though the below point is off screen.
+        let monitor_point = global_logical_to_physical(&displays, 1800.0, 700.0, 1.5);
+        assert_eq!(monitor_point, (2700.0, 1050.0));
+        let area = ScreenRect::new(1920.0, 0.0, 1920.0, 1040.0);
+        let frame = popover_placement(
+            (1800.0 * 1.5, 725.0 * 1.5),
+            Some(700.0 * 1.5),
+            (241.0 * 1.5, 121.0 * 1.5),
+            area,
+        );
+        assert_eq!(frame, ScreenRect::new(2700.0, 858.0, 362.0, 182.0));
+        let edge = popover_placement((3800.0, 1070.0), None, (361.5, 181.5), area);
+        assert_eq!(edge.x + edge.width, area.x + area.width);
+        assert_eq!(edge.y + edge.height, area.y + area.height);
     }
 
     #[cfg(windows)]
