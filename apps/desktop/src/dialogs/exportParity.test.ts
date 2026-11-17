@@ -2,7 +2,7 @@
 import { saveExportPreviewEnabled } from "../exportPreviewSettings";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { boundExportNotice, createDefaultExportDialogState, createDialogExportResult, formatExportStatus } from "../MainWindow";
+import { boundExportNotice, createDefaultExportDialogState, createDialogExportPreview, createDialogExportResult, formatExportStatus } from "../MainWindow";
 import { applyNativeChainTool, createPhase4Document, exportPhase4Cdxml, exportPhase4Pdf, exportPhase4Svg, insertNativeBracket } from "../documentWorkflow";
 import { parseDialogMessage } from "./dialogProtocol";
 import { exportFixture } from "./exportTestFixtures";
@@ -52,11 +52,20 @@ describe("Export form preserves the existing export pipeline", () => {
     native.raster.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), warnings: [{ message: "Raster warning" }] });
     const raster = { scale: 3, background: "transparent" as const, jpegQuality: 83, maxDimensionPx: 4096 };
     const result = await createDialogExportResult(document, { ...exportFixture(), format, busy: false, raster });
-    const transparent = format === "png";
+    const transparent = format === "png" || format === "tiff";
     const svg = (await exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" }));
     expect(rasterizeSvgNative).toHaveBeenLastCalledWith(svg.contents, format, { scale: 3, cssPxPerInch: 96, background: transparent ? "transparent" : "#ffffff", jpegQuality: 83, maxDimensionPx: 4096 });
     expect(result.kind === "binary" && result.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.warnings).toEqual([...svg.warnings, { message: "Raster warning" }]);
+  });
+  it.each(["white", "transparent"] as const)("previews TIFF with the requested %s background", async background => {
+    native.raster.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), warnings: [] });
+    const state = exportFixture();
+    await createDialogExportPreview(createPhase4Document("TIFF preview"), {
+      ...state, format: "tiff", raster: { ...state.raster, background }
+    });
+    expect(native.raster).toHaveBeenLastCalledWith(expect.any(String), "png",
+      expect.objectContaining({ background: background === "white" ? "#ffffff" : "transparent" }));
   });
 });
 

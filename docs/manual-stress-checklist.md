@@ -972,7 +972,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   failures must show inside the dialog. Check rounded SVG units. With a ring and arrow, PDF
   must show both in the image labeled “Preview of the PDF page layout”, with no embedded
   PDF viewer or extra tab stop. Toggle PDF page guides and compare with the exported PDF.
-  Repeat previews for BMP, GIF and TIFF. Keep Export open while editing its source drawing,
+  Repeat previews for BMP, GIF and TIFF. For TIFF, place both a White page and a Transparent
+  export over a colored background in an image editor; the color should show only through
+  the transparent TIFF. Check that both TIFFs report the requested DPI.
+  Keep Export open while editing its source drawing,
   including edits that preserve its bounds: the preview must refresh and keep the filename and
   size settings. Repeat while another drawing is active and while Choose is pending, then cancel
   Choose. The refreshed preview and final file must describe the originating drawing.

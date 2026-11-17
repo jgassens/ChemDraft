@@ -174,6 +174,24 @@ it.each([
   expect(selected).toMatchObject({ filename: "Final.pdf", destinationPath: `${folder}Final.pdf` });
 });
 
+it("lets TIFF use a transparent background and resets it for opaque formats", () => {
+  const state: ExportDialogState = { ...exportFixture(), format: "tiff", busy: false };
+  const change = vi.fn();
+  act(() => root.render(createElement(ExportForm, {
+    state, onChange: change, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+  })));
+  const background = container.querySelector<HTMLSelectElement>("#chemdraft-export-raster-background")!;
+  expect(background.querySelector<HTMLOptionElement>('option[value="transparent"]')!.disabled).toBe(false);
+  act(() => {
+    background.value = "transparent";
+    background.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const next = change.mock.lastCall![0] as ExportDialogState;
+  expect(next.raster.background).toBe("transparent");
+  expect(updateExportDialogFormat(next, "png").raster.background).toBe("transparent");
+  expect(updateExportDialogFormat(next, "jpeg").raster.background).toBe("white");
+});
+
 it("keeps the action footer outside the scrollable form body", () => {
   act(() => root.render(createElement(ExportForm, {
     state: { ...exportFixture(), busy: false }, notice: "Warning\n".repeat(100),

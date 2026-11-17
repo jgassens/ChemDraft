@@ -1,4 +1,10 @@
 import type { ExportFormatId } from "@chemdraft/export-engine";
+import type { NativeRasterExportFormat } from "../nativeRasterExport";
+
+export function supportsTransparentRasterBackground(format: NativeRasterExportFormat | undefined): boolean {
+  return format === "png" || format === "tiff";
+}
+
 export type ExportDialogFormat = ExportFormatId;
 export interface ExportPresentationOptions {
   width: number;

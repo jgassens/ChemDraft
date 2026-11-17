@@ -6,6 +6,7 @@ import { desktopExportFormatDescriptors as exportFormatDescriptors, getDesktopEx
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { isDesktopRuntime } from "../window-manager";
 import type { NativeRasterExportFormat } from "../nativeRasterExport";
+import { supportsTransparentRasterBackground } from "./exportOptions";
 import type { ExportOptions, ExportFrame, ExportPreviewResult, ExportDialogState, ExportDialogFormat, SvgDialogExportOptions, PdfDialogExportOptions, RasterDialogExportOptions, CdxmlDialogExportOptions } from "./exportOptions";
 import { exportOptions, validExportOptions } from "./exportOptionsValidation";
 import { detectDialogPlatform, type DialogPlatform } from "./dialogProtocol";
@@ -405,7 +406,7 @@ function ExportFormBody({
               }}
             >
               <option value="white">White page</option>
-              <option value="transparent" disabled={rasterFormat !== "png"}>
+              <option value="transparent" disabled={!supportsTransparentRasterBackground(rasterFormat)}>
                 Transparent
               </option>
             </select>
@@ -529,7 +530,7 @@ export function updateExportDialogFormat(state: ExportDialogState, format: Expor
     destinationPath: exportPathWithFilename(state.destinationPath, filename),
     raster: {
       ...state.raster,
-      background: rasterFormat === "png" ? state.raster.background : "white"
+      background: supportsTransparentRasterBackground(rasterFormat) ? state.raster.background : "white"
     }
   };
 }

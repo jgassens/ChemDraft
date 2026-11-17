@@ -905,6 +905,7 @@ import { exportDefaultPath, stripExportFileExtension } from "./exportFilename";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
+import { supportsTransparentRasterBackground } from "./dialogs/exportOptions";
 import { exportOptions } from "./dialogs/exportOptionsValidation";
 import type { ExportDialogResult } from "./dialogs/dialogProtocol";
 import { exportDialogHeight, exportDialogSizeError } from "./dialogs/exportPresentation";
@@ -1778,7 +1779,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.15.14.50-codex";
+const CURRENT_BUILD_STAMP = "11.16.23.57-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -33749,12 +33750,13 @@ export async function createDialogExportPreview(document: ChemDraftDocument, opt
   if (!live()) throw new Error("Preview was superseded.");
   // Webviews cannot reliably embed PDFs. Show the SVG page layout used by the PDF
   // writer, with PDF guides and its white background, without generating PDF bytes.
-  // Preview less portable raster formats through the same native renderer as opaque PNG.
+  // Preview less portable raster formats through PNG, keeping the TIFF background.
   const state: ExportDialogState = options.format === "pdf"
     ? { ...options, busy: false, format: "svg", svg: { includeWarnings: true, includePageGuides: options.pdf.includePageGuides },
       presentation: options.presentation ? { ...options.presentation, background: "white" } : undefined }
     : options.format === "tiff" || options.format === "bmp" || options.format === "gif"
-    ? { ...options, busy: false, format: "png", raster: { ...options.raster, background: "white" } }
+    ? { ...options, busy: false, format: "png", raster: { ...options.raster,
+      background: supportsTransparentRasterBackground(options.format) ? options.raster.background : "white" } }
     : { ...options, busy: false };
   const result = await createDialogExportResult(document, state, true);
   // Native rasterization already in flight cannot be interrupted. Avoid
@@ -33854,9 +33856,9 @@ export async function createDialogExportResult(
     if (!isDesktopRuntime()) {
       throw new Error(`${descriptor.menuLabel} export requires the ChemDraft desktop app.`);
     }
-    const transparent = rasterFormat === "png" && state.raster.background === "transparent";
+    const transparent = supportsTransparentRasterBackground(rasterFormat) && state.raster.background === "transparent";
     // The SVG must omit its white page rect for a transparent request, otherwise resvg
-    // paints it over the (intentionally unfilled) pixmap and the PNG comes out opaque white.
+    // paints it over the intentionally unfilled pixmap and the image comes out opaque white.
     const svgResult = (await exportPhase4Svg(document, {
       ...(sized || preview ? { outputWidth: width, outputHeight: height } : {}),
       includeWarnings: true,

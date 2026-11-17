@@ -420,17 +420,25 @@ fn encode_raster(
                 .map_err(|error| format!("Could not encode GIF export: {error}"))?;
         }
         RasterExportFormat::Tiff => {
-            let rgb = flatten_to_rgb(pixmap.data(), background.unwrap_or([255, 255, 255]));
             let resolution = tiff_resolution(tiff_pixels_per_inch)?;
             let encode_error =
                 |error: tiff::TiffError| format!("Could not encode TIFF export: {error}");
-            // Uncompressed RGB8 with no predictor: the same layout `image` wrote before.
+            // Keep the uncompressed RGB8 layout for opaque TIFFs. Add an explicit fourth
+            // sample only for a transparent background so readers can identify straight alpha.
             let mut encoder = tiff::encoder::TiffEncoder::new(&mut cursor).map_err(encode_error)?;
             let mut image = encoder
                 .new_image::<tiff::encoder::colortype::RGB8>(width, height)
                 .map_err(encode_error)?;
             image.resolution(tiff::tags::ResolutionUnit::Inch, resolution);
-            image.write_data(&rgb).map_err(encode_error)?;
+            let pixels = if let Some(background) = background {
+                flatten_to_rgb(pixmap.data(), background)
+            } else {
+                image
+                    .extra_samples(&[tiff::tags::ExtraSamples::UnassociatedAlpha])
+                    .map_err(encode_error)?;
+                straight_rgba(pixmap.data())
+            };
+            image.write_data(&pixels).map_err(encode_error)?;
         }
     }
 
@@ -1103,6 +1111,36 @@ mod tests {
         .expect("TIFF export at 1x should encode");
         assert_eq!((response.width, response.height), (64, 32));
         assert_eq!(tiff_resolution_tags(&response.bytes), ((96, 1), (96, 1), 2));
+    }
+
+    #[test]
+    fn transparent_tiff_preserves_alpha_and_resolution() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2">
+            <rect x="1" width="1" height="2" fill="red" fill-opacity="0.5"/>
+            <rect x="2" width="1" height="2" fill="blue"/>
+        </svg>"#;
+        let bytes = rasterize_svg_impl(RasterExportRequest {
+            svg: svg.to_string(),
+            background: Some("transparent".to_string()),
+            css_px_per_inch: Some(300.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("encode transparent TIFF")
+        .bytes;
+        let mut decoder = tiff::decoder::Decoder::new(Cursor::new(&bytes)).expect("read TIFF");
+        assert_eq!(
+            decoder
+                .get_tag_u16_vec(tiff::tags::Tag::ExtraSamples)
+                .expect("TIFF alpha tag"),
+            [tiff::tags::ExtraSamples::UnassociatedAlpha.to_u16()],
+        );
+        assert_eq!(tiff_resolution_tags(&bytes), ((300, 1), (300, 1), 2));
+        let pixels = image::load_from_memory_with_format(&bytes, ImageFormat::Tiff)
+            .expect("decode transparent TIFF")
+            .to_rgba8();
+        assert_eq!(pixels.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(pixels.get_pixel(1, 0).0, [255, 0, 0, 128]);
+        assert_eq!(pixels.get_pixel(2, 0).0, [0, 0, 255, 255]);
     }
 
     #[test]
