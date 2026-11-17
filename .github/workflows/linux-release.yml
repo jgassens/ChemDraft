@@ -153,33 +153,224 @@ jobs:
           cp "$deb" "$appimage" release-assets/
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "deb=$(basename "$deb")" >> "$GITHUB_OUTPUT"
+          echo "appimage=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
 
-      # Install the .deb like a user would and keep it running on a virtual display. This catches a
-      # missing library dependency and a crash during start-up (window creation, menus, palettes).
-      - name: Smoke test the installed .deb
+      # Exercise both delivered packages, even if the first fails. The Linux-only harness lives
+      # here so a dispatched source tag need not contain a separate diagnostic script.
+      - name: Smoke test the installed .deb and AppImage
         env:
           DEB: release-assets/${{ steps.bundle.outputs.deb }}
+          # APPIMAGE itself is reserved for the AppImage runtime; setting it would also make
+          # Tauri misidentify the installed .deb process as running from an AppImage.
+          APPIMAGE_PACKAGE: release-assets/${{ steps.bundle.outputs.appimage }}
         run: |
           set -euo pipefail
-          sudo -E apt-get install -y --no-install-recommends xvfb xdotool openbox "./$DEB"
+          sudo -E apt-get install -y --no-install-recommends xvfb xdotool openbox dbus dbus-bin gdb "./$DEB"
+          mkdir -p linux-smoke-logs
+          dpkg-query -W libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0 libc6 | tee linux-smoke-logs/libraries.log
           export DISPLAY=:99
-          Xvfb "$DISPLAY" -screen 0 1600x1000x24 >/dev/null 2>&1 &
+          Xvfb "$DISPLAY" -screen 0 1600x1000x24 >linux-smoke-logs/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          wm_pid=
+          trap 'kill "$xvfb_pid" ${wm_pid:+"$wm_pid"} 2>/dev/null || true' EXIT
           sleep 1
-          openbox >/dev/null 2>&1 &
-          WEBKIT_DISABLE_DMABUF_RENDERER=1 chemdraft > chemdraft-smoke.log 2>&1 &
+          kill -0 "$xvfb_pid"
+          openbox >linux-smoke-logs/openbox.log 2>&1 &
+          wm_pid=$!
+          harness="$RUNNER_TEMP/chemdraft-linux-smoke.sh"
+          cat > "$harness" <<'SMOKE'
+          set -euo pipefail
+          kind=$1
+          executable=$2
+          logs="$GITHUB_WORKSPACE/linux-smoke-logs/$kind"
+          mkdir -p "$logs"
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1 RUST_BACKTRACE=1
+          # Currently Linux has no log backend; retain this filter for builds that install one.
+          export RUST_LOG=tauri=debug,tauri_runtime_wry=debug,wry=debug,tao=debug
+          export GDK_BACKEND=x11
+          profile() {
+            local root
+            root=$(mktemp -d "$RUNNER_TEMP/chemdraft-$kind.XXXXXX")
+            export XDG_CONFIG_HOME="$root/config" XDG_DATA_HOME="$root/data"
+            export XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime"
+            mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            echo "Fresh app-data/profile: $root"
+          }
+          state() {
+            echo 'App-data and runtime entries (including any locks):'
+            find "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" -maxdepth 4 -ls
+            echo 'Single-instance D-Bus name owner (Linux uses D-Bus, not a lock file):'
+            dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+              /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+              string:org.chemdraft.desktop.SingleInstance
+            pgrep -a -x chemdraft || true
+          }
+          report_status() {
+            echo "$kind: wait exit status (\$?) = $1 ($2)"
+            if [ "$1" -gt 128 ]; then
+              local signal=$(( $1 - 128 ))
+              echo "$kind: signal $signal ($(kill -l "$signal" 2>/dev/null || echo unknown))"
+            else
+              echo "$kind: no terminating signal encoded in exit status"
+            fi
+          }
+          pid=
+          stop_and_wait() {
+            local status
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "$kind: harness sending SIGTERM to $pid after observation"
+            fi
+            # setsid gives the launcher and its WebKit children a private process group. Clean
+            # up the whole group, including AppImage children, before testing the next format.
+            if kill -0 -- "-$pid" 2>/dev/null; then
+              echo "$kind: cleaning smoke process group $pid with SIGTERM"
+              kill -TERM -- "-$pid" 2>/dev/null || true
+              for _ in $(seq 1 10); do
+                kill -0 -- "-$pid" 2>/dev/null || break
+                sleep 1
+              done
+              if kill -0 -- "-$pid" 2>/dev/null; then
+                echo "$kind: process group $pid still exists after 10 s; sending SIGKILL"
+                kill -KILL -- "-$pid" 2>/dev/null || true
+              fi
+            fi
+            # Do not let errexit discard the child's status, including signal exits.
+            set +e
+            wait "$pid"
+            status=$?
+            set -e
+            report_status "$status" 'original smoke process; harness termination is labelled above'
+            pid=
+          }
+          finish() {
+            local result=$?
+            trap - EXIT
+            if [ -n "$pid" ]; then stop_and_wait; fi
+            if [ "$result" -ne 0 ]; then
+              for log in "$logs"/*.log; do
+                [ -f "$log" ] || continue
+                echo "Full diagnostic log: $log"
+                cat "$log"
+              done
+            fi
+            exit "$result"
+          }
+          trap finish EXIT
+          visible_window() {
+            local window owner
+            for window in $(xdotool search --onlyvisible --name '^ChemDraft' 2>/dev/null || true); do
+              owner=$(xdotool getwindowpid "$window" 2>/dev/null) || continue
+              # AppImage extract-and-run may fork AppRun rather than exec it. Accept its window
+              # only if its PID descends from our launcher; never accept an unrelated instance.
+              while [[ "$owner" =~ ^[0-9]+$ ]] && [ "$owner" -gt 1 ]; do
+                [ "$owner" = "$pid" ] && return 0
+                owner=$(ps -o ppid= -p "$owner" 2>/dev/null | tr -d ' ') || break
+              done
+            done
+            return 1
+          }
+          profile
+          state | tee "$logs/state-before.log"
+          # A private session bus and an empty XDG tree exclude a previous instance/profile.
+          dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+            /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+            string:org.chemdraft.desktop.SingleInstance | grep -q 'boolean false'
+          command=("$executable")
+          debug_binary="$executable"
+          if [ "$kind" = appimage ]; then
+            chmod +x "$executable"
+            # Always use the FUSE-free path on runners. Smoke the actual delivered image.
+            command+=(--appimage-extract-and-run)
+            # A second extracted copy is for ldd/GDB only; the smoke still runs the image above.
+            extract=$(mktemp -d "$RUNNER_TEMP/chemdraft-appimage.XXXXXX")
+            (cd "$extract" && "$executable" --appimage-extract) >"$logs/extract.log" 2>&1
+            appdir="$extract/squashfs-root"
+            debug_binary="$appdir/usr/bin/chemdraft"
+            test -x "$debug_binary"
+          fi
+          echo "ldd for $debug_binary (host resolution):"
+          ldd "$debug_binary" | tee "$logs/ldd.log"
+          setsid "${command[@]}" >"$logs/app.log" 2>&1 &
           pid=$!
+          echo "$kind: smoke PID $pid; command: ${command[*]}"
+          failure=
+          appeared=false
           for _ in $(seq 1 60); do
-            kill -0 "$pid" 2>/dev/null || { cat chemdraft-smoke.log; echo '::error::ChemDraft exited during start-up.'; exit 1; }
-            xdotool search --onlyvisible --name '^ChemDraft' >/dev/null 2>&1 && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              failure='ChemDraft exited during start-up.'
+              break
+            fi
+            # Restrict to this application's windows so another package cannot satisfy the test.
+            if visible_window; then
+              appeared=true
+              break
+            fi
             sleep 1
           done
-          xdotool search --onlyvisible --name '^ChemDraft' >/dev/null || { cat chemdraft-smoke.log; echo '::error::No ChemDraft window appeared within 60 s.'; exit 1; }
-          # Stay up a while: palettes and the tooltip window are created after the document window.
-          sleep 20
-          kill -0 "$pid" 2>/dev/null || { cat chemdraft-smoke.log; echo '::error::ChemDraft crashed after start-up.'; exit 1; }
-          kill "$pid"
-          grep -n 'panicked' chemdraft-smoke.log && { echo '::error::ChemDraft panicked.'; exit 1; } || true
-          echo 'Smoke test passed: the installed .deb started and stayed up.'
+          if [ -z "$failure" ] && [ "$appeared" = false ]; then
+            failure='No ChemDraft window appeared within 60 s.'
+          fi
+          if [ -z "$failure" ]; then
+            # Palettes and the tooltip are created after the document window.
+            sleep 20
+            kill -0 "$pid" 2>/dev/null || failure='ChemDraft crashed after start-up.'
+            if [ -z "$failure" ] && ! visible_window; then
+              failure='ChemDraft has no visible window after start-up.'
+            fi
+          fi
+          state >"$logs/state-after.log" 2>&1 || true
+          stop_and_wait
+          if grep -q 'panicked' "$logs/app.log"; then failure='ChemDraft panicked.'; fi
+          if [ -n "$failure" ]; then
+            echo "::error::$kind: $failure"
+            # Retry with both fresh data and a new bus, after reaping the first process. A passing
+            # retry never clears the original failure. Bound a retry that does not reproduce.
+            profile
+            debug_command=(gdb -batch -ex run -ex bt -ex 'thread apply all bt full' --args "$debug_binary")
+            if [ "$kind" = appimage ]; then
+              # Let AppRun configure its own bundled loader, schemas and WebKit helpers before
+              # entering GDB. Replace only the executable in the disposable diagnostic copy.
+              mv "$debug_binary" "$debug_binary.real"
+              cat > "$debug_binary" <<'DEBUG'
+          #!/bin/bash
+          binary="$(dirname "$0")/chemdraft.real"
+          echo 'ldd inside the AppRun environment:'
+          ldd "$binary"
+          exec gdb -batch -ex run -ex bt -ex 'thread apply all bt full' --args "$binary" "$@"
+          DEBUG
+              chmod +x "$debug_binary"
+              debug_command=(env APPDIR="$appdir" APPIMAGE="$executable" "$appdir/AppRun")
+            fi
+            set +e
+            timeout --signal=INT --kill-after=10s 90s dbus-run-session -- "${debug_command[@]}" >"$logs/gdb.log" 2>&1
+            debug_status=$?
+            set -e
+            report_status "$debug_status" 'debugger retry; 124 means the 90 s diagnostic timeout'
+            exit 1
+          fi
+          echo "Smoke test passed: $kind started and stayed up."
+          SMOKE
+          failed=0
+          for kind in deb appimage; do
+            if [ "$kind" = deb ]; then executable=$(command -v chemdraft); else executable="$GITHUB_WORKSPACE/$APPIMAGE_PACKAGE"; fi
+            # Each format gets its own bus, so the installed package cannot cause the AppImage
+            # to hand off to it and exit successfully without actually testing its startup.
+            if dbus-run-session -- bash "$harness" "$kind" "$executable" 2>&1 | tee "linux-smoke-logs/$kind.log"; then
+              :
+            else
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Preserve Linux smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-smoke-${{ matrix.arch }}
+          path: linux-smoke-logs/
+          if-no-files-found: ignore
 
       - name: Print SHA-256 and sizes and write checksums
         run: |
