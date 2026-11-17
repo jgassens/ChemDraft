@@ -6,6 +6,8 @@ ChemDraft 1.1.0 is a free, open-source chemical drawing application for macOS an
 
 Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDraft/releases/latest) or visit [chemdraft.ai](https://chemdraft.ai).
 
+For managed or shared Windows machines, the all-users installer installs to `C:\Program Files\ChemDraft` and requires administrator rights for installation and every update. It uses a separate `latest-allusers.json` update feed; installing it alongside the per-user installer gives you two copies. For silent deployment from an elevated prompt, run `ChemDraft_<version>_x64-allusers-setup.exe /S`. Release installers are built only by the GitHub-hosted Windows release workflow. See the [Windows release guide](docs/releasing/windows-updates.md).
+
 ## What it does
 
 - Draw molecules, reactions and mechanisms with bonds, rings, arrows, atom labels and chemical abbreviations.

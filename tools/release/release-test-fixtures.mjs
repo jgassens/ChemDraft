@@ -11,6 +11,7 @@ export const commit = "a".repeat(40);
 export const arm = `ChemDraft_${version}_aarch64.dmg`;
 export const intel = `ChemDraft_${version}_x86_64.dmg`;
 export const installer = `ChemDraft_${version}_x64-setup.exe`;
+export const allUsersInstaller = `ChemDraft_${version}_x64-allusers-setup.exe`;
 
 // Private keys exist only in memory for this test process.
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -33,16 +34,18 @@ export function releaseFixture(t) {
   t.after(() => rmSync(rootDir, { recursive: true, force: true }));
   const assets = join(rootDir, "assets");
   mkdirSync(assets);
-  for (const [target, suffix] of Object.entries(BUILD_TARGETS)) {
+  for (const [target, suffix] of [...Object.entries(BUILD_TARGETS), ["x86_64-pc-windows-msvc", "x64-allusers-setup.exe"]]) {
     const file = join(assets, `ChemDraft_${version}_${suffix}`);
     writeFileSync(file, `synthetic ${target}`);
     writeFileSync(`${file}.build.json`, JSON.stringify({ commit, version, target, clean: true, ...artifactDigest(file) }));
   }
-  const signature = updaterSignature(readFileSync(join(assets, installer)));
-  writeFileSync(join(assets, `${installer}.sig`), `${signature}\n`);
-  writeFileSync(join(assets, "latest.json"), JSON.stringify({
-    version, platforms: { [windowsPlatformKey]: { url: installerUrl, signature } }
-  }));
+  for (const [name, feed] of [[installer, "latest.json"], [allUsersInstaller, "latest-allusers.json"]]) {
+    const signature = updaterSignature(readFileSync(join(assets, name)));
+    writeFileSync(join(assets, `${name}.sig`), `${signature}\n`);
+    writeFileSync(join(assets, feed), JSON.stringify({
+      version, platforms: { [windowsPlatformKey]: { url: installerUrl.replace(installer, name), signature } }
+    }));
+  }
   writeReleaseChecksums(assets);
   return { rootDir, assets, version };
 }

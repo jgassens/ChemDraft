@@ -6,34 +6,35 @@ import { artifactDigest, BUILD_TARGETS, COMMIT_PATTERN } from "./record-build.mj
 import { loadUpdaterPublicKey, RELEASE_DOWNLOAD_BASE, verifyUpdaterSignature, WINDOWS_PLATFORM_KEY } from "./windows-updater.mjs";
 
 export function verifyWindowsUpdateAssets({ assets, version, allowIncomplete = false }, { updaterPublicKey } = {}) {
-  const installer = `ChemDraft_${version}_x64-setup.exe`;
+  for (const [installer, feedName] of [[`ChemDraft_${version}_x64-setup.exe`, "latest.json"], [`ChemDraft_${version}_x64-allusers-setup.exe`, "latest-allusers.json"]]) {
   const present = new Set(readdirSync(assets));
   // An absent Windows build may be deferred, but a partial updater package must fail closed.
-  if (allowIncomplete && ![installer, `${installer}.sig`, "latest.json"].some((name) => present.has(name))) return;
+  if (allowIncomplete && ![installer, `${installer}.sig`, feedName].some((name) => present.has(name))) continue;
   const read = (name, encoding) => {
     try { return readFileSync(join(assets, name), encoding); }
     catch (error) { throw new Error(`${name}: ${error.code === "ENOENT" ? "missing release file" : error.message}`); }
   };
   const signature = read(`${installer}.sig`, "utf8").trim();
-  const manifest = read("latest.json", "utf8");
+  const manifest = read(feedName, "utf8");
   let feed;
   try { feed = JSON.parse(manifest); }
-  catch (error) { throw new Error(`latest.json: ${error.message}`); }
-  if (feed?.version !== version) throw new Error(`latest.json: version: expected ${version}, found ${feed?.version}`);
+  catch (error) { throw new Error(`${feedName}: ${error.message}`); }
+  if (feed?.version !== version) throw new Error(`${feedName}: version: expected ${version}, found ${feed?.version}`);
   const platforms = feed.platforms;
   const keys = platforms && typeof platforms === "object" && !Array.isArray(platforms) ? Object.keys(platforms) : [];
   if (keys.length !== 1 || keys[0] !== WINDOWS_PLATFORM_KEY) {
-    throw new Error(`latest.json: platforms: expected ${WINDOWS_PLATFORM_KEY}, found ${keys.join(", ") || JSON.stringify(platforms)}`);
+    throw new Error(`${feedName}: platforms: expected ${WINDOWS_PLATFORM_KEY}, found ${keys.join(", ") || JSON.stringify(platforms)}`);
   }
   const entry = platforms[WINDOWS_PLATFORM_KEY];
   const expectedUrl = `${RELEASE_DOWNLOAD_BASE}/v${version}/${encodeURIComponent(installer)}`;
-  if (entry?.url !== expectedUrl) throw new Error(`latest.json: platforms.${WINDOWS_PLATFORM_KEY}.url: expected ${expectedUrl}, found ${JSON.stringify(entry?.url)}`);
+  if (entry?.url !== expectedUrl) throw new Error(`${feedName}: platforms.${WINDOWS_PLATFORM_KEY}.url: expected ${expectedUrl}, found ${JSON.stringify(entry?.url)}`);
   if (entry?.signature !== signature) {
-    throw new Error(`latest.json: platforms.${WINDOWS_PLATFORM_KEY}.signature: expected ${JSON.stringify(signature)} from ${installer}.sig, found ${JSON.stringify(entry?.signature)}`);
+    throw new Error(`${feedName}: platforms.${WINDOWS_PLATFORM_KEY}.signature: expected ${JSON.stringify(signature)} from ${installer}.sig, found ${JSON.stringify(entry?.signature)}`);
   }
   const bytes = read(installer);
   try { verifyUpdaterSignature(bytes, signature, updaterPublicKey ?? loadUpdaterPublicKey()); }
   catch (error) { throw new Error(`${installer}.sig: ${error.message}`); }
+  }
 }
 
 export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSync } = {}) {
@@ -55,11 +56,22 @@ export function expectedReleaseCommit({ commit, tag, rootDir }, { run = spawnSyn
 
 export function releaseBuildFiles(version) {
   if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) throw new Error("Expected --version X.Y.Z");
-  return Object.entries(BUILD_TARGETS).map(([target, suffix]) => ({ target, name: `ChemDraft_${version}_${suffix}` }));
+  return [
+    ...Object.entries(BUILD_TARGETS).map(([target, suffix]) => ({ target, name: `ChemDraft_${version}_${suffix}` })),
+    { target: "x86_64-pc-windows-msvc", name: `ChemDraft_${version}_x64-allusers-setup.exe` }
+  ];
+}
+
+export function requiredWindowsUpdaterFiles(version) {
+  return [
+    ...releaseBuildFiles(version).filter(({ target }) => target === "x86_64-pc-windows-msvc").map(({ name }) => `${name}.sig`),
+    "latest.json",
+    "latest-allusers.json"
+  ];
 }
 
 export function missingBuildFiles(assets, version) {
-  return releaseBuildFiles(version).flatMap(({ name }) => [name, `${name}.build.json`]).filter((name) => {
+  return [...releaseBuildFiles(version).flatMap(({ name }) => [name, `${name}.build.json`]), ...requiredWindowsUpdaterFiles(version)].filter((name) => {
     try { return !statSync(join(assets, name)).isFile(); } catch { return true; }
   });
 }
@@ -67,9 +79,7 @@ export function missingBuildFiles(assets, version) {
 export function verifyBuildAssets({ assets, version, expectedCommit, allowIncomplete = false }, { checkDmgCommit, updaterPublicKey } = {}) {
   if (!COMMIT_PATTERN.test(expectedCommit ?? "")) throw new Error("An expected full source commit is mandatory");
   const builds = releaseBuildFiles(version);
-  const allowed = new Set(builds.flatMap(({ name }) => [name, `${name}.build.json`]));
-  allowed.add(`ChemDraft_${version}_x64-setup.exe.sig`);
-  allowed.add("latest.json");
+  const allowed = new Set([...builds.flatMap(({ name }) => [name, `${name}.build.json`]), ...requiredWindowsUpdaterFiles(version)]);
   const errors = [];
   // Feeds, checksums and notes are allowed; unexpected packages/signatures/records are not.
   const present = new Set(readdirSync(assets));
