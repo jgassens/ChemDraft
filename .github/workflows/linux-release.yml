@@ -48,6 +48,8 @@ jobs:
       NEEDRESTART_MODE: a
     outputs:
       version: ${{ steps.bundle.outputs.version }}
+      deb: ${{ steps.bundle.outputs.deb }}
+      appimage: ${{ steps.bundle.outputs.appimage }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,28 +157,54 @@ jobs:
           echo "deb=$(basename "$deb")" >> "$GITHUB_OUTPUT"
           echo "appimage=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
 
+      - name: Print SHA-256 and sizes and write checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          ls -l
+          sha256sum -- *.deb *.AppImage | tee SHA256SUMS-linux.txt
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      # Both host stacks must report, even when one fails. The packages are built only on 22.04.
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: a
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release-amd64
+          path: release-assets
+
       # Exercise both delivered packages, even if the first fails. The Linux-only harness lives
       # here so a dispatched source tag need not contain a separate diagnostic script.
       - name: Smoke test the installed .deb and AppImage
         env:
-          DEB: release-assets/${{ steps.bundle.outputs.deb }}
+          DEB: release-assets/${{ needs.build.outputs.deb }}
           # APPIMAGE itself is reserved for the AppImage runtime; setting it would also make
           # Tauri misidentify the installed .deb process as running from an AppImage.
-          APPIMAGE_PACKAGE: release-assets/${{ steps.bundle.outputs.appimage }}
+          APPIMAGE_PACKAGE: release-assets/${{ needs.build.outputs.appimage }}
         run: |
           set -euo pipefail
-          sudo -E apt-get install -y --no-install-recommends xvfb xdotool openbox dbus dbus-bin gdb "./$DEB"
+          (cd release-assets && sha256sum --check SHA256SUMS-linux.txt)
+          sudo apt-get update
+          sudo -E apt-get install -y --no-install-recommends xvfb xauth x11-utils xdotool openbox dbus dbus-bin gdb "./$DEB"
           mkdir -p linux-smoke-logs
-          dpkg-query -W libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0 libc6 | tee linux-smoke-logs/libraries.log
-          export DISPLAY=:99
-          Xvfb "$DISPLAY" -screen 0 1600x1000x24 >linux-smoke-logs/xvfb.log 2>&1 &
-          xvfb_pid=$!
-          wm_pid=
-          trap 'kill "$xvfb_pid" ${wm_pid:+"$wm_pid"} 2>/dev/null || true' EXIT
-          sleep 1
-          kill -0 "$xvfb_pid"
-          openbox >linux-smoke-logs/openbox.log 2>&1 &
-          wm_pid=$!
+          # Noble renames GTK to libgtk-3-0t64; match both hosts' installed package names.
+          dpkg-query -W 'libgtk-3-0*' libwebkit2gtk-4.1-0 'libsoup-3.0-0*' libc6 | tee linux-smoke-logs/libraries.log
           harness="$RUNNER_TEMP/chemdraft-linux-smoke.sh"
           cat > "$harness" <<'SMOKE'
           set -euo pipefail
@@ -327,67 +355,118 @@ jobs:
             # Retry with both fresh data and a new bus, after reaping the first process. A passing
             # retry never clears the original failure. Bound a retry that does not reproduce.
             profile
-            debug_command=(gdb -batch -ex run -ex bt -ex 'thread apply all bt full' --args "$debug_binary")
+            # Synchronous X errors keep the issuing GTK/Tao call on the stack at SIGTRAP.
+            export GDK_SYNCHRONIZE=1
+            debug_script="$logs/debug.gdb"
+            cat > "$debug_script" <<'GDB'
+          set pagination off
+          set breakpoint pending on
+          set startup-with-shell off
+          # These packages are amd64: record window/atom IDs and the callers of each property
+          # read without calling Xlib from GDB (which could deadlock the stopped client).
+          break XGetWindowProperty
+          commands
+            silent
+            printf "XGetWindowProperty window=%#lx atom=%lu\n", $rsi, $rdx
+            bt 12
+            continue
+          end
+          # A pending gdk_x_error breakpoint resolves if the GTK build exposes that symbol.
+          break gdk_x_error
+          # Also catch clean/fatal library exits: the previous retry exited 01 with no stack.
+          break exit
+          break _exit
+          run
+          bt
+          thread apply all bt full
+          GDB
+            debug_command=(/usr/bin/gdb --nx --nh -batch -x "$debug_script" --args "$debug_binary")
             if [ "$kind" = appimage ]; then
               # Let AppRun configure its own bundled loader, schemas and WebKit helpers before
               # entering GDB. Replace only the executable in the disposable diagnostic copy.
               mv "$debug_binary" "$debug_binary.real"
               cat > "$debug_binary" <<'DEBUG'
           #!/bin/bash
+          set -euo pipefail
           binary="$(dirname "$0")/chemdraft.real"
+          # AppRun itself sets PYTHONHOME/PYTHONPATH to its incomplete Python tree. Host GDB
+          # embeds Python, so clearing only the environment *before* AppRun is insufficient.
+          for variable in "${!PYTHON@}"; do unset "$variable"; done
           echo 'ldd inside the AppRun environment:'
-          ldd "$binary"
-          exec gdb -batch -ex run -ex bt -ex 'thread apply all bt full' --args "$binary" "$@"
+          /usr/bin/ldd "$binary"
+          # GDB must load host libraries, while the inferior needs AppRun's library/helper PATH.
+          environment_script="$CHEMDRAFT_SMOKE_LOGS/apprun-environment.gdb"
+          printf 'set environment LD_LIBRARY_PATH = %s\n' "${LD_LIBRARY_PATH-}" > "$environment_script"
+          printf 'set environment LD_PRELOAD = %s\n' "${LD_PRELOAD-}" >> "$environment_script"
+          printf 'set environment PATH = %s\n' "$PATH" >> "$environment_script"
+          exec /usr/bin/env -u LD_LIBRARY_PATH -u LD_PRELOAD PATH=/usr/bin:/bin \
+            /usr/bin/gdb --nx --nh -batch -x "$environment_script" \
+            -x "$CHEMDRAFT_SMOKE_GDB_SCRIPT" --args "$binary" "$@"
           DEBUG
               chmod +x "$debug_binary"
-              debug_command=(env APPDIR="$appdir" APPIMAGE="$executable" "$appdir/AppRun")
+              debug_command=(env APPDIR="$appdir" APPIMAGE="$executable"
+                CHEMDRAFT_SMOKE_LOGS="$logs" CHEMDRAFT_SMOKE_GDB_SCRIPT="$debug_script" "$appdir/AppRun")
             fi
             set +e
             timeout --signal=INT --kill-after=10s 90s dbus-run-session -- "${debug_command[@]}" >"$logs/gdb.log" 2>&1
             debug_status=$?
             set -e
+            # Match numeric property IDs in GDB to names without invoking Xlib in the inferior.
+            xlsatoms >"$logs/atoms.log" 2>&1 || true
             report_status "$debug_status" 'debugger retry; 124 means the 90 s diagnostic timeout'
             exit 1
           fi
           echo "Smoke test passed: $kind started and stayed up."
           SMOKE
+          # xvfb-run chooses an unused display and waits until it is ready. Keep the same
+          # server/WM for both package formats; each app still gets its own profile and bus.
+          export CHEMDRAFT_SMOKE_HARNESS="$harness"
+          xvfb-run -a --error-file=linux-smoke-logs/xvfb.log \
+            --server-args='-screen 0 1920x1080x24 +extension RANDR +extension GLX -nolisten tcp' \
+            bash <<'DISPLAY_SESSION'
+          set -euo pipefail
+          xdpyinfo >linux-smoke-logs/display.log
+          openbox >linux-smoke-logs/openbox.log 2>&1 &
+          wm_pid=$!
+          trap 'kill "$wm_pid" 2>/dev/null || true' EXIT
+          # Do not race startup against Openbox advertising its EWMH support on the root window.
+          wm_ready=false
+          for _ in $(seq 1 50); do
+            kill -0 "$wm_pid"
+            if xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id'; then wm_ready=true; break; fi
+            sleep 0.1
+          done
+          [ "$wm_ready" = true ] || { echo '::error::Openbox did not become ready.'; exit 1; }
           failed=0
           for kind in deb appimage; do
             if [ "$kind" = deb ]; then executable=$(command -v chemdraft); else executable="$GITHUB_WORKSPACE/$APPIMAGE_PACKAGE"; fi
             # Each format gets its own bus, so the installed package cannot cause the AppImage
             # to hand off to it and exit successfully without actually testing its startup.
-            if dbus-run-session -- bash "$harness" "$kind" "$executable" 2>&1 | tee "linux-smoke-logs/$kind.log"; then
+            # Allowlist the runner environment: no inherited PYTHON*, loader overrides, virtual
+            # environments, or AppImage variables. Execute the image directly, never via Python.
+            if env -i PATH=/usr/bin:/bin HOME="$HOME" USER="$USER" LANG=C.UTF-8 \
+              DISPLAY="$DISPLAY" XAUTHORITY="${XAUTHORITY:-}" \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" \
+              dbus-run-session -- bash "$CHEMDRAFT_SMOKE_HARNESS" "$kind" "$executable" \
+              2>&1 | tee "linux-smoke-logs/$kind.log"; then
               :
             else
               failed=1
             fi
           done
           exit "$failed"
+          DISPLAY_SESSION
 
       - name: Preserve Linux smoke diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-smoke-${{ matrix.arch }}
+          name: linux-smoke-amd64-${{ matrix.runner }}
           path: linux-smoke-logs/
           if-no-files-found: ignore
 
-      - name: Print SHA-256 and sizes and write checksums
-        run: |
-          set -euo pipefail
-          cd release-assets
-          ls -l
-          sha256sum -- *.deb *.AppImage | tee SHA256SUMS-linux.txt
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-release-${{ matrix.arch }}
-          path: release-assets/*
-          if-no-files-found: error
-
   upload:
-    needs: build
+    needs: [build, smoke]
     if: github.repository == 'jgassens/ChemDraft' && !github.event.repository.fork && inputs.upload_to_release != ''
     runs-on: ubuntu-latest
     permissions:
