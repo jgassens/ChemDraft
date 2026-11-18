@@ -37,6 +37,22 @@ describe("rotation drag snapping", () => {
     expect(referenceDegrees + snapRotationDegrees(delta, { referenceDegrees, shiftKey: true })).toBe(expected);
   });
 
+  it("reproduces Shift snapping from an off-grid 7° start for triage 469e", () => {
+    const referenceDegrees = 7;
+    const snapDrag = (delta: number) => snapRotationDegrees(delta, { referenceDegrees, shiftKey: true });
+    const drag = 44;
+    const turn = snapDrag(drag);
+    expect(turn).toBe(38);
+    expect(referenceDegrees + turn).toBe(45);
+    expect(snapDrag(45)).toBe(38);
+
+    expect(snapDrag(0)).toBe(-7);
+    expect(snapDrag(0.4)).toBe(-7);
+    expect(snapDrag(0.5)).toBe(8);
+    expect(snapDrag(0.5) - 0.5).toBe(7.5);
+    expect(snapDrag(0.5) - snapDrag(0.4)).toBe(15);
+  });
+
   it.each([
     [7, 6, 15], [7, 10, 15], [7, 15, 22], [7, 20, 30],
     [100, 3, 105], [100, 8.1, 108.1], [358, 4, 360], [-7, -6, -15]
