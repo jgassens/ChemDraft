@@ -59,6 +59,53 @@ foreach(target IN ITEMS uff-reference uff-reference-diagnostic)
   target_link_libraries(${target} PRIVATE Avogadro::Calc Avogadro::Core nlohmann_json::nlohmann_json)
 endforeach()
 
+# Report actual L-BFGS iterations without changing the pinned solver or the
+# pristine fixture targets. The pin otherwise discards the solver progress.
+set(upstream_optimizer "${AVOGADROLIBS_SOURCE}/avogadro/calc/energyoptimizer.cpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${upstream_optimizer}")
+file(READ "${upstream_optimizer}" optimizer_source)
+string(REPLACE "\r\n" "\n" optimizer_source "${optimizer_source}")
+set(progress_discard "  (void)solverProgress;")
+set(lbfgs_solve "  auto [solution, solverProgress] = solver.Minimize(objective, initialState);")
+set(fire_step "    positions += dr;\n    lastEnergy = method.evaluate(positions, &grad);")
+foreach(marker IN ITEMS progress_discard lbfgs_solve fire_step)
+  string(FIND "${optimizer_source}" "${${marker}}" position)
+  if(position EQUAL -1)
+    message(FATAL_ERROR "Missing optimizer instrumentation marker: ${marker}")
+  endif()
+endforeach()
+string(REPLACE "${lbfgs_solve}" [=[
+  if (Spin3dBenchmark::acceptedStepObserver) {
+    solver.SetCallback([](const auto&, const auto& accepted, const auto& progress) {
+      if (progress.num_iterations > 0)
+        Spin3dBenchmark::acceptedStepObserver(accepted.x, accepted.value, progress.num_iterations);
+    });
+  }
+  auto [solution, solverProgress] = solver.Minimize(objective, initialState);]=]
+  optimizer_source "${optimizer_source}")
+string(REPLACE "${fire_step}" "${fire_step}
+    if (Spin3dBenchmark::acceptedStepObserver)
+      Spin3dBenchmark::acceptedStepObserver(positions, lastEnergy, step + 1);"
+  optimizer_source "${optimizer_source}")
+string(REPLACE "${progress_discard}"
+  "  Spin3dBenchmark::recordLbfgsIterations(solverProgress.num_iterations);"
+  optimizer_source "${optimizer_source}")
+set(counted_optimizer "${CMAKE_CURRENT_BINARY_DIR}/energyoptimizer-counted.cpp")
+file(CONFIGURE OUTPUT "${counted_optimizer}" CONTENT
+"#include \"optimizer-observer.h\"
+@optimizer_source@" @ONLY)
+add_executable(optimizer-benchmark optimizer-benchmark.cpp "${counted_optimizer}")
+set_target_properties(optimizer-benchmark PROPERTIES
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+target_include_directories(optimizer-benchmark PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${AVOGADROLIBS_SOURCE}/avogadro/calc"
+  "${CMAKE_CURRENT_BINARY_DIR}/avogadrolibs/avogadro/calc")
+target_link_libraries(optimizer-benchmark PRIVATE Avogadro::Calc Avogadro::Core
+  nlohmann_json::nlohmann_json cppoptlib)
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/optimizer-benchmark-$<CONFIG>.txt"
+  CONTENT "$<TARGET_FILE:optimizer-benchmark>\ncxxVisibilityPreset=hidden\nvisibilityInlinesHidden=ON\n")
+
 # Let CMake resolve executable paths for single- and multi-config generators.
 get_directory_property(upstream_flags DIRECTORY "${AVOGADROLIBS_SOURCE}" DEFINITION CMAKE_CXX_FLAGS)
 get_directory_property(upstream_release_flags DIRECTORY "${AVOGADROLIBS_SOURCE}"

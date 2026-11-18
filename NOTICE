@@ -234,6 +234,25 @@ avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
   or Python (guarded by pnpm audit:engine3d-sidecar).
   Full licence text: native/avogadro3d-sidecar/licenses/avogadrolibs-LICENSE.txt
 
+Avogadro UFF (adapted Rust source)
+  BSD-3-Clause. Copyright (c) 2011-2020, Kitware, Inc.
+  Source: https://github.com/OpenChemistry/avogadrolibs, commit
+  416651ddaef33a4e20392392e7c0b505d446491b. ChemDraft adapts the UFF evaluator,
+  typing and geometry routines in apps/desktop/src-tauri/src/native_uff/.
+  Thanks to the Avogadro project and Geoff Hutchison for port guidance.
+  UFF: A. K. Rappé et al., J. Am. Chem. Soc. 114, 10024–10035 (1992).
+  https://doi.org/10.1021/ja00051a040
+  Full licence text: Appendix B.1 and native/avogadro3d-sidecar/licenses/avogadrolibs-LICENSE.txt
+
+UFF parameter table (Avogadro adaptation of RDKit data)
+  BSD-3-Clause. Copyright (C) 2004-2021 Greg Landrum and other RDKit contributors.
+  Source: avogadro/calc/uffdata.h at the Avogadro pin above. All 127 non-dummy
+  parameter labels and numeric columns match RDKit's Code/ForceField/UFF/Params.cpp
+  at e74e7b0a5a2fc4e7f77c04ec26a61d4b8edbf22f (Release_2026_03_3).
+  https://github.com/rdkit/rdkit/blob/e74e7b0a5a2fc4e7f77c04ec26a61d4b8edbf22f/Code/ForceField/UFF/Params.cpp
+  The Rust table preserves Avogadro's ordering, element numbers and float32 precision.
+  Full licence text: Appendix B.2 and packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
+
 Eigen 3.4.0 (header-only, compiled into the avogadro3d-sidecar executable)
   MPL-2.0. Source: https://gitlab.com/libeigen/eigen, tag 3.4.0. Unmodified.
   Source for the MPL-2.0 files is available at the URL above. Eigen also carries a
@@ -594,3 +613,70 @@ Wikidata chemical names and structures
   Data licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).
   Source: https://www.wikidata.org, snapshot 27 October 2026.
   See data/names/NOTICE.txt. This data licence is separate from the lookup code licence.
+
+
+APPENDIX B. Licence texts for the native UFF port
+
+B.1 Avogadro UFF
+
+    Copyright (c) 2011-2020, Kitware, Inc.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    1. Redistributions of source code must retain the above copyright notice, this
+        list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice,
+        this list of conditions and the following disclaimer in the documentation
+        and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its contributors
+        may be used to endorse or promote products derived from this software
+        without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+    ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+    WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+    TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+    THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+B.2 RDKit UFF parameter data
+
+    Copyright (C) 2004-2021 Greg Landrum and other RDKit contributors
+
+    BSD 3-Clause License
+
+    Copyright (c) 2006-2015, Rational Discovery LLC, Greg Landrum, and Julie Penzotti and others
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    1. Redistributions of source code must retain the above copyright notice, this
+       list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimer in the documentation
+       and/or other materials provided with the distribution.
+
+    3. Neither the name of the copyright holder nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+    SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+    OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

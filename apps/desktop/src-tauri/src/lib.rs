@@ -17,6 +17,7 @@ mod macos_quit;
 mod main_window_placement;
 mod monitor_query;
 mod naming_engine;
+pub mod native_uff;
 mod network_error;
 #[cfg(test)]
 mod network_test_http;

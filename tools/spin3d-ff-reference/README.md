@@ -125,11 +125,24 @@ The comparison checkout was `b296e8024abd93771f6a51f5d9eed4f9ca419e6b`.
   max-move check to complete coordinate triples and clears the L-BFGS history on exit.
 - `uff.h` is byte-identical.
 
+## Benchmark ABC-FIRE and Hybrid offline
+
+Use the same pinned dependencies and toolchain as fixture regeneration.
+
+```text
+node tools/spin3d-ff-reference/benchmark-optimizers.mjs --avogadrolibs "<pinned checkout>" --eigen "<Eigen 3.4.0 source>"
+```
+
+The benchmark writes the full run data and a summary under `benchmarks/`. It creates
+and removes a temporary build by default. Pass `--build-dir <scratch directory>` to
+reuse a build and remove it manually. See the [benchmark report](benchmarks/fire-vs-hybrid.md)
+for the measured cases, schedules and timing boundaries.
+
 ## Follow-ups
 
-Product drag and release transcripts, the 200-frame fixed-target run, the paired
-ABC-FIRE and Hybrid benchmark, and native runtime, coverage and stereo-refusal
-checks belong to the later decision-dependent work.
+Product drag and release transcripts, the 200-frame fixed-target run, and
+native runtime, coverage and stereo-refusal checks belong to the later
+decision-dependent work.
 
 ## Attribution
 
