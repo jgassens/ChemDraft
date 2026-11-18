@@ -123,6 +123,8 @@ export interface Summary {
   standaloneRGroups: unknown[];
   nonTextColours?: NonTextColourSummary[];
   placements?: Placement[];
+  /** Counted from native objects, independently of the stored placement array. */
+  placementCount?: number;
   drawing: Record<DrawingFeature, unknown>;
 }
 export interface Difference {
@@ -160,9 +162,9 @@ export interface RoundTrip {
   bytes?: number;
   ms: number;
 }
-export const undeterminedFeatures = ["connectivity", "bond-order", "molecule-placement", "colour-placement",
+export const undeterminedFeatures = ["connectivity", "bond-order", "route-summaries", "molecule-placement", "colour-placement",
   "wavy-placement", "wavy-direction", "bracket-placement", "bracket-members", "bracket-crossing-bonds"] as const;
-export const missingStoredEvidence = "Missing stored placement or endpoint evidence. Re-run the harness because rescore cannot reconstruct it.";
+export const missingStoredEvidence = "Missing stored placements, endpoints or route summaries. Re-run the harness because rescore cannot reconstruct them.";
 export interface Result {
   truthSru?: { molecules: MoleculeSummary[]; notes: string[] };
   sourceSurvival?: import("./survival").SurvivalCounts;
@@ -187,6 +189,16 @@ export interface Result {
   timings: { totalMs: number; importMs?: number; summaryMs?: number; stageMs?: Partial<Record<ErrorStage, number>> };
 }
 export type Comparison = Pick<RoundTrip, "verdict" | "differences" | "undetermined" | "drawingLoss" | "comparisonInternalErrors" | "identityPasses" | "chemistryPassReason">;
+
+/** A legacy single-leg route can use its two recorded endpoints directly. */
+export function storedRouteLegs(before: Summary | undefined, trip: RoundTrip): NonNullable<RoundTrip["legs"]> | undefined {
+  if (!before || !trip.summary) return undefined;
+  if (trip.legs === undefined && trip.route !== "cdx-cdxml-cdx") return [{ before, after: trip.summary, warnings: trip.warnings }];
+  const expected = trip.route === "cdx-cdxml-cdx" ? 3 : 1;
+  if (trip.legs?.length === expected && trip.legs.every(leg => leg?.before && leg.after)) return trip.legs;
+  return undefined;
+}
+
 export const jsonEqual = (a: unknown, b: unknown) => isDeepStrictEqual(a, b);
 export const sorted = <T>(items: T[]): T[] => items.sort((a, b) => {
   const first = JSON.stringify(a), second = JSON.stringify(b);
@@ -343,23 +355,36 @@ const placementScope = (p: Placement) => ({ ...p, scope: JSON.stringify([placeme
 const placementKey = (p: Placement) => JSON.stringify([p.page, p.id]);
 type PlacementComparison = ReturnType<typeof comparePlacements>;
 
-const hasAtomEvidence = (site: AtomSite) => Array.isArray(site.neighbours);
-const hasBondEvidence = (bond: BondSite) => bond.length === 2 && bond.every(hasAtomEvidence);
-const hasSiteInventory = (sites?: MoleculeSites) =>
-  !!sites?.atoms?.length && Array.isArray(sites.bonds) && sites.atoms.every(hasAtomEvidence) && sites.bonds.every(hasBondEvidence);
+const hasPoint = (point?: Point) => !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
+const hasBox = (site?: Placement) => !!site && hasPoint(site) && Number.isFinite(site.page) && typeof site.type === "string" &&
+  (site.type !== "graphic" || typeof site.graphicKind === "string") &&
+  Number.isFinite(site.width) && Number.isFinite(site.height) &&
+  (site.line === undefined || Array.isArray(site.line) && site.line.length === 2 && hasPoint(site.line[0]) && hasPoint(site.line[1]));
+const hasAtomPosition = (site: AtomSite) => hasPoint(site) && typeof site.element === "string";
+const hasAtomEvidence = (site: AtomSite) => hasAtomPosition(site) && Array.isArray(site.neighbours) && site.neighbours.every(hasAtomPosition);
+const hasBondEvidence = (bond?: BondSite) =>
+  Array.isArray(bond) && bond.length === 2 && hasAtomEvidence(bond[0]) && hasAtomEvidence(bond[1]);
+function hasSiteInventory(molecule: MoleculeSummary) {
+  const { sites, pairing } = molecule;
+  // RDKit counts can differ from the native graph after abbreviation expansion.
+  return Array.isArray(pairing?.elements) && Array.isArray(sites?.atoms) && sites.atoms.length === pairing.elements.length &&
+    Array.isArray(sites.bonds) && sites.bonds.length === pairing.bonds &&
+    sites.atoms.every(hasAtomEvidence) && sites.bonds.every(hasBondEvidence);
+}
 
 function placementEvidence(summary: Summary) {
-  const placements = summary.placements ?? [];
-  const incompleteKinds = new Set(placements.filter(p => p.id === undefined ||
-    p.type === "molecule" && p.structure === undefined).map(placementKind));
+  const placements = Array.isArray(summary.placements) ? summary.placements.filter(p => hasBox(p) && typeof p.id === "string") : [];
+  const incompleteKinds = new Set(placements.filter(p => p.type === "molecule" && p.structure === undefined).map(placementKind));
   const byId = new Map(placements.map(p => [placementKey(p), p]));
-  const graphs = new Map(summary.molecules.filter(m => hasSiteInventory(m.sites)).map(m => [m.objectId, m.sites]));
-  const hasCandidates = (ref: Placement) => !!summary.placements && !incompleteKinds.has(placementKind(ref));
+  const complete = Array.isArray(summary.placements) && summary.placements.length === summary.placementCount &&
+    byId.size === summary.placementCount;
+  const graphs = new Map(summary.molecules.filter(hasSiteInventory).map(m => [m.objectId, m.sites]));
+  const hasCandidates = (ref: Placement) => complete && !incompleteKinds.has(placementKind(ref));
   return {
-    placements, byId, hasCandidates,
+    placements: complete ? placements : [], byId, hasCandidates, complete,
     hasObject(ref: Placement) {
       const object = byId.get(placementKey(ref));
-      return ref.id !== undefined && hasCandidates(ref) && !!object &&
+      return hasBox(ref) && typeof ref.id === "string" && hasCandidates(ref) && !!object &&
         (ref.type !== "molecule" || ref.structure !== undefined) && samePlacement(ref, object);
     },
     graph: (ref: Placement) => graphs.get(ref.id)
@@ -434,9 +459,13 @@ function nonTextColoursComparison(before: Summary, after: Summary, placement: Pl
     const leftGraph = placement.graph(a, "before"), rightGraph = placement.graph(b, "after");
     const result = compareReferences(a.roles!, b.roles!, (x, y) => {
       if (!jsonEqual(x.role, y.role)) return "changed";
-      if (x.atom && y.atom) return compareAtomSite(x.atom, y.atom, leftGraph, rightGraph);
-      if (x.bond && y.bond) return compareBondSite(x.bond, y.bond, leftGraph, rightGraph);
-      return byValue([x.atom, x.bond], [y.atom, y.bond]);
+      if (x.role[0] === "atomLabelColors" || x.atom || y.atom) {
+        return x.atom && y.atom ? compareAtomSite(x.atom, y.atom, leftGraph, rightGraph) : "ambiguous";
+      }
+      if (x.role[0] === "bondColors" || x.bond || y.bond) {
+        return x.bond && y.bond ? compareBondSite(x.bond, y.bond, leftGraph, rightGraph) : "ambiguous";
+      }
+      return "match";
     }, (x, y) => byValue(x.value, y.value));
     if (result === "ambiguous") return "ambiguous";
     if (result === "changed") changed = true;
@@ -474,13 +503,17 @@ function glyphAlignments(a: BracketSummary, b: BracketSummary): (0 | 1)[] {
   return ([0, 1] as const).filter(index => samePlacement(left[0], right[index]) && samePlacement(left[1], right[1 - index]));
 }
 
+const hasGlyphs = (bracket: BracketSummary) =>
+  Array.isArray(bracket.placements) && bracket.placements.length === 2 && hasBox(bracket.placements[0]) && hasBox(bracket.placements[1]);
+
 function missingBracketEvidence(bracket: BracketSummary, evidence: ReturnType<typeof placementEvidence>) {
   const missing: ("bracket-members" | "bracket-crossing-bonds")[] = [];
   if (!bracket.members || bracket.members.length < bracket.memberCount || bracket.members.some(member =>
     "object" in member && (!evidence.hasObject(member.object) ||
       !!member.atom && (!hasAtomEvidence(member.atom) || !evidence.graph(member.object))))) missing.push("bracket-members");
-  const crossings = bracket.crossings?.flat() ?? [];
-  if (!bracket.crossings || crossings.length < bracket.crossingBondCount || crossings.some(crossing =>
+  const [first, second] = bracket.crossings ?? [];
+  if (!Array.isArray(first) || !Array.isArray(second) || first.length + second.length < bracket.crossingBondCount ||
+    [...first, ...second].some(crossing =>
     "object" in crossing && (!evidence.hasObject(crossing.object) || !evidence.graph(crossing.object) ||
       !hasBondEvidence(crossing.bond) || !!crossing.inner && !("unresolved" in crossing.inner) && !hasAtomEvidence(crossing.inner)))) {
     missing.push("bracket-crossing-bonds");
@@ -490,13 +523,14 @@ function missingBracketEvidence(bracket: BracketSummary, evidence: ReturnType<ty
 
 const hasDrawingItems = (items: unknown) => Array.isArray(items) && items.length > 0;
 export const lacksBracketPlacements = (summary: Summary) => summary.brackets
-  ? summary.brackets.some(bracket => !bracket.placements)
+  ? summary.brackets.some(bracket => !hasGlyphs(bracket))
   : hasDrawingItems(summary.drawing.brackets);
 
 function lacksColourEvidence(summary: Summary, evidence: ReturnType<typeof placementEvidence>, other: ReturnType<typeof placementEvidence>) {
-  return !summary.placements || !summary.nonTextColours || summary.nonTextColours.some(item =>
-    !evidence.hasObject(item) || !other.hasCandidates(item) || !item.roles || item.roles.some(({ atom, bond }) =>
-      (!!atom && !hasAtomEvidence(atom) || !!bond && !hasBondEvidence(bond) || !!(atom || bond) && !evidence.graph(item))));
+  return !evidence.complete || !summary.nonTextColours || summary.nonTextColours.some(item =>
+    !evidence.hasObject(item) || !other.hasCandidates(item) || !item.roles?.length || item.roles.some(({ role, atom, bond }) =>
+      (role[0] === "atomLabelColors" || atom !== undefined) && (!atom || !hasAtomEvidence(atom) || !evidence.graph(item)) ||
+      (role[0] === "bondColors" || bond !== undefined) && (!hasBondEvidence(bond) || !evidence.graph(item))));
 }
 
 /** Stored evidence must be sufficient both when comparing and when reading an old verdict. */
@@ -519,6 +553,7 @@ export function missingComparisonEvidence(before: Summary, after: Summary,
 export function compareBracket(a: BracketSummary, b: BracketSummary, placement: PlacementComparison) {
   const differences: { feature: Feature; before: unknown; after: unknown }[] = [];
   const ambiguous: ("bracket-members" | "bracket-crossing-bonds")[] = [];
+  if (!hasGlyphs(a) || !hasGlyphs(b)) return { differences, ambiguous, missing: ["bracket-placement"] as const };
   const missing = [...missingBracketEvidence(a, placement.left), ...missingBracketEvidence(b, placement.right)];
   const alignment = glyphAlignments(a, b)[0];
   const fields = [["bracket-usage", "bracketUsage"], ["bracket-repeat-count", "repeatCount"], ["bracket-repeat-unit", "repeatUnit"],
@@ -552,6 +587,12 @@ export function compareBracket(a: BracketSummary, b: BracketSummary, placement: 
 }
 
 export function pairBrackets(before: BracketSummary[], after: BracketSummary[]) {
+  if (before.some(bracket => !hasGlyphs(bracket)) || after.some(bracket => !hasGlyphs(bracket))) {
+    return [
+      ...before.map(bracket => ({ before: bracket, after: undefined, ambiguous: true })),
+      ...after.map(bracket => ({ before: undefined, after: bracket, ambiguous: true }))
+    ];
+  }
   const same = (a: BracketSummary, b: BracketSummary) => glyphAlignments(a, b).length > 0;
   const { paired, ambiguousBefore, ambiguousAfter } = pairUnique(before, after, same, items => {
     const glyphs = items.flatMap(bracket => bracket.placements?.map((site, i, sites) => ({ bracket, site, other: sites[1 - i] })) ?? []);
@@ -658,10 +699,14 @@ export function pairWavyMolecules(before: MoleculeSummary[], after: MoleculeSumm
 }
 
 export const lacksWavyDirection = (m: MoleculeSummary) => (m.displays?.wavy ?? 0) > 0 &&
-  (!hasSiteInventory(m.sites) || !m.sites?.bonds.length || m.wavyBonds?.length !== m.displays.wavy || !m.wavyBonds.every(hasBondEvidence));
+  (!hasSiteInventory(m) || !m.sites?.bonds.length || !Array.isArray(m.wavyBonds) ||
+    m.wavyBonds.length !== m.displays.wavy || !m.wavyBonds.every(hasBondEvidence));
 
 /** Track marked bonds using all native sites as candidates, including unmarked bonds. */
 export function matchWavyBonds(before: MoleculeSummary, after: MoleculeSummary) {
+  if (lacksWavyDirection(before) || lacksWavyDirection(after)) {
+    return { paired: new Map<BondSite, BondSite>(), ambiguous: true };
+  }
   const a = before.wavyBonds ?? [], b = after.wavyBonds ?? [];
   const status = (x: BondSite, y: BondSite) => compareBondSite(x, y, before.sites, after.sites, true);
   const { paired, ambiguousBefore, ambiguousAfter } = pairUnique(a, b, (x, y) => status(x, y) === "match");

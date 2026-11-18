@@ -1,8 +1,8 @@
 import { appendOutput as appendFile, writeOutput as writeFile, prepareOutput } from "./safety";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { chemistryFeatures, compareBracket, comparePlacements, compareSurvival, drawingFeatures, lacksBracketPlacements, lacksWavyDirection, matchWavyBonds, missingComparisonEvidence, missingStoredEvidence, pairBrackets, pairWavyMolecules, publicSanitizationReason, undeterminedFeatures, type MoleculeSummary, type Result, type Summary } from "./model";
-import type { BondSite } from "./placement";
+import { chemistryFeatures, compare, compareBracket, comparePlacements, compareSurvival, drawingFeatures, lacksWavyDirection, matchWavyBonds, missingComparisonEvidence, missingStoredEvidence, pairBrackets, pairWavyMolecules, publicSanitizationReason, storedRouteLegs, undeterminedFeatures, type MoleculeSummary, type Result, type Summary } from "./model";
+import { maxSiteNeighbours, type BondSite } from "./placement";
 import { stepArrowLosses, type SurvivalCounts } from "./survival";
 import { lines, results } from "./io";
 import { publicGroup } from "./runner";
@@ -15,7 +15,9 @@ export function verdict(result: Result): string {
   if (result.status !== "ok") return result.status;
   const comparisons = [...result.roundTrips, initialComparison(result)].filter(r => r !== undefined);
   if (comparisons.some(r => r.verdict === "FAIL")) return "FAIL";
-  if (!result.roundTrips.some(r => r.verdict !== "SKIPPED") || comparisons.some(r => r.verdict === "ERROR" || r.undetermined?.length)) return "error";
+  const routes = result.roundTrips.filter(r => r.verdict !== "SKIPPED");
+  if (!routes.length || routes.some(r => !storedRouteLegs(result.summary, r)) ||
+    comparisons.some(r => r.verdict === "ERROR" || r.undetermined?.length)) return "error";
   if (comparisons.some(r => r.verdict === "WARNED")) return "WARNED";
   return comparisons.some(r => r.verdict === "DRAWN-DIFFERENTLY") ? "DRAWN-DIFFERENTLY" : "PASS";
 }
@@ -76,17 +78,55 @@ function cdxmlScore(value: Result): number {
   return v === "PASS" ? 0 : v === "DRAWN-DIFFERENTLY" ? 1 : v === "WARNED" ? 2 : v === "FAIL" ? 3 : 4;
 }
 
+const hasOversizedSites = (summary: Summary) => summary.molecules.some(m =>
+  m.sites?.atoms?.some(site => (site?.neighbours?.length ?? 0) > maxSiteNeighbours));
+const cappedFeatures = ["wavy-placement", "colour-placement", "bracket-members", "bracket-crossing-bonds"];
+
 function checkStoredEvidence(row: Result) {
   for (const trip of row.roundTrips) {
     if (trip.verdict === "SKIPPED") continue;
-    const before = row.summary ?? trip.summary, after = trip.summary ?? row.summary;
-    const missing: ReturnType<typeof missingComparisonEvidence> = before && after ? missingComparisonEvidence(before, after) : new Set();
-    for (const leg of trip.legs ?? []) for (const feature of missingComparisonEvidence(leg.before, leg.after)) missing.add(feature);
+    const legs = storedRouteLegs(row.summary, trip);
+    const missing = new Set<typeof undeterminedFeatures[number]>();
+    if (!legs) missing.add("route-summaries");
+    if (row.summary && trip.summary) {
+      for (const feature of missingComparisonEvidence(row.summary, trip.summary)) missing.add(feature);
+    }
+    if (trip.legs && legs) for (const leg of legs) {
+      for (const feature of missingComparisonEvidence(leg.before, leg.after)) missing.add(feature);
+    }
+    let withholdIdentity = missing.size > 0;
     for (const feature of missing) {
       if (!trip.undetermined?.some(check => check.feature === feature && check.reason === missingStoredEvidence)) {
         (trip.undetermined ??= []).push({ feature, reason: missingStoredEvidence });
       }
-      if (trip.verdict !== "FAIL") trip.verdict = "ERROR";
+    }
+    if (missing.size) {
+      trip.differences = trip.differences.filter(diff => {
+        if (missing.has("bracket-placement") && diff.feature.startsWith("bracket-")) return false;
+        if ((diff.feature === "bracket-members" || diff.feature === "bracket-crossing-bonds") && missing.has(diff.feature)) {
+          return typeof diff.before === "number" && typeof diff.after === "number";
+        }
+        return !(missing.has("wavy-direction") && diff.feature === "stereo-display" && Array.isArray(diff.before) && Array.isArray(diff.after));
+      });
+      if (trip.verdict !== "FAIL" || !trip.differences.some(diff => !diff.warned && !diff.classification)) trip.verdict = "ERROR";
+    }
+    // A stored verdict may predate the neighbour cap. Recheck the rare large
+    // inventories with the bounded comparator so reports also reflect it.
+    if (trip.verdict !== "ERROR" && trip.verdict !== "FAIL" && !trip.undetermined?.length) {
+      for (const leg of legs ?? []) {
+        if (!hasOversizedSites(leg.before) && !hasOversizedSites(leg.after)) continue;
+        const checks = compare(leg.before, leg.after, leg.warnings).undetermined?.filter(check => cappedFeatures.includes(check.feature));
+        if (checks?.length) {
+          trip.undetermined = checks;
+          trip.verdict = "ERROR";
+          withholdIdentity = true;
+          break;
+        }
+      }
+    }
+    if (withholdIdentity) {
+      delete trip.identityPasses;
+      delete trip.chemistryPassReason;
     }
   }
 }
@@ -96,15 +136,13 @@ function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], origi
   if (!routes.length) return 0;
   const surviving = new Map(originals.flatMap(m => m.wavyBonds && !lacksWavyDirection(m) ? [[m, m.wavyBonds] as const] : []));
   for (const trip of routes) {
-    if (trip.legs?.some(leg => leg.before.molecules.some(lacksWavyDirection))) return 0;
-    const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
-    if (stages.length !== (trip.route === "cdx-cdxml-cdx" ? 3 : 1)) return 0;
+    const legs = storedRouteLegs(summary, trip);
+    if (!legs || trip.undetermined?.some(check => check.feature === "wavy-direction")) return 0;
     let before = summary.molecules;
     const tracked = new Map([...surviving].map(([m, bonds]) => [m, {
       molecule: m, bonds: bonds.map(bond => [bond, bond] as [BondSite, BondSite])
     }]));
-    for (const stage of stages) {
-      if (!stage?.molecules) return 0;
+    for (const { after: stage } of legs) {
       const matches = pairWavyMolecules(before, stage.molecules);
       for (const [original, item] of tracked) {
         const after = matches.get(item.molecule);
@@ -202,11 +240,12 @@ export async function report(out: string, baseline?: string): Promise<void> {
       addCounts(survival.source, source);
       if (row.summary?.survival) addSurvival(survival.afterImport, source, row.summary.survival, [row.summary.survival]);
       for (const trip of row.roundTrips) {
-        if (trip.verdict === "SKIPPED" || !trip.summary) continue;
-        const stages = [row.summary, ...(trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary])].map(s => s?.survival);
-        if (stages.some(s => !s)) continue;
+        const legs = storedRouteLegs(row.summary, trip);
+        const imported = row.summary?.survival;
+        if (trip.verdict === "SKIPPED" || !legs || !imported || !trip.summary?.survival ||
+          legs.some(leg => !leg.before.survival || !leg.after.survival)) continue;
         const route = survival.routes[trip.route] ??= survivalStage();
-        addSurvival(route, source, row.summary!.survival!, stages as SurvivalCounts[]);
+        addSurvival(route, source, imported, [imported, ...legs.map(leg => leg.after.survival!)]);
       }
     }
     const originalBrackets = row.summary?.brackets ?? [];
@@ -220,12 +259,13 @@ export async function report(out: string, baseline?: string): Promise<void> {
     }
     for (const trip of row.roundTrips) {
       const route = brackets.routes[trip.route];
-      if (!route || trip.verdict === "SKIPPED" || !trip.summary || !row.summary?.brackets || !trip.summary.brackets) continue;
-      const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
-      if (lacksBracketPlacements(row.summary) || stages.some(stage => !stage.brackets || lacksBracketPlacements(stage))) continue;
+      const legs = storedRouteLegs(row.summary, trip);
+      if (!route || trip.verdict === "SKIPPED" || !legs || !row.summary?.brackets || !trip.summary?.brackets ||
+        legs.some(leg => !leg.before.brackets || !leg.after.brackets) ||
+        trip.undetermined?.some(check => check.feature.startsWith("bracket-") && check.reason === missingStoredEvidence)) continue;
       let remaining = new Set(originalBrackets);
       let previous = row.summary, lost = false;
-      for (const stage of stages) {
+      for (const { after: stage } of legs) {
         const pairs = pairBrackets(previous.brackets!, stage.brackets!);
         if (pairs.some(pair => !pair.ambiguous && !pair.after)) lost = true;
         const placement = comparePlacements(previous, stage);

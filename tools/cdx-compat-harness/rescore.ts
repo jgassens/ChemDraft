@@ -2,7 +2,7 @@ import { rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { describeStructure, SummaryContext } from "./chemistry";
 import { results } from "./io";
-import { compare, compareSurvival, chemistryVerdict, guardDifferences, type Summary } from "./model";
+import { compare, compareSurvival, chemistryVerdict, guardDifferences, missingStoredEvidence, storedRouteLegs, type Summary } from "./model";
 import { appendOutput, prepareOutput, writableOutput, writeOutput } from "./safety";
 
 /** No source files or importers: old summaries retain their measured feature values. */
@@ -30,22 +30,26 @@ export async function rescore(out: string): Promise<void> {
       };
       for (const trip of row.roundTrips) {
         if (trip.verdict === "SKIPPED") continue;
-        const legs = trip.legs?.length ? trip.legs : row.summary && trip.summary
-          ? [{ before: row.summary, after: trip.summary, warnings: trip.route === "cdx-cdxml-cdx" ? [] : trip.warnings }] : [];
-        if (!legs.length) { trip.verdict = "ERROR"; trip.reason = "Stored summaries unavailable for rescoring."; continue; }
+        const completeLegs = storedRouteLegs(row.summary, trip);
+        const legs = completeLegs ?? trip.legs?.filter(leg => leg?.before && leg.after) ?? [];
         const historical = guardDifferences(trip.differences);
-        const legacyChainLoss = trip.route === "cdx-cdxml-cdx" && !trip.legs?.length && historical.differences.length > 0;
         const historicalErrors = historical.comparisonInternalErrors;
         trip.differences = []; trip.drawingLoss = []; trip.comparisonInternalErrors = historicalErrors;
         trip.identityPasses = 0; delete trip.chemistryPassReason;
-        delete trip.undetermined;
+        if (completeLegs) delete trip.undetermined;
+        else {
+          trip.undetermined = [{ feature: "route-summaries", reason: missingStoredEvidence }];
+          trip.reason = "Stored endpoint or intermediate summaries are missing.";
+        }
         let incomplete = false;
         for (const leg of legs) {
           await enrich(leg.before); await enrich(leg.after);
           incomplete ||= !!leg.before.summaryErrors?.length || !!leg.after.summaryErrors?.length;
           const comparison = compare(leg.before, leg.after, leg.warnings);
-          trip.identityPasses += comparison.identityPasses ?? 0;
-          if (comparison.chemistryPassReason) trip.chemistryPassReason = comparison.chemistryPassReason;
+          if (completeLegs) {
+            trip.identityPasses += comparison.identityPasses ?? 0;
+            if (comparison.chemistryPassReason) trip.chemistryPassReason = comparison.chemistryPassReason;
+          }
           trip.differences.push(...comparison.differences);
           if (comparison.undetermined?.length) (trip.undetermined ??= []).push(...comparison.undetermined);
           trip.drawingLoss = [...new Set([...trip.drawingLoss, ...comparison.drawingLoss])];
@@ -53,10 +57,6 @@ export async function rescore(out: string): Promise<void> {
         }
         const measured = chemistryVerdict(trip.differences, !!trip.undetermined?.length);
         trip.verdict = trip.error || trip.errors?.length || incomplete || (trip.verdict === "ERROR" && measured !== "FAIL") ? "ERROR" : measured;
-        if (legacyChainLoss && trip.verdict !== "FAIL" && trip.verdict !== "ERROR") {
-          trip.verdict = "ERROR";
-          trip.reason = "Legacy chained losses cannot be cleared without stored intermediate summaries.";
-        }
       }
       await appendOutput(temporary, `${JSON.stringify(row)}\n`);
     }

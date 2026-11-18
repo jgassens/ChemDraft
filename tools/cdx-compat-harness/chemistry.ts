@@ -656,6 +656,7 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
     survival: nativeSurvival(document),
     summaryErrors,
     ...describeBrackets(placements),
+    placementCount: objects.length,
     placements: [...placements.values()],
     nonTextColours,
     reactions: objects.filter(o => o.type === "reaction").flatMap(r => {

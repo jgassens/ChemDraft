@@ -249,9 +249,9 @@ describe("synthetic bracket pair survival", () => {
   });
 
   it.each([
-    ["preserves an SRU atom when rounding and reversed enumeration require reassigning a neighbour", 1.07, "PASS"],
-    ["marks an SRU atom inconclusive when rounding permits distinct neighbour assignments", 0.97, "ERROR"]
-  ] as const)("%s", async (_name, separation, verdict) => {
+    ["preserves an SRU atom when rounding and reversed enumeration require reassigning a neighbour", 1.07],
+    ["preserves the sole SRU nitrogen through either assignment of two fluorine neighbours", 0.97]
+  ] as const)("%s", async (_name, separation) => {
     const xml = wrap(molecule([[7, 20, 30], [9, 40, 30], [9, 50, 30]], [[0, 1], [0, 2]]) +
       sru(20, 30, 10, 100, 10, 101, 10).replace(/<crossingbond[^>]+\/>/g, ""));
     const document = await openXml(xml);
@@ -263,8 +263,22 @@ describe("synthetic bracket pair survival", () => {
     second.x -= 0.10 * placementTolerance;
     fragment.bonds.reverse();
     const after = await describeDocument(document, []);
-    expect(compare(before, after, [])).toMatchObject({ verdict, differences: [],
-      ...(verdict === "ERROR" ? { undetermined: [{ feature: "bracket-members" }] } : {})
+    expect(compare(before, after, [])).toMatchObject({ verdict: "PASS", differences: [] });
+  });
+
+  it("marks SRU membership inconclusive when neighbour assignments can exchange the two target atoms", async () => {
+    const xml = wrap(molecule([[7, 20, 30], [9, 40, 30], [9, 50, 30]], [[0, 1], [0, 2]]) +
+      sru(20, 30, 11, 100, 11, 101, 11).replace(/<crossingbond[^>]+\/>/g, ""));
+    const document = await openXml(xml);
+    const fragment = document.pages[0].objects.find(object => object.type === "molecule")!;
+    const [, first, second] = fragment.atoms;
+    second.x = first.x + 0.97 * placementTolerance;
+    const before = await describeDocument(document, []);
+    first.x += 0.02 * placementTolerance;
+    second.x -= 0.10 * placementTolerance;
+    const after = await describeDocument(document, []);
+    expect(compare(before, after, [])).toMatchObject({
+      verdict: "ERROR", differences: [], undetermined: [{ feature: "bracket-members" }]
     });
   });
 });

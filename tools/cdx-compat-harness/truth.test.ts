@@ -83,7 +83,8 @@ it("compares CDXML baseline IDs and distinguishes regressions and new files", as
   const root = await mkdtemp(join(tmpdir(), "cdx-baseline-test-")); directories.push(root);
   const out = join(root, "new"), old = join(root, "old");
   await mkdir(join(out, "private"), { recursive: true }); await mkdir(join(old, "private"), { recursive: true });
-  const base: Result = { id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown", format: "cdxml", size: 1, parseOk: true, status: "ok", warnings: [], timings: { totalMs: 1 }, roundTrips: [{ route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], ms: 1 }] };
+  const summary = { molecules: [], reactions: [], standaloneAbbreviations: [], standaloneRGroups: [], drawing: { arrows: [], brackets: [], "text-styling": 0, colours: [], pages: 1, "other-graphics": [] } };
+  const base: Result = { id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown", format: "cdxml", size: 1, parseOk: true, status: "ok", warnings: [], timings: { totalMs: 1 }, summary, roundTrips: [{ route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], ms: 1, summary }] };
   await writeFile(join(old, "private", "results.jsonl"), `${JSON.stringify(base)}\n`);
   const changed = structuredClone(base); changed.roundTrips[0].verdict = "FAIL";
   await writeFile(join(out, "private", "results.jsonl"), `${JSON.stringify(changed)}\n${JSON.stringify({ ...base, id: "bbbbbbbbbbbb" })}\n`);

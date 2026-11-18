@@ -35,9 +35,12 @@ export const samePlacement = (a: Placement, b: Placement) => a.page === b.page &
 
 type IndexedPosition = Point & Extents & { scope: string | number };
 
-export function positionIndex<T>(items: readonly T[], locate: (item: T) => IndexedPosition | undefined) {
+export function positionIndex<T>(items: readonly T[], locate: (item: T) => IndexedPosition | undefined, onInspect?: () => void) {
   const buckets = new Map<string, { item: T; point: IndexedPosition }[]>();
-  const cell = (coordinate: number) => Math.floor(coordinate / (2 * placementTolerance));
+  // Saturate before floating-point spacing can make adjacent cells identical
+  // or let the relative part of the tolerance span several cells.
+  const limit = 2 ** 50;
+  const cell = (coordinate: number) => Math.max(-limit, Math.min(limit, Math.floor(coordinate / (2 * placementTolerance))));
   const extentCell = (extent?: number) => extent === undefined ? undefined : cell(extent);
   const nearbyCells = (coordinate?: number) => {
     const centre = extentCell(coordinate);
@@ -58,6 +61,7 @@ export function positionIndex<T>(items: readonly T[], locate: (item: T) => Index
     const [xs, ys, widths, heights] = [point.x, point.y, point.width, point.height].map(nearbyCells);
     for (const x of xs) for (const y of ys) for (const width of widths) for (const height of heights) {
       for (const other of buckets.get(key(point.scope, x, y, width, height)) ?? []) {
+        onInspect?.();
         if (samePoint(point, other.point) && sameExtents(point, other.point) && accepts(other.item)) candidates.push(other.item);
         if (candidates.length === 2) return candidates;
       }
@@ -105,84 +109,84 @@ const sameAtomPosition = (a: AtomSite, b: AtomSite) => a.element === b.element &
 
 export type SiteComparison = "match" | "changed" | "ambiguous";
 
-/** Find a complete assignment even when the first suitable neighbour is needed elsewhere. */
-function atomFingerprint(a: AtomSite, b: AtomSite, checkAmbiguity: boolean): SiteComparison {
+export const maxSiteNeighbours = 64;
+
+/** A perfect matching establishes that these two fixed targets have compatible neighbourhoods.
+ * The choice of neighbour assignment does not change either target. */
+function atomFingerprint(a: AtomSite, b: AtomSite): SiteComparison {
   if (!sameAtomPosition(a, b)) return "changed";
   const left = a.neighbours ?? [], right = b.neighbours ?? [];
+  if (left.length > maxSiteNeighbours || right.length > maxSiteNeighbours) return "ambiguous";
   if (left.length !== right.length) return "changed";
   if (a === b || !left.length) return "match";
   if (left.length === 1) return sameAtomPosition(left[0], right[0]) ? "match" : "changed";
   const edges = left.map(site => right.flatMap((candidate, i) => sameAtomPosition(site, candidate) ? [i] : []));
-  const owners: number[] = Array(right.length).fill(-1);
-  const assign = (i: number, visited: Set<number>): boolean => {
-    for (const j of edges[i]) {
-      if (visited.has(j)) continue;
-      visited.add(j);
-      if (owners[j] < 0 || assign(owners[j], visited)) {
-        owners[j] = i;
-        return true;
+  const owners = Array<number>(right.length).fill(-1);
+  const assigned = Array<number>(left.length).fill(-1);
+  // At most one breadth-first augmenting-path search per left vertex, O(V*(V+E)).
+  for (let start = 0; start < left.length; start++) {
+    const queue = [start];
+    const parent = Array<number>(right.length).fill(-1);
+    let free = -1;
+    for (let head = 0; head < queue.length && free < 0; head++) {
+      const i = queue[head];
+      for (const j of edges[i]) {
+        if (parent[j] >= 0) continue;
+        parent[j] = i;
+        if (owners[j] < 0) { free = j; break; }
+        queue.push(owners[j]);
       }
+    }
+    if (free < 0) return "changed";
+    for (let j = free; j >= 0;) {
+      const i = parent[j];
+      owners[j] = i;
+      [assigned[i], j] = [j, assigned[i]];
+    }
+  }
+  return "match";
+}
+
+function directedFingerprint(a: BondSite, b: BondSite): SiteComparison {
+  const from = atomFingerprint(a[0], b[0]);
+  if (from === "changed") return "changed";
+  const to = atomFingerprint(a[1], b[1]);
+  return to === "match" ? from : to;
+}
+
+function bondFingerprint(a: BondSite, b: BondSite): SiteComparison {
+  const forward = directedFingerprint(a, b);
+  if (forward === "match") return forward;
+  const reverse = directedFingerprint(a, [b[1], b[0]]);
+  return reverse === "changed" ? forward : reverse;
+}
+
+function siteIsAmbiguous<T>(site: T, before: readonly T[], after: readonly T[], compare: (a: T, b: T) => SiteComparison) {
+  const nearby = (items: readonly T[]) => {
+    let matches = 0;
+    for (const item of items) {
+      const status = compare(site, item);
+      if (status === "ambiguous" || (status === "match" && ++matches > 1)) return true;
     }
     return false;
   };
-  if (!left.every((_, i) => assign(i, new Set()))) return "changed";
-  if (!checkAmbiguity) return "match";
-
-  const exact = (site: AtomSite) => JSON.stringify([site.element, site.isotope, site.x, site.y]);
-  const leftKeys = left.map(exact), rightKeys = right.map(exact);
-  // Group identical descriptors before looking for alternating cycles. A cycle
-  // through distinct pairs changes the correspondence; swapping copies does not.
-  const possible = new Map<string, string[]>(), assigned = new Map<string, string[]>();
-  const add = (map: Map<string, string[]>, source: string, target: string) => {
-    const destinations = map.get(source) ?? [];
-    if (!destinations.includes(target)) destinations.push(target);
-    map.set(source, destinations);
-  };
-  edges.forEach((choices, i) => choices.forEach(j => add(possible, leftKeys[i], rightKeys[j])));
-  owners.forEach((i, j) => add(assigned, rightKeys[j], leftKeys[i]));
-  const hasAlternative = (start: string, first: string) => {
-    const visited = new Set<string>();
-    const canReturn = (candidate: string): boolean => {
-      if (visited.has(candidate)) return false;
-      visited.add(candidate);
-      return assigned.get(candidate)!.some(owner => owner === start
-        ? candidate !== first : possible.get(owner)!.some(canReturn));
-    };
-    return canReturn(first);
-  };
-  for (const [site, choices] of possible) if (choices.some(candidate => hasAlternative(site, candidate))) return "ambiguous";
-  return "match";
-}
-
-const sameAtomSite = (a: AtomSite, b: AtomSite) => atomFingerprint(a, b, false) === "match";
-const sameDirectedBond = (a: BondSite, b: BondSite) => sameAtomSite(a[0], b[0]) && sameAtomSite(a[1], b[1]);
-const sameBondSite = (a: BondSite, b: BondSite) => sameDirectedBond(a, b)
-  || (sameAtomSite(a[0], b[1]) && sameAtomSite(a[1], b[0]));
-
-function directedFingerprint(a: BondSite, b: BondSite): SiteComparison {
-  const from = atomFingerprint(a[0], b[0], true), to = atomFingerprint(a[1], b[1], true);
-  if (from === "changed" || to === "changed") return "changed";
-  if (from === "ambiguous" || to === "ambiguous") return "ambiguous";
-  return "match";
-}
-
-function siteIsAmbiguous<T>(site: T, before: readonly T[], after: readonly T[], same: (a: T, b: T) => boolean) {
-  const nearby = (items: readonly T[]) => upToTwo(items, item => same(site, item)).length > 1;
   return nearby(before) || nearby(after);
 }
 
 export function compareAtomSite(a: AtomSite, b: AtomSite, before?: MoleculeSites, after?: MoleculeSites): SiteComparison {
-  const fingerprint = atomFingerprint(a, b, true);
+  const fingerprint = atomFingerprint(a, b);
   if (fingerprint !== "match") return fingerprint;
-  if ([a, b].some(site => siteIsAmbiguous(site, before?.atoms ?? [], after?.atoms ?? [], sameAtomSite))) return "ambiguous";
+  if ([a, b].some(site => siteIsAmbiguous(site, before?.atoms ?? [], after?.atoms ?? [], atomFingerprint))) return "ambiguous";
   return "match";
 }
 
 export function compareBondSite(a: BondSite, b: BondSite, before?: MoleculeSites, after?: MoleculeSites, directed = false): SiteComparison {
-  if (!sameBondSite(a, b)) return "changed";
-  if ([a, b].some(site => siteIsAmbiguous(site, before?.bonds ?? [], after?.bonds ?? [], sameBondSite))
-    || [...a, ...b].some(site => siteIsAmbiguous(site, before?.atoms ?? [], after?.atoms ?? [], sameAtomSite))
-    || (directed && [a, b].some(([from, to]) => sameAtomSite(from, to)))) return "ambiguous";
+  const fingerprint = bondFingerprint(a, b);
+  if (fingerprint !== "match") return fingerprint;
+  if ([a, b].some(site => siteIsAmbiguous(site, before?.bonds ?? [], after?.bonds ?? [], bondFingerprint))) return "ambiguous";
+  if (!directed) return "match";
   const forward = directedFingerprint(a, b);
-  return directed || forward !== "changed" ? forward : directedFingerprint(a, [b[1], b[0]]);
+  if ([a, b].some(([from, to]) => atomFingerprint(from, to) !== "changed") ||
+    forward === "match" && directedFingerprint(a, [b[1], b[0]]) !== "changed") return "ambiguous";
+  return forward;
 }

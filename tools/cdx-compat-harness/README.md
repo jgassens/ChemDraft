@@ -257,7 +257,7 @@ are drawing differences. Each bracket pair matches by both glyph placements with
 their order. Whole-molecule members use canonical structure and placement. Crossing records retain
 their attachment and distinguish resolved inner atoms, unresolved source IDs, and absent IDs.
 Reports count pairs unchanged through every
-measured leg and files where a leg loses pairs. Stored brackets need glyph placements and, for
+leg and files where a leg loses pairs. Stored bracket pairs need both glyph bounds and, for
 resolved targets, placement IDs, molecular structure and atom or bond sites as applicable.
 
 Non-text colours compare by drawing position and style role. Bond colours use the effective value
@@ -265,14 +265,17 @@ after a bond-specific override and a molecule-wide default are applied. Colour a
 are measured after placement matching. The placement tolerance accounts for CDXML's four
 decimal places and CDX's fixed-point units in native drawing coordinates. Placement candidates
 include uncoloured objects and are indexed by their origins and extents using that tolerance.
+The stored object count must agree with the placement inventory length. Site inventories must
+contain every native atom and bond. Per-bond colours require the corresponding bond sites.
 Wavy single bonds retain the order of their drawn endpoints, including isotope and neighbour
-evidence. Neighbour comparisons require a one-to-one correspondence. Distinct correspondences
-within tolerance are inconclusive. The report awards survival credit only with a unique directed
-match through each leg, including for single-bond molecules.
+evidence. An iterative search checks for a one-to-one neighbour assignment. Competing matches
+for the measured atom or bond are inconclusive. Multiple assignments that identify the same
+target can pass. A neighbourhood with more than 64 entries is inconclusive when the comparison
+needs its fingerprint. Wavy survival requires a unique directed match through every leg.
 Reports and rescore mark bracket, colour or wavy checks as undetermined when a stored summary
 lacks the necessary placements or endpoint evidence. The affected checks block PASS and withhold
-survival credit. Re-run the harness to capture the missing evidence because rescore cannot
-reconstruct it.
+survival credit. Routes also require stored import and result summaries and both endpoints of each
+chained leg. Re-run the harness to capture missing evidence because rescore cannot reconstruct it.
 The CDXML baseline section compares shared IDs' CDXML routes, flags worse chemistry verdicts or added drawing-loss
 categories, and reports new IDs separately. Reports do not assert compatibility beyond their corpus.
 
@@ -301,12 +304,10 @@ source documents. Older summaries, including obsolete skeleton/ledger evidence, 
 identity evidence from stored SMILES only; their measured
 features are retained. Reports (including baseline reports) prefer the rescored file when present.
 Rerun rescore after appending/resuming a run. Original results remain unchanged. Incomplete summaries
-and conversion errors stay ERROR. New runs store per-leg summaries and warnings for chained routes;
-legacy chained results contain only the final summary, so rescore can compare only baseline to final
-and cannot reconstruct transient intermediate losses. A previously recorded unequal chained loss
-cannot be cleared from final-state evidence alone: it becomes ERROR if the final comparison would
-otherwise excuse it. It grants no warning exemptions on legacy chained comparisons. Older equal-value
-diagnostics are counted as internal errors on rescore.
+and conversion errors stay ERROR. New runs store per-leg summaries and warnings for chained routes.
+Legacy chained results with only a final summary are undetermined. A stored leg with both summaries
+and its warnings can still establish a definite loss. Older equal-value diagnostics are counted as
+internal errors on rescore.
 The error stage × category table (`errorCounts` in JSON) counts individual failure occurrences,
 including truth errors, without messages, exception codes or stacks. Repeated failed invocations
 on independent routes count separately; the top-level first-error alias is not counted twice.

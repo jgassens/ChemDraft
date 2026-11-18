@@ -136,7 +136,9 @@ describe("source-to-native survival reporting", () => {
     const dropped = { ...emptySummary(), survival: { stepArrows: 0, abbreviations: 0, display: {} } };
     await run(defaults(list, out), async () => ({ result: { ...successful(), sourceSurvival: counts, summary: full, roundTrips: [
       { route: "cdxml", ...compare(full, full, []), summary: full, warnings: [], ms: 1 },
-      { route: "cdx-cdxml-cdx", ...compare(full, dropped, []), summary: full, warnings: [], legs: [{ before: full, after: dropped, warnings: [] }, { before: dropped, after: full, warnings: [] }], ms: 1 }
+      { route: "cdx-cdxml-cdx", ...compare(full, dropped, []), summary: full, warnings: [], legs: [
+        { before: full, after: dropped, warnings: [] }, { before: dropped, after: full, warnings: [] }, { before: full, after: full, warnings: [] }
+      ], ms: 1 }
     ] } }));
     await report(out);
     const survival = JSON.parse(await readFile(join(out, "report.json"), "utf8")).survival;
@@ -159,7 +161,7 @@ describe("source-to-native survival reporting", () => {
     const row: Result = { ...successful(), id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown",
       sourceSurvival: counts, summary: full, roundTrips: [{
         route: "cdx-cdxml-cdx", ...compare(full, moved, []), summary: full, warnings: [], ms: 1,
-        legs: [{ before: full, after: moved, warnings: [] }, { before: moved, after: full, warnings: [] }]
+        legs: [{ before: full, after: moved, warnings: [] }, { before: moved, after: full, warnings: [] }, { before: full, after: full, warnings: [] }]
       }]
     };
     expect(verdict(row)).toBe("FAIL");
@@ -903,8 +905,14 @@ process.once('message', job => {
     });
   });
 
-  it.each(["bracket-members", "colour-placement", "wavy-direction"] as const)(
-    "rejects stored PASS and requests a rerun for missing %s evidence", async feature => {
+  it.each([
+    ["bracket-members", "placement inventory"],
+    ["colour-placement", "placement inventory"],
+    ["colour-placement", "uncoloured coincident graphic"],
+    ["colour-placement", "bond sites on colour roles"],
+    ["wavy-direction", "endpoint neighbours"],
+    ["wavy-direction", "unmarked coincident atom and bond"]
+  ] as const)("rejects stored PASS for incomplete %s evidence with missing %s", async (feature, missing) => {
     const { out } = await setup();
     const xml = feature === "bracket-members" ? syntheticXml.replace("</page>", `
       <fragment id="3"><n id="12" Element="6" p="20 30"/><n id="13" Element="7" p="40 30"/><b id="21" B="12" E="13" Order="1"/></fragment>
@@ -915,11 +923,34 @@ process.once('message', job => {
       </bracketedgroup></page>`) : feature === "colour-placement" ? `<CDXML><colortable><color r="1" g="0" b="0"/></colortable>
       <page id="1"><graphic id="2" GraphicType="Line" BoundingBox="10 10 30 15" color="2"/>
       <graphic id="3" GraphicType="Line" BoundingBox="10 10 30 15"/></page></CDXML>`
+      : missing === "unmarked coincident atom and bond" ? syntheticXml.replace('<b id="20" B="10" E="11" Order="1"/>',
+        '<n id="12" Element="6" p="20 30"/><b id="21" B="12" E="11" Order="1"/><b id="20" B="10" E="11" Order="1" Display="Wavy"/>')
       : syntheticXml.replace('Order="1"/>', 'Order="1" Display="Wavy"/>');
     const describe = async (source: string) => chemistry.describeDocument((await codec.open(Buffer.from(source))).document!, []);
-    const before = await describe(xml);
-    const after = await describe(feature === "bracket-members" ? xml.replace('BracketedObjectIDs="2"', 'BracketedObjectIDs="3"')
-      : feature === "colour-placement" ? xml.replace(' color="2"', "").replace('id="3"', 'id="3" color="2"') : xml);
+    const colouredBond = async (reverse: boolean) => {
+      const source = syntheticXml.replace('<b id="20" B="10" E="11" Order="1"/>',
+        '<n id="12" Element="7" p="60 30"/><b id="20" B="10" E="11" Order="1"/><b id="21" B="11" E="12" Order="1"/>');
+      const document = (await codec.open(Buffer.from(source))).document!;
+      const molecule = document.pages[0].objects.find(object => object.type === "molecule")!;
+      molecule.style.bondColors = { [molecule.bonds[Number(reverse)].id]: "#ff0000" };
+      return chemistry.describeDocument(document, []);
+    };
+    const colouredGraphic = async (reverse: boolean) => {
+      const document = (await codec.open(Buffer.from(xml))).document!;
+      const graphics = document.pages[0].objects.filter(object => object.type === "graphic");
+      // The importer can materialize default black. Retain a truly uncoloured
+      // candidate so the filtered inventory contains every colour record.
+      graphics.forEach((graphic, i) => { graphic.style = i === Number(reverse) ? { strokeColor: "#ff0000" } : {}; });
+      return chemistry.describeDocument(document, []);
+    };
+    const before = missing === "bond sites on colour roles" ? await colouredBond(false)
+      : missing === "uncoloured coincident graphic" ? await colouredGraphic(false) : await describe(xml);
+    const after = missing === "bond sites on colour roles" ? await colouredBond(true)
+      : missing === "uncoloured coincident graphic" ? await colouredGraphic(true)
+      : await describe(feature === "bracket-members" ? xml.replace('BracketedObjectIDs="2"', 'BracketedObjectIDs="3"')
+        : feature === "colour-placement" ? xml.replace(' color="2"', "").replace('id="3"', 'id="3" color="2"')
+        : missing === "unmarked coincident atom and bond" ? xml.replace(' Display="Wavy"', "").replace('B="12" E="11" Order="1"', 'B="12" E="11" Order="1" Display="Wavy"')
+        : xml);
     if (feature === "bracket-members") {
       expect(compare(before, after, []).differences).toMatchObject([{ feature }]);
       for (const summary of [before, after]) {
@@ -929,10 +960,27 @@ process.once('message', job => {
         delete member.object.id;
         delete member.object.structure;
       }
+    } else if (missing === "bond sites on colour roles") {
+      expect(compare(before, after, []).drawingLoss).toContain("colours");
+      for (const summary of [before, after]) delete summary.nonTextColours![0].roles!.find(role => role.role[0] === "bondColors")!.bond;
     } else if (feature === "colour-placement") {
       expect(compare(before, after, []).undetermined).toContainEqual({ feature });
-      delete before.placements;
-      delete after.placements;
+      for (const summary of [before, after]) {
+        if (missing === "uncoloured coincident graphic") {
+          expect(summary.placements).toHaveLength(2);
+          expect(summary.nonTextColours).toHaveLength(1);
+          summary.placements = summary.placements!.filter(p => p.id === summary.nonTextColours![0].id);
+          expect(summary.placements).toHaveLength(1);
+        } else delete summary.placements;
+      }
+    } else if (missing === "unmarked coincident atom and bond") {
+      expect(compare(before, after, []).undetermined).toContainEqual(expect.objectContaining({ feature: "wavy-placement" }));
+      for (const { molecules: [molecule] } of [before, after]) {
+        expect(molecule.sites?.atoms).toHaveLength(3);
+        expect(molecule.sites?.bonds).toHaveLength(2);
+        const [marked] = molecule.wavyBonds!;
+        molecule.sites = { atoms: [...marked], bonds: [marked] };
+      }
     } else {
       // Earlier directed sites omitted neighbours for endpoints that appeared unique locally.
       // Keep the candidate inventory to test whether a partially upgraded summary can pass.
@@ -941,7 +989,7 @@ process.once('message', job => {
       }
     }
     const diagnostic = { feature, reason: expect.stringMatching(/re-run.*rescore/i) };
-    expect.soft(compare(before, after, [])).toMatchObject({ verdict: "ERROR", undetermined: [expect.objectContaining(diagnostic)] });
+    expect.soft(compare(before, after, [])).toMatchObject({ verdict: "ERROR", differences: [], undetermined: [expect.objectContaining(diagnostic)] });
     await mkdir(join(out, "private"), { recursive: true });
     const row: Result = { ...successful(), id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown", summary: before,
       roundTrips: [{ route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary: after, ms: 1 }] };
@@ -1119,20 +1167,133 @@ process.once('message', job => {
 
   it("indexes extents for same-origin graphics without comparing every distinct width", () => {
     const count = 400;
-    const comparisons = vi.spyOn(placement, "samePlacement");
+    const index = placement.positionIndex;
+    const inspected = vi.fn();
+    vi.spyOn(placement, "positionIndex").mockImplementation((items, locate) => index(items, locate, inspected));
     const tolerance = placement.placementTolerance;
     const make = (prefix: string, offset: number) => Array.from({ length: count }, (_, i) => ({
       id: `${prefix}-${i}`, page: 0, type: "graphic", graphicKind: "rect", x: 10, y: 15, height: 25,
       width: (8 * (i + 1) + offset) * tolerance
     }));
     const before = make("before", -0.2), after = make("after", 0.2);
-    const comparison = comparePlacements({ ...emptySummary(), placements: before }, { ...emptySummary(), placements: [...after].reverse() });
-    expect.soft(comparisons.mock.calls.length).toBeLessThanOrEqual(count * 8);
-    expect.soft(comparisons.mock.calls.length).toBeGreaterThanOrEqual(count);
+    const summary = (placements: typeof before): Summary => ({ ...emptySummary(), placementCount: placements.length, placements });
+    const comparison = comparePlacements(summary(before), summary([...after].reverse()));
+    expect.soft(inspected.mock.calls.length).toBeLessThanOrEqual(count * 8);
+    expect.soft(inspected.mock.calls.length).toBeGreaterThanOrEqual(count);
     expect(before.map((item, i) => comparison.objects(item, after[i]))).toEqual(Array(count).fill("match"));
     const nearby = { ...after[0], id: "nearby", width: before[0].width - 0.1 * tolerance };
-    const ambiguous = comparePlacements({ ...emptySummary(), placements: before }, { ...emptySummary(), placements: [...after, nearby] });
+    const ambiguous = comparePlacements(summary(before), summary([...after, nearby]));
     expect(ambiguous.objects(before[0], after[0])).toBe("ambiguous");
+  });
+
+  it("matches one graphic with a huge finite extent without counting its bucket twice", () => {
+    const graphic = { page: 0, type: "graphic", graphicKind: "rect", x: 10, y: 15, width: 1e14, height: 25 };
+    const before = { ...graphic, id: "before" }, after = { ...graphic, id: "after" };
+    const summary = (item: typeof before): Summary => ({
+      ...emptySummary(), placements: [item], placementCount: 1,
+      nonTextColours: [{ ...item, roles: [{ role: ["strokeColor"], value: "#ff0000" }] }]
+    });
+    expect(compare(summary(before), summary(after), [])).toMatchObject({ verdict: "PASS", drawingLoss: [] });
+  });
+
+  it("bounds the fingerprint search before inspecting an oversized dense neighbourhood", () => {
+    let reads = 0;
+    const neighbour = { element: "F", y: 0, get x() { reads++; return 1; } };
+    const nitrogen = { element: "N", x: 0, y: 0 };
+    // The legacy search accepts identical descriptors, even for this dense graph.
+    const atLimit = { ...nitrogen, neighbours: Array(64).fill(neighbour) };
+    expect(placement.compareAtomSite(atLimit, { ...atLimit })).toBe("match");
+    const overLimit = { ...nitrogen, neighbours: [...atLimit.neighbours, neighbour] };
+    reads = 0;
+    expect(placement.compareAtomSite(overLimit, { ...overLimit })).toBe("ambiguous");
+    expect(reads).toBe(0);
+  });
+
+  it("revalidates stored wavy PASS when an endpoint exceeds the neighbour cap", async () => {
+    const { out } = await setup();
+    const neighbours = Array.from({ length: 64 }, (_, i) => `<n id="${i + 100}" Element="9" p="80 30"/><b id="${i + 200}" B="10" E="${i + 100}" Order="1"/>`).join("");
+    const xml = syntheticXml.replace('Order="1"/>', 'Order="1" Display="Wavy"/>').replace("</fragment>", `${neighbours}</fragment>`);
+    const summary = await chemistry.describeDocument((await codec.open(Buffer.from(xml))).document!, []);
+    const molecule = summary.molecules[0];
+    expect(summary.summaryErrors).toEqual([]);
+    expect(molecule.wavyBonds?.[0][0].neighbours).toHaveLength(65);
+    await mkdir(join(out, "private"), { recursive: true });
+    const row: Result = { ...successful(), id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown", summary, roundTrips: [
+      { route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary, ms: 1 }
+    ] };
+    await writeFile(join(out, "private", "results.jsonl"), `${JSON.stringify(row)}\n`);
+    await report(out);
+    const reported = JSON.parse(await readFile(join(out, "report.json"), "utf8"));
+    expect.soft(reported.totals).toMatchObject({ pass: 0, error: 1, fail: 0 });
+    expect.soft(reported.undetermined["wavy-placement"].count).toBe(1);
+    expect.soft(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 0 survived every leg.");
+    await main(["rescore", "--out", out]);
+    const rescored = JSON.parse(await readFile(join(out, "private", "results.rescored.jsonl"), "utf8")) as Result;
+    expect(rescored.roundTrips[0]).toMatchObject({ verdict: "ERROR", differences: [],
+      undetermined: [expect.objectContaining({ feature: "wavy-placement" })] });
+  });
+
+  it("accepts a unique undirected bond when exchanging coincident endpoints leaves the same bond", () => {
+    const a = { element: "C", x: 0, y: 0, neighbours: [{ element: "C", x: 0, y: 0 }] };
+    const b = structuredClone(a);
+    const bond: placement.BondSite = [a, b];
+    const before = { atoms: [a, b], bonds: [bond] }, after = structuredClone(before);
+    expect(placement.compareBondSite(bond, after.bonds[0], before, after)).toBe("match");
+    expect(placement.compareBondSite(bond, after.bonds[0], before, after, true)).toBe("ambiguous");
+  });
+
+  it.each(["width", "second glyph"] as const)("treats an unchanged bracket with missing %s as undetermined", async missing => {
+    const { out } = await setup();
+    const summary = await describeBracketSummary();
+    const after = JSON.parse(JSON.stringify(summary)) as Summary;
+    const glyphs = after.brackets![0].placements!;
+    if (missing === "width") delete glyphs[0].width;
+    else glyphs.splice(1, 1);
+    const diagnostic = expect.objectContaining({ feature: "bracket-placement", reason: expect.stringMatching(/re-run/i) });
+    expect.soft(compare(summary, after, [])).toMatchObject({ verdict: "ERROR", differences: [], undetermined: [diagnostic] });
+    await mkdir(join(out, "private"), { recursive: true });
+    const row: Result = { ...successful(), id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown", summary, roundTrips: [
+      { route: "cdxml", verdict: missing === "width" ? "FAIL" : "PASS", warnings: [], drawingLoss: [], summary: after, ms: 1,
+        differences: missing === "width" ? [{ feature: "bracket-pair", warned: false, before: summary.brackets![0], after: null }] : [] }
+    ] };
+    await writeFile(join(out, "private", "results.jsonl"), `${JSON.stringify(row)}\n`);
+    await report(out);
+    const reported = JSON.parse(await readFile(join(out, "report.json"), "utf8"));
+    expect.soft(reported.totals).toMatchObject({ pass: 0, error: 1, fail: 0 });
+    expect.soft(reported.failures["bracket-pair"].count).toBe(0);
+    expect.soft(reported.brackets.routes.cdxml).toEqual({ survivingUnchanged: 0, filesLosingPairs: 0 });
+    await main(["rescore", "--out", out]);
+    const rescored = JSON.parse(await readFile(join(out, "private", "results.rescored.jsonl"), "utf8")) as Result;
+    expect(rescored.roundTrips[0]).toMatchObject({ verdict: "ERROR", differences: [], undetermined: [diagnostic] });
+  });
+
+  it.each(["missing result", "missing import", "missing intermediate states", "incomplete leg list", "missing leg endpoint"] as const)(
+    "withholds stored PASS and every survival credit for a route with %s", async missing => {
+    const { out } = await setup();
+    const summary = await describeBracketSummary();
+    const single = missing === "missing result" || missing === "missing import";
+    const route = single ? "cdxml" : "cdx-cdxml-cdx";
+    const leg = { before: summary, after: summary, warnings: [] };
+    const row: Result = { ...successful(), id: "aaaaaaaaaaaa", group: "ungrouped", era: "unknown",
+      sourceSurvival: summary.survival, summary: missing === "missing import" ? undefined : summary, roundTrips: [{
+        route, verdict: "PASS", identityPasses: 1, warnings: [], differences: [], drawingLoss: [], ms: 1,
+        summary: missing === "missing result" ? undefined : summary,
+        legs: missing === "incomplete leg list" ? [leg, leg] : missing === "missing leg endpoint"
+          ? [leg, { ...leg, after: undefined! }, leg] : undefined
+      }] };
+    await mkdir(join(out, "private"), { recursive: true });
+    await writeFile(join(out, "private", "results.jsonl"), `${JSON.stringify(row)}\n`);
+    await report(out);
+    const reported = JSON.parse(await readFile(join(out, "report.json"), "utf8"));
+    expect.soft(reported.totals).toMatchObject({ pass: 0, error: 1 });
+    expect.soft(reported.undetermined["route-summaries"]?.count).toBe(1);
+    expect.soft(reported.identityPasses).toBe(0);
+    expect.soft(reported.brackets.routes[route]).toEqual({ survivingUnchanged: 0, filesLosingPairs: 0 });
+    expect.soft(reported.survival.routes[route]).toBeUndefined();
+    await main(["rescore", "--out", out]);
+    const rescored = JSON.parse(await readFile(join(out, "private", "results.rescored.jsonl"), "utf8")) as Result;
+    expect(rescored.roundTrips[0]).toMatchObject({ verdict: "ERROR",
+      undetermined: [expect.objectContaining({ feature: "route-summaries", reason: expect.stringMatching(/re-run/i) })] });
   });
 
   it("reports bracket usage and per-route survival across intermediate legs", async () => {
@@ -1140,6 +1301,20 @@ process.once('message', job => {
     const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
     await writeFile(original, syntheticXml);
     await writeFile(list, original);
+    const summary = await describeBracketSummary();
+    const dropped = { ...summary, brackets: [] };
+    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
+      { route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary, ms: 1 },
+      { route: "cdx-cdxml-cdx", verdict: "FAIL", warnings: [], differences: [], drawingLoss: [], summary, legs: [
+        { before: summary, after: dropped, warnings: [] }, { before: dropped, after: summary, warnings: [] }, { before: summary, after: summary, warnings: [] }
+      ], ms: 1 }
+    ] } }));
+    await report(out);
+    expect(JSON.parse(await readFile(join(out, "report.json"), "utf8")).brackets).toMatchObject({ pairs: 1, unpaired: 1, byUsage: { sru: 1 }, routes: { cdxml: { survivingUnchanged: 1, filesLosingPairs: 0 }, "cdx-cdxml-cdx": { survivingUnchanged: 0, filesLosingPairs: 1 } } });
+    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Brackets: 1 pairs after import");
+  });
+
+  async function describeBracketSummary() {
     const xml = syntheticXml.replace("</page>", `
       <graphic id="30" GraphicType="Bracket" BracketType="Square" BoundingBox="34 50 30 10"/>
       <graphic id="31" GraphicType="Bracket" BracketType="Square" BoundingBox="46 10 50 50"/>
@@ -1148,16 +1323,8 @@ process.once('message', job => {
         <bracketattachment id="33" GraphicID="30"><crossingbond id="34" BondID="20" InnerAtomID="10"/></bracketattachment>
         <bracketattachment id="35" GraphicID="31"/>
       </bracketedgroup></page>`);
-    const summary = await chemistry.describeDocument((await codec.open(Buffer.from(xml))).document!, []);
-    const dropped = { ...summary, brackets: [] };
-    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
-      { route: "cdxml", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary, ms: 1 },
-      { route: "cdx-cdxml-cdx", verdict: "FAIL", warnings: [], differences: [], drawingLoss: [], summary, legs: [{ before: summary, after: dropped, warnings: [] }, { before: dropped, after: summary, warnings: [] }], ms: 1 }
-    ] } }));
-    await report(out);
-    expect(JSON.parse(await readFile(join(out, "report.json"), "utf8")).brackets).toMatchObject({ pairs: 1, unpaired: 1, byUsage: { sru: 1 }, routes: { cdxml: { survivingUnchanged: 1, filesLosingPairs: 0 }, "cdx-cdxml-cdx": { survivingUnchanged: 0, filesLosingPairs: 1 } } });
-    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Brackets: 1 pairs after import");
-  });
+    return chemistry.describeDocument((await codec.open(Buffer.from(xml))).document!, []);
+  }
 
   it("withholds unchanged SRU survival credit for coincident pairs after rescore", async () => {
     const { root, sources, out } = await setup();
@@ -1167,7 +1334,7 @@ process.once('message', job => {
     const bracket: NonNullable<Summary["brackets"]>[number] = {
       bracketKind: "square", bracketUsage: "sru", repeatCount: 2, label: "n", repeatUnit: true,
       memberCount: 1, crossingBondCount: 0,
-      placements: [{ page: 0, type: "bracket", x: 10, y: 10 }, { page: 0, type: "bracket", x: 40, y: 10 }]
+      placements: [{ page: 0, type: "bracket", x: 10, y: 10, width: 4, height: 40 }, { page: 0, type: "bracket", x: 40, y: 10, width: 4, height: 40 }]
     };
     const other = { ...structuredClone(bracket), repeatCount: 3 };
     const summary = { ...emptySummary(), brackets: [bracket, other] };
