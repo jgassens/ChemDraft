@@ -99,11 +99,18 @@ Crystal Builder's MOF builder needs a linker whose connection points (where it b
 node) are marked. Marking them over there by hand undoes the "one click" promise, so the user marks
 them **in ChemDraft**, where drawing is easy.
 
-**How a connection point is marked: an ordinary atom labelled `X`.** On terephthalic acid the user
-draws an `X` on each carboxylate carbon, where the acid OH would otherwise be. That is a normal
-ChemDraft atom label: visible, saved with the document, editable, undoable, and it needs no new host
-object or tool. PORMAKE, which Crystal Builder's MOF builder uses, is believed to mark connection
-points with `X` atoms in its building blocks; this is from memory and must be confirmed (A6).
+**How a connection point is marked: an ordinary atom labelled `X`.** That is a normal ChemDraft atom
+label: visible, saved with the document, editable, undoable, and it needs no new host object or tool.
+PORMAKE, which Crystal Builder's MOF builder uses, marks connection points with `X` atoms in its
+building blocks (confirmed by test, below).
+
+**Where the X goes follows PORMAKE's cut, not the acid.** PORMAKE's carboxylate nodes already contain
+the carboxylates (node N16 is Zn4O(CO2)6 with 6 X), and the matching linker E14 is bare C6H4 with an
+`X` on each ring carbon that bore a CO2. So for terephthalic acid the user draws a benzene ring with
+`X` in place of each COOH, not an `X` on the carboxyl carbon (which would double the carboxylates).
+The plugin's help and refusal messages say this, with the terephthalate picture. A convenience for
+later (not in Phase 2): **"Cut at carboxylates"**, where the plugin replaces each COOH or COO⁻ in the
+selection with `X` on send, and says so in the pre-send box (§7: the drawn document is not changed).
 
 **Two commands:**
 
@@ -120,8 +127,8 @@ or more atoms, or by a multiple bond; `X` in a molecule of several components.
 cannot type a dummy atom, so the plugin gives `embed3d` a SMILES in which each `X` becomes an explicit
 `[H]`, minimizes as usual, then writes those atoms back out as `X` in the XYZ. Atom order is stable
 across embedding and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a C–H
-distance (about 1.1 Å) along the bond to its anchor; if Crystal Builder expects a different distance
-(for example a metal–O or C–C length), the plugin rescales along the same bond vector (A6). How an
+distance (about 1.1 Å) along the bond to its anchor. Tested: the builder accepts 1.09 Å as well as
+PORMAKE's own 0.75 Å, so no rescaling is needed. How an
 `X` label reaches the plugin in the selection SMILES (as `*`, as an unknown label, or refused by the
 host) is part of the Phase 0 code map (0.3); if the host refuses it, the plugin reads `X` atoms from the
 selection's atom list instead, and no host change is planned without a separate decision.
@@ -130,6 +137,32 @@ selection's atom list instead, and no host change is planned without a separate 
 the plugin adds `X` atoms at the right bond length and direction, as one labelled undo entry with the
 new atoms selected (§4.4). It needs `document.write`, a dangerous permission, so it ships only if the
 owner wants it (owner question 6). Drawing `X` by hand stays the documented way and is enough.
+
+### Test results: Crystal Builder 1.1.1, macOS Intel (2026-11-18)
+
+The official `Crystal-Builder-1.1.1-x86_64.dmg` (SHA-256 matches the release digest) was run from a
+scratch folder on the Intel iMac, never installed into `/Applications`, with the owner's approval. Driven
+headlessly through its bundled `xtal` CLI and, for the window, through background app control.
+
+| Question | Answer | How it was checked |
+|---|---|---|
+| A1 Plain XYZ | Opens as a molecule in a padded box (5 Å vacuum) with a warning, "no Lattice= in the comment line". Extended-XYZ keys (`smiles=`, `net_charge=`, `method=`) are tolerated | `xtal info` / `inspect` on benzene with plain and extended comment lines; both C6H6, 12 bonds |
+| A2 App already running (macOS) | One process; each file opens as a **new tab** in the existing window | `open -a <app> -- file` twice while running; process count stayed 1; window shows a tab per file |
+| A3 Names (macOS) | Bundle ID `org.crystalbuilder.CrystalBuilder`; ad-hoc signed; Intel build is x86_64 only; macOS 12.3 or later; `xtal` ships in `Contents/MacOS` | `Info.plist`, `codesign -dv` |
+| A4 File types | Registers `.cif` and `.xtalproj` only, not `.xyz`. `open -a` opens the `.xyz` anyway, so registration is not needed for the handoff | `Info.plist`, launch test |
+| A6 Linker, headless | **Works.** A plain XYZ with `X` atoms and no bond table, used through `bb_dir`, builds MOF-5 (pcu, node N16): C24H12O13Zn4, identical to the stock linker. Accepted with X at 0.75 Å and 1.09 Å, and with slightly non-planar geometry | `xtal run mof.build -p topology=pcu -p nodes=N16 -p edges=<name> -p bb_dir=<dir>` |
+| A6 Linker, in the window | **Does not work yet.** When the XYZ is opened in the window, the `X` atoms get no bonds, so Structure → Building blocks → Save as a building block refuses: "X1 is a connection point with no bonds… this cell holds 3 separate pieces". Same with PORMAKE's own bond-table XYZ, and after Recalculate bonds | Background app control on the scratch copy; nothing saved |
+
+What this changes:
+
+- **Phase 2 can ship the molecule send as planned**, and the linker send produces a file the MOF
+  builder accepts headlessly.
+- **The one-click demo in the window needs one small change on Crystal Builder's side**: its XYZ
+  reader bonding each `X` to its nearest atom, or a format that carries bonds into the window. That
+  is the remaining question for the author (A6, reworded). Until then the honest demo is: send, then
+  in Crystal Builder select each `X` and its anchor and use Add bond, then Save as a building block.
+- Still unverified: everything on **Windows** (tab behavior, installed executable and folder names);
+  run from the Windows session against the official `setup.exe`.
 
 ## Decision 2: how to hand it over
 
@@ -273,13 +306,13 @@ quitting ChemDraft leaves the other app running.
 | 2A Scaffold | manifest, `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
 | 2B XYZ writer | `src/xyz.ts` + test | Pure function, `Plugin3DModel` → text; fixed decimals, CRLF-free, atom count and order equal the model; comment line carries SMILES, net charge, method | Kimi |
 | 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
-| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index; optional rescale along the anchor bond. Fixtures: terephthalic-acid linker with 2 X, a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
+| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index. Fixtures: terephthalate linker (benzene ring with X in place of each COOH, PORMAKE E14 cut), a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
 | 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
 | 2G (optional, owner question 6) Mark Connection Points | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
-terephthalic acid with two `X` atoms sent as a MOF linker, then built into a framework with Crystal
+a benzene ring with `X` in place of each COOH (terephthalate) sent as a MOF linker, then built into MOF-5 with node N16 in Crystal
 Builder's MOF builder (the demo; confirm the connection points are recognized without re-marking);
 the same molecule without `X` (linker send refused with its message); benzene as a molecule; a charged species; a molecule with one unspecified
 center; a salt; an abbreviation; an R-group (refused); a ferrocene-like complex (expect an honest
@@ -319,14 +352,19 @@ For the owner:
 
 For Crystal Builder's author (owner relays):
 
-- A1. Does a plain XYZ with no lattice open as a molecule? Are extra extended-XYZ comment keys tolerated?
-- A2. What happens when a file is opened while the app is already running: new tab, new window, or a second copy? Same on macOS and Windows?
-- A3. What is the macOS bundle identifier, and the Windows executable and install folder names? Will they stay stable?
-- A4. Would they add `.xyz` to the declared document types, or accept a pull request for it?
-- A5. Is the window MCP server (`open(path)`, `mof.build`) shipped and stable enough to build Phase 4 on?
-- A6. How should a linker arrive so the MOF builder uses it without re-marking: an XYZ with `X` atoms
-  at the connection points (as in PORMAKE building blocks)? At what distance from the anchor atom?
-  If XYZ is not enough, which format does "Mark connection points" save?
+A1–A4 were answered on macOS by testing (see "Test results" under Decision 1b); only intent and
+Windows details remain:
+
+- A1. Answered (macOS): opens as a molecule in a padded box; extended keys tolerated.
+- A2. Answered (macOS): new tab in the running window. Windows: confirm the same.
+- A3. Answered (macOS): `org.crystalbuilder.CrystalBuilder`. Ask: will it stay stable, and what are the
+  Windows executable and install folder names?
+- A4. Answered: `.xyz` is not registered, and the handoff does not need it. No ask.
+- A5. Is the window MCP server (`open(path)`, `mof.build`) stable enough to build Phase 4 on?
+- A6. Reworded after testing: a linker XYZ with `X` atoms works headlessly through `bb_dir`, but
+  opened in the window its `X` atoms are unbonded and Save as a building block refuses it. Would the
+  author bond each `X` to its nearest atom on XYZ read (or accept a pull request), or name a format
+  that carries those bonds into the window?
 
 ## Verification
 
