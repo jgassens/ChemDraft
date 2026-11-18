@@ -77,6 +77,7 @@ export interface MoleculeSummary {
   tetrahedral: { atom: number; cip: string }[];
   doubleBonds: { atoms: number[]; stereo: string }[];
   displays: { wedge: number; hash: number; either: number; wavy: number };
+  wavyBondKeys?: string[];
   heavyAtoms: number;
   bonds: number;
   abbreviations: { label: string; expandedFragment?: string }[];
@@ -92,6 +93,8 @@ export type ReactionParticipantSummary = string
 export interface BracketSummary {
   bracketKind: string | null; bracketUsage: string | null | (string | null)[]; repeatCount: number | string | null | (number | string | null)[];
   label: string | null; repeatUnit: string | boolean | null | (boolean | null)[]; memberCount: number; crossingBondCount: number;
+  memberKeys?: string[];
+  crossingBondKeys?: string[];
   objectIds?: string[];
 }
 export interface Summary {
@@ -103,6 +106,7 @@ export interface Summary {
   unpairedBrackets?: number;
   standaloneAbbreviations: unknown[];
   standaloneRGroups: unknown[];
+  nonTextColours?: { page: number; type: string; id: string; x: number; y: number; colours: string[] }[];
   drawing: Record<DrawingFeature, unknown>;
 }
 export interface Difference {
@@ -307,6 +311,27 @@ const reactionValue = (r: Summary["reactions"][number]) => ({
 
 export const bracketValue = ({ objectIds: _objectIds, ...value }: BracketSummary) => value;
 
+function nonTextColoursChanged(before: Summary["nonTextColours"], after: Summary["nonTextColours"]): boolean {
+  if (!before || !after) return false; // Legacy summaries only measured the palette.
+  if (before.length !== after.length) return true;
+  const remaining = [...after];
+  const sameKind = (a: typeof before[number], b: typeof before[number]) => a.page === b.page && a.type === b.type;
+  const renumbered = [];
+  for (const object of before) {
+    const index = remaining.findIndex(candidate => sameKind(object, candidate) && object.id === candidate.id);
+    if (index < 0) renumbered.push(object);
+    else if (!jsonEqual(object.colours, remaining.splice(index, 1)[0].colours)) return true;
+  }
+  // The visible exporter may allocate new IDs for ordinary graphics.
+  for (const object of renumbered) {
+    const matches = remaining.filter(candidate => sameKind(object, candidate)
+      && Math.abs(object.x - candidate.x) < 0.001 && Math.abs(object.y - candidate.y) < 0.001);
+    if (matches.length !== 1 || !jsonEqual(object.colours, matches[0].colours)) return true;
+    remaining.splice(remaining.indexOf(matches[0]), 1);
+  }
+  return false;
+}
+
 /** Chemical identities and source IDs outrank geometry; positional native IDs are last. */
 export function pairMolecules(before: MoleculeSummary[], after: MoleculeSummary[]) {
   const remaining = new Set(after);
@@ -492,7 +517,7 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   const undetermined: NonNullable<Comparison["undetermined"]> = [];
   // Preserve every stored chemistry field, including graph evidence and display intent.
   // Compare as a multiset without depending on object IDs, geometry or ordering.
-  const chemistry = ({ objectId: _objectId, originalId: _originalId, pairing: _pairing, ...m }: MoleculeSummary) => m;
+  const chemistry = ({ objectId: _objectId, originalId: _originalId, pairing: _pairing, wavyBondKeys: _wavyBondKeys, ...m }: MoleculeSummary) => m;
   const remaining = after.molecules.map(chemistry);
   const identical = before.molecules.length > 0 && before.molecules.length === remaining.length && before.molecules.every(m => {
     const index = remaining.findIndex(candidate => jsonEqual(chemistry(m), candidate));
@@ -573,16 +598,22 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
     const j = right.findIndex(item => jsonEqual(bracketValue(item), bracketValue(left[i])));
     if (j >= 0) { left.splice(i, 1); right.splice(j, 1); }
   }
-  const fields = [["bracket-usage", "bracketUsage"], ["bracket-repeat-count", "repeatCount"], ["bracket-repeat-unit", "repeatUnit"], ["bracket-members", "memberCount"], ["bracket-crossing-bonds", "crossingBondCount"], ["bracket-drawing", "bracketKind"], ["bracket-drawing", "label"]] as const;
+  const fields = [["bracket-usage", "bracketUsage"], ["bracket-repeat-count", "repeatCount"], ["bracket-repeat-unit", "repeatUnit"],
+    ["bracket-members", "memberCount", "memberKeys"], ["bracket-crossing-bonds", "crossingBondCount", "crossingBondKeys"], ["bracket-drawing", "bracketKind"], ["bracket-drawing", "label"]] as const;
+  const changedFields = (a: BracketSummary, b: BracketSummary) => fields.flatMap(([feature, field, identities]) => {
+    // Compare reference identities when both summaries recorded them. Preserve count diagnostics.
+    const key = a[field] === b[field] && identities && a[identities] && b[identities] ? identities : field;
+    return jsonEqual(a[key], b[key]) ? [] : [{ feature, before: a[key], after: b[key] }];
+  });
   const changes: { feature: Feature; before: unknown; after: unknown; ids: string[] }[] = [];
   while (left.length || right.length) {
     const a = left.shift();
     let index = -1;
-    if (a && right.length) index = right.reduce((best, item, i) => fields.filter(([, key]) => !jsonEqual(a[key], item[key])).length < fields.filter(([, key]) => !jsonEqual(a[key], right[best][key])).length ? i : best, 0);
+    if (a && right.length) index = right.reduce((best, item, i) => changedFields(a, item).length < changedFields(a, right[best]).length ? i : best, 0);
     const b = index >= 0 ? right.splice(index, 1)[0] : !a ? right.shift() : undefined;
     const ids = [...(a?.objectIds ?? []), ...(b?.objectIds ?? [])];
     if (!a || !b) changes.push({ feature: "bracket-pair", before: a ? bracketValue(a) : null, after: b ? bracketValue(b) : null, ids });
-    else for (const [feature, key] of fields) if (!jsonEqual(a[key], b[key])) changes.push({ feature, before: a[key], after: b[key], ids });
+    else changes.push(...changedFields(a, b).map(change => ({ ...change, ids })));
   }
   for (const change of changes) {
     const warned = warnings.some(w => w.features.includes(change.feature) && (w.objectId ? change.ids.includes(w.objectId) : changes.filter(c => c.feature === change.feature).length === 1));
@@ -591,7 +622,8 @@ export function compare(before: Summary, after: Summary, warnings: Warning[], op
   const survival = before.survival && after.survival ? compareSurvival(before.survival, after.survival, warnings) : undefined;
   differences.push(...(survival?.differences ?? []));
   const guarded = guardDifferences(differences);
-  const drawingLoss = drawingFeatures.filter(feature => !jsonEqual(before.drawing[feature], after.drawing[feature]));
+  const drawingLoss = drawingFeatures.filter(feature => !jsonEqual(before.drawing[feature], after.drawing[feature])
+    || (feature === "colours" && nonTextColoursChanged(before.nonTextColours, after.nonTextColours)));
   for (const feature of survival?.drawingLoss ?? []) if (!drawingLoss.includes(feature)) drawingLoss.push(feature);
   const incomplete = !!before.summaryErrors?.length || !!after.summaryErrors?.length;
   const verdict = chemistryVerdict(guarded.differences, undetermined.length > 0);

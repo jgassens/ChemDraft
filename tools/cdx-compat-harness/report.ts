@@ -1,7 +1,7 @@
 import { appendOutput as appendFile, writeOutput as writeFile, prepareOutput } from "./safety";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { bracketValue, chemistryFeatures, compareSurvival, drawingFeatures, jsonEqual, publicSanitizationReason, type Result, type Summary } from "./model";
+import { bracketValue, chemistryFeatures, compareSurvival, drawingFeatures, jsonEqual, pairMolecules, publicSanitizationReason, type MoleculeSummary, type Result, type Summary } from "./model";
 import { stepArrowLosses, type SurvivalCounts } from "./survival";
 import { lines, results } from "./io";
 import { publicGroup } from "./runner";
@@ -73,6 +73,44 @@ function cdxmlScore(value: Result): number {
   if (value.status !== "ok") return 4;
   const v = value.roundTrips.find(t => t.route === "cdxml")?.verdict;
   return v === "PASS" ? 0 : v === "DRAWN-DIFFERENTLY" ? 1 : v === "WARNED" ? 2 : v === "FAIL" ? 3 : 4;
+}
+
+function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], originals: MoleculeSummary[]): number {
+  const routes = trips.filter(trip => trip.verdict !== "SKIPPED");
+  if (!routes.length) return 0;
+  const matches: Map<MoleculeSummary, MoleculeSummary>[][] = [];
+  for (const trip of routes) {
+    const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
+    if (stages.length !== (trip.route === "cdx-cdxml-cdx" ? 3 : 1)) return 0;
+    let before = summary.molecules;
+    const route: Map<MoleculeSummary, MoleculeSummary>[] = [];
+    for (const stage of stages) {
+      if (!stage?.molecules) return 0;
+      route.push(new Map(pairMolecules(before, stage.molecules).flatMap(pair =>
+        pair.before && pair.after ? [[pair.before, pair.after]] : [])));
+      before = stage.molecules;
+    }
+    matches.push(route);
+  }
+  return originals.reduce((total, original) => {
+    let surviving = original.wavyBondKeys;
+    for (const route of matches) {
+      let molecule = original;
+      for (const leg of route) {
+        const after = leg.get(molecule);
+        if (!after?.displays?.wavy) return total;
+        const afterKeys = after.wavyBondKeys;
+        if (surviving && afterKeys) {
+          surviving = surviving.filter(key => afterKeys.includes(key));
+        } else if (original.bonds !== 1 || after.bonds !== 1 || original.smiles !== after.smiles) {
+          // A legacy count identifies the bond only for the same one-bond molecule.
+          return total;
+        }
+        molecule = after;
+      }
+    }
+    return total + (surviving?.length ?? original.displays.wavy);
+  }, 0);
 }
 
 export async function report(out: string, baseline?: string): Promise<void> {
@@ -177,13 +215,7 @@ export async function report(out: string, baseline?: string): Promise<void> {
     const wavyMolecules = row.summary?.molecules.filter(molecule => (molecule.displays?.wavy ?? 0) > 0) ?? [];
     const originalWavy = wavyMolecules.reduce((n, molecule) => n + (molecule.displays?.wavy ?? 0), 0);
     wavyOriginals += originalWavy;
-    const completedLegs = row.roundTrips.filter(trip => trip.verdict !== "SKIPPED" && trip.summary);
-    if (completedLegs.length > 0) for (const molecule of wavyMolecules) {
-      if (completedLegs.every(trip => !trip.differences.some(difference =>
-        difference.feature === "stereo-display" && difference.molecule?.before === molecule.objectId))) {
-        wavySurvivedEveryLeg += molecule.displays.wavy;
-      }
-    }
+    if (originalWavy && row.summary) wavySurvivedEveryLeg += countWavySurvivors(row.summary, row.roundTrips, wavyMolecules);
     countSanitization(row.summary, sanitization);
     for (const trip of row.roundTrips) countSanitization(trip.summary, roundTripSanitization);
     for (const error of resultErrors(row)) countError(error);

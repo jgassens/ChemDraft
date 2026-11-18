@@ -88,6 +88,35 @@ describe("synthetic abbreviation and display survival", () => {
 });
 
 describe("synthetic bracket pair survival", () => {
+  it.each([
+    ['BracketedObjectIDs="11"', 'BracketedObjectIDs="12"', "bracket-members"],
+    ['BondID="100"', 'BondID="101"', "bracket-crossing-bonds"]
+  ])("fails an SRU retarget from %s to %s with unchanged counts", async (attribute, retargeted, feature) => {
+    const xml = wrap(`${molecule([[6, 20, 30], [6, 40, 30], [8, 60, 30]], [[0, 1], [1, 2]])}
+      <graphic id="20" GraphicType="Bracket" BracketType="Square" BoundingBox="34 50 30 10"/>
+      <graphic id="21" GraphicType="Bracket" BracketType="Square" BoundingBox="46 10 50 50"/>
+      <bracketedgroup id="30" BracketUsage="SRU" BracketedObjectIDs="11" SRULabel="n">
+        <bracketattachment id="31" GraphicID="20"><crossingbond id="32" BondID="100" InnerAtomID="11"/></bracketattachment>
+        <bracketattachment id="33" GraphicID="21"/>
+      </bracketedgroup>`);
+    const document = (await open(Buffer.from(xml))).document!;
+    const before = await describeDocument(document, []);
+    expect(before.brackets).toHaveLength(1);
+    for (const format of ["cdx", "cdxml"] as const) {
+      const exported = await interchange(document, format);
+      const reopened = await open(exported.bytes);
+      expect(compare(before, await describeDocument(reopened.document!, []), [])).toMatchObject({ verdict: "PASS", differences: [] });
+    }
+    const reordered = xml.replace(/(<n id="10"[^>]+\/>)(<n id="11"[^>]+\/>)/, "$2$1")
+      .replace(/(<b id="100"[^>]+\/>)(<b id="101"[^>]+\/>)/, "$2$1");
+    const reindexed = (await open(Buffer.from(reordered))).document!;
+    expect(compare(before, await describeDocument(reindexed, []), [])).toMatchObject({ verdict: "PASS", differences: [] });
+    const changed = (await open(Buffer.from(xml.replace(attribute, retargeted)))).document!;
+    const after = await describeDocument(changed, []);
+    expect(after.brackets).toMatchObject([{ memberCount: before.brackets![0].memberCount, crossingBondCount: 1 }]);
+    expect(compare(before, after, [])).toMatchObject({ verdict: "FAIL", differences: [{ feature, warned: false }] });
+  });
+
   it("summarizes pairs independently of IDs and order and distinguishes chemistry from drawing", async () => {
     const doc = createEmptyDocument();
     // This checkout's schema predates these fields; their shapes match the native product schema.
@@ -1017,6 +1046,29 @@ describe("synthetic format features", () => {
     expect(described.drawing.colours).toEqual(["#0000ff", "#ff0000"]);
     expect(described.drawing["other-graphics"]).toEqual(["graphic.rect"]);
     expect(described.reactions).toEqual([{ objectId: "reaction", reactants: ["C"], products: ["O"], agents: ["N"], conditions: [], arrowKinds: ["equilibrium"] }]);
+  });
+
+  it("reports a non-text colour swap between the same two drawing objects", async () => {
+    const document = createEmptyDocument();
+    const graphic = (id: string, sourceId: string, x: number, strokeColor: string) => GraphicObjectSchema.parse({
+      id, type: "graphic", graphicKind: "line", x, y: 0, width: 20, height: 5, style: { strokeColor, fillColor: "none" },
+      compatibility: { sourceFormat: "cdxml", originalId: sourceId, warnings: [], unknown: {} }
+    });
+    const a = graphic("a", "10", 0, "#ff0000"), b = graphic("b", "20", 30, "#0000ff");
+    document.pages[0].objects = [a, b];
+    const before = await describeDocument(document, []);
+    for (const format of ["cdx", "cdxml"] as const) {
+      const reopened = await open((await interchange(document, format)).bytes);
+      const after = await describeDocument(reopened.document!, []);
+      expect(compare(before, after, []).drawingLoss, JSON.stringify({ format, before: before.nonTextColours, after: after.nonTextColours })).not.toContain("colours");
+    }
+    const aRenumbered = { ...a, id: "new-a" }, bRenumbered = { ...b, id: "new-b" };
+    document.pages[0].objects = [bRenumbered, aRenumbered];
+    expect(compare(before, await describeDocument(document, []), []).drawingLoss).toEqual([]);
+    [aRenumbered.style, bRenumbered.style] = [bRenumbered.style, aRenumbered.style];
+    const after = await describeDocument(document, []);
+    expect(after.drawing.colours).toEqual(before.drawing.colours);
+    expect(compare(before, after, []).drawingLoss).toEqual(["colours"]);
   });
 
   it("fails swapped reactant and product identities and equal-count component replacements; passes reordered components", async () => {

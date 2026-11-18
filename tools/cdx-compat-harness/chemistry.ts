@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { nativeSurvival } from "./survival";
-import { moleculeToMolfileV3000, type ChemDraftDocument, type MoleculeObject } from "../../packages/chem-core/src/index";
+import { moleculeToMolfileV3000, type ChemDraftDocument, type DocumentObject, type MoleculeObject } from "../../packages/chem-core/src/index";
 import { expandNativeMoleculeLabelGroups, nativeMoleculeUnspellableLabels, nativeSingleHeavyElementLabelValence, nativeSingleBondGraphMetadata, nativeElementFromAtomLabel, nativeImplicitHydrogenCount } from "../../packages/document-workflow-core/src/index";
 import { nativeBondOrderResolution } from "../../packages/layout-engine/src/index";
 import { installNodeRdkitModuleLoader } from "../../packages/rdkit-adapter/src/node";
@@ -334,7 +334,7 @@ async function describeMolecule(drawn: MoleculeObject, warnings: Warning[], cont
     wedge: drawn.bonds.filter(b => b.display?.bondStyle === "wedge").length,
     hash: drawn.bonds.filter(b => b.display?.bondStyle === "hashed").length,
     either: drawn.bonds.filter(b => b.stereo === "either").length,
-    wavy: drawn.bonds.filter(b => (b.order ?? "single") === "single" && b.display?.bondStyle === "wavy").length
+    wavy: drawn.bonds.filter(isWavySingleBond).length
   };
   summary.abbreviations = [];
   for (const s of drawn.superatoms) summary.abbreviations.push({ label: s.label, expandedFragment: s.expandedStructure ? (await describeStructure(s.expandedStructure, undefined, context)).smiles : undefined });
@@ -422,6 +422,16 @@ function arrowKind(object: ChemDraftDocument["pages"][number]["objects"][number]
   return kinds[object.data.artToolId ?? ""] ?? (object.data.markerEnd || object.data.markerStart ? "graphic-arrow" : undefined);
 }
 
+const objectKey = (object: DocumentObject) => object.compatibility?.originalId ?? object.id;
+const isWavySingleBond = (bond: MoleculeObject["bonds"][number]) =>
+  (bond.order ?? "single") === "single" && bond.display?.bondStyle === "wavy";
+const atomKeys = (molecule: MoleculeObject) => {
+  const sourceIds = molecule.compatibility?.unknown.cdxmlAtomIdsByAtomId as Record<string, string> | undefined;
+  return new Map(molecule.atoms.map((atom, index) => [atom.id, sourceIds?.[atom.id] ?? index]));
+};
+const bondEndpointKeys = (bond: MoleculeObject["bonds"][number], atoms: ReturnType<typeof atomKeys>) =>
+  sorted([atoms.get(bond.fromAtomId) ?? bond.fromAtomId, atoms.get(bond.toAtomId) ?? bond.toAtomId]);
+
 export async function describeDocument(document: ChemDraftDocument, warnings: Warning[], context = new SummaryContext()): Promise<Summary> {
   const molecules: MoleculeSummary[] = [];
   const summaryErrors: NonNullable<Summary["summaryErrors"]> = [];
@@ -429,7 +439,18 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
   const brackets: BracketSummary[] = [];
   let unpairedBrackets = 0;
   for (const page of document.pages) {
-    type OptionalBracket = { id: string; pairId?: unknown; bracketKind?: unknown; bracketUsage?: unknown; repeatCount?: unknown; label?: unknown; repeatUnit?: unknown; containedObjectIds?: unknown; crossingBondIds?: unknown };
+    const objectsById = new Map(page.objects.map(object => [object.id, object]));
+    const targetKey = (id: string) => {
+      const target = objectsById.get(id);
+      return target ? objectKey(target) : id;
+    };
+    const keysByMolecule = new Map<MoleculeObject, ReturnType<typeof atomKeys>>();
+    const bracketAtomKeys = (molecule: MoleculeObject) => {
+      const keys = keysByMolecule.get(molecule) ?? atomKeys(molecule);
+      keysByMolecule.set(molecule, keys);
+      return keys;
+    };
+    type OptionalBracket = { id: string; pairId?: unknown; bracketKind?: unknown; bracketUsage?: unknown; repeatCount?: unknown; label?: unknown; repeatUnit?: unknown; containedObjectIds?: unknown; crossingBondIds?: unknown; compatibility?: DocumentObject["compatibility"] };
     const groups = new Map<string, OptionalBracket[]>();
     for (const object of page.objects) if (object.type === "bracket") {
       const b = object as OptionalBracket;
@@ -442,13 +463,36 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
       const usage = sorted(group.map(b => typeof b.bracketUsage === "string" ? b.bracketUsage : null));
       const counts = sorted(group.map(b => typeof b.repeatCount === "string" || (typeof b.repeatCount === "number" && Number.isFinite(b.repeatCount)) ? b.repeatCount : null));
       const units = sorted(group.map(b => typeof b.repeatUnit === "boolean" ? b.repeatUnit : null));
-      const members = new Set(group.flatMap(b => Array.isArray(b.containedObjectIds) ? b.containedObjectIds.filter((id: unknown): id is string => typeof id === "string") : []));
+      const members = new Set(group.flatMap(b => {
+        const contained = Array.isArray(b.containedObjectIds) ? b.containedObjectIds.flatMap((id: unknown) =>
+          typeof id === "string" ? [JSON.stringify(["object", targetKey(id)])] : []) : [];
+        // The importer keeps atom-level SRU membership in compatibility records.
+        const records = b.compatibility?.unknown.cdxmlBracketMembers;
+        if (Array.isArray(records)) for (const record of records) {
+          if (typeof record?.objectId !== "string" || typeof record.atomId !== "string") continue;
+          const target = objectsById.get(record.objectId);
+          if (target?.type !== "molecule") continue;
+          const atom = bracketAtomKeys(target).get(record.atomId);
+          if (atom !== undefined) contained.push(JSON.stringify(["atom", objectKey(target), atom]));
+        }
+        return contained;
+      }));
       const crossingBonds = new Set(group.flatMap(b => Array.isArray(b.crossingBondIds) ? b.crossingBondIds.flatMap((entry: unknown) => {
         if (typeof entry === "string") return [JSON.stringify([entry])];
-        if (entry && typeof entry === "object" && "objectId" in entry && "bondId" in entry && typeof entry.objectId === "string" && typeof entry.bondId === "string") return [JSON.stringify([entry.objectId, entry.bondId])];
-        return [];
+        if (!entry || typeof entry !== "object" || !("objectId" in entry) || !("bondId" in entry) || typeof entry.objectId !== "string" || typeof entry.bondId !== "string") return [];
+        const target = objectsById.get(entry.objectId);
+        if (target?.type === "molecule") {
+          const index = target.bonds.findIndex(bond => bond.id === entry.bondId);
+          if (index >= 0) {
+            const bond = target.bonds[index];
+            const sourceIds = target.compatibility?.unknown.cdxmlBondIdsByBondId as Record<string, string> | undefined;
+            return [JSON.stringify([objectKey(target), sourceIds?.[bond.id] ?? index, bondEndpointKeys(bond, bracketAtomKeys(target))])];
+          }
+        }
+        return [JSON.stringify([targetKey(entry.objectId), entry.bondId])];
       }) : []));
-      brackets.push({ bracketKind: stringField("bracketKind"), bracketUsage: usage, repeatCount: counts, label: stringField("label"), repeatUnit: units, memberCount: members.size, crossingBondCount: crossingBonds.size, objectIds: group.map(b => b.id).sort() });
+      brackets.push({ bracketKind: stringField("bracketKind"), bracketUsage: usage, repeatCount: counts, label: stringField("label"), repeatUnit: units,
+        memberCount: members.size, crossingBondCount: crossingBonds.size, memberKeys: sorted([...members]), crossingBondKeys: sorted([...crossingBonds]), objectIds: group.map(b => b.id).sort() });
     }
   }
   brackets.sort((a, b) => {
@@ -483,7 +527,10 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
           bondLength: lengths.length ? lengths[Math.floor(lengths.length / 2)] : 30,
           elements: atoms.map(a => a.element), labels: atoms.filter(a => a.element !== "C" || a.labelVisible || a.labelLiteral).map(a => a.element), bonds: object.bonds.length
         } : undefined;
-        molecules.push({ ...structuredClone(cached.summary!), objectId: object.id, originalId: object.compatibility?.originalId, pairing });
+        const wavy = object.bonds.filter(isWavySingleBond);
+        const keys = wavy.length ? atomKeys(object) : undefined;
+        const wavyBondKeys = keys ? wavy.map(bond => JSON.stringify(bondEndpointKeys(bond, keys))) : undefined;
+        molecules.push({ ...structuredClone(cached.summary!), objectId: object.id, originalId: object.compatibility?.originalId, pairing, wavyBondKeys });
       }
       warnings.push(...cached.warnings.map(w => ({ ...w, ...(w.objectId ? { objectId: object.id } : {}) })));
     } catch (error) {
@@ -506,12 +553,19 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
   };
   const arrowKinds = sorted(objects.flatMap(o => arrowKind(o) ? [arrowKind(o)!] : []));
   const colours = new Set<string>();
-  const findColours = (value: unknown, key = "") => {
-    if (typeof value === "string" && /color|colour/i.test(key)) colours.add(value.toLowerCase());
-    else if (Array.isArray(value)) value.forEach(v => findColours(v));
-    else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) findColours(v, k);
+  const findColours = (found: Set<string>, value: unknown, key = "") => {
+    if (typeof value === "string" && /color|colour/i.test(key)) found.add(value.toLowerCase());
+    else if (Array.isArray(value)) value.forEach(v => findColours(found, v));
+    else if (value && typeof value === "object") for (const [k, v] of Object.entries(value)) findColours(found, v, k);
   };
-  for (const object of objects) { findColours(object.style); if (object.type === "text") findColours(object.spans); }
+  const nonTextColours: NonNullable<Summary["nonTextColours"]> = [];
+  for (const [page, entry] of document.pages.entries()) for (const object of entry.objects) {
+    const found = new Set<string>();
+    findColours(found, object.style);
+    if (object.type === "text") findColours(found, object.spans);
+    else if (found.size) nonTextColours.push({ page, type: object.type, id: objectKey(object), x: object.x, y: object.y, colours: sorted([...found]) });
+    for (const colour of found) colours.add(colour);
+  }
   const texts = objects.filter(o => o.type === "text");
   const textStyles = texts.map(t => {
     const styles = [t.style, ...t.spans.map(s => ({ ...t.style, ...s.style }))];
@@ -532,6 +586,7 @@ export async function describeDocument(document: ChemDraftDocument, warnings: Wa
     summaryErrors,
     brackets,
     unpairedBrackets,
+    nonTextColours,
     reactions: objects.filter(o => o.type === "reaction").flatMap(r => {
       try {
         const role = (name: "reactant" | "product" | "agent") => sorted(r.components.filter(c => c.role === name).map(c => participant(c.objectId)));

@@ -50,18 +50,22 @@ export async function main(args: string[]): Promise<number> {
     // Reject public destinations before creating anything or invoking a child.
     const privatePath = join(out, "private");
     if (!inside(await destinationRealpath(privatePath), await destinationRealpath(to))) throw new Error("Export-set: --to must be inside <out>/private.");
+    const ids = new Set<string>();
+    for await (const id of lines(required("list"))) {
+      if (!/^[0-9a-f]{12}$/.test(id)) throw new Error("Export-set IDs must be 12 lowercase hexadecimal characters.");
+      if (ids.has(id)) throw new Error(`Export-set: duplicate ID ${id}.`);
+      ids.add(id);
+    }
     await prepareOutput(out);
     if (!inside(await realpath(privatePath), await destinationRealpath(to))) throw new Error("Export-set: --to must be inside <out>/private.");
     // Check every indexed original, including IDs not selected for export, before writing.
     for await (const row of lines(join(privatePath, "index.tsv"))) await validateDestination(row.split("\t")[1], to);
     // Preflight all requested names so a later collision cannot cause a partial export.
-    for await (const id of lines(required("list"))) {
-      if (!/^[0-9a-f]{12}$/.test(id)) throw new Error("Export-set IDs must be 12 lowercase hexadecimal characters.");
+    for (const id of ids) {
       for (const format of ["cdx", "cdxml"]) if (await noSymlink(join(to, `${id}.${format}`))) throw new Error("Export-set: destination already exists.");
     }
     await mkdir(to, { recursive: true, mode: 0o700 });
-    for await (const id of lines(required("list"))) {
-      if (!/^[0-9a-f]{12}$/.test(id)) throw new Error("Export-set IDs must be 12 lowercase hexadecimal characters.");
+    for (const id of ids) {
       let original: string | undefined;
       for await (const row of lines(join(out, "private", "index.tsv"))) {
         const [key, path] = row.split("\t");

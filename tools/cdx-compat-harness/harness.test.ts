@@ -877,6 +877,44 @@ process.once('message', job => {
     expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 1 survived every leg.");
   });
 
+  it.each(["missing summary", "missing display", "retargeted display", "legacy chain"])("requires positive wavy-bond evidence on every leg with %s", async kind => {
+    const { root, sources, out } = await setup();
+    const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
+    const xml = syntheticXml.replace('<b id="20" B="10" E="11" Order="1"/>',
+      '<n id="12" Element="6" p="60 30"/><b id="20" B="10" E="11" Order="1" Display="Wavy"/><b id="21" B="11" E="12" Order="1"/>');
+    await writeFile(original, xml);
+    await writeFile(list, original);
+    const describe = async (source: string) => chemistry.describeDocument((await codec.open(Buffer.from(source))).document!, []);
+    const summary = await describe(xml);
+    const changed = kind === "retargeted display"
+      ? xml.replace(' Display="Wavy"', "").replace('B="11" E="12" Order="1"', 'B="11" E="12" Order="1" Display="Wavy"')
+      : xml.replace(' Display="Wavy"', "");
+    const intermediate = await describe(changed);
+    const legs = [summary, intermediate, summary].map((after, index) => ({ before: index === 2 ? intermediate : summary, after, warnings: [] }));
+    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
+      { route: "cdx", verdict: "PASS", warnings: [], differences: [], drawingLoss: [], summary, ms: 1 },
+      { route: "cdx-cdxml-cdx", verdict: kind === "missing summary" ? "ERROR" : "PASS", warnings: [], differences: [], drawingLoss: [],
+        summary: kind === "missing summary" ? undefined : summary,
+        legs: kind === "missing summary" || kind === "legacy chain" ? undefined : legs, ms: 1 }
+    ] } }));
+    await report(out);
+    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 0 survived every leg.");
+  });
+
+  it("counts a wavy bond preserved through both formats and all three chained legs", async () => {
+    const { root, sources, out } = await setup();
+    const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
+    const xml = syntheticXml.replace('<b id="20" B="10" E="11" Order="1"/>',
+      '<n id="12" Element="6" p="60 30"/><b id="20" B="10" E="11" Order="1" Display="Wavy"/><b id="21" B="11" E="12" Order="1"/>');
+    await writeFile(original, xml);
+    await writeFile(list, original);
+    const converted = await processCopy(original);
+    expect(converted.roundTrips.map(trip => [trip.verdict, trip.legs?.length])).toEqual([["PASS", 1], ["PASS", 1], ["PASS", 3]]);
+    await run(defaults(list, out), async () => ({ result: converted }));
+    await report(out);
+    expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 1 survived every leg.");
+  });
+
   it("reports bracket usage and per-route survival across intermediate legs", async () => {
     const { root, sources, out } = await setup();
     const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt");
@@ -988,6 +1026,18 @@ process.once('message', job => {
     expect(await readdir(publicDirectory)).toEqual([]);
     expect(await readdir(join(out, "private"))).toEqual(["exports"]);
   });
+
+  it("rejects a repeated export-set ID before creating the destination", async () => {
+    const { sources, root, out } = await setup();
+    const original = join(sources, "synthetic.cdxml"), list = join(root, "list.txt"), ids = join(root, "ids.txt");
+    await writeFile(original, syntheticXml);
+    await writeFile(list, original);
+    await run(defaults(list, out), async () => ({ result: successful() }));
+    const id = (await collect(out))[0].id, to = join(out, "private", "exports");
+    await writeFile(ids, `${id}\n${id}\n`);
+    await expect(main(["export-set", "--list", ids, "--out", out, "--to", to])).rejects.toThrow(`Export-set: duplicate ID ${id}.`);
+    await expect(stat(to)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 30000);
 
   it("logs an unreadable source privately and continues with the next synthetic file", async () => {
     const { root, sources, out } = await setup();
