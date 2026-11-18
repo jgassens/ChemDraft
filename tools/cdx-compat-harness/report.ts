@@ -1,7 +1,8 @@
 import { appendOutput as appendFile, writeOutput as writeFile, prepareOutput } from "./safety";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { bracketValue, chemistryFeatures, compareSurvival, drawingFeatures, jsonEqual, pairMolecules, publicSanitizationReason, type MoleculeSummary, type Result, type Summary } from "./model";
+import { bracketDifferences, chemistryFeatures, compareSurvival, drawingFeatures, pairBrackets, pairWavyMolecules, publicSanitizationReason, type MoleculeSummary, type Result, type Summary } from "./model";
+import { matchedItems, sameDirectedBond, type BondSite } from "./placement";
 import { stepArrowLosses, type SurvivalCounts } from "./survival";
 import { lines, results } from "./io";
 import { publicGroup } from "./runner";
@@ -78,39 +79,45 @@ function cdxmlScore(value: Result): number {
 function countWavySurvivors(summary: Summary, trips: Result["roundTrips"], originals: MoleculeSummary[]): number {
   const routes = trips.filter(trip => trip.verdict !== "SKIPPED");
   if (!routes.length) return 0;
-  const matches: Map<MoleculeSummary, MoleculeSummary>[][] = [];
+  const surviving = new Map(originals.map(m => [m, m.wavyBonds]));
   for (const trip of routes) {
     const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
     if (stages.length !== (trip.route === "cdx-cdxml-cdx" ? 3 : 1)) return 0;
     let before = summary.molecules;
-    const route: Map<MoleculeSummary, MoleculeSummary>[] = [];
+    const tracked = new Map([...surviving].map(([m, bonds]) => [m, {
+      molecule: m, bonds: bonds?.map(bond => [bond, bond] as [BondSite, BondSite])
+    }]));
     for (const stage of stages) {
       if (!stage?.molecules) return 0;
-      route.push(new Map(pairMolecules(before, stage.molecules).flatMap(pair =>
-        pair.before && pair.after ? [[pair.before, pair.after]] : [])));
+      const matches = pairWavyMolecules(before, stage.molecules, [...tracked.values()].map(item => item.molecule));
+      for (const [original, item] of tracked) {
+        const after = matches.get(item.molecule);
+        const bonds = item.bonds;
+        const next = bonds && after?.wavyBonds
+          ? new Map(matchedItems(bonds.map(([, prior]) => prior), after.wavyBonds, sameDirectedBond)) : undefined;
+        const kept = next && bonds?.flatMap(([start, prior]): [BondSite, BondSite][] => {
+          const current = next.get(prior);
+          return current ? [[start, current]] : [];
+        });
+        // Old summaries can identify the bond only when the molecule has a single bond.
+        const legacySurvival = !bonds && !after?.wavyBonds && original.bonds === 1 && after?.bonds === 1 && original.smiles === after.smiles;
+        if (!after?.displays?.wavy || (!kept?.length && !legacySurvival)) {
+          tracked.delete(original);
+        } else {
+          item.molecule = after;
+          item.bonds = kept ?? bonds;
+        }
+      }
+      if (!tracked.size) return 0;
       before = stage.molecules;
     }
-    matches.push(route);
-  }
-  return originals.reduce((total, original) => {
-    let surviving = original.wavyBondKeys;
-    for (const route of matches) {
-      let molecule = original;
-      for (const leg of route) {
-        const after = leg.get(molecule);
-        if (!after?.displays?.wavy) return total;
-        const afterKeys = after.wavyBondKeys;
-        if (surviving && afterKeys) {
-          surviving = surviving.filter(key => afterKeys.includes(key));
-        } else if (original.bonds !== 1 || after.bonds !== 1 || original.smiles !== after.smiles) {
-          // A legacy count identifies the bond only for the same one-bond molecule.
-          return total;
-        }
-        molecule = after;
-      }
+    for (const original of surviving.keys()) {
+      const item = tracked.get(original);
+      if (item) surviving.set(original, item.bonds?.map(([start]) => start));
+      else surviving.delete(original);
     }
-    return total + (surviving?.length ?? original.displays.wavy);
-  }, 0);
+  }
+  return [...surviving].reduce((total, [original, bonds]) => total + (bonds?.length ?? original.displays.wavy), 0);
 }
 
 export async function report(out: string, baseline?: string): Promise<void> {
@@ -201,15 +208,16 @@ export async function report(out: string, baseline?: string): Promise<void> {
       if (!route || trip.verdict === "SKIPPED" || !trip.summary || !row.summary?.brackets || !trip.summary.brackets) continue;
       const stages = trip.legs?.length ? trip.legs.map(leg => leg.after) : [trip.summary];
       if (stages.some(stage => !stage.brackets)) continue;
-      let remaining = originalBrackets.map(bracketValue);
-      let previousCount = originalBrackets.length, lost = false;
+      let remaining = new Set(originalBrackets);
+      let previous = originalBrackets, lost = false;
       for (const stage of stages) {
-        const next = stage.brackets!.map(bracketValue);
-        if (next.length < previousCount) lost = true;
-        previousCount = next.length;
-        remaining = remaining.filter(item => { const i = next.findIndex(candidate => jsonEqual(item, candidate)); if (i < 0) return false; next.splice(i, 1); return true; });
+        const pairs = pairBrackets(previous, stage.brackets!);
+        if (pairs.some(pair => !pair.after)) lost = true;
+        remaining = new Set(pairs.flatMap(({ before, after }) =>
+          before && after && remaining.has(before) && !bracketDifferences(before, after).length ? [after] : []));
+        previous = stage.brackets!;
       }
-      route.survivingUnchanged += remaining.length;
+      route.survivingUnchanged += remaining.size;
       if (lost) route.filesLosingPairs++;
     }
     const wavyMolecules = row.summary?.molecules.filter(molecule => (molecule.displays?.wavy ?? 0) > 0) ?? [];

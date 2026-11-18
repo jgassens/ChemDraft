@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { fork, type ForkOptions } from "node:child_process";
 import { once } from "node:events";
 import { processCopy } from "./worker";
-import { compare, warning, type Result, type Summary, type WorkerProgress } from "./model";
+import { compare, pairMolecules, warning, type Result, type Summary, type WorkerProgress } from "./model";
 import { child, run, type RunOptions } from "./runner";
 import { results, withCopy } from "./io";
 import { report, verdict } from "./report";
@@ -913,6 +913,79 @@ process.once('message', job => {
     await run(defaults(list, out), async () => ({ result: converted }));
     await report(out);
     expect(await readFile(join(out, "report.md"), "utf8")).toContain("Wavy single bonds: 1 in originals; 1 survived every leg.");
+  });
+
+  it.each([
+    ["atom reordering on a page without source atom IDs", false],
+    ["a retarget made during atom reordering", true],
+    ["a reversal of the wavy bond's marked endpoint", true],
+    ["binary renumbering on a symbolic-ID SRU page", false]
+  ])("reports per-leg wavy identity through %s", async (kind, changed) => {
+    const { sources, out } = await setup();
+    const symbolic = kind === "binary renumbering on a symbolic-ID SRU page";
+    const xml = syntheticXml.replace('id="10" Element="6"', 'id="10" Element="7"').replace('id="11" Element="8"', 'id="11" Element="6"')
+      .replace('<b id="20" B="10" E="11" Order="1"/>',
+        '<n id="12" Element="8" p="60 30"/><b id="20" B="10" E="11" Order="1" Display="Wavy"/><b id="21" B="12" E="11" Order="1"/>');
+    const input = symbolic ? xml.replace("</page>", `
+      <graphic id="30" GraphicType="Bracket" BracketType="Square" BoundingBox="34 50 30 10"/>
+      <graphic id="31" GraphicType="Bracket" BracketType="Square" BoundingBox="46 10 50 50"/>
+      <bracketedgroup id="32" BracketUsage="SRU" BracketedObjectIDs="11" SRULabel="n">
+        <bracketattachment id="33" GraphicID="30"><crossingbond id="34" BondID="20" InnerAtomID="11"/></bracketattachment>
+        <bracketattachment id="35" GraphicID="31"><crossingbond id="36" BondID="21" InnerAtomID="11"/></bracketattachment>
+      </bracketedgroup></page>`).replace(/(id|B|E|BracketedObjectIDs|GraphicID|BondID|InnerAtomID)="(\d+)"/g, '$1="sym_$2"') : xml;
+    const source = (await codec.open(Buffer.from(input))).document!;
+    const summary = await chemistry.describeDocument(source, []);
+    const graph = source.pages[0].objects.find(o => o.type === "molecule");
+    if (!graph || graph.type !== "molecule") throw new Error("Expected synthetic molecule");
+    if (!symbolic) expect(graph.compatibility?.unknown.cdxmlAtomIdsByAtomId).toBeUndefined();
+    let after: Summary;
+    if (symbolic) {
+      after = await chemistry.describeDocument((await codec.open((await codec.interchange(source, "cdx")).bytes)).document!, []);
+    } else {
+      if (kind.startsWith("a reversal")) {
+        const bond = graph.bonds[0];
+        [bond.fromAtomId, bond.toAtomId] = [bond.toAtomId, bond.fromAtomId];
+      } else {
+        graph.atoms.reverse();
+        if (changed) [graph.bonds[0].display, graph.bonds[1].display] = [graph.bonds[1].display, graph.bonds[0].display];
+      }
+      after = await chemistry.describeDocument(source, []);
+    }
+    expect(after.molecules[0].displays.wavy).toBe(1);
+    const comparison = compare(summary, after, []);
+    const original = join(sources, "synthetic.cdxml"), list = join(sources, "..", "list.txt");
+    await writeFile(original, input);
+    await writeFile(list, original);
+    await run(defaults(list, out), async () => ({ result: { ...successful(), summary, roundTrips: [
+      { route: "cdx-cdxml-cdx", ...comparison, warnings: [], summary, legs: [
+        { before: summary, after: summary, warnings: [] },
+        { before: summary, after, warnings: [] },
+        { before: after, after: summary, warnings: [] }
+      ], ms: 1 }
+    ] } }));
+    await report(out);
+    expect.soft(await readFile(join(out, "report.md"), "utf8")).toContain(`Wavy single bonds: 1 in originals; ${changed ? 0 : 1} survived every leg.`);
+    expect(comparison.verdict).toBe(changed ? "FAIL" : "PASS");
+    if (changed) expect(comparison.differences).toContainEqual(expect.objectContaining({ feature: "stereo-display", warned: false }));
+  });
+
+  it("indexes drawing positions for repeated molecules without rescanning canonical candidates", async () => {
+    const molecule = await chemistry.describeStructure("CC");
+    let reads = 0;
+    const count = 200;
+    const before = Array.from({ length: count }, (_, i) => ({ ...molecule, objectId: String(i), originalId: String(i),
+      pairing: { page: 0, centroid: [i * 30, 0] as [number, number], bondLength: 30, elements: ["C", "C"], labels: [], bonds: 1 },
+      get smiles() { reads++; return molecule.smiles; }
+    }));
+    const after = before.map((item, i) => {
+      const { smiles: _smiles, ...rest } = item;
+      return { ...rest, objectId: String(count - i), originalId: String(count - i),
+        get smiles() { reads++; return molecule.smiles; } };
+    }).reverse();
+    reads = 0;
+    const pairs = pairMolecules(before, after);
+    expect.soft(reads).toBeLessThan(count * 20);
+    expect(pairs.map(pair => pair.after?.pairing?.centroid)).toEqual(before.map(item => item.pairing.centroid));
   });
 
   it("reports bracket usage and per-route survival across intermediate legs", async () => {

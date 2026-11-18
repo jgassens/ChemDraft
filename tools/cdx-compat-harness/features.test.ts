@@ -88,6 +88,50 @@ describe("synthetic abbreviation and display survival", () => {
 });
 
 describe("synthetic bracket pair survival", () => {
+  const sru = (id: number, x: number, member: number, leftBond: number, leftInner: number, rightBond: number, rightInner: number) => `
+    <graphic id="${id}" GraphicType="Bracket" BracketType="Square" BoundingBox="${x + 4} 50 ${x} 10"/>
+    <graphic id="${id + 1}" GraphicType="Bracket" BracketType="Square" BoundingBox="${x + 16} 10 ${x + 20} 50"/>
+    <bracketedgroup id="${id + 2}" BracketUsage="SRU" BracketedObjectIDs="${member}" SRULabel="n">
+      <bracketattachment id="${id + 3}" GraphicID="${id}"><crossingbond id="${id + 4}" BondID="${leftBond}" InnerAtomID="${leftInner}"/></bracketattachment>
+      <bracketattachment id="${id + 5}" GraphicID="${id + 1}"><crossingbond id="${id + 6}" BondID="${rightBond}" InnerAtomID="${rightInner}"/></bracketattachment>
+    </bracketedgroup>`;
+  const graph = molecule([[7, 20, 30], [6, 40, 30], [6, 60, 30], [8, 80, 30]], [[0, 1, "1", "Wavy"], [1, 2], [2, 3]]);
+  const openXml = async (source: string) => (await open(Buffer.from(source))).document!;
+
+  it("preserves SRU references across symbolic CDXML to binary CDX to CDXML renumbering", async () => {
+    const xml = wrap(graph + sru(20, 30, 11, 100, 11, 101, 11))
+      .replace(/(id|B|E|BracketedObjectIDs|GraphicID|BondID|InnerAtomID)="(\d+)"/g, '$1="sym_$2"');
+    const original = await openXml(xml);
+    const binary = (await open((await interchange(original, "cdx")).bytes)).document!;
+    expect(binary.pages[0].objects.find(o => o.type === "molecule")?.compatibility?.originalId).toMatch(/^\d+$/);
+    const reopened = await openXml(Buffer.from((await interchange(binary, "cdxml")).bytes).toString("utf8"));
+    const before = await describeDocument(original, []);
+    const afterBinary = await describeDocument(binary, []);
+    for (const pair of [[before, afterBinary], [afterBinary, await describeDocument(reopened, [])]] as const) {
+      expect(compare(...pair, [])).toMatchObject({ verdict: "PASS", differences: [] });
+    }
+  });
+
+  it.each([
+    ["crossing-bond swaps across attachments", sru(20, 30, 11, 101, 11, 100, 11)],
+    ["a changed crossing InnerAtomID", sru(20, 30, 11, 100, 10, 101, 11)]
+  ])("detects %s on a fixed SRU pair", async (_case, changed) => {
+    const before = await describeDocument(await openXml(wrap(graph + sru(20, 30, 11, 100, 11, 101, 11))), []);
+    const after = await describeDocument(await openXml(wrap(graph + changed)), []);
+    expect(after.brackets?.map(b => b.crossingBondCount)).toEqual(before.brackets?.map(b => b.crossingBondCount));
+    expect(compare(before, after, [])).toMatchObject({ verdict: "FAIL", differences: [{ feature: "bracket-crossing-bonds" }] });
+  });
+
+  it("detects two SRU pairs exchanging their complete member and crossing targets", async () => {
+    const first = sru(20, 30, 11, 100, 11, 101, 11), second = sru(30, 52, 12, 101, 12, 102, 12);
+    const before = await describeDocument(await openXml(wrap(graph + first + second)), []);
+    expect(compare(before, await describeDocument(await openXml(wrap(graph + second + first)), []), []).verdict).toBe("PASS");
+    const swapped = sru(20, 30, 12, 101, 12, 102, 12) + sru(30, 52, 11, 100, 11, 101, 11);
+    const comparison = compare(before, await describeDocument(await openXml(wrap(graph + swapped)), []), []);
+    expect(comparison.verdict).toBe("FAIL");
+    expect(comparison.differences.map(d => d.feature).sort()).toEqual(["bracket-crossing-bonds", "bracket-crossing-bonds", "bracket-members", "bracket-members"]);
+  });
+
   it.each([
     ['BracketedObjectIDs="11"', 'BracketedObjectIDs="12"', "bracket-members"],
     ['BondID="100"', 'BondID="101"', "bracket-crossing-bonds"]
@@ -1066,6 +1110,63 @@ describe("synthetic format features", () => {
     document.pages[0].objects = [bRenumbered, aRenumbered];
     expect(compare(before, await describeDocument(document, []), []).drawingLoss).toEqual([]);
     [aRenumbered.style, bRenumbered.style] = [bRenumbered.style, aRenumbered.style];
+    const after = await describeDocument(document, []);
+    expect(after.drawing.colours).toEqual(before.drawing.colours);
+    expect(compare(before, after, []).drawingLoss).toEqual(["colours"]);
+  });
+
+  it.each([false, true])("matches lines by position before recycled export IDs (colours swapped: %s)", async swap => {
+    const xml = wrap('<graphic id="2" GraphicType="Line" BoundingBox="10 10 30 15" color="2"/><graphic id="1" GraphicType="Line" BoundingBox="60 10 80 15" color="3"/>')
+      .replace('id="1" BoundingBox="0 0 612 792"', 'id="70" BoundingBox="0 0 612 792"')
+      .replace("<page", '<colortable><color r="1" g="0" b="0"/><color r="0" g="0" b="1"/></colortable><page');
+    const document = (await open(Buffer.from(xml))).document!;
+    const before = await describeDocument(document, []);
+    const afterDoc = (await open((await interchange(document, "cdxml")).bytes)).document!;
+    const [a, b] = afterDoc.pages[0].objects;
+    expect([a, b].map(o => o.compatibility?.originalId)).toEqual(["1", "2"]);
+    expect([a, b].map(o => o.style.strokeColor)).toEqual(["#ff0000", "#0000ff"]);
+    if (swap) [a.style, b.style] = [b.style, a.style];
+    expect(compare(before, await describeDocument(afterDoc, []), []).drawingLoss).toEqual(swap ? ["colours"] : []);
+  });
+
+  it("distinguishes renumbered graphics with a shared origin by their size", async () => {
+    const document = createEmptyDocument();
+    const rectangle = (id: string, width: number, strokeColor: string) => GraphicObjectSchema.parse({
+      id, type: "graphic", graphicKind: "rect", x: 10, y: 15, width, height: 25, style: { strokeColor }
+    });
+    const one = rectangle("a", 12, "#ff0000"), two = rectangle("b", 30, "#0000ff");
+    document.pages[0].objects = [one, two];
+    const before = await describeDocument(document, []);
+    document.pages[0].objects = [{ ...two, id: "renumbered-b" }, { ...one, id: "renumbered-a" }];
+    expect(compare(before, await describeDocument(document, []), []).drawingLoss).toEqual([]);
+  });
+
+  it("reports a rectangle stroke/fill colour swap even when its palette is unchanged", async () => {
+    const document = createEmptyDocument();
+    const rectangle = GraphicObjectSchema.parse({ id: "box", type: "graphic", graphicKind: "rect",
+      x: 10, y: 15, width: 20, height: 25, style: { strokeColor: "#ff0000", fillColor: "#0000ff" } });
+    document.pages[0].objects = [rectangle];
+    const before = await describeDocument(document, []);
+    [rectangle.style.strokeColor, rectangle.style.fillColor] = [rectangle.style.fillColor, rectangle.style.strokeColor];
+    const after = await describeDocument(document, []);
+    expect(after.drawing.colours).toEqual(before.drawing.colours);
+    expect(compare(before, after, []).drawingLoss).toEqual(["colours"]);
+  });
+
+  it("reports colours swapping between bonds after their IDs and order change", async () => {
+    const xml = wrap(molecule([[7, 20, 30], [6, 40, 30], [8, 60, 30]], [[0, 1], [1, 2]]));
+    const document = (await open(Buffer.from(xml))).document!;
+    const graph = document.pages[0].objects[0];
+    if (graph.type !== "molecule") throw new Error("Expected a molecule");
+    const [left, right] = graph.bonds;
+    graph.style.bondColors = { [left.id]: "#ff0000", [right.id]: "#0000ff" };
+    const before = await describeDocument(document, []);
+    const binary = (await open((await interchange(document, "cdx")).bytes)).document!;
+    expect(compare(before, await describeDocument(binary, []), []).drawingLoss).toEqual([]);
+    graph.bonds = [{ ...right, id: "20" }, { ...left, id: "21" }];
+    graph.style.bondColors = { "20": "#0000ff", "21": "#ff0000" };
+    expect(compare(before, await describeDocument(document, []), []).drawingLoss).toEqual([]);
+    graph.style.bondColors = { "20": "#ff0000", "21": "#0000ff" };
     const after = await describeDocument(document, []);
     expect(after.drawing.colours).toEqual(before.drawing.colours);
     expect(compare(before, after, []).drawingLoss).toEqual(["colours"]);

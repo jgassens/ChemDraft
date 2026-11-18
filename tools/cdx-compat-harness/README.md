@@ -251,15 +251,22 @@ Route losses use the minimum count through initial import and every measured leg
 final count cannot hide an intermediate loss. Counts are relative to the source; these aggregate
 counts cannot identify individual objects when counts happen to compensate. Missing legacy
 survival data and skipped routes are excluded from measured-stage denominators.
-Usage, repeat count, repeat unit, contained-object count and crossing-bond count are chemistry;
-kind and label alone are drawing differences. Reports count pairs unchanged through every measured
-leg of each route and files where a leg loses pairs. Legacy summaries without bracket data are
-excluded from route survival counts.
+Usage, repeat count, repeat unit, member targets and crossing bonds are chemistry. Kind and label
+are drawing differences. Corresponding bracket pairs match by glyph position. Crossing records
+retain their attachment and resolved inner atom. Reports count pairs unchanged through every
+measured leg and files where a leg loses pairs. Legacy summaries without bracket data are excluded
+from route survival counts.
+
+Non-text colours are compared by drawing position and style role, including colours assigned to
+individual bonds and atom labels. Wavy single bonds retain the order of their drawn endpoints so
+the unknown stereo mark stays on the same atom. The report follows those bonds through each leg.
+Legacy summaries lack directed endpoint evidence and retain the count fallback for one-bond
+molecules when both sides only recorded counts.
 The CDXML baseline section compares shared IDs' CDXML routes, flags worse chemistry verdicts or added drawing-loss
 categories, and reports new IDs separately. Reports do not assert compatibility beyond their corpus.
 
-Round-trip comparison pairs canonical identities (SMILES plus dummy labels), then
-`compatibility.originalId` source identities. Remaining native
+Round-trip comparison pairs canonical identities (SMILES plus dummy labels), using drawing position
+to distinguish repeated identities, then `compatibility.originalId` source identities. Remaining native
 molecules are paired only when each is the other's unique closest candidate on the same page,
 within one measured bond length (30 drawing units for an unbonded molecule), with identical
 heavy-atom element multisets. Equal distances remain ambiguous. Native object IDs are used only
@@ -271,8 +278,9 @@ rescore. Differences identify the affected molecule rather than
 comparing aggregate feature counts. Every emitted difference passes a deep-equality invariant:
 equal before/after values are dropped and counted in `comparisonInternalErrors`, also aggregated
 in the public JSON report. Sanitization reasons are diagnostic metadata, not identity changes.
-Before pairing, identical multisets of complete stored molecule chemistry summaries pass by
-identity, excluding only object IDs and pairing geometry. Reaction and drawing checks still run.
+Identical multisets of complete stored molecule chemistry summaries can pass by identity. Wavy
+displays also require the same directed bonds on corresponding molecules. Reaction and drawing
+checks still run.
 `identityPasses` counts molecules across comparison legs, including legs in chained routes;
 the private result records `chemistryPassReason: "identity"` when a leg used this shortcut.
 
