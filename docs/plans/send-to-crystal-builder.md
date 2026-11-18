@@ -29,6 +29,17 @@ MOFs. ChemDraft draws the molecules that go into them. The owner wants a one-cli
 to Crystal Builder" that is fun, useful, and a good joint demo for a perspective article with Crystal
 Builder's author: draw a linker in ChemDraft, click once, build the framework in Crystal Builder.
 
+**What Crystal Builder is for** (its README): opening and cleaning up crystal structures (symmetry,
+bonds, missing hydrogens); assembling MOFs from a net, a node, and a linker (vendored PORMAKE), after
+"Mark connection points" turns a molecule into a building block; filling pores with guest molecules;
+force-field and quick quantum relaxation (UFF4MOF, xTB, DFTB+, ML potentials); powder diffraction;
+export to simulation codes. A ChemDraft user draws one molecule, not a crystal, so that molecule is
+useful there in two roles, and the plugin offers both (Decision 1b):
+
+- **As a MOF linker** (the main feature and the article demo), with its connection points marked
+  in ChemDraft before sending.
+- **As a molecule** (guest, solvent, anything else), sent as plain 3D coordinates.
+
 Two facts shape everything:
 
 1. **ChemDraft plugins cannot start another app today.** The only process-spawning capability is
@@ -72,6 +83,7 @@ Crystal Builder tolerates them, otherwise a plain comment; question A3 below).
 | Stereo flags (wedges, E/Z) | Specified stereo survives only as geometry. Unspecified centers and "either" bonds get one arbitrary 3D configuration | **Warn before send** when anything is unspecified, counting the centers and bonds |
 | Several molecules or a salt | Components sit side by side; their relative position means nothing | **Warn before send** |
 | Abbreviations, superatoms | Must expand to real atoms | Expanded when the host's SMILES already does so; otherwise **refuse**, naming the label |
+| Connection-point atoms labelled `X` (Decision 1b) | **Send as MOF Linker**: kept as `X` atoms at the connection positions. **Send as Molecule**: not chemistry | Linker send: always disclosed ("2 connection points marked"). Molecule send: **refuse**, naming the X atoms and pointing to Send as MOF Linker |
 | R-groups, atom lists, polymer brackets, repeat units | Cannot be a single 3D molecule | **Refuse**, naming the object |
 | Reaction context (arrows, roles, conditions, atom maps) | Dropped; only the selected molecules go | **Warn before send** if the selection is part of a reaction |
 | Embedding or minimization fails (common with metals) | No coordinates | **Refuse** with the specific engine reason; never send unminimized or made-up geometry without saying so |
@@ -80,6 +92,44 @@ Crystal Builder tolerates them, otherwise a plain comment; question A3 below).
 **Cancel**. With nothing specific to warn about, the send proceeds without a box (after the one-time
 consent in Decision 3) and the status line says `Sent to Crystal Builder as a 3D XYZ model (bond
 orders are not stored in XYZ)`. Nothing is ever dropped silently.
+
+## Decision 1b: two sends, and marking connection points in ChemDraft
+
+Crystal Builder's MOF builder needs a linker whose connection points (where it bonds to the metal
+node) are marked. Marking them over there by hand undoes the "one click" promise, so the user marks
+them **in ChemDraft**, where drawing is easy.
+
+**How a connection point is marked: an ordinary atom labelled `X`.** On terephthalic acid the user
+draws an `X` on each carboxylate carbon, where the acid OH would otherwise be. That is a normal
+ChemDraft atom label: visible, saved with the document, editable, undoable, and it needs no new host
+object or tool. PORMAKE, which Crystal Builder's MOF builder uses, is believed to mark connection
+points with `X` atoms in its building blocks; this is from memory and must be confirmed (A6).
+
+**Two commands:**
+
+| Command | Accepts | Sends |
+|---|---|---|
+| **Send as MOF Linker** (main) | One molecule with at least two `X` atoms, each bonded to exactly one heavy atom by a single bond | XYZ with `X` atoms at the connection positions; comment line adds `connection points: n` |
+| **Send as Molecule** | Any molecule with no `X` atoms | Plain 3D XYZ, as in Decision 1 |
+
+Linker refusals, each naming the problem: fewer than two `X` atoms ("Mark at least two connection
+points: draw an atom labelled X where the linker bonds to a metal node"); an `X` bonded to zero, two
+or more atoms, or by a multiple bond; `X` in a molecule of several components.
+
+**How the 3D model is built with `X` present** (pure plugin code, no host change): the force field
+cannot type a dummy atom, so the plugin gives `embed3d` a SMILES in which each `X` becomes an explicit
+`[H]`, minimizes as usual, then writes those atoms back out as `X` in the XYZ. Atom order is stable
+across embedding and minimization (`chemistry3d.ts`), so the mapping is exact. The `X` sits at a C–H
+distance (about 1.1 Å) along the bond to its anchor; if Crystal Builder expects a different distance
+(for example a metal–O or C–C length), the plugin rescales along the same bond vector (A6). How an
+`X` label reaches the plugin in the selection SMILES (as `*`, as an unknown label, or refused by the
+host) is part of the Phase 0 code map (0.3); if the host refuses it, the plugin reads `X` atoms from the
+selection's atom list instead, and no host change is planned without a separate decision.
+
+**Optional, later: a "Mark Connection Points" command** (task 2G). The user selects anchor atoms and
+the plugin adds `X` atoms at the right bond length and direction, as one labelled undo entry with the
+new atoms selected (§4.4). It needs `document.write`, a dangerous permission, so it ships only if the
+owner wants it (owner question 6). Drawing `X` by hand stays the documented way and is enough.
 
 ## Decision 2: how to hand it over
 
@@ -168,11 +218,14 @@ from one host (§1, §14).
 - **Plugin repository**: `jgassens/ChemDraft-CrystalBuilder-Plugin`, MIT code license, no bundled
   data (so no `dataLicenses`). Imports only `@chemdraft/plugin-api`.
 - **Plugin id**: `org.chemdraft.handoff.crystalBuilder`. Display name: "Send to Crystal Builder".
-- **Commands**: `plugin.crystalBuilder.send` (main), `plugin.crystalBuilder.chooseApp` (re-pick).
-  **Menus**: `menu.crystalBuilder.send`, `menu.crystalBuilder.chooseApp`, location `plugins`.
+- **Commands**: `plugin.crystalBuilder.sendLinker` (main, "Send as MOF Linker"),
+  `plugin.crystalBuilder.sendMolecule` ("Send as Molecule"), `plugin.crystalBuilder.chooseApp`
+  (re-pick); optional later `plugin.crystalBuilder.markConnectionPoints` (task 2G).
+  **Menus**: `menu.crystalBuilder.sendLinker`, `menu.crystalBuilder.sendMolecule`,
+  `menu.crystalBuilder.chooseApp`, location `plugins`.
 - **Permissions**: `selection.read`, `chemistry.compute`, `apps.handoff`, `native.execute`,
   `plugin.storage`, `ui.menu`. `apiVersion: "^0.1.26"`. Nothing else: no network, no clipboard, no
-  filesystem, no document write.
+  filesystem, no document write. (Only the optional task 2G would add `document.write`.)
 - **Release assets**: `crystal-builder-handoff-X.Y.Z.zip` and `.zip.sha256`, with the two release-body
   markers (`ChemDraft-Plugin-API: ^0.1.26`, `ChemDraft-Min-App:` the first app version with 0.1.26).
 - **Host catalog**: one entry in `OFFICIAL_PLUGIN_CATALOG` (`apps/desktop/src/plugins/pluginUpdates.ts`)
@@ -194,8 +247,8 @@ Windows installer comes only from the GitHub workflow; the Windows session tests
 | Task | Output | Done when |
 |---|---|---|
 | 0.1 Owner approves this plan; summary goes to the master session | Master session's OK | OK received |
-| 0.2 Note to Crystal Builder's author (owner sends; conductor drafts) | Answers to A1–A5 below | Answers recorded in this document |
-| 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations and R-groups; the consent store's shape | Note attached; no files changed |
+| 0.2 Note to Crystal Builder's author (owner sends; conductor drafts) | Answers to A1–A6 below | Answers recorded in this document |
+| 0.3 One read-only code map (single worker) | Short note: how a user-invoked command is told apart from an assistant-invoked one in `plugin-host`; what SMILES the selection snapshot carries for abbreviations, R-groups, and an atom labelled `X`, and whether the selection exposes per-atom labels and bonds; the consent store's shape | Note attached; no files changed |
 
 ### Phase 1: host capability (ChemDraft repo, branch `feat/app-handoff` off `origin/main` after 1.2)
 
@@ -219,12 +272,16 @@ quitting ChemDraft leaves the other app running.
 |---|---|---|---|
 | 2A Scaffold | manifest, `src/index.ts`, `src/workerEntry.ts`, LICENSE, README | Manifest parses; boundary rule holds (only `@chemdraft/plugin-api`) | Kimi |
 | 2B XYZ writer | `src/xyz.ts` + test | Pure function, `Plugin3DModel` → text; fixed decimals, CRLF-free, atom count and order equal the model; comment line carries SMILES, net charge, method | Kimi |
-| 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex | Kimi |
-| 2D Command flow | `src/send.ts` + test with a mocked context | Empty selection, cancelled picker, declined consent, embed failure, minimize failure, and success each produce the specified message; one send per command | Kimi |
+| 2C Loss audit | `src/lossAudit.ts` + test | Pure function returning refusals and warnings exactly per the table in Decision 1, per send mode; fixtures: charged, isotopic, radical, unspecified stereo, salt, abbreviation, R-group, reaction member, metal complex, X atoms in a molecule send | Kimi |
+| 2C2 Connection points | `src/connectionPoints.ts` + test | Pure functions: find `X` atoms and their anchors; validate per Decision 1b (fewer than two, wrong valence, multiple bond, several components each refused with its message); X→`[H]` SMILES rewrite; map embedded atoms back to `X` by index; optional rescale along the anchor bond. Fixtures: terephthalic-acid linker with 2 X, a tritopic linker with 3 X, a molecule with 1 X (refused), X on a double bond (refused) | Kimi |
+| 2D Command flow | `src/send.ts` + test with a mocked context | Both send commands: empty selection, cancelled picker, declined consent, embed failure, minimize failure, linker refusals, and success each produce the specified message; one send per command | Kimi |
 | 2E Package and release | package zip, checksum, release body markers | Installs by hand through Add plugin from package on both platforms | Kimi |
+| 2G (optional, owner question 6) Mark Connection Points | `src/markConnectionPoints.ts` + test; manifest adds `document.write` | Selected anchors get `X` atoms at bond length along the open direction, through `documents.applyPatch`, one labelled undo entry, new atoms selected (§4.4); anchors with no free valence refused by name; chemistry of the anchor molecule otherwise unchanged (§7 test: canonical SMILES with X removed equals the original) | Kimi |
 
 Hands-on, both platforms, with Crystal Builder installed by the owner (agents do not install it):
-benzene; terephthalic acid (the MOF-linker demo); a charged species; a molecule with one unspecified
+terephthalic acid with two `X` atoms sent as a MOF linker, then built into a framework with Crystal
+Builder's MOF builder (the demo; confirm the connection points are recognized without re-marking);
+the same molecule without `X` (linker send refused with its message); benzene as a molecule; a charged species; a molecule with one unspecified
 center; a salt; an abbreviation; an R-group (refused); a ferrocene-like complex (expect an honest
 refusal or warning); confirm the structure appears in Crystal Builder and matches atom count and
 formula.
@@ -237,8 +294,10 @@ Remove Plugins** on macOS and Windows; update check finds a newer release. Kimi 
 
 ### Phase 4: later, with the author (not scheduled)
 
-- "Open in the running window" and "build a MOF from this linker" through Crystal Builder's MCP
-  `open(path)` and `mof.build`, once the author confirms a stable contract and token handling.
+- "Open in the running window" and "build a MOF from this linker in one step" (pick a net and node
+  in ChemDraft, call `mof.build`) through Crystal Builder's MCP `open(path)` and `mof.build`, once the
+  author confirms a stable contract and token handling. The linker send in Phase 2 already carries the
+  connection points; this only removes the steps inside Crystal Builder.
 - CIF export when ChemDraft can draw a unit cell.
 - Return trip: a fragment from Crystal Builder back onto the ChemDraft page (through proposals).
 
@@ -254,6 +313,9 @@ For the owner:
    and "Send to Crystal Builder" acceptable, and does the author agree to their app's name in our catalog?
 5. **Agent tooling on this iMac.** `agentctl`, `~/.agentctl/`, and `~/programming/chemdraw-wt/` do
    not exist on this machine. Should the workers run from the MacBook, with this session only conducting?
+6. **Mark Connection Points command.** Ship the optional one-click marker (task 2G, adds the dangerous
+   `document.write` permission), or keep "draw an atom labelled X" as the only way? Recommended: ship
+   without it first; add it if the demo feels clumsy.
 
 For Crystal Builder's author (owner relays):
 
@@ -262,6 +324,9 @@ For Crystal Builder's author (owner relays):
 - A3. What is the macOS bundle identifier, and the Windows executable and install folder names? Will they stay stable?
 - A4. Would they add `.xyz` to the declared document types, or accept a pull request for it?
 - A5. Is the window MCP server (`open(path)`, `mof.build`) shipped and stable enough to build Phase 4 on?
+- A6. How should a linker arrive so the MOF builder uses it without re-marking: an XYZ with `X` atoms
+  at the connection points (as in PORMAKE building blocks)? At what distance from the anchor atom?
+  If XYZ is not enough, which format does "Mark connection points" save?
 
 ## Verification
 
