@@ -250,7 +250,7 @@ jobs:
       matrix:
         runner: [ubuntu-22.04, ubuntu-24.04]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 40 # Ubuntu mirror package installation took up to 19 minutes on 2026-11-18.
     env:
       DEBIAN_FRONTEND: noninteractive
       NEEDRESTART_MODE: a

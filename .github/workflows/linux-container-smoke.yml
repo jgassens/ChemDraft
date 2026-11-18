@@ -55,7 +55,7 @@ jobs:
       always() && !cancelled() && (needs.build.result == 'success' ||
       (needs.build.result == 'skipped' && (inputs.artifact_run_id != '' || inputs.artifact_name != '')))
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40 # Distro mirror package installation took up to 19 minutes on 2026-11-18.
     strategy:
       fail-fast: false
       matrix:
