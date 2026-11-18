@@ -26,8 +26,8 @@ Approved in principle, with these conditions:
 
 Crystal Builder (github.com/JulesOpp/Crystal-Builder, MIT, Python/PySide6/VTK) builds crystals and
 MOFs. ChemDraft draws the molecules that go into them. The owner wants a one-click "send what I drew
-to Crystal Builder" that is fun, useful, and a good joint demo for a perspective article with Crystal
-Builder's author: draw a linker in ChemDraft, click once, build the framework in Crystal Builder.
+to Crystal Builder" that is fun, useful, and a good demo for the owner's perspective article (the owner's alone;
+Crystal Builder's author is not a coauthor, owner 2026-11-18): draw a linker in ChemDraft, click once, build the framework in Crystal Builder.
 
 **What Crystal Builder is for** (its README): opening and cleaning up crystal structures (symmetry,
 bonds, missing hydrogens); assembling MOFs from a net, a node, and a linker (vendored PORMAKE), after
