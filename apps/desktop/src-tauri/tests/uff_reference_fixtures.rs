@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 const UPSTREAM: &str = "416651ddaef33a4e20392392e7c0b505d446491b";
-const KCAL_TO_KJ: f64 = 4.184;
+pub(crate) const KCAL_TO_KJ: f64 = 4.184;
 const TERMS: [(&str, usize); 5] = [
     ("bond", 2),
     ("angle", 3),
@@ -49,11 +49,11 @@ struct Case<G> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Graph<S, C> {
+pub(crate) struct Graph<S, C> {
     hydrogen_model: String,
     kekule: Option<String>,
-    snapshots: Vec<S>,
-    cutoff_crossing: Option<C>,
+    pub(crate) snapshots: Vec<S>,
+    pub(crate) cutoff_crossing: Option<C>,
 }
 
 #[derive(Deserialize)]
@@ -77,60 +77,62 @@ struct RequiredRun {
 }
 
 #[derive(Deserialize)]
-struct InputGraph {
+pub(crate) struct InputGraph {
     #[serde(flatten)]
-    graph: Graph<InputSnapshot, CutoffCrossingInput>,
-    atoms: Vec<InputAtom>,
-    bonds: Vec<InputBond>,
+    pub(crate) graph: Graph<InputSnapshot, CutoffCrossingInput>,
+    pub(crate) atoms: Vec<InputAtom>,
+    pub(crate) bonds: Vec<InputBond>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InputAtom {
-    atomic_number: u8,
+pub(crate) struct InputAtom {
+    pub(crate) atomic_number: u8,
+    pub(crate) formal_charge: i32,
 }
 
 #[derive(Deserialize)]
-struct InputBond {
-    a: usize,
-    b: usize,
+pub(crate) struct InputBond {
+    pub(crate) a: usize,
+    pub(crate) b: usize,
+    pub(crate) order: u8,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CutoffCrossingInput {
+pub(crate) struct CutoffCrossingInput {
     gradient_check: String,
-    snapshot_ids: Vec<String>,
+    pub(crate) snapshot_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CutoffCrossing {
+pub(crate) struct CutoffCrossing {
     gradient_check: String,
-    steps: Vec<CutoffStep>,
+    pub(crate) steps: Vec<CutoffStep>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CutoffStep {
-    snapshot_id: String,
+pub(crate) struct CutoffStep {
+    pub(crate) snapshot_id: String,
     persistent: Evaluation,
-    fresh: Evaluation,
+    pub(crate) fresh: Evaluation,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct Evaluation {
-    energy_kj_mol: f64,
-    gradient_kj_mol_angstrom: Vec<f64>,
+pub(crate) struct Evaluation {
+    pub(crate) energy_kj_mol: f64,
+    pub(crate) gradient_kj_mol_angstrom: Vec<f64>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InputSnapshot {
-    id: String,
-    gradient_check: String,
-    coordinates_angstrom: Vec<[f64; 3]>,
+pub(crate) struct InputSnapshot {
+    pub(crate) id: String,
+    pub(crate) gradient_check: String,
+    pub(crate) coordinates_angstrom: Vec<[f64; 3]>,
     #[serde(default)]
     optimization_runs: Vec<Run>,
 }
@@ -144,47 +146,47 @@ struct Run {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Snapshot {
-    id: String,
+pub(crate) struct Snapshot {
+    pub(crate) id: String,
     gradient_check: String,
-    topology: Topology,
-    total: Total,
-    terms: BTreeMap<String, Term>,
+    pub(crate) topology: Topology,
+    pub(crate) total: Total,
+    pub(crate) terms: BTreeMap<String, Term>,
     #[serde(default)]
     optimization_runs: Vec<Trajectory>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Topology {
-    atom_types: Vec<Value>,
-    tuples: BTreeMap<String, Vec<Vec<usize>>>,
-    excluded_pairs: Vec<[usize; 2]>,
-    angle_coordinations: Vec<usize>,
+pub(crate) struct Topology {
+    pub(crate) atom_types: Vec<Value>,
+    pub(crate) tuples: BTreeMap<String, Vec<Vec<usize>>>,
+    pub(crate) excluded_pairs: Vec<[usize; 2]>,
+    pub(crate) angle_coordinations: Vec<usize>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Total {
-    value_kj_mol: f64,
-    evaluate_kj_mol: f64,
+pub(crate) struct Total {
+    pub(crate) value_kj_mol: f64,
+    pub(crate) evaluate_kj_mol: f64,
     #[serde(flatten)]
-    derivatives: Derivatives,
+    pub(crate) derivatives: Derivatives,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Derivatives {
-    gradient_kj_mol_angstrom: Vec<f64>,
+pub(crate) struct Derivatives {
+    pub(crate) gradient_kj_mol_angstrom: Vec<f64>,
     central_difference_kj_mol_angstrom: [Vec<f64>; 2],
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Term {
+pub(crate) struct Term {
     energy_kj_mol: f64,
-    energy_kcal_mol: f64,
-    gradient_kcal_mol_angstrom: Vec<f64>,
+    pub(crate) energy_kcal_mol: f64,
+    pub(crate) gradient_kcal_mol_angstrom: Vec<f64>,
     central_difference_kcal_mol_angstrom: [Vec<f64>; 2],
     #[serde(flatten)]
     derivatives: Derivatives,
@@ -268,7 +270,7 @@ fn load<T: DeserializeOwned>(path: &Path, expected_hash: Option<&str>) -> T {
     serde_json::from_value(raw).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-fn close(actual: f64, reference: f64, absolute: f64, relative: f64, context: &str) {
+pub(crate) fn close(actual: f64, reference: f64, absolute: f64, relative: f64, context: &str) {
     let tolerance = absolute.max(relative * reference.abs());
     assert!(
         (actual - reference).abs() <= tolerance,
@@ -314,7 +316,11 @@ fn expected_exclusions(input: &InputGraph, context: &str) -> Vec<[usize; 2]> {
     let mut neighbors = vec![Vec::new(); input.atoms.len()];
     let mut pairs = BTreeSet::new();
     let ordered_pair = |a: usize, b: usize| [a.min(b), a.max(b)];
-    for &InputBond { a, b } in &input.bonds {
+    for &InputBond { a, b, order } in &input.bonds {
+        assert!(
+            (1..=3).contains(&order),
+            "{context}: invalid reference bond order"
+        );
         assert!(
             a < neighbors.len() && b < neighbors.len() && a != b,
             "{context}: invalid bond"
@@ -652,8 +658,9 @@ fn check_cutoff_crossing(
     }
 }
 
-#[test]
-fn pinned_uff_reference_fixtures() {
+pub(crate) fn for_each_fixture_graph(
+    mut visit: impl FnMut(&str, &InputGraph, &Graph<Snapshot, CutoffCrossing>, usize, &str),
+) {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture_dir = crate_dir.join("tests/fixtures/uff_reference");
     let tool_dir = crate_dir.join("../../../tools/spin3d-ff-reference");
@@ -773,24 +780,38 @@ fn pinned_uff_reference_fixtures() {
                 })
                 .collect();
             assert_eq!(input_runs, expected_runs, "{context}: input optimizer runs");
-            let exclusions = expected_exclusions(input, &context);
-            let label = probe_label(&id, input, &context);
-            for (input_snapshot, result_snapshot) in graph.snapshots.iter().zip(&result.snapshots) {
-                let context = format!("{context} {}", input_snapshot.id);
-                assert_eq!(
-                    input_snapshot.coordinates_angstrom.len(),
-                    input.atoms.len(),
-                    "{context}: coordinate count"
-                );
-                check_snapshot(
-                    input_snapshot,
-                    result_snapshot,
-                    &exclusions,
-                    label,
-                    &context,
-                );
-            }
-            check_cutoff_crossing(graph, result, expected.cutoff_crossing_steps, &context);
+            visit(&id, input, result, expected.cutoff_crossing_steps, &context);
         }
     }
+}
+
+#[test]
+fn pinned_uff_reference_fixtures() {
+    for_each_fixture_graph(|id, input, result, cutoff_steps, context| {
+        for atom in &input.atoms {
+            assert!(
+                i8::try_from(atom.formal_charge).is_ok(),
+                "{context}: formal charge"
+            );
+        }
+        let exclusions = expected_exclusions(input, context);
+        let label = probe_label(id, input, context);
+        for (input_snapshot, result_snapshot) in input.graph.snapshots.iter().zip(&result.snapshots)
+        {
+            let context = format!("{context} {}", input_snapshot.id);
+            assert_eq!(
+                input_snapshot.coordinates_angstrom.len(),
+                input.atoms.len(),
+                "{context}: coordinate count"
+            );
+            check_snapshot(
+                input_snapshot,
+                result_snapshot,
+                &exclusions,
+                label,
+                &context,
+            );
+        }
+        check_cutoff_crossing(&input.graph, result, cutoff_steps, context);
+    });
 }
