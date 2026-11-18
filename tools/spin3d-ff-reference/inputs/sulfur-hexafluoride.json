@@ -1,0 +1,113 @@
+{
+  "id": "sulfur-hexafluoride",
+  "group": "Charges and scope",
+  "geometrySource": "Hand-authored octahedral axes and fixed perturbations",
+  "graphs": [
+    {
+      "hydrogenModel": "no-hydrogens",
+      "atoms": [
+        {
+          "element": "S",
+          "atomicNumber": 16,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        },
+        {
+          "element": "F",
+          "atomicNumber": 9,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 4,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 5,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 6,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "octahedral",
+          "gradientCheck": "linear-boundary",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [1.56, 0, 0],
+            [-1.56, 0, 0],
+            [0, 1.56, 0],
+            [0, -1.56, 0],
+            [0, 0, 1.56],
+            [0, 0, -1.56]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.085, 0, 0.085],
+            [1.594, -0.068, 0.017],
+            [-1.594, 0.051000000000000004, -0.051000000000000004],
+            [0.085, 1.5430000000000001, 0.068],
+            [0.017, -1.645, 0],
+            [-0.051000000000000004, 0.034, 1.492],
+            [0.068, -0.034, -1.5090000000000001]
+          ]
+        }
+      ]
+    }
+  ]
+}

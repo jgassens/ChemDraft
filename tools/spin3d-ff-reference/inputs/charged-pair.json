@@ -1,0 +1,57 @@
+{
+  "id": "charged-pair",
+  "group": "Charges and scope",
+  "geometrySource": "Hand-authored separated sodium and chloride ions",
+  "graphs": [
+    {
+      "hydrogenModel": "no-hydrogens",
+      "atoms": [
+        {
+          "element": "Na",
+          "atomicNumber": 11,
+          "formalCharge": 1
+        },
+        {
+          "element": "Cl",
+          "atomicNumber": 17,
+          "formalCharge": -1
+        }
+      ],
+      "bonds": [],
+      "snapshots": [
+        {
+          "id": "inside-cutoff",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [8, 0.2, -0.1]
+          ]
+        },
+        {
+          "id": "outside-cutoff",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [12, 0.2, -0.1]
+          ]
+        }
+      ],
+      "cutoffCrossing": {
+        "gradientCheck": "cutoff-boundary",
+        "snapshotIds": [
+          "outside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "inside-cutoff",
+          "outside-cutoff"
+        ]
+      }
+    }
+  ]
+}

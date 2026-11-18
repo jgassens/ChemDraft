@@ -1,0 +1,115 @@
+{
+  "id": "acetylene",
+  "group": "Small organics and term isolation",
+  "geometrySource": "Hand-authored linear geometry and fixed bend",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 3,
+          "originalOrder": 3
+        },
+        {
+          "a": 0,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "linear",
+          "gradientCheck": "linear-boundary",
+          "coordinatesAngstrom": [
+            [-0.603, 0, 0],
+            [0.603, 0, 0],
+            [-1.665, 0, 0],
+            [1.665, 0, 0]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.688, 0, 0.085],
+            [0.637, -0.068, 0.017],
+            [-1.699, 0.051000000000000004, -0.051000000000000004],
+            [1.75, -0.017, 0.068]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 3,
+          "originalOrder": 3
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "linear",
+          "gradientCheck": "linear-boundary",
+          "coordinatesAngstrom": [
+            [-0.603, 0, 0],
+            [0.603, 0, 0]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.688, 0, 0.085],
+            [0.637, -0.068, 0.017]
+          ]
+        }
+      ]
+    }
+  ]
+}

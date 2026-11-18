@@ -1,0 +1,205 @@
+{
+  "id": "cyclopropane",
+  "group": "Rings and aromatics",
+  "geometrySource": "ChemDraft RDKit MinimalLib ETKDGv3 seed 416651 from C1CC1",
+  "graphs": [
+    {
+      "hydrogenModel": "explicit-hydrogen",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        },
+        {
+          "element": "H",
+          "atomicNumber": 1,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 2,
+          "b": 0,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 3,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 0,
+          "b": 4,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 5,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 6,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 2,
+          "b": 7,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 2,
+          "b": 8,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7034392377741104, -0.514125631634289, -0.014533003356517925],
+            [0.801233023792635, -0.3354343988001571, 0.028444632008181037],
+            [-0.12051090860859802, 0.8636518310855996, -0.018344496931198336],
+            [-1.2302962109740039, -0.8246607152506025, 0.8982214743715057],
+            [-1.0486528774243944, -0.9432610924062835, -0.9554497423283079],
+            [1.270071939062038, -0.5760779259285121, 1.0027776388507452],
+            [1.4087743199373775, -0.5758069876404865, -0.8683275718531352],
+            [-0.2587327681354301, 1.41515698160437, -0.9548254739464113],
+            [-0.1184472798755138, 1.4905579389703592, 0.8820365431851429]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7884392377741104, -0.514125631634289, 0.07046699664348208],
+            [0.835233023792635, -0.4034343988001571, 0.04544463200818104],
+            [-0.154510908608598, 0.9146518310855997, -0.06934449693119835],
+            [-1.145296210974004, -0.8416607152506025, 0.9662214743715056],
+            [-1.0316528774243945, -1.0282610924062836, -0.9554497423283079],
+            [1.2190719390620381, -0.5420779259285121, 0.9347776388507452],
+            [1.4767743199373775, -0.6098069876404866, -0.8173275718531352],
+            [-0.2587327681354301, 1.50015698160437, -0.9718254739464113],
+            [-0.1864472798755138, 1.507557938970359, 0.7970365431851429]
+          ]
+        }
+      ]
+    },
+    {
+      "hydrogenModel": "drawn-heavy-atom-only",
+      "atoms": [
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        },
+        {
+          "element": "C",
+          "atomicNumber": 6,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [
+        {
+          "a": 0,
+          "b": 1,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 1,
+          "b": 2,
+          "order": 1,
+          "originalOrder": 1
+        },
+        {
+          "a": 2,
+          "b": 0,
+          "order": 1,
+          "originalOrder": 1
+        }
+      ],
+      "snapshots": [
+        {
+          "id": "seed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7034392377741104, -0.514125631634289, -0.014533003356517925],
+            [0.801233023792635, -0.3354343988001571, 0.028444632008181037],
+            [-0.12051090860859802, 0.8636518310855996, -0.018344496931198336]
+          ]
+        },
+        {
+          "id": "perturbed",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [-0.7884392377741104, -0.514125631634289, 0.07046699664348208],
+            [0.835233023792635, -0.4034343988001571, 0.04544463200818104],
+            [-0.154510908608598, 0.9146518310855997, -0.06934449693119835]
+          ]
+        }
+      ]
+    }
+  ]
+}

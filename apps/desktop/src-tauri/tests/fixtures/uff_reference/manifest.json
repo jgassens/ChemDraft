@@ -1,0 +1,173 @@
+{
+  "upstreamCommit": "416651ddaef33a4e20392392e7c0b505d446491b",
+  "eigenVersion": "3.4.0",
+  "generatorVersion": 2,
+  "build": {
+    "compiler": "AppleClang 21.0.0.21000401",
+    "cmake": "4.4.3",
+    "generator": "Unix Makefiles",
+    "system": "Darwin",
+    "arch": "arm64",
+    "configuration": "Release",
+    "cxxStandard": "17",
+    "cxxExtensions": "OFF",
+    "cxxFlags": "-O3 -DNDEBUG",
+    "avogadroCxxFlags": "-O3 -DNDEBUG",
+    "osxArchitectures": "",
+    "osxDeploymentTarget": "11.0",
+    "EIGEN_MPL2_ONLY": "ON",
+    "SKBUILD": "ON",
+    "BUILD_SHARED_LIBS": "OFF",
+    "BUILD_DOCUMENTATION": "OFF",
+    "ENABLE_TESTING": "OFF",
+    "ENABLE_CALC_BENCHMARKS": "OFF",
+    "USE_QT": "OFF",
+    "USE_OPENGL": "OFF",
+    "USE_HDF5": "OFF",
+    "USE_LIBARCHIVE": "OFF",
+    "USE_LIBMSYM": "OFF",
+    "USE_MMTF": "OFF",
+    "USE_PLOTTER": "OFF",
+    "USE_PYTHON": "OFF",
+    "USE_SPGLIB": "OFF",
+    "USE_EXTERNAL_NLOHMANN": "OFF",
+    "USE_EXTERNAL_PUGIXML": "OFF",
+    "USE_EXTERNAL_STRUCT": "OFF",
+    "USE_EXTERNAL_TOMLPLUSPLUS": "OFF"
+  },
+  "settings": {
+    "centralDifferenceStepsAngstrom": [0.00001, 0.000005],
+    "generalRestraints": false,
+    "kcalToKj": 4.184,
+    "optimizer": {
+      "checkpointIterations": [1, 10, 100],
+      "convergenceMobileGradientRmsKjMolAngstrom": 0.01,
+      "fire": {
+        "alphaStart": 0.25,
+        "dt0": 0.05,
+        "dtMax": 0.5,
+        "fAlpha": 0.99,
+        "fDec": 0.5,
+        "fInc": 1.1,
+        "mass": 1,
+        "maxMoveAngstrom": 0.18,
+        "nDelay": 5
+      },
+      "iterationCap": 10000,
+      "verificationChunkSizes": ["single-call", "10-iterations"]
+    },
+    "vdwCutoffAngstrom": 10
+  },
+  "diagnosticMatchesUnmodified": true,
+  "inventorySha256": "7b61592638e3875a8d8aad6a2d97c0f2c253d94226b4d16cf21985b35125160d",
+  "files": {
+    "2-butanol-r.json": {
+      "inputSha256": "5feaa1c9c5548b54a0eb7bccc9cd9020c3cb19c079b2017ea01f7f145ef7f6d4",
+      "outputSha256": "f1d220830f36b16cb654aaf335da3fe9f6958b49cd7f80f7fabc7b77ef19c4f6"
+    },
+    "2-butanol-s.json": {
+      "inputSha256": "7f936c8ee1e6ef7cfd2e926895efca502066b42f6f9b2b07da133abf78fbb77c",
+      "outputSha256": "ac4b8c2242d0a9b97901c64a511d941ec83f74779e0df0e9fff1d9ceee227b7e"
+    },
+    "2-butanol-unspecified.json": {
+      "inputSha256": "4aab5a450d4d867a3a30882bd3bb242acd3b4f9fe68c6deee04cad2e2f108c35",
+      "outputSha256": "99d168e88bea2c81783d4ded694d63c17f5c724c42f85913113f0c6bfd2e5301"
+    },
+    "2-butene-e.json": {
+      "inputSha256": "f40695a281530be52114ad1aa4eef9b0dcc9c15b20a7aa72c3dc4b5d78efb40b",
+      "outputSha256": "6a3ed2fd8fad9cc8992c8e816082782c7ce1d54f3f49cfcf88c2601708207d95"
+    },
+    "2-butene-unspecified.json": {
+      "inputSha256": "045998518e6104ffe5436cebf451b1d4973e5be470d53f77308e7e86d262ecde",
+      "outputSha256": "bbf0c9c572be3efb269a95ac5a4bd041c77de8fd2ad85fd77d3acca863d17768"
+    },
+    "2-butene-z.json": {
+      "inputSha256": "174a100828559b5b7f87467095e9b6b2079f8a333bb29f17070256f5c7a83862",
+      "outputSha256": "828bd59b0b9a4ec2280f334ba9530d8717a01d935143c02db92d91f78c97b2b5"
+    },
+    "acetamide.json": {
+      "inputSha256": "fb461d372a689bbba883ce1141309256cd3c75d8caea25abe97b847b1e488acb",
+      "outputSha256": "2da32e47911e6bba67f289e82411d5945f6a0715262392ce742efab1419f9a8d"
+    },
+    "acetate.json": {
+      "inputSha256": "0aea2b3eb7c9bca4cad111fab04f7b4de27d1443494a60bcf77ad68a6528e736",
+      "outputSha256": "0de3411ff0a222873aaeb0cd2a351b74f08eee950eb9a91e8518bf25cc35ae8e"
+    },
+    "acetylene.json": {
+      "inputSha256": "b2905159bc55a0d31a908275f69723527c990eeb86a6870cd804cbf5a2bf324f",
+      "outputSha256": "8b2a6fe852f8832f73f5e3cee616932c025ac279c80ad3ca848d01f6ee905575"
+    },
+    "antimony-trihydride.json": {
+      "inputSha256": "c7625c23b4677cf94c7ff9e2d0814dd91fb6ad1cecda427e270b2805d9679f2d",
+      "outputSha256": "b17861f6d79d39b47418d851d24b620cec09e2b758ebfde56c8f1c3c22008241"
+    },
+    "benzene.json": {
+      "inputSha256": "f4a2383b72446e42f7f530c579c201614a14aedae2911107d827f47771f0b569",
+      "outputSha256": "fc9d37ef328217121c38f6c31ad12808f968368a9a502c8910f6f6d96d0f051d"
+    },
+    "charged-pair.json": {
+      "inputSha256": "aef0d2374bce833b5331f2a1cbcd483f978d28a039618db562708d8f6e0d3e7e",
+      "outputSha256": "a01cfa353d8cad8fa6d110f9bb24e64889afd04c6169cdef677f6448713f8a77"
+    },
+    "cyclohexane-chair.json": {
+      "inputSha256": "3cf360217ebc4d9cf1a7889d424729cc5c5560051a4f0d43f644584df63bb6ac",
+      "outputSha256": "11775bd5e51573a0aa90803e73ebecdbebb3d5b8cf7f838b4fcfda50775a8bce"
+    },
+    "cyclopropane.json": {
+      "inputSha256": "08b925ced5b48b50e638ff46f16b43d87c8080ce7a37f39b73aa0821c5e1933d",
+      "outputSha256": "522b01b0c5b704a6547e67e8d4399fafa05e54bcd173c3c7603c875135ab3d36"
+    },
+    "element-scan-probe.json": {
+      "inputSha256": "fbe1f3177ac57de939316e8bb8a3d5d35ee3531fc4dc21d6ca5eb91d6f33249e",
+      "outputSha256": "9185c2d52fb7833e12471093cdbea81535a18f87e3608f3260c2cc84f88a92e0"
+    },
+    "ethanol.json": {
+      "inputSha256": "94431daa3d4bb66af485932f44cf2b159f6a4f35c5890c17365a9cb5dc47875a",
+      "outputSha256": "d63c5948f75d85bc6ffef8edab86f045cec54be0f252326c7a03ca6ef8290d9b"
+    },
+    "formaldehyde.json": {
+      "inputSha256": "51a7b8fccbc15b323583afdfed4d5c96db887efe4dd72f2a46d247513d146597",
+      "outputSha256": "e270eb4719980c62ff10a5e311304a8a95cdced3c8e52b31b3f1fde5d68af14c"
+    },
+    "furan.json": {
+      "inputSha256": "e4d90f80ed38f5a2f633fb483db610dfbc7c31d8a40e1922c020c458a3a4be67",
+      "outputSha256": "9b35e89ec5c25dd56889993d6fe7656ac682e4b6c75ac81fef74cbcd05a42115"
+    },
+    "hydrogen-peroxide.json": {
+      "inputSha256": "3303fc7941388e54e246566d3e6b7fd7c7132884f7ee3847e48e99ee3c82b4d7",
+      "outputSha256": "62499943389be61315f3676ef9a2c71c21020906b9f93345514fc007c61d8f98"
+    },
+    "iodomethane.json": {
+      "inputSha256": "06e1a97a6eb7cc0842f65485cd3a11f4fbccc56255ecc3838c22b951c1894b70",
+      "outputSha256": "e52cac0b8ec444ffa1b2b6279a2da59920027c484db367223bd06f7f71755d06"
+    },
+    "iron-hexafluoride.json": {
+      "inputSha256": "d48cc56ebc9e4d33adc4a7506cfb050a87530d5ad11daffde23b95ac73a57257",
+      "outputSha256": "14a3829ac0f0a0e854d263d3507a1368db99ab9ff4391639d52b5db7c1e5f312"
+    },
+    "methane.json": {
+      "inputSha256": "946a8b403d83f5ad9be141c2fc39f52305f6d4641664ae7120d5585b0682bbf4",
+      "outputSha256": "7ca901b0a9a47be14a185e3da420c6a7218d4cbcdb7ca201a79040ff16e97b64"
+    },
+    "methylammonium.json": {
+      "inputSha256": "66dcae6005fa7317d92f4181483e58ea2dcdab4d8ccfae3e7ef9521417b642cf",
+      "outputSha256": "39ea51beda068d6ee9f5be969463c1577e1b493daae2a7b096797129666c9420"
+    },
+    "n-butane.json": {
+      "inputSha256": "11b45c3eea521983972658f67996934504bb9c32c93877c64515966554c41a3c",
+      "outputSha256": "5a881e2f6b54c4d115da2ee7fdc9bf80f4fa11e07b90cf269b36b668e261ab38"
+    },
+    "naphthalene.json": {
+      "inputSha256": "f71a9b82d20fd207128a1d69b015f4dfa1ea8d10bbcaee2a48ac7963ab5f5c1f",
+      "outputSha256": "778596abac6f8a98e64306993ab32d9cd3e38341b906fe8dbd1144e1ca56d6f9"
+    },
+    "sulfur-hexafluoride.json": {
+      "inputSha256": "e510b9bd4d005481b459d4b4983df7fbaca25495c532a5851a2f2fb78dee72fa",
+      "outputSha256": "ec070e556cca37da6aa6be17274e46585dd0406c122fe73706312ebb5b399ba6"
+    },
+    "water.json": {
+      "inputSha256": "910ea313bf18fe982ef3d769adf8c2999cbded06eae70856e7f13c9d631f8adf",
+      "outputSha256": "c6ad86aa41e4f6f66882871b4c8ac3f435a53ba6b0d976bea82c5f59140f2a6e"
+    }
+  }
+}

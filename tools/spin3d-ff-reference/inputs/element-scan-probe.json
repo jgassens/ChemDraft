@@ -1,0 +1,75 @@
+{
+  "id": "element-scan-probe",
+  "group": "Element support",
+  "geometrySource": "Hand-authored isolated atoms, each pair at least 12 angstroms apart",
+  "graphs": [
+    {
+      "hydrogenModel": "no-hydrogens",
+      "atoms": [
+        {
+          "element": "Xe",
+          "atomicNumber": 54,
+          "formalCharge": 0
+        },
+        {
+          "element": "Cs",
+          "atomicNumber": 55,
+          "formalCharge": 0
+        },
+        {
+          "element": "Lu",
+          "atomicNumber": 71,
+          "formalCharge": 0
+        },
+        {
+          "element": "W",
+          "atomicNumber": 74,
+          "formalCharge": 0
+        },
+        {
+          "element": "Rn",
+          "atomicNumber": 86,
+          "formalCharge": 0
+        },
+        {
+          "element": "Fm",
+          "atomicNumber": 100,
+          "formalCharge": 0
+        },
+        {
+          "element": "Md",
+          "atomicNumber": 101,
+          "formalCharge": 0
+        },
+        {
+          "element": "No",
+          "atomicNumber": 102,
+          "formalCharge": 0
+        },
+        {
+          "element": "Lr",
+          "atomicNumber": 103,
+          "formalCharge": 0
+        }
+      ],
+      "bonds": [],
+      "snapshots": [
+        {
+          "id": "separated",
+          "gradientCheck": "smooth",
+          "coordinatesAngstrom": [
+            [0, 0, 0],
+            [12, 0, 0],
+            [24, 0, 0],
+            [36, 0, 0],
+            [48, 0, 0],
+            [60, 0, 0],
+            [72, 0, 0],
+            [84, 0, 0],
+            [96, 0, 0]
+          ]
+        }
+      ]
+    }
+  ]
+}
